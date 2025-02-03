@@ -19,7 +19,7 @@ def decode_blueprint(blueprint_string):
             print(f'    [{k}]: saving `{v}`')
     json_data = json.dumps(obj, indent=2)
 
-    path = 'blueprints/' + blueprint_string[:20].replace('/', '_') + '.json'
+    path = 'blueprints/' + blueprint_string[:40].replace('/', '_') + '.json'
     with open(path, 'w') as f:
         f.write(json_data)
     print('    written as ' + path)
