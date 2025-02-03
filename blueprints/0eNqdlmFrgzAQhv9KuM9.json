@@ -1,0 +1,287 @@
+{
+  "blueprint": {
+    "description": "4 lane yellow belt corner leftwards to upwards 6 tiles wide, 6  tiles tall",
+    "icons": [
+      {
+        "signal": {
+          "name": "transport-belt"
+        },
+        "index": 1
+      }
+    ],
+    "entities": [
+      {
+        "entity_number": 1,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 53.5
+        }
+      },
+      {
+        "entity_number": 2,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 52.5
+        }
+      },
+      {
+        "entity_number": 3,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 53.5
+        }
+      },
+      {
+        "entity_number": 4,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 52.5
+        }
+      },
+      {
+        "entity_number": 5,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 53.5
+        }
+      },
+      {
+        "entity_number": 6,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 52.5
+        }
+      },
+      {
+        "entity_number": 7,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 53.5
+        }
+      },
+      {
+        "entity_number": 8,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 52.5
+        }
+      },
+      {
+        "entity_number": 9,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 55.5
+        }
+      },
+      {
+        "entity_number": 10,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 54.5
+        }
+      },
+      {
+        "entity_number": 11,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 55.5
+        }
+      },
+      {
+        "entity_number": 12,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 54.5
+        }
+      },
+      {
+        "entity_number": 13,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 55.5
+        }
+      },
+      {
+        "entity_number": 14,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 54.5
+        }
+      },
+      {
+        "entity_number": 15,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 16,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 54.5
+        }
+      },
+      {
+        "entity_number": 17,
+        "name": "transport-belt",
+        "position": {
+          "x": -453.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 18,
+        "name": "transport-belt",
+        "position": {
+          "x": -453.5,
+          "y": 54.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 19,
+        "name": "transport-belt",
+        "position": {
+          "x": -452.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 20,
+        "name": "transport-belt",
+        "position": {
+          "x": -452.5,
+          "y": 54.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 21,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 57.5
+        }
+      },
+      {
+        "entity_number": 22,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 56.5
+        }
+      },
+      {
+        "entity_number": 23,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 57.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 24,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 56.5
+        }
+      },
+      {
+        "entity_number": 25,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 57.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 26,
+        "name": "transport-belt",
+        "position": {
+          "x": -455.5,
+          "y": 56.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 27,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 57.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 28,
+        "name": "transport-belt",
+        "position": {
+          "x": -454.5,
+          "y": 56.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 29,
+        "name": "transport-belt",
+        "position": {
+          "x": -453.5,
+          "y": 57.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 30,
+        "name": "transport-belt",
+        "position": {
+          "x": -453.5,
+          "y": 56.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 31,
+        "name": "transport-belt",
+        "position": {
+          "x": -452.5,
+          "y": 57.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 32,
+        "name": "transport-belt",
+        "position": {
+          "x": -452.5,
+          "y": 56.5
+        },
+        "direction": 12
+      }
+    ],
+    "item": "blueprint",
+    "version": 562949955518464
+  }
+}

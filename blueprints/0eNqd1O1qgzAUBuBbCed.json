@@ -1,6 +1,6 @@
 {
   "blueprint": {
-    "description": "1 lane yellow belt corner, downwards then leftwards, 8 tiles tall,8 tiles wide",
+    "description": "1 lane yellow belt corner, downwards then leftwards, 6 tiles tall,6 tiles wide",
     "icons": [
       {
         "signal": {
@@ -15,7 +15,7 @@
         "name": "transport-belt",
         "position": {
           "x": -435.5,
-          "y": 49.5
+          "y": 53.5
         },
         "direction": 8
       },
@@ -24,7 +24,7 @@
         "name": "transport-belt",
         "position": {
           "x": -435.5,
-          "y": 51.5
+          "y": 52.5
         },
         "direction": 8
       },
@@ -33,7 +33,7 @@
         "name": "transport-belt",
         "position": {
           "x": -435.5,
-          "y": 50.5
+          "y": 55.5
         },
         "direction": 8
       },
@@ -42,57 +42,12 @@
         "name": "transport-belt",
         "position": {
           "x": -435.5,
-          "y": 53.5
-        },
-        "direction": 8
-      },
-      {
-        "entity_number": 5,
-        "name": "transport-belt",
-        "position": {
-          "x": -435.5,
-          "y": 52.5
-        },
-        "direction": 8
-      },
-      {
-        "entity_number": 6,
-        "name": "transport-belt",
-        "position": {
-          "x": -435.5,
-          "y": 55.5
-        },
-        "direction": 8
-      },
-      {
-        "entity_number": 7,
-        "name": "transport-belt",
-        "position": {
-          "x": -435.5,
           "y": 54.5
         },
         "direction": 8
       },
       {
-        "entity_number": 8,
-        "name": "transport-belt",
-        "position": {
-          "x": -442.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 9,
-        "name": "transport-belt",
-        "position": {
-          "x": -441.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 10,
+        "entity_number": 5,
         "name": "transport-belt",
         "position": {
           "x": -440.5,
@@ -101,7 +56,7 @@
         "direction": 12
       },
       {
-        "entity_number": 11,
+        "entity_number": 6,
         "name": "transport-belt",
         "position": {
           "x": -439.5,
@@ -110,7 +65,7 @@
         "direction": 12
       },
       {
-        "entity_number": 12,
+        "entity_number": 7,
         "name": "transport-belt",
         "position": {
           "x": -438.5,
@@ -119,7 +74,7 @@
         "direction": 12
       },
       {
-        "entity_number": 13,
+        "entity_number": 8,
         "name": "transport-belt",
         "position": {
           "x": -437.5,
@@ -128,7 +83,7 @@
         "direction": 12
       },
       {
-        "entity_number": 14,
+        "entity_number": 9,
         "name": "transport-belt",
         "position": {
           "x": -436.5,
@@ -137,7 +92,7 @@
         "direction": 12
       },
       {
-        "entity_number": 15,
+        "entity_number": 10,
         "name": "transport-belt",
         "position": {
           "x": -435.5,

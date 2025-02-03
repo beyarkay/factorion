@@ -1,6 +1,6 @@
 {
   "blueprint": {
-    "description": "1 lane yellow belt corner, downwards then leftwards, 8 tiles tall,8 tiles wide",
+    "description": "4 lane yellow belt corner, downwards then leftwards, 4 tiles tall,4  tiles wide",
     "icons": [
       {
         "signal": {
@@ -14,17 +14,17 @@
         "entity_number": 1,
         "name": "transport-belt",
         "position": {
-          "x": -435.5,
-          "y": 49.5
+          "x": -438.5,
+          "y": 53.5
         },
-        "direction": 8
+        "direction": 12
       },
       {
         "entity_number": 2,
         "name": "transport-belt",
         "position": {
-          "x": -435.5,
-          "y": 51.5
+          "x": -437.5,
+          "y": 53.5
         },
         "direction": 8
       },
@@ -32,8 +32,8 @@
         "entity_number": 3,
         "name": "transport-belt",
         "position": {
-          "x": -435.5,
-          "y": 50.5
+          "x": -436.5,
+          "y": 53.5
         },
         "direction": 8
       },
@@ -50,13 +50,58 @@
         "entity_number": 5,
         "name": "transport-belt",
         "position": {
-          "x": -435.5,
-          "y": 52.5
+          "x": -438.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 6,
+        "name": "transport-belt",
+        "position": {
+          "x": -438.5,
+          "y": 54.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 7,
+        "name": "transport-belt",
+        "position": {
+          "x": -437.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 8,
+        "name": "transport-belt",
+        "position": {
+          "x": -437.5,
+          "y": 54.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 9,
+        "name": "transport-belt",
+        "position": {
+          "x": -436.5,
+          "y": 55.5
+        },
+        "direction": 12
+      },
+      {
+        "entity_number": 10,
+        "name": "transport-belt",
+        "position": {
+          "x": -436.5,
+          "y": 54.5
         },
         "direction": 8
       },
       {
-        "entity_number": 6,
+        "entity_number": 11,
         "name": "transport-belt",
         "position": {
           "x": -435.5,
@@ -65,7 +110,7 @@
         "direction": 8
       },
       {
-        "entity_number": 7,
+        "entity_number": 12,
         "name": "transport-belt",
         "position": {
           "x": -435.5,
@@ -74,43 +119,7 @@
         "direction": 8
       },
       {
-        "entity_number": 8,
-        "name": "transport-belt",
-        "position": {
-          "x": -442.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 9,
-        "name": "transport-belt",
-        "position": {
-          "x": -441.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 10,
-        "name": "transport-belt",
-        "position": {
-          "x": -440.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 11,
-        "name": "transport-belt",
-        "position": {
-          "x": -439.5,
-          "y": 56.5
-        },
-        "direction": 12
-      },
-      {
-        "entity_number": 12,
+        "entity_number": 13,
         "name": "transport-belt",
         "position": {
           "x": -438.5,
@@ -119,7 +128,7 @@
         "direction": 12
       },
       {
-        "entity_number": 13,
+        "entity_number": 14,
         "name": "transport-belt",
         "position": {
           "x": -437.5,
@@ -128,7 +137,7 @@
         "direction": 12
       },
       {
-        "entity_number": 14,
+        "entity_number": 15,
         "name": "transport-belt",
         "position": {
           "x": -436.5,
@@ -137,7 +146,7 @@
         "direction": 12
       },
       {
-        "entity_number": 15,
+        "entity_number": 16,
         "name": "transport-belt",
         "position": {
           "x": -435.5,

@@ -1,0 +1,42 @@
+{
+  "blueprint": {
+    "description": "1 lane yellow belt corner leftwards to upwards 2 tiles wide, 2 tiles tall",
+    "icons": [
+      {
+        "signal": {
+          "name": "transport-belt"
+        },
+        "index": 1
+      }
+    ],
+    "entities": [
+      {
+        "entity_number": 1,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 57.5
+        }
+      },
+      {
+        "entity_number": 2,
+        "name": "transport-belt",
+        "position": {
+          "x": -457.5,
+          "y": 56.5
+        }
+      },
+      {
+        "entity_number": 3,
+        "name": "transport-belt",
+        "position": {
+          "x": -456.5,
+          "y": 57.5
+        },
+        "direction": 12
+      }
+    ],
+    "item": "blueprint",
+    "version": 562949955518464
+  }
+}
