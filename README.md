@@ -59,6 +59,12 @@ actually generate super-human factories.
       and "everything else". Where "easy" would just have yellow belts, nothing
       else. Once the model can generate yellow belts in a plausible fashion,
       we'll move on to such exciting things as underground belts (gasp!).
+  - [ ] Manual collection (ie copying blueprints in factorio and giving them
+        a good description)
+  - [ ] Automated generation. Lots of common belt patterns are probably
+        better off being auto-generated (ie various lengths of 4-lane yellow
+        belts), but then we'll need to write the script to actually auto-generate
+        these blueprints and ensure they're valid. Not hard, but a bit tedious.
 - [ ] **Data augmentation**: We'll need a _lot_ of data, but really a lot of it
       is permutations. Rotate the whole thing 90 degrees. Translate the whole thing
       left/right/up/down. Upgrade certain entities. There's some basic
