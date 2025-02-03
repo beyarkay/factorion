@@ -1,0 +1,33 @@
+{
+  "blueprint": {
+    "description": "2 yellow belts going up",
+    "icons": [
+      {
+        "signal": {
+          "name": "transport-belt"
+        },
+        "index": 1
+      }
+    ],
+    "entities": [
+      {
+        "entity_number": 1,
+        "name": "transport-belt",
+        "position": {
+          "x": -12.5,
+          "y": -15.5
+        }
+      },
+      {
+        "entity_number": 2,
+        "name": "transport-belt",
+        "position": {
+          "x": -12.5,
+          "y": -14.5
+        }
+      }
+    ],
+    "item": "blueprint",
+    "version": 562949955518464
+  }
+}
