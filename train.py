@@ -1,3 +1,5 @@
+# uv run train.py
+#
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
@@ -5,28 +7,29 @@
 #     "protobuf",
 #     "transformers",
 #     "datasets",
+#     "wandb",
 #     "accelerate>=0.26.0",
 # ]
 # ///
+
+import wandb
 import random
 import glob
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 import torch
 import transformers
 import copy
 from transformers import (
     PreTrainedTokenizerFast,
     ModernBertForMaskedLM,
-    BertTokenizer,
-    BertForMaskedLM,
     DataCollatorForLanguageModeling,
     Trainer,
     TrainingArguments
 )
 import json
-from datasets import Dataset
 
 transformers.logging.set_verbosity_info()
+wandb.init(project="factorion", name="testing-algernon")
 
 # Load tokenizer and model
 model_name = "answerdotai/ModernBERT-base"
@@ -39,7 +42,6 @@ split_dataset = dataset["train"].train_test_split(test_size=0.25)
 trn_dataset = split_dataset["train"]
 val_dataset = split_dataset["test"]
 
-# 3. Tokenize dataset
 def tokenize_function(examples):
     return tokenizer(
         examples["text"],
@@ -139,8 +141,7 @@ def pretty_print_tokens(text, tokenizer):
     return ''.join(colored_tokens)
 
 
-# TODO actually use this function
-def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
+def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=0):
     """Prepares dataset by tokenizing and augmenting multiple times."""
     paths = glob.glob(glob_str)
     blueprints = []
@@ -151,33 +152,76 @@ def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
     augmented_blueprints = []
     for _ in range(augmentations):
         for blueprint in blueprints:
-            augmented_blueprints.append(augment_blueprint(blueprint))
+            augmented_blueprints.append(augment_blueprint(
+                blueprint,
+                upgrade_entities_prob=0
+            ))
 
-
-    masked_texts = [
-        json.dumps( mask_blueprint(bp), separators=(',', ':'))
+    # Note: masking not done here, masking needs to be done during the training
+    # process
+    stringified_blueprints = [
+        json.dumps(bp, separators=(',', ':'))
         for bp in (blueprints + augmented_blueprints)
     ]
 
-    dataset = Dataset.from_dict({"text": masked_texts})
+    dataset = Dataset.from_dict({"text": stringified_blueprints}).map(tokenize_function, batched=True, remove_columns=["text"])
 
-    return dataset.map(lambda x: tokenize_function(x, tokenizer), batched=True)
+    # Don't tokenize just yet, that happens in the collator
+    # full_dataset = dataset.map(
+    #     lambda x: tokenize_function(x, tokenizer),
+    #     batched=True,
+    #     remove_columns=["text"]
+    # )
 
+    split_dataset = dataset.train_test_split(test_size=0.25, seed=42)
 
+    return split_dataset['train'], split_dataset['test']
 
-tokenized_trn = trn_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
-tokenized_val = val_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+class DataCollatorForSelectiveMasking(DataCollatorForLanguageModeling):
+    """A custom collator so that we can selectively mask parts of the JSON
+    blueprint that we actually care about."""
+    def __init__(self, tokenizer, mlm_probability=0.15):
+        super().__init__(tokenizer, mlm=True, mlm_probability=mlm_probability)
 
-# 4. Apply Masked Language Modeling (MLM)
+    def mask_json(self, json_data):
+        """Mask specific fields in the JSON before tokenization."""
+        masked_json = json_data.copy()
+        if "blueprint" in masked_json and "entities" in masked_json["blueprint"]:
+            for entity in masked_json["blueprint"]["entities"]:
+                if random.random() < self.mlm_probability:
+                    entity["name"] = "[MASK]"
+                if random.random() < self.mlm_probability:
+                    entity["position"]["x"] = "[MASK]"
+                if random.random() < self.mlm_probability:
+                    entity["position"]["y"] = "[MASK]"
+                if "type" in entity and random.random() < self.mlm_probability:
+                    entity["type"] = "[MASK]"
+        return masked_json
+
+    def __call__(self, examples):
+        """Apply masking before tokenization."""
+        masked_examples = [self.mask_json(ex) for ex in examples]
+        # tokenized = [self.tokenizer(json.dumps(ex), truncation=True, padding="max_length") for ex in masked_examples]
+        tokenized = self.tokenizer([json.dumps(ex) for ex in masked_examples], truncation=True, padding="max_length")
+        # print('type of data: ', type(data))
+        # print('data is: ', data)
+        # return data
+        return super().__call__(tokenized)
+
+# Use the custom data collator
+# data_collator = DataCollatorForSelectiveMasking(tokenizer, mlm_probability=0.15)
+
+tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
+# print(tokenized_trn)
+
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
     mlm=True,
-    mlm_probability=0.15  # 15% of tokens will be masked
+    mlm_probability=0.05
 )
 
-
 output_dir = "./modernbert-ft-factorio"
-# 5. Set up training arguments
+
 training_args = TrainingArguments(
     output_dir=output_dir,
     num_train_epochs=2,
@@ -188,9 +232,10 @@ training_args = TrainingArguments(
     logging_steps=1,
     save_total_limit=2,
     fp16=torch.cuda.is_available(),  # Use mixed precision if available
+    remove_unused_columns=False,
+    report_to="wandb"
 )
 
-# 6. Initialize Trainer
 trainer = Trainer(
     model=model,
     args=training_args,
@@ -200,9 +245,8 @@ trainer = Trainer(
     data_collator=data_collator,
 )
 
-# 7. Train the model
 trainer.train()
+# Left commented because it's handy sometimes: resume training from a checkpoint
 # trainer.train(resume_from_checkpoint=True)
 
-# 8. Save fine-tuned model
 trainer.save_model(output_dir + '-saved-model')
