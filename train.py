@@ -15,7 +15,7 @@
 import wandb
 import random
 import glob
-from datasets import load_dataset, Dataset
+from datasets import Dataset
 import torch
 import transformers
 import copy
@@ -77,10 +77,10 @@ def augment_blueprint(
         random.shuffle(augmented["blueprint"]["icons"])
 
     if x_offset is None:
-        x_offset = random.randrange(-10, 10)
+        x_offset = random.randrange(-50, 50)
 
     if y_offset is None:
-        y_offset = random.randrange(-10, 10)
+        y_offset = random.randrange(-50, 50)
 
     for entity in augmented["blueprint"]["entities"]:
         entity["position"]["x"] += x_offset
@@ -108,7 +108,7 @@ def pretty_print_tokens(text, tokenizer):
             color = random.choice(colors)
         last_color = color
         string = tokenizer.convert_ids_to_tokens([token])[0].replace("Ġ", f"{reset}{color_bg} {reset}{color}")
-        colored_tokens.append(f"{color}{string}{reset}")  # Color the token
+        colored_tokens.append(f"{color}{string}{reset}")
     return ''.join(colored_tokens)
 
 
@@ -165,11 +165,7 @@ class DataCollatorForSelectiveMasking(DataCollatorForLanguageModeling):
     def __call__(self, examples):
         """Apply masking before tokenization."""
         masked_examples = [self.mask_json(ex) for ex in examples]
-        # tokenized = [self.tokenizer(json.dumps(ex), truncation=True, padding="max_length") for ex in masked_examples]
         tokenized = self.tokenizer([json.dumps(ex) for ex in masked_examples], truncation=True, padding="max_length")
-        # print('type of data: ', type(data))
-        # print('data is: ', data)
-        # return data
         return super().__call__(tokenized)
 
 tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
@@ -177,14 +173,14 @@ tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
     mlm=True,
-    mlm_probability=0.05
+    mlm_probability=0.15
 )
 
 output_dir = "./modernbert-ft-factorio"
 
 training_args = TrainingArguments(
     output_dir=output_dir,
-    num_train_epochs=2,
+    num_train_epochs=10,
     eval_strategy="epoch",
     save_strategy="epoch",
     per_device_train_batch_size=8,
