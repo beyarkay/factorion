@@ -36,12 +36,6 @@ model_name = "answerdotai/ModernBERT-base"
 tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
 model = ModernBertForMaskedLM.from_pretrained(model_name)
 
-dataset = load_dataset("text", data_files="blueprints/*.json")
-split_dataset = dataset["train"].train_test_split(test_size=0.25)
-
-trn_dataset = split_dataset["train"]
-val_dataset = split_dataset["test"]
-
 def tokenize_function(examples):
     return tokenizer(
         examples["text"],
@@ -56,7 +50,7 @@ def augment_blueprint(
     y_offset=None,
     shuffle_entities=True,
     shuffle_icons=True,
-    upgrade_entities_prob=0.5
+    upgrade_entities_prob=0.0
 ):
     """Applies random augmentations to a Factorio blueprint JSON."""
     ENTITY_REPLACEMENTS = {
@@ -97,29 +91,6 @@ def augment_blueprint(
     return augmented
 
 
-def mask_blueprint(blueprint_dict, mask_prob=0.1):
-    """Mask out specific fields in the blueprint JSON."""
-    masked = blueprint_dict.copy()
-
-    for entity in masked["blueprint"]["entities"]:
-        if random.random() <= mask_prob:
-            entity["name"] = "[MASK]"
-
-        if random.random() <= mask_prob:
-            entity["position"]["x"] = "[MASK]"
-
-        if random.random() <= mask_prob:
-            entity["position"]["y"] = "[MASK]"
-
-        if "direction" in entity and random.random() <= mask_prob:
-            entity["type"] = "[MASK]"
-
-        if "type" in entity and random.random() <= mask_prob:
-            entity["type"] = "[MASK]"
-
-    return masked
-
-
 def pretty_print_tokens(text, tokenizer):
     """Tokenize the given text, assign each token a random colour, then return
     the coloured text version of the tokens. Useful for visualising what the
@@ -141,7 +112,7 @@ def pretty_print_tokens(text, tokenizer):
     return ''.join(colored_tokens)
 
 
-def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=0):
+def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
     """Prepares dataset by tokenizing and augmenting multiple times."""
     paths = glob.glob(glob_str)
     blueprints = []
@@ -165,13 +136,6 @@ def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=0):
     ]
 
     dataset = Dataset.from_dict({"text": stringified_blueprints}).map(tokenize_function, batched=True, remove_columns=["text"])
-
-    # Don't tokenize just yet, that happens in the collator
-    # full_dataset = dataset.map(
-    #     lambda x: tokenize_function(x, tokenizer),
-    #     batched=True,
-    #     remove_columns=["text"]
-    # )
 
     split_dataset = dataset.train_test_split(test_size=0.25, seed=42)
 
@@ -208,11 +172,7 @@ class DataCollatorForSelectiveMasking(DataCollatorForLanguageModeling):
         # return data
         return super().__call__(tokenized)
 
-# Use the custom data collator
-# data_collator = DataCollatorForSelectiveMasking(tokenizer, mlm_probability=0.15)
-
 tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
-# print(tokenized_trn)
 
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
