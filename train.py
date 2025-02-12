@@ -47,10 +47,10 @@ def augment_blueprint(
 
     augmented = copy.deepcopy(blueprint)
 
-    if shuffle_entities:
+    if shuffle_entities and 'entities' in augmented['blueprint']:
         random.shuffle(augmented["blueprint"]["entities"])
 
-    if shuffle_icons:
+    if shuffle_icons and 'icons' in augmented['blueprint']:
         random.shuffle(augmented["blueprint"]["icons"])
 
     if x_offset is None:
