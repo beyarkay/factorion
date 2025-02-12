@@ -50,23 +50,8 @@ def augment_blueprint(
     y_offset=None,
     shuffle_entities=True,
     shuffle_icons=True,
-    upgrade_entities_prob=0.0
 ):
     """Applies random augmentations to a Factorio blueprint JSON."""
-    ENTITY_REPLACEMENTS = {
-        "small-electric-pole":       "medium-electric-pole",
-        "transport-belt":            "fast-transport-belt",
-        "fast-transport-belt":       "express-transport-belt",
-        "express-transport-belt":    "turbo-transport-belt",
-        "inserter":                  "fast-inserter",
-        # Don't do the undergrounds just yet, because we'd have to swap *both* of them
-        # "underground-belt":          "fast-underground-belt",
-        # "fast-underground-belt":     "express-underground-belt",
-        # "express-underground-belt":  "turbo-underground-belt",
-        "splitter":                  "fast-splitter",
-        "fast-splitter":             "express-splitter",
-        "express-splitter":          "turbo-splitter",
-    }
 
     augmented = copy.deepcopy(blueprint)
 
@@ -85,8 +70,6 @@ def augment_blueprint(
     for entity in augmented["blueprint"]["entities"]:
         entity["position"]["x"] += x_offset
         entity["position"]["y"] += y_offset
-        if entity["name"] in ENTITY_REPLACEMENTS and random.random() < upgrade_entities_prob:
-            entity["name"] = ENTITY_REPLACEMENTS[entity["name"]]
 
     return augmented
 
@@ -123,10 +106,7 @@ def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
     augmented_blueprints = []
     for _ in range(augmentations):
         for blueprint in blueprints:
-            augmented_blueprints.append(augment_blueprint(
-                blueprint,
-                upgrade_entities_prob=0
-            ))
+            augmented_blueprints.append(augment_blueprint(blueprint))
 
     # Note: masking not done here, masking needs to be done during the training
     # process
@@ -141,39 +121,12 @@ def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
 
     return split_dataset['train'], split_dataset['test']
 
-class DataCollatorForSelectiveMasking(DataCollatorForLanguageModeling):
-    """A custom collator so that we can selectively mask parts of the JSON
-    blueprint that we actually care about."""
-    def __init__(self, tokenizer, mlm_probability=0.15):
-        super().__init__(tokenizer, mlm=True, mlm_probability=mlm_probability)
-
-    def mask_json(self, json_data):
-        """Mask specific fields in the JSON before tokenization."""
-        masked_json = json_data.copy()
-        if "blueprint" in masked_json and "entities" in masked_json["blueprint"]:
-            for entity in masked_json["blueprint"]["entities"]:
-                if random.random() < self.mlm_probability:
-                    entity["name"] = "[MASK]"
-                if random.random() < self.mlm_probability:
-                    entity["position"]["x"] = "[MASK]"
-                if random.random() < self.mlm_probability:
-                    entity["position"]["y"] = "[MASK]"
-                if "type" in entity and random.random() < self.mlm_probability:
-                    entity["type"] = "[MASK]"
-        return masked_json
-
-    def __call__(self, examples):
-        """Apply masking before tokenization."""
-        masked_examples = [self.mask_json(ex) for ex in examples]
-        tokenized = self.tokenizer([json.dumps(ex) for ex in masked_examples], truncation=True, padding="max_length")
-        return super().__call__(tokenized)
 
 tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
 
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
-    mlm=True,
-    mlm_probability=0.15
+    mlm=False,
 )
 
 output_dir = "./modernbert-ft-factorio"
