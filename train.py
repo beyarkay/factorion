@@ -12,37 +12,29 @@
 # ]
 # ///
 
-import wandb
 import random
-import glob
-from datasets import Dataset
-import torch
-import transformers
 import copy
+import torch
 from transformers import (
-    PreTrainedTokenizerFast,
-    ModernBertForMaskedLM,
+    AutoTokenizer,
+    AutoModelForCausalLM,
     DataCollatorForLanguageModeling,
     Trainer,
     TrainingArguments
 )
+from datasets import Dataset
 import json
+import glob
 
-transformers.logging.set_verbosity_info()
-wandb.init(project="factorion", name="testing-algernon")
+# Load the DeepSeek 7B model and tokenizer
+model_name = "deepseek-ai/deepseek-llm-7b-base"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map="auto"
+)
 
-# Load tokenizer and model
-model_name = "answerdotai/ModernBERT-base"
-tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
-model = ModernBertForMaskedLM.from_pretrained(model_name)
-
-def tokenize_function(examples):
-    return tokenizer(
-        examples["text"],
-        padding="max_length",
-        truncation=True,
-        max_length=8192
-    )
 
 def augment_blueprint(
     blueprint,
@@ -73,7 +65,6 @@ def augment_blueprint(
 
     return augmented
 
-
 def pretty_print_tokens(text, tokenizer):
     """Tokenize the given text, assign each token a random colour, then return
     the coloured text version of the tokens. Useful for visualising what the
@@ -94,9 +85,8 @@ def pretty_print_tokens(text, tokenizer):
         colored_tokens.append(f"{color}{string}{reset}")
     return ''.join(colored_tokens)
 
-
-def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
-    """Prepares dataset by tokenizing and augmenting multiple times."""
+# Prepare the dataset
+def prepare_dataset(tokenizer, glob_str="blueprints/autogen/*/*.json", augmentations=10):
     paths = glob.glob(glob_str)
     blueprints = []
     for path in paths:
@@ -108,54 +98,63 @@ def prepare_dataset(tokenizer, glob_str="blueprints/*.json", augmentations=50):
         for blueprint in blueprints:
             augmented_blueprints.append(augment_blueprint(blueprint))
 
-    # Note: masking not done here, masking needs to be done during the training
-    # process
     stringified_blueprints = [
         json.dumps(bp, separators=(',', ':'))
         for bp in (blueprints + augmented_blueprints)
     ]
 
-    dataset = Dataset.from_dict({"text": stringified_blueprints}).map(tokenize_function, batched=True, remove_columns=["text"])
+    dataset = Dataset.from_dict({"text": stringified_blueprints})
 
-    split_dataset = dataset.train_test_split(test_size=0.25, seed=42)
+    def tokenize_function(examples):
+        return tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=8192
+        )
+
+    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+    split_dataset = tokenized_dataset.train_test_split(test_size=0.25, seed=42)
 
     return split_dataset['train'], split_dataset['test']
 
-
 tokenized_trn, tokenized_val = prepare_dataset(tokenizer)
 
+# Set up the data collator
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
-    mlm=False,
+    mlm=False
 )
 
-output_dir = "./modernbert-ft-factorio"
-
+# Define training arguments
+output_dir = "./deepseek-7b-ft-factorio"
 training_args = TrainingArguments(
     output_dir=output_dir,
-    num_train_epochs=10,
+    num_train_epochs=20,
     eval_strategy="epoch",
     save_strategy="epoch",
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
     logging_steps=1,
     save_total_limit=2,
-    fp16=torch.cuda.is_available(),  # Use mixed precision if available
+    fp16=torch.cuda.is_available(),
     remove_unused_columns=False,
     report_to="wandb"
 )
 
+# Set up the Trainer
 trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=tokenized_trn,
     eval_dataset=tokenized_val,
-    processing_class=tokenizer,
+    tokenizer=tokenizer,
     data_collator=data_collator,
 )
 
+# Start training
 trainer.train()
-# Left commented because it's handy sometimes: resume training from a checkpoint
-# trainer.train(resume_from_checkpoint=True)
 
+# Save the fine-tuned model
 trainer.save_model(output_dir + '-saved-model')
+tokenizer.save_pretrained(output_dir + '-saved-model')
