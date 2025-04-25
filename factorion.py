@@ -1,30 +1,35 @@
 import marimo
 
-__generated_with = "0.11.24"
+__generated_with = "0.8.22"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
 def _():
+    import traceback
     from dataclasses import dataclass
     from enum import Enum
     from torch.distributions import Categorical
     from tqdm import trange
     from tqdm.notebook import tqdm
     import base64
-    import numpy as np
     import json
     import marimo as mo
     import matplotlib.pyplot as plt
     import networkx as nx
+    import numpy as np
+    import pandas as pd
     import plotly.graph_objects as go
+    import random
     import sys
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
+    import torch.nn.init as init
     import torch.optim as optim
-    import zlib
     import wandb
+    import zlib
+    import math
 
     wandb.login()
     mo.md("Imports")
@@ -35,16 +40,21 @@ def _():
         base64,
         dataclass,
         go,
+        init,
         json,
+        math,
         mo,
         nn,
         np,
         nx,
         optim,
+        pd,
         plt,
+        random,
         sys,
         torch,
         tqdm,
+        traceback,
         trange,
         wandb,
         zlib,
@@ -67,21 +77,21 @@ def _(Enum, dataclass, mo):
 
     class Footprint(Enum):
         UNAVAILABLE = 0
-        AVAILABLE = 1    
+        AVAILABLE = 1
 
     class Misc(Enum):
         NONE = 0
         UNDERGROUND_DOWN = 1
         UNDERGROUND_UP = 2
-    #     SPLITTER_INPUT_LEFT_OUTPUT_LEFT = 3 
-    #     SPLITTER_INPUT_LEFT_OUTPUT_NONE = 4 
-    #     SPLITTER_INPUT_LEFT_OUTPUT_RIGHT = 5 
-    #     SPLITTER_INPUT_NONE_OUTPUT_LEFT = 6 
-    #     SPLITTER_INPUT_NONE_OUTPUT_NONE = 7 
-    #     SPLITTER_INPUT_NONE_OUTPUT_RIGHT = 8 
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_LEFT = 9 
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_NONE = 10 
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_RIGHT = 11 
+    #     SPLITTER_INPUT_LEFT_OUTPUT_LEFT = 3
+    #     SPLITTER_INPUT_LEFT_OUTPUT_NONE = 4
+    #     SPLITTER_INPUT_LEFT_OUTPUT_RIGHT = 5
+    #     SPLITTER_INPUT_NONE_OUTPUT_LEFT = 6
+    #     SPLITTER_INPUT_NONE_OUTPUT_NONE = 7
+    #     SPLITTER_INPUT_NONE_OUTPUT_RIGHT = 8
+    #     SPLITTER_INPUT_RIGHT_OUTPUT_LEFT = 9
+    #     SPLITTER_INPUT_RIGHT_OUTPUT_NONE = 10
+    #     SPLITTER_INPUT_RIGHT_OUTPUT_RIGHT = 11
 
     class Dim(Enum):
         X = 0
@@ -127,7 +137,9 @@ def _(Enum, dataclass, mo):
         # TODO: this doesn't account for the speed of items
         # underground (which is identical to a transport belt)
     #     16: Prototype(name='underground_belt',      value=16, width=1, height=1, flow=15.0),
+        # sink
         3: Prototype(name='bulk_inserter',         value=3, width=1, height=1, flow=float('inf')),
+        # source
         4: Prototype(name='stack_inserter',        value=4, width=1, height=1, flow=float('inf')),
     }
 
@@ -137,14 +149,14 @@ def _(Enum, dataclass, mo):
         produces: dict[str, float]
 
     recipes = {
-        'electronic_circuit': Recipe( 
-            consumes={ 'copper_cable': 6.0, 'iron_plate': 2.0 }, 
-            produces={'electronic_circuit': 2.0}, 
+        'electronic_circuit': Recipe(
+            consumes={ 'copper_cable': 6.0, 'iron_plate': 2.0 },
+            produces={'electronic_circuit': 2.0},
         ),
-    #     'copper_cable': Recipe( 
-    #         consumes={ 'copper_plate': 2.0 }, 
-    #         produces={'copper_cable': 4.0}, 
-    #     ), 
+    #     'copper_cable': Recipe(
+    #         consumes={ 'copper_plate': 2.0 },
+    #         produces={'copper_cable': 4.0},
+    #     ),
     }
 
     mo.md("Datatypes")
@@ -161,8 +173,8 @@ def _(Enum, dataclass, mo):
     )
 
 
-@app.cell(hide_code=True)
-def _(
+@app.cell
+def functions(
     Categorical,
     Channel,
     Direction,
@@ -178,6 +190,7 @@ def _(
     prototypes,
     recipes,
     torch,
+    traceback,
     zlib,
 ):
     def b64_to_dict(blueprint_string):
@@ -238,6 +251,8 @@ def _(
         world[x, y, Channel.MISC.value] = misc.value
 
     def world_to_html(world):
+        assert len(world.shape) == 3, f"Expected 3 dimensions got {world.shape}"
+        assert world.shape[0] == world.shape[1], f"Expected square got {world.shape}"
         if type(world) is not np.ndarray:
             world = np.array(world)
         DIRECTION_ARROWS = {
@@ -356,10 +371,10 @@ def _(
             direction = Direction(e.get('direction', -1))
 
             add_entity(
-                world, 
+                world,
                 e['name'],
-                e['position']['x'], 
-                e['position']['y'], 
+                e['position']['x'],
+                e['position']['y'],
                 recipe=recipe.name,
                 direction=direction,
                 misc=misc,
@@ -367,10 +382,13 @@ def _(
         return world
 
     def graph_from_world(world, debug=False):
+        assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
+        assert len(world.shape) == 3, f"Expected world to have 3 dimensions, but is of shape {world.shape}"
+        assert world.shape[0] == world.shape[1], f"Expected world to be square, but is of shape {world.shape}"
+        world = world.numpy()
         G = nx.DiGraph()
         def dbg(s):
             if debug: print(s)
-
         for x in range(len(world)):
             for y in range(len(world[0])):
                 e = prototypes[world[x, y, Channel.ENTITIES.value]]
@@ -399,7 +417,7 @@ def _(
                     dst = [x + 1, y]
                 elif d == Direction.WEST:
                     src = [x + 1, y]
-                    dst = [x - 1, y]            
+                    dst = [x - 1, y]
                 elif d == Direction.NORTH:
                     src = [x, y + 1]
                     dst = [x, y - 1]
@@ -449,7 +467,7 @@ def _(
                             'belt' in src_entity.name
                             # Check the other belt is directly behind me and pointing the same direction
                             and src_direction == d
-                        ) 
+                        )
                         if src_is_beltish:
                             G.add_edge(
                                 f"{src_entity.name}\n@{src[0]},{src[1]}",
@@ -465,7 +483,7 @@ def _(
                         dst_opposing_belt = (
                             dst_is_belt
                             and abs(dst_direction.value - d.value) == 8
-                        ) 
+                        )
                         if dst_is_belt and not dst_opposing_belt:
                             G.add_edge(
                                 f"{e.name}\n@{x},{y}",
@@ -477,10 +495,10 @@ def _(
                 elif 'assembling_machine' in e.name:
                     # search the blocks around the 3x3 assembling machine for inputs
                     for dx in range(-2, 3):
-                        if not (0 <= x + dx < len(world)): 
+                        if not (0 <= x + dx < len(world)):
                             continue
                         for dy in range(-2, 3):
-                            if not (0 <= y + dy < len(world[0])): 
+                            if not (0 <= y + dy < len(world[0])):
                                 continue
                             if abs(dx) == abs(dy):
                                 continue
@@ -533,7 +551,7 @@ def _(
                             dst = [x + delta, y]
                         elif d == Direction.WEST:
                             src = [x + 1, y]
-                            dst = [x - delta, y]            
+                            dst = [x - delta, y]
                         elif d == Direction.NORTH:
                             src = [x, y + 1]
                             dst = [x, y - delta]
@@ -565,8 +583,8 @@ def _(
     def plot_flow_network(G):
         # Extract x, y coordinates from node names
         pos = {
-            node: (int(x), -int(y)) 
-            for node, (x, y) 
+            node: (int(x), -int(y))
+            for node, (x, y)
             in ((n, n.split("@")[1].split(",")) for n in G.nodes)
         }
         plt.figure(figsize=(
@@ -589,7 +607,7 @@ def _(
             if debug: print(s)
         if len(list(nx.simple_cycles(G))) > 0:
             dbg(f'Returning 0 reward due to cycles: {list(nx.simple_cycles(G))}')
-            return {'foobar': 0.0}
+            return {'foobar': 0.0}, 0
         # Now go through the graph and propogate the ingredients from producers to consumers.
         # the flow rate should depend on the intermediate rates.
         stack_inserters = [node for node, data in G.nodes(data=True) if 'stack_inserter' in node]
@@ -611,7 +629,7 @@ def _(
             count -= 1
             node = nodes.pop()
             true_dependencies = filter(
-                lambda n: n in reachable_from_stack_inserters, 
+                lambda n: n in reachable_from_stack_inserters,
                 G.predecessors(node)
             )
             if any([n not in already_processed for n in true_dependencies]):
@@ -672,7 +690,7 @@ def _(
                 dbg(f'- {repr(n)}: {G.nodes[n]}')
 
             nodes = list(set(
-                [n for n in G.neighbors(node) if n not in already_processed] 
+                [n for n in G.neighbors(node) if n not in already_processed]
                 + nodes
             ))
             dbg(f"Nodes: {nodes}")
@@ -692,7 +710,15 @@ def _(
                     output[k] = 0
                 output[k] += v
                 dbg(f'- Added {v} to output[{k}] to make {output[k]} from {repr(n)}')
-        return output
+
+        sources = [n for n in G if 'stack_inserter' in n]
+        sinks = [n for n in G if 'bulk_inserter' in n]
+
+        can_reach_sink = set().union(*(nx.ancestors(G, s) | {s} for s in sinks))
+        reachable_from_source = set().union(*(nx.descendants(G, s) | {s} for s in sources))
+        unreachable = set(G.nodes) - can_reach_sink - reachable_from_source
+
+        return output, len(unreachable)
 
     def show_two_factories(one, two, title_one="First Factory", title_two="Second Factory"):
         return mo.Html(f"""<table>
@@ -729,33 +755,40 @@ def _(
         fig.show()
 
     def normalise_world(world_T, og_world):
+        assert torch.is_tensor(world_T), f"world_T is {type(world_T)}, not a tensor"
+        assert torch.is_tensor(og_world), f"og_world is {type(og_world)}, not a tensor"
+        assert len(world_T.shape) == 3, f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
+        assert len(og_world.shape) == 3, f"Expected og_world to have 3 dimensions, but is of shape {og_world.shape}"
+        assert world_T.shape[0] == world_T.shape[1], f"Expected world_T to be square, but is of shape {world_T.shape}"
+        assert og_world.shape[0] == og_world.shape[1], f"Expected og_world to be square, but is of shape {og_world.shape}"
+
         empty_entity_value = prototype_from_str('empty').value
 
         bulk_inserter_mask = (
-            world_T[:, :, Channel.ENTITIES.value] 
+            world_T[:, :, Channel.ENTITIES.value]
             == prototype_from_str('bulk_inserter').value
         )
         world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = empty_entity_value
 
         stack_inserter_mask = (
-            world_T[:, :, Channel.ENTITIES.value] 
+            world_T[:, :, Channel.ENTITIES.value]
             == prototype_from_str('stack_inserter').value
-        )    
+        )
         world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = empty_entity_value
 
         green_circ_mask = (
-            world_T[:, :, Channel.ENTITIES.value] 
+            world_T[:, :, Channel.ENTITIES.value]
             == prototype_from_str('electronic_circuit').value
         )
         world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
 
         # Remove all transport belts without direction
         belt_mask = (
-            world_T[:, :, Channel.ENTITIES.value] 
+            world_T[:, :, Channel.ENTITIES.value]
             == prototype_from_str('transport_belt').value
         )
         no_direction_mask = (
-            world_T[:, :, Channel.DIRECTION.value] 
+            world_T[:, :, Channel.DIRECTION.value]
             == Direction.NONE.value
         )
         world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = empty_entity_value
@@ -780,7 +813,8 @@ def _(
         return world_T
 
     def get_new_world(seed, n=6):
-        np.random.seed(seed)
+        if seed is not None:
+            np.random.seed(seed)
         w = new_world(width=n, height=n)
         boundary_tiles = []
         for i in range(n):
@@ -815,6 +849,7 @@ def _(
         return torch.tensor(w).to(torch.float)
 
     def sample_world(probabilities):
+        assert torch.is_tensor(probabilities), f'probabilities is {type(probabilities)} not torch.Tensor'
         distribution = Categorical(probs=probabilities)
         samples = distribution.sample()
         # make the directions fit the expected values
@@ -824,7 +859,7 @@ def _(
         d_direction[~mask] = -1
         return samples
 
-    def eval_model(model, pars, num_evaluations=1_000, pbar=False):
+    def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         torch.manual_seed(42)
         evals = []
         iterator = torch.randint(0, 2**16-1, (num_evaluations,)).tolist()
@@ -832,9 +867,15 @@ def _(
             iterator = mo.status.progress_bar(iterator)
         for seed in iterator:
             original_world = get_new_world(seed, n=4)
-            probabilities, value = model(original_world)
+            probabilities = actor(original_world)
             normalised_world = normalise_world(sample_world(probabilities), original_world)
-            throughput = funge_throughput(normalised_world)
+            # value = critic(normalised_world)
+            value = critic(normalised_world.to(torch.float))
+            # Maybe having throughput being calculated as a black box is the problem?
+            throughput = torch.tensor(
+                funge_throughput(normalised_world)[0] / 15.0,
+                dtype=value.dtype,
+            )
             num_entities = (normalised_world[:, :, Channel.ENTITIES.value] != prototype_from_str('empty').value).sum()
             evals.append({
                 'seed': seed,
@@ -849,14 +890,18 @@ def _(
 
         return evals, avg_throughput, float(avg_num_entities)
 
-    def funge_throughput(world):
-         try:
-             throughput = calc_throughput(graph_from_world(world.numpy()))
-             if len(throughput) == 0:
-                 return 0
-             return list(throughput.values())[0]
-         except AssertionError:
-             return 0
+    def funge_throughput(world, debug=False):
+        assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
+        assert len(world.shape) == 3, f"Expected world to have 3 dimensions, but is of shape {world.shape}"
+        assert world.shape[0] == world.shape[1], f"Expected world to be square, but is of shape {world.shape}"
+        try:
+            throughput, num_unreachable = calc_throughput(graph_from_world(world, debug=debug), debug=debug)
+            if len(throughput) == 0:
+                return 0, 0
+            return list(throughput.values())[0], num_unreachable
+        except AssertionError:
+            traceback.print_exc()
+            return 0, 0
 
     mo.md("Functions")
     return (
@@ -882,142 +927,29 @@ def _(
 
 
 @app.cell
-def _(mo, wandb):
+def _(mo):
     pars = {
-        'policy_lr': 5e-4,
-        'value_lr': 1e-3,
-        'num_epochs': 2_000,
+        'policy_lr': 1e-4,
+        'value_lr': 1e-5,
+        'num_epochs': 10,
         'world_size': 4,
+        'batch_size': 1,
         'hidden_channels': [8, 16, 8],
         'entropy_loss_multiplier': 0.1,
     }
-    run = wandb.init(
-        project="factorion",  # Specify your project
-        config=pars,
-    )
+    pars['num_epochs'] //= pars['batch_size']
+    # run = wandb.init(
+    #     project="factorion",  # Specify your project
+    #     config=pars,
+    # )
 
     mo.md("Define hyperparameters")
-    return pars, run
+    return (pars,)
 
 
-@app.cell(hide_code=True)
-def _(mo, nn):
-    class PPOModel(nn.Module):
-        def __init__(self, in_channels, hidden_channels, out_channels, num_entities):
-            super().__init__()
-            # channels = [in_channels, *hidden_channels]
-
-            # self.cnn = nn.Sequential(*[
-            #     layer
-            #     for c_in, c_out in zip(channels[:-1], channels[1:])
-            #     for layer in [nn.Conv2d(c_in, c_out, kernel_size=3, padding=1), nn.ReLU()]
-            # ][:-1])  # Remove last ReLU
-
-            self.policy_head = nn.Sequential(
-               nn.Conv2d(in_channels, 8, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(8, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, out_channels * num_entities, kernel_size=1),
-            )
-
-            self.value_head = nn.Sequential(
-               nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 1, kernel_size=1)
-            )
-
-            self.num_entities = num_entities
-            self.out_channels = out_channels
-            self.hidden_channels = hidden_channels
-
-        def forward(self, x):
-            # (W, H, C) -> (B=1, C, W, H)
-            x = x.permute(2, 0, 1).unsqueeze(0)  
-
-            # features = self.cnn(x)
-            # Policy head
-            # Shape: (1, out_channels * num_entities, W, H)
-            policy = self.policy_head(x)
-            policy = policy.view(1, self.out_channels, self.num_entities, *policy.shape[2:])
-            # Shape: (W, H, out_channels, num_entities)
-            policy = policy.permute(3, 4, 0, 1, 2).squeeze(2)
-            probabilities = policy.softmax(dim=-1)
-
-            # Value head
-            value = self.value_head(x).mean(dim=(-1, -2)).squeeze()
-            return probabilities, value
-
-    class ActorModel(nn.Module):
-        def __init__(self, in_channels, hidden_channels, out_channels, num_entities):
-            super().__init__()
-            self.policy_head = nn.Sequential(
-               nn.Conv2d(in_channels, 8, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(8, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, out_channels * num_entities, kernel_size=1),
-            )
-
-            self.num_entities = num_entities
-            self.out_channels = out_channels
-            self.hidden_channels = hidden_channels
-
-        def forward(self, x):
-            x = x.permute(2, 0, 1).unsqueeze(0)  
-
-            policy = self.policy_head(x)
-            policy = policy.view(1, self.out_channels, self.num_entities, *policy.shape[2:])
-            # Shape: (W, H, out_channels, num_entities)
-            policy = policy.permute(3, 4, 0, 1, 2).squeeze(2)
-            probabilities = policy.softmax(dim=-1)
-
-            return probabilities
-
-    class CriticModel(nn.Module):
-        def __init__(self, in_channels, hidden_channels, out_channels, num_entities):
-            super().__init__()
-            self.value_head = nn.Sequential(
-               nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(16, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 64, kernel_size=3, padding=1),
-               nn.ReLU(),
-               nn.Conv2d(64, 1, kernel_size=1)
-            )
-
-            self.num_entities = num_entities
-            self.out_channels = out_channels
-            self.hidden_channels = hidden_channels
-
-        def forward(self, x):
-            # (W, H, C) -> (B=1, C, W, H)
-            x = x.permute(2, 0, 1).unsqueeze(0)  
-            # Value head
-            value = self.value_head(x).mean(dim=(-1, -2)).squeeze()
-            return value
-
-
-    mo.md("Define Model")
-    return ActorModel, CriticModel, PPOModel
-
-
-@app.cell(hide_code=True)
+@app.cell
 def calc_grad_norms():
-    def calc_grad_norms(model):
+    def calc_grad_norms(model, prefix=''):
         mean_grad_norm = 0
         n = 0
         value_grad_norm = 0
@@ -1034,11 +966,80 @@ def calc_grad_norms():
         mean_grad_norm /= n
 
         return {
-            'mean_grad_norm': mean_grad_norm,
-            'policy_grad_norm': policy_grad_norm,
-            'value_grad_norm': value_grad_norm,
+            f'{prefix}mean_grad_norm': mean_grad_norm,
+            f'{prefix}policy_grad_norm': policy_grad_norm,
+            f'{prefix}value_grad_norm': value_grad_norm,
         }
     return (calc_grad_norms,)
+
+
+@app.cell
+def _(mo, nn, pars, x):
+    class ActorModel(nn.Module):
+        def __init__(self, in_channels, hidden_channels, out_channels, num_entities):
+            super().__init__()
+            self.policy_head = nn.Sequential(
+               nn.Conv2d(in_channels, 8, kernel_size=3, padding=1),
+               nn.ReLU(),
+               nn.Conv2d(8, 16, kernel_size=3, padding=1),
+               nn.ReLU(),
+               nn.Conv2d(16, 16, kernel_size=3, padding=1),
+               nn.ReLU(),
+               nn.Conv2d(16, out_channels * num_entities, kernel_size=1),
+               # Note: no relu here? probably a mistake
+            )
+
+            self.num_entities = num_entities
+            self.out_channels = out_channels
+            self.hidden_channels = hidden_channels
+
+        def forward(self, x):
+            assert len(x.shape) == 4, f'Expected 4 dimensions, got {x.shape}'
+            x = x.permute(0, 3, 1, 2)
+
+            policy = self.policy_head(x)
+            policy = policy.view(pars['batch_size'], 1, self.out_channels, self.num_entities, *policy.shape[2:])
+            # Shape: (W, H, out_channels, num_entities)
+            policy = policy.permute(0, 4, 5, 1, 2, 3).squeeze((1, 2, 3, 4, 5))
+            probabilities = policy.softmax(dim=-1)
+
+            return probabilities
+
+    class CriticModel(nn.Module):
+        def __init__(self, in_channels, hidden_channels, out_channels, num_entities):
+            super().__init__()
+
+            self.value_head = nn.Sequential(
+                nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+                nn.BatchNorm2d(32),  # Added batch norm
+                nn.LeakyReLU(),       # Changed activation
+
+                nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),  # Added batch norm
+                nn.LeakyReLU(),       # Changed activation
+
+                nn.Conv2d(64, 32, kernel_size=3, padding=1),
+                nn.BatchNorm2d(32),  # Added batch norm
+                nn.LeakyReLU(),       # Changed activation
+
+                nn.Conv2d(32, 1, kernel_size=1)
+            )
+
+            self.num_entities = num_entities
+            self.out_channels = out_channels
+            self.hidden_channels = hidden_channels
+
+        def forward(self, x_BWHC):
+            assert len(x_BWHC.shape) == 4, f'Expected 4 dimensions, got {x.shape}'
+            x_BCWH = x_BWHC.permute(0, 3, 1, 2)
+            value_B1WH = self.value_head(x_BCWH)
+            value_BWH = value_B1WH.squeeze(1)
+            value_B = value_BWH.mean(dim=(-1, -2))
+            return value_B
+
+
+    mo.md("Define Model")
+    return ActorModel, CriticModel
 
 
 @app.cell
@@ -1060,8 +1061,6 @@ def _(
     sample_world,
     torch,
 ):
-    import random
-
     def _():
         epsilon = 0.2
         history = []
@@ -1072,101 +1071,426 @@ def _(
             out_channels=len(Channel),
             num_entities=len(prototypes),
         )
+
         critic = CriticModel(
             in_channels=len(Channel),
             hidden_channels=pars['hidden_channels'],
             out_channels=len(Channel),
             num_entities=len(prototypes),
         )
+        # with torch.no_grad():
+            # init.xavier_uniform_(critic.value_head[-1].weight)
+            # critic.value_head[-1].bias.fill_(0.5)
         print(f"Actor has {sum(p.numel() for p in actor.parameters())} params")
         print(f"Critic has {sum(p.numel() for p in critic.parameters())} params")
 
         actor_optimizer = optim.Adam(actor.parameters(), lr=pars['policy_lr'])
         critic_optimizer = optim.Adam(critic.parameters(), lr=pars['value_lr'])
-    # 
-        # # Initial probabilities for use in PPO improvement calcs
-        probabilities = actor(get_new_world(42, n=pars['world_size']))
+
+        init_worlds = [
+           get_new_world(idx, n=pars['world_size'])
+           for idx
+           in range(pars['batch_size'])
+        ]
+        # action_probs_old = actor(torch.stack(init_worlds))
+        probabilities = actor(torch.stack(init_worlds))
         sampled_world = Categorical(probs=probabilities).sample()
-        old_probs = probabilities.gather(
-            dim=-1, 
+        action_probs_old = probabilities.gather(
+            dim=-1,
             index=sampled_world.unsqueeze(-1)
-        ).squeeze(-1).detach()
-    
+        ).squeeze(-1)
+
         pbar = mo.status.progress_bar(range(pars['num_epochs']), title='Training Value+Policy model')
-        for epoch in pbar:
-            critic_optimizer.zero_grad()
-            actor_optimizer.zero_grad()
-    
-            original_world = get_new_world(epoch, n=pars['world_size'])
+        for batch_num in pbar:
+            # Generate a batch of worlds
+            worlds = torch.stack([
+               get_new_world(
+                   batch_num * pars['batch_size'] + idx,
+                   n=pars['world_size']
+               )
+                for idx in range(pars['batch_size'])
+            ])
 
-            while True:
-                probabilities = actor(original_world)
-    
-                if torch.isnan(probabilities).any():
-                    print("!Probabilites are NaN!")
-                    return history
-        
-                normalised_world = normalise_world(sample_world(probabilities), original_world)
-                value = critic(normalised_world.to(torch.float))
-                throughput = torch.tensor(
-                    funge_throughput(normalised_world) / 15.0, 
-                    dtype=value.dtype,
+            # Stochastically sample each of the worlds
+            probabilities = actor(worlds)
+            sampled_world = Categorical(probs=probabilities).sample()
+            # Get the probability of the sampled action
+            action_probs_new = probabilities.gather(
+                dim=-1,
+                index=sampled_world.unsqueeze(-1)
+            ).squeeze(-1)
+
+            # Calculate the value and throughput of each world
+            values = critic(worlds)
+            throughputs = [
+                torch.tensor(
+                    # 1.0,
+                    funge_throughput(normalise_world(sample_world(probs), world))[0] /  15.0,
+                    dtype=values.dtype
                 )
-                assert 0 <= throughput <= 1.0, f'Throughput is {throughput}, world is shape {normalised_world.shape}:\n{normalised_world}'
-        
+                for world, probs in zip(worlds, probabilities)
+            ]
+
+            # Iterate over each world to accumulate the loss
+            policy_loss_sum = 0
+            value_loss_sum = 0
+            zipper = zip(
+                action_probs_old,
+                action_probs_new,
+                values,
+                throughputs
+            )
+
+            policy_loss_mult = 0 # (batch_num / pars['num_epochs']) * (batch_num / pars['num_epochs'])
+            for i, (old_prob, new_prob, value, throughput) in enumerate(zipper):
                 advantage = throughput - value
-        
-                # Get the action probabilities for the taken sampled_world
-                sampled_world = Categorical(probs=probabilities).sample()
-                action_probs = probabilities.gather(
-                    dim=-1, 
-                    index=sampled_world.unsqueeze(-1)
-                ).squeeze(-1)
-                ratio = action_probs / old_probs
+                ratio = new_prob / (old_prob + 1e-8)
                 clipped_ratio = torch.clamp(ratio, 1 - epsilon, 1 + epsilon)
-        
-                entropy_loss = -(probabilities * probabilities.log()).sum(dim=-1).mean()
-    
-                old_probs = action_probs.clone().detach()
-            
+                policy_loss = (clipped_ratio * advantage).mean()
+                # policy_loss = torch.min(
+                #     ratio * advantage,
+                #     clipped_ratio * advantage
+                # ).mean()
+                # Accumulate and normalise the policy/value loss
+                policy_loss_sum += policy_loss / pars['batch_size']
                 value_loss = F.mse_loss(value, throughput)
-                value_loss.backward(retain_graph=True)
-            
-                policy_loss = (
-                    - torch.min(ratio * advantage, clipped_ratio * advantage).mean()  
-                    - entropy_loss * pars['entropy_loss_multiplier']
-                )
-                policy_loss.backward()
-            
-                actor_optimizer.step()
-                critic_optimizer.step()
-        
-                history.append({
-                    'policy_loss': policy_loss,
-                    'value_loss': value_loss,
-                    'entropy_loss': -pars['entropy_loss_multiplier'] * entropy_loss,
-                    'throughput': throughput.item(),
+                value_loss_sum += value_loss / pars['batch_size']
+                history.append({})
+                history[-1].update({
+                    # 'world_idx': float(i) / pars['batch_size'],
                     'value': value.item(),
-                    'clipped_ratio': clipped_ratio.mean().item(),
+                    'throughput': throughput.item(),
                     'advantage': advantage.item(),
-                } | { k: v for k, v in calc_grad_norms(actor).items() if v != 0 } 
-                  | { k: v for k, v in calc_grad_norms(critic).items() if v != 0 })
-            
-                if throughput == 0.0:
-                    break
-    
-            # if epoch % 5_000 == 0:
-            #     evaluations, avg_thrpt, avg_entities = eval_model(model, pars)
-            #     print(f"[{epoch}] avg throughput: {avg_thrpt:.4f}, avg #entities: {avg_entities:.4f}, value_loss: {value_loss:.4f}, policy_loss: {policy_loss:.4f}")
+                    # 'ratio': ratio.mean().item(),
+                    # 'clipped_ratio': clipped_ratio.mean().item(),
+                    'policy_loss': policy_loss.item(),
+                    'value_loss': value_loss.item(),
+                    'policy_loss_mult': policy_loss_mult,
+                })
 
-        return history
+            # Backpropogate the loss
+            total_loss = policy_loss_mult * policy_loss_sum + value_loss_sum
+            history[-1].update({'total_loss': total_loss})
+            total_loss.backward()
 
-    plot_history(_(), hide=['mean_grad_norm', 'value_grad_norm', 'throughput', 'clipped_ratio', 'advantage'])
-    return (random,)
+            # Clip the gradients and then perform an optimizer step
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
+            history[-1].update(
+                calc_grad_norms(critic, prefix="critic_")
+            )
+
+            actor_optimizer.step()
+            critic_optimizer.step()
+            actor_optimizer.zero_grad()
+            critic_optimizer.zero_grad()
+
+            # Finally, store the this loop's current probabilities as next loop's
+            # old probabilities
+            action_probs_old = action_probs_new.detach().clone()
+
+        return actor, critic, history
+
+    actor, critic, history = _()
+    plot_history(history, hide=[
+        'value_loss',
+        'total_loss',
+        'ratio',
+        'world_idx',
+        'policy_loss',
+        'advantage',
+        'clipped_ratio',
+        'critic_mean_grad_norm',
+        'critic_policy_grad_norm',
+        'critic_value_grad_norm',
+        'actor_mean_grad_norm',
+        'actor_policy_grad_norm',
+        'actor_value_grad_norm',
+    ])
+    return actor, critic, history
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        ## To Do
+
+        - the problem isn't factorio, it's the PPO algorithm implemntation
+        - Simplify the source problem. Just a 4x4 grid, evaluate the model on something super simple. Like every other cell is lit up, or similar.
+            - Needs to be dependant on the input (to prevent hardcoding)
+            - But also needs to be verifiable just by looking at the output (for more representative critic implementation)
+        - Then work on PPO with an actor/critic setup until the critic evaluates the input and output correctly, and the actor correctly predicts the output
+        - Once PPO works on the toy problem, abstract the implementation into a PPO()PPO() function with callbacks, so we can know the implemnetation is correct
+        - Slowly migrate the problem to be closer and closer to factorio.
+        - Also look at evolutionary strategies as an alternative
+        """
+    )
+    return
 
 
 @app.cell
-def _(go, np):
+def _():
+    # # PPO Optimisation as a service
+    # class Actor(nn.Module):
+    #     def __init__(self, input_channels=3, num_entities=5):
+    #         super().__init__()
+    #         self.num_entities = num_entities
+    #         self.cnn = nn.Sequential(
+    #             nn.Conv2d(input_channels, 16, kernel_size=3, padding=1),
+    #             nn.ReLU(),
+    #             nn.Conv2d(16, 32, kernel_size=3, padding=1),
+    #             nn.ReLU(),
+    #             nn.Conv2d(32, input_channels * num_entities, kernel_size=1),
+    #         )
+
+    #     def forward(self, x):
+    #         B, C, H, W = x.shape
+    #         t = self.cnn(x)
+    #         D = t.shape[1] // C
+    #         t = (
+    #             # Convert (B, CxD, H, W) to (B, C, D, H, W)
+    #             t.view(B, C, D, H, W)
+    #             # Move D to the end (B, C, H, W, D)
+    #             .permute(0, 1, 3, 4, 2)
+    #         )
+    #         return t
+
+    # class Critic(nn.Module):
+    #     def __init__(self, input_channels=3, num_entities=5):
+    #         super().__init__()
+    #         self.cnn = nn.Sequential(
+    #             nn.Conv2d(input_channels, 16, kernel_size=3, padding=1),
+    #             nn.ReLU(),
+    #             nn.Conv2d(16, 32, kernel_size=3, padding=1),
+    #             nn.ReLU(),
+    #             nn.Conv2d(32, 1, kernel_size=1)
+    #         )
+
+    #     def forward(self, x):
+    #         # Convert to float
+    #         x = x.to(torch.float)
+    #         # Pass through network to get B, 1, H, W
+    #         x = self.cnn(x)
+    #         # Squeeze to get B, H, W
+    #         x = x.squeeze(1)
+    #         # Evaluate value as the average value of each tile
+    #         value = x.mean(dim=(-2, -1))
+    #         return value
+
+    # def calculate_ppo_loss(
+    #     actor: Actor,
+    #     critic: Critic,
+    #     states_BCHW: torch.Tensor,
+    #     actions_BCHW: torch.Tensor,
+    #     rewards_B: torch.Tensor,
+    #     old_log_probs_B: torch.Tensor,
+    #     epsilon: float = 0.2,
+    #     entropy_coeff: float = 0.01,
+    #     value_coeff: float = 0.5
+    # ):
+    #     # 1. Get outputs from the CURRENT actor and critic models
+    #     # Actor logits -> distribution
+    #     logits_new_BCHWD = actor(states_BCHW)
+    #     dist_new_BCHW = Categorical(logits=logits_new_BCHWD)
+
+    #     # Critic values for the *resulting states_BCHW* (the actions_BCHW/sampled worlds)
+    #     # Give the critic the delta so it can learn to grade the difference between them
+    #     values_new_B = critic(actions_BCHW - states_BCHW) # Critic evaluates the *result* of the action
+
+    #     # 2. Calculate necessary components for PPO loss
+    #     # Log probabilities of the taken actions_BCHW under the CURRENT policy
+    #     # Sum log probs across C, H, W dimensions for the log prob of the whole action
+    #     log_probs_new_B = dist_new_BCHW.log_prob(actions_BCHW).sum(dim=(1, 2, 3))
+
+    #     # Advantage: A(s, a) = R(s, a) - V(s')
+    #     # Since it's one step, R(s,a) is just the reward, V(s') is the value of the
+    #     # resulting state. Detach values here for advantage calculation (don't want
+    #     # policy loss to update critic)
+    #     advantage = rewards_B - values_new_B.detach()
+
+    #     # Ratio: r(theta) = exp(log P_new(a|s) - log P_old(a|s))
+    #     ratio_B = torch.exp(log_probs_new_B - old_log_probs_B)
+
+    #     # 3. Calculate PPO Surrogate Policy Loss
+    #     surr1 = ratio_B * advantage
+    #     surr2 = torch.clamp(ratio_B, 1.0 - epsilon, 1.0 + epsilon) * advantage
+    #     # PPO minimizes the negative of the objective
+    #     policy_surr_loss = -torch.min(surr1, surr2).mean()
+
+    #     # 4. Calculate Value Loss
+    #     # MSE between the critic's prediction and the actual reward
+    #     value_loss = F.mse_loss(values_new_B, rewards_B)
+
+    #     # 5. Calculate Entropy Bonus
+    #     # Maximize entropy -> Minimize negative entropy
+    #     # Mean entropy across all dimensions (Batch, C, H, W)
+    #     entropy_bonus = -dist_new_BCHW.entropy().mean()
+
+    #     # 6. Calculate Total Combined Loss
+    #     total_loss = (policy_surr_loss +
+    #                   value_coeff * value_loss +
+    #                   entropy_coeff * entropy_bonus) # Entropy bonus is subtracted (added negative entropy)
+
+    #     return total_loss, policy_surr_loss, value_loss, entropy_bonus * entropy_coeff, values_new_B
+
+    # def grade_output(initial_states_BCHW: torch.Tensor, actor_outputs_BCHW: torch.Tensor) -> torch.Tensor:
+
+    #     matches_BCHW = (initial_states_BCHW == actor_outputs_BCHW)
+    #     scores_B = matches_BCHW.sum(dim=(1, 2, 3))
+    #     B, C, H, W = matches_BCHW.shape
+    #     rewards_B = scores_B / float(C * H * W)
+
+    #     return rewards_B
+
+
+    # # --- Training Loop ---
+    # def _2(
+    #     channels=3,
+    #     num_entities=5,
+    #     height=4,
+    #     width=4,
+    #     batch_size=16,
+    #     LEARNING_RATE = 1e-4,
+    #     NUM_EPOCHS = 100,
+    #     PPO_EPSILON = 0.2,
+    #     ENTROPY_COEFF = 0.01,
+    #     VALUE_COEFF = 0.5,
+    # ):
+    #     # Hyperparameters
+    #     PRINT_INTERVAL = 200 # Print stats every N epochs
+    #     history = []
+
+    #     # Setup Device
+    #     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    #     print(f"Using device: {device}")
+
+    #     # Initialize Models
+    #     actor = Actor(input_channels=channels, num_entities=num_entities).to(device)
+    #     critic = Critic(input_channels=channels, num_entities=num_entities).to(device)
+
+    #     # Initialize Optimizer (optimize both actor and critic parameters together)
+    #     optimizer = optim.Adam(
+    #         list(actor.parameters()) + list(critic.parameters()),
+    #         lr=LEARNING_RATE,
+    #         eps=1e-5
+    #     )
+
+    #     print("Starting training...")
+
+    #     for epoch in range(NUM_EPOCHS):
+    #         # Use eval mode for sampling, but track gradients conceptually
+    #         actor.eval()
+
+    #         # 1. Generate a batch of initial states (dummy data)
+    #         # initial_states_BCHW = torch.randn(BATCH_SIZE, INPUT_CHANNELS, HEIGHT, WIDTH, device=device)
+    #         initial_states_BCHW = torch.randint(0, num_entities, (batch_size, channels, height, width), device=device).to(torch.float32)
+
+    #         # 2. Get actions and log probabilities from the *current* policy (actor)
+    #         with torch.no_grad(): # Don't need gradients through the sampling process itself
+    #             action_logits_BCHWD = actor(initial_states_BCHW) # Shape (B, C, H, W, D)
+    #             action_dist = Categorical(logits=action_logits_BCHWD)
+    #             # Sample actions - these represent the chosen entity for each C, H, W
+    #             # Output shape: (B, C, H, W), type: Long
+    #             sampled_actions_BCHW = action_dist.sample()
+
+    #             # Calculate the log probability of these actions under the *generating* policy
+    #             # Sum across C, H, W dimensions for the log prob of the whole 'action image'
+    #             old_log_probs_B = action_dist.log_prob(sampled_actions_BCHW).sum(dim=(1, 2, 3)) # Shape (B,)
+
+    #         rewards_B = grade_output(initial_states_BCHW, sampled_actions_BCHW)
+
+    #         # --- Learning Phase ---
+    #         actor.train() # Switch back to train mode for gradient calculation
+    #         critic.train()
+
+    #         # Move collected data to device explicitly (though it should be already
+    #         # if generated there)
+    #         initial_states_BCHW = initial_states_BCHW.to(device)
+    #         sampled_actions_BCHW = sampled_actions_BCHW.to(device)
+    #         rewards_B = rewards_B.to(device)
+    #         old_log_probs_B = old_log_probs_B.to(device) # Already detached
+
+    #         # 4. Calculate PPO loss using the *current* policy and critic
+    #         (
+    #             total_loss, policy_loss, value_loss, entropy_bonus, values_B
+    #         ) = calculate_ppo_loss(
+    #             actor,
+    #             critic,
+    #             initial_states_BCHW,
+    #             sampled_actions_BCHW,
+    #             rewards_B,
+    #             old_log_probs_B,
+    #             epsilon=PPO_EPSILON,
+    #             entropy_coeff=ENTROPY_COEFF,
+    #             value_coeff=VALUE_COEFF
+    #         )
+
+    #         # 5. Optimize models
+    #         optimizer.zero_grad()
+    #         total_loss.backward()
+    #         # torch.nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), max_norm=0.5)
+    #         optimizer.step()
+    #         history.append({
+    #             'reward_avg': rewards_B.mean().item(),
+    #             'values_avg': values_B.mean().item(),
+    #             # 'epoch': epoch,
+    #             'loss_total': total_loss.item(),
+    #             'policy_loss': policy_loss.item(),
+    #             'value_loss': value_loss.item(),
+    #             'entropy_bonus': entropy_bonus.item(),
+    #         })
+
+    #         # --- Logging ---
+    #         if (epoch + 1) % PRINT_INTERVAL == 0:
+    #             print(
+    #                 f"Epoch [{epoch+1}/{NUM_EPOCHS}] | "
+    #                 f"Avg Reward: {rewards_B.mean().item():.4f} | "
+    #                 f"Total Loss: {total_loss.item():.4f} | "
+    #                 f"Policy Loss: {policy_loss.item():.4f} | "
+    #                 f"Value Loss: {value_loss.item():.4f} | "
+    #                 f"Entropy Bonus: {entropy_bonus.item():.4f} | "
+    #              )
+
+    #     return actor, critic, history
+
+    # channels = 1
+    # num_entities = 2 # should match actor's d dimension
+    # height = 4
+    # width = 4
+    # batch_size = 16
+
+    # print('random_chance =', 1.0/num_entities)
+
+    # actor_, critic_, history_ = _2(
+    #     channels=channels,
+    #     num_entities=num_entities,
+    #     height=height,
+    #     width=width,
+    #     batch_size=batch_size,
+    #     LEARNING_RATE=7e-5,
+    #     NUM_EPOCHS=500,
+    #     VALUE_COEFF=0.5,
+    #     ENTROPY_COEFF=0,
+    # )
+    # plot_history(history_, hide=['entropy_bonus'])
+
+    # t = torch.randint(0, num_entities, (batch_size, channels, height, width), device='mps').to(torch.float32)
+
+    # t_hat = Categorical(logits=actor_(t)).sample()
+    # print(t_hat[0].to(int))
+    # print(t[0].to(int))
+    return
+
+
+@app.cell
+def _():
+    # TODO: With the update equation we know what direction the "gradient" of a specific state-action pair is – that is to say, to make that action (in a specific state) more likely by changing the neural networks weights in the direction of the gradient - can we log the mean delta probabilities for the selected actions after an update?
+    return
+
+
+@app.cell
+def _(go):
     def plot_history(history, hide=None):
         hide = [] if hide is None else hide
         # Create a figure
@@ -1174,12 +1498,19 @@ def _(go, np):
         # Add traces for each key in loss_history
 
         all_keys = list(set([k for h in history for k in h.keys()]))
-        print(all_keys)
+        print(f"{all_keys=}")
         for key in all_keys:
+            l = [
+                (i, float(v[key]))
+                for i, v
+                in enumerate(history)
+                if key in v
+            ]
+            xs, ys = zip(*l)
             fig.add_trace(
                 go.Scatter(
-                    x=list(range(len(history))),
-                    y=[float(v[key]) if key in v else np.nan for v in history], 
+                    x=xs,
+                    y=ys,
                     mode='lines',  # Plot as lines
                     name=key,  # Legend label
                     line=dict(width=0.75),  # Set line width
@@ -1193,7 +1524,7 @@ def _(go, np):
             template='plotly_dark',
         )
         fig.update_traces(
-            visible="legendonly", 
+            visible="legendonly",
             selector=lambda t: t.name in hide
         )
         # Show the plot
@@ -1202,7 +1533,115 @@ def _(go, np):
 
 
 @app.cell
-def _():
+def _(torch):
+    import gymnasium as gym
+    from cleanrl.cleanrl.ppo import AgentCNN, FactorioEnv
+
+    path = 'cleanrl/artifacts/agent-1.000000-factorion-FactorioEnv-v0__ppo__1__1745516456.pt'
+    path = 'cleanrl/artifacts/agent-0.994240-factorion-FactorioEnv-v0__ppo__1__2025-04-24T22-15-15.pt'
+
+    path = 'cleanrl/artifacts/agent-1.023271-factorion-FactorioEnv-v0__ppo__1__2025-04-25T04-00-29.pt'
+
+    path = 'cleanrl/artifacts/agent-0.966447-factorion-FactorioEnv-v0__ppo__1__2025-04-25T11-17-30.pt'
+
+
+    def make_env():
+        def _thunk():
+            return FactorioEnv()
+        return _thunk
+
+    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(4)])
+
+    agent = AgentCNN(envs)
+    agent.load_state_dict(torch.load(path, weights_only=False))
+    agent.eval()
+    return AgentCNN, FactorioEnv, agent, envs, gym, make_env, path
+
+
+@app.cell
+def __(
+    Channel,
+    agent,
+    funge_throughput,
+    get_new_world,
+    normalise_world,
+    torch,
+    world_to_html,
+):
+    size = 5
+    world_CWH = get_new_world(seed=None, n=size).permute(2, 0, 1)
+    world_CWH
+
+
+    example_input = torch.randn(1, agent.channels, agent.width, agent.height)
+    with torch.no_grad():
+        action_BCWH, logprob, entropy, value = agent.get_action_and_value(world_CWH.unsqueeze(0))
+
+    action_CWH = action_BCWH[0, :, :, :]
+    dir_CWH = action_CWH[Channel.DIRECTION.value, :, :]
+    mask = (dir_CWH > 0)
+    dir_CWH[mask] = dir_CWH[mask] * 4 - 4
+    dir_CWH[~mask] = -1
+    action_WHC = torch.tensor(action_CWH).permute(1, 2, 0)
+    world_WHC = world_CWH.permute(1, 2, 0)
+    normalised_world_WHC = normalise_world(action_WHC, world_WHC)
+    throughput, num_unreachable = funge_throughput(normalised_world_WHC, debug=False)
+    throughput /= 15.0
+    frac_reachable = 1.0 - float(num_unreachable) / (size*size)
+    normalised_world_CWH = normalised_world_WHC.permute(2, 0, 1)
+
+    # print(normalised_world_WHC, action_CWH.permute(1, 2, 0))
+    hallucination_rate = (normalised_world_WHC != action_CWH.permute(1, 2, 0)).sum() / action_CWH.numel()
+    # print(f"{hallucination_rate=}")
+
+
+
+
+    # pred_world = action[0].permute(1, 2, 0)
+    # normed_world = normalise_world(pred_world, world_CWH.permute(1, 2, 0))
+    # print(normed_world[:, :, Channel.DIRECTION.value])
+    # print(normed_world)
+    print(throughput)
+    print(frac_reachable)
+
+    # print(action, value)
+    # print(funge_throughput(normed_world))
+    (
+
+        "(white inserter is source, green inserter is sink)",
+        "---Initial world---",
+        world_to_html(world_CWH.permute(1, 2, 0)),
+        "---Before normalisation---",
+        world_to_html(action_CWH.permute(1, 2, 0)),
+        "---Predicted world---",
+        world_to_html(normalised_world_WHC),
+        f"Throughput: {throughput*100:.0f}%, hallu: {hallucination_rate:.2f}, frac: {frac_reachable}"
+    )
+    return (
+        action_BCWH,
+        action_CWH,
+        action_WHC,
+        dir_CWH,
+        entropy,
+        example_input,
+        frac_reachable,
+        hallucination_rate,
+        logprob,
+        mask,
+        normalised_world_CWH,
+        normalised_world_WHC,
+        num_unreachable,
+        size,
+        throughput,
+        value,
+        world_CWH,
+        world_WHC,
+    )
+
+
+@app.cell
+def __(np):
+    np.random.rand()
     return
 
 

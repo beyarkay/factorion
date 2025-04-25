@@ -1,0 +1,76 @@
+# sweep.yaml
+
+method: bayes # or "grid" or "random"
+metric:
+  name: "charts/episodic_return_ma"
+  goal: maximize
+
+parameters:
+  seed:
+    value: 1
+
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
+
+  ent_coef:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 0.1
+
+  gae_lambda:
+    distribution: uniform
+    min: 0.8
+    max: 0.99
+
+  num_minibatches:
+    values: [2, 4, 8]
+
+  update_epochs:
+    values: [2, 4, 8]
+
+  max_grad_norm:
+    values: [0.3, 0.5, 1.0]
+
+  vf_coef:
+    distribution: uniform
+    min: 0.3
+    max: 1.0
+
+  num_envs:
+    values: [4, 8, 16, 32, 64]
+
+  clip_coef:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+
+#   coeff_throughput:
+#     distribution: uniform
+#     min: 0.9
+#     max: 1.0
+#
+#   coeff_frac_hallucin:
+#     distribution: uniform
+#     min: 0.0
+#     max: 0.1
+#
+#   coeff_frac_reachable:
+#     distribution: uniform
+#     min: 0.0
+#     max: 0.1
+
+program: cleanrl/ppo.py
+
+command:
+  - bash
+  - run_sweep.sh
+  - --env-id
+  - factorion/FactorioEnv-v0
+  - --total-timesteps
+  - 400000
+  - --track
+  - --wandb-project-name
+  - factorion
+  - ${args}

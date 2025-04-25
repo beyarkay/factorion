@@ -74,3 +74,16 @@ actually generate super-human factories.
       and augments the dataset, but I'm not sure about the easiest way to do
       training runs. I'm going to try get my server setup which might be
       enough.
+
+
+
+## New Plan
+
+Okay I'm starting to doubt the idea of training an LLM to generate blueprints
+from a description. It's not necessarily bad, just won't get to the end game.
+
+We need to go back to generating a full factory, with the inputs being "belt in
+here" and "belt out here".
+
+
+Plan is to have a convolutional neural network that takes as input
