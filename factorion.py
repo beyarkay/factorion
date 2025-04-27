@@ -61,15 +61,15 @@ def _():
     )
 
 
-@app.cell(hide_code=True)
-def _(Enum, dataclass, mo):
+@app.cell
+def datatypes(Enum, dataclass, mo):
     class Channel(Enum):
         # What entity occupies this tile?
         ENTITIES = 0
         # What recipe OR filter is set?
-        RECIPES = 1
+        # RECIPES = 1
         # what direction is the entity facing?
-        DIRECTION = 2
+        DIRECTION = 1
         # Undergrounds and splitter mechanics, see class Misc(Enum)
     #     MISC = 3
         # 1 if you can build there, 0 if you can't
@@ -99,15 +99,20 @@ def _(Enum, dataclass, mo):
 
     class Direction(Enum):
         """Directions the entity can be facing"""
-        NONE = -1
-        NORTH = 0
-    #     NORTH_EAST = 2
-        EAST = 4
-    #     SOUTH_EAST = 6
-        SOUTH = 8
-    #     SOUTH_WEST = 10
-        WEST = 12
-    #     NORTH_WEST = 14
+        NONE = 0
+        NORTH = 1
+        EAST = 2
+        SOUTH = 3
+        WEST = 4
+    #     NONE = -1
+    #     NORTH = 0
+    # #     NORTH_EAST = 2
+    #     EAST = 4
+    # #     SOUTH_EAST = 6
+    #     SOUTH = 8
+    # #     SOUTH_WEST = 10
+    #     WEST = 12
+    # #     NORTH_WEST = 14
 
     @dataclass
     class Prototype:
@@ -119,6 +124,11 @@ def _(Enum, dataclass, mo):
 
     prototypes = {
         0:  Prototype(name='empty',                 value=0,  width=1, height=1, flow=0.0),
+        1: Prototype(name='transport_belt',        value=1, width=1, height=1, flow=15.0),
+        # sink
+        2: Prototype(name='bulk_inserter',         value=2, width=1, height=1, flow=float('inf')),
+        # source
+        3: Prototype(name='stack_inserter',        value=3, width=1, height=1, flow=float('inf')),
     #     1:  Prototype(name='sink',                  value=1,  width=1, height=1, flow=float('inf')),
     #     2:  Prototype(name='source',                value=2,  width=1, height=1, flow=float('inf')),
     #     3:  Prototype(name='assembling_machine_1',  value=3,  width=3, height=3, flow=0.5),
@@ -126,21 +136,16 @@ def _(Enum, dataclass, mo):
     #     5:  Prototype(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
     #     6:  Prototype(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
     #     7:  Prototype(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
-        1:  Prototype(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
+        # 1:  Prototype(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
     #     9:  Prototype(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
     #     10: Prototype(name='inserter',              value=10, width=1, height=1, flow=0.86),
     #     11: Prototype(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
     #     12: Prototype(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
     #     13: Prototype(name='splitter',              value=13, width=2, height=1, flow=15.0),
     #     14: Prototype(name='steel_chest',           value=14, width=1, height=1, flow=0.0),
-        2: Prototype(name='transport_belt',        value=2, width=1, height=1, flow=15.0),
         # TODO: this doesn't account for the speed of items
         # underground (which is identical to a transport belt)
     #     16: Prototype(name='underground_belt',      value=16, width=1, height=1, flow=15.0),
-        # sink
-        3: Prototype(name='bulk_inserter',         value=3, width=1, height=1, flow=float('inf')),
-        # source
-        4: Prototype(name='stack_inserter',        value=4, width=1, height=1, flow=float('inf')),
     }
 
     @dataclass
@@ -173,7 +178,7 @@ def _(Enum, dataclass, mo):
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def functions(
     Categorical,
     Channel,
@@ -211,6 +216,9 @@ def functions(
         for v in prototypes.values():
             if v.name == s.replace('-', '_'):
                 return v
+        # TODO I'm almost certianly going to regret hardcoding this
+        if s == 'electronic_circuit':
+            return Prototype(name='electronic_circuit', value=len(prototypes), width=1, height=1, flow=0.0)
         print(f"WARN: unknown entity {s}")
         return None
 
@@ -247,8 +255,8 @@ def functions(
 
         world[x, y, Channel.ENTITIES.value] = proto.value
         world[x, y, Channel.DIRECTION.value] = direction.value
-        world[x, y, Channel.RECIPES.value] = recipe_proto.value
-        world[x, y, Channel.MISC.value] = misc.value
+        # world[x, y, Channel.RECIPES.value] = recipe_proto.value
+        # world[x, y, Channel.MISC.value] = misc.value
 
     def world_to_html(world):
         assert len(world.shape) == 3, f"Expected 3 dimensions got {world.shape}"
@@ -271,11 +279,11 @@ def functions(
             html.append("<tr>")
             for x in range(len(world)):
                 proto = prototypes[world[x, y, Channel.ENTITIES.value]]
-                recipe = prototypes[world[x, y, Channel.RECIPES.value]]
+                # recipe = prototypes[world[x, y, Channel.RECIPES.value]]
                 direction = world[x, y, Channel.DIRECTION.value]
     #             entity, direction, recipe = get_entity_info(world, x, y)
                 entity_icon = b64img_from_str(proto.name)
-                recipe_icon = b64img_from_str(recipe.name)
+                # recipe_icon = b64img_from_str(recipe.name)
                 direction_arrow = DIRECTION_ARROWS.get(direction, "")
                 if any(['Channel.MISC' in i for i in map(str, list(Channel))]):
                     misc = Misc(world[x, y, Channel.MISC.value])
@@ -294,7 +302,6 @@ def functions(
                     <div style='position: relative; width: 50px; height: 50px; {bg_style}'>
                         <img src='{entity_icon}' style='width: 60%; height: 60%;'>
                         <div style='position: absolute; bottom: 0; left: 0; font-size: 20px;'>{direction_arrow}</div>
-                        <img src='{recipe_icon}' style='position: absolute; top: 0; right: 0; width: 20px; height: 20px;'>
                         <div style='position: absolute; top: 50%; left: 50%;
                         font-size: 20px; font-weight: bold; color: white;'>{underground_symbol}</div>
                     </div>
@@ -394,7 +401,9 @@ def functions(
                 e = prototypes[world[x, y, Channel.ENTITIES.value]]
                 if e.name == 'empty':
                     continue
-                r = prototypes[world[x, y, Channel.RECIPES.value]]
+
+                # while we're mocking the recipe, just hardcode electronic_circuit
+                r = prototype_from_str('electronic_circuit')
                 d = Direction(world[x, y, Channel.DIRECTION.value])
 
                 input_ = {}
@@ -716,7 +725,7 @@ def functions(
 
         can_reach_sink = set().union(*(nx.ancestors(G, s) | {s} for s in sinks))
         reachable_from_source = set().union(*(nx.descendants(G, s) | {s} for s in sources))
-        unreachable = set(G.nodes) - can_reach_sink - reachable_from_source
+        unreachable = set(G.nodes) - can_reach_sink.intersection(reachable_from_source)
 
         return output, len(unreachable)
 
@@ -793,15 +802,15 @@ def functions(
         )
         world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = empty_entity_value
 
-        # Ensure belts don't have recipes
-        belt_entity_value = prototype_from_str('transport_belt').value
-        belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
-        world_T[:, :, Channel.RECIPES.value][belt_entities] = empty_entity_value
+        # # Ensure belts don't have recipes
+        # belt_entity_value = prototype_from_str('transport_belt').value
+        # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
+        # world_T[:, :, Channel.RECIPES.value][belt_entities] = empty_entity_value
 
-        # Ensure all empty entities have no recipe, no direction
-        no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
-        world_T[:, :, Channel.RECIPES.value][no_entity] = empty_entity_value
-        world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
+        # # Ensure all empty entities have no recipe, no direction
+        # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
+        # world_T[:, :, Channel.RECIPES.value][no_entity] = empty_entity_value
+        # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
 
         # Ensure the model can't just overwrite existing factories with a simpler thing.
         tworld = og_world.clone().detach().to(torch.int64)
@@ -823,28 +832,29 @@ def functions(
                     continue
                 if i in (0, n-1) or j in (0, n-1):
                     boundary_tiles.append((i, j))
+
+        # Put a source and a sink on one of the boundaries
         source = boundary_tiles[np.random.choice(len(boundary_tiles))]
         sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
         while source == sink:
             sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
 
+        # Add the source + sink to the world
         w[source[0], source[1], Channel.ENTITIES.value] = prototype_from_str('stack_inserter').value
         w[sink[0], sink[1], Channel.ENTITIES.value] = prototype_from_str('bulk_inserter').value
-        w[source[0], source[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
-        w[sink[0], sink[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
+        # w[source[0], source[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
+        # w[sink[0], sink[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
 
-        for x, y, flipper in [(*source, 0), (*sink, 8)]:
+        # Figure out the direction of the source + sink
+        for x, y, is_source in [(*source, True), (*sink, False)]:
             if x == 0:
-                d = Direction.EAST
+                w[x, y, Channel.DIRECTION.value] = (Direction.EAST if is_source else Direction.WEST).value
             if x == n-1:
-                d = Direction.WEST
+                w[x, y, Channel.DIRECTION.value] = (Direction.WEST if is_source else Direction.EAST).value
             if y == 0:
-                d = Direction.SOUTH
+                w[x, y, Channel.DIRECTION.value] = (Direction.SOUTH if is_source else Direction.NORTH).value
             if y == n-1:
-                d = Direction.NORTH
-
-            d = (d.value + flipper) % 16
-            w[x, y, Channel.DIRECTION.value] = d
+                w[x, y, Channel.DIRECTION.value] = (Direction.NORTH if is_source else Direction.SOUTH).value
 
         return torch.tensor(w).to(torch.float)
 
@@ -898,8 +908,11 @@ def functions(
             throughput, num_unreachable = calc_throughput(graph_from_world(world, debug=debug), debug=debug)
             if len(throughput) == 0:
                 return 0, 0
-            return list(throughput.values())[0], num_unreachable
+            actual_throughput = list(throughput.values())[0]
+            assert  actual_throughput < float('inf'), f"throughput is +inf, probably a bug, world is: {torch.tensor(world).permute(2, 0, 1)}"
+            return actual_throughput, num_unreachable
         except AssertionError:
+            1/0
             traceback.print_exc()
             return 0, 0
 
