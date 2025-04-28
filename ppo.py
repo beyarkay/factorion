@@ -24,6 +24,7 @@ import factorion
 
 episodic_returns = deque(maxlen=100)
 final_throughputs = deque(maxlen=100)
+min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
 @dataclass
 class Args:
@@ -45,6 +46,8 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    start_from: Optional[str] = None
+    """Path of a model from which to start the training (instead of from scratch)"""
 
     # Algorithm specific arguments
     env_id: str = "factorion/FactorioEnv-v0"
@@ -53,7 +56,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 24
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
@@ -73,20 +76,34 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
+
     ent_coef: float = 0.025
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
-    coeff_throughput: float = 0.90
+    coeff_throughput: float = 0.98
     """coefficient of the throughput when calculating reward"""
-    coeff_frac_reachable: float = 0.05
+    coeff_frac_reachable: float = 0.01
     """coefficient of the fraction of unreachable nodes when calculating reward"""
-    coeff_frac_hallucin: float = 0.05
+    coeff_frac_hallucin: float = 0.00
     """coefficient of the fraction of tiles that had to be changed after normalisation"""
+    coeff_final_dir_reward: float = 0.01
+    """coefficient of reward given to the final belt being correctly oriented"""
+
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
+    adam_epsilon: float = 1e-5
+    """The epsilon parameter for Adam"""
+    chan1: int = 8
+    """Number of channels in the first layer of the CNN encoder"""
+    chan2: int = 8
+    """Number of channels in the second layer of the CNN encoder"""
+    chan3: int = 8
+    """Number of channels in the third layer of the CNN encoder"""
+    flat_dim: int = 64
+    """Output size of the fully connected layer after the encoder"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -211,9 +228,10 @@ class FactorioEnv2(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        self._world_CWH = self.get_new_world(seed, n=self.size).permute(2, 0, 1).to(int)
+        self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=[1, 2, 3, 4, 5]).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
+
 
     def step(self, action):
         (x, y), entity_id, direc = action
@@ -224,18 +242,12 @@ class FactorioEnv2(gym.Env):
         assert 0 <= direc < len(self.Direction), f"{direc} isn't between 0 and {len(self.Direction)}"
 
 
-        # print("=================================")
-        # print(f"Adding {entity_id} to world at {x},{y} in direction {direc} ({self.Direction(direc)})")
-        # print(get_pretty_format(self._world_CWH, mapping))
-        # print("---------------------------------")
-
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
         direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
         if entity_to_be_replaced in (len(self.prototypes)-1, len(self.prototypes)-2):
             # disallow the replacement of the source+sink
-            # print(f"[DBG]Stopped model from trying to replace {entity_to_be_replaced} at {x},{y}")
             pass
         elif entity_id == 1 and direc == 0:
             # Disallow the placement of belts without a direction
@@ -248,7 +260,6 @@ class FactorioEnv2(gym.Env):
             self._world_CWH[self.Channel.DIRECTION.value, x, y] = direc
         # TODO need to change the world to be like how funge_throughput expects
 
-        # print(get_pretty_format(self._world_CWH, mapping))
 
         world_old_CWH = self._world_CWH.clone().detach()
 
@@ -257,8 +268,23 @@ class FactorioEnv2(gym.Env):
 
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
-        frac_reachable = 1.0 - float(num_unreachable) / (self.size * self.size)
+        num_entities = self._world_CWH[self.Channel.ENTITIES.value].count_nonzero()
+        frac_reachable = 0 if num_entities == 2 else (1.0 - (float(num_unreachable) / (num_entities - 2)))
         frac_hallucin = 0
+
+        # Give some small reward for having the belt be the right direction
+        sink_id = self.prototype_from_str('bulk_inserter').value
+        sink_locs = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == sink_id)
+        assert len(sink_locs[0]) == len(sink_locs[1]) == 1, f"Expected 1 bulk inserter, found {sink_locs} in world {self._world_CWH}"
+        C, W, H = self._world_CWH.shape
+        w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
+        w_belt = torch.clamp(w_sink, 1, W-2)
+        h_belt = torch.clamp(h_sink, 1, H-2)
+
+        final_belt_dir = self._world_CWH[self.Channel.DIRECTION.value, w_belt, h_belt]
+        sink_dir = self._world_CWH[self.Channel.DIRECTION.value, w_sink, h_sink]
+
+        final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
 
         # if throughput == 1.0:
         #     # print(self._world_CWH)
@@ -268,20 +294,45 @@ class FactorioEnv2(gym.Env):
             throughput * args.coeff_throughput
             + frac_reachable * args.coeff_frac_reachable
             + frac_hallucin * args.coeff_frac_hallucin
+            + final_dir_reward * args.coeff_final_dir_reward
         )
-        reward /= args.coeff_throughput + args.coeff_frac_hallucin + args.coeff_frac_reachable
-
-        # if np.random.rand() > 0.999 or (np.random.rand() > 0.99 and throughput == 1.0):
-        if throughput == 1.0:
-            print(get_pretty_format(self._world_CWH, mapping))
-            # print(f"{args.coeff_throughput=} {args.coeff_frac_hallucin=} {args.coeff_frac_reachable=}")
-            print(f'!!! {throughput}i/s, {num_unreachable} unreachable, {reward:.3f} reward!!!')
-            print('--------------')
+        reward /= (
+            args.coeff_throughput
+            + args.coeff_frac_hallucin
+            + args.coeff_frac_reachable
+            + args.coeff_final_dir_reward
+        )
 
         # Terminate early when the agent connects source to sink
         terminated = throughput == 1.0
         # Halt the run if the agent runs out of steps
         truncated = self.steps >= self.max_steps
+
+        if terminated:
+            # If the agent solved before the end, give extra reward
+            reward += (self.max_steps - self.steps)
+
+        min_belts = self.get_min_belts(self._world_CWH)
+
+        # if np.random.rand() > 0.999 or (np.random.rand() > 0.99 and throughput == 1.0):
+        if throughput == 1.0:
+            print(f"{self.steps=} {min_belts=}")
+            print(get_pretty_format(self._world_CWH, mapping))
+            print(f'!!! {throughput}i/s + {num_unreachable} unreachable + {final_dir_reward} direction = {reward:.3f} reward!!!')
+            print('--------------')
+
+
+        # Calculate the Manhattan distance between the source and the sink
+        # stack_inserter_id = self.prototype_from_str("stack_inserter").value
+        # bulk_inserter_id = self.prototype_from_str("bulk_inserter").value
+        # coords1 = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == bulk_inserter_id)
+        # assert len(coords1[0]) == len(coords1[1]) == 1, f"Expected 1 bulk inserter, found {coords1} in world {self._world_CWH}"
+        # w1, h1 = coords1[0][0], coords1[1][0]
+
+        # coords2 = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == stack_inserter_id)
+        # assert len(coords2[0]) == len(coords2[1]) == 1, f"Expected 1 stack inserter, found {coords2} in world {self._world_CWH}"
+        # w2, h2 = coords2[0][0], coords2[1][0]
+        # min_belts = torch.abs(w1 - w2) + torch.abs(h1 - h2)
 
         observation = self._get_obs()
         info = self._get_info()
@@ -289,16 +340,17 @@ class FactorioEnv2(gym.Env):
             'throughput': throughput,
             'frac_reachable': frac_reachable,
             'frac_hallucin': frac_hallucin,
+            'min_belts': int(min_belts),
         })
 
         self.steps += 1
         assert not torch.isnan(torch.tensor(reward)).any(), f"Reward is nan or inf: {reward}"
         assert not torch.isinf(torch.tensor(reward)).any(), f"Reward is nan or inf: {reward}"
 
-        return observation.numpy(), reward, terminated, truncated, info
+        return observation.numpy(), float(reward), terminated, truncated, info
 
-class AgentCNN2(nn.Module):
-    def __init__(self, envs):
+class AgentCNN(nn.Module):
+    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256):
         super().__init__()
         base_env = envs.envs[0].unwrapped
         self.width = base_env.size
@@ -309,15 +361,15 @@ class AgentCNN2(nn.Module):
         self.num_directions = len(base_env.Direction)
 
         self.encoder = nn.Sequential(
-            layer_init(nn.Conv2d(self.channels, 32, kernel_size=3, padding=1)),
+            layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=3, padding=1)),
+            layer_init(nn.Conv2d(chan1, chan2, kernel_size=3, padding=1)),
             nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, padding=1)),
+            layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
             nn.ReLU(),
         )
 
-        flat_dim = 64 * self.width * self.height
+        flat_dim = chan3 * self.width * self.height
 
         # Project encoded state to value
         self.critic_head = nn.Sequential(
@@ -328,14 +380,14 @@ class AgentCNN2(nn.Module):
         # Action heads: output logits for x, y, direction, entity_id
         self.action_head = nn.Sequential(
             nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 256)),
+            layer_init(nn.Linear(flat_dim, flat_dim)),
             nn.ReLU()
         )
 
-        self.x_head = layer_init(nn.Linear(256, self.width))
-        self.y_head = layer_init(nn.Linear(256, self.height))
-        self.ent_head = layer_init(nn.Linear(256, self.num_entities))
-        self.dir_head = layer_init(nn.Linear(256, self.num_directions))
+        self.x_head = layer_init(nn.Linear(flat_dim, self.width))
+        self.y_head = layer_init(nn.Linear(flat_dim, self.height))
+        self.ent_head = layer_init(nn.Linear(flat_dim, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
 
     def get_value(self, x_BCWH):
         encoded = self.encoder(x_BCWH)
@@ -393,64 +445,7 @@ class AgentCNN2(nn.Module):
 
         # Final action format: tuple of tensors
         action_out = (torch.stack([x_B, y_B], dim=1), ent_B, dir_B)
-        # print(f"{action_out=}")
         return action_out, logp_B, entropy_B, value_B
-
-class AgentCNN(nn.Module):
-    def __init__(self, envs):
-        super().__init__()
-        self.num_envs = len(envs.envs)
-        self.width = envs.envs[0].width
-        self.height = envs.envs[0].height
-        self.channels = envs.envs[0].channels
-        self.num_entities = envs.envs[0].num_entities
-        self.network = nn.Sequential(
-            layer_init(nn.Conv2d(self.channels, 32, kernel_size=3, stride=1, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, self.channels * self.num_entities, kernel_size=1)),
-            nn.ReLU(),
-        )
-
-        self.critic = layer_init(nn.Conv2d(
-            self.channels * self.num_entities,
-            1,
-            kernel_size=1
-        ), std=1)
-
-        self.actor = layer_init(nn.Conv2d(
-            self.channels * self.num_entities,
-            self.channels * self.num_entities,
-            kernel_size=1
-        ), std=0.01)
-
-    def get_value(self, x_BCWH):
-        assert len(x_BCWH.shape) == 4, f'Expected 4 dimensions, got {x.shape}'
-        hidden_BCWH = self.network(x_BCWH)
-        value_B1WH = self.critic(hidden_BCWH)
-        value_BWH = value_B1WH.squeeze(1)
-        value_B = value_BWH.mean(dim=(-1, -2))
-        return value_B
-
-
-    def get_action_and_value(self, x_BCWH, action_BCWH=None):
-        B, C, W, H = x_BCWH.shape
-        hidden_BCWH = self.network(x_BCWH)
-        logits_BCWH = self.actor(hidden_BCWH)
-
-        logits_BCDWH = logits_BCWH.view(B, C, self.num_entities, W, H)
-        logits_BCWHD = logits_BCDWH.permute(0, 1, 3, 4, 2)
-
-        probs = Categorical(logits=logits_BCWHD)
-        if action_BCWH is None:
-            action_BCWH = probs.sample()
-
-        value_B = self.get_value(x_BCWH)
-        logprobs_BCWH = probs.log_prob(action_BCWH)
-        return action_BCWH, logprobs_BCWH, probs.entropy(), value_B
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -500,8 +495,21 @@ if __name__ == "__main__":
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
 
-    agent = AgentCNN2(envs).to(device)
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    agent = AgentCNN(
+        envs,
+        chan1=args.chan1,
+        chan2=args.chan2,
+        chan3=args.chan3,
+        flat_dim=args.flat_dim
+    )
+
+    if args.start_from is not None:
+        print(f"Loading model weights from {args.start_from}")
+        agent.load_state_dict(torch.load(args.start_from))
+
+    agent.to(device)
+
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
 
     # ALGO Logic: Storage setup
     obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -544,13 +552,11 @@ if __name__ == "__main__":
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
-            # print(f"{action_ET=}")
             action_ET_np = (
                 action_ET[0].cpu().numpy(),
                 action_ET[1].cpu().numpy(),
                 action_ET[2].cpu().numpy(),
             )
-            # print(f"{action_ET_np=}")
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ET_np)
             next_done = np.logical_or(terminations, truncations)
@@ -581,6 +587,17 @@ if __name__ == "__main__":
                     avg_throughput = sum(final_throughputs) / len(final_throughputs)
                     writer.add_scalar("charts/final_throughput_ma", avg_throughput, global_step)
 
+                    min_belts = infos['min_belts'][i]
+                    writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
+
+                    min_belts_thoughputs[min_belts].append(final_throughput)
+                    avg_min_belts_throughput = (
+                        0
+                        if not min_belts_thoughputs[min_belts]
+                        else sum(min_belts_thoughputs[min_belts]) / len(min_belts_thoughputs[min_belts])
+                    )
+                    writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
+
                     writer.add_scalar("charts/episodic_return", episode_return, global_step)
                     writer.add_scalar("charts/episodic_length", episode_len, global_step)
                     writer.add_scalar("charts/episodic_throughput", final_throughput, global_step)
@@ -600,10 +617,8 @@ if __name__ == "__main__":
                     nextnonterminal = 1.0 - dones_SE[t + 1]
                     nextvalues = values_SE[t + 1]
                 delta = rewards_SE[t] + args.gamma * nextvalues * nextnonterminal - values_SE[t]
-                # print(f"{values_SE[t]=} {nextnonterminal=} {nextvalues=} {rewards_SE[t]=}")
                 lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
                 advantages_SE[t] = lastgaelam
-                # print(f"{t=} {delta=} {advantages_SE[t]=}")
             returns_SE = advantages_SE + values_SE
 
         # flatten the batch
@@ -611,7 +626,6 @@ if __name__ == "__main__":
         logprobs_B = logprobs_SE.reshape(-1)
         # NOTE: maybe have to convert back to tuple of batches
         actions_B = actions_SEA.reshape((-1,) + ACTION_SPACE_SHAPE)
-        # print(f"{advantages_SE=}")
         advantages_B = advantages_SE.reshape(-1)
         returns_B = returns_SE.reshape(-1)
         values_B = values_SE.reshape(-1)
@@ -625,15 +639,11 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 idxs = idxs_B[start:end]
 
-                # print(f"{logprobs_B[idxs].reshape(-1)=}")
-                # print(f"{actions_B.long()[idxs]=}")
                 _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
                     obs_B[idxs],
                     actions_B.long()[idxs]
                 )
                 newlogprobs_B = newlogprobs_B.reshape(-1)
-                # print(f"{logprobs_B[idxs].reshape(-1)=}")
-                # print(f"{newlogprobs_B=}")
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
                 ratio_B = logratio_B.exp()
 
@@ -643,15 +653,12 @@ if __name__ == "__main__":
                     approx_kl = ((ratio_B - 1) - logratio_B).mean()
                     clipfracs += [((ratio_B - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                # print(f"{advantages_B=}")
                 assert not torch.isnan(advantages_B).any(), f"Some advantages are NaN: {advantages_B=}"
                 advantages_mB = advantages_B[idxs]
                 if args.norm_adv:
-                    # print(f"!!! {advantages_mB.std()=}")
                     advantages_mB = (advantages_mB - advantages_mB.mean()) / (advantages_mB.std() + 1e-8)
+
                 # Policy loss
-                # print(f"{ratio_B=}")
-                # print(f"{advantages_mB=}")
                 pg_loss1 = -advantages_mB * ratio_B
                 pg_loss2 = -advantages_mB * torch.clamp(ratio_B, 1 - args.clip_coef, 1 + args.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
@@ -672,8 +679,6 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - returns_B[idxs]) ** 2).mean()
 
                 entropy_loss = entropy_B.mean()
-                # print(f"{pg_loss=}")
-                # print(f"{v_loss=}")
                 assert not torch.isnan(pg_loss), f"pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), f"v_loss is NaN, probably a bug"
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -683,7 +688,6 @@ if __name__ == "__main__":
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
-                # print(f"!after!: {advantages_B=}")
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
@@ -691,26 +695,6 @@ if __name__ == "__main__":
         y_pred, y_true = values_B.cpu().numpy(), returns_B.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-
-        preds = (y_pred > 0.5).astype(int)
-        truth = y_true.astype(int)
-
-        # tp = ((preds == 1) & (truth == 1)).sum() / len(preds)
-        # tn = ((preds == 0) & (truth == 0)).sum() / len(preds)
-        # fp = ((preds == 1) & (truth == 0)).sum() / len(preds)
-        # fn = ((preds == 0) & (truth == 1)).sum() / len(preds)
-
-        # precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        # recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        # f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-        # writer.add_scalar("metrics/precision", precision, global_step)
-        # writer.add_scalar("metrics/recall", recall, global_step)
-        # writer.add_scalar("metrics/f1_score", f1, global_step)
-        # writer.add_scalar("metrics/true_positives", tp, global_step)
-        # writer.add_scalar("metrics/true_negatives", tn, global_step)
-        # writer.add_scalar("metrics/false_positives", fp, global_step)
-        # writer.add_scalar("metrics/false_negatives", fn, global_step)
 
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         # TRY NOT TO MODIFY: record rewards for plotting purposes
@@ -726,19 +710,21 @@ if __name__ == "__main__":
 
         if len(final_throughputs) > 0:
             final_throughput_ma = sum(final_throughputs) / len(final_throughputs)
-            pbar.set_description(f"thput: {final_throughput_ma}")
+            pbar.set_description(f"thput: {final_throughput_ma:.2f}")
 
     envs.close()
     writer.close()
-    if len(final_throughputs) > 0: # and sum(episodic_returns) / len(episodic_returns) > 0.90:
+    if len(final_throughputs) > 0 and args.num_iterations > 10_000:
         avg_throughput = float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
         agent_name = f"agent-{avg_throughput:.6f}-{run_name_dir_safe}"
         print(f"Saving model with MA final throughput of {avg_throughput:.8f} to artifacts/{agent_name}.pt")
+        os.makedirs("artifacts", exist_ok=True)
         torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
-        artifact = wandb.Artifact(name=agent_name, type="model")
-        artifact.add_file(f"artifacts/{agent_name}.pt")
-        wandb.log_artifact(artifact)
+        if args.track:
+            artifact = wandb.Artifact(name=agent_name, type="model")
+            artifact.add_file(f"artifacts/{agent_name}.pt")
+            wandb.log_artifact(artifact)
 
 

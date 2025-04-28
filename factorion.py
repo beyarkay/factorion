@@ -687,7 +687,6 @@ def functions(
                         for k, v in
                         recipes[curr['recipe']].produces.items()
                     }
-    #                 print(f"  curr output is {curr['output']}")
                 else:
                     # Given this node's total input, calculate it's total output
                     for k, v in curr['input_'].items():
@@ -725,7 +724,7 @@ def functions(
 
         can_reach_sink = set().union(*(nx.ancestors(G, s) | {s} for s in sinks))
         reachable_from_source = set().union(*(nx.descendants(G, s) | {s} for s in sources))
-        unreachable = set(G.nodes) - can_reach_sink.intersection(reachable_from_source)
+        unreachable = set(G.nodes) - can_reach_sink - reachable_from_source
 
         return output, len(unreachable)
 
@@ -821,9 +820,38 @@ def functions(
             world_T[:, :, ch.value][original_had_something] = replacements
         return world_T
 
-    def get_new_world(seed, n=6):
+    def get_min_belts(world_CWH):
+        assert world_CWH.shape[1] == world_CWH.shape[2], "Wrong shape: {world_CWH.shape}"
+        C, W, H = world_CWH.shape
+
+        stack_inserter_id = prototype_from_str("stack_inserter").value
+        bulk_inserter_id = prototype_from_str("bulk_inserter").value
+        coords1 = torch.where(world_CWH[Channel.ENTITIES.value] == bulk_inserter_id)
+        assert len(coords1[0]) == len(coords1[1]) == 1, f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
+        w1, h1 = coords1[0][0], coords1[1][0]
+
+
+        coords2 = torch.where(world_CWH[Channel.ENTITIES.value] == stack_inserter_id)
+        assert len(coords2[0]) == len(coords2[1]) == 1, f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
+        w2, h2 = coords2[0][0], coords2[1][0]
+
+        # we want an estimate for how many belts are required, so get the
+        # coords of the transport belt tile closest to the source/sink
+        w1 = torch.clamp(w1, 1, W-2)
+        h1 = torch.clamp(h1, 1, H-2)
+        w2 = torch.clamp(w2, 1, W-2)
+        h2 = torch.clamp(h2, 1, H-2)
+
+        manhat_dist = torch.abs(w1 - w2) + torch.abs(h1 - h2)
+        min_belts = manhat_dist + 1
+        return min_belts
+
+    def get_new_world(seed, n=6, min_belts=None):
         if seed is not None:
             np.random.seed(seed)
+        assert min_belts != [1], f"min_belts of [1] is sometimes unsatisfiable"
+        if min_belts is None:
+            min_belts = list(range(0, 64))
         w = new_world(width=n, height=n)
         boundary_tiles = []
         for i in range(n):
@@ -835,13 +863,26 @@ def functions(
 
         # Put a source and a sink on one of the boundaries
         source = boundary_tiles[np.random.choice(len(boundary_tiles))]
-        sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
-        while source == sink:
+        w[source[0], source[1], Channel.ENTITIES.value] = prototype_from_str('stack_inserter').value
+        # TODO not the most efficient, but it'll be okay for now
+        while True:
+            # Find random location for the sink
             sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
+            # Ensure the sink isn't on top of the source
+            if source == sink:
+                continue
+            # Add the sink to the world
+            w[sink[0], sink[1], Channel.ENTITIES.value] = prototype_from_str('bulk_inserter').value
+            # Calculate the manhatten distance
+            min_belt = get_min_belts(torch.tensor(w).permute(2, 0, 1))
+            # If manhatten distance is acceptable and source != sink, we've got
+            # our world
+            if (source != sink) and (min_belt in min_belts):
+                break
+            # else, remove the sink from the world and try again
+            w[sink[0], sink[1], Channel.ENTITIES.value] = prototype_from_str('empty').value
 
         # Add the source + sink to the world
-        w[source[0], source[1], Channel.ENTITIES.value] = prototype_from_str('stack_inserter').value
-        w[sink[0], sink[1], Channel.ENTITIES.value] = prototype_from_str('bulk_inserter').value
         # w[source[0], source[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
         # w[sink[0], sink[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
 
@@ -907,12 +948,12 @@ def functions(
         try:
             throughput, num_unreachable = calc_throughput(graph_from_world(world, debug=debug), debug=debug)
             if len(throughput) == 0:
-                return 0, 0
+                return 0, num_unreachable
             actual_throughput = list(throughput.values())[0]
             assert  actual_throughput < float('inf'), f"throughput is +inf, probably a bug, world is: {torch.tensor(world).permute(2, 0, 1)}"
             return actual_throughput, num_unreachable
         except AssertionError:
-            1/0
+            breakpoint()
             traceback.print_exc()
             return 0, 0
 
@@ -970,7 +1011,6 @@ def calc_grad_norms():
         for name, param in model.named_parameters():
             if param.grad is not None:
                 mean_grad_norm += param.grad.norm()
-                # print(f"- {name}: {param.grad.norm():.4f}")
                 if 'policy_head' in name:
                     policy_grad_norm += param.grad.norm() / 2
                 if 'value_head' in name:
@@ -1473,8 +1513,6 @@ def _():
     # width = 4
     # batch_size = 16
 
-    # print('random_chance =', 1.0/num_entities)
-
     # actor_, critic_, history_ = _2(
     #     channels=channels,
     #     num_entities=num_entities,
@@ -1491,8 +1529,6 @@ def _():
     # t = torch.randint(0, num_entities, (batch_size, channels, height, width), device='mps').to(torch.float32)
 
     # t_hat = Categorical(logits=actor_(t)).sample()
-    # print(t_hat[0].to(int))
-    # print(t[0].to(int))
     return
 
 
@@ -1603,22 +1639,8 @@ def __(
     frac_reachable = 1.0 - float(num_unreachable) / (size*size)
     normalised_world_CWH = normalised_world_WHC.permute(2, 0, 1)
 
-    # print(normalised_world_WHC, action_CWH.permute(1, 2, 0))
     hallucination_rate = (normalised_world_WHC != action_CWH.permute(1, 2, 0)).sum() / action_CWH.numel()
-    # print(f"{hallucination_rate=}")
 
-
-
-
-    # pred_world = action[0].permute(1, 2, 0)
-    # normed_world = normalise_world(pred_world, world_CWH.permute(1, 2, 0))
-    # print(normed_world[:, :, Channel.DIRECTION.value])
-    # print(normed_world)
-    print(throughput)
-    print(frac_reachable)
-
-    # print(action, value)
-    # print(funge_throughput(normed_world))
     (
 
         "(white inserter is source, green inserter is sink)",

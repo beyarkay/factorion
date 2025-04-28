@@ -24,6 +24,15 @@ parameters:
     min: 0.8
     max: 0.99
 
+  chan1:
+    values: [8, 16, 32, 64, 128, 256]
+  chan2:
+    values: [8, 16, 32, 64, 128, 256]
+  chan3:
+    values: [8, 16, 32, 64, 128, 256]
+  flat_dim:
+    values: [64, 128, 256, 512]
+
   num_minibatches:
     values: [2, 4, 8]
 
@@ -69,7 +78,7 @@ command:
   - --env-id
   - factorion/FactorioEnv-v0
   - --total-timesteps
-  - 400000
+  - 500000
   - --track
   - --wandb-project-name
   - factorion
