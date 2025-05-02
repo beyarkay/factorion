@@ -64,22 +64,22 @@ class Args:
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
-    gae_lambda: float = 0.95
+    gae_lambda: float = 0.93
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 4
+    update_epochs: int = 8
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.26
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef: float = 0.025
+    ent_coef: float = 0.00065
     """coefficient of the entropy"""
-    vf_coef: float = 0.5
+    vf_coef: float = 0.6
     """coefficient of the value function"""
     coeff_throughput: float = 0.98
     """coefficient of the throughput when calculating reward"""
@@ -90,19 +90,19 @@ class Args:
     coeff_final_dir_reward: float = 0.01
     """coefficient of reward given to the final belt being correctly oriented"""
 
-    max_grad_norm: float = 0.5
+    max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
     adam_epsilon: float = 1e-5
     """The epsilon parameter for Adam"""
-    chan1: int = 8
+    chan1: int = 256
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 8
+    chan2: int = 256
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 8
+    chan3: int = 128
     """Number of channels in the third layer of the CNN encoder"""
-    flat_dim: int = 64
+    flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
 
     # to be filled in runtime
@@ -177,7 +177,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv2(gym.Env):
     def __init__(
         self,
-        size: int = 5,
+        size: int = 16,
         max_steps: Optional[int] = None,
     ):
         self.size = size
@@ -228,7 +228,7 @@ class FactorioEnv2(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=[1, 2, 3, 4, 5]).permute(2, 0, 1).to(int)
+        self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
 
