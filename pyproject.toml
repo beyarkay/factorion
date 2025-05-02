@@ -1,0 +1,2 @@
+[tool.marimo.runtime]
+output_max_bytes = 15_000_000
