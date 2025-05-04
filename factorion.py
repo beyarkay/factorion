@@ -75,6 +75,7 @@ def datatypes(Enum, dataclass, mo):
         # 1 if you can build there, 0 if you can't
         # FOOTPRINT = 4
 
+
     class Footprint(Enum):
         UNAVAILABLE = 0
         AVAILABLE = 1
@@ -85,12 +86,15 @@ def datatypes(Enum, dataclass, mo):
         UNDERGROUND_DOWN = 1
         UNDERGROUND_UP = 2
 
+
     class Dim(Enum):
         X = 0
         Y = 1
 
+
     class Direction(Enum):
         """Directions the entity can be facing"""
+
         NONE = 0
         NORTH = 1
         EAST = 2
@@ -101,6 +105,8 @@ def datatypes(Enum, dataclass, mo):
     @dataclass
     class Item:
         name: str
+        value: int
+
 
     @dataclass
     class Entity:
@@ -113,24 +119,25 @@ def datatypes(Enum, dataclass, mo):
 
     # NOTE: Don't forget to update the "value" as well as the order
     items = {
-        0: Entity(name="empty"),
-        1: Entity(name='copper_cable'),
-        2: Entity(name='copper_plate'),
+        0: Item(name="empty", value=0),
+        1: Item(name="copper_cable", value=1),
+        2: Item(name="copper_plate", value=2),
     }
 
     entities = {
         0: Entity(name="empty", value=0, width=1, height=1, flow=0.0),
         1: Entity(name="transport_belt", value=1, width=1, height=1, flow=15.0),
-        2: Entity(
-            name="assembling_machine_1", value=2, width=3, height=3, flow=0.5
+        2: Entity(name='inserter',              value=2, width=1, height=1, flow=0.86),
+        3: Entity(
+            name="assembling_machine_1", value=3, width=3, height=3, flow=0.5
         ),
         # sink
-        3: Entity(
-            name="bulk_inserter", value=3, width=1, height=1, flow=float("inf")
+        4: Entity(
+            name="bulk_inserter", value=4, width=1, height=1, flow=float("inf")
         ),
         # source
-        4: Entity(
-            name="stack_inserter", value=4, width=1, height=1, flow=float("inf")
+        5: Entity(
+            name="stack_inserter", value=5, width=1, height=1, flow=float("inf")
         ),
         #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
         #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
@@ -138,7 +145,6 @@ def datatypes(Enum, dataclass, mo):
         #     7:  Entity(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
         # 1:  Entity(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
         #     9:  Entity(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
-        #     10: Entity(name='inserter',              value=10, width=1, height=1, flow=0.86),
         #     11: Entity(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
         #     12: Entity(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
         #     13: Entity(name='splitter',              value=13, width=2, height=1, flow=15.0),
@@ -170,11 +176,13 @@ def datatypes(Enum, dataclass, mo):
         Channel,
         Dim,
         Direction,
-        Footprint,
-        Misc,
         Entity,
+        Footprint,
+        Item,
+        Misc,
         Recipe,
         entities,
+        items,
         recipes,
     )
 
@@ -184,17 +192,18 @@ def functions(
     Categorical,
     Channel,
     Direction,
+    Entity,
     Footprint,
     Misc,
-    Entity,
     base64,
+    entities,
     go,
+    items,
     json,
     mo,
     np,
     nx,
     plt,
-    entities,
     recipes,
     torch,
     traceback,
@@ -216,14 +225,10 @@ def functions(
 
 
     def str2item(s):
-        if s is None:
-            print(f"WARN: given string  is None")
-            return None
-        for v in items.values():
-            if v.name == s.replace("-", "_"):
-                return v
-        print(f"WARN: unknown entity {s}")
-        return None
+        assert s is not None, "input cannot be None"
+        return next(
+            (v for k, v in items.items() if v.name == s.replace("-", "_")), None
+        )
 
 
     def str2ent(s):
@@ -246,9 +251,7 @@ def functions(
         return None
 
 
-    def str2b64img(s, base_path="factorio-icons"):
-        proto = str2ent(s)
-        path = proto.name
+    def _str2b64img(path, base_path="factorio-icons"):
         try:
             with open(f"{base_path}/{path}.png", "rb") as image_file:
                 return "data:image/png;base64," + base64.b64encode(
@@ -256,6 +259,14 @@ def functions(
                 ).decode("utf-8")
         except:
             return ""
+
+
+    def ent_str2b64img(ent, base_path="factorio-icons"):
+        return _str2b64img(str2ent(ent).name)
+
+
+    def item_str2b64img(item, base_path="factorio-icons"):
+        return _str2b64img(str2item(item).name)
 
 
     def new_world(width=8, height=8):
@@ -307,27 +318,42 @@ def functions(
         if type(world_WHC) is not np.ndarray:
             world_WHC = np.array(world_WHC)
         DIRECTION_ARROWS = {
-            -1: "",
-            0: "↑",
-            2: "↗",
-            4: "→",
-            6: "↘",
-            8: "↓",
-            10: "↙",
-            12: "←",
-            14: "↖",
+            Direction.NONE.value: "",
+            Direction.NORTH.value: "↑",
+            Direction.EAST.value: "→",
+            Direction.SOUTH.value: "↓",
+            Direction.WEST.value: "←",
+            # 0: "↘",
+            # 10: "↙",
+            # 14: "↖",
         }
         html = ["<table style='border-collapse: collapse;'>"]
         W, H, C = world_WHC.shape
+        display_asm_ghost = 0
+        ghosts = []
         for y in range(H):
             html.append("<tr>")
             for x in range(W):
                 proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-                # recipe = entities[world_WHC[x, y, Channel.ITEMS.value]]
+                if proto.width != 1 or proto.height != 1:
+                    ghosts.append({
+                        'x_lo': x,
+                        'y_lo': y,
+                        'x_hi': x + proto.width,
+                        'y_hi': y + proto.height,
+                        'name': proto.name,
+                    })
+                item = items[world_WHC[x, y, Channel.ITEMS.value]]
                 direction = world_WHC[x, y, Channel.DIRECTION.value]
                 #             entity, direction, recipe = get_entity_info(world_WHC, x, y)
-                entity_icon = str2b64img(proto.name)
-                # recipe_icon = str2b64img(recipe.name)
+                entity_icon = ent_str2b64img(proto.name)
+
+                ghost_icons = []
+                for ghost in ghosts:
+                    if ghost['x_lo'] <= x < ghost['x_hi'] and  ghost['y_lo'] <= y < ghost['y_hi']:
+                        ghost_icons.append(ent_str2b64img(ghost['name']))
+
+                item_icon = item_str2b64img(item.name)
                 direction_arrow = DIRECTION_ARROWS.get(direction, "")
                 if any(["Channel.MISC" in i for i in map(str, list(Channel))]):
                     misc = Misc(world_WHC[x, y, Channel.MISC.value])
@@ -355,13 +381,23 @@ def functions(
                     "background: rgba(255, 0, 0, 0.3);" if not available else ""
                 )
                 #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
+
+                ghost_imgs = '\n'.join([
+                    f"<img src='{ghost_icon}' style=' position: absolute; top: 10%;  left: 10%;  width: 60%; height: 60%; opacity: 20%;'>"
+                    for ghost_icon 
+                    in ghost_icons
+                ])
+
+                xy_str = f"{x},{y}"
                 cell_content = f"""
-                    <div style='position: relative; width: 50px; height: 50px; {bg_style}'>
-                        <img src='{entity_icon}' style='width: 60%; height: 60%;'>
-                        <div style='position: absolute; bottom: 0; left: 0; font-size: 20px;'>{direction_arrow}</div>
-                        <div style='position: absolute; top: 50%; left: 50%;
-                        font-size: 20px; font-weight: bold; color: white;'>{underground_symbol}</div>
-                    </div>
+               <div style='position: relative; width: 50px; height: 50px; {bg_style}; border: 1px solid grey;'> 
+        <img src='{entity_icon}' style=' position: absolute; top: 10%;   left: 10%;  width: 60%; height: 60%; '>
+        {ghost_imgs}
+        <img src='{item_icon}' style=' position: absolute; bottom: 5%;  right: 5%;  width: 20%; height: 20%; '>
+        <div style='position: absolute; top: 0; left: 0; font-size: 8px; opacity: 50%'>{xy_str}</div>
+        <div style='position: absolute; bottom: 0; left: 0; font-size: 20px;'>{direction_arrow}</div>
+        <div style=' position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);  font-size: 20px; font-weight: bold; color: white; '>{underground_symbol}</div>
+    </div> 
                 """
                 html.append(
                     f"<td style='border: 1px solid black; padding: 0;'>{cell_content}</td>"
@@ -683,8 +719,7 @@ def functions(
         empty_entity_value = str2ent("empty").value
 
         bulk_inserter_mask = (
-            world_T[:, :, Channel.ENTITIES.value]
-            == str2ent("bulk_inserter").value
+            world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
         )
         world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
             empty_entity_value
@@ -774,7 +809,7 @@ def functions(
         return min_belts
 
 
-    def get_new_world(seed, n=6, min_belts=None):
+    def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
         stack_inserter_value = str2ent("stack_inserter").value
         bulk_inserter_value = str2ent("bulk_inserter").value
         empty_value = str2ent("empty").value
@@ -797,7 +832,8 @@ def functions(
         source = boundary_tiles[np.random.choice(len(boundary_tiles))]
         w[source[0], source[1], Channel.ENTITIES.value] = stack_inserter_value
         # TODO not the most efficient, but it'll be okay for now
-        while True:
+        limit = 1000
+        while limit > 0:
             # Find random location for the sink
             sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
             # Ensure the sink isn't on top of the source
@@ -813,10 +849,15 @@ def functions(
                 break
             # else, remove the sink from the world and try again
             w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
+        assert limit > 0, "Infinite loop blocked"
 
         # Add the source + sink to the world
         # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
         # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
+        if source_item is not None:
+            w[source[0], source[1], Channel.ITEMS.value] = source_item
+        if sink_item is not None:
+            w[sink[0], sink[1], Channel.ITEMS.value] = sink_item
 
         # Figure out the direction of the source + sink
         for x, y, is_source in [(*source, True), (*sink, False)]:
@@ -937,8 +978,9 @@ def functions(
             if debug:
                 print(s)
 
-        for x in range(len(world_WHC)):
-            for y in range(len(world_WHC[0])):
+        W, H, C = world_WHC.shape
+        for x in range(W):
+            for y in range(H):
                 e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
                 if e.name == "empty":
                     continue
@@ -976,10 +1018,14 @@ def functions(
                 elif d == Direction.SOUTH:
                     src = [x, y - 1]
                     dst = [x, y + 1]
+                elif d == Direction.NONE:
+                    # If there's no direction, logic will be handled in the handlers
+                    src = [x, y]
+                    dst = [x, y]
                 else:
                     assert False, f"Can't handle direction {d} for entity {e}"
                 # Connect the inserters' & belts' nodes
-                # TODO here we connect nodes twice, once on source->me and again on me->destination.
+                # Here we connect nodes twice, once on source->me and again on me->destination.
                 x_src_valid = 0 <= src[0] < len(world_WHC)
                 y_src_valid = 0 <= src[1] < len(world_WHC[0])
                 x_dst_valid = 0 <= dst[0] < len(world_WHC)
@@ -1066,16 +1112,21 @@ def functions(
 
                 # connect up the assembling machines
                 elif "assembling_machine" in e.name:
+                    dbg(f"Connecting assembler {e}")
                     # search the blocks around the 3x3 assembling machine for inputs
-                    for dx in range(-2, 3):
-                        if not (0 <= x + dx < len(world_WHC)):
+                    for dx in range(-1, 4):
+                        if not (0 <= x + dx < W):
+                            # omit tiles outside the world
                             continue
-                        for dy in range(-2, 3):
-                            if not (0 <= y + dy < len(world_WHC[0])):
+                        for dy in range(-1, 4):
+                            if not (0 <= y + dy < H):
+                                # omit tiles outside the world
+                                continue
+                            if 0 <= dx < 3 and 0 <= dy < 3:
+                                # omit tiles inside the assembler
                                 continue
                             if abs(dx) == abs(dy):
-                                continue
-                            if abs(dx) != 2 and abs(dy) != 2:
+                                # Omit corners
                                 continue
                             other_e = entities[
                                 world_WHC[x + dx, y + dy, Channel.ENTITIES.value]
@@ -1083,6 +1134,7 @@ def functions(
                             other_d = Direction(
                                 world_WHC[x + dx, y + dy, Channel.DIRECTION.value]
                             )
+                            # print(f"{x+dx=},{y+dy=},{other_e=}")
                             # Only inserters can insert into an assembling machine
                             if "inserter" not in other_e.name:
                                 continue
@@ -1166,22 +1218,24 @@ def functions(
     return (
         add_entity,
         b64_to_dict,
-        str2b64img,
+        blueprint2world,
         calc_throughput,
         dict2b64,
+        ent_str2b64img,
         eval_model,
         funge_throughput,
         get_min_belts,
         get_new_world,
-        world2graph,
+        item_str2b64img,
         new_world,
         normalise_world,
         plot_flow_network,
         plot_loss_history,
-        str2ent,
         sample_world,
         show_two_factories,
-        blueprint2world,
+        str2ent,
+        str2item,
+        world2graph,
         world2html,
     )
 
@@ -1189,21 +1243,51 @@ def functions(
 @app.cell
 def __(
     Channel,
+    Direction,
     get_new_world,
-    world2graph,
+    plot_flow_network,
     str2ent,
+    str2item,
+    world2graph,
     world2html,
 ):
     def blank():
-        world_WHC = get_new_world(n=5, seed=42)
+        cable_value = str2item("copper_cable").value
+        copper_value = str2item("copper_plate").value
+        world_WHC = get_new_world(
+            n=7, seed=42,
+            source_item=copper_value,
+            sink_item=cable_value
+        )
         asm_mach_value = str2ent("assembling_machine_1").value
-        G = world2graph(world_WHC)
+        inserter_value = str2ent("inserter").value
+        belt_value = str2ent("transport_belt").value
 
         world_WHC[1, 1, Channel.ENTITIES.value] = asm_mach_value
+        world_WHC[1, 1, Channel.ITEMS.value] = cable_value
 
+        world_WHC[1, 4, Channel.ENTITIES.value] = inserter_value
+        world_WHC[1, 4, Channel.DIRECTION.value] = Direction.NORTH.value
+        
+        world_WHC[3, 4, Channel.ENTITIES.value] = inserter_value
+        world_WHC[3, 4, Channel.DIRECTION.value] = Direction.SOUTH.value
+
+        belt_locs = [
+            (1, 5, Direction.NORTH),
+            (3, 5, Direction.EAST),
+            (4, 5, Direction.EAST),
+            (5, 5, Direction.EAST),
+        ]
+        for x, y, d in belt_locs:
+            world_WHC[x, y, Channel.ENTITIES.value] = belt_value
+            world_WHC[x, y, Channel.DIRECTION.value] = d.value
+            
+        
         # return plot_flow_network(G)
 
-        return world2html(world_WHC), world_WHC.permute(2, 1, 0)
+        G = world2graph(world_WHC)
+        
+        return world2html(world_WHC), plot_flow_network(G)
 
 
     blank()
