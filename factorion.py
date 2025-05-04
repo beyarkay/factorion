@@ -165,10 +165,10 @@ def datatypes(Enum, dataclass, mo):
             consumes={"copper_cable": 6.0, "iron_plate": 2.0},
             produces={"electronic_circuit": 2.0},
         ),
-        #     'copper_cable': Recipe(
-        #         consumes={ 'copper_plate': 2.0 },
-        #         produces={'copper_cable': 4.0},
-        #     ),
+        'copper_cable': Recipe(
+            consumes={ 'copper_plate': 2.0 },
+            produces={'copper_cable': 4.0},
+        ),
     }
 
     mo.md("Datatypes")
@@ -521,8 +521,8 @@ def functions(
     def calc_throughput(G, debug=False):
         foobar = 1
 
-        def dbg(s):
-            if debug:
+        def dbg(s): 
+            if debug: 
                 print(s)
 
         if len(list(nx.simple_cycles(G))) > 0:
@@ -586,14 +586,15 @@ def functions(
                             curr["input_"][item] = 0
                         curr["input_"][item] += flow_rate
                 dbg(f"  curr[input_] is now: {curr['input_']}")
+                
                 if "assembling_machine" in node:
                     dbg(f"  asm machine: {curr}")
                     assert curr["recipe"] != "empty"
                     min_ratio = 1
                     # TODO crafting speed???
+                    print(f"{recipes=}")
                     for item, rate in recipes[curr["recipe"]].consumes.items():
                         ratio = curr["input_"][item] / rate
-                        #                     print(f"    [{item}] input:{curr['input_'][item]} / max:{rate} = {ratio}")
                         min_ratio = min(min_ratio, ratio)
                     dbg(f"  Minimum ratio for {curr} is {min_ratio}")
                     dbg(
@@ -649,8 +650,12 @@ def functions(
         reachable_from_source = set().union(
             *(nx.descendants(G, s) | {s} for s in sources)
         )
-        unreachable = set(G.nodes) - can_reach_sink - reachable_from_source
+        unreachable = set(G.nodes) - (can_reach_sink.intersection(reachable_from_source))
 
+        dbg(f"{can_reach_sink=}")
+        dbg(f"{reachable_from_source=}")
+        dbg(f"source -> ({len(reachable_from_source)} nodes) ... ({len(can_reach_sink)} nodes) -> sink")
+        dbg(f"Final Throughput: {output}, {len(unreachable)} unreachable nodes: {unreachable}")
         return output, len(unreachable)
 
 
@@ -986,23 +991,23 @@ def functions(
                     continue
 
                 # while we're mocking the recipe, just hardcode electronic_circuit
-                r = str2ent("electronic_circuit")
+                item = items[world_WHC[x, y, Channel.ITEMS.value]]
                 d = Direction(world_WHC[x, y, Channel.DIRECTION.value])
 
                 input_ = {}
                 output = {}
                 if e.name == "stack_inserter":
-                    output = {r.name: float("inf")}
+                    output = {item.name: float("inf")}
 
                 self_name = f"{e.name}\n@{x},{y}"
                 G.add_node(
                     self_name,
                     input_=input_,
                     output=output,
-                    recipe=r.name if "assembling_machine" in e.name else None,
+                    recipe=item.name if "assembling_machine" in e.name else None,
                 )
                 dbg(
-                    f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {r.name}"
+                    f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {item.name}"
                 )
 
                 # Figure out coords for source and destination
@@ -1125,7 +1130,7 @@ def functions(
                             if 0 <= dx < 3 and 0 <= dy < 3:
                                 # omit tiles inside the assembler
                                 continue
-                            if abs(dx) == abs(dy):
+                            if dx in (-1, 3) and dy in (-1, 3):
                                 # Omit corners
                                 continue
                             other_e = entities[
@@ -1134,13 +1139,14 @@ def functions(
                             other_d = Direction(
                                 world_WHC[x + dx, y + dy, Channel.DIRECTION.value]
                             )
-                            # print(f"{x+dx=},{y+dy=},{other_e=}")
                             # Only inserters can insert into an assembling machine
                             if "inserter" not in other_e.name:
                                 continue
                             #                         if f"{other_e.name}\n@{x + dx},{y + dy}" == 'inserter\n@2,0':
                             #                             print(other_e, e, other_d, dy, dx)
 
+                            # dbg(f"{dx=},{dy=}")
+                            # dbg(f"{x+dx=},{y+dy=},{other_e=}")
                             other_str = f"{other_e.name}\n@{x + dx},{y + dy}"
                             self_str = f"{e.name}\n@{x},{y}"
 
@@ -1244,10 +1250,12 @@ def functions(
 def __(
     Channel,
     Direction,
+    calc_throughput,
     get_new_world,
     plot_flow_network,
     str2ent,
     str2item,
+    traceback,
     world2graph,
     world2html,
 ):
@@ -1266,28 +1274,44 @@ def __(
         world_WHC[1, 1, Channel.ENTITIES.value] = asm_mach_value
         world_WHC[1, 1, Channel.ITEMS.value] = cable_value
 
-        world_WHC[1, 4, Channel.ENTITIES.value] = inserter_value
-        world_WHC[1, 4, Channel.DIRECTION.value] = Direction.NORTH.value
-        
-        world_WHC[3, 4, Channel.ENTITIES.value] = inserter_value
-        world_WHC[3, 4, Channel.DIRECTION.value] = Direction.SOUTH.value
+        inserter_locs = [
+            (1, 4, Direction.NORTH),
+            (2, 4, Direction.NORTH),
+            (3, 4, Direction.SOUTH),
+            (4, 1, Direction.EAST),
+            (4, 2, Direction.EAST),
+            (4, 3, Direction.EAST),
+        ]
+        for x, y, d in inserter_locs:
+            world_WHC[x, y, Channel.ENTITIES.value] = inserter_value
+            world_WHC[x, y, Channel.DIRECTION.value] = d.value
 
         belt_locs = [
-            (1, 5, Direction.NORTH),
+            (1, 5, Direction.EAST),
+            (2, 5, Direction.NORTH),
             (3, 5, Direction.EAST),
             (4, 5, Direction.EAST),
             (5, 5, Direction.EAST),
+            (5, 1, Direction.SOUTH),
+            (5, 2, Direction.SOUTH),
+            (5, 3, Direction.SOUTH),
+            (5, 4, Direction.SOUTH),
         ]
         for x, y, d in belt_locs:
             world_WHC[x, y, Channel.ENTITIES.value] = belt_value
             world_WHC[x, y, Channel.DIRECTION.value] = d.value
             
         
-        # return plot_flow_network(G)
-
         G = world2graph(world_WHC)
-        
+        try:
+            thput = calc_throughput(G, debug=False)
+            print(thput)
+        except Exception as e:
+            print('err')
+            print(traceback.format_exc())
         return world2html(world_WHC), plot_flow_network(G)
+
+        # return , world_WHC.permute(2, 1, 0)
 
 
     blank()
