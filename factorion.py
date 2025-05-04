@@ -31,7 +31,7 @@ def _():
     import zlib
     import math
 
-    # wandb.login()
+    wandb.login()
     mo.md("Imports")
     return (
         Categorical,
@@ -66,17 +66,14 @@ def datatypes(Enum, dataclass, mo):
     class Channel(Enum):
         # What entity occupies this tile?
         ENTITIES = 0
-        # What recipe OR filter is set?
-        # RECIPES = 1
         # what direction is the entity facing?
         DIRECTION = 1
+        # What recipe OR filter is set?
+        ITEMS = 2
         # Undergrounds and splitter mechanics, see class Misc(Enum)
-
-
-    #     MISC = 3
-    # 1 if you can build there, 0 if you can't
-    #     FOOTPRINT = 4
-
+        # MISC = 3
+        # 1 if you can build there, 0 if you can't
+        # FOOTPRINT = 4
 
     class Footprint(Enum):
         UNAVAILABLE = 0
@@ -88,26 +85,12 @@ def datatypes(Enum, dataclass, mo):
         UNDERGROUND_DOWN = 1
         UNDERGROUND_UP = 2
 
-
-    #     SPLITTER_INPUT_LEFT_OUTPUT_LEFT = 3
-    #     SPLITTER_INPUT_LEFT_OUTPUT_NONE = 4
-    #     SPLITTER_INPUT_LEFT_OUTPUT_RIGHT = 5
-    #     SPLITTER_INPUT_NONE_OUTPUT_LEFT = 6
-    #     SPLITTER_INPUT_NONE_OUTPUT_NONE = 7
-    #     SPLITTER_INPUT_NONE_OUTPUT_RIGHT = 8
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_LEFT = 9
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_NONE = 10
-    #     SPLITTER_INPUT_RIGHT_OUTPUT_RIGHT = 11
-
-
     class Dim(Enum):
         X = 0
         Y = 1
 
-
     class Direction(Enum):
         """Directions the entity can be facing"""
-
         NONE = 0
         NORTH = 1
         EAST = 2
@@ -115,19 +98,12 @@ def datatypes(Enum, dataclass, mo):
         WEST = 4
 
 
-    #     NONE = -1
-    #     NORTH = 0
-    # #     NORTH_EAST = 2
-    #     EAST = 4
-    # #     SOUTH_EAST = 6
-    #     SOUTH = 8
-    # #     SOUTH_WEST = 10
-    #     WEST = 12
-    # #     NORTH_WEST = 14
-
+    @dataclass
+    class Item:
+        name: str
 
     @dataclass
-    class Prototype:
+    class Entity:
         name: str
         value: int
         flow: float
@@ -136,33 +112,39 @@ def datatypes(Enum, dataclass, mo):
 
 
     # NOTE: Don't forget to update the "value" as well as the order
-    prototypes = {
-        0: Prototype(name="empty", value=0, width=1, height=1, flow=0.0),
-        1: Prototype(name="transport_belt", value=1, width=1, height=1, flow=15.0),
-        2: Prototype(
+    items = {
+        0: Entity(name="empty"),
+        1: Entity(name='copper_cable'),
+        2: Entity(name='copper_plate'),
+    }
+
+    entities = {
+        0: Entity(name="empty", value=0, width=1, height=1, flow=0.0),
+        1: Entity(name="transport_belt", value=1, width=1, height=1, flow=15.0),
+        2: Entity(
             name="assembling_machine_1", value=2, width=3, height=3, flow=0.5
         ),
         # sink
-        3: Prototype(
+        3: Entity(
             name="bulk_inserter", value=3, width=1, height=1, flow=float("inf")
         ),
         # source
-        4: Prototype(
+        4: Entity(
             name="stack_inserter", value=4, width=1, height=1, flow=float("inf")
         ),
-        #     4:  Prototype(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
-        #     5:  Prototype(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
-        #     6:  Prototype(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
-        #     7:  Prototype(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
-        # 1:  Prototype(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
-        #     9:  Prototype(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
-        #     10: Prototype(name='inserter',              value=10, width=1, height=1, flow=0.86),
-        #     11: Prototype(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
-        #     12: Prototype(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
-        #     13: Prototype(name='splitter',              value=13, width=2, height=1, flow=15.0),
-        #     14: Prototype(name='steel_chest',           value=14, width=1, height=1, flow=0.0),
+        #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
+        #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
+        #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
+        #     7:  Entity(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
+        # 1:  Entity(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
+        #     9:  Entity(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
+        #     10: Entity(name='inserter',              value=10, width=1, height=1, flow=0.86),
+        #     11: Entity(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
+        #     12: Entity(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
+        #     13: Entity(name='splitter',              value=13, width=2, height=1, flow=15.0),
+        #     14: Entity(name='steel_chest',           value=14, width=1, height=1, flow=0.0),
         # underground (which is identical to a transport belt)
-        #     16: Prototype(name='underground_belt',      value=16, width=1, height=1, flow=15.0),
+        #     16: Entity(name='underground_belt',      value=16, width=1, height=1, flow=15.0),
     }
 
 
@@ -190,9 +172,9 @@ def datatypes(Enum, dataclass, mo):
         Direction,
         Footprint,
         Misc,
-        Prototype,
+        Entity,
         Recipe,
-        prototypes,
+        entities,
         recipes,
     )
 
@@ -204,7 +186,7 @@ def functions(
     Direction,
     Footprint,
     Misc,
-    Prototype,
+    Entity,
     base64,
     go,
     json,
@@ -212,7 +194,7 @@ def functions(
     np,
     nx,
     plt,
-    prototypes,
+    entities,
     recipes,
     torch,
     traceback,
@@ -226,25 +208,36 @@ def functions(
         return json.loads(json_data)
 
 
-    def dict_to_b64(dictionary):
+    def dict2b64(dictionary):
         compressed = zlib.compress(json.dumps(dictionary).encode("utf-8"))
         b64_encoded = base64.b64encode(compressed).decode("utf-8")
         blueprint_string = "0" + b64_encoded  # Add version byte
         return blueprint_string
 
 
-    def prototype_from_str(s):
+    def str2item(s):
         if s is None:
-            print(f"WARN: entity is None")
+            print(f"WARN: given string  is None")
             return None
-        for v in prototypes.values():
+        for v in items.values():
+            if v.name == s.replace("-", "_"):
+                return v
+        print(f"WARN: unknown entity {s}")
+        return None
+
+
+    def str2ent(s):
+        if s is None:
+            print(f"WARN: given string  is None")
+            return None
+        for v in entities.values():
             if v.name == s.replace("-", "_"):
                 return v
         # TODO I'm almost certianly going to regret hardcoding this
         if s == "electronic_circuit":
-            return Prototype(
+            return Entity(
                 name="electronic_circuit",
-                value=len(prototypes),
+                value=len(entities),
                 width=1,
                 height=1,
                 flow=0.0,
@@ -253,8 +246,8 @@ def functions(
         return None
 
 
-    def b64img_from_str(s, base_path="factorio-icons"):
-        proto = prototype_from_str(s)
+    def str2b64img(s, base_path="factorio-icons"):
+        proto = str2ent(s)
         path = proto.name
         try:
             with open(f"{base_path}/{path}.png", "rb") as image_file:
@@ -269,7 +262,7 @@ def functions(
         channels = len(Channel)
         #     print(f"Making world w={width}, h={height}, c={channels}")
         world = np.zeros((width, height, channels), dtype=int)
-        world[:, :, Channel.ENTITIES.value] = prototype_from_str("empty").value
+        world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
         world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
         if any(["Channel.FOOTPRINT" in i for i in map(str, list(Channel))]):
             world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
@@ -285,26 +278,26 @@ def functions(
         recipe="empty",
         misc=Misc.NONE,
     ):
-        proto = prototype_from_str(proto_str)
-        EMPTY = prototype_from_str("empty")
+        proto = str2ent(proto_str)
+        EMPTY = str2ent("empty")
         if proto is None:
             proto = EMPTY
-        recipe_proto = prototype_from_str(recipe)
+        recipe_proto = str2ent(recipe)
         if recipe_proto is None:
             recipe_proto = EMPTY
         assert world[x, y, Channel.ENTITIES.value] == EMPTY.value, (
-            f"Can't place {proto_str} at {x},{y} because {prototypes[world[x, y, Channel.ENTITIES.value]]} is there"
+            f"Can't place {proto_str} at {x},{y} because {entities[world[x, y, Channel.ENTITIES.value]]} is there"
         )
         assert 0 <= x < len(world), f"{x=} is not in [0, {len(world)})"
         assert 0 <= y < len(world[0]), f"{y=} is not in [0, {len(world[0])})"
 
         world[x, y, Channel.ENTITIES.value] = proto.value
         world[x, y, Channel.DIRECTION.value] = direction.value
-        # world[x, y, Channel.RECIPES.value] = recipe_proto.value
+        # world[x, y, Channel.ITEMS.value] = recipe_proto.value
         # world[x, y, Channel.MISC.value] = misc.value
 
 
-    def world_to_html(world_WHC):
+    def world2html(world_WHC):
         assert len(world_WHC.shape) == 3, (
             f"Expected 3 dimensions got {world_WHC.shape}"
         )
@@ -329,12 +322,12 @@ def functions(
         for y in range(H):
             html.append("<tr>")
             for x in range(W):
-                proto = prototypes[world_WHC[x, y, Channel.ENTITIES.value]]
-                # recipe = prototypes[world_WHC[x, y, Channel.RECIPES.value]]
+                proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+                # recipe = entities[world_WHC[x, y, Channel.ITEMS.value]]
                 direction = world_WHC[x, y, Channel.DIRECTION.value]
                 #             entity, direction, recipe = get_entity_info(world_WHC, x, y)
-                entity_icon = b64img_from_str(proto.name)
-                # recipe_icon = b64img_from_str(recipe.name)
+                entity_icon = str2b64img(proto.name)
+                # recipe_icon = str2b64img(recipe.name)
                 direction_arrow = DIRECTION_ARROWS.get(direction, "")
                 if any(["Channel.MISC" in i for i in map(str, list(Channel))]):
                     misc = Misc(world_WHC[x, y, Channel.MISC.value])
@@ -378,7 +371,7 @@ def functions(
         return mo.Html("".join(html))
 
 
-    def world_from_blueprint(bp):
+    def blueprint2world(bp):
         obj = b64_to_dict(bp)
 
         min_x = float("inf")
@@ -424,17 +417,17 @@ def functions(
                 print(f"Ignoring tile {t}")
 
         for e in obj["blueprint"].get("entities", []):
-            entity = prototype_from_str(e["name"])
+            entity = str2ent(e["name"])
             if entity is None:
-                entity = prototype_from_str("empty")
+                entity = str2ent("empty")
 
             if "recipe" in e:
-                recipe = prototype_from_str(e["recipe"])
+                recipe = str2ent(e["recipe"])
             else:
                 if len(e.get("filters", [])) == 1:
-                    recipe = prototype_from_str(e["filters"][0]["name"])
+                    recipe = str2ent(e["filters"][0]["name"])
                 else:
-                    recipe = prototype_from_str("empty")
+                    recipe = str2ent("empty")
 
             # underground belts. Output = emerging, input = descending
             if e.get("type", None) == "output":
@@ -545,7 +538,7 @@ def functions(
             dbg(f"\nChecking node {repr(node)}")
 
             curr = G.nodes[node]
-            proto = prototype_from_str(node.split("\n@")[0])
+            proto = str2ent(node.split("\n@")[0])
             dbg(f"  {curr=}")
             # Don't bother checking the initial sources for input rates
             if len(curr["output"]) == 0:
@@ -632,8 +625,8 @@ def functions(
         <th>{title_one}</th>
         <th>{title_two}</th>
         <tr>
-        <td>{world_to_html(one).data}</td>
-        <td>{world_to_html(two).data}</td>
+        <td>{world2html(one).data}</td>
+        <td>{world2html(two).data}</td>
         </tr></table>""")
 
 
@@ -687,11 +680,11 @@ def functions(
             f"Expected og_world to be square, but is of shape {og_world.shape}"
         )
 
-        empty_entity_value = prototype_from_str("empty").value
+        empty_entity_value = str2ent("empty").value
 
         bulk_inserter_mask = (
             world_T[:, :, Channel.ENTITIES.value]
-            == prototype_from_str("bulk_inserter").value
+            == str2ent("bulk_inserter").value
         )
         world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
             empty_entity_value
@@ -699,7 +692,7 @@ def functions(
 
         stack_inserter_mask = (
             world_T[:, :, Channel.ENTITIES.value]
-            == prototype_from_str("stack_inserter").value
+            == str2ent("stack_inserter").value
         )
         world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
             empty_entity_value
@@ -707,14 +700,14 @@ def functions(
 
         green_circ_mask = (
             world_T[:, :, Channel.ENTITIES.value]
-            == prototype_from_str("electronic_circuit").value
+            == str2ent("electronic_circuit").value
         )
         world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
 
         # Remove all transport belts without direction
         belt_mask = (
             world_T[:, :, Channel.ENTITIES.value]
-            == prototype_from_str("transport_belt").value
+            == str2ent("transport_belt").value
         )
         no_direction_mask = (
             world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
@@ -724,13 +717,13 @@ def functions(
         )
 
         # # Ensure belts don't have recipes
-        # belt_entity_value = prototype_from_str('transport_belt').value
+        # belt_entity_value = str2ent('transport_belt').value
         # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
-        # world_T[:, :, Channel.RECIPES.value][belt_entities] = empty_entity_value
+        # world_T[:, :, Channel.ITEMS.value][belt_entities] = empty_entity_value
 
         # # Ensure all empty entities have no recipe, no direction
         # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
-        # world_T[:, :, Channel.RECIPES.value][no_entity] = empty_entity_value
+        # world_T[:, :, Channel.ITEMS.value][no_entity] = empty_entity_value
         # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
 
         # Ensure the model can't just overwrite existing factories with a simpler thing.
@@ -751,8 +744,8 @@ def functions(
         )
         C, W, H = world_CWH.shape
 
-        stack_inserter_id = prototype_from_str("stack_inserter").value
-        bulk_inserter_id = prototype_from_str("bulk_inserter").value
+        stack_inserter_id = str2ent("stack_inserter").value
+        bulk_inserter_id = str2ent("bulk_inserter").value
         coords1 = torch.where(
             world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
         )
@@ -782,9 +775,9 @@ def functions(
 
 
     def get_new_world(seed, n=6, min_belts=None):
-        stack_inserter_value = prototype_from_str("stack_inserter").value
-        bulk_inserter_value = prototype_from_str("bulk_inserter").value
-        empty_value = prototype_from_str("empty").value
+        stack_inserter_value = str2ent("stack_inserter").value
+        bulk_inserter_value = str2ent("bulk_inserter").value
+        empty_value = str2ent("empty").value
 
         if seed is not None:
             np.random.seed(seed)
@@ -822,8 +815,8 @@ def functions(
             w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
 
         # Add the source + sink to the world
-        # w[source[0], source[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
-        # w[sink[0], sink[1], Channel.RECIPES.value] = prototype_from_str('electronic_circuit').value
+        # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
+        # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
 
         # Figure out the direction of the source + sink
         for x, y, is_source in [(*source, True), (*sink, False)]:
@@ -882,7 +875,7 @@ def functions(
             )
             num_entities = (
                 normalised_world[:, :, Channel.ENTITIES.value]
-                != prototype_from_str("empty").value
+                != str2ent("empty").value
             ).sum()
             evals.append(
                 {
@@ -912,7 +905,7 @@ def functions(
         )
         try:
             throughput, num_unreachable = calc_throughput(
-                graph_from_world(world, debug=debug), debug=debug
+                world2graph(world, debug=debug), debug=debug
             )
             if len(throughput) == 0:
                 return 0, num_unreachable
@@ -927,7 +920,7 @@ def functions(
             return 0, 0
 
 
-    def graph_from_world(world_WHC, debug=False):
+    def world2graph(world_WHC, debug=False):
         assert torch.is_tensor(world_WHC), (
             f"world is {type(world_WHC)}, not a tensor"
         )
@@ -946,12 +939,12 @@ def functions(
 
         for x in range(len(world_WHC)):
             for y in range(len(world_WHC[0])):
-                e = prototypes[world_WHC[x, y, Channel.ENTITIES.value]]
+                e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
                 if e.name == "empty":
                     continue
 
                 # while we're mocking the recipe, just hardcode electronic_circuit
-                r = prototype_from_str("electronic_circuit")
+                r = str2ent("electronic_circuit")
                 d = Direction(world_WHC[x, y, Channel.DIRECTION.value])
 
                 input_ = {}
@@ -993,7 +986,7 @@ def functions(
                 y_dst_valid = 0 <= dst[1] < len(world_WHC[0])
                 if "inserter" in e.name:
                     if x_src_valid and y_src_valid:
-                        src_entity = prototypes[
+                        src_entity = entities[
                             world_WHC[src[0], src[1], Channel.ENTITIES.value]
                         ]
                         src_direction = Direction(
@@ -1009,7 +1002,7 @@ def functions(
                                 f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
                             )
                     if x_dst_valid and y_dst_valid:
-                        dst_entity = prototypes[
+                        dst_entity = entities[
                             world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
                         ]
                         # TODO: This doesn't allow for the case where
@@ -1030,7 +1023,7 @@ def functions(
 
                 elif "transport_belt" in e.name:
                     if x_src_valid and y_src_valid:
-                        src_entity = prototypes[
+                        src_entity = entities[
                             world_WHC[src[0], src[1], Channel.ENTITIES.value]
                         ]
                         src_direction = Direction(
@@ -1051,7 +1044,7 @@ def functions(
                             )
 
                     if x_dst_valid and y_dst_valid:
-                        dst_entity = prototypes[
+                        dst_entity = entities[
                             world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
                         ]
                         dst_direction = Direction(
@@ -1084,7 +1077,7 @@ def functions(
                                 continue
                             if abs(dx) != 2 and abs(dy) != 2:
                                 continue
-                            other_e = prototypes[
+                            other_e = entities[
                                 world_WHC[x + dx, y + dy, Channel.ENTITIES.value]
                             ]
                             other_d = Direction(
@@ -1147,7 +1140,7 @@ def functions(
                         x_valid = 0 <= dst[0] < len(world_WHC)
                         y_valid = 0 <= dst[1] < len(world_WHC[0])
                         if x_valid and y_valid:
-                            dst_entity = prototypes[
+                            dst_entity = entities[
                                 world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
                             ]
                             going_underground = (
@@ -1173,29 +1166,48 @@ def functions(
     return (
         add_entity,
         b64_to_dict,
-        b64img_from_str,
+        str2b64img,
         calc_throughput,
-        dict_to_b64,
+        dict2b64,
         eval_model,
         funge_throughput,
         get_min_belts,
         get_new_world,
-        graph_from_world,
+        world2graph,
         new_world,
         normalise_world,
         plot_flow_network,
         plot_loss_history,
-        prototype_from_str,
+        str2ent,
         sample_world,
         show_two_factories,
-        world_from_blueprint,
-        world_to_html,
+        blueprint2world,
+        world2html,
     )
 
 
 @app.cell
-def __():
-    return
+def __(
+    Channel,
+    get_new_world,
+    world2graph,
+    str2ent,
+    world2html,
+):
+    def blank():
+        world_WHC = get_new_world(n=5, seed=42)
+        asm_mach_value = str2ent("assembling_machine_1").value
+        G = world2graph(world_WHC)
+
+        world_WHC[1, 1, Channel.ENTITIES.value] = asm_mach_value
+
+        # return plot_flow_network(G)
+
+        return world2html(world_WHC), world_WHC.permute(2, 1, 0)
+
+
+    blank()
+    return (blank,)
 
 
 @app.cell
@@ -1240,7 +1252,7 @@ def __(
     get_new_world,
     normalise_world,
     torch,
-    world_to_html,
+    world2html,
 ):
     size = 5
     world_CWH = get_new_world(seed=None, n=size).permute(2, 0, 1)
@@ -1275,11 +1287,11 @@ def __(
     (
         "(white inserter is source, green inserter is sink)",
         "---Initial world---",
-        world_to_html(world_CWH.permute(1, 2, 0)),
+        world2html(world_CWH.permute(1, 2, 0)),
         "---Before normalisation---",
-        world_to_html(action_CWH.permute(1, 2, 0)),
+        world2html(action_CWH.permute(1, 2, 0)),
         "---Predicted world---",
-        world_to_html(normalised_world_WHC),
+        world2html(normalised_world_WHC),
         f"Throughput: {throughput * 100:.0f}%, hallu: {hallucination_rate:.2f}, frac: {frac_reachable}",
     )
     return (
