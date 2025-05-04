@@ -273,7 +273,7 @@ class FactorioEnv(gym.Env):
         frac_hallucin = 0
 
         # Give some small reward for having the belt be the right direction
-        sink_id = self.prototype_from_str('bulk_inserter').value
+        sink_id = self.str2ent('bulk_inserter').value
         sink_locs = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == sink_id)
         assert len(sink_locs[0]) == len(sink_locs[1]) == 1, f"Expected 1 bulk inserter, found {sink_locs} in world {self._world_CWH}"
         C, W, H = self._world_CWH.shape
@@ -323,8 +323,8 @@ class FactorioEnv(gym.Env):
 
 
         # Calculate the Manhattan distance between the source and the sink
-        # stack_inserter_id = self.prototype_from_str("stack_inserter").value
-        # bulk_inserter_id = self.prototype_from_str("bulk_inserter").value
+        # stack_inserter_id = self.str2ent("stack_inserter").value
+        # bulk_inserter_id = self.str2ent("bulk_inserter").value
         # coords1 = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == bulk_inserter_id)
         # assert len(coords1[0]) == len(coords1[1]) == 1, f"Expected 1 bulk inserter, found {coords1} in world {self._world_CWH}"
         # w1, h1 = coords1[0][0], coords1[1][0]
