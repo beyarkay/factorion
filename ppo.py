@@ -174,7 +174,7 @@ def get_pretty_format(tensor, entity_dir_map):
     return "\n".join(lines)
 
 
-class FactorioEnv2(gym.Env):
+class FactorioEnv(gym.Env):
     def __init__(
         self,
         size: int = 16,
@@ -453,7 +453,7 @@ if __name__ == "__main__":
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
     # get the default size from the FactorioEnv
-    args.size = FactorioEnv2().size
+    args.size = FactorioEnv().size
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}")
     iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{iso8601}"
@@ -478,7 +478,7 @@ if __name__ == "__main__":
     # Register the factorio env
     gym.register(
         id="factorion/FactorioEnv-v0",
-        entry_point=FactorioEnv2,
+        entry_point=FactorioEnv,
     )
 
     # TRY NOT TO MODIFY: seeding
