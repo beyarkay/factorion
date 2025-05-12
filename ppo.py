@@ -56,7 +56,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 24
+    num_envs: int = 4
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
@@ -81,7 +81,7 @@ class Args:
     """coefficient of the entropy"""
     vf_coef: float = 0.6
     """coefficient of the value function"""
-    coeff_throughput: float = 0.98
+    coeff_throughput: float = 0.97
     """coefficient of the throughput when calculating reward"""
     coeff_frac_reachable: float = 0.01
     """coefficient of the fraction of unreachable nodes when calculating reward"""
@@ -89,6 +89,8 @@ class Args:
     """coefficient of the fraction of tiles that had to be changed after normalisation"""
     coeff_final_dir_reward: float = 0.01
     """coefficient of reward given to the final belt being correctly oriented"""
+    coeff_material_cost: float = 0.01
+    """coefficient of reward given to the cost of materials used to solve the problem"""
 
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
@@ -96,11 +98,11 @@ class Args:
     """the target KL divergence threshold"""
     adam_epsilon: float = 1e-5
     """The epsilon parameter for Adam"""
-    chan1: int = 256
+    chan1: int = 32
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 256
+    chan2: int = 32
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 128
+    chan3: int = 32
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
@@ -151,11 +153,13 @@ mapping = {
 
 def get_pretty_format(tensor, entity_dir_map):
     assert isinstance(tensor, torch.Tensor), f"Input must be a torch tensor but is {tensor}"
-    assert tensor.ndim == 3 and tensor.shape[0] == 2, f"Tensor must have shape (2, W, H) but has shape {tensor.shape}"
+    assert tensor.ndim == 3 and tensor.shape[0] >= 2, f"Tensor must have shape (2+, W, H) but has shape {tensor.shape}"
     assert tensor.shape[1] == tensor.shape[2], f"Expected world to be square, but is of shape {tensor.shape}"
     # assert torch.is_integral(tensor), "Tensor must contain integers"
 
     _, W, H = tensor.shape
+    # entities = tensor[Channel.ENTITIES.value]
+    # directions = tensor[Channel.DIRECTION.value]
     entities = tensor[0]
     directions = tensor[1]
 
@@ -166,6 +170,8 @@ def get_pretty_format(tensor, entity_dir_map):
             ent = int(entities[x, y])
             direc = int(directions[x, y])
             char = entity_dir_map.get((ent, direc), str(ent))
+            if char == '0':
+                char = '.'
             if char in ('📤', '📥'):
                 line.append(f"{char:^2}")
             else:
@@ -177,7 +183,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 16,
+        size: int = 8,
         max_steps: Optional[int] = None,
     ):
         self.size = size
@@ -195,27 +201,39 @@ class FactorioEnv(gym.Env):
             self.fns[func_name] = func
             setattr(self, func_name, func)
 
-
         self._world_CWH = torch.zeros((len(self.Channel), self.size, self.size))
 
-        self.max_ = max(len(self.prototypes), len(self.Direction))
+        self.max_id_in_tensor = max(len(self.items), len(self.entities), len(self.Direction))
         # Observation is the world, with a square grid of tiles and one channel
         # representing the entity ID, the other representing the direction
         self.observation_space = gym.spaces.Box(
             low=0,
-            high=self.max_,
+            high=self.max_id_in_tensor,
             shape=(len(self.Channel), self.size, self.size),
             dtype=int,
         )
 
-        self.action_space = gym.spaces.Tuple((
-            # x,y coordinates
-            gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),
-            # Direction: None, North, South, East, West
-            gym.spaces.Discrete(len(self.Direction)),
-            # Entity ID: None or belt
-            gym.spaces.Discrete(len(self.prototypes))
-        ))
+
+        self.action_space = gym.spaces.Dict({
+            "xy": gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),
+            "entity": gym.spaces.Discrete(len(self.entities)),
+            "direction": gym.spaces.Discrete(len(self.Direction)),
+            "item": gym.spaces.Discrete(len(self.items)),
+            "misc": gym.spaces.Discrete(len(self.Misc))
+        })
+
+        # self.action_space = gym.spaces.Tuple((
+        #     # x,y coordinates
+        #     gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),
+        #     # Direction: None, North, South, East, West
+        #     gym.spaces.Discrete(len(self.Direction)),
+        #     # entity ID
+        #     gym.spaces.Discrete(len(self.entities)),
+        #     # item ID
+        #     gym.spaces.Discrete(len(self.items)),
+        #     # Misc: basically just upwards underground belt or downwards
+        #     gym.spaces.Discrete(len(self.Misc))
+        # ))
 
         self.steps = 0
 
@@ -224,46 +242,89 @@ class FactorioEnv(gym.Env):
         return self._world_CWH
 
     def _get_info(self):
-        return { }
+        return {
+            'num_missing_entities': self.num_missing_entities,
+        }
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
+        # print(f"Resetting env with options {options}")
+        self.num_missing_entities = 1 if options is None else options.get('num_missing_entities', 1)
+        self.actions = []
+        self._world_CWH = self.generate_lesson(
+            size=self.size,
+            kind=self.LessonKind.MOVE_ONE_ITEM,
+            num_missing_entities=self.num_missing_entities,
+            seed=seed
+        )
+        # self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
 
 
     def step(self, action):
-        (x, y), entity_id, direc = action
+        # print(f"Stepping env with action {action}")
+        x, y = action["xy"]
+        entity_id = action["entity"]
+        direc = action["direction"]
+        item_id = action["item"]
+        misc = action["misc"]
+        # (x, y), entity_id, direc = action
+
         assert 0 <= x < self._world_CWH.shape[1], f"{x} isn't between 0 and {self._world_CWH.shape[1]}"
         assert 0 <= y < self._world_CWH.shape[2], f"{y} isn't between 0 and {self._world_CWH.shape[2]}"
         # account for two non-placeable prototypes: source and sink
-        assert 0 <= entity_id < len(self.prototypes) - 2, f"{entity_id} isn't between 0 and {len(self.prototypes)-2}"
+        assert 0 <= entity_id < len(self.entities) - 2, f"{entity_id} isn't between 0 and {len(self.entities)-2}"
         assert 0 <= direc < len(self.Direction), f"{direc} isn't between 0 and {len(self.Direction)}"
-
+        # TODO update for new action logic
 
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
         direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
-        if entity_to_be_replaced in (len(self.prototypes)-1, len(self.prototypes)-2):
+        self.actions.append(None)
+        # Check that the action is actually valid
+        if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
             pass
-        elif entity_id == 1 and direc == 0:
-            # Disallow the placement of belts without a direction
+        elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
+            # Model is trying to place an assembling machine without a recipe
             pass
-        elif entity_id != 0 and direc == 0:
+        elif entity_id not in (self.str2ent('empty').value, self.str2ent('assembling_machine_1').value) and direc == self.Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             pass
+        elif (misc == self.Misc.NONE.value) and (entity_id == self.str2ent('underground_belt').value):
+            # model is trying to place an underground belt without giving a down/up
+            pass
+        elif (misc != self.Misc.NONE.value) and (entity_id != self.str2ent('underground_belt').value):
+            # model is trying to place a thing that doesn't need a Misc but
+            # still giving it a Misc
+            pass
+        elif x + self.entities[entity_id].width > self.size:
+            # The thing is too wide to be placed here
+            pass
+        elif y + self.entities[entity_id].height > self.size:
+            # The thing is too tall to be placed here
+            pass
         else:
+            # If all the above guards didn't catch anything, allow the
+            # placement of the entity
             self._world_CWH[self.Channel.ENTITIES.value, x, y] = entity_id
             self._world_CWH[self.Channel.DIRECTION.value, x, y] = direc
-        # TODO need to change the world to be like how funge_throughput expects
-
+            self._world_CWH[self.Channel.ITEMS.value, x, y] = item_id
+            self._world_CWH[self.Channel.MISC.value, x, y] = misc
+            self.actions[-1] = {
+                'entity': self.entities[entity_id].name,
+                'xy': (x, y),
+                'direction': self.Direction(direc),
+                'item': self.items[item_id].name,
+                'misc': self.Misc(misc),
+            }
 
         world_old_CWH = self._world_CWH.clone().detach()
 
         throughput, num_unreachable = self.funge_throughput(self._world_CWH.permute(1, 2, 0))
+        # TODO don't always divide by 15
         throughput /= 15.0
 
         # Calculate a "reachable" fraction that penalises the model for leaving
@@ -286,21 +347,25 @@ class FactorioEnv(gym.Env):
 
         final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
 
-        # if throughput == 1.0:
-        #     # print(self._world_CWH)
-        #     print(get_pretty_format(self._world_CWH, mapping))
-        #     print(f"{throughput=} {frac_reachable=}")
+        material_cost = (
+            1.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('transport_belt').value).sum()
+            + 1.5 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('underground_belt').value).sum()
+            + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
+        )
+
         reward = (
             throughput * args.coeff_throughput
             + frac_reachable * args.coeff_frac_reachable
             + frac_hallucin * args.coeff_frac_hallucin
             + final_dir_reward * args.coeff_final_dir_reward
+            + material_cost * args.coeff_material_cost
         )
         reward /= (
             args.coeff_throughput
             + args.coeff_frac_hallucin
             + args.coeff_frac_reachable
             + args.coeff_final_dir_reward
+            + args.coeff_material_cost
         )
 
         # Terminate early when the agent connects source to sink
@@ -312,27 +377,14 @@ class FactorioEnv(gym.Env):
             # If the agent solved before the end, give extra reward
             reward += (self.max_steps - self.steps)
 
-        min_belts = self.get_min_belts(self._world_CWH)
+        # min_belts = self.get_min_belts(self._world_CWH)
 
         # if np.random.rand() > 0.999 or (np.random.rand() > 0.99 and throughput == 1.0):
         if throughput == 1.0:
-            print(f"{self.steps=} {min_belts=}")
-            print(get_pretty_format(self._world_CWH, mapping))
+            print(f"{self.steps=}, {self.num_missing_entities=}, {self.actions=}")
             print(f'!!! {throughput}i/s + {num_unreachable} unreachable + {final_dir_reward} direction = {reward:.3f} reward!!!')
+            print(get_pretty_format(self._world_CWH, mapping))
             print('--------------')
-
-
-        # Calculate the Manhattan distance between the source and the sink
-        # stack_inserter_id = self.str2ent("stack_inserter").value
-        # bulk_inserter_id = self.str2ent("bulk_inserter").value
-        # coords1 = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == bulk_inserter_id)
-        # assert len(coords1[0]) == len(coords1[1]) == 1, f"Expected 1 bulk inserter, found {coords1} in world {self._world_CWH}"
-        # w1, h1 = coords1[0][0], coords1[1][0]
-
-        # coords2 = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == stack_inserter_id)
-        # assert len(coords2[0]) == len(coords2[1]) == 1, f"Expected 1 stack inserter, found {coords2} in world {self._world_CWH}"
-        # w2, h2 = coords2[0][0], coords2[1][0]
-        # min_belts = torch.abs(w1 - w2) + torch.abs(h1 - h2)
 
         observation = self._get_obs()
         info = self._get_info()
@@ -340,15 +392,17 @@ class FactorioEnv(gym.Env):
             'throughput': throughput,
             'frac_reachable': frac_reachable,
             'frac_hallucin': frac_hallucin,
-            'min_belts': int(min_belts),
+            'num_missing_entities': self.num_missing_entities,
+            'final_dir_reward': final_dir_reward,
+            'material_cost': material_cost,
         })
 
         self.steps += 1
-        assert not torch.isnan(torch.tensor(reward)).any(), f"Reward is nan or inf: {reward}"
-        assert not torch.isinf(torch.tensor(reward)).any(), f"Reward is nan or inf: {reward}"
+        # assert not torch.isnan(reward).any(), f"Reward is nan: {reward}"
+        # assert not torch.isinf(reward).any(), f"Reward is inf: {reward}"
 
         return observation.numpy(), float(reward), terminated, truncated, info
-
+#
 class AgentCNN(nn.Module):
     def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256):
         super().__init__()
@@ -357,8 +411,10 @@ class AgentCNN(nn.Module):
         self.height = base_env.size
         self.channels = len(base_env.Channel)
         # minus two for the source and the sink
-        self.num_entities = len(base_env.prototypes) - 2
+        self.num_entities = len(base_env.entities) - 2
         self.num_directions = len(base_env.Direction)
+        self.num_items = len(base_env.items)
+        self.num_misc = len(base_env.Misc)
 
         self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
@@ -368,7 +424,10 @@ class AgentCNN(nn.Module):
             layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
             nn.ReLU(),
         )
+        num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
+        print(f"Encoder has {num_params_encoder} params")
 
+        # TODO the flat dim as the parameter actually does nothing
         flat_dim = chan3 * self.width * self.height
 
         # Project encoded state to value
@@ -377,7 +436,7 @@ class AgentCNN(nn.Module):
             layer_init(nn.Linear(flat_dim, 1), std=1.0)
         )
 
-        # Action heads: output logits for x, y, direction, entity_id
+        # Action heads: output logits for x, y, direction, entity_id, etc
         self.action_head = nn.Sequential(
             nn.Flatten(),
             layer_init(nn.Linear(flat_dim, flat_dim)),
@@ -388,6 +447,8 @@ class AgentCNN(nn.Module):
         self.y_head = layer_init(nn.Linear(flat_dim, self.height))
         self.ent_head = layer_init(nn.Linear(flat_dim, self.num_entities))
         self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
+        self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
+        self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
 
     def get_value(self, x_BCWH):
         encoded = self.encoder(x_BCWH)
@@ -409,12 +470,16 @@ class AgentCNN(nn.Module):
         logits_y_BH = self.y_head(features_BF)
         logits_e_BE = self.ent_head(features_BF)
         logits_d_BD = self.dir_head(features_BF)
+        logits_i_BD = self.item_head(features_BF)
+        logits_m_BD = self.misc_head(features_BF)
 
         # Build distributions
         dist_x = Categorical(logits=logits_x_BW)
         dist_y = Categorical(logits=logits_y_BH)
         dist_e = Categorical(logits=logits_e_BE)
         dist_d = Categorical(logits=logits_d_BD)
+        dist_i = Categorical(logits=logits_i_BD)
+        dist_m = Categorical(logits=logits_m_BD)
 
         # Sample or unpack provided actions
         if action is None:
@@ -422,11 +487,16 @@ class AgentCNN(nn.Module):
             y_B = dist_y.sample()
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
+            item_B = dist_i.sample()
+            misc_B = dist_m.sample()
         else:
+            # Surprisingly enough, action is a tensor here, not a dict
             x_B = action[:, 0]
             y_B = action[:, 1]
             ent_B = action[:, 2]
             dir_B = action[:, 3]
+            item_B = action[:, 4]
+            misc_B = action[:, 5]
 
 
         # Compute log probs and entropy
@@ -434,20 +504,32 @@ class AgentCNN(nn.Module):
             dist_x.log_prob(x_B) +
             dist_y.log_prob(y_B) +
             dist_e.log_prob(ent_B) +
-            dist_d.log_prob(dir_B)
+            dist_d.log_prob(dir_B) +
+            dist_i.log_prob(item_B) +
+            dist_m.log_prob(misc_B)
         )
         entropy_B = (
             dist_x.entropy() +
             dist_y.entropy() +
             dist_e.entropy() +
-            dist_d.entropy()
+            dist_d.entropy() +
+            dist_i.entropy() +
+            dist_m.entropy()
         )
 
         # Final action format: tuple of tensors
-        action_out = (torch.stack([x_B, y_B], dim=1), ent_B, dir_B)
+        # action_out = (torch.stack([x_B, y_B], dim=1), ent_B, dir_B)
+        action_out = {
+            "xy": torch.stack([x_B, y_B], dim=1),
+            "direction": dir_B,
+            "entity": ent_B,
+            "item": item_B,
+            "misc": misc_B,
+        }
         return action_out, logp_B, entropy_B, value_B
 
 if __name__ == "__main__":
+    print("Starting...")
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -469,18 +551,21 @@ if __name__ == "__main__":
             monitor_gym=True,
             save_code=True,
         )
+    print("Setting up writer")
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
+    print("Registering factorio Gym env")
     # Register the factorio env
     gym.register(
         id="factorion/FactorioEnv-v0",
         entry_point=FactorioEnv,
     )
 
+    print(f"Seeding with {args.seed=}")
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -490,11 +575,13 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else ("mps" if torch.backends.mps.is_available() and args.metal else "cpu"))
 
+    print("Setting up envs")
     # env setup
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
 
+    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=} ")
     agent = AgentCNN(
         envs,
         chan1=args.chan1,
@@ -511,9 +598,10 @@ if __name__ == "__main__":
 
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
 
+    print("Allocating storage space")
     # ALGO Logic: Storage setup
     obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
-    ACTION_SPACE_SHAPE = (4,)
+    ACTION_SPACE_SHAPE = (6,)
     actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=int).to(device)
     logprobs_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -523,12 +611,17 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs_ECWH, _ = envs.reset(seed=args.seed)
+    next_obs_ECWH, _ = envs.reset(
+        seed=args.seed,
+        options={'num_missing_entities': 1}
+    )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
+    print("Starting iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
+        # print(f"{iteration=}")
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
@@ -542,25 +635,59 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                # T for a tuple
-                action_ET, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
+                # TODO update for new action logic
+                # D for dictionary
+                action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
                 values_SE[step] = value_E
                 # Flatten action
-                (xy_B2, direc_B1, entities_B1) = action_ET
-                action_EA = torch.cat([xy_B2, direc_B1.unsqueeze(1), entities_B1.unsqueeze(1)], dim=1)
+                # (xy_B2, direc_B1, entities_B1) = action_ED
+
+                # Unpack the action
+                x_B, y_B = action_ED["xy"].unbind(dim=1)  # Unbind xy into x and y
+                ent_B = action_ED["entity"]
+                dir_B = action_ED["direction"]
+                item_B = action_ED["item"]
+                misc_B = action_ED["misc"]
+
+                # Combine the actions together such that the environments are
+                # grouped first and then each component of the action
+                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
-            action_ET_np = (
-                action_ET[0].cpu().numpy(),
-                action_ET[1].cpu().numpy(),
-                action_ET[2].cpu().numpy(),
-            )
+            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ET_np)
+            next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.tensor(reward).to(device).view(-1)
+
+            # Add one to the environments that succeeded at getting some throughput
+            if 'num_missing_entities' not in infos:
+                breakpoint()
+            new_missing_entities = infos['num_missing_entities'] + (reward >= args.coeff_throughput).astype(int)
+
+            # Compute num_missing_entities based on global progress, from 1 to width*height
+            for k, v in infos.items():
+                if k.startswith("_") or k == 'episode':
+                    continue
+                for i, value in enumerate(v):
+                    if value is None:
+                        continue
+                    try:
+                        writer.add_scalar(f"charts/{k}_{i:0>2}", value, global_step)
+                    except:
+                        breakpoint()
+
+            # Prepare reset options per env
+            options = [{'num_missing_entities': new_missing_entities[i]} if d else None for i, d in enumerate(next_done)]
+
+            # Reset only the done environments with updated num_missing_entities
+            done_indices = np.where(next_done)[0]
+            for idx in done_indices:
+                obs, _ = envs.envs[idx].reset(options=options[idx])
+                next_obs_ECWH[idx] = obs
+
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
             next_done = torch.Tensor(next_done).to(device)
 
@@ -587,16 +714,16 @@ if __name__ == "__main__":
                     avg_throughput = sum(final_throughputs) / len(final_throughputs)
                     writer.add_scalar("charts/final_throughput_ma", avg_throughput, global_step)
 
-                    min_belts = infos['min_belts'][i]
-                    writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
+                    # min_belts = infos['min_belts'][i]
+                    # writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
 
-                    min_belts_thoughputs[min_belts].append(final_throughput)
-                    avg_min_belts_throughput = (
-                        0
-                        if not min_belts_thoughputs[min_belts]
-                        else sum(min_belts_thoughputs[min_belts]) / len(min_belts_thoughputs[min_belts])
-                    )
-                    writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
+                    # min_belts_thoughputs[min_belts].append(final_throughput)
+                    # avg_min_belts_throughput = (
+                    #     0
+                    #     if not min_belts_thoughputs[min_belts]
+                    #     else sum(min_belts_thoughputs[min_belts]) / len(min_belts_thoughputs[min_belts])
+                    # )
+                    # writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
 
                     writer.add_scalar("charts/episodic_return", episode_return, global_step)
                     writer.add_scalar("charts/episodic_length", episode_len, global_step)
@@ -714,8 +841,8 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
-    if len(final_throughputs) > 0 and args.num_iterations > 10_000:
-        avg_throughput = float(sum(final_throughputs) / len(final_throughputs))
+    if args.total_timesteps > 5_000:
+        avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
         agent_name = f"agent-{avg_throughput:.6f}-{run_name_dir_safe}"

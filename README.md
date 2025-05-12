@@ -14,3 +14,9 @@ from a description. It's not necessarily bad, just won't get to the end game.
 
 We need to go back to generating a full factory, with the inputs being "belt in
 here" and "belt out here".
+
+## TODO
+
+- [ ] Get the frame renderer working for pretty videos
+- [ ] Integrate with a running factorio instance.
+- [ ] Bigger
