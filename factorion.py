@@ -1283,7 +1283,8 @@ def functions(
 
 
     def generate_lesson(
-        size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0.0, seed=None
+        size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0.0,
+        seed=None, random_item=False
     ):
         if seed is not None:
             random.seed(seed)
@@ -1314,7 +1315,11 @@ def functions(
                 sink_dir = random.choice(
                     [d for d in Direction if d != Direction.NONE]
                 )
-                item_value = random.choice([v.value for k, v in items.items()])
+
+                if random_item:
+                    item_value = random.choice([v.value for k, v in items.items()])
+                else:
+                    item_value = str2item('electronic_circuit').value
 
                 world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
                     str2ent("source").value
@@ -1345,32 +1350,34 @@ def functions(
                     world_CWH = torch.tensor(
                         new_world(width=size, height=size)
                     ).permute(2, 0, 1)
-                    # Restart the loop until we get a source+sink that can be connecte
+                    # Restart the loop until we get a source+sink that can be connected
                     continue
                 else:
                     # Choose a valid path at random and add it to the map
-                    chosen_path = random.choice(paths)
-                    for x, y, d in chosen_path:
-                        world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                            "transport_belt"
-                        ).value
-                        world_CWH[Channel.DIRECTION.value, x, y] = d.value
+                    if num_missing_entities != float('inf'):
+                        chosen_path = random.choice(paths)
+                        for x, y, d in chosen_path:
+                            world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                                "transport_belt"
+                            ).value
+                            world_CWH[Channel.DIRECTION.value, x, y] = d.value
                 # Randomly remove some number of transport belts from the map
-                # belt_value = str2ent('transport_belt').value
-                entity_locs = (
-                    (world_CWH[Channel.ENTITIES.value] != str2ent("source").value)
-                    & (world_CWH[Channel.ENTITIES.value] != str2ent("sink").value)
-                    & (world_CWH[Channel.ENTITIES.value] != str2ent("empty").value)
-                ).nonzero(as_tuple=False)
-                num_samples = min(num_missing_entities, len(entity_locs))
-                samples = [] if num_samples == 0 else random.sample(list(entity_locs), num_samples)
-                for x, y in samples:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                        "empty"
-                    ).value
-                    world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
-                    world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
-                    world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
+
+                if num_missing_entities != float('inf'):
+                    entity_locs = (
+                        (world_CWH[Channel.ENTITIES.value] != str2ent("source").value)
+                        & (world_CWH[Channel.ENTITIES.value] != str2ent("sink").value)
+                        & (world_CWH[Channel.ENTITIES.value] != str2ent("empty").value)
+                    ).nonzero(as_tuple=False)
+                    num_samples = min(num_missing_entities, len(entity_locs))
+                    samples = [] if num_samples == 0 else random.sample(list(entity_locs), num_samples)
+                    for x, y in samples:
+                        world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                            "empty"
+                        ).value
+                        world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
+                        world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
+                        world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
                 break
             if count == 0:
                 raise Exception("Failed to find valid lesson after 100 attempts")

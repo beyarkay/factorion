@@ -58,7 +58,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 4
+    num_envs: int = 1
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
@@ -125,8 +125,8 @@ def make_env(env_id, idx, capture_video, size, run_name):
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size})
         env = gym.make(env_id, **kwargs)
-        if capture_video and idx == 0:
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        if capture_video:
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     return thunk
@@ -304,6 +304,15 @@ class FactorioEnv(gym.Env):
         if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
             pass
+        elif entity_id == self.str2ent('empty').value and entity_to_be_replaced == self.str2item('empty').value:
+            # Model is trying to replace empty space with more empty space
+            pass
+        elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
+            # Model is trying to place empty space with a direction
+            pass
+        elif entity_id == self.str2ent('empty').value and item_id != self.str2item('empty').value:
+            # Model is trying to place empty space with a recipe item
+            pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             pass
@@ -451,7 +460,7 @@ class FactorioEnv(gym.Env):
             for ent_id, ent in self.entities.items():
                 p = ICON_DIR / f"{ent.name}.png"
                 if p.exists():
-                    img = Image.open(p).convert("RGBA").resize((CELL_PX, CELL_PX), Image.BICUBIC)
+                    img = Image.open(p).convert("RGBA").resize(((CELL_PX // 10) * 8, (CELL_PX // 10) * 8), Image.BICUBIC)
                     self._render_cache["entity"][ent_id] = img
 
             # item (recipe) icons (resized to MINI_PX)
@@ -506,14 +515,14 @@ class FactorioEnv(gym.Env):
 
         for gx in range(self.size):          # grid row
             for gy in range(self.size):      # grid col
-                x0, y0 = gy * CELL_PX, gx * CELL_PX
+                x0, y0 = gx * CELL_PX, gy * CELL_PX
                 x1, y1 = x0 + CELL_PX, y0 + CELL_PX
                 draw.rectangle([x0, y0, x1, y1], outline=GRID_COLOR, width=1)
 
                 ent_id = int(ent_layer[gx, gy])
                 sprite = cache["entity"].get(ent_id)
                 if sprite is not None:
-                    canvas.paste(sprite, (x0, y0), sprite)
+                    canvas.paste(sprite, (x0 + CELL_PX//10, y0 + CELL_PX//10), sprite)
                 else:
                     # fallback: draw first letter
                     letter = self.entities[ent_id].name[0].upper()
@@ -525,6 +534,15 @@ class FactorioEnv(gym.Env):
                         fill=(0, 0, 0),
                         font=font,
                     )
+                # Draw the xy-coords onto the cell
+                text = f"{gx},{gx}"
+                font   = cache["font"]
+                draw.text(
+                    (x0 + (CELL_PX // 10) * 8, y0 + CELL_PX // 10),
+                    text,
+                    fill=(0, 0, 0),
+                    font=font,
+                )
 
                 itm_id = int(item_layer[gx, gy])
                 mini   = cache["item"].get(itm_id)
@@ -532,7 +550,7 @@ class FactorioEnv(gym.Env):
                     off = CELL_PX - MINI_PX - 2
                     canvas.paste(mini, (x0 + off, y0 + off), mini)
 
-                dir_id = int(dir_layer[gx, gy])
+                dir_id = self.Direction(dir_layer[gx, gy]).value
                 arrow  = cache["arrow"].get(dir_id)
                 if arrow is not None:
                     canvas.paste(arrow, (x0 + 2, y0 + 2), arrow)
@@ -548,6 +566,10 @@ class FactorioEnv(gym.Env):
             f"SumReward: {cum_reward:.3f}  |  Reward: {reward:.3f}",
             f"thrput: {throughput}  |  Unreachable: {unreach:.3f}",
         ]
+        if self.actions and self.actions[-1] is not None:
+            lines.append(f"Placing {self.actions[-1]['entity']}")
+            lines.append(f"    at {self.actions[-1]['xy']}")
+            lines.append(f"    facing {self.actions[-1]['direction']}")
 
         font = cache["font"]
         bbox = font.getbbox(lines[0])
@@ -773,7 +795,8 @@ if __name__ == "__main__":
     start_time = time.time()
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
-        options={'num_missing_entities': 1}
+        # options={'num_missing_entities': float('inf')}
+        options={'num_missing_entities': 0}
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
