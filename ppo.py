@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 import tqdm
 import gymnasium as gym
@@ -19,8 +20,9 @@ import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 import sys
-sys.path.insert(1, '/Users/brk/projects/factorion')
+sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
+from PIL import Image, ImageDraw, ImageFont
 
 episodic_returns = deque(maxlen=100)
 final_throughputs = deque(maxlen=100)
@@ -106,6 +108,8 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
+    size: int = 4
+    """The width and height of the factory"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -114,18 +118,17 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-    size: int = 0
-    """The width and height of the factory (computed at runtime)"""
 
 
-def make_env(env_id, idx, capture_video, run_name):
+def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
-        # if capture_video and idx == 0:
-        #     env = gym.make(env_id, render_mode="rgb_array")
-        #     env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        # else:
-        return gym.wrappers.RecordEpisodeStatistics(gym.make(env_id))
-
+        kwargs = {"render_mode": "rgb_array"} if capture_video else {}
+        kwargs.update({'size': size})
+        env = gym.make(env_id, **kwargs)
+        if capture_video and idx == 0:
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return env
     return thunk
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -140,15 +143,15 @@ mapping = {
     (1, 3): '↓',
     (1, 4): '←',
     # sink
-    (2, 1):  '📥',
-    (2, 2):  '📥',
-    (2, 3):  '📥',
-    (2, 4): '📥',
+    (5, 1):  '📥',
+    (5, 2):  '📥',
+    (5, 3):  '📥',
+    (5, 4): '📥',
     # source
-    (3, 1):  '📤',
-    (3, 2):  '📤',
-    (3, 3):  '📤',
-    (3, 4): '📤',
+    (6, 1):  '📤',
+    (6, 2):  '📤',
+    (6, 3):  '📤',
+    (6, 4): '📤',
 }
 
 def get_pretty_format(tensor, entity_dir_map):
@@ -183,9 +186,18 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 8,
+        size: int = 5,
         max_steps: Optional[int] = None,
+        render_mode: Optional[str] = None
     ):
+        super().__init__()
+        print(f"{render_mode=}")
+        # Setup the renderer if requested
+        if render_mode is not None:
+            self.metadata = {"render_modes": [render_mode], "render_fps": 2}
+            self.render_mode = render_mode
+            self.render_modes = [render_mode]
+
         self.size = size
         if max_steps is None:
             max_steps = self.size * self.size
@@ -222,32 +234,38 @@ class FactorioEnv(gym.Env):
             "misc": gym.spaces.Discrete(len(self.Misc))
         })
 
-        # self.action_space = gym.spaces.Tuple((
-        #     # x,y coordinates
-        #     gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),
-        #     # Direction: None, North, South, East, West
-        #     gym.spaces.Discrete(len(self.Direction)),
-        #     # entity ID
-        #     gym.spaces.Discrete(len(self.entities)),
-        #     # item ID
-        #     gym.spaces.Discrete(len(self.items)),
-        #     # Misc: basically just upwards underground belt or downwards
-        #     gym.spaces.Discrete(len(self.Misc))
-        # ))
-
         self.steps = 0
 
     def _get_obs(self):
-        # return self._world_CWH.numpy()
         return self._world_CWH
 
     def _get_info(self):
         return {
             'num_missing_entities': self.num_missing_entities,
+            'throughput': self._throughput,
+            'frac_reachable': self._frac_reachable,
+            'frac_hallucin': self._frac_hallucin,
+            'final_dir_reward': self._final_dir_reward,
+            'material_cost': self._material_cost,
+            'reward': self._reward,
+            'cum_reward': self._cum_reward,
         }
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
+        self._cum_reward = 0
+        self._seed = seed
+
+        self._throughput = 0
+        self._frac_reachable = 0
+        self._frac_hallucin = 0
+        self._num_missing_entities = 0
+        self._final_dir_reward = 0
+        self._material_cost = 0
+        self._reward = 0
+        self._terminated = False
+        self._truncated = False
+
         # print(f"Resetting env with options {options}")
         self.num_missing_entities = 1 if options is None else options.get('num_missing_entities', 1)
         self.actions = []
@@ -260,7 +278,6 @@ class FactorioEnv(gym.Env):
         # self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
-
 
     def step(self, action):
         # print(f"Stepping env with action {action}")
@@ -386,8 +403,20 @@ class FactorioEnv(gym.Env):
             print(get_pretty_format(self._world_CWH, mapping))
             print('--------------')
 
+        self._throughput = throughput
+        self._frac_reachable = frac_reachable
+        self._frac_hallucin = frac_hallucin
+        self._num_missing_entities = self.num_missing_entities
+        self._final_dir_reward = final_dir_reward
+        self._material_cost = material_cost
+        self._reward = reward
+        self._terminated = terminated
+        self._truncated = truncated
+
         observation = self._get_obs()
         info = self._get_info()
+        if terminated:
+            info.update({ 'steps_taken': self.steps })
         info.update({
             'throughput': throughput,
             'frac_reachable': frac_reachable,
@@ -397,12 +426,145 @@ class FactorioEnv(gym.Env):
             'material_cost': material_cost,
         })
 
+        self._cum_reward += reward
         self.steps += 1
-        # assert not torch.isnan(reward).any(), f"Reward is nan: {reward}"
-        # assert not torch.isinf(reward).any(), f"Reward is inf: {reward}"
 
         return observation.numpy(), float(reward), terminated, truncated, info
-#
+
+    def render(self):
+        """
+        Grid renderer with icons, direction arrow, and recipe icon.
+        Returns an RGB uint8 array compatible with Gymnasium video wrappers.
+        """
+        # ------------------- constants -------------------
+        ICON_DIR       = Path("factorio-icons")   # where all *.png live
+        CELL_PX        = 64                       # tile size in pixels
+        MINI_PX        = 18                       # size for arrow + recipe icon
+        GRID_COLOR     = (0, 0, 0)                # black grid lines
+
+        # ---------------- lazy one-time setup ------------
+        if not hasattr(self, "_render_cache"):
+            # cache will store resized sprites + generated arrows
+            self._render_cache = {"entity": {}, "item": {}, "arrow": {}}
+
+            # entity icons (resized to CELL_PX)
+            for ent_id, ent in self.entities.items():
+                p = ICON_DIR / f"{ent.name}.png"
+                if p.exists():
+                    img = Image.open(p).convert("RGBA").resize((CELL_PX, CELL_PX), Image.BICUBIC)
+                    self._render_cache["entity"][ent_id] = img
+
+            # item (recipe) icons (resized to MINI_PX)
+            for itm_id, itm in self.items.items():
+                if itm_id == 0:  # 0 = empty → no icon
+                    continue
+                p = ICON_DIR / f"{itm.name}.png"
+                if p.exists():
+                    img = Image.open(p).convert("RGBA").resize((MINI_PX, MINI_PX), Image.BICUBIC)
+                    self._render_cache["item"][itm_id] = img
+
+            # tiny triangular arrow, rotated for each cardinal direction
+            base = Image.new("RGBA", (MINI_PX, MINI_PX), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(base)
+            # shaft: thin vertical rectangle
+            shaft_w = max(1, MINI_PX // 12)
+            shaft_x0 = (MINI_PX - shaft_w) // 2
+            draw.rectangle(
+                [shaft_x0, MINI_PX // 3, shaft_x0 + shaft_w, MINI_PX - 1],
+                fill=(0, 0, 0, 255)
+            )
+            # head: triangle at the top
+            draw.polygon(
+                [
+                    (MINI_PX // 2, 0),           # tip
+                    (shaft_x0 + shaft_w*4, MINI_PX // 3),
+                    (shaft_x0 - shaft_w*4, MINI_PX // 3),
+                ],
+                fill=(0, 0, 0, 255)
+            )
+            # cache rotations for each cardinal direction
+            self._render_cache["arrow"][self.Direction.NORTH.value] = base
+            self._render_cache["arrow"][self.Direction.EAST.value]  = base.rotate(-90, expand=True)
+            self._render_cache["arrow"][self.Direction.SOUTH.value] = base.rotate(180, expand=True)
+            self._render_cache["arrow"][self.Direction.WEST.value]  = base.rotate(90,  expand=True)
+
+            # default font for fallback label
+            self._render_cache["font"] = ImageFont.load_default()
+
+        cache = self._render_cache
+        ENT, DIR, ITEM = self.Channel.ENTITIES.value, self.Channel.DIRECTION.value, self.Channel.ITEMS.value
+
+        # ---------------- canvas -------------------------
+        HUD_PX = 32*4                                     # height of stats strip
+        canvas_w = canvas_h = self.size * CELL_PX
+        canvas = Image.new("RGB", (canvas_w, canvas_h + HUD_PX), (255, 255, 255))
+        draw   = ImageDraw.Draw(canvas)
+
+        ent_layer  = self._world_CWH[ENT].cpu().numpy()
+        dir_layer  = self._world_CWH[DIR].cpu().numpy()
+        item_layer = self._world_CWH[ITEM].cpu().numpy()
+
+        for gx in range(self.size):          # grid row
+            for gy in range(self.size):      # grid col
+                x0, y0 = gy * CELL_PX, gx * CELL_PX
+                x1, y1 = x0 + CELL_PX, y0 + CELL_PX
+                draw.rectangle([x0, y0, x1, y1], outline=GRID_COLOR, width=1)
+
+                ent_id = int(ent_layer[gx, gy])
+                sprite = cache["entity"].get(ent_id)
+                if sprite is not None:
+                    canvas.paste(sprite, (x0, y0), sprite)
+                else:
+                    # fallback: draw first letter
+                    letter = self.entities[ent_id].name[0].upper()
+                    font   = cache["font"]
+                    canvas_w, canvas_h   = font.getbbox(letter)[2:]
+                    draw.text(
+                        (x0 + (CELL_PX - canvas_w) // 2, y0 + (CELL_PX - canvas_h) // 2),
+                        letter,
+                        fill=(0, 0, 0),
+                        font=font,
+                    )
+
+                itm_id = int(item_layer[gx, gy])
+                mini   = cache["item"].get(itm_id)
+                if mini is not None:
+                    off = CELL_PX - MINI_PX - 2
+                    canvas.paste(mini, (x0 + off, y0 + off), mini)
+
+                dir_id = int(dir_layer[gx, gy])
+                arrow  = cache["arrow"].get(dir_id)
+                if arrow is not None:
+                    canvas.paste(arrow, (x0 + 2, y0 + 2), arrow)
+
+        info = self._get_info() or {}
+        unreach = info.get("frac_reachable", "?")
+        cum_reward = info.get("cum_reward", 0)
+        throughput = info.get("throughput", "?")
+        reward = info.get("reward", "?")
+
+        lines = [
+            f"Step {self.steps}/{self.max_steps}",
+            f"SumReward: {cum_reward:.3f}  |  Reward: {reward:.3f}",
+            f"thrput: {throughput}  |  Unreachable: {unreach:.3f}",
+        ]
+
+        font = cache["font"]
+        bbox = font.getbbox(lines[0])
+        txt_h = bbox[3] - bbox[1]
+
+        draw.rectangle([(0, canvas_h), (canvas_w, canvas_h + HUD_PX)], fill=(230, 230, 230))
+        for i, line in enumerate(lines):
+            draw.text(
+                (4, 4 + canvas_h + i * txt_h * 1.25),
+                line,
+                fill=(0, 0, 0),
+                font=font,
+            )
+
+        return np.asarray(canvas, dtype=np.uint8)
+
+
 class AgentCNN(nn.Module):
     def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256):
         super().__init__()
@@ -411,7 +573,7 @@ class AgentCNN(nn.Module):
         self.height = base_env.size
         self.channels = len(base_env.Channel)
         # minus two for the source and the sink
-        self.num_entities = len(base_env.entities) - 2
+        self.num_entities = 2 # len(base_env.entities) - 2 TODO for now, only allow empty or transport_belt
         self.num_directions = len(base_env.Direction)
         self.num_items = len(base_env.items)
         self.num_misc = len(base_env.Misc)
@@ -447,8 +609,8 @@ class AgentCNN(nn.Module):
         self.y_head = layer_init(nn.Linear(flat_dim, self.height))
         self.ent_head = layer_init(nn.Linear(flat_dim, self.num_entities))
         self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
-        self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
-        self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
+        # self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
+        # self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
 
     def get_value(self, x_BCWH):
         encoded = self.encoder(x_BCWH)
@@ -470,16 +632,16 @@ class AgentCNN(nn.Module):
         logits_y_BH = self.y_head(features_BF)
         logits_e_BE = self.ent_head(features_BF)
         logits_d_BD = self.dir_head(features_BF)
-        logits_i_BD = self.item_head(features_BF)
-        logits_m_BD = self.misc_head(features_BF)
+        # logits_i_BD = self.item_head(features_BF)
+        # logits_m_BD = self.misc_head(features_BF)
 
         # Build distributions
         dist_x = Categorical(logits=logits_x_BW)
         dist_y = Categorical(logits=logits_y_BH)
         dist_e = Categorical(logits=logits_e_BE)
         dist_d = Categorical(logits=logits_d_BD)
-        dist_i = Categorical(logits=logits_i_BD)
-        dist_m = Categorical(logits=logits_m_BD)
+        # dist_i = Categorical(logits=logits_i_BD)
+        # dist_m = Categorical(logits=logits_m_BD)
 
         # Sample or unpack provided actions
         if action is None:
@@ -487,16 +649,16 @@ class AgentCNN(nn.Module):
             y_B = dist_y.sample()
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
-            item_B = dist_i.sample()
-            misc_B = dist_m.sample()
+            # item_B = dist_i.sample()
+            # misc_B = dist_m.sample()
         else:
             # Surprisingly enough, action is a tensor here, not a dict
             x_B = action[:, 0]
             y_B = action[:, 1]
             ent_B = action[:, 2]
             dir_B = action[:, 3]
-            item_B = action[:, 4]
-            misc_B = action[:, 5]
+            # item_B = action[:, 4]
+            # misc_B = action[:, 5]
 
 
         # Compute log probs and entropy
@@ -504,17 +666,17 @@ class AgentCNN(nn.Module):
             dist_x.log_prob(x_B) +
             dist_y.log_prob(y_B) +
             dist_e.log_prob(ent_B) +
-            dist_d.log_prob(dir_B) +
-            dist_i.log_prob(item_B) +
-            dist_m.log_prob(misc_B)
+            dist_d.log_prob(dir_B) # +
+            # dist_i.log_prob(item_B) +
+            # dist_m.log_prob(misc_B)
         )
         entropy_B = (
             dist_x.entropy() +
             dist_y.entropy() +
             dist_e.entropy() +
-            dist_d.entropy() +
-            dist_i.entropy() +
-            dist_m.entropy()
+            dist_d.entropy() # +
+            # dist_i.entropy() +
+            # dist_m.entropy()
         )
 
         # Final action format: tuple of tensors
@@ -523,8 +685,8 @@ class AgentCNN(nn.Module):
             "xy": torch.stack([x_B, y_B], dim=1),
             "direction": dir_B,
             "entity": ent_B,
-            "item": item_B,
-            "misc": misc_B,
+            "item": torch.zeros_like(ent_B),
+            "misc": torch.zeros_like(ent_B),
         }
         return action_out, logp_B, entropy_B, value_B
 
@@ -534,8 +696,6 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    # get the default size from the FactorioEnv
-    args.size = FactorioEnv().size
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}")
     iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{iso8601}"
@@ -575,10 +735,10 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else ("mps" if torch.backends.mps.is_available() and args.metal else "cpu"))
 
-    print("Setting up envs")
+    print(f"Setting up envs with {args}")
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
     )
 
     print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=} ")
@@ -675,7 +835,7 @@ if __name__ == "__main__":
                     if value is None:
                         continue
                     try:
-                        writer.add_scalar(f"charts/{k}_{i:0>2}", value, global_step)
+                        writer.add_scalar(f"charts/info_{k}_{i:0>2}", value, global_step)
                     except:
                         breakpoint()
 

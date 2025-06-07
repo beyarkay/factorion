@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.8.22"
+__generated_with = "0.13.7"
 app = marimo.App(width="medium")
 
 
@@ -38,7 +38,6 @@ def _():
     return (
         Categorical,
         Enum,
-        F,
         List,
         Tuple,
         base64,
@@ -46,23 +45,14 @@ def _():
         defaultdict,
         deque,
         go,
-        init,
         json,
-        math,
         mo,
-        nn,
         np,
         nx,
-        optim,
-        pd,
         plt,
         random,
-        sys,
         torch,
-        tqdm,
         traceback,
-        trange,
-        wandb,
         zlib,
     )
 
@@ -132,6 +122,7 @@ def datatypes(Enum, dataclass, mo):
         4: Item(name="electronic_circuit", value=4),
     }
 
+    # Also update the pretty printer
     entities = {
         0: Entity(name="empty", value=0, width=1, height=1, flow=0.0),
         1: Entity(name="transport_belt", value=1, width=1, height=1, flow=15.0),
@@ -200,14 +191,11 @@ def datatypes(Enum, dataclass, mo):
     return (
         Channel,
         DIR_TO_DELTA,
-        Dim,
         Direction,
         Entity,
         Footprint,
-        Item,
         LessonKind,
         Misc,
-        Recipe,
         entities,
         items,
         recipes,
@@ -1132,10 +1120,19 @@ def functions(
                         src_direction = Direction(
                             world_WHC[src[0], src[1], Channel.DIRECTION.value]
                         )
+                        src_misc = Misc(
+                            world_WHC[src[0], src[1], Channel.MISC.value]
+                        )
                         src_is_beltish = (
                             "belt" in src_entity.name
-                            # Check the other belt is directly behind me and pointing the same direction
+                            # Check the other belt is directly behind me and
+                            # pointing the same direction
                             and src_direction == d
+                            # Check that the other is not a downwards underground belt
+                            and not (
+                               "underground_belt" in src_entity.name
+                                and src_misc.value == Misc.UNDERGROUND_DOWN
+                            )
                         )
                         if src_is_beltish:
                             G.add_edge(
@@ -1153,12 +1150,25 @@ def functions(
                         dst_direction = Direction(
                             world_WHC[dst[0], dst[1], Channel.DIRECTION.value]
                         )
+                        dst_misc = Misc(
+                            world_WHC[dst[0], dst[1], Channel.MISC.value]
+                        )
                         dst_not_empty = dst_entity.name != "empty"
                         dst_is_belt = "belt" in dst_entity.name
+                        opposite = Direction.SOUTH.value - Direction.NORTH.value
                         dst_opposing_belt = (
-                            dst_is_belt and abs(dst_direction.value - d.value) == 8
+                            dst_is_belt and abs(dst_direction.value - d.value) == opposite
                         )
-                        if dst_is_belt and not dst_opposing_belt:
+                        # various underground belt checks
+                        # TODO figure out these checks
+                        dest_underground_ok = (
+                            True
+                            # "underground_belt" not in dst_entity.name
+                            # or (
+                            #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
+                            # )
+                        )
+                        if dst_is_belt and not dst_opposing_belt and dest_underground_ok:
                             G.add_edge(
                                 f"{e.name}\n@{x},{y}",
                                 f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
@@ -1353,7 +1363,8 @@ def functions(
                     & (world_CWH[Channel.ENTITIES.value] != str2ent("empty").value)
                 ).nonzero(as_tuple=False)
                 num_samples = min(num_missing_entities, len(entity_locs))
-                for x, y in random.sample(list(entity_locs), num_samples):
+                samples = [] if num_samples == 0 else random.sample(list(entity_locs), num_samples)
+                for x, y in samples:
                     world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
                         "empty"
                     ).value
@@ -1479,25 +1490,13 @@ def functions(
 
     mo.md("Functions")
     return (
-        add_entity,
-        b64_to_dict,
-        blueprint2world,
         calc_throughput,
-        dict2b64,
-        ent_str2b64img,
-        eval_model,
-        find_belt_paths_with_source_sink_orient,
         funge_throughput,
         generate_lesson,
-        get_min_belts,
         get_new_world,
-        item_str2b64img,
         new_world,
         normalise_world,
         plot_flow_network,
-        plot_loss_history,
-        sample_world,
-        show_two_factories,
         str2ent,
         str2item,
         world2graph,
@@ -1506,7 +1505,7 @@ def functions(
 
 
 @app.cell
-def __(LessonKind, generate_lesson, world2html):
+def _(LessonKind, generate_lesson, world2html):
     def __():
         # np.random.seed(42)
         # torch.manual_seed(42)
@@ -1527,7 +1526,7 @@ def __(LessonKind, generate_lesson, world2html):
 
 
 @app.cell
-def __(
+def _(
     Channel,
     Direction,
     Misc,
@@ -1643,11 +1642,11 @@ def __(
 
 
     blank2()
-    return (blank2,)
+    return
 
 
 @app.cell
-def __(items):
+def _(items):
     items
     return
 
@@ -1683,11 +1682,11 @@ def _():
     # )
     # agent.load_state_dict(torch.load(path, weights_only=False))
     # agent.eval()
-    return AgentCNN, FactorioEnv, envs, gym, make_env, path
+    return
 
 
 @app.cell
-def __(
+def _(
     Channel,
     agent,
     funge_throughput,
@@ -1736,26 +1735,7 @@ def __(
         world2html(normalised_world_WHC),
         f"Throughput: {throughput * 100:.0f}%, hallu: {hallucination_rate:.2f}, frac: {frac_reachable}",
     )
-    return (
-        action_BCWH,
-        action_CWH,
-        action_WHC,
-        dir_CWH,
-        entropy,
-        example_input,
-        frac_reachable,
-        hallucination_rate,
-        logprob,
-        mask,
-        normalised_world_CWH,
-        normalised_world_WHC,
-        num_unreachable,
-        size,
-        throughput,
-        value,
-        world_CWH,
-        world_WHC,
-    )
+    return
 
 
 if __name__ == "__main__":
