@@ -58,7 +58,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 1
+    num_envs: int = 8
     """the number of parallel game environments"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
@@ -126,7 +126,8 @@ def make_env(env_id, idx, capture_video, size, run_name):
         kwargs.update({'size': size})
         env = gym.make(env_id, **kwargs)
         if capture_video:
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
+            # env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     return thunk
@@ -191,7 +192,6 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None
     ):
         super().__init__()
-        print(f"{render_mode=}")
         # Setup the renderer if requested
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
@@ -241,7 +241,7 @@ class FactorioEnv(gym.Env):
 
     def _get_info(self):
         return {
-            'num_missing_entities': self.num_missing_entities,
+            # 'num_missing_entities': self.num_missing_entities,
             'throughput': self._throughput,
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
@@ -259,7 +259,7 @@ class FactorioEnv(gym.Env):
         self._throughput = 0
         self._frac_reachable = 0
         self._frac_hallucin = 0
-        self._num_missing_entities = 0
+        # self._num_missing_entities = 0
         self._final_dir_reward = 0
         self._material_cost = 0
         self._reward = 0
@@ -267,14 +267,16 @@ class FactorioEnv(gym.Env):
         self._truncated = False
 
         # print(f"Resetting env with options {options}")
-        self.num_missing_entities = 1 if options is None else options.get('num_missing_entities', 1)
+        # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
-        self._world_CWH = self.generate_lesson(
+        self._world_CWH, min_entities_required = self.generate_lesson(
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
-            num_missing_entities=self.num_missing_entities,
+            # num_missing_entities=float('inf'), #self.num_missing_entities,
             seed=seed
         )
+        self.min_entities_required = min_entities_required
+        self._original_world_CWH = torch.clone(self._world_CWH)
         # self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
@@ -356,7 +358,10 @@ class FactorioEnv(gym.Env):
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
         num_entities = self._world_CWH[self.Channel.ENTITIES.value].count_nonzero()
-        frac_reachable = 0 if num_entities == 2 else (1.0 - (float(num_unreachable) / (num_entities - 2)))
+        # NOTE: weird bug with num_unreachable calculations, not planning on
+        # fixing any time super soon. really the calculation should be to
+        # calculate frac_reachable directly, not go via frac_unreachable
+        frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
         frac_hallucin = 0
 
         # Give some small reward for having the belt be the right direction
@@ -379,14 +384,14 @@ class FactorioEnv(gym.Env):
             + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
         )
 
-        reward = (
+        pre_reward = (
             throughput * args.coeff_throughput
             + frac_reachable * args.coeff_frac_reachable
             + frac_hallucin * args.coeff_frac_hallucin
             + final_dir_reward * args.coeff_final_dir_reward
             + material_cost * args.coeff_material_cost
         )
-        reward /= (
+        pre_reward /= (
             args.coeff_throughput
             + args.coeff_frac_hallucin
             + args.coeff_frac_reachable
@@ -401,21 +406,37 @@ class FactorioEnv(gym.Env):
 
         if terminated:
             # If the agent solved before the end, give extra reward
-            reward += (self.max_steps - self.steps)
+            reward = pre_reward + (self.max_steps - self.steps)
+        else:
+            reward = pre_reward
 
         # min_belts = self.get_min_belts(self._world_CWH)
 
         # if np.random.rand() > 0.999 or (np.random.rand() > 0.99 and throughput == 1.0):
         if throughput == 1.0:
-            print(f"{self.steps=}, {self.num_missing_entities=}, {self.actions=}")
-            print(f'!!! {throughput}i/s + {num_unreachable} unreachable + {final_dir_reward} direction = {reward:.3f} reward!!!')
-            print(get_pretty_format(self._world_CWH, mapping))
-            print('--------------')
+            print(
+                f"Found model with throughput == 1.0 (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\n"
+                f"Before:\n" +
+                get_pretty_format(self._original_world_CWH, mapping) +
+                f"\nActions:\n" +
+                '\n'.join([
+                    f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
+                ]) +
+                f"\nAfter:\n" +
+                get_pretty_format(self._world_CWH, mapping) +
+                f"\n(pre_reward) {pre_reward:.6f} = (thput){throughput:.6f}*{args.coeff_throughput}" +
+                f" + (reachable){frac_reachable:.6f}*{args.coeff_frac_reachable}" +
+                f" + (halluc){frac_hallucin:.6f}*{args.coeff_frac_hallucin} " +
+                f" + (final_direc){final_dir_reward:.6f}*{args.coeff_final_dir_reward} " +
+                f" + (material_cost){material_cost:.6f}*{args.coeff_material_cost}\n" +
+                f"completion bonus: {self.max_steps - self.steps}\n"
+                '\n--------------\n'
+            )
 
         self._throughput = throughput
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
-        self._num_missing_entities = self.num_missing_entities
+        # self._num_missing_entities = self.num_missing_entities
         self._final_dir_reward = final_dir_reward
         self._material_cost = material_cost
         self._reward = reward
@@ -430,7 +451,7 @@ class FactorioEnv(gym.Env):
             'throughput': throughput,
             'frac_reachable': frac_reachable,
             'frac_hallucin': frac_hallucin,
-            'num_missing_entities': self.num_missing_entities,
+            # 'num_missing_entities': self.num_missing_entities,
             'final_dir_reward': final_dir_reward,
             'material_cost': material_cost,
         })
@@ -535,7 +556,7 @@ class FactorioEnv(gym.Env):
                         font=font,
                     )
                 # Draw the xy-coords onto the cell
-                text = f"{gx},{gx}"
+                text = f"{gx},{gy}"
                 font   = cache["font"]
                 draw.text(
                     (x0 + (CELL_PX // 10) * 8, y0 + CELL_PX // 10),
@@ -796,7 +817,7 @@ if __name__ == "__main__":
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         # options={'num_missing_entities': float('inf')}
-        options={'num_missing_entities': 0}
+        # options={'num_missing_entities': float('inf')}
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
@@ -846,29 +867,31 @@ if __name__ == "__main__":
             rewards_SE[step] = torch.tensor(reward).to(device).view(-1)
 
             # Add one to the environments that succeeded at getting some throughput
-            if 'num_missing_entities' not in infos:
-                breakpoint()
-            new_missing_entities = infos['num_missing_entities'] + (reward >= args.coeff_throughput).astype(int)
+            # if 'num_missing_entities' not in infos:
+            #     breakpoint()
+            # new_missing_entities = infos['num_missing_entities'] + (reward >= args.coeff_throughput).astype(int)
 
-            # Compute num_missing_entities based on global progress, from 1 to width*height
-            for k, v in infos.items():
-                if k.startswith("_") or k == 'episode':
-                    continue
-                for i, value in enumerate(v):
-                    if value is None:
-                        continue
-                    try:
-                        writer.add_scalar(f"charts/info_{k}_{i:0>2}", value, global_step)
-                    except:
-                        breakpoint()
+            # # Compute num_missing_entities based on global progress, from 1 to width*height
+            # for k, v in infos.items():
+            #     if k.startswith("_") or k == 'episode':
+            #         continue
+            #     for i, value in enumerate(v):
+            #         if value is None:
+            #             continue
+            #         try:
+            #             writer.add_scalar(f"charts/info_{k}_{i:0>2}", value, global_step)
+            #         except:
+            #             breakpoint()
 
-            # Prepare reset options per env
-            options = [{'num_missing_entities': new_missing_entities[i]} if d else None for i, d in enumerate(next_done)]
+            # # Prepare reset options per env
+            # options = [{'num_missing_entities': new_missing_entities[i]} if d else None for i, d in enumerate(next_done)]
+            # options = [{'num_missing_entities': float('inf')} if d else None for i, d in enumerate(next_done)]
 
             # Reset only the done environments with updated num_missing_entities
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
-                obs, _ = envs.envs[idx].reset(options=options[idx])
+                # obs, _ = envs.envs[idx].reset(options=options[idx])
+                obs, _ = envs.envs[idx].reset()
                 next_obs_ECWH[idx] = obs
 
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
@@ -1024,7 +1047,7 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
-    if args.total_timesteps > 5_000:
+    if args.total_timesteps > 10_000:
         avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')

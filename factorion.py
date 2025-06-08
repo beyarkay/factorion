@@ -698,6 +698,12 @@ def functions(
         dbg(
             f"Final Throughput: {output}, {len(unreachable)} unreachable nodes: {unreachable}"
         )
+        # NOTE: there's a subtle bug here that doesn't have much affect on the
+        # reward being able to go down. The "unreachable" calculation tries to
+        # not count the sink/source, since the model can't place those, but it
+        # does so in a way that makes the end result weird if the sink and the
+        # source are the only entities on the map. Not planning on fixing this
+        # one anytime soon.
         return output, len(unreachable)
 
 
@@ -992,7 +998,7 @@ def functions(
             f"Expected world to be square, but is of shape {world.shape}"
         )
         try:
-            throughput, num_unreachable = calc_throughput( world2graph(world, debug=debug), debug=debug)
+            throughput, num_unreachable = calc_throughput(world2graph(world, debug=debug), debug=debug)
             if len(throughput) == 0:
                 return 0, num_unreachable
             actual_throughput = list(throughput.values())[0]
@@ -1283,14 +1289,17 @@ def functions(
 
 
     def generate_lesson(
-        size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0.0,
-        seed=None, random_item=False
+        size=5,
+        kind=LessonKind.MOVE_ONE_ITEM,
+        num_missing_entities=float('inf'),
+        seed=None,
+        random_item=False
     ):
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
-
+        min_entities_required = None
         world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
             2, 0, 1
         )
@@ -1356,11 +1365,15 @@ def functions(
                     # Choose a valid path at random and add it to the map
                     if num_missing_entities != float('inf'):
                         chosen_path = random.choice(paths)
+                        min_entities_required = len(chosen_path)
                         for x, y, d in chosen_path:
                             world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
                                 "transport_belt"
                             ).value
                             world_CWH[Channel.DIRECTION.value, x, y] = d.value
+                    else:
+                        min_entities_required = min([len(p) for p in paths])
+
                 # Randomly remove some number of transport belts from the map
 
                 if num_missing_entities != float('inf'):
@@ -1371,7 +1384,12 @@ def functions(
                     ).nonzero(as_tuple=False)
                     num_samples = min(num_missing_entities, len(entity_locs))
                     samples = [] if num_samples == 0 else random.sample(list(entity_locs), num_samples)
+                    min_entities_required = num_samples
+                    # print(f"Removing {num_samples} entities")
+                    # if num_samples != 0:
+                    #     breakpoint()
                     for x, y in samples:
+                        # print(f"  Removing entity from {x},{y}, num_samples: {num_samples}")
                         world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
                             "empty"
                         ).value
@@ -1384,7 +1402,7 @@ def functions(
         else:
             raise Exception(f"Can't handle {kind}")
 
-        return world_CWH
+        return world_CWH, min_entities_required
 
 
     def find_belt_paths_with_source_sink_orient(
@@ -1518,8 +1536,8 @@ def _(LessonKind, generate_lesson, world2html):
         # torch.manual_seed(42)
         # random.seed(42)
 
-        world_CWH = generate_lesson(
-            size=16, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=5
+        world_CWH, _ = generate_lesson(
+            size=16, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=float('inf')
         )
 
         # print(world_CWH[Channel.ENTITIES.value])
@@ -1636,7 +1654,7 @@ def _(
 
         G = world2graph(world_WHC, debug=True)
         try:
-            thput = calc_throughput(G, debug=False)
+            thput, _num_unreachable = calc_throughput(G, debug=False)
             print(thput)
         except Exception as e:
             print("err")
