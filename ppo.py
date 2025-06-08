@@ -256,6 +256,7 @@ class FactorioEnv(gym.Env):
         self._cum_reward = 0
         self._seed = seed
 
+        self.invalid_actions = 0
         self._throughput = 0
         self._frac_reachable = 0
         self._frac_hallucin = 0
@@ -302,6 +303,7 @@ class FactorioEnv(gym.Env):
         direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
         self.actions.append(None)
+        self.invalid_actions += 1
         # Check that the action is actually valid
         if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
@@ -335,6 +337,7 @@ class FactorioEnv(gym.Env):
             # The thing is too tall to be placed here
             pass
         else:
+            self.invalid_actions -= 1
             # If all the above guards didn't catch anything, allow the
             # placement of the entity
             self._world_CWH[self.Channel.ENTITIES.value, x, y] = entity_id
@@ -454,6 +457,10 @@ class FactorioEnv(gym.Env):
             # 'num_missing_entities': self.num_missing_entities,
             'final_dir_reward': final_dir_reward,
             'material_cost': material_cost,
+            'completion_bonus': self.max_steps - self.steps,
+            'min_entities_required': self.min_entities_required,
+            'num_entities': num_entities,
+            'frac_invalid_actions': self.invalid_actions / self.max_steps,
         })
 
         self._cum_reward += reward
@@ -910,7 +917,7 @@ if __name__ == "__main__":
                     episode_len = infos["episode"]["l"][i]
                     final_throughput = infos["throughput"][i]
                     final_frac_reachable = infos["frac_reachable"][i]
-                    final_frac_hallucin = infos["frac_hallucin"][i]
+                    # final_frac_hallucin = infos["frac_hallucin"][i]
 
                     episodic_returns.append(episode_return)
                     avg_return = sum(episodic_returns) / len(episodic_returns)
@@ -931,11 +938,16 @@ if __name__ == "__main__":
                     # )
                     # writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
 
-                    writer.add_scalar("charts/episodic_return", episode_return, global_step)
-                    writer.add_scalar("charts/episodic_length", episode_len, global_step)
-                    writer.add_scalar("charts/episodic_throughput", final_throughput, global_step)
+                    writer.add_scalar("charts/episodic_excess_entities", infos['num_entities'][i] / infos['min_entities_required'][i], global_step)
+                    writer.add_scalar("charts/episodic_completion_bonus", infos['completion_bonus'][i], global_step)
+                    writer.add_scalar("charts/episodic_final_dir_reward", infos['final_dir_reward'][i], global_step)
                     writer.add_scalar("charts/episodic_frac_reachable", final_frac_reachable, global_step)
-                    writer.add_scalar("charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
+                    writer.add_scalar("charts/episodic_length", episode_len, global_step)
+                    writer.add_scalar("charts/episodic_material_cost", infos['material_cost'][i], global_step)
+                    writer.add_scalar("charts/episodic_return", episode_return, global_step)
+                    writer.add_scalar("charts/episodic_throughput", final_throughput, global_step)
+                    writer.add_scalar("charts/episodic_frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
+                    # writer.add_scalar("charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
