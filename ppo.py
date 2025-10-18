@@ -311,7 +311,7 @@ class FactorioEnv(gym.Env):
 
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
-        direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
+        # direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
         self.actions.append(None)
         self.invalid_actions += 1
@@ -386,7 +386,7 @@ class FactorioEnv(gym.Env):
                 'misc': self.Misc(misc),
             }
 
-        world_old_CWH = self._world_CWH.clone().detach()
+        # world_old_CWH = self._world_CWH.clone().detach()
 
         throughput, num_unreachable = self.funge_throughput(self._world_CWH.permute(1, 2, 0))
         # TODO don't always divide by 15
@@ -508,6 +508,7 @@ class FactorioEnv(gym.Env):
         info = self._get_info()
         if terminated:
             info.update({ 'steps_taken': self.steps })
+
         info.update({
             'throughput': throughput,
             'frac_reachable': frac_reachable,
@@ -733,7 +734,7 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         t0 = time.time()
-        B = x_BCWH.shape[0]
+        # B = x_BCWH.shape[0]
 
         # Encode input
         encoded_BCWH = self.encoder(x_BCWH)
@@ -978,7 +979,8 @@ if __name__ == "__main__":
 
 
             for reason, values in infos.get('invalid_reason', {}).items():
-                if reason[0] == '_': continue
+                if reason[0] == '_':
+                    continue
                 for value in values:
                     writer.add_scalar(f"per_episode_invalid_reasons/{reason}", value, global_step)
 
@@ -989,7 +991,8 @@ if __name__ == "__main__":
 
                 # Iterate through the boolean mask
                 for i in range(args.num_envs):
-                    if not finished_envs_mask[i]: continue
+                    if not finished_envs_mask[i]:
+                        continue
                     # This environment finished, extract its stats
                     episode_return = infos["episode"]["r"][i]
                     episode_len = infos["episode"]["l"][i]
@@ -1114,13 +1117,13 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - returns_B[idxs]) ** 2).mean()
 
                 entropy_loss = entropy_B.mean()
-                assert not torch.isnan(pg_loss), f"pg_loss is NaN, probably a bug"
-                assert not torch.isnan(v_loss), f"v_loss is NaN, probably a bug"
+                assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
+                assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 t0 = time.time()
                 optimizer.zero_grad()
-                assert not torch.isnan(loss), f"Loss is NaN, probably a bug"
+                assert not torch.isnan(loss), "Loss is NaN, probably a bug"
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
