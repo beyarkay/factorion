@@ -967,7 +967,8 @@ if __name__ == "__main__":
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
             next_done = torch.Tensor(next_done).to(device)
 
-            for reason, values in infos['invalid_reason'].items():
+
+            for reason, values in infos.get('invalid_reason', {}).items():
                 if reason[0] == '_': continue
                 for value in values:
                     writer.add_scalar(f"per_episode_invalid_reasons/{reason}", value, global_step)
