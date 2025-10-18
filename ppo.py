@@ -820,6 +820,7 @@ class AgentCNN(nn.Module):
 
 if __name__ == "__main__":
     print("Starting...")
+    start_time = time.time()
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -1165,17 +1166,17 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
-    # if args.total_timesteps > 10_000:
-    #     avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
-    #     # Save the model to a file
-    #     run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
-    #     agent_name = f"agent-{avg_throughput:.6f}-{run_name_dir_safe}"
-    #     print(f"Saving model with MA final throughput of {avg_throughput:.8f} to artifacts/{agent_name}.pt")
-    #     os.makedirs("artifacts", exist_ok=True)
-    #     torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
-    #     if args.track:
-    #         artifact = wandb.Artifact(name=agent_name, type="model")
-    #         artifact.add_file(f"artifacts/{agent_name}.pt")
-    #         wandb.log_artifact(artifact)
+    if start_time - time.time() > 60 * 5: # 5 minutes
+        # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
+        # Save the model to a file
+        run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
+        agent_name = f"agent-{run_name_dir_safe}"
+        print(f"Saving model to artifacts/{agent_name}.pt")
+        os.makedirs("artifacts", exist_ok=True)
+        torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
+        if args.track:
+            artifact = wandb.Artifact(name=agent_name, type="model")
+            artifact.add_file(f"artifacts/{agent_name}.pt")
+            wandb.log_artifact(artifact)
 
 
