@@ -77,16 +77,19 @@ blueprints and use chunks of them as training data to show the RL agent?
   - Number of steps taken until finish
   - Steps per second
 - Also need definitions for what the various terms are, or to get better names
+- Try to see how fast the loop can be made. Comment out all the graph
+  calculations to see how quickly it'll train with the fastest possible graph
+  algorithm
 
 ## Layout of ppo.py
 
 1.  setup
 2.  for iteration in range(args.num_iterations):
 3.  for step in range(args.num_steps):
-4.                for each environment:
-5.                  calculate action based on input
-6.                  update each env based on the action
-7.                  if an env is done, reset it
+4.                 for each environment:
+5.                   calculate action based on input
+6.                   update each env based on the action
+7.                   if an env is done, reset it
 
 ## Notable runs
 

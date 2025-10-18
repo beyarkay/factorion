@@ -512,6 +512,8 @@ class FactorioEnv(gym.Env):
         if terminated:
             info.update({ 'steps_taken': self.steps })
 
+        num_placed_entities = len([a for a in self.actions if a is not None and a['entity'] != 'empty'])
+
         info.update({
             'throughput': throughput,
             'frac_reachable': frac_reachable,
@@ -522,6 +524,7 @@ class FactorioEnv(gym.Env):
             'completion_bonus': self.max_steps - self.steps,
             'min_entities_required': self.min_entities_required,
             'num_entities': num_entities,
+            'num_placed_entities': num_placed_entities,
             'frac_invalid_actions': self.invalid_actions / self.max_steps,
             'max_entities': self.max_entities,
             'invalid_reason': invalid_reason,
@@ -1033,8 +1036,9 @@ if __name__ == "__main__":
                     writer.add_scalar("at_end_of_episode/throughput", end_of_episode_thput, global_step)
                     writer.add_scalar("at_end_of_episode/num_steps", episode_len, global_step)
                     writer.add_scalar("at_end_of_episode/frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/num_entites", infos['num_entities'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/num_entities", infos['num_entities'][i], global_step)
                     writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
+                    writer.add_scalar("at_end_of_episode/num_placed_entities", infos['num_placed_entities'][i], global_step)
                     writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
 
                     # min_belts = infos['min_belts'][i]
