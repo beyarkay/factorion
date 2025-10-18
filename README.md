@@ -13,6 +13,19 @@ in the source into whatever items are in the sink.
 
 Weights & Biases report (a few months out of date, 2025-04-29): https://api.wandb.ai/links/beyarkay/wmccb7fq
 
+## Running the code
+
+```
+uv pip install -r requirements.txt
+source .venv/bin/activate
+python ppo.py \
+    --seed 1 \
+    --env-id factorion/FactorioEnv-v0 \
+    --track \
+    --wandb-project-name factorion \
+    --total-timesteps 50000
+```
+
 ## Ideas around gradually teaching/training the agent
 
 Environments, from easiest to hardest:
@@ -70,7 +83,7 @@ blueprints and use chunks of them as training data to show the RL agent?
 1.  setup
 2.  for iteration in range(args.num_iterations):
 3.  for step in range(args.num_steps):
-4.       for each environment:
-5.         calculate action based on input
-6.         update each env based on the action
-7.         if an env is done, reset it
+4.             for each environment:
+5.               calculate action based on input
+6.               update each env based on the action
+7.               if an env is done, reset it
