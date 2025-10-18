@@ -25,7 +25,7 @@ import factorion
 from PIL import Image, ImageDraw, ImageFont
 
 episodic_returns = deque(maxlen=100)
-final_throughputs = deque(maxlen=100)
+end_of_episode_thputs = deque(maxlen=100)
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
 @dataclass
@@ -58,8 +58,8 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 8
-    """the number of parallel game environments"""
+    num_envs: int = 4
+    """the number of parallel game environments. More envs -> less likely to fit on GPU"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
@@ -68,8 +68,8 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.93
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
-    """the number of mini-batches"""
+    num_minibatches: int = 128
+    """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
     update_epochs: int = 8
     """the K epochs to update the policy"""
     norm_adv: bool = True
@@ -306,37 +306,60 @@ class FactorioEnv(gym.Env):
 
         self.actions.append(None)
         self.invalid_actions += 1
+        invalid_reason = {
+            'replaced_source_or_sink': False,
+            'replace_empty_with_empty': False,
+            'place_empty_w_direction': False,
+            'place_empty_w_recipe': False,
+            'place_asm_mach_wo_recipe': False,
+            'placement_wo_direction': False,
+            'ug_belt_wo_up_or_down': False,
+            'placement_with_unneeded_misc': False,
+            'too_wide': False,
+            'too_tall': False,
+        }
+
         # Check that the action is actually valid
         if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
+            invalid_reason['replaced_source_or_sink'] = True
             pass
         elif entity_id == self.str2ent('empty').value and entity_to_be_replaced == self.str2item('empty').value:
             # Model is trying to replace empty space with more empty space
+            invalid_reason['replace_empty_with_empty'] = True
             pass
         elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
             # Model is trying to place empty space with a direction
+            invalid_reason['place_empty_w_direction'] = True
             pass
         elif entity_id == self.str2ent('empty').value and item_id != self.str2item('empty').value:
             # Model is trying to place empty space with a recipe item
+            invalid_reason['place_empty_w_recipe'] = True
             pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
+            invalid_reason['place_asm_mach_wo_recipe'] = True
             pass
         elif entity_id not in (self.str2ent('empty').value, self.str2ent('assembling_machine_1').value) and direc == self.Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
+            invalid_reason['placement_wo_direction'] = True
             pass
         elif (misc == self.Misc.NONE.value) and (entity_id == self.str2ent('underground_belt').value):
             # model is trying to place an underground belt without giving a down/up
+            invalid_reason['ug_belt_wo_up_or_down'] = True
             pass
         elif (misc != self.Misc.NONE.value) and (entity_id != self.str2ent('underground_belt').value):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
+            invalid_reason['placement_with_unneeded_misc'] = True
             pass
         elif x + self.entities[entity_id].width > self.size:
             # The thing is too wide to be placed here
+            invalid_reason['too_wide'] = True
             pass
         elif y + self.entities[entity_id].height > self.size:
             # The thing is too tall to be placed here
+            invalid_reason['too_tall'] = True
             pass
         else:
             self.invalid_actions -= 1
@@ -469,6 +492,7 @@ class FactorioEnv(gym.Env):
             'num_entities': num_entities,
             'frac_invalid_actions': self.invalid_actions / self.max_steps,
             'max_entities': self.max_entities,
+            'invalid_reason': invalid_reason,
         })
 
         self._cum_reward += reward
@@ -862,7 +886,13 @@ if __name__ == "__main__":
             with torch.no_grad():
                 # TODO update for new action logic
                 # D for dictionary
+                t0 = time.time()
                 action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
+                writer.add_scalar(
+                    f"per_second/get_action_for_rollout_div_{len(next_obs_ECWH)}",
+                    ((1.0/(time.time() - t0))/len(next_obs_ECWH)),
+                     global_step
+                )
                 values_SE[step] = value_E
                 # Flatten action
                 # (xy_B2, direc_B1, entities_B1) = action_ED
@@ -900,7 +930,7 @@ if __name__ == "__main__":
             #         if value is None:
             #             continue
             #         try:
-            #             writer.add_scalar(f"charts/info_{k}_{i:0>2}", value, global_step)
+            #             writer.add_scalar(f"old/charts/info_{k}_{i:0>2}", value, global_step)
             #         except:
             #             breakpoint()
 
@@ -918,6 +948,11 @@ if __name__ == "__main__":
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
             next_done = torch.Tensor(next_done).to(device)
 
+            for reason, values in infos['invalid_reason'].items():
+                if reason[0] == '_': continue
+                for value in values:
+                    writer.add_scalar(f"per_episode_invalid_reasons/{reason}", value, global_step)
+
             if "episode" in infos:
                 # The "_episode" mask indicates which environments finished this step
                 # We can use any of the masks (_r, _l, _t) as they should be the same for a finished env
@@ -929,17 +964,22 @@ if __name__ == "__main__":
                     # This environment finished, extract its stats
                     episode_return = infos["episode"]["r"][i]
                     episode_len = infos["episode"]["l"][i]
-                    final_throughput = infos["throughput"][i]
+                    end_of_episode_thput = infos["throughput"][i]
                     final_frac_reachable = infos["frac_reachable"][i]
                     # final_frac_hallucin = infos["frac_hallucin"][i]
 
                     episodic_returns.append(episode_return)
                     avg_return = sum(episodic_returns) / len(episodic_returns)
-                    writer.add_scalar("charts/episodic_return_ma", avg_return, global_step)
+                    writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
 
-                    final_throughputs.append(final_throughput)
-                    avg_throughput = sum(final_throughputs) / len(final_throughputs)
-                    writer.add_scalar("charts/final_throughput_ma", avg_throughput, global_step)
+                    end_of_episode_thputs.append(end_of_episode_thput)
+                    avg_throughput = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
+                    writer.add_scalar("moving_avg/throughput", avg_throughput, global_step)
+                    writer.add_scalar("at_end_of_episode/throughput", end_of_episode_thput, global_step)
+                    writer.add_scalar("at_end_of_episode/num_steps", episode_len, global_step)
+                    writer.add_scalar("at_end_of_episode/frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
+                    writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
 
                     # min_belts = infos['min_belts'][i]
                     # writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
@@ -952,17 +992,17 @@ if __name__ == "__main__":
                     # )
                     # writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
 
-                    writer.add_scalar("charts/episodic_entity_efficiency",  infos['min_entities_required'][i] / infos['num_entities'][i], global_step)
-                    writer.add_scalar("charts/episodic_completion_bonus", infos['completion_bonus'][i], global_step)
-                    writer.add_scalar("charts/episodic_final_dir_reward", infos['final_dir_reward'][i], global_step)
-                    writer.add_scalar("charts/episodic_frac_reachable", final_frac_reachable, global_step)
-                    writer.add_scalar("charts/episodic_length", episode_len, global_step)
-                    writer.add_scalar("charts/episodic_material_cost", infos['material_cost'][i], global_step)
-                    writer.add_scalar("charts/episodic_return", episode_return, global_step)
-                    writer.add_scalar("charts/episodic_throughput", final_throughput, global_step)
-                    writer.add_scalar("charts/episodic_frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
-                    writer.add_scalar("charts/episodic_max_entities", infos['max_entities'][i], global_step)
-                    # writer.add_scalar("charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
+                    writer.add_scalar("old/charts/episodic_entity_efficiency",  infos['min_entities_required'][i] / infos['num_entities'][i], global_step)
+                    writer.add_scalar("old/charts/episodic_completion_bonus", infos['completion_bonus'][i], global_step)
+                    writer.add_scalar("old/charts/episodic_final_dir_reward", infos['final_dir_reward'][i], global_step)
+                    writer.add_scalar("old/charts/episodic_frac_reachable", final_frac_reachable, global_step)
+                    writer.add_scalar("old/charts/episodic_length", episode_len, global_step)
+                    writer.add_scalar("old/charts/episodic_material_cost", infos['material_cost'][i], global_step)
+                    writer.add_scalar("old/charts/episodic_return", episode_return, global_step)
+                    writer.add_scalar("old/charts/final_through", end_of_episode_thput, global_step)
+                    writer.add_scalar("old/charts/episodic_max_entities", infos['max_entities'][i], global_step)
+
+                    # writer.add_scalar("old/charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -999,9 +1039,15 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 idxs = idxs_B[start:end]
 
+                t0 = time.time()
                 _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
                     obs_B[idxs],
                     actions_B.long()[idxs]
+                )
+                writer.add_scalar(
+                    f"per_second/get_action_for_optim_div_{len(obs_B[idxs])}",
+                    ((1.0/(time.time() - t0))/len(obs_B[idxs])),
+                    global_step
                 )
                 newlogprobs_B = newlogprobs_B.reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
@@ -1049,8 +1095,7 @@ if __name__ == "__main__":
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
-                time_for_backward_and_step = time.time() - t0
-                writer.add_scalar("time_for/backward_and_step", time_for_backward_and_step, global_step)
+                writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
@@ -1061,7 +1106,7 @@ if __name__ == "__main__":
 
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("old/charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
@@ -1069,11 +1114,11 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("old/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if len(final_throughputs) > 0:
-            final_throughput_ma = sum(final_throughputs) / len(final_throughputs)
-            pbar.set_description(f"gstep: {global_step}, thput: {final_throughput_ma:.2f}")
+        if len(end_of_episode_thputs) > 0:
+            final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
+            pbar.set_description(f"gstep: {global_step}, thput: {final_thputs_100ma:.2f}")
 
     envs.close()
     writer.close()

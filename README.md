@@ -55,7 +55,22 @@ blueprints and use chunks of them as training data to show the RL agent?
     figure out the problem?
 - I don't feel like I have visibility about why the agent is struggling, and
   can't diagnose issues easily. Key metrics:
-  - time for environment
-  - time for forward/backward pass
-  - time for everything else
+  - Time for environment
+  - Time for forward/backward pass
+  - Time for everything else
+  - Number of entities on the map
+  - Whether the agent's action was valid or invalid
+  - Throughput of the environment
+  - Number of steps taken until finish
+  - Steps per second
 - Also need definitions for what the various terms are, or to get better names
+
+## Layout of ppo.py
+
+1.  setup
+2.  for iteration in range(args.num_iterations):
+3.  for step in range(args.num_steps):
+4.      for each environment:
+5.        calculate action based on input
+6.        update each env based on the action
+7.        if an env is done, reset it
