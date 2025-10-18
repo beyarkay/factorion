@@ -275,10 +275,18 @@ class FactorioEnv(gym.Env):
         self._world_CWH, min_entities_required = self.generate_lesson(
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
-            # num_missing_entities=float('inf'), #self.num_missing_entities,
+            num_missing_entities=0, #self.num_missing_entities,
             seed=seed,
-            max_entities=self.max_entities,
+            # max_entities=self.max_entities,
         )
+        image = Image.fromarray(self.render(), mode="RGB")
+        iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
+        w = self._world_CWH.shape[1]
+        h = self._world_CWH.shape[2]
+        # print(f"world {min_entities_required}: ")
+        # print(get_pretty_format(self._world_CWH, mapping))
+        image.save(f'videos/world_inits/{iso8601}_seed{seed}_{w}x{h}.png', format="png", optimize=True)
+
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
         # self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
