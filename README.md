@@ -17,7 +17,7 @@ Weights & Biases report (a few months out of date, 2025-04-29): https://api.wand
 
 Environments, from easiest to hardest:
 
-1. Given a working factory, don't break It
+1. Given a working factory, don't break it
 2. Given a working factory, try and improve it
 3. Given a factory with one entity missing, add that tile
 4. Given a factory with N entities missing, add those entities
@@ -70,7 +70,7 @@ blueprints and use chunks of them as training data to show the RL agent?
 1.  setup
 2.  for iteration in range(args.num_iterations):
 3.  for step in range(args.num_steps):
-4.      for each environment:
-5.        calculate action based on input
-6.        update each env based on the action
-7.        if an env is done, reset it
+4.       for each environment:
+5.         calculate action based on input
+6.         update each env based on the action
+7.         if an env is done, reset it

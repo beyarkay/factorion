@@ -412,20 +412,39 @@ class FactorioEnv(gym.Env):
             + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
         )
 
-        pre_reward = (
-            throughput * args.coeff_throughput
-            + frac_reachable * args.coeff_frac_reachable
-            + frac_hallucin * args.coeff_frac_hallucin
-            + final_dir_reward * args.coeff_final_dir_reward
-            + material_cost * args.coeff_material_cost
-        )
-        pre_reward /= (
-            args.coeff_throughput
-            + args.coeff_frac_hallucin
-            + args.coeff_frac_reachable
-            + args.coeff_final_dir_reward
-            + args.coeff_material_cost
-        )
+        reward_components = {
+            'throughput': {
+                'coeff': args.coeff_throughput,
+                'value': throughput,
+            },
+            # 'frac_reachable': {
+            #     'coeff': args.coeff_frac_reachable,
+            #     'value': frac_reachable,
+            # },
+            # 'frac_hallucin': {
+            #     'coeff': args.coeff_frac_hallucin,
+            #     'value': frac_hallucin,
+            # },
+            # 'final_dir_reward': {
+            #     'coeff': args.coeff_final_dir_reward,
+            #     'value': final_dir_reward,
+            # },
+            # 'material_cost': {
+            #     'coeff': args.coeff_material_cost,
+            #     'value': material_cost,
+            # },
+            # 'finished_before_deadline': {
+            #     'coeff': args.coeff_finished_before_deadline,
+            #     'value': (self.max_steps - self.steps) if terminated else 0,
+            # },
+        }
+        pre_reward = 0.0
+        normalisation = 0.0
+        for name, item in reward_components.items():
+            pre_reward += item['coeff'] * item['value']
+            normalisation += item['coeff']
+
+        pre_reward /= normalisation
 
         # Terminate early when the agent connects source to sink
         terminated = throughput == 1.0
