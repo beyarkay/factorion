@@ -317,7 +317,7 @@ class FactorioEnv(gym.Env):
         self.invalid_actions += 1
         invalid_reason = {
             'replaced_source_or_sink': False,
-            'replace_empty_with_empty': False,
+            # 'replace_empty_with_empty': False,
             'place_empty_w_direction': False,
             'place_empty_w_recipe': False,
             'place_asm_mach_wo_recipe': False,
@@ -333,10 +333,11 @@ class FactorioEnv(gym.Env):
             # disallow the replacement of the source+sink
             invalid_reason['replaced_source_or_sink'] = True
             pass
-        elif entity_id == self.str2ent('empty').value and entity_to_be_replaced == self.str2item('empty').value:
-            # Model is trying to replace empty space with more empty space
-            invalid_reason['replace_empty_with_empty'] = True
-            pass
+        # This is fine, actually
+        # elif entity_id == self.str2ent('empty').value and entity_to_be_replaced == self.str2item('empty').value:
+        #     # Model is trying to replace empty space with more empty space
+        #     invalid_reason['replace_empty_with_empty'] = True
+        #     pass
         elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
             # Model is trying to place empty space with a direction
             invalid_reason['place_empty_w_direction'] = True
@@ -899,6 +900,7 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
+    global_num_optimiser_steps = 0
     start_time = time.time()
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
@@ -908,7 +910,7 @@ if __name__ == "__main__":
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    print("Starting iterations")
+    print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
@@ -951,6 +953,15 @@ if __name__ == "__main__":
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
+            # log each item of the action for each environment
+            for i, action in enumerate(action_EA):
+                writer.add_scalar("actions/x",         action[0], global_step + i)
+                writer.add_scalar("actions/y",         action[1], global_step + i)
+                writer.add_scalar("actions/entity",    action[2], global_step + i)
+                writer.add_scalar("actions/direction", action[3], global_step + i)
+                writer.add_scalar("actions/item",      action[4], global_step + i)
+                writer.add_scalar("actions/misc",      action[5], global_step + i)
+
 
             action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
@@ -1139,7 +1150,9 @@ if __name__ == "__main__":
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
+                global_num_optimiser_steps += 1
                 writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
+                writer.add_scalar("optim/num_steps", global_num_optimiser_steps, global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
