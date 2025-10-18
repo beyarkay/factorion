@@ -123,7 +123,7 @@ class Args:
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size})
+        kwargs.update({'size': size, 'max_steps':(2*size)})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -201,6 +201,7 @@ class FactorioEnv(gym.Env):
         self.size = size
         if max_steps is None:
             max_steps = self.size * self.size
+        print(f"FactorioEnv({size=}, {max_steps=}, {render_mode=})")
         self.max_steps = max_steps
 
         # Import the functions from factorion
