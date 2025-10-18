@@ -83,7 +83,29 @@ blueprints and use chunks of them as training data to show the RL agent?
 1.  setup
 2.  for iteration in range(args.num_iterations):
 3.  for step in range(args.num_steps):
-4.             for each environment:
-5.               calculate action based on input
-6.               update each env based on the action
-7.               if an env is done, reset it
+4.                for each environment:
+5.                  calculate action based on input
+6.                  update each env based on the action
+7.                  if an env is done, reset it
+
+## Notable runs
+
+### 5x5 world, 150k timesteps, world is perfect beforehand
+
+0fb32039cbe9b07355c9a2fb20d66e2bba39c19f
+
+https://wandb.ai/beyarkay/factorion/runs/z5v42zmk?nw=nwuserbeyarkay
+
+With these settings, the model slowly figures out how to not mess itself up. It
+is given a perfect world, it just has to learn not to touch anything and it'll
+get a perfect score. Some points:
+
+- `at_end_of_episode/throughput` is basically stagnant at 0.25 until around
+  850k global steps, at which point it starts getting better. This isn't great
+  for fast iteration/testing of ideas, because it'll take a long time to
+  experiment before we can figure out if something good or not.
+- `at_end_of_episode/frac_invalid_actions` keeps rising, and looking at
+  `actions/entity` and `actions/direction`, it looks like the model has learnt
+  to place a transport belt without a direction as a way of doing a no-op,
+  which will never have a bad effect on the map. Whereas placing an actual
+  empty entity might cause it to remove the existing belts.
