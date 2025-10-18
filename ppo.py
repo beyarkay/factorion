@@ -456,9 +456,11 @@ class FactorioEnv(gym.Env):
         pre_reward /= normalisation
 
         # Terminate early when the agent connects source to sink
-        terminated = throughput == 1.0
+        terminated = False # TODO revide early-stopping, but for now we'll remove it `throughput == 1.0`
         # Halt the run if the agent runs out of steps
         truncated = self.steps >= self.max_steps
+        # TODO remove this
+        terminated = truncated
 
         if terminated:
             # If the agent solved before the end, give extra reward
