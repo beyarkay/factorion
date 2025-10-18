@@ -724,6 +724,15 @@ class AgentCNN(nn.Module):
         self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
         self.time_for_get_value = None
         self.time_for_get_action_and_value = None
+
+        # Bias the entity/direction heads towards predicting empty space
+        with torch.no_grad():
+            self.ent_head.bias.fill_(0.0)
+            self.ent_head.bias.data[0] = 1.0
+            self.dir_head.bias.fill_(0.0)
+            self.dir_head.bias.data[0] = 1.0
+
+
         # self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
         # self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
 
