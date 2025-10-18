@@ -1180,7 +1180,7 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
-    if start_time - time.time() > 60 * 5: # 5 minutes
+    if time.time() - start_time > 60 * 5: # 5 minutes
         # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
@@ -1192,5 +1192,7 @@ if __name__ == "__main__":
             artifact = wandb.Artifact(name=agent_name, type="model")
             artifact.add_file(f"artifacts/{agent_name}.pt")
             wandb.log_artifact(artifact)
+    else:
+        print('Not saving because: ', time.time() - start_time, '<=', 60 * 5)
 
 
