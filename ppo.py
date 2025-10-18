@@ -1033,6 +1033,7 @@ if __name__ == "__main__":
                     writer.add_scalar("at_end_of_episode/throughput", end_of_episode_thput, global_step)
                     writer.add_scalar("at_end_of_episode/num_steps", episode_len, global_step)
                     writer.add_scalar("at_end_of_episode/frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/num_entites", infos['num_entities'][i], global_step)
                     writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
                     writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
 
