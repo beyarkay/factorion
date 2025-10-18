@@ -318,8 +318,8 @@ class FactorioEnv(gym.Env):
         invalid_reason = {
             'replaced_source_or_sink': False,
             # 'replace_empty_with_empty': False,
-            'place_empty_w_direction': False,
-            'place_empty_w_recipe': False,
+            # 'place_empty_w_direction': False,
+            # 'place_empty_w_recipe': False,
             'place_asm_mach_wo_recipe': False,
             'placement_wo_direction': False,
             'ug_belt_wo_up_or_down': False,
@@ -338,14 +338,14 @@ class FactorioEnv(gym.Env):
         #     # Model is trying to replace empty space with more empty space
         #     invalid_reason['replace_empty_with_empty'] = True
         #     pass
-        elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
-            # Model is trying to place empty space with a direction
-            invalid_reason['place_empty_w_direction'] = True
-            pass
-        elif entity_id == self.str2ent('empty').value and item_id != self.str2item('empty').value:
-            # Model is trying to place empty space with a recipe item
-            invalid_reason['place_empty_w_recipe'] = True
-            pass
+        # elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
+        #     # Model is trying to place empty space with a direction
+        #     invalid_reason['place_empty_w_direction'] = True
+        #     pass
+        # elif entity_id == self.str2ent('empty').value and item_id != self.str2item('empty').value:
+        #     # Model is trying to place empty space with a recipe item
+        #     invalid_reason['place_empty_w_recipe'] = True
+        #     pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
