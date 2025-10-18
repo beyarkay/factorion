@@ -173,7 +173,8 @@ def datatypes(Enum, dataclass, mo):
 
     class LessonKind(Enum):
         MOVE_ONE_ITEM = 0
-        MOVE_TWO_ITEMS_NO_UNDERGROUND = 1
+        ALL_BELTS_ALREADY_IN_PLACE = 1
+        MOVE_TWO_ITEMS_NO_UNDERGROUND = 2
         MOVE_TWO_ITEMS_WITH_UNDERGROUND = 2
         CREATE_COPPER_WIRE = 3
         CREATE_ELECTRONIC_CIRCUIT = 4
@@ -1305,12 +1306,17 @@ def functions(
             2, 0, 1
         )
         C, W, H = world_CWH.shape
+        # print(f'making world for lesson {kind}')
         # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
-        if kind.value == LessonKind.MOVE_ONE_ITEM.value:
+        if kind.value == LessonKind.ALL_BELTS_ALREADY_IN_PLACE.value:
+            pass
+        elif kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
             original_count = 500 # usually require ~50, sometimes up to 100
             count = original_count
+            # print(f'count is {count}')
             while count > 0:
+                # print(f"{count} attmempting to place source/sink")
                 count -= 1
                 pos1 = torch.randint(0, H * W, (1,))
                 pos2 = torch.randint(0, H * W, (1,))
@@ -1351,13 +1357,17 @@ def functions(
                     sink_dir.value
                 )
                 # print(world_CWH)
+                # print(f"world so far: ")
+                # print(world_CWH[0])
 
                 paths = find_belt_paths_with_source_sink_orient(
                     entities=world_CWH[Channel.ENTITIES.value],
                     directions=world_CWH[Channel.DIRECTION.value],
                 )
                 # Remove all paths that would require placing too many entities
+                # print('found paths', len(paths))
                 paths = list(filter(lambda p: len(p) <= max_entities, paths))
+                # print('filtered paths', len(paths))
 
                 if len(paths) == 0:
                     world_CWH = torch.tensor(
