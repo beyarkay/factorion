@@ -100,11 +100,11 @@ class Args:
     """the target KL divergence threshold"""
     adam_epsilon: float = 1e-5
     """The epsilon parameter for Adam"""
-    chan1: int = 32
+    chan1: int = 64
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 32
+    chan2: int = 64
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 32
+    chan3: int = 64
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
@@ -253,6 +253,7 @@ class FactorioEnv(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
+        options = options if options is not None else {}
         self._cum_reward = 0
         self._seed = seed
 
@@ -266,7 +267,7 @@ class FactorioEnv(gym.Env):
         self._reward = 0
         self._terminated = False
         self._truncated = False
-
+        self.max_entities = 2
         # print(f"Resetting env with options {options}")
         # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
@@ -274,7 +275,8 @@ class FactorioEnv(gym.Env):
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
             # num_missing_entities=float('inf'), #self.num_missing_entities,
-            seed=seed
+            seed=seed,
+            max_entities=self.max_entities,
         )
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
@@ -413,28 +415,33 @@ class FactorioEnv(gym.Env):
         else:
             reward = pre_reward
 
-        # min_belts = self.get_min_belts(self._world_CWH)
-
-        # if np.random.rand() > 0.999 or (np.random.rand() > 0.99 and throughput == 1.0):
-        if throughput == 1.0:
-            print(
-                f"Found model with throughput == 1.0 (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\n"
-                f"Before:\n" +
-                get_pretty_format(self._original_world_CWH, mapping) +
-                f"\nActions:\n" +
-                '\n'.join([
-                    f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
-                ]) +
-                f"\nAfter:\n" +
-                get_pretty_format(self._world_CWH, mapping) +
-                f"\n(pre_reward) {pre_reward:.6f} = (thput){throughput:.6f}*{args.coeff_throughput}" +
-                f" + (reachable){frac_reachable:.6f}*{args.coeff_frac_reachable}" +
-                f" + (halluc){frac_hallucin:.6f}*{args.coeff_frac_hallucin} " +
-                f" + (final_direc){final_dir_reward:.6f}*{args.coeff_final_dir_reward} " +
-                f" + (material_cost){material_cost:.6f}*{args.coeff_material_cost}\n" +
-                f"completion bonus: {self.max_steps - self.steps}\n"
-                '\n--------------\n'
-            )
+        # if throughput == 1.0:
+        #     print(f"\033[1;36mSUCCESS throughput={throughput} (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\033[0m\n" +
+        #         f"\nActions:\n" +
+        #         '\n'.join([
+        #             f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
+        #         ]) +
+        #         f"\nAfter:\n" +
+        #         get_pretty_format(self._world_CWH, mapping) +
+        #         f"\n(pre_reward) {pre_reward:.6f} = (thput){throughput:.6f}*{args.coeff_throughput}" +
+        #         f" + (reachable){frac_reachable:.6f}*{args.coeff_frac_reachable}" +
+        #         f" + (halluc){frac_hallucin:.6f}*{args.coeff_frac_hallucin} " +
+        #         f" + (final_direc){final_dir_reward:.6f}*{args.coeff_final_dir_reward} " +
+        #         f" + (material_cost){material_cost:.6f}*{args.coeff_material_cost}\n" +
+        #         f"completion bonus: {self.max_steps - self.steps}\n"
+        #         '\n--------------\n'
+        #     )
+        # elif truncated:
+        # if truncated:
+        #     print(f"\033[1;31mTRUNCATED: throughput={throughput} (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\n" +
+        #           # f"\nActions:\n" +
+        #           # '\n'.join([
+        #           #     f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
+        #           # ]) +
+        #           # f"\nAfter:\n" +
+        #         get_pretty_format(self._world_CWH, mapping) +
+        #         '\n--------------\033[0m\n'
+        #     )
 
         self._throughput = throughput
         self._frac_reachable = frac_reachable
@@ -461,6 +468,7 @@ class FactorioEnv(gym.Env):
             'min_entities_required': self.min_entities_required,
             'num_entities': num_entities,
             'frac_invalid_actions': self.invalid_actions / self.max_steps,
+            'max_entities': self.max_entities,
         })
 
         self._cum_reward += reward
@@ -659,15 +667,20 @@ class AgentCNN(nn.Module):
         self.y_head = layer_init(nn.Linear(flat_dim, self.height))
         self.ent_head = layer_init(nn.Linear(flat_dim, self.num_entities))
         self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
+        self.time_for_get_value = None
+        self.time_for_get_action_and_value = None
         # self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
         # self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
 
     def get_value(self, x_BCWH):
+        t0 = time.time()
         encoded = self.encoder(x_BCWH)
         value_B = self.critic_head(encoded).squeeze(-1)
+        self.time_for_get_value = time.time() - t0
         return value_B
 
     def get_action_and_value(self, x_BCWH, action=None):
+        t0 = time.time()
         B = x_BCWH.shape[0]
 
         # Encode input
@@ -738,6 +751,7 @@ class AgentCNN(nn.Module):
             "item": torch.zeros_like(ent_B),
             "misc": torch.zeros_like(ent_B),
         }
+        self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
 
 if __name__ == "__main__":
@@ -823,8 +837,8 @@ if __name__ == "__main__":
     start_time = time.time()
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
-        # options={'num_missing_entities': float('inf')}
-        # options={'num_missing_entities': float('inf')}
+        options={'max_entities': 2}
+        # options={'max_entities': global_step // 2_000 + 1}
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
@@ -898,7 +912,7 @@ if __name__ == "__main__":
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 # obs, _ = envs.envs[idx].reset(options=options[idx])
-                obs, _ = envs.envs[idx].reset()
+                obs, _ = envs.envs[idx].reset(options={'max_entities': 2})
                 next_obs_ECWH[idx] = obs
 
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
@@ -938,7 +952,7 @@ if __name__ == "__main__":
                     # )
                     # writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
 
-                    writer.add_scalar("charts/episodic_excess_entities", infos['num_entities'][i] / infos['min_entities_required'][i], global_step)
+                    writer.add_scalar("charts/episodic_entity_efficiency",  infos['min_entities_required'][i] / infos['num_entities'][i], global_step)
                     writer.add_scalar("charts/episodic_completion_bonus", infos['completion_bonus'][i], global_step)
                     writer.add_scalar("charts/episodic_final_dir_reward", infos['final_dir_reward'][i], global_step)
                     writer.add_scalar("charts/episodic_frac_reachable", final_frac_reachable, global_step)
@@ -947,6 +961,7 @@ if __name__ == "__main__":
                     writer.add_scalar("charts/episodic_return", episode_return, global_step)
                     writer.add_scalar("charts/episodic_throughput", final_throughput, global_step)
                     writer.add_scalar("charts/episodic_frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
+                    writer.add_scalar("charts/episodic_max_entities", infos['max_entities'][i], global_step)
                     # writer.add_scalar("charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
 
         # bootstrap value if not done
@@ -1028,11 +1043,14 @@ if __name__ == "__main__":
                 assert not torch.isnan(v_loss), f"v_loss is NaN, probably a bug"
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
+                t0 = time.time()
                 optimizer.zero_grad()
                 assert not torch.isnan(loss), f"Loss is NaN, probably a bug"
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
+                time_for_backward_and_step = time.time() - t0
+                writer.add_scalar("time_for/backward_and_step", time_for_backward_and_step, global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
@@ -1055,21 +1073,21 @@ if __name__ == "__main__":
 
         if len(final_throughputs) > 0:
             final_throughput_ma = sum(final_throughputs) / len(final_throughputs)
-            pbar.set_description(f"thput: {final_throughput_ma:.2f}")
+            pbar.set_description(f"gstep: {global_step}, thput: {final_throughput_ma:.2f}")
 
     envs.close()
     writer.close()
-    if args.total_timesteps > 10_000:
-        avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
-        # Save the model to a file
-        run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
-        agent_name = f"agent-{avg_throughput:.6f}-{run_name_dir_safe}"
-        print(f"Saving model with MA final throughput of {avg_throughput:.8f} to artifacts/{agent_name}.pt")
-        os.makedirs("artifacts", exist_ok=True)
-        torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
-        if args.track:
-            artifact = wandb.Artifact(name=agent_name, type="model")
-            artifact.add_file(f"artifacts/{agent_name}.pt")
-            wandb.log_artifact(artifact)
+    # if args.total_timesteps > 10_000:
+    #     avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
+    #     # Save the model to a file
+    #     run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
+    #     agent_name = f"agent-{avg_throughput:.6f}-{run_name_dir_safe}"
+    #     print(f"Saving model with MA final throughput of {avg_throughput:.8f} to artifacts/{agent_name}.pt")
+    #     os.makedirs("artifacts", exist_ok=True)
+    #     torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
+    #     if args.track:
+    #         artifact = wandb.Artifact(name=agent_name, type="model")
+    #         artifact.add_file(f"artifacts/{agent_name}.pt")
+    #         wandb.log_artifact(artifact)
 
 

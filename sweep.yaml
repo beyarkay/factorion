@@ -11,36 +11,36 @@ parameters:
 
   learning_rate:
     distribution: log_uniform_values
-    min: 1e-5
+    min: 5e-5
     max: 1e-2
 
   ent_coef:
     distribution: log_uniform_values
     min: 1e-4
-    max: 0.1
+    max: 1e-2
 
   gae_lambda:
     distribution: uniform
-    min: 0.8
-    max: 0.99
+    min: 0.85
+    max: 0.9999
 
   chan1:
-    values: [8, 16, 32, 64, 128, 256, 512]
+    values: [16, 32, 64, 128, 256, 512]
   chan2:
-    values: [8, 16, 32, 64, 128, 256, 512]
+    values: [16, 32, 64, 128, 256, 512]
   chan3:
-    values: [8, 16, 32, 64, 128, 256, 512]
+    values: [16, 32, 64, 128, 256, 512]
   flat_dim:
     values: [16, 32, 64, 128, 256, 512]
 
   num_minibatches:
-    values: [2, 4, 8, 16, 32]
+    values: [2, 4, 8]
 
   update_epochs:
     values: [2, 4, 8, 16, 32]
 
   max_grad_norm:
-    values: [0.3, 0.5, 1.0, 1.5, 2.0]
+    values: [0.5, 1.0, 1.5, 2.0, 4.0, 8.0]
 
   vf_coef:
     distribution: uniform
@@ -48,11 +48,11 @@ parameters:
     max: 1.0
 
   num_envs:
-    values: [4, 8, 16, 32, 64, 128]
+    values: [4, 8, 16]
 
   clip_coef:
     distribution: uniform
-    min: 0.1
+    min: 0.2
     max: 0.4
 
 #   coeff_throughput:
@@ -78,7 +78,7 @@ command:
   - --env-id
   - factorion/FactorioEnv-v0
   - --total-timesteps
-  - 400000
+  - 100000
   - --track
   - --wandb-project-name
   - factorion

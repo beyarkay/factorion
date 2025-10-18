@@ -1293,7 +1293,8 @@ def functions(
         kind=LessonKind.MOVE_ONE_ITEM,
         num_missing_entities=float('inf'),
         seed=None,
-        random_item=False
+        random_item=False,
+        max_entities=float('inf')
     ):
         if seed is not None:
             random.seed(seed)
@@ -1307,7 +1308,8 @@ def functions(
         # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
         if kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
-            count = 100
+            original_count = 500 # usually require ~50, sometimes up to 100
+            count = original_count
             while count > 0:
                 count -= 1
                 pos1 = torch.randint(0, H * W, (1,))
@@ -1354,6 +1356,8 @@ def functions(
                     entities=world_CWH[Channel.ENTITIES.value],
                     directions=world_CWH[Channel.DIRECTION.value],
                 )
+                # Remove all paths that would require placing too many entities
+                paths = list(filter(lambda p: len(p) <= max_entities, paths))
 
                 if len(paths) == 0:
                     world_CWH = torch.tensor(
@@ -1398,9 +1402,10 @@ def functions(
                         world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
                 break
             if count == 0:
-                raise Exception("Failed to find valid lesson after 100 attempts")
+                raise Exception(f"Failed to find valid lesson after {original_count} attempts")
         else:
             raise Exception(f"Can't handle {kind}")
+        # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
 
         return world_CWH, min_entities_required
 
