@@ -108,7 +108,7 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    size: int = 10
+    size: int = 5
     """The width and height of the factory"""
 
     # to be filled in runtime
