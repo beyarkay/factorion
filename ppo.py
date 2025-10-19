@@ -895,13 +895,13 @@ if __name__ == "__main__":
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
-    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
+    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape, dtype=torch.float32).to(device)
     ACTION_SPACE_SHAPE = (6,)
     actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=int).to(device)
-    logprobs_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values_SE = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
+    rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
+    dones_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
+    values_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -913,7 +913,7 @@ if __name__ == "__main__":
         # options={'max_entities': global_step // 2_000 + 1}
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)
+    next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
 
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
@@ -972,7 +972,7 @@ if __name__ == "__main__":
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
-            rewards_SE[step] = torch.tensor(reward).to(device).view(-1)
+            rewards_SE[step] = torch.tensor(reward, dtype=torch.float32).to(device).view(-1)
 
             # Add one to the environments that succeeded at getting some throughput
             # if 'num_missing_entities' not in infos:
