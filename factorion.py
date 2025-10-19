@@ -1318,8 +1318,10 @@ def functions(
             while count > 0:
                 # print(f"{count} attmempting to place source/sink")
                 count -= 1
-                pos1 = torch.randint(0, H * W, (1,))
-                pos2 = torch.randint(0, H * W, (1,))
+                pos1 = torch.tensor(0)
+                pos2 = torch.tensor(H * W - 1)
+                # pos1 = torch.randint(0, H * W, (1,))
+                # pos2 = torch.randint(0, H * W, (1,))
                 if pos1 == pos2:
                     # restart the loop until we find non-equal source/sink
                     continue
@@ -1332,6 +1334,8 @@ def functions(
                 sink_dir = random.choice(
                     [d for d in Direction if d != Direction.NONE]
                 )
+                source_dir = Direction.SOUTH
+                sink_dir = Direction.SOUTH
 
                 if random_item:
                     item_value = random.choice([v.value for k, v in items.items()])
@@ -1378,7 +1382,8 @@ def functions(
                 else:
                     # Choose a valid path at random and add it to the map
                     if num_missing_entities != float('inf'):
-                        chosen_path = random.choice(paths)
+                        # chosen_path = random.choice(paths)
+                        chosen_path = paths[0]
                         min_entities_required = len(chosen_path)
                         for x, y, d in chosen_path:
                             world_CWH[Channel.ENTITIES.value, x, y] = str2ent(

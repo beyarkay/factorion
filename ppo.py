@@ -123,7 +123,8 @@ class Args:
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps':(2*size)})
+        # kwargs.update({'size': size, 'max_steps': 2*size})
+        kwargs.update({'size': size, 'max_steps': 2})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -262,20 +263,20 @@ class FactorioEnv(gym.Env):
         self._throughput = 0
         self._frac_reachable = 0
         self._frac_hallucin = 0
-        # self._num_missing_entities = 0
         self._final_dir_reward = 0
         self._material_cost = 0
         self._reward = 0
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
+        self._num_missing_entities = 1
         # print(f"Resetting env with options {options}")
         # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
         self._world_CWH, min_entities_required = self.generate_lesson(
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
-            num_missing_entities=0, #self.num_missing_entities,
+            num_missing_entities=self._num_missing_entities,
             seed=seed,
             # max_entities=self.max_entities,
         )
@@ -867,6 +868,7 @@ if __name__ == "__main__":
     torch.use_deterministic_algorithms(args.torch_deterministic)
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else ("mps" if torch.backends.mps.is_available() and args.metal else "cpu"))
+    print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
     # env setup
