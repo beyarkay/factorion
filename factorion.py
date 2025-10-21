@@ -1627,7 +1627,7 @@ def _(LessonKind, generate_lesson, world2html):
         return world2html(world_WHC=world_CWH.permute(1, 2, 0))
 
 
-    __()
+    # __()
     return
 
 
@@ -1770,6 +1770,10 @@ def _(torch):
     path = "cleanrl/artifacts/agent-0.966447-factorion-FactorioEnv-v0__ppo__1__2025-04-25T11-17-30.pt"
     path = "cleanrl/agent-1.023271-factorion-FactorioEnv-v0__ppo__1__2025-04-25T04-00-29.pt"
 
+    path = (
+        "artifacts/agent-factorion-FactorioEnv-v0__ppo__1__2025-10-19T07-39-15.pt"
+    )
+
 
     def make_env():
         def _thunk():
@@ -1778,69 +1782,100 @@ def _(torch):
         return _thunk
 
 
-    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(4)])
+    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(1)])
 
-    # agent = AgentCNN(envs,
-    #     chan1=32,
-    #     chan2=32,
-    #     chan3=32,
-    #     flat_dim=32,
+    agent = AgentCNN(
+        envs,
+        chan1=32,
+        chan2=32,
+        chan3=32,
+        flat_dim=128,
+    )
+    agent.load_state_dict(torch.load(path, weights_only=False))
+    agent.eval()
+    return AgentCNN, FactorioEnv, agent, envs, gym, make_env, path
+
+
+@app.cell
+def __(FactorioEnv, world2html):
+    env_ = FactorioEnv(size=5)
+    env_.reset(13453)
+    world2html(env_._world_CWH.permute(1, 2, 0))
+    return (env_,)
+
+
+@app.cell
+def _(FactorioEnv, agent, torch, world2html):
+    size = 5
+    # world_CWH = get_new_world(seed=None, n=size).permute(2, 0, 1)
+
+    # world_CWH, min_entities_required = generate_lesson(
+    #     size=size,
+    #     kind=LessonKind.MOVE_ONE_ITEM,
+    #     num_missing_entities=2,
+    #     seed=42,
+    #     # max_entities=self.max_entities,
     # )
-    # agent.load_state_dict(torch.load(path, weights_only=False))
-    # agent.eval()
+    env = FactorioEnv(size=size)
+    env.reset(13453)
+    world2html(env._world_CWH.permute(1, 2, 0))
+    # world_CWH.dtype = torch.float32
+    # world2html(world_CWH.permute(1, 2, 0)),
+
+
+    worlds = [env._world_CWH]
+    actions = []
+    for i in range(5):
+        print('world[-1]', worlds[-1][0])
+        with torch.no_grad():
+            action_BCWH, logprob, entropy, value = agent.get_action_and_value(
+                torch.Tensor(worlds[-1]).clone().unsqueeze(0).to(torch.float32)
+            )
+        
+        d = {
+            "xy": action_BCWH["xy"][0].tolist(), # tensor([[2, 1]]),
+            "direction": action_BCWH["direction"][0].item(), # tensor([2]),
+            "entity": action_BCWH["entity"][0].item(), #tensor([1]),
+            "item": action_BCWH["item"][0].item(), # tensor([0]),
+            "misc": action_BCWH["misc"][0].item(), #tensor([0]),
+        }
+        print('action: ', d)
+        actions.append(d)
+        # break
+        
+        observation, reward, terminated, truncated, info = env.step(d)
+        print('next state: ', torch.Tensor(observation)[0])
+        # break
+        worlds.append(torch.Tensor(observation).clone())
+        
+
+    [(i, world2html(w.permute(1, 2, 0)), a) for i, w, a in zip(range(len(worlds)), worlds, actions)]
+    return (
+        action_BCWH,
+        actions,
+        d,
+        entropy,
+        env,
+        i,
+        info,
+        logprob,
+        observation,
+        reward,
+        size,
+        terminated,
+        truncated,
+        value,
+        worlds,
+    )
+
+
+@app.cell
+def __():
     return
 
 
 @app.cell
-def _(
-    Channel,
-    agent,
-    funge_throughput,
-    get_new_world,
-    normalise_world,
-    torch,
-    world2html,
-):
-    size = 5
-    world_CWH = get_new_world(seed=None, n=size).permute(2, 0, 1)
-    world_CWH
-
-
-    example_input = torch.randn(1, agent.channels, agent.width, agent.height)
-    with torch.no_grad():
-        action_BCWH, logprob, entropy, value = agent.get_action_and_value(
-            world_CWH.unsqueeze(0)
-        )
-
-    action_CWH = action_BCWH[0, :, :, :]
-    dir_CWH = action_CWH[Channel.DIRECTION.value, :, :]
-    mask = dir_CWH > 0
-    dir_CWH[mask] = dir_CWH[mask] * 4 - 4
-    dir_CWH[~mask] = -1
-    action_WHC = torch.tensor(action_CWH).permute(1, 2, 0)
-    world_WHC = world_CWH.permute(1, 2, 0)
-    normalised_world_WHC = normalise_world(action_WHC, world_WHC)
-    throughput, num_unreachable = funge_throughput(
-        normalised_world_WHC, debug=False
-    )
-    throughput /= 15.0
-    frac_reachable = 1.0 - float(num_unreachable) / (size * size)
-    normalised_world_CWH = normalised_world_WHC.permute(2, 0, 1)
-
-    hallucination_rate = (
-        normalised_world_WHC != action_CWH.permute(1, 2, 0)
-    ).sum() / action_CWH.numel()
-
-    (
-        "(white inserter is source, green inserter is sink)",
-        "---Initial world---",
-        world2html(world_CWH.permute(1, 2, 0)),
-        "---Before normalisation---",
-        world2html(action_CWH.permute(1, 2, 0)),
-        "---Predicted world---",
-        world2html(normalised_world_WHC),
-        f"Throughput: {throughput * 100:.0f}%, hallu: {hallucination_rate:.2f}, frac: {frac_reachable}",
-    )
+def __():
     return
 
 
