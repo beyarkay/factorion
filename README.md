@@ -15,7 +15,7 @@ output items.
 > experimental and will not be held to the same quality standards as my more
 > mature projects (e.g., https://github.com/beyarkay/eskom-calendar).
 
-_(Placeholder for a short video or GIF of Factorio gameplay)_
+![](imgs/blueprint.png)
 
 Weights & Biases report (a few months out of date, 2025-04-29, current work has
 progressed significantly): https://api.wandb.ai/links/beyarkay/wmccb7fq
