@@ -858,6 +858,7 @@ if __name__ == "__main__":
             f"num_iterations:{args.num_iterations}",
             f"batch_size:{args.batch_size}",
             f"seed:{args.seed}",
+            f"size:{args.size}",
             f"timesteps:{args.total_timesteps//1000}K",
         )
     print("Setting up writer")
