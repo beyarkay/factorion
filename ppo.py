@@ -2,6 +2,7 @@
 # TODO: convert to many steps, each predicting the placement of an item
 # TODO: integrate with actual factorio
 import os
+import typing
 import random
 import time
 from dataclasses import dataclass
@@ -110,6 +111,8 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     size: int = 5
     """The width and height of the factory"""
+    tags: typing.Optional[typing.List[str]] = None
+    """Tags to apply to the wandb run."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -124,7 +127,7 @@ def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
         # kwargs.update({'size': size, 'max_steps': 2*size})
-        kwargs.update({'size': size, 'max_steps': 5})
+        kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -269,7 +272,7 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = int(torch.randint(1, 4, (1,))[0]) # TODO also change max_steps in tandem
+        self._num_missing_entities = int(torch.randint(0, 4, (1,))[0]) # TODO also change max_steps in tandem
         # print(f"Resetting env with options {options}")
         # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
@@ -423,9 +426,11 @@ class FactorioEnv(gym.Env):
             + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
         )
 
+        # print(locals())
+        # print('args' in locals())
         reward_components = {
             'throughput': {
-                'coeff': args.coeff_throughput,
+                'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
                 'value': throughput,
             },
             # 'frac_reachable': {
@@ -833,10 +838,11 @@ if __name__ == "__main__":
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}")
     iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{iso8601}"
+    run = None
     if args.track:
         import wandb
 
-        wandb.init(
+        run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             sync_tensorboard=True,
@@ -844,6 +850,15 @@ if __name__ == "__main__":
             name=run_name,
             monitor_gym=True,
             save_code=True,
+            tags=args.tags
+        )
+        run.tags = run.tags + (
+            f"batch_size:{args.batch_size}",
+            f"minibatch_size:{args.minibatch_size}",
+            f"num_iterations:{args.num_iterations}",
+            f"batch_size:{args.batch_size}",
+            f"seed:{args.seed}",
+            f"timesteps:{args.total_timesteps//1000}K",
         )
     print("Setting up writer")
     writer = SummaryWriter(f"runs/{run_name}")
@@ -886,6 +901,8 @@ if __name__ == "__main__":
     )
 
     if args.start_from is not None:
+        if track:
+            run.tags = run.tags + (f"start_from:{args.start_from}",)
         print(f"Loading model weights from {args.start_from}")
         agent.load_state_dict(torch.load(args.start_from))
 
@@ -1184,6 +1201,8 @@ if __name__ == "__main__":
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             pbar.set_description(f"gstep: {global_step}, thput: {final_thputs_100ma:.2f}")
 
+    final_thput = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
+    run.tags = run.tags + (f"thput:{final_thput*100:.0f}",)
     envs.close()
     writer.close()
     if time.time() - start_time > 60 * 5: # 5 minutes
@@ -1193,6 +1212,7 @@ if __name__ == "__main__":
         agent_name = f"agent-{run_name_dir_safe}"
         print(f"Saving model to artifacts/{agent_name}.pt")
         os.makedirs("artifacts", exist_ok=True)
+        run.tags = run.tags + (f"saved_as:{agent_name}.pt",)
         torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
         if args.track:
             artifact = wandb.Artifact(name=agent_name, type="model")
