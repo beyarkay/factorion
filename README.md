@@ -72,7 +72,13 @@ of the Factorio game world.
   is thus incentivized to create designs that are not just connected, but
   efficient.
 
-_(TODO screenshots of FactorioEnv)_
+#### An example 5x5 environment with one transport-belt missing
+
+![](imgs/5x5.png)
+
+#### An example 7x7 environment with two transport-belts missing
+
+![](imgs/7x7.png)
 
 ### Curriculum learning
 
@@ -158,16 +164,33 @@ python ppo.py \
     --env-id factorion/FactorioEnv-v0 \
     --track \
     --wandb-project-name factorion \
-    --total-timesteps 50000
+    --total-timesteps 500000
 ```
 
+Most runs that get to any level of ability take at least 4 hours of my M1
+macbook pro.
+
 ## Notable runs / logbook (very rough from here on out)
+
+Note: about 250 runs have been done so far, this is a significantly reduced
+summary. I'll do a proper write-up once there's not so many gains to be had
+from researching more. All metrics are done through Weights & Biases.
+
+![](imgs/wandb.png)
 
 ### 5x5 world, 150k timesteps, world is perfect beforehand
 
 Git hash: 0fb32039cbe9b07355c9a2fb20d66e2bba39c19f
 
 https://wandb.ai/beyarkay/factorion/runs/z5v42zmk?nw=nwuserbeyarkay
+
+##### The throughput of this run over time
+
+![](imgs/smol-thput.png)
+
+##### The actions of the model over time
+
+![](imgs/smol-actions.png)
 
 With these settings, the model slowly figures out how to not mess itself up. It
 is given a perfect world, it just has to learn not to touch anything and it'll
