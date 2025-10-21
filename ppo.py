@@ -109,7 +109,7 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    size: int = 5
+    size: int = 6
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
@@ -272,7 +272,7 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = int(torch.randint(0, 4, (1,))[0]) # TODO also change max_steps in tandem
+        self._num_missing_entities = int(torch.randint(0, 3, (1,))[0]) # TODO also change max_steps in tandem
         # print(f"Resetting env with options {options}")
         # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
