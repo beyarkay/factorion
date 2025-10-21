@@ -1,21 +1,156 @@
-# Factorion
+# Factorion: An RL Agent for Building Factories
 
-This project aims to create a ML model that can create high-throughput
-factories in the video-game factorio. It's been through several iterations and
-ideas, but the current research direction is to train an reinforcement-learning
-agent to place entities in the game world, and then reward that agent based on
-the throughput of the built factory.
+This project is an experiment in using Reinforcement Learning (RL) to train an
+agent that can build high-throughput factories in an environment inspired by
+the game Factorio.
 
-Once an agent is successfully building factories, this agent will be integrated
-into a factorio mod, so that you can just place "source" tiles and "sink"
-tiles, and the agent will create a factory that'll convert whatever items are
-in the source into whatever items are in the sink.
+The ultimate goal is to create an agent that, given a defined buildable area, a
+"source" tile for inputs, and a "sink" tile for outputs, can autonomously
+design and build a factory. This involves placing all the necessary assembling
+machines, power poles, transport belts, etc. to transform the input items into
+the desired output items, optimising for maximum production throughput of the
+output items.
 
-Weights & Biases report (a few months out of date, 2025-04-29): https://api.wandb.ai/links/beyarkay/wmccb7fq
+> **Note:** This project is under heavy development. The codebase is
+> experimental and will not be held to the same quality standards as my more
+> mature projects (e.g., https://github.com/beyarkay/eskom-calendar).
 
-## Running the code
+_(Placeholder for a short video or GIF of Factorio gameplay)_
 
-```
+Weights & Biases report (a few months out of date, 2025-04-29, current work has
+progressed significantly): https://api.wandb.ai/links/beyarkay/wmccb7fq
+
+## What is Factorio?
+
+Factorio is a popular 2D tile-based top-down PC game centred on automation and
+logistics. Players start by manually mining basic resources like iron and
+copper ore. They then use these resources to build machines, which in turn
+automate production processes. The core gameplay loop involves designing and
+expanding intricate "factories" - complex webs of machines, conveyor belts, and
+robotic arms - to produce increasingly sophisticated items, from simple gears to
+rocket components. The game presents a significant logistical and design
+challenge, making it an interesting domain for an autonomous RL agent.
+
+## The Reinforcement Learning Problem
+
+Instead of integrating directly with the game (which would be prohibitively
+slow for training), this project uses a basic implementation of core Factorio
+mechanics. Currently this is in python, but will be rewritten in C/Rust before
+the next scale-up of agent training as roll-out times are becoming a
+bottleneck.
+
+### The Environment: `FactorioEnv`
+
+The agent operates within a grid-world environment that simulates a small patch
+of the Factorio game world.
+
+- **State/Observation Space**: The environment's state is represented as a 3D
+  tensor of shape `(Channels, Width, Height)`. It's a grid where each cell `(x, y)`
+  has several channels describing its contents. Key channels include:
+
+  - `ENTITIES`: An integer ID for the machine or belt in that cell (e.g.,
+    transport belt, assembler).
+  - `DIRECTION`: The orientation of the entity (e.g., North, East, South,
+    West).
+  - `ITEMS`: The recipe an assembler is set to, or the item an inserter is
+    filtering for.
+  - `MISC`: Used for special entity states, like the direction of an
+    underground belt.
+
+- **Action Space**: The agent interacts with the environment by placing one
+  entity at a time. Each turn, the agent outputs a discrete action composed of:
+
+  - `xy`: The coordinates for the placement.
+  - `entity`: The type of entity to place.
+  - `direction`: The orientation of the entity.
+
+- **Reward Signal**: After the agent has finished placing entities (or the
+  episode times out), the resulting factory is evaluated. A custom graph-based
+  algorithm simulates the flow of items through the constructed belts and
+  machines to calculate the factory's final **throughput** (items produced per
+  second). This throughput value serves as the primary reward signal. The agent
+  is thus incentivized to create designs that are not just connected, but
+  efficient.
+
+_(TODO screenshots of FactorioEnv)_
+
+### Curriculum learning
+
+To reduce the sparsity of the reward (even mostly-correct factories can result
+in zero throughput and therefore zero reward), a curriculum learning approach
+is taken. Basic factories (as simple as a series of transport belts that are
+all connected) are auto-generated using hand-written factory-generation code,
+and then entities are removed from the known-correct factory. At first, zero or
+one entities are removed, so the agent only has to place one entity (or ensure
+it doesn't remove an entity) in order to receive a reward. As the agent
+improves, more and more entities are removed from the known-correct factory,
+until only the input and output tiles remain.
+
+### The Agent: `AgentCNN`
+
+The agent's policy is represented by a Convolutional Neural Network (CNN). This
+architecture is well-suited for processing grid-based, spatial data like our
+environment.
+
+- **Input**: The network takes the environment's `(Channels, Width, Height)`
+  tensor as input.
+- **Architecture**: The agent uses a series of convolutional layers to extract
+  spatial features from the factory layout. The output of the convolutional
+  encoder is then fed into several separate linear heads.
+- **Output**:
+  - **Actor Heads**: There are separate output heads for each component of the
+    action space (`x`, `y`, `entity`, `direction`), predicting a probability
+    distribution over the possible choices for each.
+  - **Critic Head**: A single value head outputs an estimate of the expected
+    future reward from the current state, which is used during training.
+
+## Current Status and Future Goals
+
+The project is progressing by gradually increasing the complexity of the tasks
+the agent must solve. Currently, the focus is on training the agent to solve a
+fundamental logistics problem: placing transport belts on increasingly-sized
+grids to create an unbroken path from a source to a sink. The agent is
+successfully able to place transport belts on 7x7 grids. The grid size will
+increase until we reach an 11x11 grid, which is the smallest required to fit a
+basic green-circuits factory:
+
+#### **Green circuit factory in factorio**
+
+Here is the (intermediate) goal: The input is 1. the copper plates in the
+top-left steel chest and 2. the iron plates in the bottom left steel chest. The
+output is the green electronic circuit, in the very bottom left corner. All 36
+entities must be precisely placed, otherwise the throughput of the factory will
+be zero.
+
+![](imgs/green-in-factorio.png)
+
+#### **Green circuit factory in tensor representation**
+
+The agent sees the factory something like the below image. Directions, recipes,
+and entity IDs are all encoded in the third dimension of the tensor:
+
+![](imgs/green.png)
+
+#### **Green circuit factory in graph representation**
+
+In order to calculate the throughput of a factory, a graph is created from the
+tensor based on factorio's game logic, and then the min-flow of that graph is
+calculated to give the throughput of the factory. A debug representation of the
+graph for the green-circuits factory is given below:
+
+![](imgs/flow.png)
+
+## Next steps:
+
+1.  Increasing world size to present more complex path finding problems.
+2.  Introducing more entities, such as inserters, assembling machines,
+    underground belts, power poles.
+3.  Moving towards more complex tasks, such as building a complete production
+    line to transform copper and iron plates into electronic circuits.
+
+## Running the Code
+
+```bash
 uv pip install -r requirements.txt
 source .venv/bin/activate
 python ppo.py \
@@ -26,76 +161,11 @@ python ppo.py \
     --total-timesteps 50000
 ```
 
-## Ideas around gradually teaching/training the agent
-
-Environments, from easiest to hardest:
-
-1. Given a working factory, don't break it
-2. Given a working factory, try and improve it
-3. Given a factory with one entity missing, add that tile
-4. Given a factory with N entities missing, add those entities
-5. Given a factory with only the input and output, place all the entities
-   required to maximise throughput
-
-## Ideas around the reward signal
-
-- The throughput of the factory (items/second)
-- The number of entities placed
-- The number of entities which are connected to one another in the graph
-- the distance that input items travel away from the source
-
-## Ideas around the environment
-
-Currently, the environment is a custom-built mimic of a fraction of factorio's
-features. This isn't idea, but it is (probably) faster than factorio.
-
-Really, I want to have either an actual factorio instance running, or a much
-better mimic of factorio's behaviour. I'm pretty sure running a full factorio
-instance is going to be very very slow, and won't parallelise without a lot of
-boring effort.
-
-Maybe, to collect training data, I could download some factorio worlds or
-blueprints and use chunks of them as training data to show the RL agent?
-
-## Open questions
-
-- The agent struggles to learn to place even one transport belt. Something
-  seems fundamentally wrong with the system.
-  - Maybe the RL loop is too slow so there's not enough training? Need to
-    measure time taken doing forward/backward passes vs time taken
-    calculating the environment.
-  - Maybe the underlying policy doesn't have the size required to actually
-    figure out the problem?
-- I don't feel like I have visibility about why the agent is struggling, and
-  can't diagnose issues easily. Key metrics:
-  - Time for environment
-  - Time for forward/backward pass
-  - Time for everything else
-  - Number of entities on the map
-  - Whether the agent's action was valid or invalid
-  - Throughput of the environment
-  - Number of steps taken until finish
-  - Steps per second
-- Also need definitions for what the various terms are, or to get better names
-- Try to see how fast the loop can be made. Comment out all the graph
-  calculations to see how quickly it'll train with the fastest possible graph
-  algorithm
-
-## Layout of ppo.py
-
-1.  setup
-2.  for iteration in range(args.num_iterations):
-3.  for step in range(args.num_steps):
-4.                 for each environment:
-5.                   calculate action based on input
-6.                   update each env based on the action
-7.                   if an env is done, reset it
-
-## Notable runs
+## Notable runs / logbook (very rough from here on out)
 
 ### 5x5 world, 150k timesteps, world is perfect beforehand
 
-0fb32039cbe9b07355c9a2fb20d66e2bba39c19f
+Git hash: 0fb32039cbe9b07355c9a2fb20d66e2bba39c19f
 
 https://wandb.ai/beyarkay/factorion/runs/z5v42zmk?nw=nwuserbeyarkay
 
