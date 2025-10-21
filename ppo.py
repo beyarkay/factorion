@@ -923,7 +923,7 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     global_num_optimiser_steps = 0
-    start_time = time.time()
+    # start_time = time.time()
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={'max_entities': 2}
@@ -1201,11 +1201,18 @@ if __name__ == "__main__":
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             pbar.set_description(f"gstep: {global_step}, thput: {final_thputs_100ma:.2f}")
 
-    final_thput = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-    run.tags = run.tags + (f"thput:{final_thput*100:.0f}",)
+    final_thput = 0 if len(end_of_episode_thputs) == 0 else sum(end_of_episode_thputs) / len(end_of_episode_thputs)
+    def format_duration(seconds: float) -> str:
+        total_seconds = int(round(seconds))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
+    runtime = time.time() - start_time
+    run.tags = run.tags + (f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     writer.close()
-    if time.time() - start_time > 60 * 5: # 5 minutes
+    if runtime > 60 * 5: # 5 minutes
         # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
