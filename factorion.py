@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.13.7"
+__generated_with = "0.8.22"
 app = marimo.App(width="medium")
 
 
@@ -38,6 +38,7 @@ def _():
     return (
         Categorical,
         Enum,
+        F,
         List,
         Tuple,
         base64,
@@ -45,14 +46,23 @@ def _():
         defaultdict,
         deque,
         go,
+        init,
         json,
+        math,
         mo,
+        nn,
         np,
         nx,
+        optim,
+        pd,
         plt,
         random,
+        sys,
         torch,
+        tqdm,
         traceback,
+        trange,
+        wandb,
         zlib,
     )
 
@@ -192,11 +202,14 @@ def datatypes(Enum, dataclass, mo):
     return (
         Channel,
         DIR_TO_DELTA,
+        Dim,
         Direction,
         Entity,
         Footprint,
+        Item,
         LessonKind,
         Misc,
+        Recipe,
         entities,
         items,
         recipes,
@@ -604,7 +617,9 @@ def functions(
                     f"  Moved {repr(nodes[0])} to front of queue, some dependants {unprocessed} haven't been processed"
                 )
                 continue
-            assert node not in already_processed, f"Node {node} isn't in {already_processed=}"
+            assert node not in already_processed, (
+                f"Node {node} isn't in {already_processed=}"
+            )
             dbg(f"\nChecking node {repr(node)}")
 
             curr = G.nodes[node]
@@ -624,19 +639,23 @@ def functions(
                 if "assembling_machine" in node:
                     dbg(f"  asm machine: {curr}")
                     if curr["recipe"] == "empty":
-                        print(f"asesmbling machine {repr(node)} has {curr['recipe']=}, is not equal to empty")
+                        print(
+                            f"asesmbling machine {repr(node)} has {curr['recipe']=}, is not equal to empty"
+                        )
                     min_ratio = 1
                     # TODO crafting speed???
                     # dbg(f"{recipes=}")
                     curr["output"] = {}
-                    if curr['recipe'] in recipes:
+                    if curr["recipe"] in recipes:
                         for item, rate in recipes[curr["recipe"]].consumes.items():
                             ratio = curr["input_"].get(item, 0) / rate
                             min_ratio = min(min_ratio, ratio)
                         dbg(
                             f"    Recipe consumables: {recipes[curr['recipe']].consumes}"
                         )
-                        dbg(f"    Recipe products: {recipes[curr['recipe']].produces}")
+                        dbg(
+                            f"    Recipe products: {recipes[curr['recipe']].produces}"
+                        )
                         curr["output"] = {
                             k: v * min_ratio
                             for k, v in recipes[curr["recipe"]].produces.items()
@@ -999,7 +1018,9 @@ def functions(
             f"Expected world to be square, but is of shape {world.shape}"
         )
         try:
-            throughput, num_unreachable = calc_throughput(world2graph(world, debug=debug), debug=debug)
+            throughput, num_unreachable = calc_throughput(
+                world2graph(world, debug=debug), debug=debug
+            )
             if len(throughput) == 0:
                 return 0, num_unreachable
             actual_throughput = list(throughput.values())[0]
@@ -1137,7 +1158,7 @@ def functions(
                             and src_direction == d
                             # Check that the other is not a downwards underground belt
                             and not (
-                               "underground_belt" in src_entity.name
+                                "underground_belt" in src_entity.name
                                 and src_misc.value == Misc.UNDERGROUND_DOWN
                             )
                         )
@@ -1164,7 +1185,8 @@ def functions(
                         dst_is_belt = "belt" in dst_entity.name
                         opposite = Direction.SOUTH.value - Direction.NORTH.value
                         dst_opposing_belt = (
-                            dst_is_belt and abs(dst_direction.value - d.value) == opposite
+                            dst_is_belt
+                            and abs(dst_direction.value - d.value) == opposite
                         )
                         # various underground belt checks
                         # TODO figure out these checks
@@ -1175,7 +1197,11 @@ def functions(
                             #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
                             # )
                         )
-                        if dst_is_belt and not dst_opposing_belt and dest_underground_ok:
+                        if (
+                            dst_is_belt
+                            and not dst_opposing_belt
+                            and dest_underground_ok
+                        ):
                             G.add_edge(
                                 f"{e.name}\n@{x},{y}",
                                 f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
@@ -1250,7 +1276,9 @@ def functions(
                     elif m == Misc.UNDERGROUND_UP:
                         max_delta = 1
                     else:
-                        assert False, f"Underground belts must be either UP or DOWN, not {m}"
+                        assert False, (
+                            f"Underground belts must be either UP or DOWN, not {m}"
+                        )
                     for delta in range(1, max_delta):
                         if d == Direction.EAST:
                             src = [x - 1, y]
@@ -1292,10 +1320,10 @@ def functions(
     def generate_lesson(
         size=5,
         kind=LessonKind.MOVE_ONE_ITEM,
-        num_missing_entities=float('inf'),
+        num_missing_entities=float("inf"),
         seed=None,
         random_item=False,
-        max_entities=float('inf')
+        max_entities=float("inf"),
     ):
         if seed is not None:
             random.seed(seed)
@@ -1312,7 +1340,7 @@ def functions(
             pass
         elif kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
-            original_count = 500 # usually require ~50, sometimes up to 100
+            original_count = 500  # usually require ~50, sometimes up to 100
             count = original_count
             # print(f'count is {count}')
             while count > 0:
@@ -1340,7 +1368,7 @@ def functions(
                 if random_item:
                     item_value = random.choice([v.value for k, v in items.items()])
                 else:
-                    item_value = str2item('electronic_circuit').value
+                    item_value = str2item("electronic_circuit").value
 
                 world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
                     str2ent("source").value
@@ -1381,7 +1409,7 @@ def functions(
                     continue
                 else:
                     # Choose a valid path at random and add it to the map
-                    if num_missing_entities != float('inf'):
+                    if num_missing_entities != float("inf"):
                         # chosen_path = random.choice(paths)
                         chosen_path = paths[0]
                         min_entities_required = len(chosen_path)
@@ -1395,14 +1423,27 @@ def functions(
 
                 # Randomly remove some number of transport belts from the map
 
-                if num_missing_entities != float('inf'):
+                if num_missing_entities != float("inf"):
                     entity_locs = (
-                        (world_CWH[Channel.ENTITIES.value] != str2ent("source").value)
-                        & (world_CWH[Channel.ENTITIES.value] != str2ent("sink").value)
-                        & (world_CWH[Channel.ENTITIES.value] != str2ent("empty").value)
+                        (
+                            world_CWH[Channel.ENTITIES.value]
+                            != str2ent("source").value
+                        )
+                        & (
+                            world_CWH[Channel.ENTITIES.value]
+                            != str2ent("sink").value
+                        )
+                        & (
+                            world_CWH[Channel.ENTITIES.value]
+                            != str2ent("empty").value
+                        )
                     ).nonzero(as_tuple=False)
                     num_samples = min(num_missing_entities, len(entity_locs))
-                    samples = [] if num_samples == 0 else random.sample(list(entity_locs), num_samples)
+                    samples = (
+                        []
+                        if num_samples == 0
+                        else random.sample(list(entity_locs), num_samples)
+                    )
                     min_entities_required = num_samples
                     # print(f"Removing {num_samples} entities")
                     # if num_samples != 0:
@@ -1412,12 +1453,18 @@ def functions(
                         world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
                             "empty"
                         ).value
-                        world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
-                        world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
+                        world_CWH[Channel.DIRECTION.value, x, y] = (
+                            Direction.NONE.value
+                        )
+                        world_CWH[Channel.ITEMS.value, x, y] = str2item(
+                            "empty"
+                        ).value
                         world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
                 break
             if count == 0:
-                raise Exception(f"Failed to find valid lesson after {original_count} attempts")
+                raise Exception(
+                    f"Failed to find valid lesson after {original_count} attempts"
+                )
         else:
             raise Exception(f"Can't handle {kind}")
         # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
@@ -1535,13 +1582,25 @@ def functions(
 
     mo.md("Functions")
     return (
+        add_entity,
+        b64_to_dict,
+        blueprint2world,
         calc_throughput,
+        dict2b64,
+        ent_str2b64img,
+        eval_model,
+        find_belt_paths_with_source_sink_orient,
         funge_throughput,
         generate_lesson,
+        get_min_belts,
         get_new_world,
+        item_str2b64img,
         new_world,
         normalise_world,
         plot_flow_network,
+        plot_loss_history,
+        sample_world,
+        show_two_factories,
         str2ent,
         str2item,
         world2graph,
@@ -1557,7 +1616,9 @@ def _(LessonKind, generate_lesson, world2html):
         # random.seed(42)
 
         world_CWH, _ = generate_lesson(
-            size=16, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=float('inf')
+            size=16,
+            kind=LessonKind.MOVE_ONE_ITEM,
+            num_missing_entities=float("inf"),
         )
 
         # print(world_CWH[Channel.ENTITIES.value])
@@ -1687,7 +1748,7 @@ def _(
 
 
     blank2()
-    return
+    return (blank2,)
 
 
 @app.cell
@@ -1697,7 +1758,7 @@ def _(items):
 
 
 @app.cell
-def _():
+def _(torch):
     import gymnasium as gym
     from ppo import AgentCNN, FactorioEnv
 
