@@ -860,6 +860,10 @@ if __name__ == "__main__":
             f"seed:{args.seed}",
             f"size:{args.size}",
             f"timesteps:{args.total_timesteps//1000}K",
+            f"chan1:{args.chan1}",
+            f"chan2:{args.chan2}",
+            f"chan3:{args.chan3}",
+            f"flat_dim:{args.flat_dim}",
         )
     print("Setting up writer")
     writer = SummaryWriter(f"runs/{run_name}")
