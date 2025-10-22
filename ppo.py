@@ -902,7 +902,7 @@ if __name__ == "__main__":
     )
 
     if args.start_from is not None:
-        if track:
+        if args.track:
             run.tags = run.tags + (f"start_from:{args.start_from}",)
         print(f"Loading model weights from {args.start_from}")
         agent.load_state_dict(torch.load(args.start_from))
