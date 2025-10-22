@@ -1797,9 +1797,9 @@ def _(torch):
 
 
 @app.cell
-def __(FactorioEnv, world2html):
-    env_ = FactorioEnv(size=5)
-    env_.reset(13453)
+def __(FactorioEnv, random, world2html):
+    env_ = FactorioEnv(size=7)
+    env_.reset(random.randint(0, 1235))
     world2html(env_._world_CWH.permute(1, 2, 0))
     return (env_,)
 
