@@ -259,6 +259,7 @@ class FactorioEnv(gym.Env):
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
         options = options if options is not None else {}
+        # print(f"Resetting env with {options=}")
         self._cum_reward = 0
         self._seed = seed
 
@@ -272,7 +273,7 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = int(torch.randint(0, self.size * 2, (1,))[0]) # TODO also change max_steps in tandem
+        self._num_missing_entities = options.get('num_missing_entities', 0) # TODO also change max_steps in tandem
         # print(f"Resetting env with options {options}")
         # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
         self.actions = []
@@ -929,10 +930,13 @@ if __name__ == "__main__":
     global_step = 0
     global_num_optimiser_steps = 0
     # start_time = time.time()
+    max_missing_entities = 1
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
-        options={'max_entities': 2}
-        # options={'max_entities': global_step // 2_000 + 1}
+        options={
+            'num_missing_entities': max_missing_entities,
+            # 'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
+        }
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
@@ -996,32 +1000,14 @@ if __name__ == "__main__":
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.tensor(reward, dtype=torch.float32).to(device).view(-1)
 
-            # Add one to the environments that succeeded at getting some throughput
-            # if 'num_missing_entities' not in infos:
-            #     breakpoint()
-            # new_missing_entities = infos['num_missing_entities'] + (reward >= args.coeff_throughput).astype(int)
-
-            # # Compute num_missing_entities based on global progress, from 1 to width*height
-            # for k, v in infos.items():
-            #     if k.startswith("_") or k == 'episode':
-            #         continue
-            #     for i, value in enumerate(v):
-            #         if value is None:
-            #             continue
-            #         try:
-            #             writer.add_scalar(f"old/charts/info_{k}_{i:0>2}", value, global_step)
-            #         except:
-            #             breakpoint()
-
-            # # Prepare reset options per env
-            # options = [{'num_missing_entities': new_missing_entities[i]} if d else None for i, d in enumerate(next_done)]
-            # options = [{'num_missing_entities': float('inf')} if d else None for i, d in enumerate(next_done)]
-
             # Reset only the done environments with updated num_missing_entities
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 # obs, _ = envs.envs[idx].reset(options=options[idx])
-                obs, _ = envs.envs[idx].reset(options={'max_entities': 2})
+                obs, _ = envs.envs[idx].reset(options={
+                    'num_missing_entities': max_missing_entities,
+                    # 'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                })
                 next_obs_ECWH[idx] = obs
 
             next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
@@ -1204,7 +1190,42 @@ if __name__ == "__main__":
 
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            pbar.set_description(f"gstep: {global_step}, thput: {final_thputs_100ma:.2f}")
+            # if len(end_of_episode_thputs) > 90:
+            #     if final_thputs_100ma < 0.10:
+            #         max_missing_entities = max(max_missing_entities - 1, 0)
+            #         print(f"Now working with {max_missing_entities=}")
+            #     elif final_thputs_100ma > 0.90:
+            #         max_missing_entities = min(max_missing_entities + 1, args.size*2)
+            #         print(f"Now working with {max_missing_entities=}")
+            writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
+            writer.add_scalar("at_end_of_episode/final_thputs_100ma", final_thputs_100ma, global_step)
+            pbar.set_description(f"gstep:{global_step} thput:{final_thputs_100ma:.2f} missing:{max_missing_entities}")
+
+        if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
+            print(f"Recording agent progress at {iteration}")
+
+            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, False, args.size, run_name)])
+
+            next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': max_missing_entities})
+
+            for img in render_envs.render():
+                image = Image.fromarray(img, mode="RGB")
+                iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
+                image.save(f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_00.png', format="png", optimize=True)
+
+            for i in range(1, 10):
+
+                with torch.no_grad():
+                    action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
+                    action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
+                    next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
+
+                for img in render_envs.render():
+                    image = Image.fromarray(img, mode="RGB")
+                    iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
+                    image.save(f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_{i:02}.png', format="png", optimize=True)
+                if np.logical_or(terminations_render, truncations_render).all():
+                    break
 
     final_thput = 0 if len(end_of_episode_thputs) == 0 else sum(end_of_episode_thputs) / len(end_of_episode_thputs)
     def format_duration(seconds: float) -> str:
