@@ -906,8 +906,8 @@ if __name__ == "__main__":
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
-            'num_missing_entities': max_missing_entities,
-            # 'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
+            # 'num_missing_entities': max_missing_entities,
+            'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
         }
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
