@@ -25,7 +25,7 @@ sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before impor
 import factorion
 from PIL import Image, ImageDraw, ImageFont
 
-episodic_returns = deque(maxlen=100)
+# episodic_returns = deque(maxlen=100)
 end_of_episode_thputs = deque(maxlen=100)
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
@@ -1011,9 +1011,9 @@ if __name__ == "__main__":
                     final_frac_reachable = infos["frac_reachable"][i]
                     # final_frac_hallucin = infos["frac_hallucin"][i]
 
-                    episodic_returns.append(episode_return)
-                    avg_return = sum(episodic_returns) / len(episodic_returns)
-                    writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
+                    # episodic_returns.append(episode_return)
+                    # avg_return = sum(episodic_returns) / len(episodic_returns)
+                    # writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
 
                     end_of_episode_thputs.append(end_of_episode_thput)
                     avg_throughput = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
@@ -1024,7 +1024,7 @@ if __name__ == "__main__":
                     writer.add_scalar("at_end_of_episode/num_entities", infos['num_entities'][i], global_step)
                     writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
                     writer.add_scalar("at_end_of_episode/num_placed_entities", infos['num_placed_entities'][i], global_step)
-                    writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
+                    # writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
 
                     # min_belts = infos['min_belts'][i]
                     # writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
@@ -1159,29 +1159,28 @@ if __name__ == "__main__":
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("old/charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("optim/learning_rate", optimizer.param_groups[0]["lr"], global_step)
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("old/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("per_second/global_steps", int(global_step / (time.time() - start_time)), global_step)
 
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            # if len(end_of_episode_thputs) > 90:
-            #     if final_thputs_100ma < 0.10:
-            #         max_missing_entities = max(max_missing_entities - 1, 0)
-            #         print(f"Now working with {max_missing_entities=}")
-            #     elif final_thputs_100ma > 0.90:
-            #         max_missing_entities = min(max_missing_entities + 1, args.size*2)
-            #         print(f"Now working with {max_missing_entities=}")
+            if len(end_of_episode_thputs) > 90:
+                # if final_thputs_100ma < 0.05:
+                #     max_missing_entities = max(max_missing_entities - 1, 0)
+                #     print(f"\nNow working with {max_missing_entities=} ({final_thputs_100ma=})")
+                if final_thputs_100ma > 0.95:
+                    end_of_episode_thputs.clear()
+                    max_missing_entities = min(max_missing_entities + 1, args.size*2)
+                    print(f"\nNow working with {max_missing_entities=}")
             writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
-            writer.add_scalar("at_end_of_episode/final_thputs_100ma", final_thputs_100ma, global_step)
+            # writer.add_scalar("at_end_of_episode/final_thputs_100ma", final_thputs_100ma, global_step)
 
         if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
             print(f"Recording agent progress at {iteration}")
