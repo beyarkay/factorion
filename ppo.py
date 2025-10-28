@@ -275,7 +275,7 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options.get('num_missing_entities', 0) # TODO also change max_steps in tandem
+        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
 
         self.actions = []
         self._world_CWH, min_entities_required = self.generate_lesson(
@@ -902,7 +902,7 @@ if __name__ == "__main__":
     global_step = 0
     global_num_optimiser_steps = 0
     # start_time = time.time()
-    max_missing_entities = 0
+    max_missing_entities = 1
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
