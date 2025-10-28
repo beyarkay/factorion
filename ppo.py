@@ -193,7 +193,8 @@ class FactorioEnv(gym.Env):
         self,
         size: int = 5,
         max_steps: Optional[int] = None,
-        render_mode: Optional[str] = None
+        render_mode: Optional[str] = None,
+        options: Optional[dict] = None,
     ):
         super().__init__()
         # Setup the renderer if requested
@@ -238,6 +239,7 @@ class FactorioEnv(gym.Env):
             "item": gym.spaces.Discrete(len(self.items)),
             "misc": gym.spaces.Discrete(len(self.Misc))
         })
+        self._reset_options = options if options is not None else {}
 
         self.steps = 0
 
@@ -258,8 +260,8 @@ class FactorioEnv(gym.Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        options = options if options is not None else {}
-        # print(f"Resetting env with {options=}")
+        if options is not None:
+            self._reset_options = options
         self._cum_reward = 0
         self._seed = seed
 
@@ -273,28 +275,18 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = options.get('num_missing_entities', 0) # TODO also change max_steps in tandem
-        # print(f"Resetting env with options {options}")
-        # self.num_missing_entities = float('inf') if options is None else options.get('num_missing_entities', float('inf'))
+        self._num_missing_entities = self._reset_options.get('num_missing_entities', 0) # TODO also change max_steps in tandem
+
         self.actions = []
         self._world_CWH, min_entities_required = self.generate_lesson(
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
             num_missing_entities=self._num_missing_entities,
             seed=seed,
-            # max_entities=self.max_entities,
         )
-        # image = Image.fromarray(self.render(), mode="RGB")
-        # iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
-        # w = self._world_CWH.shape[1]
-        # h = self._world_CWH.shape[2]
-        # print(f"world {min_entities_required}: ")
-        # print(get_pretty_format(self._world_CWH, mapping))
-        # image.save(f'videos/world_inits/{iso8601}_seed{seed}_{w}x{h}.png', format="png", optimize=True)
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
-        # self._world_CWH = self.get_new_world(seed, n=self.size, min_belts=list(range(0,  17))).permute(2, 0, 1).to(int)
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
 
@@ -305,8 +297,9 @@ class FactorioEnv(gym.Env):
         direc = action["direction"]
         item_id = action["item"]
         misc = action["misc"]
-        # (x, y), entity_id, direc = action
 
+
+        # (x, y), entity_id, direc = action
         assert 0 <= x < self._world_CWH.shape[1], f"{x} isn't between 0 and {self._world_CWH.shape[1]}"
         assert 0 <= y < self._world_CWH.shape[2], f"{y} isn't between 0 and {self._world_CWH.shape[2]}"
         # account for two non-placeable prototypes: source and sink
@@ -316,15 +309,11 @@ class FactorioEnv(gym.Env):
 
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
-        # direc_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
         self.actions.append(None)
         self.invalid_actions += 1
         invalid_reason = {
             'replaced_source_or_sink': False,
-            # 'replace_empty_with_empty': False,
-            # 'place_empty_w_direction': False,
-            # 'place_empty_w_recipe': False,
             'place_asm_mach_wo_recipe': False,
             'placement_wo_direction': False,
             'ug_belt_wo_up_or_down': False,
@@ -338,19 +327,6 @@ class FactorioEnv(gym.Env):
             # disallow the replacement of the source+sink
             invalid_reason['replaced_source_or_sink'] = True
             pass
-        # This is fine, actually
-        # elif entity_id == self.str2ent('empty').value and entity_to_be_replaced == self.str2item('empty').value:
-        #     # Model is trying to replace empty space with more empty space
-        #     invalid_reason['replace_empty_with_empty'] = True
-        #     pass
-        # elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
-        #     # Model is trying to place empty space with a direction
-        #     invalid_reason['place_empty_w_direction'] = True
-        #     pass
-        # elif entity_id == self.str2ent('empty').value and item_id != self.str2item('empty').value:
-        #     # Model is trying to place empty space with a recipe item
-        #     invalid_reason['place_empty_w_recipe'] = True
-        #     pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
@@ -391,8 +367,6 @@ class FactorioEnv(gym.Env):
                 'item': self.items[item_id].name,
                 'misc': self.Misc(misc),
             }
-
-        # world_old_CWH = self._world_CWH.clone().detach()
 
         throughput, num_unreachable = self.funge_throughput(self._world_CWH.permute(1, 2, 0))
         # TODO don't always divide by 15
@@ -507,7 +481,6 @@ class FactorioEnv(gym.Env):
         self._throughput = throughput
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
-        # self._num_missing_entities = self.num_missing_entities
         self._final_dir_reward = final_dir_reward
         self._material_cost = material_cost
         self._reward = reward
@@ -525,7 +498,6 @@ class FactorioEnv(gym.Env):
             'throughput': throughput,
             'frac_reachable': frac_reachable,
             'frac_hallucin': frac_hallucin,
-            # 'num_missing_entities': self.num_missing_entities,
             'final_dir_reward': final_dir_reward,
             'material_cost': material_cost,
             'completion_bonus': self.max_steps - self.steps,
