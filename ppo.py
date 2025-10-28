@@ -912,7 +912,8 @@ if __name__ == "__main__":
     )
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
-
+    final_thputs_100ma = np.nan
+    clipped_grad_norm = np.nan
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
@@ -924,6 +925,7 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
+            pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; thput:{final_thputs_100ma:.2f}")
             global_step += args.num_envs
             obs_SECWH[step] = next_obs_ECWH
             dones_SE[step] = next_done
@@ -1076,6 +1078,7 @@ if __name__ == "__main__":
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
         for epoch in range(args.update_epochs):
+            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{clipped_grad_norm:5.2f}; thput:{final_thputs_100ma:.2f}")
             np.random.shuffle(idxs_B)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -1135,7 +1138,10 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
                 loss.backward()
+                # first call to actually clip gradients
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                # second call as a convenient way of getting the grad norm
+                clipped_grad_norm = torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=float('inf'))
                 optimizer.step()
                 global_num_optimiser_steps += 1
                 writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
@@ -1171,7 +1177,6 @@ if __name__ == "__main__":
             #         print(f"Now working with {max_missing_entities=}")
             writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
             writer.add_scalar("at_end_of_episode/final_thputs_100ma", final_thputs_100ma, global_step)
-            pbar.set_description(f"gstep:{global_step} thput:{final_thputs_100ma:.2f} missing:{max_missing_entities}")
 
         if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
             print(f"Recording agent progress at {iteration}")
@@ -1186,7 +1191,6 @@ if __name__ == "__main__":
                 image.save(f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_00.png', format="png", optimize=True)
 
             for i in range(1, 10):
-
                 with torch.no_grad():
                     action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
                     action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
@@ -1207,7 +1211,8 @@ if __name__ == "__main__":
         secs = total_seconds % 60
         return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
     runtime = time.time() - start_time
-    run.tags = run.tags + (f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
+    if args.track:
+        run.tags = run.tags + (f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     writer.close()
     if runtime > 60 * 5: # 5 minutes
@@ -1217,7 +1222,8 @@ if __name__ == "__main__":
         agent_name = f"agent-{run_name_dir_safe}"
         print(f"Saving model to artifacts/{agent_name}.pt")
         os.makedirs("artifacts", exist_ok=True)
-        run.tags = run.tags + (f"saved_as:{agent_name}.pt",)
+        if args.track:
+            run.tags = run.tags + (f"saved_as:{agent_name}.pt",)
         torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
         if args.track:
             artifact = wandb.Artifact(name=agent_name, type="model")
