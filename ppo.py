@@ -913,7 +913,7 @@ if __name__ == "__main__":
     next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
     final_thputs_100ma = np.nan
-    clipped_grad_norm = np.nan
+    unclipped_grad_norm = np.nan
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
@@ -925,8 +925,9 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         for step in range(0, args.num_steps):
-            pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; thput:{final_thputs_100ma:.2f}")
             global_step += args.num_envs
+            if (step+1) % 10 == 0 or step + 1 == args.num_steps:
+                pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6};             thput:{final_thputs_100ma:.2f}")
             obs_SECWH[step] = next_obs_ECWH
             dones_SE[step] = next_done
 
@@ -1074,11 +1075,14 @@ if __name__ == "__main__":
         returns_B = returns_SE.reshape(-1)
         values_B = values_SE.reshape(-1)
 
+        # print()
+
         # Optimizing the policy and value network
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
+        approx_kl = np.nan
         for epoch in range(args.update_epochs):
-            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{clipped_grad_norm:5.2f}; thput:{final_thputs_100ma:.2f}")
+            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; thput:{final_thputs_100ma:.2f}")
             np.random.shuffle(idxs_B)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -1138,17 +1142,18 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
                 loss.backward()
-                # first call to actually clip gradients
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                # second call as a convenient way of getting the grad norm
-                clipped_grad_norm = torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=float('inf'))
+                unclipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                clipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), float('inf'))
                 optimizer.step()
                 global_num_optimiser_steps += 1
                 writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
                 writer.add_scalar("optim/num_steps", global_num_optimiser_steps, global_step)
+                writer.add_scalar("optim/grad_norm_clipped", clipped_grad_norm, global_step)
+                writer.add_scalar("optim/grad_norm_unclipped", unclipped_grad_norm, global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
+        # print()
 
         y_pred, y_true = values_B.cpu().numpy(), returns_B.cpu().numpy()
         var_y = np.var(y_true)
