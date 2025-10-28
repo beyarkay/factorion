@@ -902,7 +902,7 @@ if __name__ == "__main__":
     global_step = 0
     global_num_optimiser_steps = 0
     # start_time = time.time()
-    max_missing_entities = 1
+    max_missing_entities = 0
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
