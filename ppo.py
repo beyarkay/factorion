@@ -914,6 +914,7 @@ if __name__ == "__main__":
     next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
     final_thputs_100ma = np.nan
     unclipped_grad_norm = np.nan
+    approx_kl = np.nan
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
@@ -1080,7 +1081,6 @@ if __name__ == "__main__":
         # Optimizing the policy and value network
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
-        approx_kl = np.nan
         for epoch in range(args.update_epochs):
             pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; thput:{final_thputs_100ma:.2f}")
             np.random.shuffle(idxs_B)
