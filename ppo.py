@@ -51,6 +51,8 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     start_from: Optional[str] = None
     """Path of a model from which to start the training (instead of from scratch)"""
+    start_from_wandb: Optional[str] = None
+    """wandb run id to continue from"""
 
     # Algorithm specific arguments
     env_id: str = "factorion/FactorioEnv-v0"
@@ -814,6 +816,8 @@ if __name__ == "__main__":
     run = None
     if args.track:
         import wandb
+        if args.start_from_wandb is not None and args.start_from is None:
+            raise Exception(f"args.start_from_wandb is not None ({args.start_from_wandb}) and args.start_from is None")
 
         run = wandb.init(
             project=args.wandb_project_name,
@@ -823,7 +827,9 @@ if __name__ == "__main__":
             name=run_name,
             monitor_gym=True,
             save_code=True,
-            tags=args.tags
+            tags=args.tags,
+            id= args.start_from_wandb,
+            resume="must" if  args.start_from_wandb is not None else None
         )
         run.tags = run.tags + (
             f"batch_size:{args.batch_size}",
@@ -916,6 +922,7 @@ if __name__ == "__main__":
     unclipped_grad_norm = np.nan
     approx_kl = np.nan
     print(f"Starting {args.num_iterations} iterations")
+    iteration_of_last_increase = 0
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
@@ -1175,7 +1182,8 @@ if __name__ == "__main__":
                 # if final_thputs_100ma < 0.05:
                 #     max_missing_entities = max(max_missing_entities - 1, 0)
                 #     print(f"\nNow working with {max_missing_entities=} ({final_thputs_100ma=})")
-                if final_thputs_100ma > 0.95:
+                if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
+                    iteration_of_last_increase = iteration
                     end_of_episode_thputs.clear()
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
                     print(f"\nNow working with {max_missing_entities=}")
