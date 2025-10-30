@@ -61,9 +61,9 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 2
+    num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
-    num_steps: int = 128
+    num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -118,11 +118,11 @@ class Args:
 
     # to be filled in runtime
     batch_size: int = 0
-    """the batch size (computed in runtime)"""
+    """the batch size (num_envs * num_steps)"""
     minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
+    """the mini-batch size (batch_size // num_minibatches)"""
     num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
+    """the number of iterations (total_timesteps // batch_size)"""
 
 
 def make_env(env_id, idx, capture_video, size, run_name):
