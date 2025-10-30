@@ -103,15 +103,15 @@ class Args:
     """the target KL divergence threshold"""
     adam_epsilon: float = 1e-5
     """The epsilon parameter for Adam"""
-    chan1: int = 32
+    chan1: int = 48
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 32
+    chan2: int = 48
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 32
+    chan3: int = 48
     """Number of channels in the third layer of the CNN encoder"""
-    flat_dim: int = 128
+    flat_dim: int = 256
     """Output size of the fully connected layer after the encoder"""
-    size: int = 5
+    size: int = 6
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
