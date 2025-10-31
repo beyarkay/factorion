@@ -206,22 +206,29 @@ get a perfect score. Some points:
   which will never have a bad effect on the map. Whereas placing an actual
   empty entity might cause it to remove the existing belts.
 
-### 5x5 world, 500k timesteps, sampling num_missing_entities from increasing range
+### 2025-10-31 Trying to train a 7x7 model
 
-This run took ~6.5M global steps to pass 0.5 throughput, but at 12M global
-steps it had figured out how to get >0.9 throughput with every entity missing
+https://wandb.ai/beyarkay/factorion/runs/nikxsaj6/panel/s7a2nkqwz?nw=nwuserbeyarkay
 
-https://wandb.ai/beyarkay/factorion/runs/wmgng3jl/panel/s7a2nkqwz?nw=nwuserbeyarkay
+It's learning, but it just never quite gets past the ~0.8 throughput barrier,
+so never sees more than 1 entity missing.
 
-### Current test:
+### 2025-10-30 Sweep for speed
+
+https://wandb.ai/beyarkay/factorion/sweeps/6zvjlntl?nw=nwuserbeyarkay
+
+Did sweep to figure out how to go fast
+
+### 2025-10-29 Size-of-model test
 
 See if the size of the model has an effect on how quickly it learns a 6x6
 world, comparing ymhimm2c (32-32-32-128) with r6p0mc0y (48-48-48-256). So the
 larger model learnt faster? I wasn't expecting that. And it learnt more, in the
 same time it managed to get to 8 entities removed, as opposed to just 6.
 
-### Sweep for speed
+### 2025-10-28 5x5 world, 500k timesteps, sampling num_missing_entities from increasing range
 
-https://wandb.ai/beyarkay/factorion/sweeps/6zvjlntl?nw=nwuserbeyarkay
+This run took ~6.5M global steps to pass 0.5 throughput, but at 12M global
+steps it had figured out how to get >0.9 throughput with every entity missing
 
-Did sweep to figure out how to go fast
+https://wandb.ai/beyarkay/factorion/runs/wmgng3jl/panel/s7a2nkqwz?nw=nwuserbeyarkay
