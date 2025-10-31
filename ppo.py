@@ -63,7 +63,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
-    num_steps: int = 512
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -71,7 +71,7 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.93
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 128
+    num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
     update_epochs: int = 8
     """the K epochs to update the policy"""

@@ -1,6 +1,6 @@
 # sweep.yaml
 
-method: bayes # or "grid" or "random"
+method: bayes
 metric:
   name: "per_second/global_steps"
   goal: maximize
@@ -20,56 +20,6 @@ parameters:
 
   num_steps:
     values: [64, 128, 256, 512, 1024]
-
-#  learning_rate:
-#    distribution: log_uniform_values
-#    min: 5e-5
-#    max: 1e-2
-#
-#  ent_coef:
-#    distribution: log_uniform_values
-#    min: 1e-4
-#    max: 1e-2
-#
-#  gae_lambda:
-#    distribution: uniform
-#    min: 0.85
-#    max: 0.9999
-#
-#  chan1:
-#    values: [16, 32, 64, 128, 256, 512]
-#  chan2:
-#    values: [16, 32, 64, 128, 256, 512]
-#  chan3:
-#    values: [16, 32, 64, 128, 256, 512]
-#  flat_dim:
-#    values: [16, 32, 64, 128, 256, 512]
-#  max_grad_norm:
-#    values: [0.5, 1.0, 1.5, 2.0, 4.0, 8.0]
-#
-#  vf_coef:
-#    distribution: uniform
-#    min: 0.3
-#    max: 1.0
-#  clip_coef:
-#    distribution: uniform
-#    min: 0.2
-#    max: 0.4
-#
-#   coeff_throughput:
-#     distribution: uniform
-#     min: 0.9
-#     max: 1.0
-#
-#   coeff_frac_hallucin:
-#     distribution: uniform
-#     min: 0.0
-#     max: 0.1
-#
-#   coeff_frac_reachable:
-#     distribution: uniform
-#     min: 0.0
-#     max: 0.1
 
 program: ppo.py
 

@@ -219,3 +219,9 @@ See if the size of the model has an effect on how quickly it learns a 6x6
 world, comparing ymhimm2c (32-32-32-128) with r6p0mc0y (48-48-48-256). So the
 larger model learnt faster? I wasn't expecting that. And it learnt more, in the
 same time it managed to get to 8 entities removed, as opposed to just 6.
+
+### Sweep for speed
+
+https://wandb.ai/beyarkay/factorion/sweeps/6zvjlntl?nw=nwuserbeyarkay
+
+Did sweep to figure out how to go fast
