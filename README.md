@@ -157,8 +157,8 @@ graph for the green-circuits factory is given below:
 ## Running the Code
 
 ```bash
-uv pip install -r requirements.txt
 source .venv/bin/activate
+uv pip install -r requirements.txt
 python ppo.py \
     --seed 1 \
     --env-id factorion/FactorioEnv-v0 \
@@ -167,8 +167,54 @@ python ppo.py \
     --total-timesteps 500000
 ```
 
-Most runs that get to any level of ability take at least 4 hours of my M1
+Most runs that get to any level of ability take at least 1 hour on my M1
 macbook pro.
+
+## Factorio environment rewrite/overhaul
+
+Want to be able to support enough for a green circuits factory:
+
+- Transport belts
+- Source
+- Sink
+- Assembling machines
+- Splitters
+- Underground belts
+- Different recipes
+- Maybe also an "ores" layer?
+- Belts having two sides
+- Some entities being sources/sinks themselves (miners, science labs, nuclear
+  power stations, coal furnaces)
+- long inserters
+
+Also:
+
+- run the factory outside of the training loop, in a notebook
+- have the factory logic live in FactorioEnv
+- probably get rid of factorion.py, replace it with non-marimo solution +
+  jupyter notebook
+- Speed is important, look at rust with pyO3
+- don't always assume 1x1 sized entities
+
+Eventually, the layers will look like:
+
+- Entity ID (maybe this should be combined with rotation?)
+- Rotation
+- Recipe (for assembling machines)
+- Ore
+
+Ignoring:
+
+- Circuit conditions
+- Trains/railways
+- All of space age (quality, new recipes, new planets)
+- Fluids
+- Robots/logistics
+- Biters
+- modules
+- filters (on inserters, splitters)
+
+And then also want a way of visualising this nicely, for debugging.
 
 ## Notable runs / logbook (very rough from here on out)
 

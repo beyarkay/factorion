@@ -1,6 +1,3 @@
-# TODO: also log throughput, frac hallucin, frac_reachable, to wandb
-# TODO: convert to many steps, each predicting the placement of an item
-# TODO: integrate with actual factorio
 import os
 import typing
 import random
@@ -24,6 +21,7 @@ import sys
 sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
 from PIL import Image, ImageDraw, ImageFont
+import factorion_rs
 
 # episodic_returns = deque(maxlen=100)
 end_of_episode_thputs = deque(maxlen=100)
@@ -111,7 +109,7 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 256
     """Output size of the fully connected layer after the encoder"""
-    size: int = 6
+    size: int = 7
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
@@ -403,33 +401,11 @@ class FactorioEnv(gym.Env):
             + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
         )
 
-        # print(locals())
-        # print('args' in locals())
         reward_components = {
             'throughput': {
                 'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
                 'value': throughput,
             },
-            # 'frac_reachable': {
-            #     'coeff': args.coeff_frac_reachable,
-            #     'value': frac_reachable,
-            # },
-            # 'frac_hallucin': {
-            #     'coeff': args.coeff_frac_hallucin,
-            #     'value': frac_hallucin,
-            # },
-            # 'final_dir_reward': {
-            #     'coeff': args.coeff_final_dir_reward,
-            #     'value': final_dir_reward,
-            # },
-            # 'material_cost': {
-            #     'coeff': args.coeff_material_cost,
-            #     'value': material_cost,
-            # },
-            # 'finished_before_deadline': {
-            #     'coeff': args.coeff_finished_before_deadline,
-            #     'value': (self.max_steps - self.steps) if terminated else 0,
-            # },
         }
         pre_reward = 0.0
         normalisation = 0.0
@@ -1234,14 +1210,12 @@ if __name__ == "__main__":
         agent_name = f"agent-{run_name_dir_safe}"
         print(f"Saving model to artifacts/{agent_name}.pt")
         os.makedirs("artifacts", exist_ok=True)
-        if args.track:
-            run.tags = run.tags + (f"saved_as:{agent_name}.pt",)
         torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
         if args.track:
             artifact = wandb.Artifact(name=agent_name, type="model")
             artifact.add_file(f"artifacts/{agent_name}.pt")
             wandb.log_artifact(artifact)
     else:
-        print('Not saving because: ', time.time() - start_time, '<=', 60 * 5)
+        print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')
 
 

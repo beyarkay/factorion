@@ -2,24 +2,73 @@
 
 method: bayes
 metric:
-  name: "per_second/global_steps"
+  name: "moving_avg/throughput"
   goal: maximize
 
 parameters:
-  seed:
-    value: 1
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
 
-  update_epochs:
-    values: [2, 4, 8, 16, 24, 32]
+  gamma:
+    distribution: uniform
+    min: 0.95
+    max: 0.999
+
+  gae_lambda:
+    distribution: uniform
+    min: 0.9
+    max: 0.98
+
+  clip_coef:
+    distribution: uniform
+    min: 0.1
+    max: 0.4
+
+  ent_coef:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-2
+
+  vf_coef:
+    distribution: uniform
+    min: 0.3
+    max: 1.0
+
+  max_grad_norm:
+    distribution: uniform
+    min: 0.5
+    max: 2.0
 
   num_minibatches:
-    values: [2, 8, 32, 128, 256, 512]
+    values: [16, 32, 64]
 
-  num_envs:
-    values: [2, 4, 8, 16, 24, 32]
+  update_epochs:
+    values: [4, 8, 16]
 
-  num_steps:
-    values: [64, 128, 256, 512, 1024]
+  chan1:
+    values: [16, 32, 48, 64, 96, 128]
+
+  chan2:
+    values: [16, 32, 48, 64, 96, 128]
+
+  chan3:
+    values: [16, 32, 48, 64, 96, 128]
+
+  flat_dim:
+    values: [64, 128, 256, 512]
+
+  adam_epsilon:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-4
+
+early_terminate:
+  type: hyperband
+  min_iter: 1_500_000
+  eta: 2
+  s: 3
 
 program: ppo.py
 
@@ -27,6 +76,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - 10000
+  - 10_000_000
   - --track
   - ${args}
