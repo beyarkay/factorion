@@ -25,6 +25,8 @@ import factorion_rs
 
 # episodic_returns = deque(maxlen=100)
 end_of_episode_thputs = deque(maxlen=100)
+for _ in range(100):
+    end_of_episode_thputs.append(0)
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
 @dataclass
