@@ -786,7 +786,10 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}")
+    # 16 * 256 * (50000/(16*256))
+    num_gsteps = args.num_envs * args.num_steps * args.num_iterations
+    print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
+
     iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{iso8601}"
     run = None
