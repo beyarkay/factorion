@@ -7,6 +7,10 @@ from typing import Optional
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+import tempfile
+from pathlib import Path
+import shutil
+import subprocess
 
 import tqdm
 import gymnasium as gym
@@ -1168,13 +1172,15 @@ if __name__ == "__main__":
 
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            if len(end_of_episode_thputs) > 90:
+            if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
                 # if final_thputs_100ma < 0.05:
                 #     max_missing_entities = max(max_missing_entities - 1, 0)
                 #     print(f"\nNow working with {max_missing_entities=} ({final_thputs_100ma=})")
                 if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
                     iteration_of_last_increase = iteration
                     end_of_episode_thputs.clear()
+                    for _ in range(moving_average_length):
+                        end_of_episode_thputs.append(0)
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
                     print(f"\nNow working with {max_missing_entities=}")
             writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
@@ -1182,29 +1188,59 @@ if __name__ == "__main__":
 
         if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
             print(f"Recording agent progress at {iteration}")
-
-            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, 0, False, args.size, run_name)])
-
+            num_render_envs = 5
+            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name) for i in range(num_render_envs)])
             next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': max_missing_entities})
 
-            for img in render_envs.render():
-                image = Image.fromarray(img, mode="RGB")
-                iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
-                image.save(f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_00.png', format="png", optimize=True)
+            temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]
+            frame_counts = [0] * num_render_envs
 
-            for i in range(1, 10):
-                with torch.no_grad():
-                    action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
-                    action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
-                    next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
-
-                for img in render_envs.render():
+            try:
+                # Save initial frames
+                for env_idx, img in enumerate(render_envs.render()):
                     image = Image.fromarray(img, mode="RGB")
-                    iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
-                    image.save(f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_{i:02}.png', format="png", optimize=True)
-                if np.logical_or(terminations_render, truncations_render).all():
-                    break
+                    frame_path = os.path.join(temp_dirs[env_idx], f'frame_{frame_counts[env_idx]:06d}.png')
+                    image.save(frame_path, format="png", optimize=True)
+                    frame_counts[env_idx] += 1
 
+                # Run simulation and save frames
+                for i in range(1, 10):
+                    with torch.no_grad():
+                        action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
+                        action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
+                        next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
+
+                    for env_idx, img in enumerate(render_envs.render()):
+                        image = Image.fromarray(img, mode="RGB")
+                        frame_path = os.path.join(temp_dirs[env_idx], f'frame_{frame_counts[env_idx]:06d}.png')
+                        image.save(frame_path, format="png", optimize=True)
+                        frame_counts[env_idx] += 1
+
+                # Create videos for each environment
+                iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T').replace(":", "-")
+                Path('videos').mkdir(parents=True, exist_ok=True)
+
+                for env_idx in range(num_render_envs):
+                    output_path = f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_env{env_idx}.mp4'
+
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-y',
+                        '-framerate', '2',
+                        '-i', os.path.join(temp_dirs[env_idx], 'frame_%06d.png'),
+                        '-c:v', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-crf', '23',
+                        output_path
+                    ]
+
+                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+                    print(f"Video saved: {output_path}")
+
+            finally:
+                for temp_dir in temp_dirs:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                render_envs.close()
     final_thput = 0 if len(end_of_episode_thputs) == 0 else sum(end_of_episode_thputs) / len(end_of_episode_thputs)
     def format_duration(seconds: float) -> str:
         total_seconds = int(round(seconds))
