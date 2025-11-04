@@ -44,7 +44,7 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    metal: bool = False # TODO set to true and convert all floats to f32
+    metal: bool = True
     """if toggled, Apple MPS will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -863,6 +863,9 @@ if __name__ == "__main__":
     torch.use_deterministic_algorithms(args.torch_deterministic)
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else ("mps" if torch.backends.mps.is_available() and args.metal else "cpu"))
+    if device.type == "mps":
+        # metal doesn't like anything but f32
+        torch.set_default_dtype(torch.float32)
     print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
