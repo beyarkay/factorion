@@ -128,8 +128,8 @@ class Args:
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
-        # kwargs.update({'size': size, 'max_steps': 2*size})
-        kwargs.update({'size': size, 'max_steps': 6})
+        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
+        # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -196,6 +196,7 @@ class FactorioEnv(gym.Env):
         size: int = 5,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
+        idx: Optional[int] = None,
         options: Optional[dict] = None,
     ):
         super().__init__()
@@ -208,7 +209,12 @@ class FactorioEnv(gym.Env):
         self.size = size
         if max_steps is None:
             max_steps = self.size * self.size
-        print(f"FactorioEnv({size=}, {max_steps=}, {render_mode=})")
+
+        if idx is None:
+            idx = 0
+        self.idx = idx
+
+        print(f"FactorioEnv({size=}, {max_steps=}, {render_mode=}, {idx=})")
         self.max_steps = max_steps
 
         # Import the functions from factorion
@@ -261,11 +267,13 @@ class FactorioEnv(gym.Env):
         }
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        super().reset(seed=seed)
+        if seed is None:
+            seed = 0
+        self._seed = int(seed + self.idx)
+        super().reset(seed=self._seed)
         if options is not None:
             self._reset_options = options
         self._cum_reward = 0
-        self._seed = seed
 
         self.invalid_actions = 0
         self._throughput = 0
@@ -284,8 +292,10 @@ class FactorioEnv(gym.Env):
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
             num_missing_entities=self._num_missing_entities,
-            seed=seed,
+            seed=self._seed,
         )
+        print(self._seed)
+        print(get_pretty_format(self._world_CWH, mapping))
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
@@ -967,8 +977,7 @@ if __name__ == "__main__":
             # Reset only the done environments with updated num_missing_entities
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
-                # obs, _ = envs.envs[idx].reset(options=options[idx])
-                obs, _ = envs.envs[idx].reset(options={
+                obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
                     'num_missing_entities': max_missing_entities,
                     # 'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
                 })

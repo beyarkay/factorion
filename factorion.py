@@ -1346,10 +1346,8 @@ def functions(
             while count > 0:
                 # print(f"{count} attmempting to place source/sink")
                 count -= 1
-                pos1 = torch.tensor(0)
-                pos2 = torch.tensor(H * W - 1)
-                # pos1 = torch.randint(0, H * W, (1,))
-                # pos2 = torch.randint(0, H * W, (1,))
+                pos1 = torch.randint(0, H * W, (1,))
+                pos2 = torch.randint(0, H * W, (1,))
                 if pos1 == pos2:
                     # restart the loop until we find non-equal source/sink
                     continue
@@ -1362,8 +1360,6 @@ def functions(
                 sink_dir = random.choice(
                     [d for d in Direction if d != Direction.NONE]
                 )
-                source_dir = Direction.SOUTH
-                sink_dir = Direction.SOUTH
 
                 if random_item:
                     item_value = random.choice([v.value for k, v in items.items()])
@@ -1410,8 +1406,7 @@ def functions(
                 else:
                     # Choose a valid path at random and add it to the map
                     if num_missing_entities != float("inf"):
-                        # chosen_path = random.choice(paths)
-                        chosen_path = paths[0]
+                        chosen_path = random.choice(paths)
                         min_entities_required = len(chosen_path)
                         for x, y, d in chosen_path:
                             world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
@@ -1831,7 +1826,7 @@ def _(FactorioEnv, agent, torch, world2html):
             action_BCWH, logprob, entropy, value = agent.get_action_and_value(
                 torch.Tensor(worlds[-1]).clone().unsqueeze(0).to(torch.float32)
             )
-        
+
         d = {
             "xy": action_BCWH["xy"][0].tolist(), # tensor([[2, 1]]),
             "direction": action_BCWH["direction"][0].item(), # tensor([2]),
@@ -1842,12 +1837,12 @@ def _(FactorioEnv, agent, torch, world2html):
         print('action: ', d)
         actions.append(d)
         # break
-        
+
         observation, reward, terminated, truncated, info = env.step(d)
         print('next state: ', torch.Tensor(observation)[0])
         # break
         worlds.append(torch.Tensor(observation).clone())
-        
+
 
     [(i, world2html(w.permute(1, 2, 0)), a) for i, w, a in zip(range(len(worlds)), worlds, actions)]
     return (
