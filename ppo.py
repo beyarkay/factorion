@@ -28,8 +28,9 @@ from PIL import Image, ImageDraw, ImageFont
 import factorion_rs
 
 # episodic_returns = deque(maxlen=100)
-end_of_episode_thputs = deque(maxlen=100)
-for _ in range(100):
+moving_average_length = 500
+end_of_episode_thputs = deque(maxlen=moving_average_length)
+for _ in range(moving_average_length):
     end_of_episode_thputs.append(0)
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
