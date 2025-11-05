@@ -299,8 +299,6 @@ class FactorioEnv(gym.Env):
             num_missing_entities=self._num_missing_entities,
             seed=self._seed,
         )
-        print(self._seed)
-        print(get_pretty_format(self._world_CWH, mapping))
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
