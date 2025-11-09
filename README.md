@@ -252,18 +252,50 @@ get a perfect score. Some points:
   which will never have a bad effect on the map. Whereas placing an actual
   empty entity might cause it to remove the existing belts.
 
+### 2025-11-05 Struggling to exceed 0.4 throughput even on 5x5 world
+
+Now with the fully random world, the model maxes out at 0.42 throughput on a
+5x5 world even after 10 hours of training. It's possible a hyperparameter sweep
+will help, since the model learns and then plateaus, but I don't have high
+confidence in this being the solution. I'll need to investigate the reason for
+it's plateau to figure out why it's not learning. Possibly the entropy
+coefficient is too low (resulting in a lack of exploration) or the learning
+rate is decaying too fast (resulting in a struggle to get out of local minima).
+
+https://wandb.ai/beyarkay/factorion/runs/moiiqkew
+
+### 2025-11-04 Lack of randomisation caused inflated results
+
+Unfortunately commit `7d13160`, which significantly reduced the entropy of the
+initial factory, has been causing the results/learning to be inflated. The task
+is much easier, because there's basically only one factory layout, which can be
+memorised. These changes have been undone in
+6bd587bb51200e36a1d51e4ca5dee234abbcabcb, but now the model isn't training
+nearly as quickly, nor getting to as good of a throughput as before.
+
+### 2025-11-03 sweep for 7x7 model
+
+https://wandb.ai/beyarkay/factorion/sweeps/ouwt11gi
+
+Started a long-running sweep to find good hyperparameters for training a 7x7
+model, although I did the early-stopping calculations incorrectly which lead to
+no runs stopping early. Not a train smash, but there was some wasted
+computation. This run in particular looks hopeful:
+
+https://wandb.ai/beyarkay/factorion/sweeps/ouwt11gi/runs/blmu29sm
+
 ### 2025-10-31 Trying to train a 7x7 model
 
-https://wandb.ai/beyarkay/factorion/runs/nikxsaj6/panel/s7a2nkqwz?nw=nwuserbeyarkay
+https://wandb.ai/beyarkay/factorion/runs/nikxsaj6/panel/s7a2nkqwz
 
 It's learning, but it just never quite gets past the ~0.8 throughput barrier,
 so never sees more than 1 entity missing.
 
 ### 2025-10-30 Sweep for speed
 
-https://wandb.ai/beyarkay/factorion/sweeps/6zvjlntl?nw=nwuserbeyarkay
+https://wandb.ai/beyarkay/factorion/sweeps/6zvjlntl
 
-Did sweep to figure out how to go fast
+Did sweep to figure out how to go fast.
 
 ### 2025-10-29 Size-of-model test
 
@@ -277,4 +309,4 @@ same time it managed to get to 8 entities removed, as opposed to just 6.
 This run took ~6.5M global steps to pass 0.5 throughput, but at 12M global
 steps it had figured out how to get >0.9 throughput with every entity missing
 
-https://wandb.ai/beyarkay/factorion/runs/wmgng3jl/panel/s7a2nkqwz?nw=nwuserbeyarkay
+https://wandb.ai/beyarkay/factorion/runs/wmgng3jl/panel/s7a2nkqwz
