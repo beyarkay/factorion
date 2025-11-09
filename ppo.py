@@ -108,15 +108,15 @@ class Args:
     """the target KL divergence threshold"""
     adam_epsilon: float = 1e-5
     """The epsilon parameter for Adam"""
-    chan1: int = 48
+    chan1: int = 64
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 48
+    chan2: int = 64
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 48
+    chan3: int = 64
     """Number of channels in the third layer of the CNN encoder"""
-    flat_dim: int = 256
+    flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    size: int = 7
+    size: int = 5
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
@@ -904,12 +904,10 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     global_num_optimiser_steps = 0
-    # start_time = time.time()
     max_missing_entities = 1
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
-            # 'num_missing_entities': max_missing_entities,
             'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
         }
     )
@@ -984,8 +982,7 @@ if __name__ == "__main__":
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': max_missing_entities,
-                    # 'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
                 })
                 next_obs_ECWH[idx] = obs
 
@@ -1175,9 +1172,6 @@ if __name__ == "__main__":
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
-                # if final_thputs_100ma < 0.05:
-                #     max_missing_entities = max(max_missing_entities - 1, 0)
-                #     print(f"\nNow working with {max_missing_entities=} ({final_thputs_100ma=})")
                 if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
                     iteration_of_last_increase = iteration
                     end_of_episode_thputs.clear()
