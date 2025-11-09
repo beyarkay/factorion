@@ -101,7 +101,8 @@ class Args:
     """coefficient of reward given to the final belt being correctly oriented"""
     coeff_material_cost: float = 0.01
     """coefficient of reward given to the cost of materials used to solve the problem"""
-
+    coeff_validity: float = 0.01
+    """coefficient of reward given to the action being valid"""
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
@@ -326,7 +327,7 @@ class FactorioEnv(gym.Env):
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
 
         self.actions.append(None)
-        self.invalid_actions += 1
+        action_is_invalid = False
         invalid_reason = {
             'replaced_source_or_sink': False,
             'place_asm_mach_wo_recipe': False,
@@ -341,34 +342,41 @@ class FactorioEnv(gym.Env):
         if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
             invalid_reason['replaced_source_or_sink'] = True
+            action_is_invalid = True
             pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
+            action_is_invalid = True
             pass
         elif entity_id not in (self.str2ent('empty').value, self.str2ent('assembling_machine_1').value) and direc == self.Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['placement_wo_direction'] = True
+            action_is_invalid = True
             pass
         elif (misc == self.Misc.NONE.value) and (entity_id == self.str2ent('underground_belt').value):
             # model is trying to place an underground belt without giving a down/up
             invalid_reason['ug_belt_wo_up_or_down'] = True
+            action_is_invalid = True
             pass
         elif (misc != self.Misc.NONE.value) and (entity_id != self.str2ent('underground_belt').value):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
             invalid_reason['placement_with_unneeded_misc'] = True
+            action_is_invalid = True
             pass
         elif x + self.entities[entity_id].width > self.size:
             # The thing is too wide to be placed here
             invalid_reason['too_wide'] = True
+            action_is_invalid = True
             pass
         elif y + self.entities[entity_id].height > self.size:
             # The thing is too tall to be placed here
             invalid_reason['too_tall'] = True
+            action_is_invalid = True
             pass
         else:
-            self.invalid_actions -= 1
+            action_is_invalid = False
             # If all the above guards didn't catch anything, allow the
             # placement of the entity
             self._world_CWH[self.Channel.ENTITIES.value, x, y] = entity_id
@@ -382,6 +390,8 @@ class FactorioEnv(gym.Env):
                 'item': self.items[item_id].name,
                 'misc': self.Misc(misc),
             }
+
+        self.invalid_actions += 1 if action_is_invalid else 0
 
         throughput, num_unreachable = self.funge_throughput(self._world_CWH.permute(1, 2, 0))
         # TODO don't always divide by 15
@@ -420,6 +430,10 @@ class FactorioEnv(gym.Env):
             'throughput': {
                 'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
                 'value': throughput,
+            },
+            'validity': {
+                'coeff': Args.coeff_validity if 'args' not in locals() else args.coeff_validity,
+                'value': 0 if action_is_invalid else 1,
             },
         }
         pre_reward = 0.0
