@@ -457,34 +457,6 @@ class FactorioEnv(gym.Env):
         else:
             reward = pre_reward
 
-        # if throughput == 1.0:
-        #     print(f"\033[1;36mSUCCESS throughput={throughput} (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\033[0m\n" +
-        #         f"\nActions:\n" +
-        #         '\n'.join([
-        #             f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
-        #         ]) +
-        #         f"\nAfter:\n" +
-        #         get_pretty_format(self._world_CWH, mapping) +
-        #         f"\n(pre_reward) {pre_reward:.6f} = (thput){throughput:.6f}*{args.coeff_throughput}" +
-        #         f" + (reachable){frac_reachable:.6f}*{args.coeff_frac_reachable}" +
-        #         f" + (halluc){frac_hallucin:.6f}*{args.coeff_frac_hallucin} " +
-        #         f" + (final_direc){final_dir_reward:.6f}*{args.coeff_final_dir_reward} " +
-        #         f" + (material_cost){material_cost:.6f}*{args.coeff_material_cost}\n" +
-        #         f"completion bonus: {self.max_steps - self.steps}\n"
-        #         '\n--------------\n'
-        #     )
-        # elif truncated:
-        # if truncated:
-        #     print(f"\033[1;31mTRUNCATED: throughput={throughput} (reward={reward:.6f}, step {self.steps}/{self.max_steps} (min: {self.min_entities_required}))\n" +
-        #           # f"\nActions:\n" +
-        #           # '\n'.join([
-        #           #     f"  {i:0>2}. Placing {a['entity']: <20} at {a['xy']} facing {a['direction']}" for i, a in enumerate(self.actions) if a is not None
-        #           # ]) +
-        #           # f"\nAfter:\n" +
-        #         get_pretty_format(self._world_CWH, mapping) +
-        #         '\n--------------\033[0m\n'
-        #     )
-
         self._throughput = throughput
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
@@ -1036,6 +1008,8 @@ if __name__ == "__main__":
                     writer.add_scalar("at_end_of_episode/throughput", end_of_episode_thput, global_step)
                     writer.add_scalar("at_end_of_episode/num_steps", episode_len, global_step)
                     writer.add_scalar("at_end_of_episode/frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/steps_taken", infos['steps_taken'][i], global_step)
+
                     writer.add_scalar("at_end_of_episode/num_entities", infos['num_entities'][i], global_step)
                     writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
                     writer.add_scalar("at_end_of_episode/num_placed_entities", infos['num_placed_entities'][i], global_step)
