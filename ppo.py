@@ -332,6 +332,7 @@ class FactorioEnv(gym.Env):
             'replaced_source_or_sink': False,
             'place_asm_mach_wo_recipe': False,
             'placement_wo_direction': False,
+            'direction_wo_entity': False,
             'ug_belt_wo_up_or_down': False,
             'placement_with_unneeded_misc': False,
             'too_wide': False,
@@ -352,6 +353,11 @@ class FactorioEnv(gym.Env):
         elif entity_id not in (self.str2ent('empty').value, self.str2ent('assembling_machine_1').value) and direc == self.Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['placement_wo_direction'] = True
+            action_is_invalid = True
+            pass
+        elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
+            # Model is trying to put a thing without giving a direction
+            invalid_reason['direction_wo_entity'] = True
             action_is_invalid = True
             pass
         elif (misc == self.Misc.NONE.value) and (entity_id == self.str2ent('underground_belt').value):
