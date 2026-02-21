@@ -1108,3 +1108,464 @@ class TestRealisticFactories:
             place_entity(w, 3, y, "transport_belt", Direction.SOUTH)
         place_entity(w, 3, 6, "bulk_inserter", Direction.SOUTH, "iron_plate")
         self._assert_both(w, calculator, 15.0, 0)
+
+
+# ── Graph Implementation Tests ────────────────────────────────────────────────
+
+
+class TestGraphInvariants:
+    """Verify the dict-based graph data structure is internally consistent."""
+
+    @staticmethod
+    def _edges_from_fwd(fwd):
+        return {(src, dst) for src, succs in fwd.items() for dst in succs}
+
+    def test_fwd_rev_consistency(self, calculator):
+        """Every edge in fwd must appear in rev and vice versa."""
+        world = make_world(7)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 6):
+            place_entity(world, x, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 6, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        # Every forward edge (u→v) must have u in rev[v]
+        for u, succs in fwd.items():
+            for v in succs:
+                assert u in rev[v], f"Edge {u}→{v} in fwd but {u} not in rev[{v}]"
+
+        # Every reverse edge (v←u) must have v in fwd[u]
+        for v, preds in rev.items():
+            for u in preds:
+                assert v in fwd[u], f"{u} in rev[{v}] but {v} not in fwd[{u}]"
+
+    def test_fwd_rev_consistency_assembler(self, calculator):
+        """Assembler perimeter edges also maintain fwd/rev consistency."""
+        world = make_world(9)
+        place_entity(world, 0, 1, "stack_inserter", Direction.EAST, "copper_plate")
+        place_entity(world, 1, 1, "inserter", Direction.EAST)
+        place_entity(world, 2, 0, "assembling_machine_1", Direction.NONE, "copper_cable")
+        place_entity(world, 5, 1, "inserter", Direction.EAST)
+        place_entity(world, 6, 1, "transport_belt", Direction.EAST)
+        place_entity(world, 7, 1, "bulk_inserter", Direction.EAST, "copper_cable")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        for u, succs in fwd.items():
+            for v in succs:
+                assert u in rev[v], f"Edge {u}→{v} in fwd but {u} not in rev[{v}]"
+        for v, preds in rev.items():
+            for u in preds:
+                assert v in fwd[u], f"{u} in rev[{v}] but {v} not in fwd[{u}]"
+
+    def test_all_edge_endpoints_are_nodes(self, calculator):
+        """Every node referenced in fwd/rev must exist in the nodes dict."""
+        world = make_world(9)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "underground_belt", Direction.EAST, misc=Misc.UNDERGROUND_DOWN)
+        place_entity(world, 5, 0, "underground_belt", Direction.EAST, misc=Misc.UNDERGROUND_UP)
+        place_entity(world, 6, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 7, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        all_edge_nodes = set()
+        for u, succs in fwd.items():
+            all_edge_nodes.add(u)
+            all_edge_nodes.update(succs)
+        for v, preds in rev.items():
+            all_edge_nodes.add(v)
+            all_edge_nodes.update(preds)
+
+        assert all_edge_nodes <= set(nodes), (
+            f"Edge references nodes not in graph: {all_edge_nodes - set(nodes)}"
+        )
+
+    def test_node_data_has_required_keys(self, calculator):
+        """Every node must have entity_name, entity_flow, input_, output keys."""
+        world = make_world(7)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "inserter", Direction.EAST)
+        place_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        required_keys = {"entity_name", "entity_flow", "input_", "output", "recipe"}
+        for nid, data in nodes.items():
+            assert required_keys <= set(data.keys()), (
+                f"Node {nid} missing keys: {required_keys - set(data.keys())}"
+            )
+
+    def test_every_node_has_fwd_and_rev_entry(self, calculator):
+        """Every node in the nodes dict must also exist as a key in fwd and rev."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        assert set(nodes) == set(fwd) == set(rev), (
+            f"nodes/fwd/rev key mismatch.\n"
+            f"nodes: {set(nodes)}\nfwd: {set(fwd)}\nrev: {set(rev)}"
+        )
+
+    def test_edge_deduplication(self, calculator):
+        """Edges must be deduplicated (assembler+inserter both claim same edge)."""
+        world = make_world(9)
+        place_entity(world, 0, 1, "stack_inserter", Direction.EAST, "copper_plate")
+        place_entity(world, 1, 1, "inserter", Direction.EAST)
+        place_entity(world, 2, 0, "assembling_machine_1", Direction.NONE, "copper_cable")
+        place_entity(world, 5, 1, "inserter", Direction.EAST)
+        place_entity(world, 6, 1, "transport_belt", Direction.EAST)
+        place_entity(world, 7, 1, "bulk_inserter", Direction.EAST, "copper_cable")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        # fwd values are sets, so duplicates are impossible by construction.
+        # But verify no node has duplicate successors anyway.
+        for u, succs in fwd.items():
+            assert isinstance(succs, set), f"fwd[{u}] is {type(succs)}, not set"
+        for v, preds in rev.items():
+            assert isinstance(preds, set), f"rev[{v}] is {type(preds)}, not set"
+
+    def test_empty_world_produces_empty_graph(self, calculator):
+        """An all-empty world should produce an empty graph."""
+        world = make_world(5)
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+        assert len(nodes) == 0
+        assert len(fwd) == 0
+        assert len(rev) == 0
+
+    def test_single_entity_no_edges(self, calculator):
+        """A single belt in the middle has no connections (no neighbors)."""
+        world = make_world(5)
+        place_entity(world, 2, 2, "transport_belt", Direction.EAST)
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+        assert len(nodes) == 1
+        edges = self._edges_from_fwd(fwd)
+        assert len(edges) == 0
+
+    @pytest.mark.parametrize("seed", range(100))
+    def test_fwd_rev_consistency_fuzz(self, calculator, seed):
+        """Fuzz: fwd/rev consistency on random worlds."""
+        rng = random.Random(seed)
+        size = rng.choice([5, 7, 9])
+        world = make_world(size)
+        entity_values = [e.value for e in entities.values()]
+        direction_values = [d.value for d in Direction]
+        num_ents = rng.randint(1, min(15, size * size))
+        positions = rng.sample(
+            [(x, y) for x in range(size) for y in range(size)], num_ents
+        )
+        for x, y in positions:
+            world[x, y, Channel.ENTITIES.value] = rng.choice(entity_values)
+            world[x, y, Channel.DIRECTION.value] = rng.choice(direction_values)
+            world[x, y, Channel.ITEMS.value] = rng.choice([0, 1, 2, 3, 4])
+            world[x, y, Channel.MISC.value] = rng.choice([0, 1, 2])
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        # fwd/rev consistency
+        for u, succs in fwd.items():
+            for v in succs:
+                assert u in rev[v], f"seed={seed}: {u}→{v} fwd but {u} not in rev[{v}]"
+        for v, preds in rev.items():
+            for u in preds:
+                assert v in fwd[u], f"seed={seed}: {u} in rev[{v}] but {v} not in fwd[{u}]"
+
+        # all keys consistent
+        assert set(nodes) == set(fwd) == set(rev), f"seed={seed}: key mismatch"
+
+
+class TestKahnTopoSort:
+    """Test the Kahn's algorithm implementation directly."""
+
+    def test_linear_chain(self):
+        """A→B→C should produce [A, B, C]."""
+        nodes = {"A": {}, "B": {}, "C": {}}
+        fwd = {"A": {"B"}, "B": {"C"}, "C": set()}
+        rev = {"A": set(), "B": {"A"}, "C": {"B"}}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order == ["A", "B", "C"]
+
+    def test_diamond(self):
+        """A→B, A→C, B→D, C→D: A must come first, D last."""
+        nodes = {"A": {}, "B": {}, "C": {}, "D": {}}
+        fwd = {"A": {"B", "C"}, "B": {"D"}, "C": {"D"}, "D": set()}
+        rev = {"A": set(), "B": {"A"}, "C": {"A"}, "D": {"B", "C"}}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is not None
+        assert order[0] == "A"
+        assert order[-1] == "D"
+        assert order.index("B") < order.index("D")
+        assert order.index("C") < order.index("D")
+
+    def test_simple_cycle(self):
+        """A→B→A is a cycle, should return None."""
+        nodes = {"A": {}, "B": {}}
+        fwd = {"A": {"B"}, "B": {"A"}}
+        rev = {"A": {"B"}, "B": {"A"}}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is None
+
+    def test_self_loop(self):
+        """A→A is a cycle."""
+        nodes = {"A": {}}
+        fwd = {"A": {"A"}}
+        rev = {"A": {"A"}}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is None
+
+    def test_single_node_no_edges(self):
+        """One node, no edges."""
+        nodes = {"X": {}}
+        fwd = {"X": set()}
+        rev = {"X": set()}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order == ["X"]
+
+    def test_disconnected_components(self):
+        """Two disconnected chains: both should appear in topological order."""
+        nodes = {"A": {}, "B": {}, "X": {}, "Y": {}}
+        fwd = {"A": {"B"}, "B": set(), "X": {"Y"}, "Y": set()}
+        rev = {"A": set(), "B": {"A"}, "X": set(), "Y": {"X"}}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is not None
+        assert len(order) == 4
+        assert order.index("A") < order.index("B")
+        assert order.index("X") < order.index("Y")
+
+    def test_cycle_in_larger_graph(self):
+        """A→B→C→A cycle embedded in larger graph."""
+        nodes = {"A": {}, "B": {}, "C": {}, "D": {}}
+        fwd = {"A": {"B"}, "B": {"C"}, "C": {"A"}, "D": {"A"}}
+        rev = {"A": {"C", "D"}, "B": {"A"}, "C": {"B"}, "D": set()}
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is None
+
+    def test_wide_fan_out(self):
+        """One source fans out to many sinks."""
+        sinks = [f"S{i}" for i in range(10)]
+        nodes = {"root": {}}
+        nodes.update({s: {} for s in sinks})
+        fwd = {"root": set(sinks)}
+        fwd.update({s: set() for s in sinks})
+        rev = {"root": set()}
+        rev.update({s: {"root"} for s in sinks})
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is not None
+        assert order[0] == "root"
+        assert set(order[1:]) == set(sinks)
+
+    def test_wide_fan_in(self):
+        """Many sources converge to one sink."""
+        sources = [f"S{i}" for i in range(10)]
+        nodes = {"sink": {}}
+        nodes.update({s: {} for s in sources})
+        fwd = {"sink": set()}
+        fwd.update({s: {"sink"} for s in sources})
+        rev = {"sink": set(sources)}
+        rev.update({s: set() for s in sources})
+        order = ThroughputCalculator._kahn_topo_sort(nodes, fwd, rev)
+        assert order is not None
+        assert order[-1] == "sink"
+        assert set(order[:-1]) == set(sources)
+
+    def test_empty_graph(self):
+        """Empty graph returns empty list."""
+        order = ThroughputCalculator._kahn_topo_sort({}, {}, {})
+        assert order == []
+
+
+class TestBFSForward:
+    """Test the BFS reachability implementation directly."""
+
+    def test_linear_chain(self):
+        fwd = {"A": {"B"}, "B": {"C"}, "C": set()}
+        reached = ThroughputCalculator._bfs_forward(["A"], fwd)
+        assert reached == {"A", "B", "C"}
+
+    def test_unreachable_node(self):
+        fwd = {"A": {"B"}, "B": set(), "C": set()}
+        reached = ThroughputCalculator._bfs_forward(["A"], fwd)
+        assert reached == {"A", "B"}
+        assert "C" not in reached
+
+    def test_multiple_start_nodes(self):
+        fwd = {"A": {"C"}, "B": {"C"}, "C": {"D"}, "D": set()}
+        reached = ThroughputCalculator._bfs_forward(["A", "B"], fwd)
+        assert reached == {"A", "B", "C", "D"}
+
+    def test_empty_start(self):
+        fwd = {"A": {"B"}, "B": set()}
+        reached = ThroughputCalculator._bfs_forward([], fwd)
+        assert reached == set()
+
+    def test_diamond_reachability(self):
+        fwd = {"A": {"B", "C"}, "B": {"D"}, "C": {"D"}, "D": set()}
+        reached = ThroughputCalculator._bfs_forward(["A"], fwd)
+        assert reached == {"A", "B", "C", "D"}
+
+    def test_disconnected_components(self):
+        fwd = {"A": {"B"}, "B": set(), "X": {"Y"}, "Y": set()}
+        reached = ThroughputCalculator._bfs_forward(["A"], fwd)
+        assert reached == {"A", "B"}
+
+
+class TestFlowPropagation:
+    """Test that flow values propagate correctly through the graph."""
+
+    def test_source_to_sink_belt_flow(self, calculator):
+        """Source→belt→belt→sink: flow should be belt capacity (15.0)."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 3, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert "iron_plate" in output
+        assert output["iron_plate"] == pytest.approx(15.0, abs=1e-6)
+        assert unreachable == 0
+
+    def test_inserter_caps_flow(self, calculator):
+        """Source→belt→inserter→belt→sink: inserter rate (0.86) caps flow."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "inserter", Direction.EAST)
+        place_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert output["iron_plate"] == pytest.approx(0.86, abs=1e-6)
+
+    def test_no_sinks_zero_output(self, calculator):
+        """Source→belt→belt: no sinks means zero throughput."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "transport_belt", Direction.EAST)
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert len(output) == 0
+        assert unreachable == 3
+
+    def test_cycle_returns_foobar(self, calculator):
+        """Belt loop should be detected as cycle, return foobar: 0.0."""
+        world = make_world(3)
+        place_entity(world, 0, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 1, 0, "transport_belt", Direction.SOUTH)
+        place_entity(world, 1, 1, "transport_belt", Direction.WEST)
+        place_entity(world, 0, 1, "transport_belt", Direction.NORTH)
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert "foobar" in output
+        assert output["foobar"] == 0.0
+
+    def test_empty_graph_returns_empty(self, calculator):
+        """Empty world → empty output, 0 unreachable."""
+        world = make_world(3)
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert output == {}
+        assert unreachable == 0
+
+    def test_source_output_is_infinite(self, calculator):
+        """Source (stack_inserter) should produce infinite initial output."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+
+        # Find the source node
+        source_nodes = [n for n in nodes if "stack_inserter" in n]
+        assert len(source_nodes) == 1
+        source_data = nodes[source_nodes[0]]
+        assert source_data["output"]["iron_plate"] == float("inf")
+
+    def test_flow_preserves_item_type(self, calculator):
+        """Item type is preserved through the belt chain."""
+        world = make_world(5)
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 3, 0, "bulk_inserter", Direction.EAST, "copper_plate")
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert "copper_plate" in output
+        assert "iron_plate" not in output
+
+    def test_assembler_recipe_application(self, calculator):
+        """Assembler with copper_cable recipe: 2 copper_plate → 4 copper_cable,
+        capped by inserter rate."""
+        world = make_world(9)
+        place_entity(world, 0, 1, "stack_inserter", Direction.EAST, "copper_plate")
+        place_entity(world, 1, 1, "inserter", Direction.EAST)
+        place_entity(world, 2, 0, "assembling_machine_1", Direction.NONE, "copper_cable")
+        place_entity(world, 5, 1, "inserter", Direction.EAST)
+        place_entity(world, 6, 1, "transport_belt", Direction.EAST)
+        place_entity(world, 7, 1, "transport_belt", Direction.EAST)
+        place_entity(world, 8, 1, "bulk_inserter", Direction.EAST, "copper_cable")
+
+        graph = calculator.build_flow_graph(world.numpy())
+        nodes, fwd, rev = graph
+        output, unreachable = calculator.propagate_flow(graph)
+
+        # Input is 0.86 copper_plate, recipe needs 2 → ratio = 0.43
+        # Produces 4 * 0.43 = 1.72 copper_cable, capped by output inserter at 0.86
+        assert "copper_cable" in output
+        assert output["copper_cable"] == pytest.approx(0.86, abs=1e-6)
+
+    def test_unreachable_counts_correctly(self, calculator):
+        """Disconnected entities should be counted as unreachable."""
+        world = make_world(5)
+        # Connected path
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        # Isolated belt (not connected to source or sink)
+        place_entity(world, 4, 4, "transport_belt", Direction.EAST)
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        assert unreachable == 1  # the isolated belt
+
+    def test_two_parallel_paths_sum(self, calculator):
+        """Two independent source→sink paths: outputs should sum."""
+        world = make_world(5)
+        # Path 1
+        place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        # Path 2
+        place_entity(world, 0, 4, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(world, 1, 4, "transport_belt", Direction.EAST)
+        place_entity(world, 2, 4, "bulk_inserter", Direction.EAST, "iron_plate")
+
+        graph = calculator.build_flow_graph(world.numpy())
+        output, unreachable = calculator.propagate_flow(graph)
+
+        # Each path contributes 15.0
+        assert output["iron_plate"] == pytest.approx(30.0, abs=1e-6)
+        assert unreachable == 0
