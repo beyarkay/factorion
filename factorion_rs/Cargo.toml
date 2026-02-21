@@ -8,8 +8,12 @@ name = "factorion_rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
-numpy = "0.23"
+pyo3 = { version = "0.23", optional = true }
+numpy = { version = "0.23", optional = true }
+
+[features]
+default = ["pyo3-bindings"]
+pyo3-bindings = ["pyo3/extension-module", "dep:pyo3", "dep:numpy"]
 
 [dev-dependencies]
 # dev deps for tests only

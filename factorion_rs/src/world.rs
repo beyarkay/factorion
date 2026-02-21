@@ -1,5 +1,3 @@
-use numpy::PyUntypedArrayMethods;
-
 use crate::types::{Channel, Direction, EntityKind, Item, Misc};
 
 /// A wrapper around a 3D array representing a factory world.
@@ -53,7 +51,10 @@ impl World {
 
     /// Construct a World from a numpy array (called from PyO3).
     /// The array should have shape (W, H, C) and dtype i64.
+    #[cfg(feature = "pyo3-bindings")]
     pub fn from_numpy(array: &numpy::PyReadonlyArray3<i64>) -> Self {
+        use numpy::PyUntypedArrayMethods;
+
         let shape = array.shape();
         let width = shape[0];
         let height = shape[1];

@@ -4,11 +4,16 @@ mod throughput;
 mod types;
 mod world;
 
+#[cfg(feature = "pyo3-bindings")]
 use numpy::PyReadonlyArray3;
+#[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
 
+#[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
+#[cfg(feature = "pyo3-bindings")]
 use throughput::calc_throughput;
+#[cfg(feature = "pyo3-bindings")]
 use world::World;
 
 /// Calculate the throughput of a factory represented as a 3D tensor.
@@ -17,6 +22,7 @@ use world::World;
 ///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state)
 ///
 /// Returns: (throughput, num_unreachable) matching funge_throughput's signature.
+#[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     let world = World::from_numpy(&world);
@@ -37,6 +43,7 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     Ok((throughput, num_unreachable))
 }
 
+#[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
