@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 
-@dataclass
+@dataclass(slots=True)
 class TileInfo:
     """Data read from the world tensor for a single tile."""
     entity_name: str
@@ -33,65 +33,86 @@ class TileInfo:
     misc: object  # Misc enum
     x: int
     y: int
+    node_id: str = ""
 
-    @property
-    def node_id(self) -> str:
-        return f"{self.entity_name}\n@{self.x},{self.y}"
+    def __post_init__(self):
+        self.node_id = f"{self.entity_name}\n@{self.x},{self.y}"
 
 
 class WorldAccessor:
-    """Thin wrapper around the numpy world array for named tile access."""
+    """Thin wrapper around the numpy world array for named tile access.
+
+    Pre-caches all TileInfo objects on construction so that get_tile is O(1).
+    """
 
     def __init__(self, world_WHC: np.ndarray, entities, items, Channel, Direction, Misc, DIR_TO_DELTA):
-        self._world = world_WHC
-        self.W, self.H, self.C = world_WHC.shape
-        self._entities = entities
-        self._items = items
-        self._Channel = Channel
-        self._Direction = Direction
-        self._Misc = Misc
+        W, H, C = world_WHC.shape
+        self.W = W
+        self.H = H
         self._DIR_TO_DELTA = DIR_TO_DELTA
 
-    def in_bounds(self, x: int, y: int) -> bool:
-        return 0 <= x < self.W and 0 <= y < self.H
+        # Pre-extract enum .value constants to avoid repeated attribute lookups
+        ch_ent = Channel.ENTITIES.value
+        ch_dir = Channel.DIRECTION.value
+        ch_itm = Channel.ITEMS.value
+        ch_msc = Channel.MISC.value
+
+        # Pre-build lookup tables to avoid repeated enum construction
+        dir_lookup = {d.value: d for d in Direction}
+        misc_lookup = {m.value: m for m in Misc}
+
+        # Pre-cache all tiles in a flat list (row-major: index = x * H + y)
+        cache = [None] * (W * H)
+        for x in range(W):
+            row_offset = x * H
+            for y in range(H):
+                e = entities[world_WHC[x, y, ch_ent]]
+                if e.name == "empty":
+                    continue
+                d = dir_lookup[world_WHC[x, y, ch_dir]]
+                item = items[world_WHC[x, y, ch_itm]]
+                misc = misc_lookup[world_WHC[x, y, ch_msc]]
+                cache[row_offset + y] = TileInfo(
+                    entity_name=e.name,
+                    entity_value=e.value,
+                    entity_flow=e.flow,
+                    entity_width=e.width,
+                    entity_height=e.height,
+                    direction=d,
+                    item_name=item.name,
+                    misc=misc,
+                    x=x,
+                    y=y,
+                )
+        self._cache = cache
+        self._empty_tile_template = TileInfo(
+            entity_name="empty", entity_value=0, entity_flow=0.0,
+            entity_width=1, entity_height=1, direction=Direction.NONE,
+            item_name="empty", misc=Misc.NONE, x=0, y=0,
+        )
 
     def get_tile(self, x: int, y: int) -> Optional[TileInfo]:
-        if not self.in_bounds(x, y):
+        if not (0 <= x < self.W and 0 <= y < self.H):
             return None
-        e = self._entities[self._world[x, y, self._Channel.ENTITIES.value]]
-        d = self._Direction(self._world[x, y, self._Channel.DIRECTION.value])
-        item = self._items[self._world[x, y, self._Channel.ITEMS.value]]
-        misc = self._Misc(self._world[x, y, self._Channel.MISC.value])
-        return TileInfo(
-            entity_name=e.name,
-            entity_value=e.value,
-            entity_flow=e.flow,
-            entity_width=e.width,
-            entity_height=e.height,
-            direction=d,
-            item_name=item.name,
-            misc=misc,
-            x=x,
-            y=y,
-        )
+        tile = self._cache[x * self.H + y]
+        if tile is None:
+            # Empty tile — return a lightweight sentinel
+            return self._empty_tile_template
+        return tile
 
     def get_neighbor(self, x: int, y: int, direction) -> Optional[TileInfo]:
         """Get the tile in front of (x, y) given the direction."""
         delta = self._DIR_TO_DELTA.get(direction)
         if delta is None:
-            # Direction.NONE: point at self (matches old behavior)
             return self.get_tile(x, y)
-        dx, dy = delta
-        return self.get_tile(x + dx, y + dy)
+        return self.get_tile(x + delta[0], y + delta[1])
 
     def get_behind(self, x: int, y: int, direction) -> Optional[TileInfo]:
         """Get the tile behind (x, y) given the direction."""
         delta = self._DIR_TO_DELTA.get(direction)
         if delta is None:
-            # Direction.NONE: point at self (matches old behavior)
             return self.get_tile(x, y)
-        dx, dy = delta
-        return self.get_tile(x - dx, y - dy)
+        return self.get_tile(x - delta[0], y - delta[1])
 
 
 class EntityHandler(Protocol):
@@ -179,10 +200,10 @@ class TransportBeltHandler:
     def __init__(self, Direction, Misc):
         self._Direction = Direction
         self._Misc = Misc
+        self._opposite = Direction.SOUTH.value - Direction.NORTH.value
 
     def get_connections(self, tile: TileInfo, world: WorldAccessor) -> list[tuple[str, str]]:
         edges = []
-        Direction = self._Direction
         Misc = self._Misc
 
         # Source: belt behind, same direction, not underground-DOWN
@@ -207,10 +228,9 @@ class TransportBeltHandler:
         dst_tile = world.get_neighbor(tile.x, tile.y, tile.direction)
         if dst_tile is not None:
             dst_is_belt = "belt" in dst_tile.entity_name
-            opposite = Direction.SOUTH.value - Direction.NORTH.value
             dst_opposing = (
                 dst_is_belt
-                and abs(dst_tile.direction.value - tile.direction.value) == opposite
+                and abs(dst_tile.direction.value - tile.direction.value) == self._opposite
             )
             if dst_is_belt and not dst_opposing:
                 edges.append((tile.node_id, dst_tile.node_id))
@@ -424,56 +444,47 @@ class ThroughputCalculator:
     def build_flow_graph(self, world_WHC: np.ndarray, debug=False) -> nx.DiGraph:
         """Build a directed flow graph from the world tensor.
 
-        Two-pass construction: (1) create all nodes, (2) create all edges.
+        Single-pass: iterates pre-cached tiles, creates nodes and edges together.
         """
         world = self._make_world_accessor(world_WHC)
         G = nx.DiGraph()
+        handlers = self._handlers
 
         def dbg(s):
             if debug:
                 print(s)
 
+        # Collect non-empty tiles from the pre-built cache
+        cache = world._cache
+        H = world.H
+        tiles = [t for t in cache if t is not None]
+
         # Pass 1: create all nodes
-        for x in range(world.W):
-            for y in range(world.H):
-                tile = world.get_tile(x, y)
-                if tile.entity_name == "empty":
-                    continue
+        for tile in tiles:
+            handler = handlers.get(tile.entity_name)
+            if handler is None:
+                assert False, f"Don't know how to handle {tile.entity_name} at {tile.x} {tile.y}"
 
-                handler = self._handlers.get(tile.entity_name)
-                if handler is None:
-                    assert False, f"Don't know how to handle {tile.entity_name} at {x} {y}"
-
-                initial_output = handler.get_initial_output(tile)
-                G.add_node(
-                    tile.node_id,
-                    input_={},
-                    output=initial_output,
-                    recipe=tile.item_name if "assembling_machine" in tile.entity_name else None,
-                    entity_name=tile.entity_name,
-                    entity_flow=tile.entity_flow,
-                )
-                dbg(
-                    f"Created node {repr(tile.node_id)}: {G.nodes[tile.node_id]}, "
-                    f"direction is {tile.direction}, recipe is {tile.item_name}"
-                )
+            initial_output = handler.get_initial_output(tile)
+            G.add_node(
+                tile.node_id,
+                input_={},
+                output=initial_output,
+                recipe=tile.item_name if "assembling_machine" in tile.entity_name else None,
+                entity_name=tile.entity_name,
+                entity_flow=tile.entity_flow,
+            )
+            dbg(
+                f"Created node {repr(tile.node_id)}: {G.nodes[tile.node_id]}, "
+                f"direction is {tile.direction}, recipe is {tile.item_name}"
+            )
 
         # Pass 2: create all edges
-        for x in range(world.W):
-            for y in range(world.H):
-                tile = world.get_tile(x, y)
-                if tile.entity_name == "empty":
-                    continue
-
-                handler = self._handlers[tile.entity_name]
-                for src, dst in handler.get_connections(tile, world):
-                    # Only add edges between nodes that exist in the graph.
-                    # The old code uses nx.add_edge which implicitly creates
-                    # missing nodes (without attributes). We replicate that
-                    # behavior: add the edge even if a node doesn't exist yet
-                    # (nx.add_edge will create it).
-                    G.add_edge(src, dst)
-                    dbg(f"{repr(src)} -> {repr(dst)}")
+        for tile in tiles:
+            handler = handlers[tile.entity_name]
+            for src, dst in handler.get_connections(tile, world):
+                G.add_edge(src, dst)
+                dbg(f"{repr(src)} -> {repr(dst)}")
 
         return G
 
