@@ -211,7 +211,7 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 mod tests {
     use super::*;
     use crate::graph::build_graph;
-    use crate::types::{Channel, Direction, NodeId};
+    use crate::types::{Direction, NodeId};
     use crate::world::World;
 
     #[test]
@@ -230,23 +230,22 @@ mod tests {
         // Throughput limited by belt rate (15.0).
         let mut w = World::empty(4, 1);
 
-        // Source at (0,0) facing east, drops onto belt at (1,0)
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-
-        // Belt at (1,0)
-        w.set(1, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-
-        // Belt at (2,0)
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-
-        // Sink at (3,0) facing east, picks up from belt at (2,0)
-        w.set(3, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -272,23 +271,16 @@ mod tests {
         // Throughput limited by inserter rate (0.86).
         let mut w = World::empty(4, 1);
 
-        // Source at (0,0) facing east
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-
-        // Inserter at (1,0) facing east (picks up from source, drops on belt)
-        w.set(1, 0, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-
-        // Belt at (2,0) facing east
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-
-        // Sink at (3,0) facing east (picks up from belt)
-        w.set(3, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(1, 0, EntityKind::Inserter, Direction::East, Item::Empty);
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -312,17 +304,15 @@ mod tests {
         // Source and sink exist but aren't connected. A lone belt sits in the middle.
         let mut w = World::empty(5, 5);
 
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-
-        w.set(4, 4, Channel::Entities, EntityKind::Sink as i64);
-        w.set(4, 4, Channel::Direction, Direction::East as i64);
-        w.set(4, 4, Channel::Items, Item::CopperCable as i64);
-
-        // Disconnected belt
-        w.set(2, 2, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 2, Channel::Direction, Direction::East as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(4, 4, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(
+            2,
+            2,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -383,9 +373,7 @@ mod tests {
     #[test]
     fn test_source_only_no_sink() {
         let mut w = World::empty(3, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
 
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);

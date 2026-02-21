@@ -92,6 +92,22 @@ impl World {
         self.data[idx] = value;
     }
 
+    /// Place an entity at (x, y) with the given direction and item.
+    #[allow(dead_code)]
+    pub fn place(&mut self, x: usize, y: usize, entity: EntityKind, dir: Direction, item: Item) {
+        self.set(x, y, Channel::Entities, entity as i64);
+        self.set(x, y, Channel::Direction, dir as i64);
+        self.set(x, y, Channel::Items, item as i64);
+    }
+
+    /// Place an underground belt at (x, y) with the given direction and misc state.
+    #[allow(dead_code)]
+    pub fn place_underground(&mut self, x: usize, y: usize, dir: Direction, misc: Misc) {
+        self.set(x, y, Channel::Entities, EntityKind::UndergroundBelt as i64);
+        self.set(x, y, Channel::Direction, dir as i64);
+        self.set(x, y, Channel::Misc, misc as i64);
+    }
+
     /// Get the entity kind at (x, y).
     pub fn entity_at(&self, x: usize, y: usize) -> EntityKind {
         EntityKind::from_i64(self.get(x, y, Channel::Entities))
@@ -154,9 +170,13 @@ mod tests {
     #[test]
     fn test_set_and_get() {
         let mut w = make_3x3_world();
-        w.set(1, 2, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 2, Channel::Direction, Direction::East as i64);
-        w.set(1, 2, Channel::Items, Item::CopperCable as i64);
+        w.place(
+            1,
+            2,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::CopperCable,
+        );
 
         assert_eq!(w.entity_at(1, 2), EntityKind::TransportBelt);
         assert_eq!(w.direction_at(1, 2), Direction::East);
@@ -182,18 +202,31 @@ mod tests {
         let mut w = World::empty(5, 5);
 
         // Place a source at (0,0) facing east
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::ElectronicCircuit as i64);
+        w.place(
+            0,
+            0,
+            EntityKind::Source,
+            Direction::East,
+            Item::ElectronicCircuit,
+        );
 
         // Place a belt at (1,0) facing east
-        w.set(1, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         // Place a sink at (2,0) facing east
-        w.set(2, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-        w.set(2, 0, Channel::Items, Item::ElectronicCircuit as i64);
+        w.place(
+            2,
+            0,
+            EntityKind::Sink,
+            Direction::East,
+            Item::ElectronicCircuit,
+        );
 
         assert_eq!(w.entity_at(0, 0), EntityKind::Source);
         assert_eq!(w.entity_at(1, 0), EntityKind::TransportBelt);
@@ -204,13 +237,8 @@ mod tests {
     #[test]
     fn test_underground_belt_misc() {
         let mut w = World::empty(5, 5);
-        w.set(1, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-        w.set(1, 0, Channel::Misc, Misc::UndergroundDown as i64);
-
-        w.set(3, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Misc, Misc::UndergroundUp as i64);
+        w.place_underground(1, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(3, 0, Direction::East, Misc::UndergroundUp);
 
         assert_eq!(w.misc_at(1, 0), Misc::UndergroundDown);
         assert_eq!(w.misc_at(3, 0), Misc::UndergroundUp);

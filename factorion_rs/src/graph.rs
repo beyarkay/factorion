@@ -132,7 +132,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Channel, Direction, Misc};
+    use crate::types::{Direction, Misc};
 
     #[test]
     fn test_empty_world_graph() {
@@ -144,8 +144,13 @@ mod tests {
     #[test]
     fn test_single_belt_no_edges() {
         let mut w = World::empty(3, 3);
-        w.set(1, 1, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 1, Channel::Direction, Direction::East as i64);
+        w.place(
+            1,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         let g = build_graph(&w);
         assert_eq!(g.node_count(), 1);
@@ -157,19 +162,22 @@ mod tests {
     fn test_belt_chain_graph() {
         // Source → Belt → Belt → Sink
         let mut w = World::empty(5, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-
-        w.set(1, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(3, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
 
         let g = build_graph(&w);
         assert_eq!(g.node_count(), 4);
@@ -197,22 +205,17 @@ mod tests {
     fn test_inserter_chain_graph() {
         // Source → Inserter → Belt → Inserter → Sink
         let mut w = World::empty(5, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-
-        w.set(1, 0, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(3, 0, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(4, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(4, 0, Channel::Direction, Direction::East as i64);
-        w.set(4, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(1, 0, EntityKind::Inserter, Direction::East, Item::Empty);
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(3, 0, EntityKind::Inserter, Direction::East, Item::Empty);
+        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
 
         let g = build_graph(&w);
         assert_eq!(g.node_count(), 5);
@@ -241,19 +244,22 @@ mod tests {
     fn test_underground_belt_graph() {
         // Belt → Underground(down) ... Underground(up) → Belt
         let mut w = World::empty(6, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-
-        w.set(1, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-        w.set(1, 0, Channel::Misc, Misc::UndergroundDown as i64);
-
-        w.set(4, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(4, 0, Channel::Direction, Direction::East as i64);
-        w.set(4, 0, Channel::Misc, Misc::UndergroundUp as i64);
-
-        w.set(5, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(5, 0, Channel::Direction, Direction::East as i64);
+        w.place(
+            0,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place_underground(1, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(4, 0, Direction::East, Misc::UndergroundUp);
+        w.place(
+            5,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         let g = build_graph(&w);
         assert_eq!(g.node_count(), 4);

@@ -420,26 +420,27 @@ impl FactoryEntity for EmptyEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Channel;
 
     /// Helper to build a small world with a few entities for testing connections.
     fn make_belt_chain_world() -> World {
         // 5x1 world: Source(east) -> Belt(east) -> Belt(east) -> Sink(east)
         let mut w = World::empty(5, 1);
-        // Source at (0,0)
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(0, 0, Channel::Items, Item::CopperCable as i64);
-        // Belt at (1,0)
-        w.set(1, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-        // Belt at (2,0)
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
-        // Sink at (3,0)
-        w.set(3, 0, Channel::Entities, EntityKind::Sink as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Items, Item::CopperCable as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
         w
     }
 
@@ -477,10 +478,20 @@ mod tests {
     fn test_transport_belt_no_opposing_connection() {
         // Two belts facing each other should not connect
         let mut w = World::empty(3, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(1, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::West as i64);
+        w.place(
+            0,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::West,
+            Item::Empty,
+        );
 
         let belt = TransportBelt;
         let edges = belt.connections((0, 0), Direction::East, &w);
@@ -492,12 +503,15 @@ mod tests {
     fn test_inserter_connections() {
         // Inserter at (1,0) facing east, source at (0,0), belt at (2,0)
         let mut w = World::empty(3, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(0, 0, Channel::Direction, Direction::East as i64);
-        w.set(1, 0, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-        w.set(2, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(2, 0, Channel::Direction, Direction::East as i64);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::Empty);
+        w.place(1, 0, EntityKind::Inserter, Direction::East, Item::Empty);
+        w.place(
+            2,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         let inserter = Inserter;
         let edges = inserter.connections((1, 0), Direction::East, &w);
@@ -519,9 +533,8 @@ mod tests {
     fn test_inserter_wont_drop_on_empty() {
         // Inserter facing east, source behind, empty ahead
         let mut w = World::empty(3, 1);
-        w.set(0, 0, Channel::Entities, EntityKind::Source as i64);
-        w.set(1, 0, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
+        w.place(0, 0, EntityKind::Source, Direction::None, Item::Empty);
+        w.place(1, 0, EntityKind::Inserter, Direction::East, Item::Empty);
 
         let inserter = Inserter;
         let edges = inserter.connections((1, 0), Direction::East, &w);
@@ -534,21 +547,19 @@ mod tests {
     fn test_assembler_connections() {
         // 6x6 world with assembler at (1,1) and inserters on perimeter
         let mut w = World::empty(6, 6);
-        w.set(
+        w.place(
             1,
             1,
-            Channel::Entities,
-            EntityKind::AssemblingMachine1 as i64,
+            EntityKind::AssemblingMachine1,
+            Direction::None,
+            Item::ElectronicCircuit,
         );
-        w.set(1, 1, Channel::Items, Item::ElectronicCircuit as i64);
 
         // Inserter at (0,1) facing east → inserting into assembler
-        w.set(0, 1, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(0, 1, Channel::Direction, Direction::East as i64);
+        w.place(0, 1, EntityKind::Inserter, Direction::East, Item::Empty);
 
         // Inserter at (4,2) facing east → taking from assembler (facing away)
-        w.set(4, 2, Channel::Entities, EntityKind::Inserter as i64);
-        w.set(4, 2, Channel::Direction, Direction::East as i64);
+        w.place(4, 2, EntityKind::Inserter, Direction::East, Item::Empty);
 
         let asm = AssemblingMachine {
             recipe_item: Item::ElectronicCircuit,
@@ -621,13 +632,8 @@ mod tests {
     fn test_underground_belt_down_connections() {
         // Underground down at (1,0) facing east, underground up at (3,0) facing east
         let mut w = World::empty(5, 1);
-        w.set(1, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(1, 0, Channel::Direction, Direction::East as i64);
-        w.set(1, 0, Channel::Misc, Misc::UndergroundDown as i64);
-
-        w.set(3, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Misc, Misc::UndergroundUp as i64);
+        w.place_underground(1, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(3, 0, Direction::East, Misc::UndergroundUp);
 
         let ub = UndergroundBelt {
             misc: Misc::UndergroundDown,
@@ -644,12 +650,14 @@ mod tests {
     fn test_underground_belt_up_connections() {
         // Underground up at (3,0) facing east, belt at (4,0) facing east
         let mut w = World::empty(5, 1);
-        w.set(3, 0, Channel::Entities, EntityKind::UndergroundBelt as i64);
-        w.set(3, 0, Channel::Direction, Direction::East as i64);
-        w.set(3, 0, Channel::Misc, Misc::UndergroundUp as i64);
-
-        w.set(4, 0, Channel::Entities, EntityKind::TransportBelt as i64);
-        w.set(4, 0, Channel::Direction, Direction::East as i64);
+        w.place_underground(3, 0, Direction::East, Misc::UndergroundUp);
+        w.place(
+            4,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
 
         let ub = UndergroundBelt {
             misc: Misc::UndergroundUp,
