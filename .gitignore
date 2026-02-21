@@ -8,3 +8,4 @@ runs
 videos/
 *.png
 factorion_rs/target/
+__pycache__/
