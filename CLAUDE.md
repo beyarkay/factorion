@@ -73,13 +73,14 @@ WANDB_MODE=disabled WANDB_DISABLED=true python tests/bench_throughput.py
 
 Before claiming work is done, run all of the following:
 
-1. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
+1. **Rust format + lint**: `cd factorion_rs && cargo fmt && cargo clippy -- -D warnings && cd ..`
 2. **Rust tests**: `cd factorion_rs && cargo test && cd ..`
-3. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true python -m pytest tests/ -v`
-4. **Linter**: `ruff check .`
-5. **PPO smoke test**: `WANDB_MODE=disabled python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+3. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
+4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true python -m pytest tests/ -v`
+5. **Python linter**: `ruff check .`
+6. **PPO smoke test**: `WANDB_MODE=disabled python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
 
-All five must pass before the work is considered complete.
+All six must pass before the work is considered complete.
 
 ## Code Conventions
 

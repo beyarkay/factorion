@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{Direction, EntityKind, Item, Misc, NodeId, get_recipe};
+use crate::types::{get_recipe, Direction, EntityKind, Item, Misc, NodeId};
 use crate::world::World;
 
 /// An edge in the factory graph: (source_node, destination_node).
@@ -69,10 +69,7 @@ impl FactoryEntity for TransportBelt {
                     && src_misc == Misc::UndergroundDown);
 
             if src_is_beltish {
-                edges.push((
-                    NodeId::new(src_entity, sx, sy),
-                    self_id.clone(),
-                ));
+                edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
             }
         }
 
@@ -91,14 +88,10 @@ impl FactoryEntity for TransportBelt {
             );
             // Don't connect to a belt facing the opposite direction
             let opposite = Direction::South as i64 - Direction::North as i64;
-            let dst_opposing = dst_is_belt
-                && (dst_dir as i64 - dir as i64).abs() == opposite;
+            let dst_opposing = dst_is_belt && (dst_dir as i64 - dir as i64).abs() == opposite;
 
             if dst_is_belt && !dst_opposing {
-                edges.push((
-                    self_id,
-                    NodeId::new(dst_entity, dx_u, dy_u),
-                ));
+                edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
             }
         }
 
@@ -187,11 +180,10 @@ impl FactoryEntity for AssemblingMachine {
                 // The inserter's direction points from pickup to dropoff.
                 // If the inserter faces toward the assembler interior → inserting into assembler.
                 // If the inserter faces away from the assembler interior → taking from assembler.
-                let is_inserting_into_assembler =
-                    (other_dir == Direction::North && ddy < 0)
-                        || (other_dir == Direction::South && ddy > 0)
-                        || (other_dir == Direction::West && ddx < 0)
-                        || (other_dir == Direction::East && ddx > 0);
+                let is_inserting_into_assembler = (other_dir == Direction::North && ddy < 0)
+                    || (other_dir == Direction::South && ddy > 0)
+                    || (other_dir == Direction::West && ddx < 0)
+                    || (other_dir == Direction::East && ddx > 0);
 
                 // Wait — the Python code uses a different convention. Let me re-check:
                 // Python: Direction is "self -> other" where self=assembler, other=inserter.
@@ -282,17 +274,14 @@ impl FactoryEntity for UndergroundBelt {
             let dst_yu = dst_y as usize;
             let dst_entity = world.entity_at(dst_xu, dst_yu);
 
-            let going_underground = dst_entity == EntityKind::UndergroundBelt
-                && self.misc == Misc::UndergroundDown;
+            let going_underground =
+                dst_entity == EntityKind::UndergroundBelt && self.misc == Misc::UndergroundDown;
 
-            let cxn_to_belt = matches!(dst_entity, EntityKind::TransportBelt)
-                && self.misc == Misc::UndergroundUp;
+            let cxn_to_belt =
+                matches!(dst_entity, EntityKind::TransportBelt) && self.misc == Misc::UndergroundUp;
 
             if going_underground || cxn_to_belt {
-                edges.push((
-                    self_id.clone(),
-                    NodeId::new(dst_entity, dst_xu, dst_yu),
-                ));
+                edges.push((self_id.clone(), NodeId::new(dst_entity, dst_xu, dst_yu)));
             }
         }
 
@@ -545,7 +534,12 @@ mod tests {
     fn test_assembler_connections() {
         // 6x6 world with assembler at (1,1) and inserters on perimeter
         let mut w = World::empty(6, 6);
-        w.set(1, 1, Channel::Entities, EntityKind::AssemblingMachine1 as i64);
+        w.set(
+            1,
+            1,
+            Channel::Entities,
+            EntityKind::AssemblingMachine1 as i64,
+        );
         w.set(1, 1, Channel::Items, Item::ElectronicCircuit as i64);
 
         // Inserter at (0,1) facing east → inserting into assembler
@@ -595,18 +589,12 @@ mod tests {
         };
 
         // Full input: 6 copper cable + 2 iron plate → 2 electronic circuits
-        let input = HashMap::from([
-            (Item::CopperCable, 6.0),
-            (Item::IronPlate, 2.0),
-        ]);
+        let input = HashMap::from([(Item::CopperCable, 6.0), (Item::IronPlate, 2.0)]);
         let output = asm.transform_flow(&input);
         assert!((output[&Item::ElectronicCircuit] - 2.0).abs() < 1e-9);
 
         // Half input: 3 copper cable + 2 iron plate → ratio = min(3/6, 2/2) = 0.5
-        let input = HashMap::from([
-            (Item::CopperCable, 3.0),
-            (Item::IronPlate, 2.0),
-        ]);
+        let input = HashMap::from([(Item::CopperCable, 3.0), (Item::IronPlate, 2.0)]);
         let output = asm.transform_flow(&input);
         assert!((output[&Item::ElectronicCircuit] - 1.0).abs() < 1e-9);
 

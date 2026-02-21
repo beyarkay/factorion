@@ -49,6 +49,7 @@ impl Direction {
     }
 
     /// The opposite direction.
+    #[allow(dead_code)]
     pub fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
@@ -99,6 +100,7 @@ impl Item {
         }
     }
 
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             Item::Empty => "empty",
@@ -135,6 +137,7 @@ impl EntityKind {
         }
     }
 
+    #[allow(dead_code)]
     pub fn flow_rate(self) -> f64 {
         match self {
             EntityKind::Empty => 0.0,
@@ -147,6 +150,7 @@ impl EntityKind {
         }
     }
 
+    #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
             EntityKind::Empty => "empty",
@@ -171,10 +175,7 @@ pub struct Recipe {
 pub fn get_recipe(item: Item) -> Option<Recipe> {
     match item {
         Item::ElectronicCircuit => Some(Recipe {
-            consumes: HashMap::from([
-                (Item::CopperCable, 6.0),
-                (Item::IronPlate, 2.0),
-            ]),
+            consumes: HashMap::from([(Item::CopperCable, 6.0), (Item::IronPlate, 2.0)]),
             produces: HashMap::from([(Item::ElectronicCircuit, 2.0)]),
         }),
         Item::CopperCable => Some(Recipe {
@@ -199,6 +200,7 @@ impl NodeId {
         Self { entity_kind, x, y }
     }
 
+    #[allow(dead_code)]
     pub fn label(&self) -> String {
         format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
     }

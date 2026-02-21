@@ -20,6 +20,7 @@ pub struct World {
 
 impl World {
     /// Create a World from a flat data vec with given dimensions.
+    #[allow(dead_code)]
     pub fn new(data: Vec<i64>, width: usize, height: usize, channels: usize) -> Self {
         assert_eq!(
             data.len(),
@@ -39,6 +40,7 @@ impl World {
     }
 
     /// Create an empty world of given dimensions, filled with zeros.
+    #[allow(dead_code)]
     pub fn empty(width: usize, height: usize) -> Self {
         let channels = 4;
         Self {
@@ -84,6 +86,7 @@ impl World {
     }
 
     /// Set a raw value at (x, y, channel).
+    #[allow(dead_code)]
     pub fn set(&mut self, x: usize, y: usize, channel: Channel, value: i64) {
         let idx = self.index(x, y, channel.index());
         self.data[idx] = value;

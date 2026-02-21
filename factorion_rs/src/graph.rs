@@ -7,6 +7,7 @@ use crate::world::World;
 /// A node in the factory graph.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
+    #[allow(dead_code)]
     pub id: NodeId,
     pub entity_kind: EntityKind,
     pub item: Item,
@@ -24,6 +25,7 @@ pub struct FactoryGraph {
     /// Nodes indexed by their position in this vec.
     pub nodes: Vec<GraphNode>,
     /// Map from NodeId to index in `nodes`.
+    #[allow(dead_code)]
     pub node_index: HashMap<NodeId, usize>,
     /// Adjacency list: edges[i] = list of node indices that node i has edges TO.
     pub successors: Vec<Vec<usize>>,
@@ -36,14 +38,17 @@ impl FactoryGraph {
         self.nodes.len()
     }
 
+    #[cfg(test)]
     pub fn get_node(&self, idx: usize) -> &GraphNode {
         &self.nodes[idx]
     }
 
+    #[cfg(test)]
     pub fn get_node_mut(&mut self, idx: usize) -> &mut GraphNode {
         &mut self.nodes[idx]
     }
 
+    #[cfg(test)]
     pub fn get_index(&self, id: &NodeId) -> Option<usize> {
         self.node_index.get(id).copied()
     }
@@ -106,9 +111,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     let mut predecessors = vec![Vec::new(); n];
 
     for (src_id, dst_id) in &edge_list {
-        if let (Some(&src_idx), Some(&dst_idx)) =
-            (node_index.get(src_id), node_index.get(dst_id))
-        {
+        if let (Some(&src_idx), Some(&dst_idx)) = (node_index.get(src_id), node_index.get(dst_id)) {
             if !successors[src_idx].contains(&dst_idx) {
                 successors[src_idx].push(dst_idx);
             }
@@ -172,8 +175,12 @@ mod tests {
         assert_eq!(g.node_count(), 4);
 
         // Belt(1,0) → Belt(2,0) edge should exist
-        let belt1 = g.get_index(&NodeId::new(EntityKind::TransportBelt, 1, 0)).unwrap();
-        let belt2 = g.get_index(&NodeId::new(EntityKind::TransportBelt, 2, 0)).unwrap();
+        let belt1 = g
+            .get_index(&NodeId::new(EntityKind::TransportBelt, 1, 0))
+            .unwrap();
+        let belt2 = g
+            .get_index(&NodeId::new(EntityKind::TransportBelt, 2, 0))
+            .unwrap();
         assert!(g.successors[belt1].contains(&belt2));
         assert!(g.predecessors[belt2].contains(&belt1));
 
@@ -212,15 +219,21 @@ mod tests {
 
         // Source → Inserter(1,0)
         let source = g.get_index(&NodeId::new(EntityKind::Source, 0, 0)).unwrap();
-        let ins1 = g.get_index(&NodeId::new(EntityKind::Inserter, 1, 0)).unwrap();
+        let ins1 = g
+            .get_index(&NodeId::new(EntityKind::Inserter, 1, 0))
+            .unwrap();
         assert!(g.successors[source].contains(&ins1) || g.predecessors[ins1].contains(&source));
 
         // Inserter(1,0) → Belt(2,0)
-        let belt = g.get_index(&NodeId::new(EntityKind::TransportBelt, 2, 0)).unwrap();
+        let belt = g
+            .get_index(&NodeId::new(EntityKind::TransportBelt, 2, 0))
+            .unwrap();
         assert!(g.successors[ins1].contains(&belt));
 
         // Belt(2,0) → Inserter(3,0)
-        let ins2 = g.get_index(&NodeId::new(EntityKind::Inserter, 3, 0)).unwrap();
+        let ins2 = g
+            .get_index(&NodeId::new(EntityKind::Inserter, 3, 0))
+            .unwrap();
         assert!(g.predecessors[ins2].contains(&belt));
     }
 

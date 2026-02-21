@@ -55,16 +55,10 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     let mut iteration = 0;
 
     // Clone the graph's nodes into a mutable working copy
-    let mut node_inputs: Vec<HashMap<Item, f64>> = graph
-        .nodes
-        .iter()
-        .map(|n| n.input.clone())
-        .collect();
-    let mut node_outputs: Vec<HashMap<Item, f64>> = graph
-        .nodes
-        .iter()
-        .map(|n| n.output.clone())
-        .collect();
+    let mut node_inputs: Vec<HashMap<Item, f64>> =
+        graph.nodes.iter().map(|n| n.input.clone()).collect();
+    let mut node_outputs: Vec<HashMap<Item, f64>> =
+        graph.nodes.iter().map(|n| n.output.clone()).collect();
 
     while let Some(node_idx) = queue.pop_back() {
         iteration += 1;
@@ -113,11 +107,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
 
             if entity_kind == EntityKind::AssemblingMachine1 {
                 // For assemblers, use the specialized transform that checks recipes
-                let asm_entity = make_entity(
-                    entity_kind,
-                    graph.nodes[node_idx].recipe_item,
-                    Misc::None,
-                );
+                let asm_entity =
+                    make_entity(entity_kind, graph.nodes[node_idx].recipe_item, Misc::None);
                 node_outputs[node_idx] = asm_entity.transform_flow(&accumulated_input);
             } else {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
