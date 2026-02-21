@@ -399,7 +399,7 @@ class FactorioEnv(gym.Env):
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        throughput, num_unreachable = self.funge_throughput(self._world_CWH.permute(1, 2, 0))
+        throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).numpy())
         # TODO don't always divide by 15
         throughput /= 15.0
 

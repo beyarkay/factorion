@@ -7,3 +7,4 @@ cleanrl
 runs
 videos/
 *.png
+factorion_rs/target/

@@ -1,0 +1,15 @@
+[package]
+name = "factorion_rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "factorion_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+
+[dev-dependencies]
+# dev deps for tests only
