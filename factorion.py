@@ -245,6 +245,12 @@ def functions(
     traceback,
     zlib,
 ):
+    from throughput import ThroughputCalculator
+    _calculator = ThroughputCalculator(
+        entities, items, recipes, Channel, Direction, Misc, DIR_TO_DELTA,
+    )
+    calculate_throughput = _calculator.calculate_throughput
+
     def b64_to_dict(blueprint_string):
         decoded = base64.b64decode(
             blueprint_string.strip()[1:]
@@ -1581,6 +1587,7 @@ def functions(
         b64_to_dict,
         blueprint2world,
         calc_throughput,
+        calculate_throughput,
         dict2b64,
         ent_str2b64img,
         eval_model,
