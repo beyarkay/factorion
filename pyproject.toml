@@ -1,2 +1,16 @@
 [tool.marimo.runtime]
 output_max_bytes = 15_000_000
+
+[tool.ruff]
+# Existing code has many pre-existing violations in the marimo notebook
+# and training script. Ignoring rules that are pervasive but low-risk,
+# while keeping rules that catch real bugs.
+lint.select = ["E", "F", "W"]
+lint.ignore = [
+    "E501",  # line too long (pervasive in existing code)
+    "F541",  # f-string without placeholders (pervasive in debug logging)
+    "F841",  # local variable assigned but unused (WIP code)
+    "E722",  # bare except (used in image loading fallback)
+    "F811",  # redefinition of unused name (duplicate Path import)
+    "F401",  # unused import (factorion_rs used at runtime via FFI)
+]
