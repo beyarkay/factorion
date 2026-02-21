@@ -65,3 +65,8 @@ No test framework or test files are currently configured.
 - Factory state is represented as 3D tensors with semantic channels.
 - Experiment runs are tracked with Weights & Biases.
 - The project uses pinned dependencies in `requirements.txt`.
+
+## Personal Preferences
+
+- Always run smoke tests before claiming work is done.
+- New code must be accompanied by end-to-end tests.
