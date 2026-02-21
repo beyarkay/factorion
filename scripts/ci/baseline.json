@@ -1,0 +1,25 @@
+{
+    "losses/value_loss": {
+        "max": 100.0,
+        "direction": "lower",
+        "required": true,
+        "_comment": "Sanity check: value loss should not explode"
+    },
+    "losses/policy_loss": {
+        "max": 10.0,
+        "direction": "lower",
+        "required": true,
+        "_comment": "Sanity check: policy loss should not explode"
+    },
+    "losses/entropy": {
+        "min": 0.0,
+        "direction": "higher",
+        "required": false,
+        "_comment": "Entropy should stay positive (agent is still exploring)"
+    },
+    "charts/learning_rate": {
+        "min": 0.0,
+        "required": false,
+        "_comment": "Learning rate should remain non-negative"
+    }
+}
