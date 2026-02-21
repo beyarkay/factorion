@@ -14,83 +14,25 @@ Covers:
   - Belt-only vs mixed-entity random worlds
 """
 
-import os
 import random
 import sys
 import time
 
-import numpy as np
 import torch
 
-os.environ["WANDB_MODE"] = "disabled"
-os.environ["WANDB_DISABLED"] = "true"
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-import factorion
-import factorion_rs
-
-# ── Extract marimo cell objects ──────────────────────────────────────────────
-
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-Channel = _objs["Channel"]
-Direction = _objs["Direction"]
-Misc = _objs["Misc"]
-LessonKind = _objs["LessonKind"]
-entities = _objs["entities"]
-items = _objs["items"]
-
-generate_lesson = _fns["generate_lesson"]
-str2ent = _fns["str2ent"]
-str2item = _fns["str2item"]
-world2graph = _fns["world2graph"]
-calc_throughput_py = _fns["calc_throughput"]
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def make_world(w, h=None):
-    if h is None:
-        h = w
-    size = max(w, h)
-    return torch.zeros((size, size, 4), dtype=torch.int64)
-
-
-def set_entity(world, x, y, entity_name, direction, item_name="empty", misc=0):
-    world[x, y, Channel.ENTITIES.value] = str2ent(entity_name).value
-    world[x, y, Channel.DIRECTION.value] = direction.value
-    world[x, y, Channel.ITEMS.value] = str2item(item_name).value
-    world[x, y, Channel.MISC.value] = misc
-
-
-def set_assembler(world, x, y, recipe_name):
-    for dx in range(3):
-        for dy in range(3):
-            world[x + dx, y + dy, Channel.ENTITIES.value] = str2ent(
-                "assembling_machine_1"
-            ).value
-            world[x + dx, y + dy, Channel.DIRECTION.value] = Direction.NORTH.value
-            world[x + dx, y + dy, Channel.ITEMS.value] = str2item(recipe_name).value
-
-
-def py_throughput(world):
-    """Python throughput via world2graph + calc_throughput."""
-    G = world2graph(world)
-    throughput_dict, num_unreachable = calc_throughput_py(G)
-    if len(throughput_dict) == 0:
-        return 0.0, num_unreachable
-    actual = list(throughput_dict.values())[0]
-    if actual == float("inf"):
-        return 0.0, num_unreachable
-    return float(actual), num_unreachable
-
-
-def rs_throughput(world):
-    """Rust throughput via Python bindings."""
-    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+# Allow running directly: python tests/bench_throughput.py
+sys.path.insert(0, "tests")
+from helpers import (
+    Direction,
+    LessonKind,
+    Misc,
+    generate_lesson,
+    make_world,
+    py_throughput_safe,
+    rs_throughput,
+    set_assembler,
+    set_entity,
+)
 
 
 # ── World generators ─────────────────────────────────────────────────────────
@@ -189,35 +131,24 @@ def handcrafted_zigzag(rows):
             if y > rows:
                 break
             direction = Direction.EAST
-    # The last belt faces SOUTH at (x, rows-1), so place sink facing SOUTH
-    # to pick up from behind (the belt above it)
     set_entity(world, x, y, "bulk_inserter", Direction.SOUTH, "copper_cable")
     return world
 
 
 def handcrafted_underground_chain(num_pairs):
     """Chain of underground belt pairs."""
-    # Each pair: UG_down + 3 gap + UG_up + 1 belt = 6 tiles
-    length = num_pairs * 6 + 2  # +2 for source and sink
+    length = num_pairs * 6 + 2
     world = make_world(length)
     set_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_plate")
     pos = 1
     for _ in range(num_pairs):
         set_entity(
-            world,
-            pos,
-            0,
-            "underground_belt",
-            Direction.EAST,
+            world, pos, 0, "underground_belt", Direction.EAST,
             misc=Misc.UNDERGROUND_DOWN.value,
         )
-        pos += 4  # skip 3 tiles
+        pos += 4
         set_entity(
-            world,
-            pos,
-            0,
-            "underground_belt",
-            Direction.EAST,
+            world, pos, 0, "underground_belt", Direction.EAST,
             misc=Misc.UNDERGROUND_UP.value,
         )
         pos += 1
@@ -297,14 +228,11 @@ def handcrafted_inserter_chain(n_inserters):
 
 
 def bench(name, worlds, n_repeats=3):
-    """Benchmark Python vs Rust on a list of worlds.
-
-    Returns dict with timing results.
-    """
+    """Benchmark Python vs Rust on a list of worlds."""
     # Warmup
     for w in worlds[:2]:
         try:
-            py_throughput(w)
+            py_throughput_safe(w)
         except Exception:
             pass
         rs_throughput(w)
@@ -316,7 +244,7 @@ def bench(name, worlds, n_repeats=3):
         t0 = time.perf_counter()
         for w in worlds:
             try:
-                py_throughput(w)
+                py_throughput_safe(w)
             except Exception:
                 py_errors += 1
         py_times.append(time.perf_counter() - t0)
@@ -348,7 +276,6 @@ def bench(name, worlds, n_repeats=3):
 
 def print_results(results):
     """Pretty-print benchmark results."""
-    # Header
     print(f"\n{'=' * 90}")
     print(f"{'Benchmark':<40} {'Worlds':>6} {'Python':>10} {'Rust':>10} {'Speedup':>10}")
     print(f"{'':40} {'':>6} {'(ms/world)':>10} {'(ms/world)':>10} {'':>10}")
@@ -366,7 +293,6 @@ def print_results(results):
     print("* = some Python calls raised exceptions (counted as 0ms)")
     print()
 
-    # Summary
     py_total = sum(r["py_total_s"] for r in results)
     rs_total = sum(r["rs_total_s"] for r in results)
     total_worlds = sum(r["n_worlds"] for r in results)
@@ -380,26 +306,22 @@ def main():
     results = []
     rng = random.Random(42)
 
-    # ── 1. Random worlds (various sizes) ─────────────────────────────────
     print("Generating random worlds...")
     for size, label in [(3, "tiny 3x3"), (5, "small 5x5"), (8, "medium 8x8"), (15, "large 15x15"), (25, "xlarge 25x25")]:
         worlds = [random_world(size, random.Random(rng.randint(0, 99999))) for _ in range(50)]
         results.append(bench(f"Random mixed ({label})", worlds))
 
-    # ── 2. Random belt-only worlds ───────────────────────────────────────
     print("Generating belt-only worlds...")
     for size, label in [(5, "5x5"), (10, "10x10"), (20, "20x20")]:
         worlds = [random_belt_world(size, random.Random(rng.randint(0, 99999))) for _ in range(50)]
         results.append(bench(f"Random belts ({label})", worlds))
 
-    # ── 3. Dense vs sparse ───────────────────────────────────────────────
     print("Generating dense/sparse worlds...")
     worlds_sparse = [random_world(10, random.Random(rng.randint(0, 99999)), density=0.1) for _ in range(50)]
     worlds_dense = [random_world(10, random.Random(rng.randint(0, 99999)), density=0.7) for _ in range(50)]
     results.append(bench("Sparse 10x10 (10% density)", worlds_sparse))
     results.append(bench("Dense 10x10 (70% density)", worlds_dense))
 
-    # ── 4. Generated lessons ─────────────────────────────────────────────
     print("Generating lesson worlds...")
     lesson_worlds = []
     for seed in range(50):
@@ -410,44 +332,36 @@ def main():
     if lesson_worlds:
         results.append(bench("Generated lessons (5x5)", lesson_worlds))
 
-    # ── 5. Handcrafted: straight belts ───────────────────────────────────
     print("Generating handcrafted worlds...")
     for length in [5, 10, 20, 50]:
         worlds = [handcrafted_straight_belt(length)]
         results.append(bench(f"Straight belt chain (len={length})", worlds, n_repeats=10))
 
-    # ── 6. Handcrafted: zigzag ───────────────────────────────────────────
     for rows in [2, 4, 8]:
         worlds = [handcrafted_zigzag(rows)]
         results.append(bench(f"Zigzag serpentine ({rows} rows)", worlds, n_repeats=10))
 
-    # ── 7. Handcrafted: underground chains ───────────────────────────────
     for pairs in [1, 3, 5]:
         worlds = [handcrafted_underground_chain(pairs)]
         results.append(bench(f"Underground chain ({pairs} pairs)", worlds, n_repeats=10))
 
-    # ── 8. Handcrafted: assembler lines ──────────────────────────────────
     worlds = [handcrafted_assembler_line()]
     results.append(bench("Copper cable factory", worlds, n_repeats=10))
     worlds = [handcrafted_electronic_circuit()]
     results.append(bench("Electronic circuit factory", worlds, n_repeats=10))
 
-    # ── 9. Handcrafted: parallel paths ───────────────────────────────────
     for n in [2, 5, 10]:
         worlds = [handcrafted_parallel_paths(n)]
         results.append(bench(f"Parallel paths (n={n})", worlds, n_repeats=10))
 
-    # ── 10. Handcrafted: inserter chains ─────────────────────────────────
     for n in [1, 3, 5]:
         worlds = [handcrafted_inserter_chain(n)]
         results.append(bench(f"Inserter chain (n={n})", worlds, n_repeats=10))
 
-    # ── 11. Empty worlds (baseline) ──────────────────────────────────────
     for size in [5, 15, 30]:
         worlds = [make_world(size)]
         results.append(bench(f"Empty world ({size}x{size})", worlds, n_repeats=10))
 
-    # ── Print results ────────────────────────────────────────────────────
     print_results(results)
 
 

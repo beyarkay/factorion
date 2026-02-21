@@ -48,15 +48,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: |
           pip install pytest pytest-timeout
-          # Install project deps that don't require GPU/compiled extensions
-          pip install numpy gymnasium networkx tyro pydantic || true
+          pip install numpy gymnasium networkx tyro pydantic torch --index-url https://download.pytorch.org/whl/cpu
+          pip install marimo maturin
+      - name: Build factorion_rs
+        run: cd factorion_rs && maturin develop --release
       - name: Run Python tests
+        env:
+          WANDB_MODE: disabled
+          WANDB_DISABLED: "true"
         run: |
           if compgen -G "tests/test_*.py" > /dev/null 2>&1 || compgen -G "tests/*_test.py" > /dev/null 2>&1; then
             pytest tests/ -v --timeout=120
@@ -76,7 +85,7 @@ jobs:
       - name: Check for Rust code
         id: check-rust
         run: |
-          if [ -f Cargo.toml ]; then
+          if [ -f factorion_rs/Cargo.toml ]; then
             echo "has_rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_rust=false" >> "$GITHUB_OUTPUT"
@@ -87,7 +96,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Run Rust tests
         if: steps.check-rust.outputs.has_rust == 'true'
-        run: cargo test --workspace
+        run: cd factorion_rs && cargo test
 
   # ──────────────────────────────────────────────
   # Job 4: GPU smoke test (RunPod H100)

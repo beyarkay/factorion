@@ -39,6 +39,48 @@ pub fn make_entity(kind: EntityKind, item: Item, misc: Misc) -> Box<dyn FactoryE
     }
 }
 
+/// Stack-allocated entity enum for use in hot loops (avoids Box<dyn> heap allocation).
+pub enum EntityEnum {
+    TransportBelt,
+    Inserter,
+    AssemblingMachine { recipe_item: Item },
+    UndergroundBelt,
+    Sink,
+    Source { item: Item },
+    Empty,
+}
+
+impl EntityEnum {
+    pub fn new(kind: EntityKind, item: Item) -> Self {
+        match kind {
+            EntityKind::TransportBelt => EntityEnum::TransportBelt,
+            EntityKind::Inserter => EntityEnum::Inserter,
+            EntityKind::AssemblingMachine1 => EntityEnum::AssemblingMachine { recipe_item: item },
+            EntityKind::UndergroundBelt => EntityEnum::UndergroundBelt,
+            EntityKind::Sink => EntityEnum::Sink,
+            EntityKind::Source => EntityEnum::Source { item },
+            EntityKind::Empty => EntityEnum::Empty,
+        }
+    }
+
+    pub fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        match self {
+            EntityEnum::TransportBelt => TransportBelt.transform_flow(input),
+            EntityEnum::Inserter => Inserter.transform_flow(input),
+            EntityEnum::AssemblingMachine { recipe_item } => AssemblingMachine {
+                recipe_item: *recipe_item,
+            }
+            .transform_flow(input),
+            EntityEnum::UndergroundBelt => {
+                UndergroundBelt { misc: Misc::None }.transform_flow(input)
+            }
+            EntityEnum::Sink => Sink.transform_flow(input),
+            EntityEnum::Source { item } => Source { item: *item }.transform_flow(input),
+            EntityEnum::Empty => EmptyEntity.transform_flow(input),
+        }
+    }
+}
+
 // ── Transport Belt ──────────────────────────────────────────────────────────
 
 struct TransportBelt;
@@ -168,37 +210,33 @@ impl FactoryEntity for AssemblingMachine {
                 let ny_u = ny as usize;
                 let other_entity = world.entity_at(nx_u, ny_u);
 
-                // Only inserters can interact with assembling machines
-                if other_entity != EntityKind::Inserter {
+                // Only inserter-like entities can interact with assembling machines.
+                // In Python, Source (stack_inserter) and Sink (bulk_inserter)
+                // both contain "inserter" in their name, so they match too.
+                if !matches!(
+                    other_entity,
+                    EntityKind::Inserter | EntityKind::Source | EntityKind::Sink
+                ) {
                     continue;
                 }
 
                 let other_dir = world.direction_at(nx_u, ny_u);
-                let other_id = NodeId::new(EntityKind::Inserter, nx_u, ny_u);
+                let other_id = NodeId::new(other_entity, nx_u, ny_u);
 
-                // Determine if the inserter is inserting INTO or OUT OF the assembler.
-                // The inserter's direction points from pickup to dropoff.
-                // If the inserter faces toward the assembler interior → inserting into assembler.
-                // If the inserter faces away from the assembler interior → taking from assembler.
-                let is_inserting_into_assembler = (other_dir == Direction::North && ddy < 0)
+                // Determine edge direction between assembler and the adjacent inserter-like entity.
+                // When the entity's facing direction points away from the assembler body
+                // (e.g. entity is above assembler and faces north), items flow OUT of the
+                // assembler: assembler → entity. Otherwise, items flow IN: entity → assembler.
+                let assembler_outputs_to_entity = (other_dir == Direction::North && ddy < 0)
                     || (other_dir == Direction::South && ddy > 0)
                     || (other_dir == Direction::West && ddx < 0)
                     || (other_dir == Direction::East && ddx > 0);
 
-                // Wait — the Python code uses a different convention. Let me re-check:
-                // Python: Direction is "self -> other" where self=assembler, other=inserter.
-                // If other_d == NORTH and dy < 0, that means the inserter is above the assembler
-                // and facing north (away from assembler), so direction is assembler -> inserter.
-                // Actually re-reading the Python more carefully:
-                //   if (other_d == Direction.NORTH and dy < 0)
-                //   -> src = self_str (assembler), dst = other_str (inserter)
-                // So when the inserter is above (dy < 0) and faces north, items flow FROM assembler TO inserter.
-                // Otherwise, items flow FROM inserter TO assembler.
-                if is_inserting_into_assembler {
-                    // Assembler → Inserter (inserter takes from assembler)
+                if assembler_outputs_to_entity {
+                    // Assembler → entity (entity takes from assembler)
                     edges.push((self_id.clone(), other_id));
                 } else {
-                    // Inserter → Assembler (inserter puts into assembler)
+                    // Entity → Assembler (entity feeds into assembler)
                     edges.push((other_id, self_id.clone()));
                 }
             }
@@ -257,12 +295,11 @@ impl FactoryEntity for UndergroundBelt {
         };
 
         for delta in 1..max_delta {
-            let (_dx, _dy) = dir.delta();
-            let (_src_x, _src_y, dst_x, dst_y) = match dir {
-                Direction::East => (x as i64 - 1, y as i64, x as i64 + delta as i64, y as i64),
-                Direction::West => (x as i64 + 1, y as i64, x as i64 - delta as i64, y as i64),
-                Direction::North => (x as i64, y as i64 + 1, x as i64, y as i64 - delta as i64),
-                Direction::South => (x as i64, y as i64 - 1, x as i64, y as i64 + delta as i64),
+            let (dst_x, dst_y) = match dir {
+                Direction::East => (x as i64 + delta as i64, y as i64),
+                Direction::West => (x as i64 - delta as i64, y as i64),
+                Direction::North => (x as i64, y as i64 - delta as i64),
+                Direction::South => (x as i64, y as i64 + delta as i64),
                 Direction::None => continue,
             };
 

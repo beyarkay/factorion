@@ -59,14 +59,23 @@ impl World {
         let height = shape[1];
         let channels = shape[2];
         let array = array.as_array();
-        let mut data = vec![0i64; width * height * channels];
-        for x in 0..width {
-            for y in 0..height {
-                for c in 0..channels {
-                    data[x * height * channels + y * channels + c] = array[[x, y, c]];
+
+        // Fast path: if the array is C-contiguous, copy the entire buffer at once.
+        let data = if let Some(slice) = array.as_slice() {
+            slice.to_vec()
+        } else {
+            // Fallback for non-contiguous arrays
+            let mut data = vec![0i64; width * height * channels];
+            for x in 0..width {
+                for y in 0..height {
+                    for c in 0..channels {
+                        data[x * height * channels + y * channels + c] = array[[x, y, c]];
+                    }
                 }
             }
-        }
+            data
+        };
+
         Self {
             data,
             width,

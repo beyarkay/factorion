@@ -27,8 +27,9 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
         return Ok((0.0, num_unreachable));
     }
 
-    // Return the first (and typically only) item's throughput, matching Python behavior
-    let throughput = throughput_map.values().next().copied().unwrap_or(0.0);
+    // Sum all items' throughput for deterministic results regardless of HashMap order.
+    // For single-item factories this is equivalent to taking the only value.
+    let throughput: f64 = throughput_map.values().copied().sum();
     if throughput.is_infinite() {
         return Ok((0.0, num_unreachable));
     }

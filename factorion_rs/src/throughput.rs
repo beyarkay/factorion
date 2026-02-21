@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::entities::make_entity;
+use crate::entities::EntityEnum;
 use crate::graph::FactoryGraph;
-use crate::types::{EntityKind, Item, Misc};
+use crate::types::{EntityKind, Item};
 
 /// Calculate the throughput of a factory graph.
 ///
@@ -40,19 +40,27 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     // Find nodes reachable from sources (for determining processing order)
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
-    // 2. Topological BFS from sources
-    // We use a queue and process nodes when all their "true" predecessors
-    // (those reachable from a source) have been processed.
-    let mut already_processed: HashSet<usize> = HashSet::new();
-    let mut queue: VecDeque<usize> = VecDeque::new();
+    // 2. Kahn's algorithm: topological BFS from sources.
+    // Count "true" in-degree (only from predecessors reachable from a source).
+    let mut in_degree: Vec<usize> = graph
+        .predecessors
+        .iter()
+        .map(|preds| {
+            preds
+                .iter()
+                .filter(|&&p| reachable_from_sources.contains(&p))
+                .count()
+        })
+        .collect();
 
-    // Initialize: start with sources
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    let mut in_queue: HashSet<usize> = HashSet::new();
+
+    // Initialize: enqueue all sources (in-degree 0 among reachable nodes)
     for &s in &sources {
         queue.push_back(s);
+        in_queue.insert(s);
     }
-
-    let max_iterations = graph.node_count() * graph.node_count();
-    let mut iteration = 0;
 
     // Clone the graph's nodes into a mutable working copy
     let mut node_inputs: Vec<HashMap<Item, f64>> =
@@ -60,26 +68,10 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     let mut node_outputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.output.clone()).collect();
 
-    while let Some(node_idx) = queue.pop_back() {
-        iteration += 1;
-        if iteration > max_iterations {
-            break;
-        }
+    let mut already_processed: HashSet<usize> = HashSet::new();
 
-        // Check if all true predecessors have been processed
-        let true_preds: Vec<usize> = graph.predecessors[node_idx]
-            .iter()
-            .filter(|&&p| reachable_from_sources.contains(&p))
-            .copied()
-            .collect();
-
-        if true_preds.iter().any(|p| !already_processed.contains(p)) {
-            // Not ready yet, push to front of queue (will try again later)
-            if !queue.is_empty() {
-                queue.push_front(node_idx);
-            }
-            continue;
-        }
+    while let Some(node_idx) = queue.pop_front() {
+        in_queue.remove(&node_idx);
 
         if already_processed.contains(&node_idx) {
             continue;
@@ -98,31 +90,30 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
             }
             node_inputs[node_idx] = accumulated_input.clone();
 
-            // Compute output using entity's transform_flow
-            let entity = make_entity(
-                entity_kind,
-                graph.nodes[node_idx].item,
-                Misc::None, // misc not needed for transform_flow
-            );
-
-            if entity_kind == EntityKind::AssemblingMachine1 {
-                // For assemblers, use the specialized transform that checks recipes
-                let asm_entity =
-                    make_entity(entity_kind, graph.nodes[node_idx].recipe_item, Misc::None);
-                node_outputs[node_idx] = asm_entity.transform_flow(&accumulated_input);
+            // Compute output using stack-allocated enum dispatch (no heap allocation)
+            let item = if entity_kind == EntityKind::AssemblingMachine1 {
+                graph.nodes[node_idx].recipe_item
             } else {
-                node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
-            }
-        }
-
-        // Add unprocessed successors to the queue
-        for &succ in &graph.successors[node_idx] {
-            if !already_processed.contains(&succ) && !queue.contains(&succ) {
-                queue.push_back(succ);
-            }
+                graph.nodes[node_idx].item
+            };
+            let entity = EntityEnum::new(entity_kind, item);
+            node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
         }
 
         already_processed.insert(node_idx);
+
+        // Decrement in-degree of successors; enqueue when all predecessors processed
+        for &succ in &graph.successors[node_idx] {
+            if already_processed.contains(&succ) {
+                continue;
+            }
+            // Saturating sub in case of edges from unreachable predecessors
+            in_degree[succ] = in_degree[succ].saturating_sub(1);
+            if in_degree[succ] == 0 && !in_queue.contains(&succ) {
+                queue.push_back(succ);
+                in_queue.insert(succ);
+            }
+        }
     }
 
     // 3. Collect output at sinks
