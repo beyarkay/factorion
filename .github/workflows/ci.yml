@@ -58,8 +58,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pytest pytest-timeout
-          pip install numpy gymnasium networkx tyro pydantic torch --index-url https://download.pytorch.org/whl/cpu
-          pip install marimo maturin
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy gymnasium networkx tyro pydantic marimo maturin
       - name: Build factorion_rs
         run: cd factorion_rs && maturin develop --release
       - name: Run Python tests
