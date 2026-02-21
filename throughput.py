@@ -15,9 +15,9 @@ import traceback
 from dataclasses import dataclass
 from typing import Protocol, Optional
 
-import networkx as nx
 import numpy as np
 import torch
+from collections import deque
 
 
 @dataclass(slots=True)
@@ -441,13 +441,15 @@ class ThroughputCalculator:
             self.Channel, self.Direction, self.Misc, self.DIR_TO_DELTA,
         )
 
-    def build_flow_graph(self, world_WHC: np.ndarray, debug=False) -> nx.DiGraph:
+    def build_flow_graph(self, world_WHC: np.ndarray, debug=False):
         """Build a directed flow graph from the world tensor.
 
-        Single-pass: iterates pre-cached tiles, creates nodes and edges together.
+        Returns a plain-dict graph: (nodes, fwd, rev) where:
+        - nodes: dict[str, dict] mapping node_id to node data
+        - fwd: dict[str, list[str]] adjacency list (successors)
+        - rev: dict[str, list[str]] reverse adjacency list (predecessors)
         """
         world = self._make_world_accessor(world_WHC)
-        G = nx.DiGraph()
         handlers = self._handlers
 
         def dbg(s):
@@ -455,9 +457,11 @@ class ThroughputCalculator:
                 print(s)
 
         # Collect non-empty tiles from the pre-built cache
-        cache = world._cache
-        H = world.H
-        tiles = [t for t in cache if t is not None]
+        tiles = [t for t in world._cache if t is not None]
+
+        nodes = {}  # node_id -> {input_, output, recipe, entity_name, entity_flow}
+        fwd = {}    # node_id -> set of successor_ids
+        rev = {}    # node_id -> set of predecessor_ids
 
         # Pass 1: create all nodes
         for tile in tiles:
@@ -465,31 +469,79 @@ class ThroughputCalculator:
             if handler is None:
                 assert False, f"Don't know how to handle {tile.entity_name} at {tile.x} {tile.y}"
 
+            nid = tile.node_id
             initial_output = handler.get_initial_output(tile)
-            G.add_node(
-                tile.node_id,
-                input_={},
-                output=initial_output,
-                recipe=tile.item_name if "assembling_machine" in tile.entity_name else None,
-                entity_name=tile.entity_name,
-                entity_flow=tile.entity_flow,
-            )
+            nodes[nid] = {
+                "input_": {},
+                "output": initial_output,
+                "recipe": tile.item_name if "assembling_machine" in tile.entity_name else None,
+                "entity_name": tile.entity_name,
+                "entity_flow": tile.entity_flow,
+            }
+            fwd[nid] = set()
+            rev[nid] = set()
             dbg(
-                f"Created node {repr(tile.node_id)}: {G.nodes[tile.node_id]}, "
+                f"Created node {repr(nid)}: {nodes[nid]}, "
                 f"direction is {tile.direction}, recipe is {tile.item_name}"
             )
 
-        # Pass 2: create all edges
+        # Pass 2: create all edges (sets auto-deduplicate like NetworkX)
         for tile in tiles:
             handler = handlers[tile.entity_name]
             for src, dst in handler.get_connections(tile, world):
-                G.add_edge(src, dst)
+                # Ensure both endpoints exist (old code uses nx.add_edge which
+                # implicitly creates missing nodes)
+                if src not in nodes:
+                    nodes[src] = {"input_": {}, "output": {}, "recipe": None,
+                                  "entity_name": "", "entity_flow": 0.0}
+                    fwd[src] = set()
+                    rev[src] = set()
+                if dst not in nodes:
+                    nodes[dst] = {"input_": {}, "output": {}, "recipe": None,
+                                  "entity_name": "", "entity_flow": 0.0}
+                    fwd[dst] = set()
+                    rev[dst] = set()
+                fwd[src].add(dst)
+                rev[dst].add(src)
                 dbg(f"{repr(src)} -> {repr(dst)}")
 
-        return G
+        return nodes, fwd, rev
 
-    def propagate_flow(self, G: nx.DiGraph, debug=False) -> tuple[dict[str, float], int]:
+    @staticmethod
+    def _kahn_topo_sort(nodes, fwd, rev):
+        """Kahn's algorithm: returns topological order, or None if a cycle exists."""
+        in_degree = {n: len(rev[n]) for n in nodes}
+        queue = deque(n for n, d in in_degree.items() if d == 0)
+        order = []
+        while queue:
+            node = queue.popleft()
+            order.append(node)
+            for succ in fwd[node]:
+                in_degree[succ] -= 1
+                if in_degree[succ] == 0:
+                    queue.append(succ)
+        if len(order) != len(nodes):
+            return None  # cycle detected
+        return order
+
+    @staticmethod
+    def _bfs_forward(start_nodes, fwd):
+        """BFS forward from start_nodes through fwd adjacency."""
+        visited = set(start_nodes)
+        queue = deque(start_nodes)
+        while queue:
+            node = queue.popleft()
+            for succ in fwd[node]:
+                if succ not in visited:
+                    visited.add(succ)
+                    queue.append(succ)
+        return visited
+
+    def propagate_flow(self, graph, debug=False) -> tuple[dict[str, float], int]:
         """Propagate flow through the graph and return (output_dict, num_unreachable).
+
+        Args:
+            graph: tuple of (nodes, fwd, rev) from build_flow_graph
 
         Handles all edge cases from RL-generated worlds:
         - Cycles: returns ({}, 0) immediately (matches old behavior)
@@ -497,31 +549,33 @@ class ThroughputCalculator:
         - Unconnected entities: get zero flow
         - No sources/sinks: throughput = 0
         """
+        nodes, fwd, rev = graph
 
         def dbg(s):
             if debug:
                 print(s)
 
-        if len(G.nodes) == 0:
+        if not nodes:
             return {}, 0
 
-        # Check for cycles (matches old behavior: returns {"foobar": 0.0}, 0)
-        if not nx.is_directed_acyclic_graph(G):
-            dbg(f"Returning 0 reward due to cycles")
+        # Kahn's algorithm: topological sort + cycle detection in one pass
+        topo_order = self._kahn_topo_sort(nodes, fwd, rev)
+        if topo_order is None:
+            dbg("Returning 0 reward due to cycles")
             return {"foobar": 0.0}, 0
 
         dbg("Pre-calcs:")
-        for n in G.nodes:
-            dbg(f"- {repr(n)}: {G.nodes[n]}")
+        for n in nodes:
+            dbg(f"- {repr(n)}: {nodes[n]}")
 
-        # Topological sort guarantees we process each node after all predecessors
-        for node in nx.topological_sort(G):
-            data = G.nodes[node]
-            entity_name = data.get("entity_name", "")
-            entity_flow = data.get("entity_flow", 0.0)
+        # Propagate flow in topological order
+        for node in topo_order:
+            data = nodes[node]
+            entity_name = data["entity_name"]
+            entity_flow = data["entity_flow"]
 
             # Skip source nodes (they already have output set)
-            if len(data.get("output", {})) > 0:
+            if data["output"]:
                 dbg(f"\nSkipping node {repr(node)} (already has output)")
                 continue
 
@@ -529,9 +583,8 @@ class ThroughputCalculator:
 
             # Aggregate inputs from all predecessors
             aggregated_input = {}
-            for pred in G.predecessors(node):
-                pred_output = G.nodes[pred].get("output", {})
-                for item, flow_rate in pred_output.items():
+            for pred in rev[node]:
+                for item, flow_rate in nodes[pred]["output"].items():
                     if item not in aggregated_input:
                         aggregated_input[item] = 0
                     aggregated_input[item] += flow_rate
@@ -541,7 +594,7 @@ class ThroughputCalculator:
 
             # Compute output
             if "assembling_machine" in node:
-                recipe_name = data.get("recipe", "empty")
+                recipe_name = data["recipe"] or "empty"
                 if recipe_name == "empty":
                     print(
                         f"assembling machine {repr(node)} has {recipe_name=}, is not equal to empty"
@@ -569,35 +622,29 @@ class ThroughputCalculator:
 
         # Sum output at all sinks
         output = {}
-        dbg("iterating G.nodes")
-        for n in G.nodes:
-            dbg(f"- {repr(n)}: {G.nodes[n]}")
+        dbg("iterating nodes")
+        for n, data in nodes.items():
+            dbg(f"- {repr(n)}: {data}")
             if "bulk_inserter" not in n:
                 continue
             dbg(f"{repr(n)} is bulk inserter, examining")
-            for k, v in G.nodes[n].get("output", {}).items():
+            for k, v in data["output"].items():
                 if k not in output:
                     output[k] = 0
                 output[k] += v
                 dbg(f"- Added {v} to output[{k}] to make {output[k]} from {repr(n)}")
 
-        # Calculate unreachable nodes
-        sources = [n for n in G if "stack_inserter" in n]
-        sinks = [n for n in G if "bulk_inserter" in n]
+        # Calculate unreachable nodes using BFS
+        sources = [n for n in nodes if "stack_inserter" in n]
+        sinks = [n for n in nodes if "bulk_inserter" in n]
 
-        if sinks:
-            can_reach_sink = set().union(*(nx.ancestors(G, s) | {s} for s in sinks))
-        else:
-            can_reach_sink = set()
+        # BFS forward from sources
+        reachable_from_source = self._bfs_forward(sources, fwd) if sources else set()
 
-        if sources:
-            reachable_from_source = set().union(
-                *(nx.descendants(G, s) | {s} for s in sources)
-            )
-        else:
-            reachable_from_source = set()
+        # BFS backward from sinks (use rev as forward adjacency)
+        can_reach_sink = self._bfs_forward(sinks, rev) if sinks else set()
 
-        unreachable = set(G.nodes) - (
+        unreachable = set(nodes) - (
             can_reach_sink.intersection(reachable_from_source)
         )
 

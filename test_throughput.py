@@ -735,9 +735,8 @@ class TestCorrectness:
         place_entity(world, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
         place_entity(world, 1, 0, "transport_belt", Direction.EAST)
         place_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
-        G = calculator.build_flow_graph(world.numpy())
-        for node in G.nodes:
-            data = G.nodes[node]
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
+        for node, data in nodes.items():
             # All nodes should have entity_name attribute
             assert "entity_name" in data or "output" in data, (
                 f"Node {node} has no attributes: {data}"
@@ -750,6 +749,11 @@ class TestCorrectness:
 class TestGraphParity:
     """Compare graph structures between old and new implementations."""
 
+    @staticmethod
+    def _edges_from_fwd(fwd):
+        """Extract edge set from fwd adjacency list."""
+        return {(src, dst) for src, succs in fwd.items() for dst in succs}
+
     def test_graph_edges_match_simple(self, calculator):
         """Simple belt path: graphs should have identical edge sets."""
         world = make_world(5)
@@ -760,10 +764,10 @@ class TestGraphParity:
         place_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
 
         old_G = old_world2graph(world)
-        new_G = calculator.build_flow_graph(world.numpy())
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
 
         old_edges = set(old_G.edges())
-        new_edges = set(new_G.edges())
+        new_edges = self._edges_from_fwd(fwd)
 
         assert old_edges == new_edges, (
             f"Edge mismatch.\n"
@@ -782,10 +786,10 @@ class TestGraphParity:
         place_entity(world, 8, 0, "bulk_inserter", Direction.EAST, "iron_plate")
 
         old_G = old_world2graph(world)
-        new_G = calculator.build_flow_graph(world.numpy())
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
 
         old_edges = set(old_G.edges())
-        new_edges = set(new_G.edges())
+        new_edges = self._edges_from_fwd(fwd)
 
         assert old_edges == new_edges, (
             f"Edge mismatch.\n"
@@ -802,10 +806,10 @@ class TestGraphParity:
         place_entity(world, 6, 1, "transport_belt", Direction.EAST)
 
         old_G = old_world2graph(world)
-        new_G = calculator.build_flow_graph(world.numpy())
+        nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
 
         old_edges = set(old_G.edges())
-        new_edges = set(new_G.edges())
+        new_edges = self._edges_from_fwd(fwd)
 
         assert old_edges == new_edges, (
             f"Edge mismatch.\n"
@@ -840,10 +844,10 @@ class TestGraphParity:
 
             try:
                 old_G = old_world2graph(world)
-                new_G = calculator.build_flow_graph(world.numpy())
+                nodes, fwd, rev = calculator.build_flow_graph(world.numpy())
 
                 old_edges = set(old_G.edges())
-                new_edges = set(new_G.edges())
+                new_edges = self._edges_from_fwd(fwd)
 
                 assert old_edges == new_edges, (
                     f"Edge mismatch on seed {seed}.\n"
