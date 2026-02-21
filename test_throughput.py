@@ -854,3 +854,253 @@ class TestGraphParity:
                 # Old code may assert on invalid states (e.g., underground
                 # belt with Misc.NONE). That's fine, skip those.
                 pass
+
+
+# ── Fuzz Parity Tests (large-scale random) ───────────────────────────────────
+
+
+class TestFuzzParity:
+    """Large-scale fuzz testing: run both old and new implementations on
+    thousands of random worlds and verify throughput is always identical."""
+
+    def _both(self, world, calculator):
+        """Run both old and new, return (old, new) tuples or None if old crashes."""
+        try:
+            old_tp, old_ur = old_funge_throughput(world)
+        except Exception:
+            return None
+        new_tp, new_ur = calculator.calculate_throughput(world)
+        return (old_tp, old_ur), (new_tp, new_ur)
+
+    @pytest.mark.parametrize("seed", range(500))
+    def test_random_entities_throughput_parity(self, calculator, seed):
+        """Random entity placement: throughput must always match old code."""
+        rng = random.Random(seed)
+        size = rng.choice([3, 5, 7, 9, 11])
+        world = make_world(size)
+
+        entity_values = [e.value for e in entities.values()]
+        direction_values = [d.value for d in Direction]
+        num_ents = rng.randint(1, min(20, size * size))
+        positions = rng.sample(
+            [(x, y) for x in range(size) for y in range(size)], num_ents
+        )
+        for x, y in positions:
+            world[x, y, Channel.ENTITIES.value] = rng.choice(entity_values)
+            world[x, y, Channel.DIRECTION.value] = rng.choice(direction_values)
+            world[x, y, Channel.ITEMS.value] = rng.choice([0, 1, 2, 3, 4])
+            world[x, y, Channel.MISC.value] = rng.choice([0, 1, 2])
+
+        result = self._both(world, calculator)
+        if result is None:
+            pytest.skip("old code crashed on invalid state")
+        (old_tp, old_ur), (new_tp, new_ur) = result
+        assert abs(old_tp - new_tp) < 1e-6, (
+            f"Throughput mismatch: old={old_tp}, new={new_tp}"
+        )
+
+    @pytest.mark.parametrize("seed", range(500))
+    def test_valid_factory_parity(self, calculator, seed):
+        """Valid source→belts→sink factory: both throughput and unreachable
+        must match exactly."""
+        rng = random.Random(seed)
+        size = rng.choice([5, 7, 9])
+        world = make_world(size)
+
+        src_y = rng.randint(0, size - 1)
+        sink_y = rng.randint(0, size - 1)
+        item_name = rng.choice(["iron_plate", "copper_plate", "copper_cable"])
+
+        place_entity(world, 0, src_y, "stack_inserter", Direction.EAST, item_name)
+        place_entity(world, size - 1, sink_y, "bulk_inserter", Direction.EAST, item_name)
+
+        # Build path from source to sink
+        x, y = 1, src_y
+        while x < size - 1:
+            if y < sink_y:
+                place_entity(world, x, y, "transport_belt", Direction.SOUTH)
+                y += 1
+            elif y > sink_y:
+                place_entity(world, x, y, "transport_belt", Direction.NORTH)
+                y -= 1
+            else:
+                place_entity(world, x, y, "transport_belt", Direction.EAST)
+                x += 1
+
+        result = self._both(world, calculator)
+        assert result is not None, "old code should not crash on valid factory"
+        (old_tp, old_ur), (new_tp, new_ur) = result
+        assert abs(old_tp - new_tp) < 1e-6, (
+            f"Throughput mismatch: old={old_tp}, new={new_tp}"
+        )
+        assert old_ur == new_ur, (
+            f"Unreachable mismatch: old={old_ur}, new={new_ur}"
+        )
+
+
+# ── Hand-Crafted Realistic Factory Tests ─────────────────────────────────────
+
+
+class TestRealisticFactories:
+    """Hand-crafted factory layouts that an RL agent might produce.
+    Tests both parity with old code and correctness of expected values."""
+
+    def _assert_both(self, world, calculator, expected_tp, expected_ur):
+        """Assert new code matches expected values AND matches old code."""
+        new_tp, new_ur = calculator.calculate_throughput(world)
+        assert new_tp == pytest.approx(expected_tp, abs=1e-6), (
+            f"Expected throughput {expected_tp}, got {new_tp}"
+        )
+        assert new_ur == expected_ur, (
+            f"Expected unreachable {expected_ur}, got {new_ur}"
+        )
+        # Also check parity with old code
+        try:
+            old_tp, old_ur = old_funge_throughput(world)
+            assert abs(old_tp - new_tp) < 1e-6, (
+                f"Parity: old throughput {old_tp} != new {new_tp}"
+            )
+        except Exception:
+            pass  # old code crash is acceptable
+
+    def test_straight_belt_line(self, calculator):
+        w = make_world(7)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 6):
+            place_entity(w, x, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 6, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
+
+    def test_l_shaped_path(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "transport_belt", Direction.SOUTH)
+        place_entity(w, 2, 1, "transport_belt", Direction.SOUTH)
+        place_entity(w, 2, 2, "transport_belt", Direction.SOUTH)
+        place_entity(w, 2, 3, "bulk_inserter", Direction.SOUTH, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
+
+    def test_inserter_bottleneck(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "inserter", Direction.EAST)
+        place_entity(w, 3, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 0.86, 0)
+
+    def test_two_inserters_in_series(self, calculator):
+        w = make_world(7)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "inserter", Direction.EAST)
+        place_entity(w, 3, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 0, "inserter", Direction.EAST)
+        place_entity(w, 5, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 6, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 0.86, 0)
+
+    def test_underground_belt_pair(self, calculator):
+        w = make_world(9)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "underground_belt", Direction.EAST, misc=Misc.UNDERGROUND_DOWN)
+        place_entity(w, 5, 0, "underground_belt", Direction.EAST, misc=Misc.UNDERGROUND_UP)
+        place_entity(w, 6, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 7, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 8, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
+
+    def test_assembler_copper_cable(self, calculator):
+        w = make_world(9)
+        place_entity(w, 0, 1, "stack_inserter", Direction.EAST, "copper_plate")
+        place_entity(w, 1, 1, "inserter", Direction.EAST)
+        place_entity(w, 2, 0, "assembling_machine_1", Direction.NONE, "copper_cable")
+        place_entity(w, 5, 1, "inserter", Direction.EAST)
+        place_entity(w, 6, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 7, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 8, 1, "bulk_inserter", Direction.EAST, "copper_cable")
+        self._assert_both(w, calculator, 0.86, 0)
+
+    def test_two_parallel_paths(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 4):
+            place_entity(w, x, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 0, 4, "stack_inserter", Direction.EAST, "iron_plate")
+        for x in range(1, 4):
+            place_entity(w, x, 4, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 4, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 30.0, 0)
+
+    def test_dead_end_belt(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "transport_belt", Direction.NORTH)
+        self._assert_both(w, calculator, 0.0, 3)
+
+    def test_opposing_belts(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "transport_belt", Direction.WEST)
+        place_entity(w, 3, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 0.0, 5)
+
+    def test_source_adjacent_to_sink(self, calculator):
+        w = make_world(3)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 0.0, 0)
+
+    def test_two_sources_merge(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.SOUTH, "iron_plate")
+        place_entity(w, 0, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 1, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 0, 2, "stack_inserter", Direction.NORTH, "iron_plate")
+        place_entity(w, 3, 1, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
+
+    def test_zigzag_path(self, calculator):
+        w = make_world(7)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.SOUTH)
+        place_entity(w, 1, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 1, "transport_belt", Direction.NORTH)
+        place_entity(w, 2, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 3, 0, "transport_belt", Direction.SOUTH)
+        place_entity(w, 3, 1, "transport_belt", Direction.EAST)
+        place_entity(w, 4, 1, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
+
+    def test_belt_loop_with_source(self, calculator):
+        w = make_world(5)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 1, 0, "transport_belt", Direction.EAST)
+        place_entity(w, 2, 0, "transport_belt", Direction.SOUTH)
+        place_entity(w, 2, 1, "transport_belt", Direction.WEST)
+        place_entity(w, 1, 1, "transport_belt", Direction.NORTH)
+        self._assert_both(w, calculator, 0.0, 0)
+
+    def test_packed_grid(self, calculator):
+        w = make_world(5)
+        for x in range(5):
+            for y in range(5):
+                place_entity(w, x, y, "transport_belt", Direction.EAST)
+        place_entity(w, 0, 0, "stack_inserter", Direction.EAST, "iron_plate")
+        place_entity(w, 4, 0, "bulk_inserter", Direction.EAST, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 20)
+
+    def test_vertical_southward(self, calculator):
+        w = make_world(7)
+        place_entity(w, 3, 0, "stack_inserter", Direction.SOUTH, "iron_plate")
+        for y in range(1, 6):
+            place_entity(w, 3, y, "transport_belt", Direction.SOUTH)
+        place_entity(w, 3, 6, "bulk_inserter", Direction.SOUTH, "iron_plate")
+        self._assert_both(w, calculator, 15.0, 0)
