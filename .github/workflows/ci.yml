@@ -88,8 +88,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: factorion_rs
       - name: Install dependencies
         run: |
           pip install pytest pytest-timeout
@@ -129,6 +133,10 @@ jobs:
       - name: Install Rust toolchain
         if: steps.check-rust.outputs.has_rust == 'true'
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: steps.check-rust.outputs.has_rust == 'true'
+        with:
+          workspaces: factorion_rs
       - name: Run Rust tests
         if: steps.check-rust.outputs.has_rust == 'true'
         run: cd factorion_rs && cargo test --no-default-features
