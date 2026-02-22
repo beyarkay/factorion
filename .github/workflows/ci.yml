@@ -60,8 +60,8 @@ jobs:
           pip install pytest pytest-timeout
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install numpy gymnasium networkx tyro pydantic marimo maturin
-      - name: Build factorion_rs
-        run: cd factorion_rs && maturin develop --release
+      - name: Build and install factorion_rs
+        run: cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl
       - name: Run Python tests
         env:
           WANDB_MODE: disabled
