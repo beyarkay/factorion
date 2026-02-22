@@ -89,9 +89,11 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         if elapsed < 15 or elapsed % 60 < 15:
             print(f"  [debug] Full pod status: {json.dumps(status, indent=2, default=str)}")
 
-        if desired == "RUNNING" and runtime and runtime.get("uptimeInSeconds", 0) > 0:
+        # uptimeSeconds is a top-level field (not nested under runtime)
+        uptime = status.get("uptimeSeconds", 0)
+        if desired == "RUNNING" and runtime:
             ssh_host = f"{pod_id}-ssh.proxy.runpod.io"
-            print(f"Pod is running. SSH host: {ssh_host}")
+            print(f"Pod is running (uptime={uptime}s). SSH host: {ssh_host}", flush=True)
             return {
                 "pod_id": pod_id,
                 "ssh_host": ssh_host,
@@ -100,7 +102,6 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                 "status": "running",
             }
 
-        uptime = runtime.get("uptimeInSeconds") if runtime else None
         print(f"  Waiting for pod {pod_id}... ({elapsed}s, desired={desired}, runtime={runtime is not None}, uptime={uptime})", flush=True)
         time.sleep(10)
 
