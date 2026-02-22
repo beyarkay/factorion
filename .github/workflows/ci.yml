@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main, master]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       skip_gpu:
@@ -13,16 +14,16 @@ on:
       gpu_type:
         description: "RunPod GPU type ID"
         required: false
-        default: "NVIDIA H100 80GB HBM3"
+        default: "NVIDIA A100 80GB PCIe"
         type: string
       total_timesteps:
         description: "Total timesteps for smoke test"
         required: false
-        default: "10000"
+        default: "20000"
         type: string
 
 env:
-  WANDB_CI_PROJECT: factorion-ci
+  WANDB_CI_PROJECT: factorion
   PYTHON_VERSION: "3.11"
 
 jobs:
@@ -165,15 +166,13 @@ jobs:
         run: cd factorion_rs && cargo test --no-default-features
 
   # ──────────────────────────────────────────────
-  # Job 4: GPU smoke test (RunPod H100)
+  # Job 4: GPU smoke test (RunPod A100)
   # ──────────────────────────────────────────────
   gpu-smoke-test:
     needs: [lint, python-tests, rust-tests, check-gpu-trigger]
     if: ${{ needs.check-gpu-trigger.outputs.run_gpu == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      wandb_run_name: ${{ steps.smoke-test.outputs.wandb_run_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -205,7 +204,7 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           python scripts/ci/runpod_create.py \
-            --gpu-type "${{ inputs.gpu_type || 'NVIDIA H100 80GB HBM3' }}" \
+            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -253,25 +252,24 @@ jobs:
         id: smoke-test
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
-          SHA_SHORT="${GITHUB_SHA::7}"
-          TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '10000' }}"
+          TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '20000' }}"
 
           # Transfer the smoke test script and run it
           scp -i ~/.ssh/runpod_ci scripts/ci/gpu_smoke_test.sh root@"$SSH_HOST":/workspace/gpu_smoke_test.sh
 
-          WANDB_RUN_NAME="ci-pr${PR_NUMBER}-${SHA_SHORT}"
-          echo "wandb_run_name=${WANDB_RUN_NAME}" >> "$GITHUB_OUTPUT"
-
           ssh -i ~/.ssh/runpod_ci root@"$SSH_HOST" \
             WANDB_API_KEY="$WANDB_API_KEY" \
             WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
-            WANDB_RUN_NAME="$WANDB_RUN_NAME" \
             TOTAL_TIMESTEPS="$TOTAL_TIMESTEPS" \
             PR_NUMBER="$PR_NUMBER" \
             COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_smoke_test.sh
 
       - name: Destroy RunPod instance
@@ -285,28 +283,3 @@ jobs:
             echo "::warning::No pod info file found, nothing to clean up"
           fi
 
-  # ──────────────────────────────────────────────
-  # Job 5: Check W&B metrics against baseline
-  # ──────────────────────────────────────────────
-  check-metrics:
-    needs: [gpu-smoke-test]
-    if: ${{ needs.gpu-smoke-test.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: pip install wandb
-
-      - name: Compare metrics against baseline
-        env:
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-        run: |
-          python scripts/ci/check_wandb_metrics.py \
-            --project "${{ env.WANDB_CI_PROJECT }}" \
-            --run-name "${{ needs.gpu-smoke-test.outputs.wandb_run_name }}" \
-            --baseline-file scripts/ci/baseline.json

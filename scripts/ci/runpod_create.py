@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create a RunPod GPU pod for CI smoke testing.
 
-Provisions an H100 (or specified GPU) pod, waits for it to reach a running
+Provisions an A100 (or specified GPU) pod, waits for it to reach a running
 state, and writes connection info to an output JSON file.
 
 Required env vars:
@@ -19,15 +19,15 @@ import time
 
 import runpod
 
-# Ordered fallback list: try H100 first, then fall back to cheaper GPUs
+# Ordered fallback list: try A100 first, then fall back to other GPUs
 GPU_FALLBACKS = [
-    "NVIDIA H100 80GB HBM3",
     "NVIDIA A100 80GB PCIe",
     "NVIDIA A100-SXM4-80GB",
     "NVIDIA RTX A6000",
+    "NVIDIA H100 80GB HBM3",
 ]
 
-DOCKER_IMAGE = "runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04"
+DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
 POD_START_TIMEOUT = 300  # seconds
 
@@ -57,6 +57,9 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                 container_disk_in_gb=CONTAINER_DISK_GB,
                 ports="22/tcp",
                 support_public_ip=True,
+                env={
+                    "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
+                },
             )
             if pod and pod.get("id"):
                 print(f"Pod created with GPU: {gpu}")
@@ -108,7 +111,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create a RunPod GPU pod for CI")
     parser.add_argument(
         "--gpu-type",
-        default="NVIDIA H100 80GB HBM3",
+        default="NVIDIA A100 80GB PCIe",
         help="GPU type to request (falls back to cheaper GPUs if unavailable)",
     )
     parser.add_argument(
