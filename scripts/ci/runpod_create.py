@@ -92,13 +92,24 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         # uptimeSeconds is a top-level field (not nested under runtime)
         uptime = status.get("uptimeSeconds", 0)
         if desired == "RUNNING" and runtime:
-            ssh_host = "ssh.runpod.io"
-            ssh_user = pod_id
-            print(f"Pod is running (uptime={uptime}s). SSH: {ssh_user}@{ssh_host}", flush=True)
+            # Extract public SSH IP and port from runtime ports
+            ssh_host = None
+            ssh_port = 22
+            ports = runtime.get("ports", []) or []
+            for p in ports:
+                if p.get("privatePort") == 22 and p.get("isIpPublic"):
+                    ssh_host = p["ip"]
+                    ssh_port = p["publicPort"]
+                    break
+            if not ssh_host:
+                print(f"  Pod running but no public SSH port found. Ports: {ports}", flush=True)
+                time.sleep(10)
+                continue
+            print(f"Pod is running (uptime={uptime}s). SSH: root@{ssh_host} -p {ssh_port}", flush=True)
             return {
                 "pod_id": pod_id,
                 "ssh_host": ssh_host,
-                "ssh_user": ssh_user,
+                "ssh_port": ssh_port,
                 "gpu_type": status.get("machine", {}).get("gpuDisplayName", "unknown"),
                 "status": "running",
             }
