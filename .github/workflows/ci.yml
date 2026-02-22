@@ -167,9 +167,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
           chmod 600 ~/.ssh/runpod_ci
-          # Disable strict host checking for RunPod proxy hosts
+          # Disable strict host checking for RunPod SSH
           cat >> ~/.ssh/config << 'EOF'
-          Host *.proxy.runpod.io
+          Host ssh.runpod.io
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
             LogLevel ERROR
@@ -189,10 +189,11 @@ jobs:
 
       - name: Wait for SSH readiness
         run: |
+          SSH_USER=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_user'])")
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          echo "Waiting for SSH on $SSH_HOST..."
+          echo "Waiting for SSH on ${SSH_USER}@${SSH_HOST}..."
           for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/runpod_ci -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
+            if ssh -i ~/.ssh/runpod_ci -o ConnectTimeout=5 "${SSH_USER}@${SSH_HOST}" echo "SSH ready" 2>/dev/null; then
               echo "SSH connection established"
               exit 0
             fi
@@ -204,6 +205,7 @@ jobs:
 
       - name: Transfer code to pod
         run: |
+          SSH_USER=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_user'])")
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
 
           # Create a tarball of the repo (excluding .git and large dirs)
@@ -217,10 +219,10 @@ jobs:
             -C "$GITHUB_WORKSPACE" .
 
           # Transfer to pod
-          scp -i ~/.ssh/runpod_ci /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
+          scp -i ~/.ssh/runpod_ci /tmp/factorion.tar.gz "${SSH_USER}@${SSH_HOST}":/workspace/factorion.tar.gz
 
           # Extract on pod
-          ssh -i ~/.ssh/runpod_ci root@"$SSH_HOST" << 'SETUP'
+          ssh -i ~/.ssh/runpod_ci "${SSH_USER}@${SSH_HOST}" << 'SETUP'
             mkdir -p /workspace/factorion
             tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
             ls -la /workspace/factorion/
@@ -232,15 +234,16 @@ jobs:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
+          SSH_USER=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_user'])")
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
           TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '20000' }}"
 
           # Transfer the smoke test script and run it
-          scp -i ~/.ssh/runpod_ci scripts/ci/gpu_smoke_test.sh root@"$SSH_HOST":/workspace/gpu_smoke_test.sh
+          scp -i ~/.ssh/runpod_ci scripts/ci/gpu_smoke_test.sh "${SSH_USER}@${SSH_HOST}":/workspace/gpu_smoke_test.sh
 
-          ssh -i ~/.ssh/runpod_ci root@"$SSH_HOST" \
+          ssh -i ~/.ssh/runpod_ci "${SSH_USER}@${SSH_HOST}" \
             WANDB_API_KEY="$WANDB_API_KEY" \
             WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
             TOTAL_TIMESTEPS="$TOTAL_TIMESTEPS" \
