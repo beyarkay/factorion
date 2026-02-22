@@ -36,16 +36,12 @@ jobs:
       run_gpu: ${{ steps.check.outputs.run_gpu }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && 50 || 1 }}
 
       - name: Check for GPU test triggers
         id: check
         env:
           EVENT_NAME: ${{ github.event_name }}
           SKIP_GPU: ${{ inputs.skip_gpu || 'false' }}
-          PR_TITLE: ${{ github.event.pull_request.title || '' }}
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
         run: |
           RUN_GPU=false
 
@@ -55,39 +51,11 @@ jobs:
             RUN_GPU=true
           fi
 
-          # 2. Check PR title for #gpu-test or [gpu-test]
-          if echo "$PR_TITLE" | grep -qiE '#gpu-test|\[gpu-test\]'; then
-            echo "::notice::GPU tests triggered via PR title"
-            RUN_GPU=true
-          fi
-
-          # 3. Check PR body for #gpu-test or [gpu-test]
-          if echo "$PR_BODY" | grep -qiE '#gpu-test|\[gpu-test\]'; then
-            echo "::notice::GPU tests triggered via PR body"
-            RUN_GPU=true
-          fi
-
-          # 4. Check PR labels for gpu-test
+          # 2. Check PR labels for gpu-test
           LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
           if echo "$LABELS" | grep -qi 'gpu-test'; then
             echo "::notice::GPU tests triggered via PR label"
             RUN_GPU=true
-          fi
-
-          # 5. Check commit messages for #gpu-test or [gpu-test]
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-            if git log --format="%s %b" "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null \
-                | grep -qiE '#gpu-test|\[gpu-test\]'; then
-              echo "::notice::GPU tests triggered via commit message in PR"
-              RUN_GPU=true
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            if git log -1 --format="%s %b" | grep -qiE '#gpu-test|\[gpu-test\]'; then
-              echo "::notice::GPU tests triggered via push commit message"
-              RUN_GPU=true
-            fi
           fi
 
           echo "run_gpu=$RUN_GPU" >> "$GITHUB_OUTPUT"
