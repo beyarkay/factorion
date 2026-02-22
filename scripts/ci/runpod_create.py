@@ -29,7 +29,7 @@ GPU_FALLBACKS = [
 
 DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
-POD_START_TIMEOUT = 300  # seconds
+POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull)
 
 
 def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
