@@ -46,7 +46,7 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
 
     pod = None
     for gpu in gpu_types_to_try:
-        print(f"Attempting to create pod with GPU: {gpu}")
+        print(f"Attempting to create pod with GPU: {gpu}", flush=True)
         try:
             pod = runpod.create_pod(
                 name=f"ci-smoke-{int(time.time())}",
@@ -61,20 +61,21 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                     "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
                 },
             )
+            print(f"  [debug] create_pod response: {pod}", flush=True)
             if pod and pod.get("id"):
-                print(f"Pod created with GPU: {gpu}")
+                print(f"Pod created with GPU: {gpu}", flush=True)
                 break
         except Exception as e:
-            print(f"  Failed with {gpu}: {e}")
+            print(f"  Failed with {gpu}: {e}", flush=True)
             pod = None
             continue
 
     if not pod or not pod.get("id"):
-        print("ERROR: Could not create pod with any available GPU type")
+        print("ERROR: Could not create pod with any available GPU type", flush=True)
         sys.exit(1)
 
     pod_id = pod["id"]
-    print(f"Pod ID: {pod_id}")
+    print(f"Pod ID: {pod_id}", flush=True)
 
     # Wait for pod to reach running state
     start_time = time.time()
@@ -82,6 +83,11 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         status = runpod.get_pod(pod_id)
         desired = status.get("desiredStatus", "")
         runtime = status.get("runtime")
+        elapsed = int(time.time() - start_time)
+
+        # Log full response on first poll and every 60s for debugging
+        if elapsed < 15 or elapsed % 60 < 15:
+            print(f"  [debug] Full pod status: {json.dumps(status, indent=2, default=str)}")
 
         if desired == "RUNNING" and runtime and runtime.get("uptimeInSeconds", 0) > 0:
             ssh_host = f"{pod_id}-ssh.proxy.runpod.io"
@@ -94,8 +100,8 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                 "status": "running",
             }
 
-        elapsed = int(time.time() - start_time)
-        print(f"  Waiting for pod {pod_id}... ({elapsed}s, desired={desired})")
+        uptime = runtime.get("uptimeInSeconds") if runtime else None
+        print(f"  Waiting for pod {pod_id}... ({elapsed}s, desired={desired}, runtime={runtime is not None}, uptime={uptime})", flush=True)
         time.sleep(10)
 
     # Timeout - clean up the pod

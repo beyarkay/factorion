@@ -178,6 +178,7 @@ jobs:
         id: create-pod
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
