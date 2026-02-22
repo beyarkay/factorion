@@ -59,7 +59,7 @@ jobs:
         run: |
           pip install pytest pytest-timeout
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy gymnasium networkx tyro pydantic marimo maturin
+          pip install numpy gymnasium networkx tyro pydantic marimo maturin tqdm matplotlib pandas plotly wandb
       - name: Build and install factorion_rs
         run: cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl
       - name: Run Python tests
