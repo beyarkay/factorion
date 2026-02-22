@@ -28,6 +28,7 @@ Factorion is a reinforcement learning project that trains agents to autonomously
 ```bash
 source .venv/bin/activate
 uv pip install -r requirements.txt
+cd factorion_rs && maturin develop --release && cd ..
 ```
 
 ## Running
@@ -48,15 +49,38 @@ bash run_sweep.sh
 
 ## Linting
 
-ruff is installed (`ruff==0.11.8`) but not actively configured. No ruff.toml or pyproject.toml lint settings exist.
-
 ```bash
 ruff check .
 ```
 
 ## Testing
 
-No test framework or test files are currently configured.
+```bash
+WANDB_MODE=disabled WANDB_DISABLED=true python -m pytest tests/ -v
+```
+
+Rust unit tests:
+```bash
+cd factorion_rs && cargo test && cd ..
+```
+
+Benchmarks (Python vs Rust throughput):
+```bash
+WANDB_MODE=disabled WANDB_DISABLED=true python tests/bench_throughput.py
+```
+
+## Pre-completion Checklist
+
+Before claiming work is done, run all of the following:
+
+1. **Rust format + lint**: `cd factorion_rs && cargo fmt && cargo clippy -- -D warnings && cd ..`
+2. **Rust tests**: `cd factorion_rs && cargo test && cd ..`
+3. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
+4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true python -m pytest tests/ -v`
+5. **Python linter**: `ruff check .`
+6. **PPO smoke test**: `WANDB_MODE=disabled python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+
+All six must pass before the work is considered complete.
 
 ## Code Conventions
 

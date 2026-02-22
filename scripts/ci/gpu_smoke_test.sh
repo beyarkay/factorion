@@ -41,10 +41,10 @@ echo ">>> Installing Python dependencies..."
 pip install -q -r requirements.txt
 
 # Install factorion_rs if a Cargo.toml is present (compiled Rust extension)
-if [ -f Cargo.toml ]; then
+if [ -f factorion_rs/Cargo.toml ]; then
     echo ">>> Building factorion_rs from source..."
     pip install -q maturin
-    maturin develop --release
+    cd factorion_rs && maturin develop --release && cd ..
 elif pip show factorion-rs > /dev/null 2>&1; then
     echo ">>> factorion_rs already installed"
 else
@@ -56,7 +56,9 @@ fi
 # ── Log in to W&B ────────────────────────────────────────────────
 echo ""
 echo ">>> Configuring W&B..."
-wandb login --relogin "$WANDB_API_KEY" 2>/dev/null
+# Use WANDB_API_KEY env var directly (wandb respects it) to avoid
+# exposing the key in process listings.
+export WANDB_API_KEY
 
 # ── Run the smoke test ───────────────────────────────────────────
 echo ""

@@ -7,3 +7,7 @@ cleanrl
 runs
 videos/
 *.png
+factorion_rs/target/
+__pycache__/
+.venv/
+plan.md
