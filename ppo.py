@@ -1,3 +1,4 @@
+import json
 import os
 import typing
 import random
@@ -1224,8 +1225,11 @@ if __name__ == "__main__":
                         output_path
                     ]
 
-                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-                    print(f"Video saved: {output_path}")
+                    try:
+                        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+                        print(f"Video saved: {output_path}")
+                    except FileNotFoundError:
+                        print(f"ffmpeg not found, skipping video for env {env_idx}")
 
             finally:
                 for temp_dir in temp_dirs:
@@ -1257,5 +1261,24 @@ if __name__ == "__main__":
             wandb.log_artifact(artifact)
     else:
         print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')
+
+    # Write summary JSON (used by CI to post results to PR)
+    summary = {
+        "global_step": global_step,
+        "total_timesteps": args.total_timesteps,
+        "moving_avg_throughput": round(final_thput, 4),
+        "max_missing_entities": max_missing_entities,
+        "runtime_seconds": round(runtime, 1),
+        "runtime_human": format_duration(runtime),
+        "sps": int(global_step / runtime) if runtime > 0 else 0,
+        "seed": args.seed,
+        "num_envs": args.num_envs,
+        "grid_size": args.size,
+        "wandb_url": run.url if args.track and run else None,
+    }
+    summary_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Summary written to {summary_path}")
 
 

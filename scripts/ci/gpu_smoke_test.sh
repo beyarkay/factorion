@@ -1,23 +1,26 @@
 #!/bin/bash
 # gpu_smoke_test.sh — Runs on the RunPod GPU pod.
 #
-# Installs dependencies, runs a short RL training, and logs to W&B.
-# The code should already be transferred to /workspace/factorion/ before
-# this script runs.
+# Builds the Rust extension, runs a short RL training, and logs to W&B.
+# Python deps and Rust toolchain are pre-installed in the Docker image
+# (beyarkay/factorion-ci-gpu:latest). The code should already be
+# transferred to /workspace/factorion/ before this script runs.
 #
 # Required env vars:
 #   WANDB_API_KEY       - W&B API key for logging
-#   WANDB_PROJECT       - W&B project name (e.g. factorion-ci)
-#   WANDB_RUN_NAME      - Unique run name for this CI run
-#   TOTAL_TIMESTEPS     - Number of timesteps (default: 10000)
+#   WANDB_PROJECT       - W&B project name (e.g. factorion)
+#   TOTAL_TIMESTEPS     - Number of timesteps (default: 20000)
 #   PR_NUMBER           - PR number for tagging
 #   COMMIT_SHA          - Git commit SHA for tagging
+#
+# Optional env vars (for self-terminate watchdog):
+#   RUNPOD_POD_ID       - RunPod pod ID (set automatically by RunPod)
+#   RUNPOD_API_KEY      - RunPod API key (passed via pod env)
 
 set -euo pipefail
 
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-10000}"
-WANDB_PROJECT="${WANDB_PROJECT:-factorion-ci}"
-WANDB_RUN_NAME="${WANDB_RUN_NAME:-ci-smoke-test}"
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-20000}"
+WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
 COMMIT_SHA="${COMMIT_SHA:-unknown}"
 
@@ -28,56 +31,96 @@ echo "  GPU:             $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/
 echo "  CUDA:            $(nvcc --version 2>/dev/null | tail -1 || echo 'unknown')"
 echo "  Timesteps:       ${TOTAL_TIMESTEPS}"
 echo "  W&B project:     ${WANDB_PROJECT}"
-echo "  W&B run name:    ${WANDB_RUN_NAME}"
 echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
+# ── Safety net: self-terminate after 2 hours if cleanup fails ─────
+if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
+    echo ">>> Starting self-terminate watchdog (2h timeout)..."
+    nohup bash -c "
+      sleep 7200
+      curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
+        -H 'Content-Type: application/json' \
+        -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
+    " &>/dev/null &
+else
+    echo ">>> Watchdog skipped (RUNPOD_POD_ID or RUNPOD_API_KEY not set)"
+fi
+
 cd /workspace/factorion
 
-# ── Install dependencies ──────────────────────────────────────────
-echo ""
-echo ">>> Installing Python dependencies..."
-pip install -q -r requirements.txt
+# ── Ensure Rust is on PATH (installed in Docker image at /root/.cargo/bin) ─
+export PATH="/root/.cargo/bin:${PATH}"
 
-# Install factorion_rs if a Cargo.toml is present (compiled Rust extension)
+# ── CuBLAS deterministic mode (required by torch.use_deterministic_algorithms) ─
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
+# ── Build Rust extension (deps cached in image, ~30s) ────────────
 if [ -f factorion_rs/Cargo.toml ]; then
+    echo ""
     echo ">>> Building factorion_rs from source..."
-    pip install -q maturin
-    cd factorion_rs && maturin develop --release && cd ..
-elif pip show factorion-rs > /dev/null 2>&1; then
-    echo ">>> factorion_rs already installed"
+    (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
 else
     echo ">>> WARNING: factorion_rs not available."
     echo "    The smoke test may fail if ppo.py requires it."
-    echo "    Install it or add Cargo.toml to build from source."
 fi
 
 # ── Log in to W&B ────────────────────────────────────────────────
 echo ""
 echo ">>> Configuring W&B..."
-# Use WANDB_API_KEY env var directly (wandb respects it) to avoid
-# exposing the key in process listings.
 export WANDB_API_KEY
 
 # ── Run the smoke test ───────────────────────────────────────────
 echo ""
 echo ">>> Starting RL smoke test (${TOTAL_TIMESTEPS} timesteps)..."
 
-# Use a small number of envs and steps to keep it fast but meaningful.
-# Tags allow the metrics checker to find this run.
 python ppo.py \
-    --seed 42 \
+    --seed 1 \
     --env-id factorion/FactorioEnv-v0 \
     --track \
     --wandb-project-name "$WANDB_PROJECT" \
-    --exp-name "$WANDB_RUN_NAME" \
     --total-timesteps "$TOTAL_TIMESTEPS" \
-    --num-envs 4 \
-    --num-steps 128 \
-    --tags '["ci", "smoke-test", "pr:'"$PR_NUMBER"'", "sha:'"$COMMIT_SHA"'"]'
+    --tags ci smoke-test "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}"
 
 echo ""
 echo "============================================"
 echo "  Smoke test completed successfully"
 echo "============================================"
+
+# ── Generate PR summary markdown from summary.json ─────────────
+SUMMARY_JSON="/workspace/factorion/summary.json"
+SUMMARY_MD="/workspace/summary.md"
+
+if [ -f "$SUMMARY_JSON" ]; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')
+    python3 -c "
+import json, sys
+s = json.load(open('$SUMMARY_JSON'))
+gpu = '''$GPU_NAME'''
+pr = '''$PR_NUMBER'''
+sha = '''$COMMIT_SHA'''
+wandb_url = s.get('wandb_url') or 'N/A'
+wandb_link = f'[View on W&B]({wandb_url})' if wandb_url != 'N/A' else 'N/A'
+print(f'''## GPU Smoke Test Results
+
+| Metric | Value |
+|--------|-------|
+| **Throughput (moving avg)** | {s['moving_avg_throughput']:.4f} |
+| **Steps completed** | {s['global_step']:,} / {s['total_timesteps']:,} |
+| **Curriculum level** | {s['max_missing_entities']} missing entities |
+| **Training speed** | {s['sps']:,} SPS |
+| **Runtime** | {s['runtime_human']} |
+| **GPU** | {gpu} |
+| **Grid size** | {s['grid_size']}x{s['grid_size']} |
+| **Envs** | {s['num_envs']} |
+| **Seed** | {s['seed']} |
+
+{wandb_link}
+
+<sub>Commit {sha[:8]} \u00b7 PR #{pr}</sub>''')
+" > "$SUMMARY_MD"
+    echo ">>> Summary written to $SUMMARY_MD"
+else
+    echo ">>> WARNING: summary.json not found, skipping PR summary"
+fi

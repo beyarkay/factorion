@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create a RunPod GPU pod for CI smoke testing.
 
-Provisions an H100 (or specified GPU) pod, waits for it to reach a running
+Provisions an A100 (or specified GPU) pod, waits for it to reach a running
 state, and writes connection info to an output JSON file.
 
 Required env vars:
@@ -19,23 +19,23 @@ import time
 
 import runpod
 
-# Ordered fallback list: try H100 first, then fall back to cheaper GPUs
+# Ordered fallback list: try A100 first, then fall back to other GPUs
 GPU_FALLBACKS = [
-    "NVIDIA H100 80GB HBM3",
     "NVIDIA A100 80GB PCIe",
     "NVIDIA A100-SXM4-80GB",
     "NVIDIA RTX A6000",
+    "NVIDIA H100 80GB HBM3",
 ]
 
-DOCKER_IMAGE = "runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04"
+DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
-POD_START_TIMEOUT = 300  # seconds
+POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull)
 
 
 def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
     """Create a RunPod pod and wait for it to be ready.
 
-    Returns dict with pod_id, ssh_host, status.
+    Returns dict with pod_id, ssh_host, ssh_port, gpu_type, status.
     """
     runpod.api_key = os.environ["RUNPOD_API_KEY"]
 
@@ -46,7 +46,7 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
 
     pod = None
     for gpu in gpu_types_to_try:
-        print(f"Attempting to create pod with GPU: {gpu}")
+        print(f"Trying GPU: {gpu}", flush=True)
         try:
             pod = runpod.create_pod(
                 name=f"ci-smoke-{int(time.time())}",
@@ -57,21 +57,23 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                 container_disk_in_gb=CONTAINER_DISK_GB,
                 ports="22/tcp",
                 support_public_ip=True,
+                env={
+                    "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
+                },
             )
             if pod and pod.get("id"):
-                print(f"Pod created with GPU: {gpu}")
+                print(f"Pod created: {pod['id']} ({gpu})", flush=True)
                 break
         except Exception as e:
-            print(f"  Failed with {gpu}: {e}")
+            print(f"  Failed: {e}", flush=True)
             pod = None
             continue
 
     if not pod or not pod.get("id"):
-        print("ERROR: Could not create pod with any available GPU type")
+        print("ERROR: Could not create pod with any available GPU type", flush=True)
         sys.exit(1)
 
     pod_id = pod["id"]
-    print(f"Pod ID: {pod_id}")
 
     # Wait for pod to reach running state
     start_time = time.time()
@@ -79,20 +81,32 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         status = runpod.get_pod(pod_id)
         desired = status.get("desiredStatus", "")
         runtime = status.get("runtime")
+        elapsed = int(time.time() - start_time)
 
-        if desired == "RUNNING" and runtime and runtime.get("uptimeInSeconds", 0) > 0:
-            ssh_host = f"{pod_id}-ssh.proxy.runpod.io"
-            print(f"Pod is running. SSH host: {ssh_host}")
+        if desired == "RUNNING" and runtime:
+            # Extract public SSH IP and port from runtime ports
+            ssh_host = None
+            ssh_port = 22
+            ports = runtime.get("ports", []) or []
+            for p in ports:
+                if p.get("privatePort") == 22 and p.get("isIpPublic"):
+                    ssh_host = p["ip"]
+                    ssh_port = p["publicPort"]
+                    break
+            if not ssh_host:
+                print(f"  Running but no public SSH port yet ({elapsed}s)", flush=True)
+                time.sleep(10)
+                continue
+            print(f"Pod ready. SSH: root@{ssh_host} -p {ssh_port}", flush=True)
             return {
                 "pod_id": pod_id,
                 "ssh_host": ssh_host,
-                "ssh_port": 22,
+                "ssh_port": ssh_port,
                 "gpu_type": status.get("machine", {}).get("gpuDisplayName", "unknown"),
                 "status": "running",
             }
 
-        elapsed = int(time.time() - start_time)
-        print(f"  Waiting for pod {pod_id}... ({elapsed}s, desired={desired})")
+        print(f"  Waiting... ({elapsed}s, desired={desired})", flush=True)
         time.sleep(10)
 
     # Timeout - clean up the pod
@@ -108,7 +122,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create a RunPod GPU pod for CI")
     parser.add_argument(
         "--gpu-type",
-        default="NVIDIA H100 80GB HBM3",
+        default="NVIDIA A100 80GB PCIe",
         help="GPU type to request (falls back to cheaper GPUs if unavailable)",
     )
     parser.add_argument(

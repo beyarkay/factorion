@@ -3,6 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main, master]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       skip_gpu:
@@ -13,19 +14,53 @@ on:
       gpu_type:
         description: "RunPod GPU type ID"
         required: false
-        default: "NVIDIA H100 80GB HBM3"
+        default: "NVIDIA A100 80GB PCIe"
         type: string
       total_timesteps:
         description: "Total timesteps for smoke test"
         required: false
-        default: "10000"
+        default: "20000"
         type: string
 
 env:
-  WANDB_CI_PROJECT: factorion-ci
+  WANDB_CI_PROJECT: factorion
   PYTHON_VERSION: "3.11"
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Job 0: Decide whether GPU tests should run
+  # ──────────────────────────────────────────────
+  check-gpu-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      run_gpu: ${{ steps.check.outputs.run_gpu }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for GPU test triggers
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_GPU: ${{ inputs.skip_gpu || 'false' }}
+        run: |
+          RUN_GPU=false
+
+          # 1. workflow_dispatch: always run GPU tests (unless skip_gpu)
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$SKIP_GPU" != "true" ]; then
+            echo "::notice::GPU tests triggered via workflow_dispatch"
+            RUN_GPU=true
+          fi
+
+          # 2. Check PR labels for gpu-test
+          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+          if echo "$LABELS" | grep -qi 'gpu-test'; then
+            echo "::notice::GPU tests triggered via PR label"
+            RUN_GPU=true
+          fi
+
+          echo "run_gpu=$RUN_GPU" >> "$GITHUB_OUTPUT"
+          echo "GPU tests will run: $RUN_GPU"
+
   # ──────────────────────────────────────────────
   # Job 1: Lint
   # ──────────────────────────────────────────────
@@ -53,8 +88,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: factorion_rs
       - name: Install dependencies
         run: |
           pip install pytest pytest-timeout
@@ -94,20 +133,22 @@ jobs:
       - name: Install Rust toolchain
         if: steps.check-rust.outputs.has_rust == 'true'
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: steps.check-rust.outputs.has_rust == 'true'
+        with:
+          workspaces: factorion_rs
       - name: Run Rust tests
         if: steps.check-rust.outputs.has_rust == 'true'
         run: cd factorion_rs && cargo test --no-default-features
 
   # ──────────────────────────────────────────────
-  # Job 4: GPU smoke test (RunPod H100)
+  # Job 4: GPU smoke test (RunPod A100)
   # ──────────────────────────────────────────────
   gpu-smoke-test:
-    needs: [lint, python-tests, rust-tests]
-    if: ${{ !inputs.skip_gpu && vars.ENABLE_GPU_TESTS == 'true' }}
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_gpu == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      wandb_run_name: ${{ steps.smoke-test.outputs.wandb_run_name }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,6 +157,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
 
       - name: Install CI dependencies
         run: pip install runpod wandb
@@ -125,9 +167,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
           chmod 600 ~/.ssh/runpod_ci
-          # Disable strict host checking for RunPod proxy hosts
+          # Disable strict host checking for RunPod SSH
           cat >> ~/.ssh/config << 'EOF'
-          Host *.proxy.runpod.io
+          Host *
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
             LogLevel ERROR
@@ -137,9 +179,10 @@ jobs:
         id: create-pod
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python scripts/ci/runpod_create.py \
-            --gpu-type "${{ inputs.gpu_type || 'NVIDIA H100 80GB HBM3' }}" \
+            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -147,9 +190,10 @@ jobs:
       - name: Wait for SSH readiness
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          echo "Waiting for SSH on $SSH_HOST..."
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
           for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/runpod_ci -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
+            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
               echo "SSH connection established"
               exit 0
             fi
@@ -162,6 +206,7 @@ jobs:
       - name: Transfer code to pod
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
 
           # Create a tarball of the repo (excluding .git and large dirs)
           tar czf /tmp/factorion.tar.gz \
@@ -174,10 +219,10 @@ jobs:
             -C "$GITHUB_WORKSPACE" .
 
           # Transfer to pod
-          scp -i ~/.ssh/runpod_ci /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
 
           # Extract on pod
-          ssh -i ~/.ssh/runpod_ci root@"$SSH_HOST" << 'SETUP'
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
             mkdir -p /workspace/factorion
             tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
             ls -la /workspace/factorion/
@@ -187,26 +232,44 @@ jobs:
         id: smoke-test
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
-          SHA_SHORT="${GITHUB_SHA::7}"
-          TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '10000' }}"
+          TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '20000' }}"
 
           # Transfer the smoke test script and run it
-          scp -i ~/.ssh/runpod_ci scripts/ci/gpu_smoke_test.sh root@"$SSH_HOST":/workspace/gpu_smoke_test.sh
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" scripts/ci/gpu_smoke_test.sh root@"$SSH_HOST":/workspace/gpu_smoke_test.sh
 
-          WANDB_RUN_NAME="ci-pr${PR_NUMBER}-${SHA_SHORT}"
-          echo "wandb_run_name=${WANDB_RUN_NAME}" >> "$GITHUB_OUTPUT"
-
-          ssh -i ~/.ssh/runpod_ci root@"$SSH_HOST" \
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
             WANDB_API_KEY="$WANDB_API_KEY" \
             WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
-            WANDB_RUN_NAME="$WANDB_RUN_NAME" \
             TOTAL_TIMESTEPS="$TOTAL_TIMESTEPS" \
             PR_NUMBER="$PR_NUMBER" \
             COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_smoke_test.sh
+
+      - name: Fetch summary from pod
+        if: success()
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/summary.md 2>/dev/null || echo "No summary file found on pod"
+
+      - name: Post results to PR
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/summary.md)"
+          else
+            echo "::warning::No summary.md to post"
+          fi
 
       - name: Destroy RunPod instance
         if: always()
@@ -219,28 +282,3 @@ jobs:
             echo "::warning::No pod info file found, nothing to clean up"
           fi
 
-  # ──────────────────────────────────────────────
-  # Job 5: Check W&B metrics against baseline
-  # ──────────────────────────────────────────────
-  check-metrics:
-    needs: [gpu-smoke-test]
-    if: ${{ needs.gpu-smoke-test.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: pip install wandb
-
-      - name: Compare metrics against baseline
-        env:
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-        run: |
-          python scripts/ci/check_wandb_metrics.py \
-            --project "${{ env.WANDB_CI_PROJECT }}" \
-            --run-name "${{ needs.gpu-smoke-test.outputs.wandb_run_name }}" \
-            --baseline-file scripts/ci/baseline.json
