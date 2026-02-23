@@ -53,6 +53,9 @@ cd /workspace/factorion
 # ── Ensure Rust is on PATH (installed in Docker image at /root/.cargo/bin) ─
 export PATH="/root/.cargo/bin:${PATH}"
 
+# ── CuBLAS deterministic mode (required by torch.use_deterministic_algorithms) ─
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
 # ── Build Rust extension (deps cached in image, ~30s) ────────────
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
