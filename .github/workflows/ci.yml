@@ -22,6 +22,9 @@ on:
         default: "20000"
         type: string
 
+permissions:
+  pull-requests: write
+
 env:
   WANDB_CI_PROJECT: factorion
   PYTHON_VERSION: "3.11"
