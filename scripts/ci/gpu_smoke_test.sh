@@ -87,3 +87,40 @@ echo ""
 echo "============================================"
 echo "  Smoke test completed successfully"
 echo "============================================"
+
+# ── Generate PR summary markdown from summary.json ─────────────
+SUMMARY_JSON="/workspace/factorion/summary.json"
+SUMMARY_MD="/workspace/summary.md"
+
+if [ -f "$SUMMARY_JSON" ]; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')
+    python3 -c "
+import json, sys
+s = json.load(open('$SUMMARY_JSON'))
+gpu = '''$GPU_NAME'''
+pr = '''$PR_NUMBER'''
+sha = '''$COMMIT_SHA'''
+wandb_url = s.get('wandb_url') or 'N/A'
+wandb_link = f'[View on W&B]({wandb_url})' if wandb_url != 'N/A' else 'N/A'
+print(f'''## GPU Smoke Test Results
+
+| Metric | Value |
+|--------|-------|
+| **Throughput (moving avg)** | {s['moving_avg_throughput']:.4f} |
+| **Steps completed** | {s['global_step']:,} / {s['total_timesteps']:,} |
+| **Curriculum level** | {s['max_missing_entities']} missing entities |
+| **Training speed** | {s['sps']:,} SPS |
+| **Runtime** | {s['runtime_human']} |
+| **GPU** | {gpu} |
+| **Grid size** | {s['grid_size']}x{s['grid_size']} |
+| **Envs** | {s['num_envs']} |
+| **Seed** | {s['seed']} |
+
+{wandb_link}
+
+<sub>Commit {sha[:8]} \u00b7 PR #{pr}</sub>''')
+" > "$SUMMARY_MD"
+    echo ">>> Summary written to $SUMMARY_MD"
+else
+    echo ">>> WARNING: summary.json not found, skipping PR summary"
+fi

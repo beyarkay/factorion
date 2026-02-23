@@ -253,6 +253,24 @@ jobs:
             RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_smoke_test.sh
 
+      - name: Fetch summary from pod
+        if: success()
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/summary.md 2>/dev/null || echo "No summary file found on pod"
+
+      - name: Post results to PR
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/summary.md)"
+          else
+            echo "::warning::No summary.md to post"
+          fi
+
       - name: Destroy RunPod instance
         if: always()
         env:
