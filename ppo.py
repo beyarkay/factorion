@@ -120,6 +120,8 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     size: int = 8
     """The width and height of the factory"""
+    summary_path: Optional[str] = None
+    """path to write summary JSON (default: summary.json next to ppo.py)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
 
@@ -1264,7 +1266,8 @@ if __name__ == "__main__":
         "grid_size": args.size,
         "wandb_url": run.url if args.track and run else None,
     }
-    summary_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.json")
+    summary_path = args.summary_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.json")
+    os.makedirs(os.path.dirname(os.path.abspath(summary_path)), exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Summary written to {summary_path}")
