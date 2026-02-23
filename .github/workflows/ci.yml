@@ -250,6 +250,7 @@ jobs:
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix ci-smoke \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -391,6 +392,7 @@ jobs:
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix ci-bench \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -628,6 +630,7 @@ jobs:
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix "ci-sweep-${{ matrix.agent_id }}" \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
