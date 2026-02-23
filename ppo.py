@@ -1224,8 +1224,11 @@ if __name__ == "__main__":
                         output_path
                     ]
 
-                    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-                    print(f"Video saved: {output_path}")
+                    try:
+                        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+                        print(f"Video saved: {output_path}")
+                    except FileNotFoundError:
+                        print(f"ffmpeg not found, skipping video for env {env_idx}")
 
             finally:
                 for temp_dir in temp_dirs:
