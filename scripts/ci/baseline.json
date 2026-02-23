@@ -21,5 +21,11 @@
         "min": 0.0,
         "required": false,
         "_comment": "Learning rate should remain non-negative"
+    },
+    "moving_avg/throughput": {
+        "min": 0.0,
+        "direction": "higher",
+        "required": false,
+        "_comment": "Primary RL metric. Baseline value will be set after first benchmark run on main."
     }
 }
