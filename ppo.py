@@ -118,7 +118,7 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    size: int = 5
+    size: int = 8
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
