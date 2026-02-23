@@ -78,7 +78,7 @@ python ppo.py \
     --track \
     --wandb-project-name "$WANDB_PROJECT" \
     --total-timesteps "$TOTAL_TIMESTEPS" \
-    --tags '["ci", "smoke-test", "pr:'"$PR_NUMBER"'", "sha:'"$COMMIT_SHA"'"]'
+    --tags ci smoke-test "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}"
 
 echo ""
 echo "============================================"
