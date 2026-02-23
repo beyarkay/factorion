@@ -714,11 +714,10 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         t0 = time.time()
-        # B = x_BCWH.shape[0]
 
-        # Encode input
+        # Encode input once and reuse for both action and value heads
         encoded_BCWH = self.encoder(x_BCWH)
-        value_B = self.get_value(x_BCWH)
+        value_B = self.critic_head(encoded_BCWH).squeeze(-1)
 
         # Flatten for action head
         features_BF = self.action_head(encoded_BCWH)
@@ -886,13 +885,13 @@ if __name__ == "__main__":
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
-    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape, dtype=torch.float32).to(device)
+    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape, dtype=torch.float32, device=device)
     ACTION_SPACE_SHAPE = (6,)
-    actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=int).to(device)
-    logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
-    rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
-    dones_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
-    values_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32).to(device)
+    actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=int, device=device)
+    logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
+    rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
+    dones_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
+    values_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -904,8 +903,8 @@ if __name__ == "__main__":
             'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
         }
     )
-    next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
-    next_done = torch.zeros(args.num_envs, dtype=torch.float32).to(device)
+    next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
+    next_done = torch.zeros(args.num_envs, dtype=torch.float32, device=device)
     final_thputs_100ma = np.nan
     unclipped_grad_norm = np.nan
     approx_kl = np.nan
@@ -955,21 +954,12 @@ if __name__ == "__main__":
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
-            # log each item of the action for each environment
-            for i, action in enumerate(action_EA):
-                writer.add_scalar("actions/x",         action[0], global_step + i)
-                writer.add_scalar("actions/y",         action[1], global_step + i)
-                writer.add_scalar("actions/entity",    action[2], global_step + i)
-                writer.add_scalar("actions/direction", action[3], global_step + i)
-                writer.add_scalar("actions/item",      action[4], global_step + i)
-                writer.add_scalar("actions/misc",      action[5], global_step + i)
-
 
             action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
-            rewards_SE[step] = torch.tensor(reward, dtype=torch.float32).to(device).view(-1)
+            rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
             # Reset only the done environments with updated num_missing_entities
             done_indices = np.where(next_done)[0]
@@ -979,8 +969,8 @@ if __name__ == "__main__":
                 })
                 next_obs_ECWH[idx] = obs
 
-            next_obs_ECWH = torch.Tensor(next_obs_ECWH).to(device)
-            next_done = torch.Tensor(next_done).to(device)
+            next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
+            next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
 
 
             for reason, values in infos.get('invalid_reason', {}).items():
@@ -1134,16 +1124,14 @@ if __name__ == "__main__":
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 t0 = time.time()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
                 loss.backward()
                 unclipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                clipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), float('inf'))
                 optimizer.step()
                 global_num_optimiser_steps += 1
                 writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
                 writer.add_scalar("optim/num_steps", global_num_optimiser_steps, global_step)
-                writer.add_scalar("optim/grad_norm_clipped", clipped_grad_norm, global_step)
                 writer.add_scalar("optim/grad_norm_unclipped", unclipped_grad_norm, global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
