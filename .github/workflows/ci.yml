@@ -384,8 +384,8 @@ jobs:
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
 
+          # Include .git so the benchmark script can checkout main for baseline
           tar czf /tmp/factorion.tar.gz \
-            --exclude='.git' \
             --exclude='artifacts' \
             --exclude='wandb' \
             --exclude='runs' \
