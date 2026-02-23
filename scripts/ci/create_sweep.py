@@ -66,7 +66,7 @@ def main():
     api = wandb.Api()
     entity = args.entity or api.default_entity
     sweep_path = f"{entity}/{args.project}/{sweep_id}"
-    sweep_url = f"https://wandb.ai/{sweep_path}"
+    sweep_url = f"https://wandb.ai/{entity}/{args.project}/sweeps/{sweep_id}"
 
     info = {
         "sweep_id": sweep_id,

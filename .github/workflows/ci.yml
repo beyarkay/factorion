@@ -51,6 +51,11 @@ on:
         required: false
         default: "1"
         type: string
+      sweep_agents_per_pod:
+        description: "Parallel wandb agents per pod (GPU time-slicing)"
+        required: false
+        default: "5"
+        type: string
 
 permissions:
   pull-requests: write
@@ -519,6 +524,7 @@ jobs:
       sweep_url: ${{ steps.create.outputs.sweep_url }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       count_per_agent: ${{ steps.matrix.outputs.count_per_agent }}
+      agents_per_pod: ${{ steps.matrix.outputs.agents_per_pod }}
     steps:
       - uses: actions/checkout@v4
 
@@ -556,9 +562,11 @@ jobs:
         run: |
           SWEEP_URL="${{ steps.create.outputs.sweep_url }}"
           SWEEP_COUNT="${{ inputs.sweep_count || '20' }}"
-          SWEEP_AGENTS="${{ inputs.sweep_agents || '1' }}"
+          SWEEP_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          TOTAL_AGENTS=$(( SWEEP_PODS * AGENTS_PER_POD ))
           gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat <<EOF
-          **W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_AGENTS} agent(s)
+          **W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_PODS} pod(s) x ${AGENTS_PER_POD} agents/pod (${TOTAL_AGENTS} total agents)
 
           [View sweep on W&B](${SWEEP_URL})
           EOF
@@ -567,25 +575,29 @@ jobs:
       - name: Prepare agent matrix
         id: matrix
         run: |
-          NUM_AGENTS="${{ inputs.sweep_agents || '1' }}"
+          NUM_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
           TOTAL_COUNT="${{ inputs.sweep_count || '20' }}"
-          COUNT_PER=$(( TOTAL_COUNT / NUM_AGENTS ))
+          TOTAL_AGENTS=$(( NUM_PODS * AGENTS_PER_POD ))
+          COUNT_PER=$(( TOTAL_COUNT / TOTAL_AGENTS ))
 
-          # Ensure at least 1 iteration per agent
+          # Ensure at least 1 iteration per agent process
           if [ "$COUNT_PER" -lt 1 ]; then
             COUNT_PER=1
           fi
 
           MATRIX=$(python3 -c "
           import json
-          n = int('$NUM_AGENTS')
+          n = int('$NUM_PODS')
           print(json.dumps({'agent_id': list(range(n))}))
           ")
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "count_per_agent=$COUNT_PER" >> "$GITHUB_OUTPUT"
+          echo "agents_per_pod=$AGENTS_PER_POD" >> "$GITHUB_OUTPUT"
           echo "Matrix: $MATRIX"
-          echo "Count per agent: $COUNT_PER"
+          echo "Count per agent process: $COUNT_PER"
+          echo "Agents per pod: $AGENTS_PER_POD"
 
   # ──────────────────────────────────────────────
   # Job 7: GPU sweep agents — run W&B sweep on RunPod
@@ -684,6 +696,7 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
           SWEEP_PATH="${{ needs.sweep-setup.outputs.sweep_path }}"
           COUNT_PER_AGENT="${{ needs.sweep-setup.outputs.count_per_agent }}"
+          AGENTS_PER_POD="${{ needs.sweep-setup.outputs.agents_per_pod }}"
           AGENT_ID="${{ matrix.agent_id }}"
 
           scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
@@ -695,6 +708,7 @@ jobs:
             WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
             SWEEP_ID="$SWEEP_PATH" \
             SWEEP_COUNT="$COUNT_PER_AGENT" \
+            AGENTS_PER_POD="$AGENTS_PER_POD" \
             AGENT_ID="$AGENT_ID" \
             PR_NUMBER="$PR_NUMBER" \
             COMMIT_SHA="$GITHUB_SHA" \

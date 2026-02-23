@@ -61,7 +61,9 @@ def main():
     # Fetch all runs, keep only finished ones
     runs = [r for r in sweep.runs if r.state == "finished"]
 
-    sweep_url = f"https://wandb.ai/{args.sweep_path}"
+    # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
+    parts = args.sweep_path.split("/")
+    sweep_url = f"https://wandb.ai/{parts[0]}/{parts[1]}/sweeps/{parts[2]}"
 
     if not runs:
         md = (
