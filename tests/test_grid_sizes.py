@@ -6,12 +6,18 @@ and running random steps doesn't crash.
 
 import os
 import sys
+from unittest.mock import MagicMock
 
 import numpy as np
 
 # Disable wandb before importing ppo
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["WANDB_DISABLED"] = "true"
+
+# Mock tensorboard so ppo.py can be imported in CI where tensorboard
+# is not installed (CI installs torch CPU-only without tensorboard).
+for _mod in ["tensorboard", "torch.utils.tensorboard"]:
+    sys.modules.setdefault(_mod, MagicMock())
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
