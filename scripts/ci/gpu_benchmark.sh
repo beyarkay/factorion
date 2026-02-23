@@ -160,10 +160,14 @@ else
         fi
         cp -r "$WORK_DIR" "$MAIN_WORK_DIR"
         cd "$MAIN_WORK_DIR"
-        git checkout main -- . 2>/dev/null || git checkout master -- . 2>/dev/null || {
-            echo ">>> WARNING: Could not checkout main/master. Using current code as baseline."
-            cd "$WORK_DIR"
-        }
+
+        if ! git checkout main -- . 2>/dev/null && ! git checkout master -- . 2>/dev/null; then
+            echo ">>> ERROR: Could not checkout main/master for baseline comparison."
+            echo ">>> Ensure .git is included in the tarball transfer (fetch-depth: 0 required)."
+            echo ">>> Refusing to compare PR against itself."
+            exit 1
+        fi
+        echo ">>> Successfully checked out main branch for baseline"
 
         # Rebuild Rust extension for baseline
         if [ -f factorion_rs/Cargo.toml ]; then
