@@ -50,11 +50,14 @@ fi
 
 cd /workspace/factorion
 
+# ── Ensure Rust is on PATH (installed in Docker image at /root/.cargo/bin) ─
+export PATH="/root/.cargo/bin:${PATH}"
+
 # ── Build Rust extension (deps cached in image, ~30s) ────────────
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
     echo ">>> Building factorion_rs from source..."
-    cd factorion_rs && maturin develop --release && cd ..
+    (cd factorion_rs && maturin develop --release)
 else
     echo ">>> WARNING: factorion_rs not available."
     echo "    The smoke test may fail if ppo.py requires it."
