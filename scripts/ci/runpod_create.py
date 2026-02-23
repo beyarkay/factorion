@@ -35,7 +35,7 @@ POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull
 def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
     """Create a RunPod pod and wait for it to be ready.
 
-    Returns dict with pod_id, ssh_host, status.
+    Returns dict with pod_id, ssh_host, ssh_port, gpu_type, status.
     """
     runpod.api_key = os.environ["RUNPOD_API_KEY"]
 
@@ -46,7 +46,7 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
 
     pod = None
     for gpu in gpu_types_to_try:
-        print(f"Attempting to create pod with GPU: {gpu}", flush=True)
+        print(f"Trying GPU: {gpu}", flush=True)
         try:
             pod = runpod.create_pod(
                 name=f"ci-smoke-{int(time.time())}",
@@ -61,12 +61,11 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                     "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
                 },
             )
-            print(f"  [debug] create_pod response: {pod}", flush=True)
             if pod and pod.get("id"):
-                print(f"Pod created with GPU: {gpu}", flush=True)
+                print(f"Pod created: {pod['id']} ({gpu})", flush=True)
                 break
         except Exception as e:
-            print(f"  Failed with {gpu}: {e}", flush=True)
+            print(f"  Failed: {e}", flush=True)
             pod = None
             continue
 
@@ -75,7 +74,6 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         sys.exit(1)
 
     pod_id = pod["id"]
-    print(f"Pod ID: {pod_id}", flush=True)
 
     # Wait for pod to reach running state
     start_time = time.time()
@@ -85,12 +83,6 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         runtime = status.get("runtime")
         elapsed = int(time.time() - start_time)
 
-        # Log full response on first poll and every 60s for debugging
-        if elapsed < 15 or elapsed % 60 < 15:
-            print(f"  [debug] Full pod status: {json.dumps(status, indent=2, default=str)}")
-
-        # uptimeSeconds is a top-level field (not nested under runtime)
-        uptime = status.get("uptimeSeconds", 0)
         if desired == "RUNNING" and runtime:
             # Extract public SSH IP and port from runtime ports
             ssh_host = None
@@ -102,10 +94,10 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                     ssh_port = p["publicPort"]
                     break
             if not ssh_host:
-                print(f"  Pod running but no public SSH port found. Ports: {ports}", flush=True)
+                print(f"  Running but no public SSH port yet ({elapsed}s)", flush=True)
                 time.sleep(10)
                 continue
-            print(f"Pod is running (uptime={uptime}s). SSH: root@{ssh_host} -p {ssh_port}", flush=True)
+            print(f"Pod ready. SSH: root@{ssh_host} -p {ssh_port}", flush=True)
             return {
                 "pod_id": pod_id,
                 "ssh_host": ssh_host,
@@ -114,7 +106,7 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
                 "status": "running",
             }
 
-        print(f"  Waiting for pod {pod_id}... ({elapsed}s, desired={desired}, runtime={runtime is not None}, uptime={uptime})", flush=True)
+        print(f"  Waiting... ({elapsed}s, desired={desired})", flush=True)
         time.sleep(10)
 
     # Timeout - clean up the pod
