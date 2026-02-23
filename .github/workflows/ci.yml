@@ -36,6 +36,26 @@ on:
         required: false
         default: "100000"
         type: string
+      run_sweep:
+        description: "Run W&B hyperparameter sweep"
+        required: false
+        default: false
+        type: boolean
+      sweep_count:
+        description: "Total number of sweep iterations"
+        required: false
+        default: "20"
+        type: string
+      sweep_agents:
+        description: "Number of parallel sweep agents (RunPod pods)"
+        required: false
+        default: "1"
+        type: string
+      sweep_agents_per_pod:
+        description: "Parallel wandb agents per pod (GPU time-slicing)"
+        required: false
+        default: "5"
+        type: string
 
 permissions:
   pull-requests: write
@@ -53,6 +73,7 @@ jobs:
     outputs:
       run_gpu: ${{ steps.check.outputs.run_gpu }}
       run_benchmark: ${{ steps.check.outputs.run_benchmark }}
+      run_sweep: ${{ steps.check.outputs.run_sweep }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,9 +83,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SKIP_GPU: ${{ inputs.skip_gpu || 'false' }}
           RUN_BENCHMARK_INPUT: ${{ inputs.run_benchmark || 'false' }}
+          RUN_SWEEP_INPUT: ${{ inputs.run_sweep || 'false' }}
         run: |
           RUN_GPU=false
           RUN_BENCHMARK=false
+          RUN_SWEEP=false
 
           # 1. workflow_dispatch: always run GPU tests (unless skip_gpu)
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$SKIP_GPU" != "true" ]; then
@@ -76,6 +99,12 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$RUN_BENCHMARK_INPUT" = "true" ]; then
             echo "::notice::GPU benchmark triggered via workflow_dispatch"
             RUN_BENCHMARK=true
+          fi
+
+          # 2b. workflow_dispatch with sweep flag
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$RUN_SWEEP_INPUT" = "true" ]; then
+            echo "::notice::W&B sweep triggered via workflow_dispatch"
+            RUN_SWEEP=true
           fi
 
           # 3. Check PR labels for gpu-test
@@ -91,10 +120,18 @@ jobs:
             RUN_BENCHMARK=true
           fi
 
+          # 5. Check PR labels for sweep
+          if echo "$LABELS" | grep -qi '"sweep"'; then
+            echo "::notice::W&B sweep triggered via PR label"
+            RUN_SWEEP=true
+          fi
+
           echo "run_gpu=$RUN_GPU" >> "$GITHUB_OUTPUT"
           echo "run_benchmark=$RUN_BENCHMARK" >> "$GITHUB_OUTPUT"
+          echo "run_sweep=$RUN_SWEEP" >> "$GITHUB_OUTPUT"
           echo "GPU tests will run: $RUN_GPU"
           echo "GPU benchmark will run: $RUN_BENCHMARK"
+          echo "W&B sweep will run: $RUN_SWEEP"
 
   # ──────────────────────────────────────────────
   # Job 1: Lint
@@ -218,6 +255,7 @@ jobs:
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix ci-smoke \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -359,6 +397,7 @@ jobs:
         run: |
           python scripts/ci/runpod_create.py \
             --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix ci-bench \
             --output-file /tmp/pod_info.json
 
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
@@ -470,4 +509,286 @@ jobs:
             python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
           else
             echo "::warning::No pod info file found, nothing to clean up"
+          fi
+
+  # ──────────────────────────────────────────────
+  # Job 6: Sweep setup — create W&B sweep + agent matrix
+  # ──────────────────────────────────────────────
+  sweep-setup:
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_sweep == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      sweep_id: ${{ steps.create.outputs.sweep_id }}
+      sweep_path: ${{ steps.create.outputs.sweep_path }}
+      sweep_url: ${{ steps.create.outputs.sweep_url }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count_per_agent: ${{ steps.matrix.outputs.count_per_agent }}
+      agents_per_pod: ${{ steps.matrix.outputs.agents_per_pod }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install CI dependencies
+        run: pip install wandb pyyaml
+
+      - name: Create W&B sweep
+        id: create
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          python scripts/ci/create_sweep.py \
+            --config sweep.yaml \
+            --project "${{ env.WANDB_CI_PROJECT }}" \
+            --output-file /tmp/sweep_info.json
+
+          SWEEP_ID=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_id'])")
+          SWEEP_PATH=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_path'])")
+          SWEEP_URL=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_url'])")
+
+          echo "sweep_id=$SWEEP_ID" >> "$GITHUB_OUTPUT"
+          echo "sweep_path=$SWEEP_PATH" >> "$GITHUB_OUTPUT"
+          echo "sweep_url=$SWEEP_URL" >> "$GITHUB_OUTPUT"
+          echo "Sweep created: $SWEEP_PATH"
+          echo "Sweep URL: $SWEEP_URL"
+
+      - name: Post sweep started comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SWEEP_URL="${{ steps.create.outputs.sweep_url }}"
+          SWEEP_COUNT="${{ inputs.sweep_count || '20' }}"
+          SWEEP_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          TOTAL_AGENTS=$(( SWEEP_PODS * AGENTS_PER_POD ))
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat <<EOF
+          **W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_PODS} pod(s) x ${AGENTS_PER_POD} agents/pod (${TOTAL_AGENTS} total agents)
+
+          [View sweep on W&B](${SWEEP_URL})
+          EOF
+          )"
+
+      - name: Prepare agent matrix
+        id: matrix
+        run: |
+          NUM_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          TOTAL_COUNT="${{ inputs.sweep_count || '20' }}"
+          TOTAL_AGENTS=$(( NUM_PODS * AGENTS_PER_POD ))
+          COUNT_PER=$(( TOTAL_COUNT / TOTAL_AGENTS ))
+
+          # Ensure at least 1 iteration per agent process
+          if [ "$COUNT_PER" -lt 1 ]; then
+            COUNT_PER=1
+          fi
+
+          MATRIX=$(python3 -c "
+          import json
+          n = int('$NUM_PODS')
+          print(json.dumps({'agent_id': list(range(n))}))
+          ")
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count_per_agent=$COUNT_PER" >> "$GITHUB_OUTPUT"
+          echo "agents_per_pod=$AGENTS_PER_POD" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $MATRIX"
+          echo "Count per agent process: $COUNT_PER"
+          echo "Agents per pod: $AGENTS_PER_POD"
+
+  # ──────────────────────────────────────────────
+  # Job 7: GPU sweep agents — run W&B sweep on RunPod
+  # ──────────────────────────────────────────────
+  gpu-sweep:
+    needs: [sweep-setup]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sweep-setup.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install CI dependencies
+        run: pip install runpod wandb
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
+          chmod 600 ~/.ssh/runpod_ci
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Create RunPod instance
+        id: create-pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python scripts/ci/runpod_create.py \
+            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --name-prefix "ci-sweep-${{ matrix.agent_id }}" \
+            --output-file /tmp/pod_info.json
+
+          echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSH readiness
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
+              echo "SSH connection established"
+              exit 0
+            fi
+            echo "  Attempt $i/30 - retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::SSH connection timed out"
+          exit 1
+
+      - name: Transfer code to pod
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+
+          tar czf /tmp/factorion.tar.gz \
+            --exclude='.git' \
+            --exclude='artifacts' \
+            --exclude='wandb' \
+            --exclude='runs' \
+            --exclude='videos' \
+            --exclude='__pycache__' \
+            -C "$GITHUB_WORKSPACE" .
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
+            mkdir -p /workspace/factorion
+            tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
+            ls -la /workspace/factorion/
+          SETUP
+
+      - name: Run sweep agent on GPU
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          SWEEP_PATH="${{ needs.sweep-setup.outputs.sweep_path }}"
+          COUNT_PER_AGENT="${{ needs.sweep-setup.outputs.count_per_agent }}"
+          AGENTS_PER_POD="${{ needs.sweep-setup.outputs.agents_per_pod }}"
+          AGENT_ID="${{ matrix.agent_id }}"
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+            scripts/ci/gpu_sweep.sh \
+            root@"$SSH_HOST":/workspace/gpu_sweep.sh
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            SWEEP_ID="$SWEEP_PATH" \
+            SWEEP_COUNT="$COUNT_PER_AGENT" \
+            AGENTS_PER_POD="$AGENTS_PER_POD" \
+            AGENT_ID="$AGENT_ID" \
+            PR_NUMBER="$PR_NUMBER" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/gpu_sweep.sh
+
+      - name: Destroy RunPod instance
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          if [ -f /tmp/pod_info.json ]; then
+            python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
+          else
+            echo "::warning::No pod info file found, nothing to clean up"
+          fi
+
+  # ──────────────────────────────────────────────
+  # Job 8: Sweep report — collect results and post to PR
+  # ──────────────────────────────────────────────
+  sweep-report:
+    needs: [sweep-setup, gpu-sweep]
+    if: always() && needs.sweep-setup.outputs.sweep_path != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install CI dependencies
+        run: pip install wandb
+
+      - name: Generate sweep report
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          python scripts/ci/sweep_report.py \
+            --sweep-path "${{ needs.sweep-setup.outputs.sweep_path }}" \
+            --output /tmp/sweep_summary.md \
+            --pr-number "${{ github.event.pull_request.number || 'manual' }}" \
+            --commit-sha "${{ github.sha }}"
+
+      - name: Create PR with best hyperparameters
+        if: needs.gpu-sweep.result == 'success'
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/ci/apply_sweep_best.py \
+            --sweep-path "${{ needs.sweep-setup.outputs.sweep_path }}" \
+            --ppo-file ppo.py \
+            --base-branch "${{ github.event.pull_request.base.ref || 'main' }}" \
+            --pr-number "${{ github.event.pull_request.number || '' }}" \
+            --output-pr-url /tmp/sweep_pr_url.txt
+
+      - name: Append PR link to sweep summary
+        if: needs.gpu-sweep.result == 'success'
+        run: |
+          if [ -f /tmp/sweep_pr_url.txt ] && [ -f /tmp/sweep_summary.md ]; then
+            PR_URL=$(cat /tmp/sweep_pr_url.txt)
+            if [ -n "$PR_URL" ]; then
+              printf '\n---\n**Apply these hyperparameters:** [PR](%s)\n' "$PR_URL" >> /tmp/sweep_summary.md
+            fi
+          fi
+
+      - name: Post sweep results to PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/sweep_summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/sweep_summary.md)"
+          else
+            echo "::warning::No sweep summary to post"
           fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a RunPod GPU pod for CI smoke testing.
+"""Create a RunPod GPU pod for CI.
 
 Provisions an A100 (or specified GPU) pod, waits for it to reach a running
 state, and writes connection info to an output JSON file.
@@ -8,7 +8,7 @@ Required env vars:
     RUNPOD_API_KEY  - RunPod API key
 
 Usage:
-    python scripts/ci/runpod_create.py --output-file /tmp/pod_info.json
+    python scripts/ci/runpod_create.py --name-prefix ci-smoke --output-file /tmp/pod_info.json
 """
 
 import argparse
@@ -32,7 +32,7 @@ CONTAINER_DISK_GB = 40
 POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull)
 
 
-def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
+def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_TIMEOUT) -> dict:
     """Create a RunPod pod and wait for it to be ready.
 
     Returns dict with pod_id, ssh_host, ssh_port, gpu_type, status.
@@ -49,7 +49,7 @@ def create_pod(gpu_type: str, timeout: int = POD_START_TIMEOUT) -> dict:
         print(f"Trying GPU: {gpu}", flush=True)
         try:
             pod = runpod.create_pod(
-                name=f"ci-smoke-{int(time.time())}",
+                name=f"{name_prefix}-{int(time.time())}",
                 image_name=DOCKER_IMAGE,
                 gpu_type_id=gpu,
                 gpu_count=1,
@@ -132,13 +132,18 @@ def main():
         help="Timeout in seconds waiting for pod to start",
     )
     parser.add_argument(
+        "--name-prefix",
+        default="ci",
+        help="Pod name prefix (e.g. ci-smoke, ci-bench, ci-sweep)",
+    )
+    parser.add_argument(
         "--output-file",
         default="/tmp/pod_info.json",
         help="Path to write pod info JSON",
     )
     args = parser.parse_args()
 
-    pod_info = create_pod(gpu_type=args.gpu_type, timeout=args.timeout)
+    pod_info = create_pod(gpu_type=args.gpu_type, name_prefix=args.name_prefix, timeout=args.timeout)
 
     with open(args.output_file, "w") as f:
         json.dump(pod_info, f, indent=2)

@@ -53,6 +53,8 @@ bash run_sweep.sh
 ruff check .
 ```
 
+**Note**: `ruff` is a Python linter. Never run it on non-Python files (YAML, TOML, etc.) — it will produce nonsensical parse errors.
+
 ## Testing
 
 ```bash
