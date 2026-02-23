@@ -118,6 +118,8 @@ class Args:
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
+    tile_head_std: float = 0.01
+    """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     size: int = 5
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
@@ -648,7 +650,7 @@ class FactorioEnv(gym.Env):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256):
+    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01):
         super().__init__()
         base_env = envs.envs[0].unwrapped
         self.width = base_env.size
@@ -659,6 +661,7 @@ class AgentCNN(nn.Module):
         self.num_directions = len(base_env.Direction)
         self.num_items = len(base_env.items)
         self.num_misc = len(base_env.Misc)
+        self.chan3 = chan3
 
         self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
@@ -671,7 +674,6 @@ class AgentCNN(nn.Module):
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(f"Encoder has {num_params_encoder} params")
 
-        # TODO the flat dim as the parameter actually does nothing
         flat_dim = chan3 * self.width * self.height
 
         # Project encoded state to value
@@ -680,17 +682,12 @@ class AgentCNN(nn.Module):
             layer_init(nn.Linear(flat_dim, 1), std=1.0)
         )
 
-        # Action heads: output logits for x, y, direction, entity_id, etc
-        self.action_head = nn.Sequential(
-            nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, flat_dim)),
-            nn.ReLU()
-        )
+        # Tile selection: 1x1 conv producing one logit per spatial position
+        self.tile_logits = layer_init(nn.Conv2d(chan3, 1, kernel_size=1), std=tile_head_std)
 
-        self.x_head = layer_init(nn.Linear(flat_dim, self.width))
-        self.y_head = layer_init(nn.Linear(flat_dim, self.height))
-        self.ent_head = layer_init(nn.Linear(flat_dim, self.num_entities))
-        self.dir_head = layer_init(nn.Linear(flat_dim, self.num_directions))
+        # Per-tile entity/direction heads (conditioned on selected tile features)
+        self.ent_head = layer_init(nn.Linear(chan3, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(chan3, self.num_directions))
         self.time_for_get_value = None
         self.time_for_get_action_and_value = None
 
@@ -700,10 +697,6 @@ class AgentCNN(nn.Module):
             self.ent_head.bias.data[0] = 1.0
             self.dir_head.bias.fill_(0.0)
             self.dir_head.bias.data[0] = 1.0
-
-
-        # self.item_head = layer_init(nn.Linear(flat_dim, self.num_items))
-        # self.misc_head = layer_init(nn.Linear(flat_dim, self.num_misc))
 
     def get_value(self, x_BCWH):
         t0 = time.time()
@@ -716,66 +709,56 @@ class AgentCNN(nn.Module):
         t0 = time.time()
 
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH = self.encoder(x_BCWH)
+        encoded_BCWH = self.encoder(x_BCWH)  # (B, chan3, W, H)
         value_B = self.critic_head(encoded_BCWH).squeeze(-1)
 
-        # Flatten for action head
-        features_BF = self.action_head(encoded_BCWH)
+        B = encoded_BCWH.shape[0]
 
-        # Predict logits
-        logits_x_BW = self.x_head(features_BF)
-        logits_y_BH = self.y_head(features_BF)
-        logits_e_BE = self.ent_head(features_BF)
-        logits_d_BD = self.dir_head(features_BF)
-        # logits_i_BD = self.item_head(features_BF)
-        # logits_m_BD = self.misc_head(features_BF)
+        # --- Tile selection: joint (x, y) via 1x1 conv ---
+        tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
+        tile_logits_BN = tile_logits_B1WH.reshape(B, -1)       # (B, W*H)
+        dist_tile = Categorical(logits=tile_logits_BN)
 
-        # Build distributions
-        dist_x = Categorical(logits=logits_x_BW)
-        dist_y = Categorical(logits=logits_y_BH)
+        if action is None:
+            tile_idx_B = dist_tile.sample()                     # (B,)
+        else:
+            # Reconstruct tile index from stored (x, y)
+            tile_idx_B = action[:, 0] * self.height + action[:, 1]
+
+        # Decode tile index back to (x, y)
+        x_B = tile_idx_B // self.height
+        y_B = tile_idx_B % self.height
+
+        # --- Extract per-tile features at selected (x, y) ---
+        batch_idx = torch.arange(B, device=encoded_BCWH.device)
+        tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
+
+        # --- Entity and direction heads (conditioned on tile features) ---
+        logits_e_BE = self.ent_head(tile_features_BC)
+        logits_d_BD = self.dir_head(tile_features_BC)
         dist_e = Categorical(logits=logits_e_BE)
         dist_d = Categorical(logits=logits_d_BD)
-        # dist_i = Categorical(logits=logits_i_BD)
-        # dist_m = Categorical(logits=logits_m_BD)
 
-        # Sample or unpack provided actions
         if action is None:
-            x_B = dist_x.sample()
-            y_B = dist_y.sample()
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
-            # item_B = dist_i.sample()
-            # misc_B = dist_m.sample()
         else:
-            # Surprisingly enough, action is a tensor here, not a dict
-            x_B = action[:, 0]
-            y_B = action[:, 1]
             ent_B = action[:, 2]
             dir_B = action[:, 3]
-            # item_B = action[:, 4]
-            # misc_B = action[:, 5]
 
-
-        # Compute log probs and entropy
+        # --- Log probs and entropy ---
         logp_B = (
-            dist_x.log_prob(x_B) +
-            dist_y.log_prob(y_B) +
+            dist_tile.log_prob(tile_idx_B) +
             dist_e.log_prob(ent_B) +
-            dist_d.log_prob(dir_B) # +
-            # dist_i.log_prob(item_B) +
-            # dist_m.log_prob(misc_B)
+            dist_d.log_prob(dir_B)
         )
         entropy_B = (
-            dist_x.entropy() +
-            dist_y.entropy() +
+            dist_tile.entropy() +
             dist_e.entropy() +
-            dist_d.entropy() # +
-            # dist_i.entropy() +
-            # dist_m.entropy()
+            dist_d.entropy()
         )
 
-        # Final action format: tuple of tensors
-        # action_out = (torch.stack([x_B, y_B], dim=1), ent_B, dir_B)
+        # --- Output action dict (format unchanged) ---
         action_out = {
             "xy": torch.stack([x_B, y_B], dim=1),
             "direction": dir_B,
@@ -864,13 +847,14 @@ if __name__ == "__main__":
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
     )
 
-    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=} ")
+    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")
     agent = AgentCNN(
         envs,
         chan1=args.chan1,
         chan2=args.chan2,
         chan3=args.chan3,
-        flat_dim=args.flat_dim
+        flat_dim=args.flat_dim,
+        tile_head_std=args.tile_head_std,
     )
 
     if args.start_from is not None:
