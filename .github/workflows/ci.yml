@@ -21,6 +21,21 @@ on:
         required: false
         default: "20000"
         type: string
+      run_benchmark:
+        description: "Run multi-seed GPU benchmark (statistical comparison)"
+        required: false
+        default: false
+        type: boolean
+      benchmark_seeds:
+        description: "Number of seeds for benchmark"
+        required: false
+        default: "5"
+        type: string
+      benchmark_timesteps:
+        description: "Timesteps per seed for benchmark"
+        required: false
+        default: "100000"
+        type: string
 
 permissions:
   pull-requests: write
@@ -37,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_gpu: ${{ steps.check.outputs.run_gpu }}
+      run_benchmark: ${{ steps.check.outputs.run_benchmark }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,8 +61,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SKIP_GPU: ${{ inputs.skip_gpu || 'false' }}
+          RUN_BENCHMARK_INPUT: ${{ inputs.run_benchmark || 'false' }}
         run: |
           RUN_GPU=false
+          RUN_BENCHMARK=false
 
           # 1. workflow_dispatch: always run GPU tests (unless skip_gpu)
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$SKIP_GPU" != "true" ]; then
@@ -54,15 +72,29 @@ jobs:
             RUN_GPU=true
           fi
 
-          # 2. Check PR labels for gpu-test
+          # 2. workflow_dispatch with benchmark flag
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$RUN_BENCHMARK_INPUT" = "true" ]; then
+            echo "::notice::GPU benchmark triggered via workflow_dispatch"
+            RUN_BENCHMARK=true
+          fi
+
+          # 3. Check PR labels for gpu-test
           LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
           if echo "$LABELS" | grep -qi 'gpu-test'; then
             echo "::notice::GPU tests triggered via PR label"
             RUN_GPU=true
           fi
 
+          # 4. Check PR labels for gpu-benchmark
+          if echo "$LABELS" | grep -qi 'gpu-benchmark'; then
+            echo "::notice::GPU benchmark triggered via PR label"
+            RUN_BENCHMARK=true
+          fi
+
           echo "run_gpu=$RUN_GPU" >> "$GITHUB_OUTPUT"
+          echo "run_benchmark=$RUN_BENCHMARK" >> "$GITHUB_OUTPUT"
           echo "GPU tests will run: $RUN_GPU"
+          echo "GPU benchmark will run: $RUN_BENCHMARK"
 
   # ──────────────────────────────────────────────
   # Job 1: Lint
@@ -285,3 +317,157 @@ jobs:
             echo "::warning::No pod info file found, nothing to clean up"
           fi
 
+  # ──────────────────────────────────────────────
+  # Job 5: GPU benchmark — multi-seed statistical comparison
+  # ──────────────────────────────────────────────
+  gpu-benchmark:
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_benchmark == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0  # full history needed to checkout main for baseline
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install CI dependencies
+        run: pip install runpod wandb
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
+          chmod 600 ~/.ssh/runpod_ci
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          EOF
+
+      - name: Create RunPod instance
+        id: create-pod
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python scripts/ci/runpod_create.py \
+            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
+            --output-file /tmp/pod_info.json
+
+          echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSH readiness
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
+          for i in $(seq 1 30); do
+            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
+              echo "SSH connection established"
+              exit 0
+            fi
+            echo "  Attempt $i/30 - retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::SSH connection timed out"
+          exit 1
+
+      - name: Transfer code to pod
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+
+          tar czf /tmp/factorion.tar.gz \
+            --exclude='.git' \
+            --exclude='artifacts' \
+            --exclude='wandb' \
+            --exclude='runs' \
+            --exclude='videos' \
+            --exclude='__pycache__' \
+            -C "$GITHUB_WORKSPACE" .
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
+            mkdir -p /workspace/factorion
+            tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
+            ls -la /workspace/factorion/
+          SETUP
+
+      - name: Run multi-seed benchmark on GPU
+        id: benchmark
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          NUM_SEEDS="${{ inputs.benchmark_seeds || '5' }}"
+          BENCHMARK_TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
+
+          # Transfer benchmark and comparison scripts
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+            scripts/ci/gpu_benchmark.sh \
+            root@"$SSH_HOST":/workspace/gpu_benchmark.sh
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            NUM_SEEDS="$NUM_SEEDS" \
+            TOTAL_TIMESTEPS="$BENCHMARK_TIMESTEPS" \
+            PR_NUMBER="$PR_NUMBER" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            BRANCH_LABEL="pr-${PR_NUMBER}" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/gpu_benchmark.sh
+
+      - name: Fetch benchmark report from pod
+        if: always()
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/benchmark_summary.md 2>/dev/null || echo "No benchmark summary found"
+
+          # Also fetch raw results for archiving
+          scp -r -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/benchmark_results /tmp/benchmark_results 2>/dev/null || echo "No benchmark results found"
+
+      - name: Post benchmark results to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/benchmark_summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/benchmark_summary.md)"
+          else
+            echo "::warning::No benchmark summary to post"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: /tmp/benchmark_results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Destroy RunPod instance
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          if [ -f /tmp/pod_info.json ]; then
+            python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
+          else
+            echo "::warning::No pod info file found, nothing to clean up"
+          fi
