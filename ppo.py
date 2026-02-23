@@ -456,11 +456,9 @@ class FactorioEnv(gym.Env):
         pre_reward /= normalisation
 
         # Terminate early when the agent connects source to sink
-        terminated = False # TODO revide early-stopping, but for now we'll remove it `throughput == 1.0`
-        # Halt the run if the agent runs out of steps
-        truncated = self.steps > self.max_steps
-        # TODO remove this
-        terminated = truncated
+        terminated = throughput >= 1.0
+        # Halt the run if the agent runs out of steps (only if not already solved)
+        truncated = (not terminated) and (self.steps > self.max_steps)
 
         if terminated:
             # If the agent solved before the end, give extra reward
@@ -479,7 +477,7 @@ class FactorioEnv(gym.Env):
 
         observation = self._get_obs()
         info = self._get_info()
-        if terminated:
+        if terminated or truncated:
             info.update({ 'steps_taken': self.steps })
 
         num_placed_entities = len([a for a in self.actions if a is not None and a['entity'] != 'empty'])
