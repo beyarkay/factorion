@@ -57,7 +57,7 @@ export PATH="/root/.cargo/bin:${PATH}"
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
     echo ">>> Building factorion_rs from source..."
-    (cd factorion_rs && maturin develop --release)
+    (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
 else
     echo ">>> WARNING: factorion_rs not available."
     echo "    The smoke test may fail if ppo.py requires it."
