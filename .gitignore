@@ -8,6 +8,8 @@ runs
 videos/
 *.png
 factorion_rs/target/
+factorion_rs/dist/
 __pycache__/
 .venv/
 plan.md
+summary.json
