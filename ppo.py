@@ -120,7 +120,7 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.01
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
-    size: int = 5
+    size: int = 8
     """The width and height of the factory"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
