@@ -92,6 +92,46 @@ fi
 # ── Log in to W&B ─────────────────────────────────────────────────
 export WANDB_API_KEY
 
+# ── Helper: background status monitor ─────────────────────────────
+# Periodically prints progress from log files so the CI console shows
+# signs of life.  Reads the last tqdm-style progress line from each log.
+# Usage: start_status_monitor <label> <log_dir> <num_seeds>
+#   Sets STATUS_MONITOR_PID for the caller to kill later.
+start_status_monitor() {
+    local label="$1" log_dir="$2" num_seeds="$3"
+    (
+        while true; do
+            sleep 30
+            echo ""
+            echo "──── ${label} status $(date '+%H:%M:%S') ────"
+            for s in $(seq 1 "$num_seeds"); do
+                log="${log_dir}/seed_${s}.log"
+                if [ -f "$log" ]; then
+                    bytes=$(wc -c < "$log" 2>/dev/null || echo 0)
+                    # Grab the latest tqdm-style progress line
+                    latest=$(grep -oP 'gstep:\s*\d+.*?thput:[0-9.]+' "$log" 2>/dev/null | tail -1 || true)
+                    if [ -n "$latest" ]; then
+                        echo "  Seed ${s}: ${latest}  (${bytes} bytes logged)"
+                    else
+                        echo "  Seed ${s}: initializing...  (${bytes} bytes logged)"
+                    fi
+                else
+                    echo "  Seed ${s}: not started yet"
+                fi
+            done
+        done
+    ) &
+    STATUS_MONITOR_PID=$!
+}
+
+stop_status_monitor() {
+    if [ -n "${STATUS_MONITOR_PID:-}" ]; then
+        kill "$STATUS_MONITOR_PID" 2>/dev/null || true
+        wait "$STATUS_MONITOR_PID" 2>/dev/null || true
+        unset STATUS_MONITOR_PID
+    fi
+}
+
 # ── Run PR branch seeds (parallel, up to MAX_PARALLEL at a time) ──
 mkdir -p "$PR_RESULTS_DIR" "$LOG_DIR"
 
@@ -99,17 +139,18 @@ PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
 echo ""
 echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
 echo ">>> W&B group: ${PR_GROUP}"
+echo ">>> Logs: ${LOG_DIR}/pr_seed_*.log"
 echo ""
 
+start_status_monitor "PR" "$LOG_DIR" "$NUM_SEEDS"
+
 # Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
-# Each seed's output is prefixed with [seed N] and tee'd to a log file
-# so progress is visible in the CI console.
+# Output goes directly to log files (no pipe) to avoid SSH buffer deadlock.
 PIDS=()
 SEED_FOR_PID=()
 for seed in $(seq 1 "$NUM_SEEDS"); do
     # If we already have MAX_PARALLEL running, wait for any one to finish
     while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
-        # Wait for the earliest PID
         if wait "${PIDS[0]}" 2>/dev/null; then
             echo "[seed ${SEED_FOR_PID[0]}] finished (exit 0)"
         else
@@ -120,18 +161,16 @@ for seed in $(seq 1 "$NUM_SEEDS"); do
     done
 
     echo ">>> Launching seed ${seed}/${NUM_SEEDS}..."
-    (
-        python ppo.py \
-            --seed "$seed" \
-            --env-id factorion/FactorioEnv-v0 \
-            --track \
-            --wandb-project-name "$WANDB_PROJECT" \
-            --wandb-group "$PR_GROUP" \
-            --total-timesteps "$TOTAL_TIMESTEPS" \
-            --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
-            --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
-            2>&1 | sed "s/^/[seed ${seed}] /" | tee "${LOG_DIR}/pr_seed_${seed}.log"
-    ) &
+    python ppo.py \
+        --seed "$seed" \
+        --env-id factorion/FactorioEnv-v0 \
+        --track \
+        --wandb-project-name "$WANDB_PROJECT" \
+        --wandb-group "$PR_GROUP" \
+        --total-timesteps "$TOTAL_TIMESTEPS" \
+        --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
+        --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
+        > "${LOG_DIR}/pr_seed_${seed}.log" 2>&1 &
     PIDS+=($!)
     SEED_FOR_PID+=("$seed")
 done
@@ -147,11 +186,16 @@ for i in "${!PIDS[@]}"; do
     fi
 done
 
-# Print logs for any seed that didn't produce a result
+stop_status_monitor
+
+# Print tail of each seed's log
 for seed in $(seq 1 "$NUM_SEEDS"); do
+    echo ""
+    echo "──── seed ${seed} log tail ────"
+    tail -5 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
     if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
-        echo "[seed ${seed}] WARNING: summary not found. Log tail:"
-        tail -20 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || true
+        echo "  WARNING: summary JSON not produced! Full log tail:"
+        tail -30 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || true
     fi
 done
 
@@ -222,6 +266,9 @@ else
         mkdir -p "$BASELINE_LOG_DIR"
         BASELINE_GROUP="bench-baseline-${SHORT_SHA}"
         echo ">>> W&B group: ${BASELINE_GROUP}"
+        echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
+
+        start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
 
         PIDS=()
         SEED_FOR_PID=()
@@ -238,18 +285,16 @@ else
             done
 
             echo ">>> Launching baseline seed ${seed}/${NUM_SEEDS}..."
-            (
-                python ppo.py \
-                    --seed "$seed" \
-                    --env-id factorion/FactorioEnv-v0 \
-                    --track \
-                    --wandb-project-name "$WANDB_PROJECT" \
-                    --wandb-group "$BASELINE_GROUP" \
-                    --total-timesteps "$TOTAL_TIMESTEPS" \
-                    --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
-                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
-                    2>&1 | sed "s/^/[baseline ${seed}] /" | tee "${BASELINE_LOG_DIR}/seed_${seed}.log"
-            ) &
+            python ppo.py \
+                --seed "$seed" \
+                --env-id factorion/FactorioEnv-v0 \
+                --track \
+                --wandb-project-name "$WANDB_PROJECT" \
+                --wandb-group "$BASELINE_GROUP" \
+                --total-timesteps "$TOTAL_TIMESTEPS" \
+                --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
+                --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1 &
             PIDS+=($!)
             SEED_FOR_PID+=("$seed")
         done
@@ -263,10 +308,15 @@ else
             fi
         done
 
+        stop_status_monitor
+
         for seed in $(seq 1 "$NUM_SEEDS"); do
+            echo ""
+            echo "──── baseline seed ${seed} log tail ────"
+            tail -5 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
             if [ ! -f "${BASELINE_RESULTS_DIR}/seed_${seed}.json" ]; then
-                echo "[baseline ${seed}] WARNING: summary not found. Log tail:"
-                tail -20 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
+                echo "  WARNING: baseline summary JSON not produced! Full log tail:"
+                tail -30 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
             fi
         done
 
