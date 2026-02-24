@@ -18,7 +18,7 @@
 #   WANDB_PROJECT       - W&B project name (e.g. factorion)
 #
 # Optional env vars:
-#   NUM_SEEDS           - Number of seeds to run (default: 1)
+#   NUM_SEEDS           - Number of seeds to run (default: 5)
 #   MAX_PARALLEL        - Max seeds to run concurrently (default: 5)
 #   TOTAL_TIMESTEPS     - Timesteps per seed (default: 100000)
 #   PR_NUMBER           - PR number for tagging
