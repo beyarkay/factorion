@@ -160,7 +160,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: "pip"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -229,7 +229,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Install CI dependencies
         run: pip install runpod wandb
@@ -369,12 +369,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-depth: 0  # full history needed to checkout main for baseline
+          fetch-depth: 0 # full history needed to checkout main for baseline
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Install CI dependencies
         run: pip install runpod wandb
@@ -454,7 +454,7 @@ jobs:
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
           POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
-          NUM_SEEDS="${{ inputs.benchmark_seeds || '1' }}"
+          NUM_SEEDS="${{ inputs.benchmark_seeds || '5' }}"
           BENCHMARK_TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
 
           # Transfer benchmark and comparison scripts
@@ -621,7 +621,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Install CI dependencies
         run: pip install runpod wandb
