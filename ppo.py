@@ -122,6 +122,8 @@ class Args:
     """The width and height of the factory"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
+    wandb_group: Optional[str] = None
+    """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
 
@@ -813,6 +815,7 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
+            group=args.wandb_group,
             monitor_gym=True,
             save_code=True,
             tags=args.tags,

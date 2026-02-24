@@ -37,11 +37,13 @@ WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
 COMMIT_SHA="${COMMIT_SHA:-unknown}"
 BRANCH_LABEL="${BRANCH_LABEL:-pr}"
+SHORT_SHA="${COMMIT_SHA:0:7}"
 
 WORK_DIR="/workspace/factorion"
 RESULTS_DIR="/workspace/benchmark_results"
 PR_RESULTS_DIR="${RESULTS_DIR}/${BRANCH_LABEL}"
 BASELINE_RESULTS_DIR="${BASELINE_DIR:-${RESULTS_DIR}/baseline}"
+LOG_DIR="/workspace/benchmark_logs"
 
 echo "============================================"
 echo "  Factorion GPU Benchmark"
@@ -91,15 +93,17 @@ fi
 export WANDB_API_KEY
 
 # ── Run PR branch seeds (parallel, up to MAX_PARALLEL at a time) ──
-mkdir -p "$PR_RESULTS_DIR"
-LOG_DIR="/workspace/benchmark_logs"
-mkdir -p "$LOG_DIR"
+mkdir -p "$PR_RESULTS_DIR" "$LOG_DIR"
 
+PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
 echo ""
 echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
+echo ">>> W&B group: ${PR_GROUP}"
 echo ""
 
 # Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
+# Each seed's output is prefixed with [seed N] and tee'd to a log file
+# so progress is visible in the CI console.
 PIDS=()
 SEED_FOR_PID=()
 for seed in $(seq 1 "$NUM_SEEDS"); do
@@ -107,24 +111,27 @@ for seed in $(seq 1 "$NUM_SEEDS"); do
     while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
         # Wait for the earliest PID
         if wait "${PIDS[0]}" 2>/dev/null; then
-            echo "  Seed ${SEED_FOR_PID[0]} finished (exit 0)"
+            echo "[seed ${SEED_FOR_PID[0]}] finished (exit 0)"
         else
-            echo "  WARNING: Seed ${SEED_FOR_PID[0]} exited with non-zero status"
+            echo "[seed ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
         fi
         PIDS=("${PIDS[@]:1}")
         SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
     done
 
     echo ">>> Launching seed ${seed}/${NUM_SEEDS}..."
-    python ppo.py \
-        --seed "$seed" \
-        --env-id factorion/FactorioEnv-v0 \
-        --track \
-        --wandb-project-name "$WANDB_PROJECT" \
-        --total-timesteps "$TOTAL_TIMESTEPS" \
-        --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
-        --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
-        > "${LOG_DIR}/pr_seed_${seed}.log" 2>&1 &
+    (
+        python ppo.py \
+            --seed "$seed" \
+            --env-id factorion/FactorioEnv-v0 \
+            --track \
+            --wandb-project-name "$WANDB_PROJECT" \
+            --wandb-group "$PR_GROUP" \
+            --total-timesteps "$TOTAL_TIMESTEPS" \
+            --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
+            --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
+            2>&1 | sed "s/^/[seed ${seed}] /" | tee "${LOG_DIR}/pr_seed_${seed}.log"
+    ) &
     PIDS+=($!)
     SEED_FOR_PID+=("$seed")
 done
@@ -133,9 +140,9 @@ done
 FAILED=0
 for i in "${!PIDS[@]}"; do
     if wait "${PIDS[$i]}" 2>/dev/null; then
-        echo "  Seed ${SEED_FOR_PID[$i]} finished (exit 0)"
+        echo "[seed ${SEED_FOR_PID[$i]}] finished (exit 0)"
     else
-        echo "  WARNING: Seed ${SEED_FOR_PID[$i]} exited with non-zero status"
+        echo "[seed ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
         FAILED=$((FAILED + 1))
     fi
 done
@@ -143,7 +150,7 @@ done
 # Print logs for any seed that didn't produce a result
 for seed in $(seq 1 "$NUM_SEEDS"); do
     if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
-        echo "  WARNING: summary not found for seed ${seed}. Log tail:"
+        echo "[seed ${seed}] WARNING: summary not found. Log tail:"
         tail -20 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || true
     fi
 done
@@ -211,8 +218,10 @@ else
             (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
         fi
 
-        BASELINE_LOG_DIR="/workspace/benchmark_logs/baseline"
+        BASELINE_LOG_DIR="${LOG_DIR}/baseline"
         mkdir -p "$BASELINE_LOG_DIR"
+        BASELINE_GROUP="bench-baseline-${SHORT_SHA}"
+        echo ">>> W&B group: ${BASELINE_GROUP}"
 
         PIDS=()
         SEED_FOR_PID=()
@@ -220,24 +229,27 @@ else
             # Throttle to MAX_PARALLEL concurrent jobs
             while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
                 if wait "${PIDS[0]}" 2>/dev/null; then
-                    echo "  Baseline seed ${SEED_FOR_PID[0]} finished (exit 0)"
+                    echo "[baseline ${SEED_FOR_PID[0]}] finished (exit 0)"
                 else
-                    echo "  WARNING: Baseline seed ${SEED_FOR_PID[0]} exited with non-zero status"
+                    echo "[baseline ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
                 fi
                 PIDS=("${PIDS[@]:1}")
                 SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
             done
 
             echo ">>> Launching baseline seed ${seed}/${NUM_SEEDS}..."
-            python ppo.py \
-                --seed "$seed" \
-                --env-id factorion/FactorioEnv-v0 \
-                --track \
-                --wandb-project-name "$WANDB_PROJECT" \
-                --total-timesteps "$TOTAL_TIMESTEPS" \
-                --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
-                --tags ci benchmark baseline "branch:main" "seed:${seed}" \
-                > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1 &
+            (
+                python ppo.py \
+                    --seed "$seed" \
+                    --env-id factorion/FactorioEnv-v0 \
+                    --track \
+                    --wandb-project-name "$WANDB_PROJECT" \
+                    --wandb-group "$BASELINE_GROUP" \
+                    --total-timesteps "$TOTAL_TIMESTEPS" \
+                    --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
+                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                    2>&1 | sed "s/^/[baseline ${seed}] /" | tee "${BASELINE_LOG_DIR}/seed_${seed}.log"
+            ) &
             PIDS+=($!)
             SEED_FOR_PID+=("$seed")
         done
@@ -245,15 +257,15 @@ else
         # Wait for all remaining baseline jobs
         for i in "${!PIDS[@]}"; do
             if wait "${PIDS[$i]}" 2>/dev/null; then
-                echo "  Baseline seed ${SEED_FOR_PID[$i]} finished (exit 0)"
+                echo "[baseline ${SEED_FOR_PID[$i]}] finished (exit 0)"
             else
-                echo "  WARNING: Baseline seed ${SEED_FOR_PID[$i]} exited with non-zero status"
+                echo "[baseline ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
             fi
         done
 
         for seed in $(seq 1 "$NUM_SEEDS"); do
             if [ ! -f "${BASELINE_RESULTS_DIR}/seed_${seed}.json" ]; then
-                echo "  WARNING: baseline summary not found for seed ${seed}. Log tail:"
+                echo "[baseline ${seed}] WARNING: summary not found. Log tail:"
                 tail -20 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
             fi
         done
