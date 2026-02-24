@@ -277,51 +277,87 @@ else
 
         BASELINE_LOG_DIR="${LOG_DIR}/baseline"
         mkdir -p "$BASELINE_LOG_DIR"
-        BASELINE_GROUP="bench-baseline-${SHORT_SHA}"
-        echo ">>> W&B group: ${BASELINE_GROUP}"
-        echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
 
-        start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
+        # Detect whether main's ppo.py supports --summary-path (added in
+        # the parallel-benchmarks PR).  If it does we can run in parallel;
+        # otherwise we must run sequentially and copy summary.json after
+        # each seed to avoid clobbering.
+        BASELINE_PARALLEL=false
+        if python ppo.py --help 2>&1 | grep -q 'summary.path'; then
+            BASELINE_PARALLEL=true
+        fi
 
-        PIDS=()
-        SEED_FOR_PID=()
-        for seed in $(seq 1 "$NUM_SEEDS"); do
-            # Throttle to MAX_PARALLEL concurrent jobs
-            while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
-                if wait "${PIDS[0]}" 2>/dev/null; then
-                    echo "[baseline ${SEED_FOR_PID[0]}] finished (exit 0)"
-                else
-                    echo "[baseline ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
-                fi
-                PIDS=("${PIDS[@]:1}")
-                SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+        if [ "$BASELINE_PARALLEL" = true ]; then
+            BASELINE_GROUP="bench-baseline-${SHORT_SHA}"
+            echo ">>> Baseline ppo.py supports --summary-path, running in parallel"
+            echo ">>> W&B group: ${BASELINE_GROUP}"
+            echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
+
+            start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
+
+            PIDS=()
+            SEED_FOR_PID=()
+            for seed in $(seq 1 "$NUM_SEEDS"); do
+                while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
+                    if wait "${PIDS[0]}" 2>/dev/null; then
+                        echo "[baseline ${SEED_FOR_PID[0]}] finished (exit 0)"
+                    else
+                        echo "[baseline ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
+                    fi
+                    PIDS=("${PIDS[@]:1}")
+                    SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+                done
+
+                echo ">>> Launching baseline seed ${seed}/${NUM_SEEDS}..."
+                python ppo.py \
+                    --seed "$seed" \
+                    --env-id factorion/FactorioEnv-v0 \
+                    --track \
+                    --wandb-project-name "$WANDB_PROJECT" \
+                    --wandb-group "$BASELINE_GROUP" \
+                    --total-timesteps "$TOTAL_TIMESTEPS" \
+                    --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
+                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                    > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1 &
+                PIDS+=($!)
+                SEED_FOR_PID+=("$seed")
             done
 
-            echo ">>> Launching baseline seed ${seed}/${NUM_SEEDS}..."
-            python ppo.py \
-                --seed "$seed" \
-                --env-id factorion/FactorioEnv-v0 \
-                --track \
-                --wandb-project-name "$WANDB_PROJECT" \
-                --wandb-group "$BASELINE_GROUP" \
-                --total-timesteps "$TOTAL_TIMESTEPS" \
-                --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
-                --tags ci benchmark baseline "branch:main" "seed:${seed}" \
-                > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1 &
-            PIDS+=($!)
-            SEED_FOR_PID+=("$seed")
-        done
+            for i in "${!PIDS[@]}"; do
+                if wait "${PIDS[$i]}" 2>/dev/null; then
+                    echo "[baseline ${SEED_FOR_PID[$i]}] finished (exit 0)"
+                else
+                    echo "[baseline ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
+                fi
+            done
 
-        # Wait for all remaining baseline jobs
-        for i in "${!PIDS[@]}"; do
-            if wait "${PIDS[$i]}" 2>/dev/null; then
-                echo "[baseline ${SEED_FOR_PID[$i]}] finished (exit 0)"
-            else
-                echo "[baseline ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
-            fi
-        done
+            stop_status_monitor
+        else
+            echo ">>> Baseline ppo.py lacks --summary-path, running sequentially"
+            echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
 
-        stop_status_monitor
+            for seed in $(seq 1 "$NUM_SEEDS"); do
+                echo "────────────────────────────────────────"
+                echo "  Baseline Seed ${seed}/${NUM_SEEDS}"
+                echo "────────────────────────────────────────"
+
+                python ppo.py \
+                    --seed "$seed" \
+                    --env-id factorion/FactorioEnv-v0 \
+                    --track \
+                    --wandb-project-name "$WANDB_PROJECT" \
+                    --total-timesteps "$TOTAL_TIMESTEPS" \
+                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                    > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1
+
+                if [ -f summary.json ]; then
+                    cp summary.json "${BASELINE_RESULTS_DIR}/seed_${seed}.json"
+                    echo "  Saved ${BASELINE_RESULTS_DIR}/seed_${seed}.json"
+                else
+                    echo "  WARNING: summary.json not found for baseline seed ${seed}"
+                fi
+            done
+        fi
 
         for seed in $(seq 1 "$NUM_SEEDS"); do
             echo ""
