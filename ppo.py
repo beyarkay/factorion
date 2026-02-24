@@ -88,8 +88,10 @@ class Args:
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef: float = 0.00065
-    """coefficient of the entropy"""
+    ent_coef_start: float = 0.05
+    """entropy coefficient at the start of training (high = more exploration)"""
+    ent_coef_end: float = 0.0005
+    """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.6
     """coefficient of the value function"""
     coeff_throughput: float = 0.97
@@ -908,6 +910,10 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
+        # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
+        ent_frac = 1.0 - (iteration - 1.0) / args.num_iterations
+        ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
+
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             if (step+1) % 10 == 0 or step + 1 == args.num_steps:
@@ -1110,7 +1116,7 @@ if __name__ == "__main__":
                 entropy_loss = entropy_B.mean()
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 t0 = time.time()
                 optimizer.zero_grad(set_to_none=True)
@@ -1137,6 +1143,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
+        writer.add_scalar("losses/ent_coef", ent_coef, global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("per_second/global_steps", int(global_step / (time.time() - start_time)), global_step)
