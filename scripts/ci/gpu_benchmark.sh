@@ -18,7 +18,7 @@
 #   WANDB_PROJECT       - W&B project name (e.g. factorion)
 #
 # Optional env vars:
-#   NUM_SEEDS           - Number of seeds to run (default: 5)
+#   NUM_SEEDS           - Number of seeds to run (default: 1)
 #   MAX_PARALLEL        - Max seeds to run concurrently (default: 5)
 #   TOTAL_TIMESTEPS     - Timesteps per seed (default: 100000)
 #   PR_NUMBER           - PR number for tagging
@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-NUM_SEEDS="${NUM_SEEDS:-5}"
+NUM_SEEDS="${NUM_SEEDS:-1}"
 MAX_PARALLEL="${MAX_PARALLEL:-5}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
@@ -84,7 +84,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
     echo ">>> Building factorion_rs from source..."
-    (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+    (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
 else
     echo ">>> WARNING: factorion_rs not available."
 fi
@@ -272,7 +272,7 @@ else
         # Rebuild Rust extension for baseline
         if [ -f factorion_rs/Cargo.toml ]; then
             echo ">>> Rebuilding factorion_rs for baseline..."
-            (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+            (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
         fi
 
         BASELINE_LOG_DIR="${LOG_DIR}/baseline"
@@ -336,6 +336,8 @@ else
             echo ">>> Baseline ppo.py lacks --summary-path, running sequentially"
             echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
 
+            start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
+
             for seed in $(seq 1 "$NUM_SEEDS"); do
                 echo "────────────────────────────────────────"
                 echo "  Baseline Seed ${seed}/${NUM_SEEDS}"
@@ -357,6 +359,8 @@ else
                     echo "  WARNING: summary.json not found for baseline seed ${seed}"
                 fi
             done
+
+            stop_status_monitor
         fi
 
         for seed in $(seq 1 "$NUM_SEEDS"); do
@@ -387,7 +391,7 @@ print(f'Combined {len(results)} baseline results')
         # Return to PR code dir and rebuild
         cd "$WORK_DIR"
         if [ -f factorion_rs/Cargo.toml ]; then
-            (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+            (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
         fi
     fi
 fi
