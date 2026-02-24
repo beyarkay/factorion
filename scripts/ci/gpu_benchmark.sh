@@ -134,15 +134,17 @@ stop_status_monitor() {
 
 # ── Run PR branch seeds (parallel, up to MAX_PARALLEL at a time) ──
 mkdir -p "$PR_RESULTS_DIR" "$LOG_DIR"
+PR_LOG_DIR="${LOG_DIR}/pr"
+mkdir -p "$PR_LOG_DIR"
 
 PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
 echo ""
 echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
 echo ">>> W&B group: ${PR_GROUP}"
-echo ">>> Logs: ${LOG_DIR}/pr_seed_*.log"
+echo ">>> Logs: ${PR_LOG_DIR}/seed_*.log"
 echo ""
 
-start_status_monitor "PR" "$LOG_DIR" "$NUM_SEEDS"
+start_status_monitor "PR" "$PR_LOG_DIR" "$NUM_SEEDS"
 
 # Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
 # Output goes directly to log files (no pipe) to avoid SSH buffer deadlock.
@@ -170,7 +172,7 @@ for seed in $(seq 1 "$NUM_SEEDS"); do
         --total-timesteps "$TOTAL_TIMESTEPS" \
         --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
         --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
-        > "${LOG_DIR}/pr_seed_${seed}.log" 2>&1 &
+        > "${PR_LOG_DIR}/seed_${seed}.log" 2>&1 &
     PIDS+=($!)
     SEED_FOR_PID+=("$seed")
 done
@@ -192,10 +194,10 @@ stop_status_monitor
 for seed in $(seq 1 "$NUM_SEEDS"); do
     echo ""
     echo "──── seed ${seed} log tail ────"
-    tail -5 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
+    tail -5 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
     if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
         echo "  WARNING: summary JSON not produced! Full log tail:"
-        tail -30 "${LOG_DIR}/pr_seed_${seed}.log" 2>/dev/null || true
+        tail -30 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
     fi
 done
 
@@ -248,7 +250,18 @@ else
         cp -r "$WORK_DIR" "$MAIN_WORK_DIR"
         cd "$MAIN_WORK_DIR"
 
-        if ! git checkout main -- . 2>/dev/null && ! git checkout master -- . 2>/dev/null; then
+        echo ">>> Available git refs:"
+        git branch -a 2>/dev/null || true
+        echo ">>> Trying to checkout main branch files for baseline..."
+        if git checkout main -- . 2>/dev/null; then
+            echo ">>> Checked out from local 'main'"
+        elif git checkout master -- . 2>/dev/null; then
+            echo ">>> Checked out from local 'master'"
+        elif git checkout origin/main -- . 2>/dev/null; then
+            echo ">>> Checked out from 'origin/main'"
+        elif git checkout origin/master -- . 2>/dev/null; then
+            echo ">>> Checked out from 'origin/master'"
+        else
             echo ">>> ERROR: Could not checkout main/master for baseline comparison."
             echo ">>> Ensure .git is included in the tarball transfer (fetch-depth: 0 required)."
             echo ">>> Refusing to compare PR against itself."
