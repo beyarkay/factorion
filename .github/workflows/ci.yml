@@ -454,7 +454,6 @@ jobs:
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
           POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
-          NUM_SEEDS="${{ inputs.benchmark_seeds || '5' }}"
           BENCHMARK_TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
 
           # Transfer benchmark and comparison scripts
@@ -462,10 +461,19 @@ jobs:
             scripts/ci/gpu_benchmark.sh \
             root@"$SSH_HOST":/workspace/gpu_benchmark.sh
 
+          # Only pass NUM_SEEDS if explicitly provided via workflow_dispatch.
+          # Otherwise let gpu_benchmark.sh use its own default (5).
+          # This avoids a race where the base branch workflow YAML has a stale
+          # fallback that overrides the script's default.
+          NUM_SEEDS_ENV=""
+          if [ -n "${{ inputs.benchmark_seeds }}" ]; then
+            NUM_SEEDS_ENV="NUM_SEEDS=${{ inputs.benchmark_seeds }}"
+          fi
+
           ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
             WANDB_API_KEY="$WANDB_API_KEY" \
             WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
-            NUM_SEEDS="$NUM_SEEDS" \
+            $NUM_SEEDS_ENV \
             TOTAL_TIMESTEPS="$BENCHMARK_TIMESTEPS" \
             PR_NUMBER="$PR_NUMBER" \
             COMMIT_SHA="$GITHUB_SHA" \
