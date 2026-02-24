@@ -5,6 +5,10 @@
 # fetches (or runs) a baseline from the main branch, then invokes
 # compare_runs.py to produce a statistical comparison report.
 #
+# Seeds run in parallel (up to MAX_PARALLEL at a time) on a single GPU to
+# reduce wall-clock time.  Each seed writes its summary to a unique file
+# via --summary-path to avoid conflicts.
+#
 # Pre-installed deps and Rust toolchain are expected in the Docker image
 # (beyarkay/factorion-ci-gpu:latest). Code should already be at
 # /workspace/factorion/.
@@ -14,7 +18,8 @@
 #   WANDB_PROJECT       - W&B project name (e.g. factorion)
 #
 # Optional env vars:
-#   NUM_SEEDS           - Number of seeds to run (default: 5)
+#   NUM_SEEDS           - Number of seeds to run (default: 1)
+#   MAX_PARALLEL        - Max seeds to run concurrently (default: 5)
 #   TOTAL_TIMESTEPS     - Timesteps per seed (default: 100000)
 #   PR_NUMBER           - PR number for tagging
 #   COMMIT_SHA          - Git commit SHA for tagging
@@ -25,17 +30,20 @@
 
 set -euo pipefail
 
-NUM_SEEDS="${NUM_SEEDS:-5}"
+NUM_SEEDS="${NUM_SEEDS:-1}"
+MAX_PARALLEL="${MAX_PARALLEL:-5}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
 COMMIT_SHA="${COMMIT_SHA:-unknown}"
 BRANCH_LABEL="${BRANCH_LABEL:-pr}"
+SHORT_SHA="${COMMIT_SHA:0:7}"
 
 WORK_DIR="/workspace/factorion"
 RESULTS_DIR="/workspace/benchmark_results"
 PR_RESULTS_DIR="${RESULTS_DIR}/${BRANCH_LABEL}"
 BASELINE_RESULTS_DIR="${BASELINE_DIR:-${RESULTS_DIR}/baseline}"
+LOG_DIR="/workspace/benchmark_logs"
 
 echo "============================================"
 echo "  Factorion GPU Benchmark"
@@ -43,6 +51,7 @@ echo "============================================"
 echo "  GPU:             $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  CUDA:            $(nvcc --version 2>/dev/null | tail -1 || echo 'unknown')"
 echo "  Seeds:           ${NUM_SEEDS}"
+echo "  Max parallel:    ${MAX_PARALLEL}"
 echo "  Timesteps/seed:  ${TOTAL_TIMESTEPS}"
 echo "  W&B project:     ${WANDB_PROJECT}"
 echo "  Branch label:    ${BRANCH_LABEL}"
@@ -75,7 +84,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
     echo ">>> Building factorion_rs from source..."
-    (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+    (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
 else
     echo ">>> WARNING: factorion_rs not available."
 fi
@@ -83,37 +92,117 @@ fi
 # ── Log in to W&B ─────────────────────────────────────────────────
 export WANDB_API_KEY
 
-# ── Run PR branch seeds ───────────────────────────────────────────
-mkdir -p "$PR_RESULTS_DIR"
+# ── Helper: background status monitor ─────────────────────────────
+# Periodically prints progress from log files so the CI console shows
+# signs of life.  Reads the last tqdm-style progress line from each log.
+# Usage: start_status_monitor <label> <log_dir> <num_seeds>
+#   Sets STATUS_MONITOR_PID for the caller to kill later.
+start_status_monitor() {
+    local label="$1" log_dir="$2" num_seeds="$3"
+    (
+        while true; do
+            sleep 30
+            echo ""
+            echo "──── ${label} status $(date '+%H:%M:%S') ────"
+            for s in $(seq 1 "$num_seeds"); do
+                log="${log_dir}/seed_${s}.log"
+                if [ -f "$log" ]; then
+                    bytes=$(wc -c < "$log" 2>/dev/null || echo 0)
+                    # Grab the latest tqdm-style progress line
+                    latest=$(grep -oP 'gstep:\s*\d+.*?thput:[0-9.]+' "$log" 2>/dev/null | tail -1 || true)
+                    if [ -n "$latest" ]; then
+                        echo "  Seed ${s}: ${latest}  (${bytes} bytes logged)"
+                    else
+                        echo "  Seed ${s}: initializing...  (${bytes} bytes logged)"
+                    fi
+                else
+                    echo "  Seed ${s}: not started yet"
+                fi
+            done
+        done
+    ) &
+    STATUS_MONITOR_PID=$!
+}
 
+stop_status_monitor() {
+    if [ -n "${STATUS_MONITOR_PID:-}" ]; then
+        kill "$STATUS_MONITOR_PID" 2>/dev/null || true
+        wait "$STATUS_MONITOR_PID" 2>/dev/null || true
+        unset STATUS_MONITOR_PID
+    fi
+}
+
+# ── Run PR branch seeds (parallel, up to MAX_PARALLEL at a time) ──
+mkdir -p "$PR_RESULTS_DIR" "$LOG_DIR"
+PR_LOG_DIR="${LOG_DIR}/pr"
+mkdir -p "$PR_LOG_DIR"
+
+PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
 echo ""
-echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}'..."
+echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
+echo ">>> W&B group: ${PR_GROUP}"
+echo ">>> Logs: ${PR_LOG_DIR}/seed_*.log"
 echo ""
 
+start_status_monitor "PR" "$PR_LOG_DIR" "$NUM_SEEDS"
+
+# Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
+# Output goes directly to log files (no pipe) to avoid SSH buffer deadlock.
+PIDS=()
+SEED_FOR_PID=()
 for seed in $(seq 1 "$NUM_SEEDS"); do
-    echo "────────────────────────────────────────"
-    echo "  Seed ${seed}/${NUM_SEEDS}"
-    echo "────────────────────────────────────────"
+    # If we already have MAX_PARALLEL running, wait for any one to finish
+    while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
+        if wait "${PIDS[0]}" 2>/dev/null; then
+            echo "[seed ${SEED_FOR_PID[0]}] finished (exit 0)"
+        else
+            echo "[seed ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
+        fi
+        PIDS=("${PIDS[@]:1}")
+        SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+    done
 
+    echo ">>> Launching seed ${seed}/${NUM_SEEDS}..."
     python ppo.py \
         --seed "$seed" \
         --env-id factorion/FactorioEnv-v0 \
         --track \
         --wandb-project-name "$WANDB_PROJECT" \
+        --wandb-group "$PR_GROUP" \
         --total-timesteps "$TOTAL_TIMESTEPS" \
-        --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}"
+        --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
+        --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
+        > "${PR_LOG_DIR}/seed_${seed}.log" 2>&1 &
+    PIDS+=($!)
+    SEED_FOR_PID+=("$seed")
+done
 
-    # Collect the summary
-    if [ -f summary.json ]; then
-        cp summary.json "${PR_RESULTS_DIR}/seed_${seed}.json"
-        echo "  Saved ${PR_RESULTS_DIR}/seed_${seed}.json"
+# Wait for all remaining background jobs
+FAILED=0
+for i in "${!PIDS[@]}"; do
+    if wait "${PIDS[$i]}" 2>/dev/null; then
+        echo "[seed ${SEED_FOR_PID[$i]}] finished (exit 0)"
     else
-        echo "  WARNING: summary.json not found for seed ${seed}"
+        echo "[seed ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
+stop_status_monitor
+
+# Print tail of each seed's log
+for seed in $(seq 1 "$NUM_SEEDS"); do
+    echo ""
+    echo "──── seed ${seed} log tail ────"
+    tail -5 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
+    if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
+        echo "  WARNING: summary JSON not produced! Full log tail:"
+        tail -30 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
     fi
 done
 
 echo ""
-echo ">>> All ${NUM_SEEDS} PR seeds completed."
+echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
 
 # ── Combine per-seed results into one JSON array ──────────────────
 python3 -c "
@@ -161,7 +250,18 @@ else
         cp -r "$WORK_DIR" "$MAIN_WORK_DIR"
         cd "$MAIN_WORK_DIR"
 
-        if ! git checkout main -- . 2>/dev/null && ! git checkout master -- . 2>/dev/null; then
+        echo ">>> Available git refs:"
+        git branch -a 2>/dev/null || true
+        echo ">>> Trying to checkout main branch files for baseline..."
+        if git checkout main -- . 2>/dev/null; then
+            echo ">>> Checked out from local 'main'"
+        elif git checkout master -- . 2>/dev/null; then
+            echo ">>> Checked out from local 'master'"
+        elif git checkout origin/main -- . 2>/dev/null; then
+            echo ">>> Checked out from 'origin/main'"
+        elif git checkout origin/master -- . 2>/dev/null; then
+            echo ">>> Checked out from 'origin/master'"
+        else
             echo ">>> ERROR: Could not checkout main/master for baseline comparison."
             echo ">>> Ensure .git is included in the tarball transfer (fetch-depth: 0 required)."
             echo ">>> Refusing to compare PR against itself."
@@ -172,24 +272,104 @@ else
         # Rebuild Rust extension for baseline
         if [ -f factorion_rs/Cargo.toml ]; then
             echo ">>> Rebuilding factorion_rs for baseline..."
-            (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+            (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
+        fi
+
+        BASELINE_LOG_DIR="${LOG_DIR}/baseline"
+        mkdir -p "$BASELINE_LOG_DIR"
+
+        # Detect whether main's ppo.py supports --summary-path (added in
+        # the parallel-benchmarks PR).  If it does we can run in parallel;
+        # otherwise we must run sequentially and copy summary.json after
+        # each seed to avoid clobbering.
+        BASELINE_PARALLEL=false
+        if python ppo.py --help 2>&1 | grep -q 'summary.path'; then
+            BASELINE_PARALLEL=true
+        fi
+
+        if [ "$BASELINE_PARALLEL" = true ]; then
+            BASELINE_GROUP="bench-baseline-${SHORT_SHA}"
+            echo ">>> Baseline ppo.py supports --summary-path, running in parallel"
+            echo ">>> W&B group: ${BASELINE_GROUP}"
+            echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
+
+            start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
+
+            PIDS=()
+            SEED_FOR_PID=()
+            for seed in $(seq 1 "$NUM_SEEDS"); do
+                while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
+                    if wait "${PIDS[0]}" 2>/dev/null; then
+                        echo "[baseline ${SEED_FOR_PID[0]}] finished (exit 0)"
+                    else
+                        echo "[baseline ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
+                    fi
+                    PIDS=("${PIDS[@]:1}")
+                    SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+                done
+
+                echo ">>> Launching baseline seed ${seed}/${NUM_SEEDS}..."
+                python ppo.py \
+                    --seed "$seed" \
+                    --env-id factorion/FactorioEnv-v0 \
+                    --track \
+                    --wandb-project-name "$WANDB_PROJECT" \
+                    --wandb-group "$BASELINE_GROUP" \
+                    --total-timesteps "$TOTAL_TIMESTEPS" \
+                    --summary-path "${BASELINE_RESULTS_DIR}/seed_${seed}.json" \
+                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                    > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1 &
+                PIDS+=($!)
+                SEED_FOR_PID+=("$seed")
+            done
+
+            for i in "${!PIDS[@]}"; do
+                if wait "${PIDS[$i]}" 2>/dev/null; then
+                    echo "[baseline ${SEED_FOR_PID[$i]}] finished (exit 0)"
+                else
+                    echo "[baseline ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
+                fi
+            done
+
+            stop_status_monitor
+        else
+            echo ">>> Baseline ppo.py lacks --summary-path, running sequentially"
+            echo ">>> Logs: ${BASELINE_LOG_DIR}/seed_*.log"
+
+            start_status_monitor "Baseline" "$BASELINE_LOG_DIR" "$NUM_SEEDS"
+
+            for seed in $(seq 1 "$NUM_SEEDS"); do
+                echo "────────────────────────────────────────"
+                echo "  Baseline Seed ${seed}/${NUM_SEEDS}"
+                echo "────────────────────────────────────────"
+
+                python ppo.py \
+                    --seed "$seed" \
+                    --env-id factorion/FactorioEnv-v0 \
+                    --track \
+                    --wandb-project-name "$WANDB_PROJECT" \
+                    --total-timesteps "$TOTAL_TIMESTEPS" \
+                    --tags ci benchmark baseline "branch:main" "seed:${seed}" \
+                    > "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>&1
+
+                if [ -f summary.json ]; then
+                    cp summary.json "${BASELINE_RESULTS_DIR}/seed_${seed}.json"
+                    echo "  Saved ${BASELINE_RESULTS_DIR}/seed_${seed}.json"
+                else
+                    echo "  WARNING: summary.json not found for baseline seed ${seed}"
+                fi
+            done
+
+            stop_status_monitor
         fi
 
         for seed in $(seq 1 "$NUM_SEEDS"); do
-            echo "────────────────────────────────────────"
-            echo "  Baseline Seed ${seed}/${NUM_SEEDS}"
-            echo "────────────────────────────────────────"
-
-            python ppo.py \
-                --seed "$seed" \
-                --env-id factorion/FactorioEnv-v0 \
-                --track \
-                --wandb-project-name "$WANDB_PROJECT" \
-                --total-timesteps "$TOTAL_TIMESTEPS" \
-                --tags ci benchmark baseline "branch:main" "seed:${seed}"
-
-            if [ -f summary.json ]; then
-                cp summary.json "${BASELINE_RESULTS_DIR}/seed_${seed}.json"
+            echo ""
+            echo "──── baseline seed ${seed} log tail ────"
+            tail -5 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
+            if [ ! -f "${BASELINE_RESULTS_DIR}/seed_${seed}.json" ]; then
+                echo "  WARNING: baseline summary JSON not produced! Full log tail:"
+                tail -30 "${BASELINE_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
             fi
         done
 
@@ -211,7 +391,7 @@ print(f'Combined {len(results)} baseline results')
         # Return to PR code dir and rebuild
         cd "$WORK_DIR"
         if [ -f factorion_rs/Cargo.toml ]; then
-            (cd factorion_rs && maturin build --release --out dist && pip install dist/*.whl)
+            (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
         fi
     fi
 fi
