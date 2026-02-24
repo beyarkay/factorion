@@ -21,7 +21,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
 import sys
 sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
@@ -834,6 +833,7 @@ if __name__ == "__main__":
             f"flat_dim:{args.flat_dim}",
         )
     print("Setting up writer")
+    from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
