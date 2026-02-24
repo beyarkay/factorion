@@ -11,7 +11,7 @@ significance level 0.05.
 - [PR #16: Spatial per-tile action prediction](#pr-16-spatial-per-tile-action-prediction)
 - [PR #13: Eliminate difficulty-0 episodes](#pr-13-eliminate-difficulty-0-episodes)
 - [PR #14: Re-enable early termination](#pr-14-re-enable-early-termination) (invalid benchmark)
-- [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically) (invalid benchmark)
+- [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically)
 - [Historical logbook](#historical-logbook)
 
 ---
@@ -66,11 +66,35 @@ forward/backward passes. Throughput showed a slight +3.3% improvement but was
 not statistically significant (p=0.701).
 
 Both architectures plateau at curriculum level 1 with ~0.58-0.60 throughput
-within 100K steps. The architecture gives the model the *capacity* to express
-joint spatial preferences, but at this training budget neither architecture has
-learned enough to differentiate. The speed improvement means this architecture
-gets 76% more gradient updates per wall-clock second, which becomes increasingly
-valuable at longer training runs.
+within 100K steps. The ~0.58 average means the agent is solving roughly 16% of
+the non-trivial episodes (those with `num_missing_entities=1`) — barely above
+the random baseline.
+
+**Why no throughput difference?** The architecture change addressed
+*representational capacity* (can the model express joint spatial preferences?)
+but the binding constraint is *exploration* (can the model discover good actions
+at all?). Both architectures stumble into the correct action at the same low
+rate, so they plateau at the same throughput.
+
+The old architecture randomly gets the right answer ~1/640 of the time per step
+(1/64 tiles x 1/2 entities x 1/5 directions). The new architecture also starts
+at ~1/640 — even though tile selection is joint, it's initialized near-uniform,
+so the initial probability of picking the right tile is still 1/64. The
+conditioning only helps *after* the model has started learning which tiles are
+interesting, but it can't learn that without reward signal.
+
+The model learns a strong "do nothing" prior from `num_missing_entities=0`
+episodes (where throughput=1.0 every step), and when it faces
+`num_missing_entities=1`, that same "do nothing" strategy yields throughput=0.0.
+The binary reward provides no gradient to bridge the gap. At 100K timesteps with
+16 envs and `max_steps=16`, there are roughly 800 episodes with
+`num_missing_entities=1`, yielding approximately 20 accidental successes —
+nowhere near enough positive gradient signals to overcome thousands of "do
+nothing" updates. More training steps (e.g. 1M) would increase this to ~200, but
+likely still not enough for a breakthrough.
+
+See also [PR #13](#pr-13-eliminate-difficulty-0-episodes) for evidence that the
+difficulty-0 episodes are essential scaffolding, not free wins.
 
 ---
 
@@ -121,8 +145,14 @@ needs to first learn "preserve what's already correct" before it can learn "fix
 what's broken." Removing this scaffolding causes catastrophic failure — the agent
 achieves near-zero throughput across all seeds.
 
-This has implications for curriculum design: the mix of difficulty levels isn't
-just about avoiding sparse rewards, it's about teaching prerequisite skills.
+This reveals a tension in the curriculum design: difficulty-0 episodes teach the
+agent a strong "do nothing" prior (throughput=1.0 for every step where the agent
+doesn't break anything). This is a necessary prerequisite skill, but it then
+*conflicts* with difficulty-1 episodes where "do nothing" yields throughput=0.0.
+The binary reward provides no gradient to bridge from "don't break things" to
+"fix things." The mix of difficulty levels isn't just about avoiding sparse
+rewards — it's about teaching prerequisite skills that the agent must then learn
+to selectively override.
 
 ---
 
@@ -165,11 +195,39 @@ Scaled `max_steps` (the number of actions per episode) based on
 `num_missing_entities` rather than using a fixed value. The idea was to reduce
 wasted steps when only a few entities need to be placed.
 
-### Benchmark results (invalid)
+### Benchmark results (5 seeds, 100K timesteps, 8x8 grid)
 
-Same CI bug as PR #14 — benchmarked before
-[PR #15](https://github.com/beyarkay/factorion/pull/15) fix. Per-seed values
-are identical between baseline and PR. Needs re-benchmarking.
+| Metric | main (n=5) | PR (n=5) | Change | p-value | Verdict |
+|--------|------------|----------|--------|---------|---------|
+| Throughput (moving avg) | 0.5876 +/- 0.1149 | 0.5332 +/- 0.0402 | -9.3% | 0.364 | No significant difference |
+| Curriculum level | 1.0 +/- 0.0 | 1.0 +/- 0.0 | +0.0% | 1.000 | No significant difference |
+| Training speed (SPS) | 281 +/- 1 | 252 +/- 7 | **-10.5%** | 6.0e-04 | **Significantly worse** |
+
+Per-seed throughput:
+
+| Seed | Baseline | PR |
+|------|----------|-----|
+| 1 | 0.6900 | 0.5220 |
+| 2 | 0.4980 | 0.5060 |
+| 3 | 0.6860 | 0.5380 |
+| 4 | 0.4360 | 0.5000 |
+| 5 | 0.6280 | 0.6000 |
+
+W&B runs: see [PR comment](https://github.com/beyarkay/factorion/pull/11#issuecomment-3954817197) for all links.
+
+### Analysis
+
+No throughput improvement (-9.3%, not significant) and a statistically
+significant 10.5% slowdown in training speed. The dynamic step scaling adds
+computational overhead without helping the agent learn faster.
+
+One minor observation: the PR has notably lower throughput variance (0.0402 vs
+0.1149), suggesting the dynamic step count may have a regularizing effect. But
+this doesn't translate to better performance.
+
+Note: Earlier benchmarks for this PR were invalid (run before the CI fix in
+[PR #15](https://github.com/beyarkay/factorion/pull/15)). The results above are
+from the corrected benchmark pipeline.
 
 ---
 
