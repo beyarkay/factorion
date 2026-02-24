@@ -27,8 +27,10 @@ parameters:
   chan3:
     values: [48, 64]
 
-  flat_dim:
-    values: [64, 128, 256]
+  tile_head_std:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
 
   gamma:
     distribution: uniform
