@@ -21,7 +21,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
 import sys
 sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
@@ -872,21 +871,18 @@ if __name__ == "__main__":
         run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            sync_tensorboard=True,
             config=vars(args),
             name=run_name,
             group=args.wandb_group,
-            monitor_gym=True,
             save_code=True,
             tags=args.tags,
-            id= args.start_from_wandb,
-            resume="must" if  args.start_from_wandb is not None else None
+            id=args.start_from_wandb,
+            resume="must" if args.start_from_wandb is not None else None,
         )
         run.tags = run.tags + (
             f"batch_size:{args.batch_size}",
             f"minibatch_size:{args.minibatch_size}",
             f"num_iterations:{args.num_iterations}",
-            f"batch_size:{args.batch_size}",
             f"seed:{args.seed}",
             f"size:{args.size}",
             f"timesteps:{args.total_timesteps//1000}K",
@@ -895,13 +891,23 @@ if __name__ == "__main__":
             f"chan3:{args.chan3}",
             f"flat_dim:{args.flat_dim}",
         )
-    print("Setting up writer")
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
 
+        # Define metric axes and summary aggregation
+        wandb.define_metric("*", step_metric="global_step")
+        for m in ["throughput", "reward", "length", "invalid_frac",
+                   "num_entities", "entity_efficiency", "frac_reachable"]:
+            wandb.define_metric(f"episode/{m}", summary="last")
+        for m in ["tile_location", "tile_entity", "tile_direction",
+                   "delta_location", "delta_entity", "delta_direction"]:
+            wandb.define_metric(f"shaping/{m}", summary="last")
+        wandb.define_metric("curriculum/score", summary="max")
+        wandb.define_metric("curriculum/level", summary="max")
+        wandb.define_metric("curriculum/throughput_avg", summary="last")
+        for m in ["policy", "value", "entropy", "approx_kl", "clipfrac", "explained_var"]:
+            wandb.define_metric(f"losses/{m}", summary="last")
+        for m in ["lr", "ent_coef", "grad_norm"]:
+            wandb.define_metric(f"optim/{m}", summary="last")
+        wandb.define_metric("perf/sps", summary="last")
     print("Registering factorio Gym env")
     # Register the factorio env
     gym.register(
@@ -961,7 +967,6 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    global_num_optimiser_steps = 0
     max_missing_entities = 1
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
@@ -974,6 +979,21 @@ if __name__ == "__main__":
     final_thputs_100ma = np.nan
     unclipped_grad_norm = np.nan
     approx_kl = np.nan
+
+    # Accumulate episode-level metrics during rollout, log means once per iteration
+    _episode_metrics: dict[str, list[float]] = {}
+
+    def _record_episode(metrics: dict[str, float]) -> None:
+        for k, v in metrics.items():
+            _episode_metrics.setdefault(k, []).append(v)
+
+    def _flush_episode_means() -> dict[str, float]:
+        if not _episode_metrics:
+            return {}
+        means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
+        _episode_metrics.clear()
+        return means
+
     print(f"Starting {args.num_iterations} iterations")
     iteration_of_last_increase = 0
     pbar = tqdm.trange(1, args.num_iterations + 1)
@@ -1000,13 +1020,7 @@ if __name__ == "__main__":
             with torch.no_grad():
                 # TODO update for new action logic
                 # D for dictionary
-                t0 = time.time()
                 action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
-                writer.add_scalar(
-                    f"per_second/get_action_for_rollout_div_{len(next_obs_ECWH)}",
-                    ((1.0/(time.time() - t0))/len(next_obs_ECWH)),
-                     global_step
-                )
                 values_SE[step] = value_E
                 # Flatten action
                 # (xy_B2, direc_B1, entities_B1) = action_ED
@@ -1042,13 +1056,6 @@ if __name__ == "__main__":
             next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
             next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
 
-
-            for reason, values in infos.get('invalid_reason', {}).items():
-                if reason[0] == '_':
-                    continue
-                for value in values:
-                    writer.add_scalar(f"per_episode_invalid_reasons/{reason}", value, global_step)
-
             if "episode" in infos:
                 # The "_episode" mask indicates which environments finished this step
                 # We can use any of the masks (_r, _l, _t) as they should be the same for a finished env
@@ -1070,49 +1077,22 @@ if __name__ == "__main__":
                     # writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
 
                     end_of_episode_thputs.append(end_of_episode_thput)
-                    avg_throughput = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-                    writer.add_scalar("moving_avg/throughput", avg_throughput, global_step)
-                    writer.add_scalar("at_end_of_episode/throughput", end_of_episode_thput, global_step)
-                    writer.add_scalar("at_end_of_episode/num_steps", episode_len, global_step)
-                    writer.add_scalar("at_end_of_episode/frac_invalid_actions", infos['frac_invalid_actions'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/steps_taken", infos['steps_taken'][i], global_step)
 
-                    writer.add_scalar("at_end_of_episode/num_entities", infos['num_entities'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
-                    writer.add_scalar("at_end_of_episode/num_placed_entities", infos['num_placed_entities'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/tile_match_location", infos['tile_match_location'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/tile_match_entity", infos['tile_match_entity'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/tile_match_direction", infos['tile_match_direction'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_location_match", infos['shaping_location_match'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_entity_match", infos['shaping_entity_match'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_direction_match", infos['shaping_direction_match'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_location_delta", infos['shaping_location_delta'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_entity_delta", infos['shaping_entity_delta'][i], global_step)
-                    writer.add_scalar("at_end_of_episode/shaping_direction_delta", infos['shaping_direction_delta'][i], global_step)
-                    # writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
-
-                    # min_belts = infos['min_belts'][i]
-                    # writer.add_scalar(f"min_belts/d{min_belts}_throughput", final_throughput, global_step)
-
-                    # min_belts_thoughputs[min_belts].append(final_throughput)
-                    # avg_min_belts_throughput = (
-                    #     0
-                    #     if not min_belts_thoughputs[min_belts]
-                    #     else sum(min_belts_thoughputs[min_belts]) / len(min_belts_thoughputs[min_belts])
-                    # )
-                    # writer.add_scalar(f"min_belts/d{min_belts}_throughput_ma", avg_min_belts_throughput, global_step)
-
-                    writer.add_scalar("old/charts/episodic_entity_efficiency",  infos['min_entities_required'][i] / infos['num_entities'][i], global_step)
-                    writer.add_scalar("old/charts/episodic_completion_bonus", infos['completion_bonus'][i], global_step)
-                    writer.add_scalar("old/charts/episodic_final_dir_reward", infos['final_dir_reward'][i], global_step)
-                    writer.add_scalar("old/charts/episodic_frac_reachable", final_frac_reachable, global_step)
-                    writer.add_scalar("old/charts/episodic_length", episode_len, global_step)
-                    writer.add_scalar("old/charts/episodic_material_cost", infos['material_cost'][i], global_step)
-                    writer.add_scalar("old/charts/episodic_return", episode_return, global_step)
-                    writer.add_scalar("old/charts/final_through", end_of_episode_thput, global_step)
-                    writer.add_scalar("old/charts/episodic_max_entities", infos['max_entities'][i], global_step)
-
-                    # writer.add_scalar("old/charts/episodic_frac_hallucin", final_frac_hallucin, global_step)
+                    _record_episode({
+                        "episode/throughput": float(end_of_episode_thput),
+                        "episode/reward": float(episode_return),
+                        "episode/length": float(episode_len),
+                        "episode/invalid_frac": float(infos['frac_invalid_actions'][i]),
+                        "episode/num_entities": float(infos['num_entities'][i]),
+                        "episode/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
+                        "episode/frac_reachable": float(final_frac_reachable),
+                        "shaping/tile_location": float(infos['tile_match_location'][i]),
+                        "shaping/tile_entity": float(infos['tile_match_entity'][i]),
+                        "shaping/tile_direction": float(infos['tile_match_direction'][i]),
+                        "shaping/delta_location": float(infos['shaping_location_delta'][i]),
+                        "shaping/delta_entity": float(infos['shaping_entity_delta'][i]),
+                        "shaping/delta_direction": float(infos['shaping_direction_delta'][i]),
+                    })
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -1152,15 +1132,9 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 idxs = idxs_B[start:end]
 
-                t0 = time.time()
                 _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
                     obs_B[idxs],
                     actions_B.long()[idxs]
-                )
-                writer.add_scalar(
-                    f"per_second/get_action_for_optim_div_{len(obs_B[idxs])}",
-                    ((1.0/(time.time() - t0))/len(obs_B[idxs])),
-                    global_step
                 )
                 newlogprobs_B = newlogprobs_B.reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
@@ -1202,16 +1176,11 @@ if __name__ == "__main__":
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
                 loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
 
-                t0 = time.time()
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
                 loss.backward()
                 unclipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
-                global_num_optimiser_steps += 1
-                writer.add_scalar("per_second/backward_and_step", 1.0/(time.time() - t0), global_step)
-                writer.add_scalar("optim/num_steps", global_num_optimiser_steps, global_step)
-                writer.add_scalar("optim/grad_norm_unclipped", unclipped_grad_norm, global_step)
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
@@ -1221,17 +1190,25 @@ if __name__ == "__main__":
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("optim/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/ent_coef", ent_coef, global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("per_second/global_steps", int(global_step / (time.time() - start_time)), global_step)
+        # ── Per-iteration logging ──────────────────────────────────────
+        iter_metrics = {
+            "global_step": global_step,
+            "losses/policy": pg_loss.item(),
+            "losses/value": v_loss.item(),
+            "losses/entropy": entropy_loss.item(),
+            "losses/approx_kl": approx_kl.item(),
+            "losses/clipfrac": np.mean(clipfracs),
+            "losses/explained_var": explained_var,
+            "optim/lr": optimizer.param_groups[0]["lr"],
+            "optim/ent_coef": ent_coef,
+            "optim/grad_norm": float(unclipped_grad_norm),
+            "perf/sps": int(global_step / (time.time() - start_time)),
+        }
 
+        # Flush episode means (empty dict if no episodes ended this iteration)
+        iter_metrics.update(_flush_episode_means())
+
+        # Curriculum metrics — moving averages preserved exactly as before
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
@@ -1242,8 +1219,13 @@ if __name__ == "__main__":
                         end_of_episode_thputs.append(0)
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
                     print(f"\nNow working with {max_missing_entities=}")
-            writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
-            writer.add_scalar("moving_avg/curriculum_score", (max_missing_entities - 1) + final_thputs_100ma, global_step)
+            iter_metrics["curriculum/level"] = max_missing_entities
+            iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
+            iter_metrics["curriculum/throughput_avg"] = final_thputs_100ma
+
+        # Single wandb.log() call per iteration
+        if args.track:
+            wandb.log(iter_metrics, step=global_step)
 
         if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
             print(f"Recording agent progress at {iteration}")
@@ -1318,7 +1300,6 @@ if __name__ == "__main__":
     if args.track:
         run.tags = run.tags + (f"score:{curriculum_score:.2f}", f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
-    writer.close()
     if runtime > 60 * 5: # 5 minutes
         # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
