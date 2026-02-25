@@ -1,4 +1,4 @@
-# sweep.yaml
+# sweep.yaml — Delta-based reward shaping sweep
 
 method: bayes
 run_cap: 20
@@ -7,6 +7,26 @@ metric:
   goal: maximize
 
 parameters:
+  coeff_shaping_location:
+    distribution: log_uniform_values
+    min: 0.1
+    max: 5.0
+
+  coeff_shaping_entity:
+    distribution: log_uniform_values
+    min: 0.1
+    max: 5.0
+
+  coeff_shaping_direction:
+    distribution: log_uniform_values
+    min: 0.1
+    max: 5.0
+
+  coeff_throughput:
+    distribution: uniform
+    min: 0.5
+    max: 0.99
+
   ent_coef_start:
     distribution: log_uniform_values
     min: 0.005
@@ -72,6 +92,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - 250_000 # timesteps
+  - 250_000
   - --track
   - ${args}
