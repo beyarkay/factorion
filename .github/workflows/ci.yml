@@ -29,7 +29,7 @@ on:
       benchmark_seeds:
         description: "Number of seeds for benchmark"
         required: false
-        default: "5"
+        default: "10"
         type: string
       benchmark_timesteps:
         description: "Timesteps per seed for benchmark"

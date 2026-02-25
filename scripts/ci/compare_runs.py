@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compare multi-seed benchmark results between a PR branch and a baseline.
 
-Performs Welch's t-test on key RL metrics and generates a markdown report
-suitable for posting as a GitHub PR comment.
+Uses a paired t-test when PR and baseline share the same seeds (the common
+case), which removes between-seed variance and dramatically increases
+statistical power.  Falls back to Welch's t-test when seeds don't match.
 
 Usage:
     python scripts/ci/compare_runs.py \
@@ -13,6 +14,8 @@ Usage:
         --commit-sha abc1234 \
         --output summary.md
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -141,8 +144,50 @@ def _ln_beta(a: float, b: float) -> float:
     return math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
 
 
-def cohens_d(a: list[float], b: list[float]) -> float:
-    """Cohen's d effect size (pooled standard deviation)."""
+def paired_t_test(
+    a: list[float], b: list[float]
+) -> tuple[float, float, float]:
+    """Paired t-test for matched samples (same seeds run on both branches).
+
+    Computes differences d_i = a_i - b_i, then tests whether mean(d) != 0.
+    Returns (t_statistic, degrees_of_freedom, p_value).
+    p_value is two-tailed.
+    """
+    n = len(a)
+    if n != len(b) or n < 2:
+        return 0.0, 0.0, 1.0
+
+    diffs = [ai - bi for ai, bi in zip(a, b)]
+    mean_d = mean(diffs)
+    std_d = stdev(diffs)
+
+    if std_d == 0:
+        return 0.0, n - 1, 1.0
+
+    t_stat = mean_d / (std_d / math.sqrt(n))
+    df = n - 1
+
+    p_value = _t_distribution_p_value(abs(t_stat), df) * 2  # two-tailed
+    p_value = min(p_value, 1.0)
+
+    return t_stat, df, p_value
+
+
+def cohens_d(a: list[float], b: list[float], paired: bool = False) -> float:
+    """Cohen's d effect size.
+
+    When paired=True, uses the standard deviation of the differences
+    (appropriate for paired designs).  Otherwise uses the pooled SD.
+    """
+    if paired:
+        if len(a) != len(b) or len(a) < 2:
+            return 0.0
+        diffs = [ai - bi for ai, bi in zip(a, b)]
+        sd = stdev(diffs)
+        if sd == 0:
+            return 0.0
+        return mean(diffs) / sd
+
     n_a, n_b = len(a), len(b)
     if n_a < 2 or n_b < 2:
         return 0.0
@@ -184,6 +229,41 @@ def extract_metric(results: list[dict], key: str) -> list[float]:
         if key in r:
             values.append(float(r[key]))
     return values
+
+
+def pair_by_seed(
+    pr_results: list[dict],
+    baseline_results: list[dict],
+    key: str,
+) -> tuple[list[float], list[float], bool]:
+    """Pair PR and baseline values by seed number.
+
+    Returns (pr_vals, base_vals, is_paired).  When pairing succeeds, both
+    lists are aligned so that index i corresponds to the same seed.
+    """
+    # Build seed -> value maps
+    pr_by_seed = {}
+    for r in pr_results:
+        seed = r.get("seed") or r.get("seed_file")
+        if seed is not None and key in r:
+            pr_by_seed[int(seed)] = float(r[key])
+
+    base_by_seed = {}
+    for r in baseline_results:
+        seed = r.get("seed") or r.get("seed_file")
+        if seed is not None and key in r:
+            base_by_seed[int(seed)] = float(r[key])
+
+    # Find common seeds
+    common = sorted(set(pr_by_seed) & set(base_by_seed))
+
+    if len(common) >= 2:
+        pr_vals = [pr_by_seed[s] for s in common]
+        base_vals = [base_by_seed[s] for s in common]
+        return pr_vals, base_vals, True
+
+    # Fallback: unpaired
+    return extract_metric(pr_results, key), extract_metric(baseline_results, key), False
 
 
 def verdict_str(
@@ -230,11 +310,16 @@ def generate_report(
     n_pr = len(pr_results)
     n_base = len(baseline_results)
 
+    # Determine if we can use paired comparison (same seeds on both sides)
+    _, _, is_paired = pair_by_seed(pr_results, baseline_results, "moving_avg_throughput")
+    test_name = "paired t-test" if is_paired else "Welch's t-test"
+
     lines = []
     lines.append("## GPU Benchmark Results")
     lines.append("")
     lines.append(f"**PR #{pr_number}** (`{commit_sha[:8]}`) vs **main** baseline")
     lines.append(f"- Seeds: {n_pr} (PR) vs {n_base} (baseline)")
+    lines.append(f"- Statistical test: {test_name}")
     lines.append(f"- Significance level: {alpha}")
 
     gpu_name = pr_results[0].get("gpu", "") if pr_results else ""
@@ -259,8 +344,7 @@ def generate_report(
         direction = metric["direction"]
         fmt = metric["fmt"]
 
-        pr_vals = extract_metric(pr_results, key)
-        base_vals = extract_metric(baseline_results, key)
+        pr_vals, base_vals, paired = pair_by_seed(pr_results, baseline_results, key)
 
         if len(pr_vals) < 2 or len(base_vals) < 2:
             lines.append(f"| **{label}** | insufficient data | insufficient data | - | - | - |")
@@ -269,8 +353,12 @@ def generate_report(
         pr_m, pr_s = mean(pr_vals), stdev(pr_vals)
         base_m, base_s = mean(base_vals), stdev(base_vals)
 
-        _, _, p_val = welch_t_test(pr_vals, base_vals)
-        d = cohens_d(pr_vals, base_vals)
+        if paired:
+            _, _, p_val = paired_t_test(pr_vals, base_vals)
+            d = cohens_d(pr_vals, base_vals, paired=True)
+        else:
+            _, _, p_val = welch_t_test(pr_vals, base_vals)
+            d = cohens_d(pr_vals, base_vals)
 
         if base_m != 0:
             pct_change = (pr_m - base_m) / abs(base_m) * 100
@@ -303,21 +391,35 @@ def generate_report(
     lines.append("<details><summary>Per-seed details</summary>")
     lines.append("")
 
-    # Throughput per seed
+    # Throughput per seed (paired by seed number)
     lines.append("#### Throughput per seed")
     lines.append("")
-    lines.append("| Seed | Baseline | PR |")
-    lines.append("|------|----------|----|")
 
-    base_thputs = extract_metric(baseline_results, "moving_avg_throughput")
-    pr_thputs = extract_metric(pr_results, "moving_avg_throughput")
-    max_len = max(len(base_thputs), len(pr_thputs))
+    pr_by_seed = {}
+    for r in pr_results:
+        s = r.get("seed") or r.get("seed_file")
+        if s is not None and "moving_avg_throughput" in r:
+            pr_by_seed[int(s)] = float(r["moving_avg_throughput"])
+    base_by_seed = {}
+    for r in baseline_results:
+        s = r.get("seed") or r.get("seed_file")
+        if s is not None and "moving_avg_throughput" in r:
+            base_by_seed[int(s)] = float(r["moving_avg_throughput"])
 
-    for i in range(max_len):
-        base_val = f"{base_thputs[i]:.4f}" if i < len(base_thputs) else "-"
-        pr_val = f"{pr_thputs[i]:.4f}" if i < len(pr_thputs) else "-"
-        seed_num = i + 1
-        lines.append(f"| {seed_num} | {base_val} | {pr_val} |")
+    all_seeds = sorted(set(pr_by_seed) | set(base_by_seed))
+
+    lines.append("| Seed | Baseline | PR | Diff |")
+    lines.append("|------|----------|----|------|")
+
+    for seed in all_seeds:
+        base_val = f"{base_by_seed[seed]:.4f}" if seed in base_by_seed else "-"
+        pr_val = f"{pr_by_seed[seed]:.4f}" if seed in pr_by_seed else "-"
+        if seed in base_by_seed and seed in pr_by_seed:
+            diff = pr_by_seed[seed] - base_by_seed[seed]
+            diff_str = f"{diff:+.4f}"
+        else:
+            diff_str = "-"
+        lines.append(f"| {seed} | {base_val} | {pr_val} | {diff_str} |")
 
     # W&B links
     lines.append("")
@@ -406,10 +508,12 @@ def main():
     for metric in METRICS_TO_COMPARE:
         key = metric["key"]
         direction = metric["direction"]
-        pr_vals = extract_metric(pr_results, key)
-        base_vals = extract_metric(baseline_results, key)
+        pr_vals, base_vals, paired = pair_by_seed(pr_results, baseline_results, key)
         if len(pr_vals) >= 2 and len(base_vals) >= 2:
-            _, _, p_val = welch_t_test(pr_vals, base_vals)
+            if paired:
+                _, _, p_val = paired_t_test(pr_vals, base_vals)
+            else:
+                _, _, p_val = welch_t_test(pr_vals, base_vals)
             v = verdict_str(p_val, direction, mean(pr_vals), mean(base_vals), args.alpha)
             # Only gate on throughput regression, not SPS
             if key == "moving_avg_throughput" and "worse" in v.lower():
