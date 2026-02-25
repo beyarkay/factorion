@@ -21,7 +21,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
 import sys
 sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
@@ -460,11 +459,9 @@ class FactorioEnv(gym.Env):
         pre_reward /= normalisation
 
         # Terminate early when the agent connects source to sink
-        terminated = False # TODO revide early-stopping, but for now we'll remove it `throughput == 1.0`
-        # Halt the run if the agent runs out of steps
-        truncated = self.steps > self.max_steps
-        # TODO remove this
-        terminated = truncated
+        terminated = throughput >= 1.0
+        # Halt the run if the agent runs out of steps (only if not already solved)
+        truncated = (not terminated) and (self.steps > self.max_steps)
 
         if terminated:
             # If the agent solved before the end, give extra reward
@@ -483,7 +480,7 @@ class FactorioEnv(gym.Env):
 
         observation = self._get_obs()
         info = self._get_info()
-        if terminated:
+        if terminated or truncated:
             info.update({ 'steps_taken': self.steps })
 
         num_placed_entities = len([a for a in self.actions if a is not None and a['entity'] != 'empty'])
@@ -821,6 +818,7 @@ if __name__ == "__main__":
             f"flat_dim:{args.flat_dim}",
         )
     print("Setting up writer")
+    from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
