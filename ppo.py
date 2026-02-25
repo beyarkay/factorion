@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
+from torch.utils.tensorboard import SummaryWriter
 import sys
 sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
 import factorion
@@ -64,7 +65,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 3.923e-4
+    learning_rate: float = 5.86e-4
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -72,9 +73,9 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9532
+    gamma: float = 0.9857
     """the discount factor gamma"""
-    gae_lambda: float = 0.8456
+    gae_lambda: float = 0.8014
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
@@ -82,7 +83,7 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2491
+    clip_coef: float = 0.2746
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -91,9 +92,9 @@ class Args:
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0004576
     """entropy coefficient at the end of training (low = more exploitation)"""
-    vf_coef: float = 0.8019
+    vf_coef: float = 0.7426
     """coefficient of the value function"""
-    coeff_throughput: float = 0.97
+    coeff_throughput: float = 0.8785
     """coefficient of the throughput when calculating reward"""
     coeff_frac_reachable: float = 0.01
     """coefficient of the fraction of unreachable nodes when calculating reward"""
@@ -105,21 +106,27 @@ class Args:
     """coefficient of reward given to the cost of materials used to solve the problem"""
     coeff_validity: float = 0.01
     """coefficient of reward given to the action being valid"""
-    max_grad_norm: float = 1.662
+    coeff_shaping_location: float = 1.0
+    """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only)"""
+    coeff_shaping_entity: float = 1.0
+    """delta reward shaping: reward for correct entity types (solution-nonempty tiles only)"""
+    coeff_shaping_direction: float = 1.0
+    """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
+    max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
-    adam_epsilon: float = 3.208e-05
+    adam_epsilon: float = 6.866e-06
     """The epsilon parameter for Adam"""
-    chan1: int = 64
+    chan1: int = 48
     """Number of channels in the first layer of the CNN encoder"""
     chan2: int = 48
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 64
+    chan3: int = 48
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    tile_head_std: float = 0.09536
+    tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     size: int = 8
     """The width and height of the factory"""
@@ -280,6 +287,25 @@ class FactorioEnv(gym.Env):
             'cum_reward': self._cum_reward,
         }
 
+    def _compute_solution_match(self):
+        """Compute similarity to solved factory over solution-nonempty tiles only.
+        Returns (location_match, entity_match, direction_match) each in [0, 1]."""
+        orig_ent = self._solved_world_CWH[self.Channel.ENTITIES.value]
+        curr_ent = self._world_CWH[self.Channel.ENTITIES.value]
+        orig_dir = self._solved_world_CWH[self.Channel.DIRECTION.value]
+        curr_dir = self._world_CWH[self.Channel.DIRECTION.value]
+
+        mask = (orig_ent != 0)
+        n = mask.sum().item()
+        if n == 0:
+            return 1.0, 1.0, 1.0
+
+        location_match = (curr_ent[mask] != 0).float().sum().item() / n
+        entity_match = (curr_ent[mask] == orig_ent[mask]).float().sum().item() / n
+        direction_match = (curr_dir[mask] == orig_dir[mask]).float().sum().item() / n
+
+        return location_match, entity_match, direction_match
+
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is None:
             seed = 0
@@ -302,6 +328,14 @@ class FactorioEnv(gym.Env):
         self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
 
         self.actions = []
+        # Generate the solved factory first (same seed → same layout),
+        # then re-generate with missing entities for the actual episode.
+        self._solved_world_CWH, _ = self.generate_lesson(
+            size=self.size,
+            kind=self.LessonKind.MOVE_ONE_ITEM,
+            num_missing_entities=0,
+            seed=self._seed,
+        )
         self._world_CWH, min_entities_required = self.generate_lesson(
             size=self.size,
             kind=self.LessonKind.MOVE_ONE_ITEM,
@@ -311,6 +345,7 @@ class FactorioEnv(gym.Env):
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
+        self._prev_match = self._compute_solution_match()
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
 
@@ -440,6 +475,23 @@ class FactorioEnv(gym.Env):
             + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
         )
 
+        # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
+        orig_ent = self._solved_world_CWH[self.Channel.ENTITIES.value]
+        curr_ent = self._world_CWH[self.Channel.ENTITIES.value]
+        orig_dir = self._solved_world_CWH[self.Channel.DIRECTION.value]
+        curr_dir = self._world_CWH[self.Channel.DIRECTION.value]
+
+        solution_nonempty = (orig_ent != 0)
+        current_nonempty = (curr_ent != 0)
+        num_solution_nonempty = solution_nonempty.sum().item()
+        if num_solution_nonempty > 0:
+            tile_match_location = (solution_nonempty & current_nonempty).sum().item() / num_solution_nonempty
+        else:
+            tile_match_location = 1.0
+        tile_match_entity = (curr_ent == orig_ent).float().mean().item()
+        tile_match_direction = (curr_dir == orig_dir).float().mean().item()
+
+        # ── Normalized weighted reward (throughput + validity only) ──
         reward_components = {
             'throughput': {
                 'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
@@ -458,6 +510,23 @@ class FactorioEnv(gym.Env):
 
         pre_reward /= normalisation
 
+        # ── Delta-based reward shaping (PBRS, additive) ──
+        # Computed over solution-nonempty tiles only for ~10x stronger signal.
+        curr_match = self._compute_solution_match()
+        loc_delta = curr_match[0] - self._prev_match[0]
+        ent_delta = curr_match[1] - self._prev_match[1]
+        dir_delta = curr_match[2] - self._prev_match[2]
+        self._prev_match = curr_match
+
+        coeff_loc = Args.coeff_shaping_location if 'args' not in locals() else args.coeff_shaping_location
+        coeff_ent = Args.coeff_shaping_entity if 'args' not in locals() else args.coeff_shaping_entity
+        coeff_dir = Args.coeff_shaping_direction if 'args' not in locals() else args.coeff_shaping_direction
+
+        pre_reward += coeff_loc * loc_delta
+        pre_reward += coeff_ent * ent_delta
+        pre_reward += coeff_dir * dir_delta
+
+        # Terminate early when the agent connects source to sink
         # Terminate early when the agent connects source to sink
         terminated = throughput >= 1.0
         # Halt the run if the agent runs out of steps (only if not already solved)
@@ -498,6 +567,15 @@ class FactorioEnv(gym.Env):
             'frac_invalid_actions': self.invalid_actions / self.max_steps,
             'max_entities': self.max_entities,
             'invalid_reason': invalid_reason,
+            'tile_match_location': tile_match_location,
+            'tile_match_entity': tile_match_entity,
+            'tile_match_direction': tile_match_direction,
+            'shaping_location_match': curr_match[0],
+            'shaping_entity_match': curr_match[1],
+            'shaping_direction_match': curr_match[2],
+            'shaping_location_delta': loc_delta,
+            'shaping_entity_delta': ent_delta,
+            'shaping_direction_delta': dir_delta,
         })
 
         self._cum_reward += reward
@@ -818,7 +896,6 @@ if __name__ == "__main__":
             f"flat_dim:{args.flat_dim}",
         )
     print("Setting up writer")
-    from torch.utils.tensorboard import SummaryWriter
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
@@ -1003,6 +1080,15 @@ if __name__ == "__main__":
                     writer.add_scalar("at_end_of_episode/num_entities", infos['num_entities'][i], global_step)
                     writer.add_scalar("at_end_of_episode/episode_reward", episode_return, global_step)
                     writer.add_scalar("at_end_of_episode/num_placed_entities", infos['num_placed_entities'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/tile_match_location", infos['tile_match_location'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/tile_match_entity", infos['tile_match_entity'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/tile_match_direction", infos['tile_match_direction'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_location_match", infos['shaping_location_match'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_entity_match", infos['shaping_entity_match'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_direction_match", infos['shaping_direction_match'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_location_delta", infos['shaping_location_delta'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_entity_delta", infos['shaping_entity_delta'][i], global_step)
+                    writer.add_scalar("at_end_of_episode/shaping_direction_delta", infos['shaping_direction_delta'][i], global_step)
                     # writer.add_scalar("old/charts/final_throughput_ma", avg_throughput, global_step)
 
                     # min_belts = infos['min_belts'][i]

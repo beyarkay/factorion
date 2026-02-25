@@ -8,11 +8,80 @@ significance level 0.05.
 
 ## Table of Contents
 
+- [PR #18: Delta-based reward shaping (PBRS)](#pr-18-delta-based-reward-shaping-pbrs)
 - [PR #16: Spatial per-tile action prediction](#pr-16-spatial-per-tile-action-prediction)
 - [PR #13: Eliminate difficulty-0 episodes](#pr-13-eliminate-difficulty-0-episodes)
 - [PR #14: Re-enable early termination](#pr-14-re-enable-early-termination) (invalid benchmark)
 - [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically)
 - [Historical logbook](#historical-logbook)
+
+---
+
+## PR #18: Delta-based reward shaping (PBRS)
+
+**Branch:** `claude/reward-shaping-tile-match`
+| **PR:** [#18](https://github.com/beyarkay/factorion/pull/18)
+| **Status:** In progress (awaiting benchmark)
+
+### What changed
+
+Replaced absolute tile-match reward components with delta-based potential-based
+reward shaping (Ng et al. 1999). The previous decomposed tile-match approach
+(`coeff_tile_match_location/entity/direction`) had two design flaws:
+
+1. **Drowned signal**: Metrics were computed over all 64 tiles, but only ~6 have
+   entities in the solution. The baseline similarity was ~0.91–0.98, so a correct
+   placement improved the metric by just ~1/64 ≈ 0.016 — lost in noise.
+
+2. **"Do nothing" is rewarded**: Absolute similarity meant the initial state
+   (already near-complete) scored ~0.95+. Over 16 steps a passive agent
+   accumulated ~15.2 in shaped reward, making the marginal gain from actually
+   solving negligible.
+
+The fix keeps the decomposed structure (one signal per action head) but makes two
+changes:
+
+- **Focus**: All three metrics (`location_match`, `entity_match`,
+  `direction_match`) are computed over solution-nonempty tiles only (~6 tiles
+  instead of 64) — ~10x stronger per-placement signal.
+- **Delta-based**: The reward is the *change* in similarity per step, not the
+  absolute value. This eliminates free reward for doing nothing (all deltas = 0
+  for no-ops).
+
+The shaped reward is added outside the normalized weighted sum (additive PBRS),
+which is theoretically guaranteed not to alter the optimal policy:
+
+```
+reward += coeff_shaping_location  * (location_match(s') - location_match(s))
+        + coeff_shaping_entity    * (entity_match(s')   - entity_match(s))
+        + coeff_shaping_direction * (direction_match(s') - direction_match(s))
+```
+
+Key properties:
+- Do nothing → all deltas = 0 (no free reward)
+- Correct placement at right spot → location delta ~ +1/6 ≈ +0.17
+- Correct entity type → entity delta ~ +1/6 ≈ +0.17
+- Correct direction → direction delta ~ +1/6 ≈ +0.17
+- Each action head gets its own gradient signal
+
+### Benchmark results
+
+*Awaiting GPU benchmark run.*
+
+### Previous attempt: Absolute tile-match (PR #18 v1)
+
+The first version of this PR used absolute tile-match values as reward
+components in the normalized weighted sum. Benchmark results showed no
+significant improvement:
+
+| Metric | main (n=10) | PR (n=10) | Change | p-value | Verdict |
+|--------|-------------|-----------|--------|---------|---------|
+| Throughput (moving avg) | 0.5936 +/- 0.0769 | 0.5772 +/- 0.0670 | -2.8% | 0.560 | No significant difference |
+| Training speed (SPS) | 251 +/- 5 | 205 +/- 2 | **-18.3%** | 2.6e-10 | **Significantly worse** |
+
+The absolute approach was both slower (extra computation for no benefit) and
+unable to provide a useful learning signal due to the drowned signal and
+do-nothing reward problems described above.
 
 ---
 
