@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Destroy a RunPod pod.
+"""Destroy a RunPod pod, optionally recording cost data first.
 
 Used as a cleanup step in CI - always runs, even if previous steps failed.
+Queries pod cost before termination so the PR comment can include spend info.
 
 Required env vars:
     RUNPOD_API_KEY  - RunPod API key
@@ -9,6 +10,8 @@ Required env vars:
 Usage:
     python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
     python scripts/ci/runpod_destroy.py --pod-id <pod_id>
+    python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json \
+        --append-to-summary /tmp/summary.md
 """
 
 import argparse
@@ -18,6 +21,42 @@ import sys
 import time
 
 import runpod
+
+
+def format_uptime(seconds: float) -> str:
+    """Convert seconds to a human-readable duration like '20m 55s' or '1h 5m 30s'."""
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def query_pod_cost(pod_id: str) -> dict:
+    """Query RunPod for pod cost info. Returns dict with cost fields."""
+    runpod.api_key = os.environ["RUNPOD_API_KEY"]
+    pod = runpod.get_pod(pod_id)
+
+    cost_per_hr = pod["costPerHr"]
+    uptime_seconds = pod["uptimeSeconds"]
+    gpu_name = pod.get("machine", {}).get("gpuDisplayName", pod.get("gpuDisplayName", "GPU"))
+
+    total_cost = cost_per_hr * (uptime_seconds / 3600)
+
+    return {
+        "pod_id": pod_id,
+        "cost_per_hr": cost_per_hr,
+        "uptime_seconds": uptime_seconds,
+        "total_cost": round(total_cost, 2),
+        "gpu_name": gpu_name,
+        "uptime_human": format_uptime(uptime_seconds),
+    }
 
 
 def terminate_with_retry(pod_id: str, max_retries: int = 4) -> None:
@@ -44,6 +83,16 @@ def main():
     parser = argparse.ArgumentParser(description="Destroy a RunPod pod")
     parser.add_argument("--pod-info-file", default="/tmp/pod_info.json")
     parser.add_argument("--pod-id", default=None, help="Pod ID (overrides --pod-info-file)")
+    parser.add_argument(
+        "--cost-output-file",
+        default="/tmp/pod_cost.json",
+        help="Write cost data as JSON to this file",
+    )
+    parser.add_argument(
+        "--append-to-summary",
+        default=None,
+        help="Append formatted cost line to this markdown file",
+    )
     args = parser.parse_args()
 
     pod_id = args.pod_id
@@ -57,6 +106,35 @@ def main():
             print("Nothing to clean up.")
             return
 
+    # Query cost before termination (best-effort)
+    try:
+        cost = query_pod_cost(pod_id)
+        print(f"Pod cost: ${cost['total_cost']:.2f} ({cost['uptime_human']} @ ${cost['cost_per_hr']}/hr)")
+
+        with open(args.cost_output_file, "w") as f:
+            json.dump(cost, f, indent=2)
+        print(f"Cost data written to {args.cost_output_file}")
+
+        if args.append_to_summary:
+            cost_line = (
+                f"\n**Cost:** ${cost['total_cost']:.2f} "
+                f"({cost['uptime_human']} on {cost['gpu_name']} "
+                f"@ ${cost['cost_per_hr']}/hr via RunPod)\n"
+            )
+            try:
+                existing = ""
+                if os.path.exists(args.append_to_summary):
+                    with open(args.append_to_summary) as f:
+                        existing = f.read()
+                with open(args.append_to_summary, "w") as f:
+                    f.write(existing + cost_line)
+                print(f"Cost line appended to {args.append_to_summary}")
+            except OSError as e:
+                print(f"::warning::Could not append cost to {args.append_to_summary}: {e}")
+    except Exception as e:
+        print(f"::warning::Could not query pod cost: {e}")
+
+    # Always terminate, even if cost query failed
     terminate_with_retry(pod_id)
 
 

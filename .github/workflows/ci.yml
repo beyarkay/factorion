@@ -329,22 +329,11 @@ jobs:
             bash /workspace/gpu_smoke_test.sh
 
       - name: Fetch summary from pod
-        if: success()
+        if: always()
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
           scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/summary.md 2>/dev/null || echo "No summary file found on pod"
-
-      - name: Post results to PR
-        if: success() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -f /tmp/summary.md ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/summary.md)"
-          else
-            echo "::warning::No summary.md to post"
-          fi
 
       - name: Destroy RunPod instance
         if: always()
@@ -352,9 +341,22 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
+            python scripts/ci/runpod_destroy.py \
+              --pod-info-file /tmp/pod_info.json \
+              --append-to-summary /tmp/summary.md
           else
             echo "::warning::No pod info file found, nothing to clean up"
+          fi
+
+      - name: Post results to PR
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/summary.md)"
+          else
+            echo "::warning::No summary.md to post"
           fi
 
   # ──────────────────────────────────────────────
@@ -492,8 +494,21 @@ jobs:
           # Also fetch raw results for archiving
           scp -r -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/benchmark_results /tmp/benchmark_results 2>/dev/null || echo "No benchmark results found"
 
+      - name: Destroy RunPod instance
+        if: always()
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          if [ -f /tmp/pod_info.json ]; then
+            python scripts/ci/runpod_destroy.py \
+              --pod-info-file /tmp/pod_info.json \
+              --append-to-summary /tmp/benchmark_summary.md
+          else
+            echo "::warning::No pod info file found, nothing to clean up"
+          fi
+
       - name: Post benchmark results to PR
-        if: always() && github.event_name == 'pull_request'
+        if: ${{ always() && github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -511,17 +526,6 @@ jobs:
           path: /tmp/benchmark_results/
           retention-days: 30
           if-no-files-found: warn
-
-      - name: Destroy RunPod instance
-        if: always()
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
-          else
-            echo "::warning::No pod info file found, nothing to clean up"
-          fi
 
   # ──────────────────────────────────────────────
   # Job 6: Sweep setup — create W&B sweep + agent matrix
@@ -734,10 +738,21 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
           if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py --pod-info-file /tmp/pod_info.json
+            python scripts/ci/runpod_destroy.py \
+              --pod-info-file /tmp/pod_info.json \
+              --cost-output-file /tmp/pod_cost.json
           else
             echo "::warning::No pod info file found, nothing to clean up"
           fi
+
+      - name: Upload pod cost data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pod-cost-${{ matrix.agent_id }}
+          path: /tmp/pod_cost.json
+          retention-days: 7
+          if-no-files-found: warn
 
   # ──────────────────────────────────────────────
   # Job 8: Sweep report — collect results and post to PR
@@ -760,6 +775,13 @@ jobs:
 
       - name: Install CI dependencies
         run: pip install wandb
+
+      - name: Download pod cost artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pod-cost-*
+          path: /tmp/pod-costs
+          merge-multiple: false
 
       - name: Generate sweep report
         env:
@@ -793,6 +815,35 @@ jobs:
               printf '\n---\n**Apply these hyperparameters:** [PR](%s)\n' "$PR_URL" >> /tmp/sweep_summary.md
             fi
           fi
+
+      - name: Append total sweep cost to summary
+        run: |
+          python3 -c "
+          import json, glob, os
+          costs = []
+          for f in sorted(glob.glob('/tmp/pod-costs/pod-cost-*/pod_cost.json')):
+              try:
+                  data = json.load(open(f))
+                  costs.append(data)
+              except Exception as e:
+                  print(f'::warning::Could not read {f}: {e}')
+          if not costs:
+              print('No pod cost data found')
+              exit(0)
+          total = sum(c['total_cost'] for c in costs)
+          lines = []
+          for c in costs:
+              lines.append(f\"  - Pod {c['pod_id']}: \${c['total_cost']:.2f} ({c['uptime_human']})\")
+          detail = chr(10).join(lines)
+          cost_section = f\"\n**Total sweep cost:** \${total:.2f} across {len(costs)} pod(s)\n{detail}\n\"
+          summary_path = '/tmp/sweep_summary.md'
+          existing = ''
+          if os.path.exists(summary_path):
+              existing = open(summary_path).read()
+          with open(summary_path, 'w') as f:
+              f.write(existing + cost_section)
+          print(f'Total sweep cost: \${total:.2f}')
+          "
 
       - name: Post sweep results to PR
         if: github.event_name == 'pull_request'
