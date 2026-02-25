@@ -144,7 +144,7 @@ def main():
         sys.exit(1)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "moving_avg/throughput")
+    metric_name = metric_cfg.get("name", "moving_avg/curriculum_score")
     metric_goal = metric_cfg.get("goal", "maximize")
     reverse = metric_goal == "maximize"
 

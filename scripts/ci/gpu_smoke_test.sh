@@ -106,7 +106,7 @@ print(f'''## GPU Smoke Test Results
 
 | Metric | Value |
 |--------|-------|
-| **Throughput (moving avg)** | {s['moving_avg_throughput']:.4f} |
+| **Curriculum score** | {s.get('curriculum_score', (s['max_missing_entities'] - 1) + s['moving_avg_throughput']):.4f} |
 | **Steps completed** | {s['global_step']:,} / {s['total_timesteps']:,} |
 | **Curriculum level** | {s['max_missing_entities']} missing entities |
 | **Training speed** | {s['sps']:,} SPS |

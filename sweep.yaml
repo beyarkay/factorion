@@ -3,7 +3,7 @@
 method: bayes
 run_cap: 20
 metric:
-  name: "moving_avg/throughput"
+  name: "moving_avg/curriculum_score"
   goal: maximize
 
 parameters:

@@ -915,7 +915,7 @@ if __name__ == "__main__":
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             if (step+1) % 10 == 0 or step + 1 == args.num_steps:
-                pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6};             thput:{final_thputs_100ma:.2f}")
+                pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; score:{(max_missing_entities - 1) + final_thputs_100ma:.2f} (lvl:{max_missing_entities} thput:{final_thputs_100ma:.2f})")
             obs_SECWH[step] = next_obs_ECWH
             dones_SE[step] = next_done
 
@@ -1060,7 +1060,7 @@ if __name__ == "__main__":
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
         for epoch in range(args.update_epochs):
-            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; thput:{final_thputs_100ma:.2f}")
+            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; score:{(max_missing_entities - 1) + final_thputs_100ma:.2f}")
             np.random.shuffle(idxs_B)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -1157,7 +1157,7 @@ if __name__ == "__main__":
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
                     print(f"\nNow working with {max_missing_entities=}")
             writer.add_scalar("at_end_of_episode/max_missing_entities", max_missing_entities, global_step)
-            # writer.add_scalar("at_end_of_episode/final_thputs_100ma", final_thputs_100ma, global_step)
+            writer.add_scalar("moving_avg/curriculum_score", (max_missing_entities - 1) + final_thputs_100ma, global_step)
 
         if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
             print(f"Recording agent progress at {iteration}")
@@ -1218,6 +1218,10 @@ if __name__ == "__main__":
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 render_envs.close()
     final_thput = 0 if len(end_of_episode_thputs) == 0 else sum(end_of_episode_thputs) / len(end_of_episode_thputs)
+    # curriculum_score: monotonically increasing with agent capability.
+    # Advancing a curriculum level is always worth more than any throughput
+    # gain within a level (since throughput is in [0, 1]).
+    curriculum_score = (max_missing_entities - 1) + final_thput
     def format_duration(seconds: float) -> str:
         total_seconds = int(round(seconds))
         hours = total_seconds // 3600
@@ -1226,7 +1230,7 @@ if __name__ == "__main__":
         return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
     runtime = time.time() - start_time
     if args.track:
-        run.tags = run.tags + (f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
+        run.tags = run.tags + (f"score:{curriculum_score:.2f}", f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     writer.close()
     if runtime > 60 * 5: # 5 minutes
@@ -1249,6 +1253,7 @@ if __name__ == "__main__":
         "global_step": global_step,
         "total_timesteps": args.total_timesteps,
         "moving_avg_throughput": round(final_thput, 4),
+        "curriculum_score": round(curriculum_score, 4),
         "max_missing_entities": max_missing_entities,
         "runtime_seconds": round(runtime, 1),
         "runtime_human": format_duration(runtime),

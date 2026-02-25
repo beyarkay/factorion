@@ -203,8 +203,8 @@ def cohens_d(a: list[float], b: list[float], paired: bool = False) -> float:
 
 METRICS_TO_COMPARE = [
     {
-        "key": "moving_avg_throughput",
-        "label": "Throughput (moving avg)",
+        "key": "curriculum_score",
+        "label": "Curriculum score",
         "direction": "higher",
         "fmt": ".4f",
     },
@@ -215,12 +215,27 @@ METRICS_TO_COMPARE = [
         "fmt": ".1f",
     },
     {
+        "key": "moving_avg_throughput",
+        "label": "Throughput (moving avg)",
+        "direction": "higher",
+        "fmt": ".4f",
+    },
+    {
         "key": "sps",
         "label": "Training speed (SPS)",
         "direction": "higher",
         "fmt": ",.0f",
     },
 ]
+
+
+def _ensure_curriculum_score(results: list[dict]) -> None:
+    """Compute curriculum_score for results that don't have it (backward compat)."""
+    for r in results:
+        if "curriculum_score" not in r:
+            thput = float(r.get("moving_avg_throughput", 0))
+            level = int(r.get("max_missing_entities", 1))
+            r["curriculum_score"] = round((level - 1) + thput, 4)
 
 
 def extract_metric(results: list[dict], key: str) -> list[float]:
@@ -310,8 +325,12 @@ def generate_report(
     n_pr = len(pr_results)
     n_base = len(baseline_results)
 
+    # Ensure curriculum_score is available for all results (backward compat)
+    _ensure_curriculum_score(pr_results)
+    _ensure_curriculum_score(baseline_results)
+
     # Determine if we can use paired comparison (same seeds on both sides)
-    _, _, is_paired = pair_by_seed(pr_results, baseline_results, "moving_avg_throughput")
+    _, _, is_paired = pair_by_seed(pr_results, baseline_results, "curriculum_score")
     test_name = "paired t-test" if is_paired else "Welch's t-test"
 
     lines = []
@@ -391,20 +410,20 @@ def generate_report(
     lines.append("<details><summary>Per-seed details</summary>")
     lines.append("")
 
-    # Throughput per seed (paired by seed number)
-    lines.append("#### Throughput per seed")
+    # Curriculum score per seed (paired by seed number)
+    lines.append("#### Curriculum score per seed")
     lines.append("")
 
     pr_by_seed = {}
     for r in pr_results:
         s = r.get("seed") or r.get("seed_file")
-        if s is not None and "moving_avg_throughput" in r:
-            pr_by_seed[int(s)] = float(r["moving_avg_throughput"])
+        if s is not None and "curriculum_score" in r:
+            pr_by_seed[int(s)] = float(r["curriculum_score"])
     base_by_seed = {}
     for r in baseline_results:
         s = r.get("seed") or r.get("seed_file")
-        if s is not None and "moving_avg_throughput" in r:
-            base_by_seed[int(s)] = float(r["moving_avg_throughput"])
+        if s is not None and "curriculum_score" in r:
+            base_by_seed[int(s)] = float(r["curriculum_score"])
 
     all_seeds = sorted(set(pr_by_seed) | set(base_by_seed))
 
@@ -504,7 +523,9 @@ def main():
     print(report)
     print("=" * 60)
 
-    # Exit with non-zero if any metric is significantly worse
+    # Exit with non-zero if curriculum_score significantly regresses
+    _ensure_curriculum_score(pr_results)
+    _ensure_curriculum_score(baseline_results)
     for metric in METRICS_TO_COMPARE:
         key = metric["key"]
         direction = metric["direction"]
@@ -515,8 +536,8 @@ def main():
             else:
                 _, _, p_val = welch_t_test(pr_vals, base_vals)
             v = verdict_str(p_val, direction, mean(pr_vals), mean(base_vals), args.alpha)
-            # Only gate on throughput regression, not SPS
-            if key == "moving_avg_throughput" and "worse" in v.lower():
+            # Only gate on curriculum_score regression, not SPS or individual metrics
+            if key == "curriculum_score" and "worse" in v.lower():
                 print(f"\nFAILED: {metric['label']} significantly regressed")
                 sys.exit(1)
 

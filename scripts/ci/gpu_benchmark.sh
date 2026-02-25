@@ -109,7 +109,7 @@ start_status_monitor() {
                 if [ -f "$log" ]; then
                     bytes=$(wc -c < "$log" 2>/dev/null || echo 0)
                     # Grab the latest tqdm-style progress line
-                    latest=$(grep -oP 'gstep:\s*\d+.*?thput:[0-9.]+' "$log" 2>/dev/null | tail -1 || true)
+                    latest=$(grep -oP 'gstep:\s*\d+.*?score:[0-9.]+' "$log" 2>/dev/null | tail -1 || true)
                     if [ -n "$latest" ]; then
                         echo "  Seed ${s}: ${latest}  (${bytes} bytes logged)"
                     else
