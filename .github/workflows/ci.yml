@@ -56,9 +56,15 @@ on:
         required: false
         default: "5"
         type: string
+      skip_cache:
+        description: "Ignore benchmark cache (force re-run)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   pull-requests: write
+  contents: write  # needed for benchmark cache (release assets)
 
 env:
   WANDB_CI_PROJECT: factorion
@@ -381,7 +387,92 @@ jobs:
       - name: Install CI dependencies
         run: pip install runpod wandb
 
+      # ── Benchmark result cache ──────────────────────────────
+      # Results are stored as GitHub Release assets keyed by commit SHA
+      # and benchmark parameters.  When both PR and baseline have cached
+      # results we skip the RunPod pod entirely and compare locally.
+      - name: Determine commit SHAs
+        id: shas
+        run: |
+          PR_SHA="${GITHUB_SHA}"
+          BASELINE_SHA=$(git rev-parse origin/main 2>/dev/null || git rev-parse origin/master)
+          echo "pr_sha=${PR_SHA}" >> "$GITHUB_OUTPUT"
+          echo "baseline_sha=${BASELINE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "PR commit:       ${PR_SHA}"
+          echo "Baseline commit: ${BASELINE_SHA}"
+
+      - name: Check benchmark cache
+        id: cache
+        if: ${{ inputs.skip_cache != true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SEEDS="${{ inputs.benchmark_seeds || '10' }}"
+          TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
+          PR_SHA="${{ steps.shas.outputs.pr_sha }}"
+          BASELINE_SHA="${{ steps.shas.outputs.baseline_sha }}"
+
+          mkdir -p /tmp/cache/pr /tmp/cache/baseline
+
+          echo ">>> Checking PR cache (${PR_SHA::12})..."
+          if python scripts/ci/benchmark_cache.py check \
+              --sha "$PR_SHA" --seeds "$SEEDS" --timesteps "$TIMESTEPS" \
+              --output /tmp/cache/pr/all_results.json; then
+            echo "pr_cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_cached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo ">>> Checking baseline cache (${BASELINE_SHA::12})..."
+          if python scripts/ci/benchmark_cache.py check \
+              --sha "$BASELINE_SHA" --seeds "$SEEDS" --timesteps "$TIMESTEPS" \
+              --output /tmp/cache/baseline/all_results.json; then
+            echo "baseline_cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "baseline_cached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine if RunPod is needed
+        id: need-pod
+        run: |
+          PR_CACHED="${{ steps.cache.outputs.pr_cached }}"
+          BASELINE_CACHED="${{ steps.cache.outputs.baseline_cached }}"
+
+          if [ "$PR_CACHED" = "true" ] && [ "$BASELINE_CACHED" = "true" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo ">>> Both results cached — skipping RunPod!"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo ">>> RunPod needed (pr_cached=${PR_CACHED}, baseline_cached=${BASELINE_CACHED})"
+          fi
+
+      # ── Fast path: both cached, compare locally ─────────────
+      - name: Compare cached results (no GPU needed)
+        id: cached-compare
+        if: steps.need-pod.outputs.needed == 'false'
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          echo ">>> Running comparison from cached results..."
+          python3 scripts/ci/compare_runs.py \
+            --pr-results /tmp/cache/pr/all_results.json \
+            --baseline-results /tmp/cache/baseline/all_results.json \
+            --pr-label "pr-${PR_NUMBER}" \
+            --pr-number "$PR_NUMBER" \
+            --commit-sha "${{ steps.shas.outputs.pr_sha }}" \
+            --output /tmp/benchmark_summary.md
+
+          # Append cache note to the summary
+          printf '\n---\n*Results loaded from cache (no GPU pod needed).*\n' \
+            >> /tmp/benchmark_summary.md
+
+          # Copy cached results for artifact upload
+          mkdir -p /tmp/benchmark_results/pr /tmp/benchmark_results/baseline
+          cp /tmp/cache/pr/all_results.json /tmp/benchmark_results/pr/
+          cp /tmp/cache/baseline/all_results.json /tmp/benchmark_results/baseline/
+
+      # ── Slow path: need RunPod for at least one side ────────
       - name: Set up SSH key
+        if: steps.need-pod.outputs.needed == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
@@ -397,6 +488,7 @@ jobs:
 
       - name: Create RunPod instance
         id: create-pod
+        if: steps.need-pod.outputs.needed == 'true'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           PYTHONUNBUFFERED: "1"
@@ -409,6 +501,7 @@ jobs:
           echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
 
       - name: Wait for SSH readiness
+        if: steps.need-pod.outputs.needed == 'true'
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
@@ -425,6 +518,7 @@ jobs:
           exit 1
 
       - name: Transfer code to pod
+        if: steps.need-pod.outputs.needed == 'true'
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
@@ -446,8 +540,37 @@ jobs:
             ls -la /workspace/factorion/
           SETUP
 
+      - name: Transfer cached results to pod
+        if: steps.need-pod.outputs.needed == 'true'
+        run: |
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          BRANCH_LABEL="pr-${PR_NUMBER}"
+
+          # Pre-populate cached PR results on the pod so gpu_benchmark.sh skips those seeds
+          if [ "${{ steps.cache.outputs.pr_cached }}" = "true" ]; then
+            echo ">>> Transferring cached PR results to pod..."
+            ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+              "mkdir -p /workspace/benchmark_results/${BRANCH_LABEL}"
+            scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+              /tmp/cache/pr/all_results.json \
+              root@"$SSH_HOST":"/workspace/benchmark_results/${BRANCH_LABEL}/all_results.json"
+          fi
+
+          # Pre-populate cached baseline results
+          if [ "${{ steps.cache.outputs.baseline_cached }}" = "true" ]; then
+            echo ">>> Transferring cached baseline results to pod..."
+            ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+              "mkdir -p /workspace/benchmark_results/baseline"
+            scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+              /tmp/cache/baseline/all_results.json \
+              root@"$SSH_HOST":/workspace/benchmark_results/baseline/all_results.json
+          fi
+
       - name: Run multi-seed benchmark on GPU
         id: benchmark
+        if: steps.need-pod.outputs.needed == 'true'
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
@@ -485,7 +608,7 @@ jobs:
             bash /workspace/gpu_benchmark.sh
 
       - name: Fetch benchmark report from pod
-        if: always()
+        if: ${{ always() && steps.need-pod.outputs.needed == 'true' }}
         run: |
           SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
           SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
@@ -495,7 +618,7 @@ jobs:
           scp -r -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/benchmark_results /tmp/benchmark_results 2>/dev/null || echo "No benchmark results found"
 
       - name: Destroy RunPod instance
-        if: always()
+        if: ${{ always() && steps.need-pod.outputs.needed == 'true' }}
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
@@ -507,6 +630,41 @@ jobs:
             echo "::warning::No pod info file found, nothing to clean up"
           fi
 
+      # ── Save new results to cache ───────────────────────────
+      - name: Save benchmark results to cache
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SEEDS="${{ inputs.benchmark_seeds || '10' }}"
+          TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
+
+          # Save PR results if they weren't already cached
+          if [ "${{ steps.cache.outputs.pr_cached }}" != "true" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+            PR_FILE="/tmp/benchmark_results/pr-${PR_NUMBER}/all_results.json"
+            if [ -f "$PR_FILE" ]; then
+              echo ">>> Saving PR results to cache..."
+              python scripts/ci/benchmark_cache.py save \
+                --sha "${{ steps.shas.outputs.pr_sha }}" \
+                --seeds "$SEEDS" --timesteps "$TIMESTEPS" \
+                --input "$PR_FILE" || echo "::warning::Failed to cache PR results"
+            fi
+          fi
+
+          # Save baseline results if they weren't already cached
+          if [ "${{ steps.cache.outputs.baseline_cached }}" != "true" ]; then
+            BASELINE_FILE="/tmp/benchmark_results/baseline/all_results.json"
+            if [ -f "$BASELINE_FILE" ]; then
+              echo ">>> Saving baseline results to cache..."
+              python scripts/ci/benchmark_cache.py save \
+                --sha "${{ steps.shas.outputs.baseline_sha }}" \
+                --seeds "$SEEDS" --timesteps "$TIMESTEPS" \
+                --input "$BASELINE_FILE" || echo "::warning::Failed to cache baseline results"
+            fi
+          fi
+
+      # ── Post results ────────────────────────────────────────
       - name: Post benchmark results to PR
         if: ${{ always() && github.event_name == 'pull_request' }}
         env:
