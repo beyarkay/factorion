@@ -65,7 +65,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 3.923e-4
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -73,9 +73,9 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.99
+    gamma: float = 0.9532
     """the discount factor gamma"""
-    gae_lambda: float = 0.93
+    gae_lambda: float = 0.8456
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
@@ -83,16 +83,16 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.26
+    clip_coef: float = 0.2491
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef_start: float = 0.05
+    ent_coef_start: float = 0.02041
     """entropy coefficient at the start of training (high = more exploration)"""
-    ent_coef_end: float = 0.0005
+    ent_coef_end: float = 0.0004576
     """entropy coefficient at the end of training (low = more exploitation)"""
-    vf_coef: float = 0.6
+    vf_coef: float = 0.8019
     """coefficient of the value function"""
     coeff_throughput: float = 0.97
     """coefficient of the throughput when calculating reward"""
@@ -106,21 +106,21 @@ class Args:
     """coefficient of reward given to the cost of materials used to solve the problem"""
     coeff_validity: float = 0.01
     """coefficient of reward given to the action being valid"""
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 1.662
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
-    adam_epsilon: float = 1e-5
+    adam_epsilon: float = 3.208e-05
     """The epsilon parameter for Adam"""
     chan1: int = 64
     """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 64
+    chan2: int = 48
     """Number of channels in the second layer of the CNN encoder"""
     chan3: int = 64
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
-    tile_head_std: float = 0.01
+    tile_head_std: float = 0.09536
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     size: int = 8
     """The width and height of the factory"""

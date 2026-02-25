@@ -38,6 +38,7 @@ TUNABLE_PARAMS = {
     "gamma": "float",
     "learning_rate": "float",
     "max_grad_norm": "float",
+    "tile_head_std": "float",
     "vf_coef": "float",
 }
 

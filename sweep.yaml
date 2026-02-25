@@ -1,6 +1,7 @@
 # sweep.yaml
 
 method: bayes
+run_cap: 20
 metric:
   name: "moving_avg/throughput"
   goal: maximize
