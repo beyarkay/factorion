@@ -1,72 +1,70 @@
 # sweep.yaml
 
 method: bayes
+run_cap: 20
 metric:
   name: "moving_avg/throughput"
   goal: maximize
 
 parameters:
-  ent_coef:
+  ent_coef_start:
     distribution: log_uniform_values
-    min: 3e-4
-    max: 1e-3
+    min: 0.005
+    max: 0.2
 
-  chan2:
-    values: [48, 64]
-
-  adam_epsilon:
+  ent_coef_end:
     distribution: log_uniform_values
-    min: 1e-6
-    max: 2e-4
-
-  clip_coef:
-    distribution: uniform
-    min: 0.18
-    max: 0.32
-
-  chan3:
-    values: [48, 64]
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  gamma:
-    distribution: uniform
-    min: 0.95
-    max: 0.999
-
-  vf_coef:
-    distribution: uniform
-    min: 0.5
-    max: 0.9
-
-  chan1:
-    values: [32, 48, 64]
-
-  max_grad_norm:
-    distribution: uniform
-    min: 0.75
-    max: 2.5
+    min: 1e-4
+    max: 0.01
 
   learning_rate:
     distribution: log_uniform_values
     min: 5e-5
     max: 1e-3
 
+  chan1:
+    values: [32, 48, 64]
+
+  chan2:
+    values: [48, 64]
+
+  chan3:
+    values: [48, 64]
+
+  clip_coef:
+    distribution: uniform
+    min: 0.18
+    max: 0.32
+
+  gamma:
+    distribution: uniform
+    min: 0.95
+    max: 0.999
+
   gae_lambda:
     distribution: uniform
     min: 0.8
     max: 0.975
 
-#early_terminate:
-#  type: hyperband
-#  # a full run is (total_timesteps / (num_envs)) = 120000/16 = 7500, so setup
-#  # early-stopping at about 50% of the way through
-#  min_iter: 3750
-#  eta: 2
-#  s: 3
+  tile_head_std:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+
+  vf_coef:
+    distribution: uniform
+    min: 0.5
+    max: 0.9
+
+  max_grad_norm:
+    distribution: uniform
+    min: 0.75
+    max: 2.5
+
+  adam_epsilon:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 2e-4
 
 program: ppo.py
 

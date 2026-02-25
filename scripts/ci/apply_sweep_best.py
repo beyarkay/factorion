@@ -31,12 +31,14 @@ TUNABLE_PARAMS = {
     "chan2": "int",
     "chan3": "int",
     "clip_coef": "float",
-    "ent_coef": "float",
+    "ent_coef_start": "float",
+    "ent_coef_end": "float",
     "flat_dim": "int",
     "gae_lambda": "float",
     "gamma": "float",
     "learning_rate": "float",
     "max_grad_norm": "float",
+    "tile_head_std": "float",
     "vf_coef": "float",
 }
 
