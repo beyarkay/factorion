@@ -13,6 +13,7 @@ significance level 0.05.
 - [PR #13: Eliminate difficulty-0 episodes](#pr-13-eliminate-difficulty-0-episodes)
 - [PR #14: Re-enable early termination](#pr-14-re-enable-early-termination) (invalid benchmark)
 - [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically)
+- [Proposed experiments (not yet benchmarked)](#proposed-experiments-not-yet-benchmarked)
 - [Historical logbook](#historical-logbook)
 
 ---
@@ -297,6 +298,213 @@ this doesn't translate to better performance.
 Note: Earlier benchmarks for this PR were invalid (run before the CI fix in
 [PR #15](https://github.com/beyarkay/factorion/pull/15)). The results above are
 from the corrected benchmark pipeline.
+
+---
+
+## Proposed experiments (not yet benchmarked)
+
+The following are untested suggestions for improving training speed and sample
+efficiency. They are ordered by estimated impact-to-effort ratio. Proposals
+marked "Not recommended" were considered and rejected during review.
+
+### P1: Include solved factory in observation — Not recommended
+
+**Status:** Not recommended
+
+The agent's observation is `(4, W, H)` — only the current world state
+(ppo.py:255-259, 274-275). The solved factory `_solved_world_CWH` exists on
+the env (ppo.py:332-337) but is never shown to the agent. The proposal was to
+concatenate it as 4 additional channels, making the observation `(8, W, H)`.
+
+**Why it was rejected:** The agent already has sufficient context. At
+difficulty-1, it sees the source, the sink, and every entity except the single
+missing one. Showing the full solved factory would turn the agent into a copy
+machine — it would learn to diff the two halves of the observation rather than
+understanding factory mechanics (how belts connect, what direction moves items
+toward the sink, etc.). This approach doesn't extend to the real goal of
+solving never-before-seen factory layouts.
+
+The delta-based PBRS approach in PR #18 is the right way to guide the agent
+toward the solution: it provides a reward signal proportional to similarity
+without revealing the answer in the observation. The agent must still figure
+out *how* to improve — PBRS just tells it *whether* its last action helped.
+
+**Future consideration:** At higher curriculum levels (5+ missing entities),
+the agent has much less spatial context. If it ever plateaus there, a weaker
+form of hint — such as a flow-direction heatmap or a binary "entity should
+exist here" channel — could be revisited. But a full solution observation is
+not the right approach.
+
+### P2: Action masking for invalid actions
+
+**Estimated impact:** Medium-high | **Complexity:** Medium
+
+**The problem:** 330 of 640 effective actions (51.6%) are invalid with the
+current `num_entities=2` action space. Specifically:
+
+| Invalid action type | Count | Source |
+|---|---|---|
+| Placing on source/sink tiles | 20 | 2 tiles × 2 entities × 5 dirs |
+| Empty entity + non-NONE direction | 248 | 62 tiles × 1 entity × 4 dirs |
+| Transport belt + NONE direction | 62 | 62 tiles × 1 entity × 1 dir |
+| **Total invalid** | **330/640** | **51.6%** |
+
+Invalid actions are silently rejected (ppo.py:384-425) — they don't modify the
+world, return a validity penalty, but waste an entire step. This has two costs:
+
+1. **Exploration efficiency:** The correct action probability goes from ~1/640
+   to ~1/310 with masking, roughly a 2× improvement.
+
+2. **PBRS signal density (the bigger win):** Currently ~52% of steps produce
+   *no world change*, so 52% of steps have zero PBRS delta from PR #18. With
+   masking, every step modifies the world, so every step produces a non-zero
+   PBRS delta signal. This roughly doubles the effective reward signal density
+   from the PBRS shaping — a multiplicative interaction with PR #18.
+
+**How it works:** Set invalid action logits to `-inf` before the softmax in
+`get_action_and_value`. The remaining valid actions are renormalized. Gradients
+flow correctly through the masked distribution — the model learns which *valid*
+action is best. Raw logits for invalid actions become dead weights that don't
+affect behavior. This is standard practice in complex RL environments (StarCraft
+II, board games, Go, etc.).
+
+**Two masks needed:**
+
+1. **Tile mask** (dynamic, changes each step): Mask out tiles containing
+   source (entity `len(entities)-1`) or sink (`len(entities)-2`). Derived from
+   the entity channel of `_world_CWH`.
+
+2. **Entity-direction mask** (static for `num_entities=2`): Empty entity
+   requires `direction=NONE` (1 valid of 5). Transport belt requires
+   `direction ∈ {NORTH, EAST, SOUTH, WEST}` (4 valid of 5).
+
+**Critical implementation detail:** Masks must be applied during both rollout
+*and* the PPO update phase. During the update, `get_action_and_value` is called
+with stored actions to recompute log-probabilities. If the mask isn't applied
+there too, `π_new(a|s) / π_old(a|s)` becomes incorrect because the
+denominators differ (masked vs unmasked softmax). The masks must be stored
+alongside observations in the rollout buffer or recomputed from observations.
+
+Files to modify:
+- `ppo.py:FactorioEnv` — Add method returning mask tensors from `_world_CWH`
+- `ppo.py:AgentCNN.get_action_and_value` — Accept mask arguments, apply before
+  `Categorical(logits=...)` via `logits[~mask] = -inf`
+- Rollout storage (ppo.py:960-966) — Store tile masks alongside observations
+- Observation or info dict — Expose tile mask to the vectorized env wrapper
+
+**Expected results:**
+- `frac_invalid_actions` metric should drop to ~0%
+- PBRS delta signals should appear on every step (not 48% of steps)
+- Combined with PR #18, this may produce measurable throughput improvement
+
+### P3: Pre-allocated numpy buffer for Rust calls
+
+**Estimated impact:** Medium (2-5% wall-clock) | **Complexity:** Easy
+
+Every `step()` converts the world tensor for Rust throughput calculation:
+
+```python
+self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()  # ppo.py:444
+```
+
+This runs 4,096 times per training iteration (16 envs × 256 steps), allocating
+a new numpy array each time. Instead, pre-allocate a `(W, H, 4)` int64 numpy
+array in `__init__` and update only the modified cell after each action:
+
+```python
+# In __init__:
+self._world_WHC_np = np.zeros((size, size, 4), dtype=np.int64)
+
+# In step(), after mutating _world_CWH at (x, y):
+self._world_WHC_np[x, y, :] = self._world_CWH[:, x, y].numpy()
+
+# Then:
+throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_WHC_np)
+```
+
+Risk: Must keep `_world_WHC_np` perfectly in sync with `_world_CWH`. A single
+missed update causes silent correctness bugs. Also needs updating in `reset()`.
+
+### P4: Prioritized curriculum sampling
+
+**Estimated impact:** Medium | **Complexity:** Easy
+
+Difficulty is sampled uniformly from `[0, max_missing_entities]`
+(ppo.py:974, 1052). At `max_missing=5`, the agent spends equal time on
+difficulty-0 (already mastered) and difficulty-5 (too hard). Most learning
+happens at the frontier difficulty.
+
+Replace uniform sampling with a geometric distribution biased toward the
+frontier:
+
+```python
+# Instead of: randint(0, max_missing_entities+1)
+difficulty = max(0, max_missing_entities - int(np.random.geometric(p=0.5)))
+difficulty = min(difficulty, max_missing_entities)
+```
+
+This gives ~50% of episodes at the frontier, ~25% at frontier-1, etc., with a
+natural tail preserving some difficulty-0 episodes (essential scaffolding per
+PR #13).
+
+Risk: If frontier difficulty is genuinely too hard, the agent gets stuck on
+hard episodes. The geometric tail mitigates this. Must validate empirically.
+
+### P5: Parallelize env stepping with SubprocVectorEnv
+
+**Estimated impact:** Varies with grid size | **Complexity:** Easy
+
+`SyncVectorEnv` (ppo.py:934) calls each env's `step()` serially, so 16 Rust
+`simulate_throughput` calls happen sequentially per training step. Switching to
+`SubprocVectorEnv` runs each env in its own subprocess, so all 16 Rust calls
+(and all other per-step computation) happen in parallel automatically.
+
+```python
+# Current (ppo.py:934):
+envs = gym.vector.SyncVectorEnv([...])
+# Proposed:
+envs = gym.vector.AsyncVectorEnv([...])
+```
+
+Gymnasium's `AsyncVectorEnv` uses subprocesses by default. No Rust changes
+needed — each subprocess loads its own copy of the Rust extension.
+
+Files to modify:
+- `ppo.py:934` — Replace `SyncVectorEnv` with `AsyncVectorEnv`
+- May need to ensure env creation functions are pickle-safe for multiprocessing
+
+Caveat: On an 8×8 grid, each Rust call takes ~0.1ms, so 16 sequential calls
+total ~1.6ms. Subprocess IPC overhead (serializing/deserializing observations
+and actions) may negate gains at this scale. This becomes more valuable at
+larger grid sizes or if other per-step computation (PBRS, solution match) is
+also heavy. Worth a quick benchmark to find out.
+
+### P6: `torch.compile()` for the agent model
+
+**Estimated impact:** Low-medium | **Complexity:** Easy (one line)
+
+```python
+agent = torch.compile(agent, mode="default")  # after ppo.py:954
+```
+
+The model is small (135K params), so JIT compilation overhead may dominate.
+Worth a quick benchmark — if it helps, it's free performance. May require
+`fullgraph=False` if `Categorical` distributions cause graph breaks.
+
+### P7: Fix material_cost bug (correctness, no perf impact)
+
+Lines 471-475 compare `self.Channel.DIRECTION.value` (channel index 1) against
+entity IDs. Should use `self.Channel.ENTITIES.value` (channel index 0):
+
+```python
+# Current (wrong):
+self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('transport_belt').value
+# Fixed:
+self._world_CWH[self.Channel.ENTITIES.value] == self.str2ent('transport_belt').value
+```
+
+Currently `material_cost` is only logged, not used in reward, so this doesn't
+affect training. But the logged values are meaningless until fixed.
 
 ---
 
