@@ -1,11 +1,11 @@
 {
-    "losses/value_loss": {
+    "losses/value": {
         "max": 100.0,
         "direction": "lower",
         "required": true,
         "_comment": "Sanity check: value loss should not explode"
     },
-    "losses/policy_loss": {
+    "losses/policy": {
         "max": 10.0,
         "direction": "lower",
         "required": true,
@@ -17,12 +17,12 @@
         "required": false,
         "_comment": "Entropy should stay positive (agent is still exploring)"
     },
-    "charts/learning_rate": {
+    "optim/lr": {
         "min": 0.0,
         "required": false,
         "_comment": "Learning rate should remain non-negative"
     },
-    "moving_avg/throughput": {
+    "curriculum/throughput_avg": {
         "min": 0.6724,
         "direction": "higher",
         "required": false,
