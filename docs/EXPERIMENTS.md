@@ -13,6 +13,7 @@ significance level 0.05.
 - [PR #13: Eliminate difficulty-0 episodes](#pr-13-eliminate-difficulty-0-episodes)
 - [PR #14: Re-enable early termination](#pr-14-re-enable-early-termination) (invalid benchmark)
 - [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically)
+- [Proposed experiments (not yet benchmarked)](#proposed-experiments-not-yet-benchmarked)
 - [Historical logbook](#historical-logbook)
 
 ---
@@ -297,6 +298,160 @@ this doesn't translate to better performance.
 Note: Earlier benchmarks for this PR were invalid (run before the CI fix in
 [PR #15](https://github.com/beyarkay/factorion/pull/15)). The results above are
 from the corrected benchmark pipeline.
+
+---
+
+## Proposed experiments (not yet benchmarked)
+
+The following are untested suggestions for improving training speed and sample
+efficiency. They are ordered by estimated impact-to-effort ratio.
+
+### P1: Include solved factory in observation
+
+**Estimated impact:** Very high | **Complexity:** Easy
+
+The agent's observation is `(4, W, H)` — only the current world state
+(ppo.py:255-259, 274-275). The solved factory `_solved_world_CWH` exists on
+the env (ppo.py:332-337) but is **never shown to the agent**. The agent
+literally cannot see what it should build.
+
+Concatenate `_solved_world_CWH` as 4 additional channels, making the
+observation `(8, W, H)`. This transforms the problem from "guess what the
+correct factory looks like" to "match the visible target," directly addressing
+the exploration bottleneck identified in PR #16's analysis.
+
+Files to modify:
+- `ppo.py:255-259` — Observation space shape → `(len(Channel)*2, size, size)`
+- `ppo.py:274-275` (`_get_obs`) — `torch.cat([self._world_CWH, self._solved_world_CWH], dim=0)`
+- `ppo.py:738` — `self.channels` doubles (8 instead of 4)
+- `ppo.py:746` — First conv layer input channels now 8
+
+Risk: Doubles first-layer parameters (+1,728 params, negligible). One concern
+is that this may make the task "too easy" — the agent could learn to simply
+diff the two halves of the observation — but given the current ~0.58 throughput
+plateau at difficulty-1, making it easier is exactly what's needed.
+
+### P2: Action masking for invalid actions
+
+**Estimated impact:** Medium-high | **Complexity:** Medium
+
+Roughly 30-50% of randomly sampled actions are rejected as invalid
+(ppo.py:384-425): placing on source/sink tiles, belts without direction,
+empty entity with direction, etc. These wasted actions don't modify the world
+but still consume training steps.
+
+Add mask tensors that set invalid action logits to `-inf` before sampling in
+`get_action_and_value`. Two masks are needed:
+
+1. **Tile mask:** Mask out tiles containing source or sink entities.
+2. **Entity-direction mask:** If entity is "empty", force direction=NONE.
+   If entity is a belt, force direction≠NONE.
+
+The masks must also be applied during the PPO update phase (not just rollout)
+to keep log-probability computation consistent — otherwise the ratio
+`π_new / π_old` becomes incorrect for clipped actions.
+
+Files to modify:
+- `ppo.py:FactorioEnv` — Add method returning mask tensors from `_world_CWH`
+- `ppo.py:AgentCNN.get_action_and_value` — Apply masks before `Categorical`
+- Observation or info dict — Expose masks to the vectorized env wrapper
+
+### P3: Pre-allocated numpy buffer for Rust calls
+
+**Estimated impact:** Medium (2-5% wall-clock) | **Complexity:** Easy
+
+Every `step()` converts the world tensor for Rust throughput calculation:
+
+```python
+self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()  # ppo.py:444
+```
+
+This runs 4,096 times per training iteration (16 envs × 256 steps), allocating
+a new numpy array each time. Instead, pre-allocate a `(W, H, 4)` int64 numpy
+array in `__init__` and update only the modified cell after each action:
+
+```python
+# In __init__:
+self._world_WHC_np = np.zeros((size, size, 4), dtype=np.int64)
+
+# In step(), after mutating _world_CWH at (x, y):
+self._world_WHC_np[x, y, :] = self._world_CWH[:, x, y].numpy()
+
+# Then:
+throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_WHC_np)
+```
+
+Risk: Must keep `_world_WHC_np` perfectly in sync with `_world_CWH`. A single
+missed update causes silent correctness bugs. Also needs updating in `reset()`.
+
+### P4: Prioritized curriculum sampling
+
+**Estimated impact:** Medium | **Complexity:** Easy
+
+Difficulty is sampled uniformly from `[0, max_missing_entities]`
+(ppo.py:974, 1052). At `max_missing=5`, the agent spends equal time on
+difficulty-0 (already mastered) and difficulty-5 (too hard). Most learning
+happens at the frontier difficulty.
+
+Replace uniform sampling with a geometric distribution biased toward the
+frontier:
+
+```python
+# Instead of: randint(0, max_missing_entities+1)
+difficulty = max(0, max_missing_entities - int(np.random.geometric(p=0.5)))
+difficulty = min(difficulty, max_missing_entities)
+```
+
+This gives ~50% of episodes at the frontier, ~25% at frontier-1, etc., with a
+natural tail preserving some difficulty-0 episodes (essential scaffolding per
+PR #13).
+
+Risk: If frontier difficulty is genuinely too hard, the agent gets stuck on
+hard episodes. The geometric tail mitigates this. Must validate empirically.
+
+### P5: Batch Rust throughput calls with Rayon
+
+**Estimated impact:** Varies with grid size | **Complexity:** Medium
+
+`SyncVectorEnv` calls each env's `step()` serially, so 16 Rust `simulate_throughput`
+calls happen sequentially per training step. A `simulate_throughput_batch`
+function using Rayon could process all 16 worlds in parallel.
+
+Files to modify:
+- `factorion_rs/Cargo.toml` — Add `rayon` dependency
+- `factorion_rs/src/lib.rs` — Add batch function taking `(N, W, H, 4)` array
+- `ppo.py` — Custom vectorized env or post-step batched throughput call
+
+Caveat: On an 8×8 grid each call takes ~0.1ms, so 16 sequential calls ≈ 1.6ms.
+Rayon thread-pool overhead may negate gains at this scale. This becomes more
+valuable at larger grid sizes (e.g., 16×16 or bigger).
+
+### P6: `torch.compile()` for the agent model
+
+**Estimated impact:** Low-medium | **Complexity:** Easy (one line)
+
+```python
+agent = torch.compile(agent, mode="default")  # after ppo.py:954
+```
+
+The model is small (135K params), so JIT compilation overhead may dominate.
+Worth a quick benchmark — if it helps, it's free performance. May require
+`fullgraph=False` if `Categorical` distributions cause graph breaks.
+
+### P7: Fix material_cost bug (correctness, no perf impact)
+
+Lines 471-475 compare `self.Channel.DIRECTION.value` (channel index 1) against
+entity IDs. Should use `self.Channel.ENTITIES.value` (channel index 0):
+
+```python
+# Current (wrong):
+self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('transport_belt').value
+# Fixed:
+self._world_CWH[self.Channel.ENTITIES.value] == self.str2ent('transport_belt').value
+```
+
+Currently `material_cost` is only logged, not used in reward, so this doesn't
+affect training. But the logged values are meaningless until fixed.
 
 ---
 
