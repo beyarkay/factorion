@@ -953,6 +953,9 @@ if __name__ == "__main__":
 
     agent.to(device)
 
+    print("Compiling agent with torch.compile()")
+    agent = torch.compile(agent)
+
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
 
     print("Allocating storage space")
