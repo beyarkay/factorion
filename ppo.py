@@ -135,6 +135,8 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    curriculum_geometric_p: float = 0.5
+    """Geometric distribution parameter for curriculum sampling. Higher = more weight on frontier difficulty. 0 = uniform sampling (legacy behavior)."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -143,6 +145,23 @@ class Args:
     """the mini-batch size (batch_size // num_minibatches)"""
     num_iterations: int = 0
     """the number of iterations (total_timesteps // batch_size)"""
+
+
+def sample_difficulty(max_missing_entities: int, geometric_p: float) -> int:
+    """Sample a difficulty level biased toward the frontier.
+
+    When geometric_p > 0, uses a geometric distribution so ~50% of episodes
+    are at the frontier difficulty, ~25% at frontier-1, etc.  When
+    geometric_p == 0, falls back to uniform sampling (legacy behavior).
+
+    Returns an int in [0, max_missing_entities].
+    """
+    if geometric_p <= 0 or max_missing_entities <= 0:
+        return int(np.random.randint(0, max_missing_entities + 1))
+    # geometric(p) returns 1,2,3,... so subtract 1 to get 0,1,2,...
+    # This gives P(frontier) = p, P(frontier-1) = p(1-p), etc.
+    difficulty = max_missing_entities - (int(np.random.geometric(p=geometric_p)) - 1)
+    return max(0, min(difficulty, max_missing_entities))
 
 
 def make_env(env_id, idx, capture_video, size, run_name):
@@ -276,7 +295,7 @@ class FactorioEnv(gym.Env):
 
     def _get_info(self):
         return {
-            # 'num_missing_entities': self.num_missing_entities,
+            'num_missing_entities': self._num_missing_entities,
             'throughput': self._throughput,
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
@@ -903,6 +922,7 @@ if __name__ == "__main__":
         wandb.define_metric("curriculum/score", summary="max")
         wandb.define_metric("curriculum/level", summary="max")
         wandb.define_metric("curriculum/throughput_avg", summary="last")
+        wandb.define_metric("curriculum/episode_difficulty", summary="last")
         for m in ["policy", "value", "entropy", "approx_kl", "clipfrac", "explained_var"]:
             wandb.define_metric(f"losses/{m}", summary="last")
         for m in ["lr", "ent_coef", "grad_norm"]:
@@ -971,7 +991,7 @@ if __name__ == "__main__":
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
-            'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
+            'num_missing_entities': sample_difficulty(max_missing_entities, args.curriculum_geometric_p),
         }
     )
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
@@ -1049,7 +1069,7 @@ if __name__ == "__main__":
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                    'num_missing_entities': sample_difficulty(max_missing_entities, args.curriculum_geometric_p)
                 })
                 next_obs_ECWH[idx] = obs
 
@@ -1086,6 +1106,7 @@ if __name__ == "__main__":
                         "episode/num_entities": float(infos['num_entities'][i]),
                         "episode/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
                         "episode/frac_reachable": float(final_frac_reachable),
+                        "curriculum/episode_difficulty": float(infos['num_missing_entities'][i]),
                         "shaping/tile_location": float(infos['tile_match_location'][i]),
                         "shaping/tile_entity": float(infos['tile_match_entity'][i]),
                         "shaping/tile_direction": float(infos['tile_match_direction'][i]),
