@@ -135,6 +135,8 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    async_envs: bool = True
+    """Use AsyncVectorEnv (subprocess parallelism) instead of SyncVectorEnv"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -147,13 +149,15 @@ class Args:
 
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
+        # Register env if needed (subprocesses from AsyncVectorEnv don't
+        # inherit the main process's gym registry).
+        if env_id not in gym.registry:
+            gym.register(id=env_id, entry_point=FactorioEnv)
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
-        # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
-            # env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     return thunk
@@ -268,6 +272,8 @@ class FactorioEnv(gym.Env):
             "misc": gym.spaces.Discrete(len(self.Misc))
         })
         self._reset_options = options if options is not None else {}
+        self.max_missing_entities = 1
+        self._base_seed = 0
 
         self.steps = 0
 
@@ -306,9 +312,9 @@ class FactorioEnv(gym.Env):
         return location_match, entity_match, direction_match
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        if seed is None:
-            seed = 0
-        self._seed = int(seed + self.idx)
+        if seed is not None:
+            self._base_seed = seed
+        self._seed = int(self._base_seed + self.idx)
         super().reset(seed=self._seed)
         if options is not None:
             self._reset_options = options
@@ -324,7 +330,13 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
+        # Use explicit num_missing_entities if provided, otherwise self-sample
+        # from the curriculum range. Self-sampling is needed for auto-reset in
+        # AsyncVectorEnv where we can't manually reset individual subprocess envs.
+        if options is not None and 'num_missing_entities' in options:
+            self._num_missing_entities = options['num_missing_entities']
+        else:
+            self._num_missing_entities = int(np.random.randint(0, self.max_missing_entities + 1))
 
         self.actions = []
         # Generate the solved factory first (same seed → same layout),
@@ -732,15 +744,17 @@ class FactorioEnv(gym.Env):
 class AgentCNN(nn.Module):
     def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01):
         super().__init__()
-        base_env = envs.envs[0].unwrapped
-        self.width = base_env.size
-        self.height = base_env.size
-        self.channels = len(base_env.Channel)
+        # Extract env metadata from observation/action spaces (works for both
+        # SyncVectorEnv and AsyncVectorEnv, unlike envs.envs[0].unwrapped).
+        obs_shape = envs.single_observation_space.shape
+        self.channels = obs_shape[0]
+        self.width = obs_shape[1]
+        self.height = obs_shape[2]
         # minus two for the source and the sink
         self.num_entities = 2 # len(base_env.entities) - 2 TODO for now, only allow empty or transport_belt
-        self.num_directions = len(base_env.Direction)
-        self.num_items = len(base_env.items)
-        self.num_misc = len(base_env.Misc)
+        self.num_directions = envs.single_action_space["direction"].n
+        self.num_items = envs.single_action_space["item"].n
+        self.num_misc = envs.single_action_space["misc"].n
         self.chan3 = chan3
 
         self.encoder = nn.Sequential(
@@ -931,9 +945,11 @@ if __name__ == "__main__":
 
     print(f"Setting up envs with {args}")
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
-    )
+    env_fns = [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)]
+    if args.async_envs:
+        envs = gym.vector.AsyncVectorEnv(env_fns)
+    else:
+        envs = gym.vector.SyncVectorEnv(env_fns)
 
     print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")
     agent = AgentCNN(
@@ -968,12 +984,8 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     max_missing_entities = 1
-    next_obs_ECWH, _ = envs.reset(
-        seed=args.seed,
-        options={
-            'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
-        }
-    )
+    envs.set_attr("max_missing_entities", max_missing_entities)
+    next_obs_ECWH, _ = envs.reset(seed=args.seed)
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32, device=device)
     final_thputs_100ma = np.nan
@@ -1045,13 +1057,17 @@ if __name__ == "__main__":
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
-            # Reset only the done environments with updated num_missing_entities
-            done_indices = np.where(next_done)[0]
-            for idx in done_indices:
-                obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
-                })
-                next_obs_ECWH[idx] = obs
+            # Reset only the done environments with updated num_missing_entities.
+            # For AsyncVectorEnv, auto-reset handles this (envs self-sample
+            # difficulty from max_missing_entities). For SyncVectorEnv, manually
+            # reset each done env with explicit options.
+            if not args.async_envs:
+                done_indices = np.where(next_done)[0]
+                for idx in done_indices:
+                    obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
+                        'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                    })
+                    next_obs_ECWH[idx] = obs
 
             next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
             next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
@@ -1218,6 +1234,7 @@ if __name__ == "__main__":
                     for _ in range(moving_average_length):
                         end_of_episode_thputs.append(0)
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
+                    envs.set_attr("max_missing_entities", max_missing_entities)
                     print(f"\nNow working with {max_missing_entities=}")
             iter_metrics["curriculum/level"] = max_missing_entities
             iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
