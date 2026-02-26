@@ -158,6 +158,10 @@ def sample_difficulty(max_missing_entities: int, geometric_p: float) -> int:
     """
     if geometric_p <= 0 or max_missing_entities <= 0:
         return int(np.random.randint(0, max_missing_entities + 1))
+    # Clamp to <1.0 so difficulty-0 scaffolding episodes are always possible.
+    # At p=1.0, geometric always returns 1, making every episode frontier-only,
+    # which eliminates the "don't break things" training signal (see PR #13).
+    geometric_p = min(geometric_p, 0.95)
     # geometric(p) returns 1,2,3,... so subtract 1 to get 0,1,2,...
     # This gives P(frontier) = p, P(frontier-1) = p(1-p), etc.
     difficulty = max_missing_entities - (int(np.random.geometric(p=geometric_p)) - 1)
@@ -288,6 +292,7 @@ class FactorioEnv(gym.Env):
         })
         self._reset_options = options if options is not None else {}
 
+        self._num_missing_entities = 0
         self.steps = 0
 
     def _get_obs(self):

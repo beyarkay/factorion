@@ -94,6 +94,30 @@ class TestGeometricBias:
         )
 
 
+class TestPClamping:
+    """p=1.0 is clamped to 0.95 to preserve difficulty-0 scaffolding."""
+
+    def test_p_one_still_samples_non_frontier(self):
+        """With p=1.0 (clamped to 0.95), non-frontier levels must still appear."""
+        np.random.seed(42)
+        max_missing = 5
+        n = 10000
+        samples = [sample_difficulty(max_missing, 1.0) for _ in range(n)]
+        non_frontier = sum(1 for s in samples if s < max_missing)
+        assert non_frontier > 0, (
+            "p=1.0 should be clamped so non-frontier difficulties still appear"
+        )
+
+    def test_p_one_frontier_fraction_matches_clamped(self):
+        """p=1.0 should behave identically to p=0.95."""
+        np.random.seed(42)
+        n = 10000
+        samples_1 = [sample_difficulty(5, 1.0) for _ in range(n)]
+        np.random.seed(42)
+        samples_95 = [sample_difficulty(5, 0.95) for _ in range(n)]
+        assert samples_1 == samples_95
+
+
 class TestUniformFallback:
     """With geometric_p == 0, sampling should be uniform."""
 
