@@ -17,9 +17,6 @@ from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 ENV_ID = "factorion/FactorioEnv-v0-compile-test"
 
-# torch.compile requires torch >= 2.0
-TORCH_COMPILE_AVAILABLE = hasattr(torch, "compile")
-
 
 @pytest.fixture(scope="module")
 def registered_env():
@@ -44,12 +41,11 @@ def agent(envs):
 @pytest.fixture()
 def compiled_agent(agent):
     """Create a compiled AgentCNN."""
-    return torch.compile(agent, mode="default")
+    return torch.compile(agent)
 
 
-@pytest.mark.skipif(not TORCH_COMPILE_AVAILABLE, reason="torch.compile requires torch >= 2.0")
 class TestCompiledForwardPass:
-    def test_compiled_output_shapes(self, compiled_agent):
+    def test_output_shapes(self, compiled_agent):
         """Verify compiled agent produces correct output shapes."""
         obs = torch.randn(2, 4, 5, 5)
         action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
@@ -63,13 +59,13 @@ class TestCompiledForwardPass:
         assert entropy_B.shape == (2,)
         assert value_B.shape == (2,)
 
-    def test_compiled_get_value_shape(self, compiled_agent):
+    def test_get_value_shape(self, compiled_agent):
         """Verify compiled get_value output shape."""
         obs = torch.randn(4, 4, 5, 5)
         value = compiled_agent.get_value(obs)
         assert value.shape == (4,)
 
-    def test_compiled_xy_within_bounds(self, compiled_agent):
+    def test_xy_within_bounds(self, compiled_agent):
         """Verify compiled agent produces valid coordinates."""
         obs = torch.randn(8, 4, 5, 5)
         for _ in range(5):
@@ -80,9 +76,8 @@ class TestCompiledForwardPass:
             assert (y >= 0).all() and (y < 5).all(), f"y out of bounds: {y}"
 
 
-@pytest.mark.skipif(not TORCH_COMPILE_AVAILABLE, reason="torch.compile requires torch >= 2.0")
 class TestCompiledLogProbConsistency:
-    def test_compiled_log_prob_replay(self, compiled_agent):
+    def test_log_prob_replay(self, compiled_agent):
         """Sample actions from compiled agent, replay them, verify log_probs match."""
         obs = torch.randn(4, 4, 5, 5)
         action_out, logp_B, _, _ = compiled_agent.get_action_and_value(obs)
@@ -103,7 +98,6 @@ class TestCompiledLogProbConsistency:
         torch.testing.assert_close(logp_B, logp_replay)
 
 
-@pytest.mark.skipif(not TORCH_COMPILE_AVAILABLE, reason="torch.compile requires torch >= 2.0")
 class TestCompiledGradientFlow:
     def test_gradients_flow_through_compiled_model(self, compiled_agent):
         """Verify gradients propagate through the compiled agent."""
@@ -123,7 +117,6 @@ class TestCompiledGradientFlow:
                 assert param.grad is not None, f"No gradient for {name}"
 
 
-@pytest.mark.skipif(not TORCH_COMPILE_AVAILABLE, reason="torch.compile requires torch >= 2.0")
 class TestCompiledParity:
     def test_deterministic_parity(self, agent, envs):
         """Compiled and uncompiled agents with same weights produce same values."""
@@ -145,7 +138,7 @@ class TestCompiledParity:
             )
 
         # Compile the same agent (same weights)
-        compiled = torch.compile(agent, mode="default")
+        compiled = torch.compile(agent)
         with torch.no_grad():
             _, logp_compiled, entropy_compiled, value_compiled = compiled.get_action_and_value(
                 obs, action_tensor
@@ -155,21 +148,20 @@ class TestCompiledParity:
         torch.testing.assert_close(entropy_orig, entropy_compiled)
         torch.testing.assert_close(value_orig, value_compiled)
 
-    def test_compiled_value_parity(self, agent):
+    def test_value_parity(self, agent):
         """Compiled and uncompiled agents produce same value estimates."""
         obs = torch.randn(4, 4, 5, 5)
 
         with torch.no_grad():
             value_orig = agent.get_value(obs)
 
-        compiled = torch.compile(agent, mode="default")
+        compiled = torch.compile(agent)
         with torch.no_grad():
             value_compiled = compiled.get_value(obs)
 
         torch.testing.assert_close(value_orig, value_compiled)
 
 
-@pytest.mark.skipif(not TORCH_COMPILE_AVAILABLE, reason="torch.compile requires torch >= 2.0")
 class TestCompileOptimizer:
     def test_optimizer_works_with_compiled_model(self, compiled_agent):
         """Verify that Adam optimizer can step on a compiled model."""

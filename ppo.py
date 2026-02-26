@@ -135,10 +135,6 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
-    torch_compile: bool = False
-    """if toggled, apply torch.compile() to the agent model for potential speedup"""
-    torch_compile_mode: str = "default"
-    """torch.compile mode: 'default', 'reduce-overhead', or 'max-autotune'"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -957,9 +953,8 @@ if __name__ == "__main__":
 
     agent.to(device)
 
-    if args.torch_compile:
-        print(f"Compiling agent with torch.compile(mode={args.torch_compile_mode!r})")
-        agent = torch.compile(agent, mode=args.torch_compile_mode)
+    print("Compiling agent with torch.compile()")
+    agent = torch.compile(agent)
 
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
 
