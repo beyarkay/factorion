@@ -27,6 +27,12 @@
 #   BASELINE_DIR        - Path to pre-fetched baseline results (skip baseline run)
 #   RUNPOD_POD_ID       - RunPod pod ID (for self-terminate watchdog)
 #   RUNPOD_API_KEY      - RunPod API key (for watchdog)
+#
+# Cache support:
+#   If ${PR_RESULTS_DIR}/all_results.json exists before this script runs,
+#   PR seed runs are skipped entirely (cache hit from the workflow).
+#   Similarly, if ${BASELINE_RESULTS_DIR}/all_results.json exists, baseline
+#   runs are skipped.  The workflow pre-populates these via benchmark_cache.py.
 
 set -euo pipefail
 
@@ -134,78 +140,83 @@ stop_status_monitor() {
 
 # ── Run PR branch seeds (parallel, up to MAX_PARALLEL at a time) ──
 mkdir -p "$PR_RESULTS_DIR" "$LOG_DIR"
-PR_LOG_DIR="${LOG_DIR}/pr"
-mkdir -p "$PR_LOG_DIR"
 
-PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
-echo ""
-echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
-echo ">>> W&B group: ${PR_GROUP}"
-echo ">>> Logs: ${PR_LOG_DIR}/seed_*.log"
-echo ""
+if [ -f "${PR_RESULTS_DIR}/all_results.json" ]; then
+    echo ""
+    echo ">>> PR results already present (cached), skipping seed runs"
+else
+    PR_LOG_DIR="${LOG_DIR}/pr"
+    mkdir -p "$PR_LOG_DIR"
 
-start_status_monitor "PR" "$PR_LOG_DIR" "$NUM_SEEDS"
+    PR_GROUP="bench-${BRANCH_LABEL}-${SHORT_SHA}"
+    echo ""
+    echo ">>> Running ${NUM_SEEDS} seeds for branch '${BRANCH_LABEL}' (up to ${MAX_PARALLEL} in parallel)..."
+    echo ">>> W&B group: ${PR_GROUP}"
+    echo ">>> Logs: ${PR_LOG_DIR}/seed_*.log"
+    echo ""
 
-# Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
-# Output goes directly to log files (no pipe) to avoid SSH buffer deadlock.
-PIDS=()
-SEED_FOR_PID=()
-for seed in $(seq 1 "$NUM_SEEDS"); do
-    # If we already have MAX_PARALLEL running, wait for any one to finish
-    while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
-        if wait "${PIDS[0]}" 2>/dev/null; then
-            echo "[seed ${SEED_FOR_PID[0]}] finished (exit 0)"
-        else
-            echo "[seed ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
-        fi
-        PIDS=("${PIDS[@]:1}")
-        SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+    start_status_monitor "PR" "$PR_LOG_DIR" "$NUM_SEEDS"
+
+    # Launch seeds in parallel, throttled to MAX_PARALLEL concurrent jobs.
+    # Output goes directly to log files (no pipe) to avoid SSH buffer deadlock.
+    PIDS=()
+    SEED_FOR_PID=()
+    for seed in $(seq 1 "$NUM_SEEDS"); do
+        # If we already have MAX_PARALLEL running, wait for any one to finish
+        while [ "${#PIDS[@]}" -ge "$MAX_PARALLEL" ]; do
+            if wait "${PIDS[0]}" 2>/dev/null; then
+                echo "[seed ${SEED_FOR_PID[0]}] finished (exit 0)"
+            else
+                echo "[seed ${SEED_FOR_PID[0]}] WARNING: exited with non-zero status"
+            fi
+            PIDS=("${PIDS[@]:1}")
+            SEED_FOR_PID=("${SEED_FOR_PID[@]:1}")
+        done
+
+        echo ">>> Launching seed ${seed}/${NUM_SEEDS}..."
+        python ppo.py \
+            --seed "$seed" \
+            --env-id factorion/FactorioEnv-v0 \
+            --track \
+            --wandb-project-name "$WANDB_PROJECT" \
+            --wandb-group "$PR_GROUP" \
+            --total-timesteps "$TOTAL_TIMESTEPS" \
+            --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
+            --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
+            > "${PR_LOG_DIR}/seed_${seed}.log" 2>&1 &
+        PIDS+=($!)
+        SEED_FOR_PID+=("$seed")
     done
 
-    echo ">>> Launching seed ${seed}/${NUM_SEEDS}..."
-    python ppo.py \
-        --seed "$seed" \
-        --env-id factorion/FactorioEnv-v0 \
-        --track \
-        --wandb-project-name "$WANDB_PROJECT" \
-        --wandb-group "$PR_GROUP" \
-        --total-timesteps "$TOTAL_TIMESTEPS" \
-        --summary-path "${PR_RESULTS_DIR}/seed_${seed}.json" \
-        --tags ci benchmark "${BRANCH_LABEL}" "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "seed:${seed}" \
-        > "${PR_LOG_DIR}/seed_${seed}.log" 2>&1 &
-    PIDS+=($!)
-    SEED_FOR_PID+=("$seed")
-done
+    # Wait for all remaining background jobs
+    FAILED=0
+    for i in "${!PIDS[@]}"; do
+        if wait "${PIDS[$i]}" 2>/dev/null; then
+            echo "[seed ${SEED_FOR_PID[$i]}] finished (exit 0)"
+        else
+            echo "[seed ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
+            FAILED=$((FAILED + 1))
+        fi
+    done
 
-# Wait for all remaining background jobs
-FAILED=0
-for i in "${!PIDS[@]}"; do
-    if wait "${PIDS[$i]}" 2>/dev/null; then
-        echo "[seed ${SEED_FOR_PID[$i]}] finished (exit 0)"
-    else
-        echo "[seed ${SEED_FOR_PID[$i]}] WARNING: exited with non-zero status"
-        FAILED=$((FAILED + 1))
-    fi
-done
+    stop_status_monitor
 
-stop_status_monitor
+    # Print tail of each seed's log
+    for seed in $(seq 1 "$NUM_SEEDS"); do
+        echo ""
+        echo "──── seed ${seed} log tail ────"
+        tail -5 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
+        if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
+            echo "  WARNING: summary JSON not produced! Full log tail:"
+            tail -30 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
+        fi
+    done
 
-# Print tail of each seed's log
-for seed in $(seq 1 "$NUM_SEEDS"); do
     echo ""
-    echo "──── seed ${seed} log tail ────"
-    tail -5 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || echo "  (no log file)"
-    if [ ! -f "${PR_RESULTS_DIR}/seed_${seed}.json" ]; then
-        echo "  WARNING: summary JSON not produced! Full log tail:"
-        tail -30 "${PR_LOG_DIR}/seed_${seed}.log" 2>/dev/null || true
-    fi
-done
+    echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
 
-echo ""
-echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
-
-# ── Combine per-seed results into one JSON array ──────────────────
-python3 -c "
+    # ── Combine per-seed results into one JSON array ──────────────────
+    python3 -c "
 import json, glob, sys
 
 results = []
@@ -222,9 +233,13 @@ with open('${PR_RESULTS_DIR}/all_results.json', 'w') as f:
 
 print(f'Combined {len(results)} seed results into all_results.json')
 "
+fi
 
 # ── Run baseline seeds if no pre-fetched baseline ─────────────────
-if [ -n "${BASELINE_DIR:-}" ] && [ -f "${BASELINE_DIR}/all_results.json" ]; then
+if [ -f "${BASELINE_RESULTS_DIR}/all_results.json" ]; then
+    echo ""
+    echo ">>> Baseline results already present (cached), skipping"
+elif [ -n "${BASELINE_DIR:-}" ] && [ -f "${BASELINE_DIR}/all_results.json" ]; then
     echo ""
     echo ">>> Using pre-fetched baseline from ${BASELINE_DIR}"
 else
