@@ -394,7 +394,13 @@ jobs:
       - name: Determine commit SHAs
         id: shas
         run: |
-          PR_SHA="${GITHUB_SHA}"
+          # For pull_request events, GITHUB_SHA is the merge commit, not the
+          # PR head.  Use the actual head SHA so the cache key is stable.
+          if [ -n "${{ github.event.pull_request.head.sha }}" ]; then
+            PR_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            PR_SHA="${GITHUB_SHA}"
+          fi
           BASELINE_SHA=$(git rev-parse origin/main 2>/dev/null || git rev-parse origin/master)
           echo "pr_sha=${PR_SHA}" >> "$GITHUB_OUTPUT"
           echo "baseline_sha=${BASELINE_SHA}" >> "$GITHUB_OUTPUT"
