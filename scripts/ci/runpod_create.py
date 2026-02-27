@@ -104,6 +104,7 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
                 "ssh_port": ssh_port,
                 "gpu_type": status.get("machine", {}).get("gpuDisplayName", "unknown"),
                 "status": "running",
+                "created_at": time.time(),
             }
 
         print(f"  Waiting... ({elapsed}s, desired={desired})", flush=True)
