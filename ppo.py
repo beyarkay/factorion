@@ -1005,6 +1005,7 @@ if __name__ == "__main__":
         _episode_metrics.clear()
         return means
 
+    _next_eval_log_step = 256
     print(f"Starting {args.num_iterations} iterations")
     iteration_of_last_increase = 0
     pbar = tqdm.trange(1, args.num_iterations + 1)
@@ -1106,7 +1107,7 @@ if __name__ == "__main__":
                     })
 
             # Log eval metrics every 256 global steps during rollout
-            if args.track and global_step % 256 == 0:
+            if args.track and global_step >= _next_eval_log_step:
                 final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
                 eval_metrics = {
                     "curriculum/level": max_missing_entities,
@@ -1115,6 +1116,7 @@ if __name__ == "__main__":
                 }
                 eval_metrics.update(_flush_episode_means())
                 wandb.log(eval_metrics, step=global_step)
+                _next_eval_log_step = global_step + 256
 
         # bootstrap value if not done
         with torch.no_grad():
