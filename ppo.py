@@ -743,6 +743,11 @@ class AgentCNN(nn.Module):
         self.num_misc = len(base_env.Misc)
         self.chan3 = chan3
 
+        # Entity IDs for source and sink (non-placeable; used for tile masking)
+        self.source_id = len(base_env.entities) - 1
+        self.sink_id = len(base_env.entities) - 2
+        self.entity_channel_idx = base_env.Channel.ENTITIES.value
+
         self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
             nn.ReLU(),
@@ -797,6 +802,14 @@ class AgentCNN(nn.Module):
         # --- Tile selection: joint (x, y) via 1x1 conv ---
         tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
         tile_logits_BN = tile_logits_B1WH.reshape(B, -1)       # (B, W*H)
+
+        # Tile mask: disallow placement on source/sink tiles
+        ent_channel_BWH = x_BCWH[:, self.entity_channel_idx, :, :]
+        tile_mask_BN = (
+            (ent_channel_BWH != self.source_id) & (ent_channel_BWH != self.sink_id)
+        ).reshape(B, -1)
+        tile_logits_BN = tile_logits_BN.masked_fill(~tile_mask_BN, float('-inf'))
+
         dist_tile = Categorical(logits=tile_logits_BN)
 
         if action is None:
@@ -817,13 +830,25 @@ class AgentCNN(nn.Module):
         logits_e_BE = self.ent_head(tile_features_BC)
         logits_d_BD = self.dir_head(tile_features_BC)
         dist_e = Categorical(logits=logits_e_BE)
+
+        # Sample (or replay) entity first — direction mask depends on it
+        if action is None:
+            ent_B = dist_e.sample()
+        else:
+            ent_B = action[:, 2]
+
+        # Direction mask: empty (0) → only NONE (0); transport belt (1) → only cardinal (1-4)
+        dir_mask_BD = torch.zeros(B, self.num_directions, dtype=torch.bool, device=x_BCWH.device)
+        is_empty = (ent_B == 0)
+        dir_mask_BD[is_empty, 0] = True       # empty → NONE only
+        dir_mask_BD[~is_empty, 1:] = True     # transport belt → cardinal dirs only
+        logits_d_BD = logits_d_BD.masked_fill(~dir_mask_BD, float('-inf'))
+
         dist_d = Categorical(logits=logits_d_BD)
 
         if action is None:
-            ent_B = dist_e.sample()
             dir_B = dist_d.sample()
         else:
-            ent_B = action[:, 2]
             dir_B = action[:, 3]
 
         # --- Log probs and entropy ---
