@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,10 +39,12 @@ class TestFormatUptime:
 
 class TestQueryPodCost:
     @patch("runpod_destroy.runpod")
-    def test_cost_calculation(self, mock_runpod):
+    def test_cost_from_runtime_uptime_in_seconds(self, mock_runpod):
+        """Prefers runtime.uptimeInSeconds (current API) over legacy uptimeSeconds."""
         mock_runpod.get_pod.return_value = {
             "costPerHr": 2.61,
-            "uptimeSeconds": 1255,
+            "uptimeSeconds": 0,  # deprecated, returns 0
+            "runtime": {"uptimeInSeconds": 1255},
             "machine": {"gpuDisplayName": "NVIDIA A100 80GB PCIe"},
         }
         os.environ["RUNPOD_API_KEY"] = "test-key"
@@ -56,6 +59,43 @@ class TestQueryPodCost:
         assert result["gpu_name"] == "NVIDIA A100 80GB PCIe"
         assert result["uptime_human"] == "20m 55s"
         mock_runpod.get_pod.assert_called_once_with("pod-123")
+
+    @patch("runpod_destroy.runpod")
+    def test_cost_from_legacy_uptime_seconds(self, mock_runpod):
+        """Falls back to legacy uptimeSeconds when runtime field is missing."""
+        mock_runpod.get_pod.return_value = {
+            "costPerHr": 2.61,
+            "uptimeSeconds": 1255,
+            "machine": {"gpuDisplayName": "NVIDIA A100 80GB PCIe"},
+        }
+        os.environ["RUNPOD_API_KEY"] = "test-key"
+
+        result = query_pod_cost("pod-123")
+
+        assert result["uptime_seconds"] == 1255
+        assert result["total_cost"] == 0.91
+
+    @patch("runpod_destroy.time")
+    @patch("runpod_destroy.runpod")
+    def test_cost_from_created_at_fallback(self, mock_runpod, mock_time):
+        """Falls back to created_at when both API uptime fields return 0."""
+        mock_runpod.get_pod.return_value = {
+            "costPerHr": 1.39,
+            "uptimeSeconds": 0,
+            "runtime": {"ports": []},
+            "machine": {"gpuDisplayName": "A100 PCIe"},
+        }
+        os.environ["RUNPOD_API_KEY"] = "test-key"
+        # Simulate pod created 30 minutes ago
+        created_at = 1000000.0
+        mock_time.time.return_value = 1000000.0 + 1800  # 30 min later
+
+        result = query_pod_cost("pod-789", created_at=created_at)
+
+        assert result["uptime_seconds"] == 1800
+        assert result["uptime_human"] == "30m"
+        # 1.39 * (1800/3600) = 0.695 -> round(0.695, 2) = 0.69
+        assert result["total_cost"] == 0.69
 
     @patch("runpod_destroy.runpod")
     def test_cost_with_flat_gpu_name(self, mock_runpod):

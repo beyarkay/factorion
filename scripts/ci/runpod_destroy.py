@@ -14,6 +14,8 @@ Usage:
         --append-to-summary /tmp/summary.md
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -38,14 +40,26 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
-def query_pod_cost(pod_id: str) -> dict:
-    """Query RunPod for pod cost info. Returns dict with cost fields."""
+def query_pod_cost(pod_id: str, created_at: float | None = None) -> dict:
+    """Query RunPod for pod cost info. Returns dict with cost fields.
+
+    The top-level ``uptimeSeconds`` field in the RunPod API is deprecated and
+    returns 0.  We prefer ``runtime.uptimeInSeconds``; when neither is
+    available we fall back to computing elapsed time from *created_at* (a
+    Unix timestamp recorded when the pod was provisioned).
+    """
     runpod.api_key = os.environ["RUNPOD_API_KEY"]
     pod = runpod.get_pod(pod_id)
 
     cost_per_hr = pod["costPerHr"]
-    uptime_seconds = pod["uptimeSeconds"]
     gpu_name = pod.get("machine", {}).get("gpuDisplayName", pod.get("gpuDisplayName", "GPU"))
+
+    # Try runtime.uptimeInSeconds first (current API), then the legacy
+    # top-level uptimeSeconds, then compute from the creation timestamp.
+    runtime = pod.get("runtime") or {}
+    uptime_seconds = runtime.get("uptimeInSeconds") or pod.get("uptimeSeconds") or 0
+    if not uptime_seconds and created_at is not None:
+        uptime_seconds = max(0, time.time() - created_at)
 
     total_cost = cost_per_hr * (uptime_seconds / 3600)
 
@@ -96,11 +110,13 @@ def main():
     args = parser.parse_args()
 
     pod_id = args.pod_id
+    created_at = None
     if not pod_id:
         try:
             with open(args.pod_info_file) as f:
                 pod_info = json.load(f)
             pod_id = pod_info["pod_id"]
+            created_at = pod_info.get("created_at")
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
             print(f"WARNING: Could not read pod info from {args.pod_info_file}: {e}")
             print("Nothing to clean up.")
@@ -108,7 +124,7 @@ def main():
 
     # Query cost before termination (best-effort)
     try:
-        cost = query_pod_cost(pod_id)
+        cost = query_pod_cost(pod_id, created_at=created_at)
         print(f"Pod cost: ${cost['total_cost']:.2f} ({cost['uptime_human']} @ ${cost['cost_per_hr']}/hr)")
 
         with open(args.cost_output_file, "w") as f:
