@@ -248,6 +248,9 @@ class FactorioEnv(gym.Env):
             setattr(self, func_name, func)
 
         self._world_CWH = torch.zeros((len(self.Channel), self.size, self.size))
+        # Pre-allocated numpy buffer in (W, H, C) layout for Rust calls,
+        # avoiding a new allocation every step().
+        self._world_WHC_np = np.zeros((self.size, self.size, len(self.Channel)), dtype=np.int64)
 
         self.max_id_in_tensor = max(len(self.items), len(self.entities), len(self.Direction))
         # Observation is the world, with a square grid of tiles and one channel
@@ -344,6 +347,8 @@ class FactorioEnv(gym.Env):
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
+        # Bulk-sync the pre-allocated numpy buffer after world regeneration
+        self._world_WHC_np[:] = self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
         self._prev_match = self._compute_solution_match()
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
@@ -431,6 +436,11 @@ class FactorioEnv(gym.Env):
             self._world_CWH[self.Channel.DIRECTION.value, x, y] = direc
             self._world_CWH[self.Channel.ITEMS.value, x, y] = item_id
             self._world_CWH[self.Channel.MISC.value, x, y] = misc
+            # Keep pre-allocated numpy buffer in sync (avoids per-step allocation)
+            self._world_WHC_np[x, y, 0] = int(entity_id)
+            self._world_WHC_np[x, y, 1] = int(direc)
+            self._world_WHC_np[x, y, 2] = int(item_id)
+            self._world_WHC_np[x, y, 3] = int(misc)
             self.actions[-1] = {
                 'entity': self.entities[entity_id].name,
                 'xy': (x, y),
@@ -441,7 +451,7 @@ class FactorioEnv(gym.Env):
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+        throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_WHC_np)
         # TODO don't always divide by 15
         throughput /= 15.0
 
