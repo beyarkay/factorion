@@ -1,75 +1,69 @@
-# sweep.yaml — Delta-based reward shaping sweep
+# sweep.yaml — 5M-step hyperparameter sweep
+#
+# Focus: reward shaping coefficients (never tuned with delta-based PBRS)
+# and entropy schedule (critical for long runs). PPO core params are
+# narrowed around known-good defaults. CNN architecture (chan1/2/3)
+# removed to reduce search space — current 48/48/48 is well-established.
 
 method: bayes
-run_cap: 20
+run_cap: 30
 metric:
   name: "curriculum/score"
   goal: maximize
 
 parameters:
+  # ── Reward shaping (high priority — never tuned with PBRS) ──────
   coeff_shaping_location:
     distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+    min: 0.5
+    max: 10.0
 
   coeff_shaping_entity:
     distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+    min: 0.5
+    max: 10.0
 
   coeff_shaping_direction:
     distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+    min: 0.5
+    max: 10.0
 
   coeff_throughput:
     distribution: uniform
     min: 0.5
     max: 0.99
 
+  # ── Entropy schedule (high priority — drives exploration vs exploitation) ─
   ent_coef_start:
     distribution: log_uniform_values
-    min: 0.005
-    max: 0.2
+    min: 0.01
+    max: 0.3
 
   ent_coef_end:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 0.01
+    min: 1e-5
+    max: 0.005
 
+  # ── PPO core (narrowed around known-good defaults) ──────────────
   learning_rate:
     distribution: log_uniform_values
-    min: 5e-5
+    min: 2e-4
     max: 1e-3
-
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
 
   clip_coef:
     distribution: uniform
-    min: 0.18
-    max: 0.32
+    min: 0.15
+    max: 0.35
 
   gamma:
     distribution: uniform
-    min: 0.95
+    min: 0.97
     max: 0.999
 
   gae_lambda:
     distribution: uniform
-    min: 0.8
-    max: 0.975
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
+    min: 0.75
+    max: 0.95
 
   vf_coef:
     distribution: uniform
@@ -78,13 +72,22 @@ parameters:
 
   max_grad_norm:
     distribution: uniform
-    min: 0.75
-    max: 2.5
+    min: 0.5
+    max: 3.0
 
   adam_epsilon:
     distribution: log_uniform_values
     min: 1e-6
     max: 2e-4
+
+  # ── Architecture (small search, high impact) ────────────────────
+  tile_head_std:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+
+  flat_dim:
+    values: [64, 128, 256]
 
 program: ppo.py
 
@@ -92,6 +95,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - 250_000
+  - "5_000_000"
   - --track
   - ${args}

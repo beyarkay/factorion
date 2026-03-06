@@ -54,7 +54,7 @@ on:
       sweep_agents_per_pod:
         description: "Parallel wandb agents per pod (GPU time-slicing)"
         required: false
-        default: "5"
+        default: "3"
         type: string
 
 permissions:
@@ -624,7 +624,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sweep-setup.outputs.matrix) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 480
     steps:
       - uses: actions/checkout@v4
         with:

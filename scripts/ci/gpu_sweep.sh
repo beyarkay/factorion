@@ -48,11 +48,11 @@ echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
-# ── Safety net: self-terminate after 4 hours if cleanup fails ─────
+# ── Safety net: self-terminate after 8 hours if cleanup fails ─────
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
-    echo ">>> Starting self-terminate watchdog (4h timeout)..."
+    echo ">>> Starting self-terminate watchdog (8h timeout)..."
     nohup bash -c "
-      sleep 14400
+      sleep 28800
       curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
         -H 'Content-Type: application/json' \
         -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
