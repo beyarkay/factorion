@@ -54,7 +54,7 @@ on:
       sweep_agents_per_pod:
         description: "Parallel wandb agents per pod (GPU time-slicing)"
         required: false
-        default: "5"
+        default: "10"
         type: string
 
 permissions:
