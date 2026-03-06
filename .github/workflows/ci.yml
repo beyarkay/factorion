@@ -624,7 +624,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.sweep-setup.outputs.matrix) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 480
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
         with:
@@ -647,6 +647,8 @@ jobs:
           Host *
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
+            ServerAliveInterval 15
+            ServerAliveCountMax 12
             LogLevel ERROR
           EOF
 
@@ -719,18 +721,45 @@ jobs:
             scripts/ci/gpu_sweep.sh \
             root@"$SSH_HOST":/workspace/gpu_sweep.sh
 
-          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
-            WANDB_API_KEY="$WANDB_API_KEY" \
-            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
-            SWEEP_ID="$SWEEP_PATH" \
-            SWEEP_COUNT="$COUNT_PER_AGENT" \
-            AGENTS_PER_POD="$AGENTS_PER_POD" \
-            AGENT_ID="$AGENT_ID" \
-            PR_NUMBER="$PR_NUMBER" \
-            COMMIT_SHA="$GITHUB_SHA" \
-            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
-            RUNPOD_POD_ID="$POD_ID" \
-            bash /workspace/gpu_sweep.sh
+          # Launch sweep detached from SSH session so it survives disconnects.
+          # The script writes its exit code to /workspace/sweep_done when finished.
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" bash -c "'
+            export WANDB_API_KEY=\"$WANDB_API_KEY\"
+            export WANDB_PROJECT=\"${{ env.WANDB_CI_PROJECT }}\"
+            export SWEEP_ID=\"$SWEEP_PATH\"
+            export SWEEP_COUNT=\"$COUNT_PER_AGENT\"
+            export AGENTS_PER_POD=\"$AGENTS_PER_POD\"
+            export AGENT_ID=\"$AGENT_ID\"
+            export PR_NUMBER=\"$PR_NUMBER\"
+            export COMMIT_SHA=\"$GITHUB_SHA\"
+            export RUNPOD_API_KEY=\"$RUNPOD_API_KEY\"
+            export RUNPOD_POD_ID=\"$POD_ID\"
+            nohup bash -c \"bash /workspace/gpu_sweep.sh; echo \\\$? > /workspace/sweep_done\" \
+              > /workspace/sweep_stdout.log 2>&1 &
+            echo \$!
+          '"
+
+          echo ">>> Sweep launched in background on pod, polling for completion..."
+
+          # Poll every 60s until /workspace/sweep_done exists
+          while true; do
+            DONE=$(ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=10 \
+              root@"$SSH_HOST" "cat /workspace/sweep_done 2>/dev/null" 2>/dev/null || echo "")
+            if [ -n "$DONE" ]; then
+              echo ">>> Sweep finished with exit code: $DONE"
+              # Dump tail of logs
+              ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+                "tail -50 /workspace/sweep_stdout.log" 2>/dev/null || true
+              if [ "$DONE" != "0" ]; then
+                echo "ERROR: Sweep failed"
+                exit 1
+              fi
+              break
+            fi
+            # Print a heartbeat with timestamp
+            echo "  [$(date -u +%H:%M:%S)] Sweep still running..."
+            sleep 60
+          done
 
       - name: Destroy RunPod instance
         if: always()
