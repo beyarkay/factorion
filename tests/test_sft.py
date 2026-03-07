@@ -32,7 +32,7 @@ class TestExtractExpertActions:
 
         # Replay actions onto task world
         state = task.clone()
-        for obs, tile_idx, entity_id, direction_id in pairs:
+        for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
             H = state.shape[2]
             x = tile_idx // H
             y = tile_idx % H
@@ -104,7 +104,7 @@ class TestExtractExpertActions:
             size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
         )
         pairs = extract_expert_actions(solved, task)
-        for _, _, entity_id, direction_id in pairs:
+        for _, _, entity_id, direction_id, _ in pairs:
             assert entity_id != str2ent("empty").value, "Expert actions shouldn't place empty"
             assert direction_id != Direction.NONE.value, "Expert belt actions need a direction"
 
@@ -113,16 +113,17 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs = generate_dataset(args)
+        obs, tiles, ents, dirs, masks = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
         assert len(dirs) == 100
+        assert len(masks) == 100
 
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        obs, _, _, _ = generate_dataset(args)
+        obs, _, _, _, _ = generate_dataset(args)
         assert obs.shape[1] == len(Channel)  # channels
         assert obs.shape[2] == 5  # width
         assert obs.shape[3] == 5  # height
@@ -130,7 +131,7 @@ class TestGenerateDataset:
     def test_tile_indices_in_range(self):
         """Tile indices should be in [0, W*H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        _, tiles, _, _ = generate_dataset(args)
+        _, tiles, _, _, _ = generate_dataset(args)
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
 
@@ -200,7 +201,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs = generate_dataset(args)
+        obs, tiles, ents, dirs, masks = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -208,6 +209,7 @@ class TestSFTLossConvergence:
 
         optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
         ce_loss = torch.nn.CrossEntropyLoss()
+        bce_loss = torch.nn.BCEWithLogitsLoss()
 
         losses = []
         for epoch in range(5):
@@ -217,7 +219,7 @@ class TestSFTLossConvergence:
             B = encoded.shape[0]
 
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile = ce_loss(tile_logits, tiles)
+            loss_tile = bce_loss(tile_logits, masks)
 
             x_B = tiles // agent.height
             y_B = tiles % agent.height
