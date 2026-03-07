@@ -6,7 +6,7 @@ Factorion is a reinforcement learning project that trains agents to autonomously
 
 ## Tech Stack
 
-- **Language**: Python 3
+- **Language**: Python 3.11+
 - **RL Framework**: Gymnasium
 - **ML Framework**: PyTorch (`torch`)
 - **Experiment Tracking**: Weights & Biases (`wandb`)
@@ -26,9 +26,11 @@ Factorion is a reinforcement learning project that trains agents to autonomously
 ## Setup
 
 ```bash
+uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -r requirements.txt
-cd factorion_rs && maturin develop --release && cd ..
+uv pip install maturin
+maturin develop --release --manifest-path factorion_rs/Cargo.toml
 ```
 
 ## Running
