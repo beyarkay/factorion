@@ -33,6 +33,12 @@ def envs(registered_env):
 
 
 @pytest.fixture()
+def n_channels(envs):
+    """Number of observation channels from the environment."""
+    return envs.single_observation_space.shape[0]
+
+
+@pytest.fixture()
 def agent(envs):
     """Create an uncompiled AgentCNN."""
     return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
@@ -45,9 +51,9 @@ def compiled_agent(agent):
 
 
 class TestCompiledForwardPass:
-    def test_output_shapes(self, compiled_agent):
+    def test_output_shapes(self, compiled_agent, n_channels):
         """Verify compiled agent produces correct output shapes."""
-        obs = torch.randn(2, 4, 5, 5)
+        obs = torch.randn(2, n_channels, 5, 5)
         action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
 
         assert action_out["xy"].shape == (2, 2)
@@ -59,15 +65,15 @@ class TestCompiledForwardPass:
         assert entropy_B.shape == (2,)
         assert value_B.shape == (2,)
 
-    def test_get_value_shape(self, compiled_agent):
+    def test_get_value_shape(self, compiled_agent, n_channels):
         """Verify compiled get_value output shape."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
         value = compiled_agent.get_value(obs)
         assert value.shape == (4,)
 
-    def test_xy_within_bounds(self, compiled_agent):
+    def test_xy_within_bounds(self, compiled_agent, n_channels):
         """Verify compiled agent produces valid coordinates."""
-        obs = torch.randn(8, 4, 5, 5)
+        obs = torch.randn(8, n_channels, 5, 5)
         for _ in range(5):
             action_out, _, _, _ = compiled_agent.get_action_and_value(obs)
             x = action_out["xy"][:, 0]
@@ -77,9 +83,9 @@ class TestCompiledForwardPass:
 
 
 class TestCompiledLogProbConsistency:
-    def test_log_prob_replay(self, compiled_agent):
+    def test_log_prob_replay(self, compiled_agent, n_channels):
         """Sample actions from compiled agent, replay them, verify log_probs match."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
         action_out, logp_B, _, _ = compiled_agent.get_action_and_value(obs)
 
         x_B = action_out["xy"][:, 0]
@@ -99,9 +105,9 @@ class TestCompiledLogProbConsistency:
 
 
 class TestCompiledGradientFlow:
-    def test_gradients_flow_through_compiled_model(self, compiled_agent):
+    def test_gradients_flow_through_compiled_model(self, compiled_agent, n_channels):
         """Verify gradients propagate through the compiled agent."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
         action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
@@ -118,9 +124,9 @@ class TestCompiledGradientFlow:
 
 
 class TestCompiledParity:
-    def test_deterministic_parity(self, agent, envs):
+    def test_deterministic_parity(self, agent, envs, n_channels):
         """Compiled and uncompiled agents with same weights produce same values."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
         action_tensor = torch.tensor(
             [
                 [2, 3, 1, 2, 0, 0],
@@ -148,9 +154,9 @@ class TestCompiledParity:
         torch.testing.assert_close(entropy_orig, entropy_compiled)
         torch.testing.assert_close(value_orig, value_compiled)
 
-    def test_value_parity(self, agent):
+    def test_value_parity(self, agent, n_channels):
         """Compiled and uncompiled agents produce same value estimates."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
 
         with torch.no_grad():
             value_orig = agent.get_value(obs)
@@ -163,11 +169,11 @@ class TestCompiledParity:
 
 
 class TestCompileOptimizer:
-    def test_optimizer_works_with_compiled_model(self, compiled_agent):
+    def test_optimizer_works_with_compiled_model(self, compiled_agent, n_channels):
         """Verify that Adam optimizer can step on a compiled model."""
         optimizer = torch.optim.Adam(compiled_agent.parameters(), lr=1e-3)
 
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, n_channels, 5, 5)
         action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
