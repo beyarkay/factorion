@@ -124,6 +124,13 @@ for i in "${!PIDS[@]}"; do
     fi
 done
 
+# ── Grace period for W&B uploads ──────────────────────────────
+# wandb.finish() in ppo.py may still be uploading when the agent process
+# exits. Give it time to flush before the pod is terminated.
+echo ""
+echo ">>> Waiting 30s for W&B uploads to flush..."
+sleep 30
+
 echo ""
 echo "============================================"
 echo "  Sweep pod ${AGENT_ID} completed"

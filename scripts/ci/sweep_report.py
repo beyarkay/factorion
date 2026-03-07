@@ -58,6 +58,30 @@ def main():
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
 
+    def extract_metric(run):
+        """Extract a scalar metric from a run summary.
+
+        wandb.define_metric(..., summary="max") stores the value as a
+        SummarySubDict like {'max': 4.95} instead of a plain float.
+        This helper unwraps it.
+        """
+        val = run.summary.get(metric_name)
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        # SummarySubDict — try 'max' then 'last' then first value
+        if hasattr(val, 'get'):
+            for key in ('max', 'last', 'min'):
+                v = val.get(key)
+                if v is not None:
+                    return float(v)
+            # Fallback: grab first numeric value
+            for v in val.values():
+                if isinstance(v, (int, float)):
+                    return float(v)
+        return None
+
     # Fetch all runs that finished or crashed-but-logged-the-metric.
     # Runs killed by the watchdog / SSH timeout after training completed often
     # show state="crashed" even though they logged all their metrics.
@@ -65,7 +89,7 @@ def main():
         r
         for r in sweep.runs
         if r.state == "finished"
-        or (r.state == "crashed" and r.summary.get(metric_name) is not None)
+        or (r.state == "crashed" and extract_metric(r) is not None)
     ]
 
     # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
@@ -87,7 +111,7 @@ def main():
 
     # Sort runs by the sweep metric
     def get_metric(run):
-        val = run.summary.get(metric_name)
+        val = extract_metric(run)
         if val is None:
             return float("-inf") if reverse else float("inf")
         return val

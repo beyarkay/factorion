@@ -127,6 +127,8 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.01201
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    promotion_threshold: float = 0.95
+    """throughput moving average required to advance to the next curriculum level"""
     size: int = 8
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -1236,7 +1238,7 @@ if __name__ == "__main__":
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
-                if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
+                if final_thputs_100ma > args.promotion_threshold and iteration - iteration_of_last_increase > 10:
                     iteration_of_last_increase = iteration
                     end_of_episode_thputs.clear()
                     for _ in range(moving_average_length):

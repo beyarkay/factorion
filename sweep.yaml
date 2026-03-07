@@ -1,12 +1,13 @@
-# sweep.yaml — 3M-step hyperparameter sweep (follow-up to 0r1udi17)
+# sweep.yaml — 3M-step hyperparameter sweep (follow-up to 0r1udi17 + wcv9tge3)
 #
-# Narrowed from sweep 0r1udi17 based on edge analysis and parameter
-# importance. Key changes:
-#   - ent_coef_start: min 0.01 → 0.005, max 0.3 → 0.1 (most important param, all top runs < 0.045)
-#   - coeff_shaping_location/entity: min 0.5 → 0.1, max 10 → 5 (top runs clustered low)
-#   - max_grad_norm: min 0.5 → 0.25 (best run was at floor)
-#   - vf_coef: max 0.9 → 1.0 (best run near ceiling)
-#   - Dropped flat_dim (64 won decisively — best run + 2 other top runs)
+# Narrowed from 24 scored runs across sweeps 0r1udi17 and wcv9tge3.
+# Top-5 runs (score > 3.9) analysis:
+#   - ent_coef_start: all top runs 0.015–0.044 (tighten to 0.01–0.05)
+#   - coeff_shaping_location: all top runs 1.1–1.7 (tighten to 0.5–2.0)
+#   - learning_rate: all top runs 2.4e-4–5.1e-4 (tighten to 2e-4–5e-4)
+#   - clip_coef: top runs 0.28–0.34 (tighten to 0.25–0.35)
+#   - tile_head_std: best run 0.012, most top runs < 0.01 (tighten to 0.003–0.015)
+#   - flat_dim: 64 won decisively (dropped from sweep)
 
 method: bayes
 # NOTE: Also update the sweep_count default in .github/workflows/ci.yml
@@ -22,53 +23,53 @@ early_terminate:
   eta: 3
 
 parameters:
-  # ── Reward shaping (narrowed — top runs clustered low) ──────────
+  # ── Reward shaping (location tightened, others kept wide) ───────
   coeff_shaping_location:
     distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+    min: 0.5
+    max: 2.0
 
   coeff_shaping_entity:
     distribution: log_uniform_values
-    min: 0.1
+    min: 0.5
     max: 5.0
 
   coeff_shaping_direction:
     distribution: log_uniform_values
-    min: 0.1
+    min: 0.5
     max: 10.0
 
   coeff_throughput:
     distribution: uniform
-    min: 0.5
-    max: 0.99
+    min: 0.55
+    max: 0.85
 
-  # ── Entropy schedule (most important — extend floor, narrow ceiling) ─
+  # ── Entropy schedule (tightened around top-run cluster) ─────────
   ent_coef_start:
     distribution: log_uniform_values
-    min: 0.005
-    max: 0.1
+    min: 0.01
+    max: 0.05
 
   ent_coef_end:
     distribution: log_uniform_values
     min: 1e-5
-    max: 0.005
+    max: 0.004
 
-  # ── PPO core (narrowed around known-good defaults) ──────────────
+  # ── PPO core (tightened around top-run values) ──────────────────
   learning_rate:
     distribution: log_uniform_values
     min: 2e-4
-    max: 1e-3
+    max: 5e-4
 
   clip_coef:
     distribution: uniform
-    min: 0.15
+    min: 0.25
     max: 0.35
 
   gamma:
     distribution: uniform
     min: 0.97
-    max: 0.999
+    max: 0.99
 
   gae_lambda:
     distribution: uniform
@@ -78,23 +79,29 @@ parameters:
   vf_coef:
     distribution: uniform
     min: 0.5
-    max: 1.0
+    max: 0.9
 
   max_grad_norm:
     distribution: uniform
-    min: 0.25
-    max: 3.0
+    min: 0.5
+    max: 2.5
 
   adam_epsilon:
     distribution: log_uniform_values
     min: 1e-6
-    max: 2e-4
+    max: 1.5e-4
+
+  # ── Curriculum ──────────────────────────────────────────────────
+  promotion_threshold:
+    distribution: uniform
+    min: 0.8
+    max: 0.99
 
   # ── Architecture ────────────────────────────────────────────────
   tile_head_std:
     distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
+    min: 0.003
+    max: 0.015
 
 program: ppo.py
 
