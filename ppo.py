@@ -867,7 +867,7 @@ if __name__ == "__main__":
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
     iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{iso8601}"
+    run_name = f"{iso8601} seed{args.seed}"
     run = None
     if args.track:
         import wandb
