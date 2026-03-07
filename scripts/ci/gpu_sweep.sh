@@ -48,11 +48,11 @@ echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
-# ── Safety net: self-terminate after 4 hours if cleanup fails ─────
+# ── Safety net: self-terminate after 8 hours if cleanup fails ─────
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
-    echo ">>> Starting self-terminate watchdog (4h timeout)..."
+    echo ">>> Starting self-terminate watchdog (6h timeout)..."
     nohup bash -c "
-      sleep 14400
+      sleep 21600
       curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
         -H 'Content-Type: application/json' \
         -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
@@ -123,6 +123,13 @@ for i in "${!PIDS[@]}"; do
         FAILED=$((FAILED + 1))
     fi
 done
+
+# ── Grace period for W&B uploads ──────────────────────────────
+# wandb.finish() in ppo.py may still be uploading when the agent process
+# exits. Give it time to flush before the pod is terminated.
+echo ""
+echo ">>> Waiting 30s for W&B uploads to flush..."
+sleep 30
 
 echo ""
 echo "============================================"
