@@ -1243,6 +1243,8 @@ if __name__ == "__main__":
                         end_of_episode_thputs.append(0)
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
                     print(f"\nNow working with {max_missing_entities=}")
+            # Recompute after potential level-up so we use the reset buffer
+            final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             iter_metrics["curriculum/level"] = max_missing_entities
             iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
             iter_metrics["curriculum/throughput_avg"] = final_thputs_100ma
