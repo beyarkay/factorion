@@ -1096,25 +1096,21 @@ if __name__ == "__main__":
             next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
             next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
 
-            if "episode" in infos:
-                # The "_episode" mask indicates which environments finished this step
-                # We can use any of the masks (_r, _l, _t) as they should be the same for a finished env
-                finished_envs_mask = infos["_episode"]
-
-                # Iterate through the boolean mask
+            # With SameStep autoreset, terminal episode info is in
+            # infos["final_info"] — a stacked dict where each value is
+            # an array indexed by env. "_final_info" is a boolean mask.
+            if "final_info" in infos:
+                fi = infos["final_info"]
                 for i in range(args.num_envs):
-                    if not finished_envs_mask[i]:
+                    if not infos["_final_info"][i]:
+                        continue
+                    if "episode" not in fi or not fi["_episode"][i]:
                         continue
                     # This environment finished, extract its stats
-                    episode_return = infos["episode"]["r"][i]
-                    episode_len = infos["episode"]["l"][i]
-                    end_of_episode_thput = infos["throughput"][i]
-                    final_frac_reachable = infos["frac_reachable"][i]
-                    # final_frac_hallucin = infos["frac_hallucin"][i]
-
-                    # episodic_returns.append(episode_return)
-                    # avg_return = sum(episodic_returns) / len(episodic_returns)
-                    # writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
+                    episode_return = fi["episode"]["r"][i]
+                    episode_len = fi["episode"]["l"][i]
+                    end_of_episode_thput = fi["throughput"][i]
+                    final_frac_reachable = fi["frac_reachable"][i]
 
                     end_of_episode_thputs.append(end_of_episode_thput)
 
@@ -1122,16 +1118,16 @@ if __name__ == "__main__":
                         "episode/throughput": float(end_of_episode_thput),
                         "episode/reward": float(episode_return),
                         "episode/length": float(episode_len),
-                        "episode/invalid_frac": float(infos['frac_invalid_actions'][i]),
-                        "episode/num_entities": float(infos['num_entities'][i]),
-                        "episode/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
+                        "episode/invalid_frac": float(fi['frac_invalid_actions'][i]),
+                        "episode/num_entities": float(fi['num_entities'][i]),
+                        "episode/entity_efficiency": float(fi['min_entities_required'][i]) / float(fi['num_entities'][i]),
                         "episode/frac_reachable": float(final_frac_reachable),
-                        "shaping/tile_location": float(infos['tile_match_location'][i]),
-                        "shaping/tile_entity": float(infos['tile_match_entity'][i]),
-                        "shaping/tile_direction": float(infos['tile_match_direction'][i]),
-                        "shaping/delta_location": float(infos['shaping_location_delta'][i]),
-                        "shaping/delta_entity": float(infos['shaping_entity_delta'][i]),
-                        "shaping/delta_direction": float(infos['shaping_direction_delta'][i]),
+                        "shaping/tile_location": float(fi['tile_match_location'][i]),
+                        "shaping/tile_entity": float(fi['tile_match_entity'][i]),
+                        "shaping/tile_direction": float(fi['tile_match_direction'][i]),
+                        "shaping/delta_location": float(fi['shaping_location_delta'][i]),
+                        "shaping/delta_entity": float(fi['shaping_entity_delta'][i]),
+                        "shaping/delta_direction": float(fi['shaping_direction_delta'][i]),
                     })
 
             # Log eval metrics every 256 global steps during rollout
