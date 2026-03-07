@@ -240,6 +240,10 @@ def train_sft(args: SFTArgs):
         )
 
     best_val_acc = 0.0
+    val_loss = 0.0
+    val_tile_acc = 0.0
+    val_ent_acc = 0.0
+    val_dir_acc = 0.0
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
@@ -360,7 +364,7 @@ def train_sft(args: SFTArgs):
                 "sft/epoch": epoch,
             })
 
-        if val_acc > best_val_acc:
+        if val_acc >= best_val_acc:
             best_val_acc = val_acc
             torch.save(agent.state_dict(), args.checkpoint_path)
             print(f"  -> Saved best checkpoint ({val_acc:.3f})")
