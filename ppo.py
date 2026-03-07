@@ -336,13 +336,14 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        # Use num_missing_entities from options if provided, otherwise sample
-        # from [0, max_missing_entities]. This lets AsyncVectorEnv autoreset
-        # work without needing per-env manual reset calls.
-        if 'num_missing_entities' in self._reset_options:
-            self._num_missing_entities = self._reset_options['num_missing_entities']
+        # Use num_missing_entities from options if explicitly provided for
+        # this reset call, otherwise sample from [0, max_missing_entities].
+        # This lets AsyncVectorEnv autoreset (which passes options=None)
+        # work correctly with curriculum progression.
+        if options is not None and 'num_missing_entities' in options:
+            self._num_missing_entities = options['num_missing_entities']
         else:
-            self._num_missing_entities = int(torch.randint(0, self.max_missing_entities + 1, (1,)).item())
+            self._num_missing_entities = int(self.np_random.integers(0, self.max_missing_entities + 1))
 
         self.actions = []
         # Generate the solved factory first (same seed → same layout),
@@ -958,8 +959,12 @@ if __name__ == "__main__":
     print(f"Setting up envs with {args}")
     # env setup — AsyncVectorEnv runs each env in its own subprocess,
     # parallelising Rust simulate_throughput calls across CPU cores.
+    # autoreset_mode="same_step" resets done envs immediately (same step),
+    # matching the old SyncVectorEnv + manual reset semantics. The default
+    # "next_step" would waste one step per episode on a no-op autoreset.
     envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
+        autoreset_mode="SameStep",
     )
 
     print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")

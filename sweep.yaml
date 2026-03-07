@@ -1,4 +1,9 @@
 # sweep.yaml — Performance sweep (maximise training speed)
+#
+# Sweeps over parallelism and batching parameters to find the fastest
+# configuration. The metric to maximise is perf/sps (steps per second).
+# total-timesteps is set high enough that even the largest batch configs
+# (256 envs * 512 steps = 131072 batch) get multiple training iterations.
 
 method: bayes
 run_cap: 30
@@ -25,6 +30,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - "100000"
+  - "500000"
   - --track
   - ${args}
