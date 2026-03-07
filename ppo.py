@@ -371,6 +371,7 @@ class FactorioEnv(gym.Env):
         self.actions.append(None)
         action_is_invalid = False
         invalid_reason = {
+            'placed_on_masked_tile': False,
             'replaced_source_or_sink': False,
             'place_asm_mach_wo_recipe': False,
             'placement_wo_direction': False,
@@ -382,7 +383,12 @@ class FactorioEnv(gym.Env):
         }
 
         # Check that the action is actually valid
-        if entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
+        if self._world_CWH[self.Channel.FOOTPRINT.value, x, y] == self.Footprint.UNAVAILABLE.value:
+            # disallow placement on masked-out tiles
+            invalid_reason['placed_on_masked_tile'] = True
+            action_is_invalid = True
+            pass
+        elif entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
             # disallow the replacement of the source+sink
             invalid_reason['replaced_source_or_sink'] = True
             action_is_invalid = True

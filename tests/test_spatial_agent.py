@@ -13,6 +13,9 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from helpers import Channel  # noqa: E402
+
+NUM_CHANNELS = len(Channel)
 
 
 ENV_ID = "factorion/FactorioEnv-v0-spatial-test"
@@ -41,7 +44,7 @@ def agent(envs):
 class TestForwardPass:
     def test_output_shapes(self, agent):
         """Verify all output tensor shapes from get_action_and_value."""
-        obs = torch.randn(2, 4, 5, 5)
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
 
         assert action_out["xy"].shape == (2, 2)
@@ -55,7 +58,7 @@ class TestForwardPass:
 
     def test_single_batch(self, agent):
         """Verify forward pass works with batch size 1."""
-        obs = torch.randn(1, 4, 5, 5)
+        obs = torch.randn(1, NUM_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
 
         assert action_out["xy"].shape == (1, 2)
@@ -65,7 +68,7 @@ class TestForwardPass:
 
     def test_xy_within_bounds(self, agent):
         """Verify sampled x, y are within grid bounds."""
-        obs = torch.randn(16, 4, 5, 5)
+        obs = torch.randn(16, NUM_CHANNELS, 5, 5)
         for _ in range(10):
             action_out, _, _, _ = agent.get_action_and_value(obs)
             x = action_out["xy"][:, 0]
@@ -75,13 +78,13 @@ class TestForwardPass:
 
     def test_get_value_shape(self, agent):
         """Verify get_value output shape."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         value = agent.get_value(obs)
         assert value.shape == (4,)
 
     def test_item_and_misc_are_zero(self, agent):
         """Item and misc should always be zero (hardcoded)."""
-        obs = torch.randn(8, 4, 5, 5)
+        obs = torch.randn(8, NUM_CHANNELS, 5, 5)
         action_out, _, _, _ = agent.get_action_and_value(obs)
         assert (action_out["item"] == 0).all()
         assert (action_out["misc"] == 0).all()
@@ -90,7 +93,7 @@ class TestForwardPass:
 class TestLogProbConsistency:
     def test_log_prob_matches_replay(self, agent):
         """Sample actions, then replay them and verify log_prob matches."""
-        obs = torch.randn(8, 4, 5, 5)
+        obs = torch.randn(8, NUM_CHANNELS, 5, 5)
         action_out, logp_B, _, _ = agent.get_action_and_value(obs)
 
         # Reconstruct action tensor as the training loop does
@@ -112,7 +115,7 @@ class TestLogProbConsistency:
 
     def test_log_prob_is_negative(self, agent):
         """Log probabilities should be negative (prob < 1)."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         _, logp_B, _, _ = agent.get_action_and_value(obs)
         assert (logp_B < 0).all()
 
@@ -120,7 +123,7 @@ class TestLogProbConsistency:
 class TestEntropy:
     def test_entropy_is_positive(self, agent):
         """Entropy should be non-negative."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         _, _, entropy_B, _ = agent.get_action_and_value(obs)
         assert (entropy_B >= 0).all()
 
@@ -128,7 +131,7 @@ class TestEntropy:
 class TestGradientFlow:
     def test_gradients_flow_through_all_params(self, agent):
         """Verify gradients flow to encoder, tile_logits, ent_head, dir_head."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
@@ -148,7 +151,7 @@ class TestGradientFlow:
 
     def test_gradients_flow_during_update(self, agent):
         """Simulate the PPO update path (action not None) and check grads."""
-        obs = torch.randn(4, 4, 5, 5)
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         with torch.no_grad():
             action_out, _, _, _ = agent.get_action_and_value(obs)
         x_B = action_out["xy"][:, 0]
@@ -174,7 +177,7 @@ class TestGradientFlow:
 class TestBatchConsistency:
     def test_single_vs_batch(self, agent):
         """Processing items one-at-a-time gives same results as batched."""
-        obs = torch.randn(3, 4, 5, 5)
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
         # Create a fixed action to replay (within bounds for 5x5 grid)
         action_tensor = torch.tensor(
             [
