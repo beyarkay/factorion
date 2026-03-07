@@ -14,7 +14,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import Channel, Direction, LessonKind, generate_lesson, str2ent
-from sft import extract_expert_actions, generate_dataset, SFTArgs
+from sft import extract_expert_actions, generate_dataset, train_sft, SFTArgs
 from ppo import FactorioEnv, AgentCNN, make_env
 
 
@@ -236,3 +236,34 @@ class TestSFTLossConvergence:
         assert losses[-1] < losses[0], (
             f"Loss should decrease: first={losses[0]:.4f}, last={losses[-1]:.4f}"
         )
+
+
+class TestTrainSFTEndToEnd:
+    def test_train_sft_produces_checkpoint(self, tmp_path):
+        """End-to-end: train_sft() should run and produce a valid checkpoint."""
+        ckpt = str(tmp_path / "sft_e2e.pt")
+        summary = str(tmp_path / "sft_e2e_summary.json")
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=100,
+            max_level=2,
+            epochs=2,
+            batch_size=32,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+            checkpoint_path=ckpt,
+            summary_path=summary,
+        )
+        agent = train_sft(args)
+        assert os.path.exists(ckpt), "Checkpoint should be saved"
+        assert os.path.exists(summary), "Summary JSON should be saved"
+
+        import json
+        with open(summary) as f:
+            s = json.load(f)
+        assert "best_val_acc" in s
+        assert s["num_samples"] == 100
+        assert s["epochs"] == 2

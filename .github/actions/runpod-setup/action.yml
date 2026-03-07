@@ -101,12 +101,13 @@ runs:
         SSH_HOST="${{ steps.create-pod.outputs.ssh_host }}"
         SSH_PORT="${{ steps.create-pod.outputs.ssh_port }}"
 
-        EXCLUDE_ARGS="--exclude='artifacts' --exclude='wandb' --exclude='runs' --exclude='videos' --exclude='__pycache__'"
+        TAR_ARGS=()
         if [ "${{ inputs.include_git }}" != "true" ]; then
-          EXCLUDE_ARGS="--exclude='.git' $EXCLUDE_ARGS"
+          TAR_ARGS+=(--exclude=.git)
         fi
+        TAR_ARGS+=(--exclude=artifacts --exclude=wandb --exclude=runs --exclude=videos --exclude=__pycache__)
 
-        eval tar czf /tmp/factorion.tar.gz $EXCLUDE_ARGS -C "$GITHUB_WORKSPACE" .
+        tar czf /tmp/factorion.tar.gz "${TAR_ARGS[@]}" -C "$GITHUB_WORKSPACE" .
 
         scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
 
