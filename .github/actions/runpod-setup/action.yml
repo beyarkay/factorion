@@ -1,0 +1,117 @@
+name: "RunPod GPU Setup"
+description: "Create a RunPod instance, wait for SSH, and transfer code"
+
+inputs:
+  runpod_api_key:
+    description: "RunPod API key"
+    required: true
+  ssh_private_key:
+    description: "SSH private key for RunPod"
+    required: true
+  gpu_type:
+    description: "RunPod GPU type"
+    default: "NVIDIA A100 80GB PCIe"
+  name_prefix:
+    description: "Pod name prefix"
+    required: true
+  include_git:
+    description: "Include .git directory in transfer (needed for baseline checkout)"
+    default: "false"
+  python_version:
+    description: "Python version to install"
+    default: "3.11"
+
+outputs:
+  pod_id:
+    description: "Created pod ID"
+    value: ${{ steps.create-pod.outputs.pod_id }}
+  ssh_host:
+    description: "SSH host"
+    value: ${{ steps.create-pod.outputs.ssh_host }}
+  ssh_port:
+    description: "SSH port"
+    value: ${{ steps.create-pod.outputs.ssh_port }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python_version }}
+        cache: "pip"
+
+    - name: Install CI dependencies
+      shell: bash
+      run: pip install runpod wandb
+
+    - name: Set up SSH key
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh_private_key }}" > ~/.ssh/runpod_ci
+        chmod 600 ~/.ssh/runpod_ci
+        cat >> ~/.ssh/config << 'EOF'
+        Host *
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          ServerAliveInterval 15
+          ServerAliveCountMax 12
+          LogLevel ERROR
+        EOF
+
+    - name: Create RunPod instance
+      id: create-pod
+      shell: bash
+      env:
+        RUNPOD_API_KEY: ${{ inputs.runpod_api_key }}
+        PYTHONUNBUFFERED: "1"
+      run: |
+        python scripts/ci/runpod_create.py \
+          --gpu-type "${{ inputs.gpu_type }}" \
+          --name-prefix "${{ inputs.name_prefix }}" \
+          --output-file /tmp/pod_info.json
+
+        POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+        SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+        SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+        echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
+        echo "ssh_host=$SSH_HOST" >> "$GITHUB_OUTPUT"
+        echo "ssh_port=$SSH_PORT" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for SSH readiness
+      shell: bash
+      run: |
+        SSH_HOST="${{ steps.create-pod.outputs.ssh_host }}"
+        SSH_PORT="${{ steps.create-pod.outputs.ssh_port }}"
+        echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
+        for i in $(seq 1 30); do
+          if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
+            echo "SSH connection established"
+            exit 0
+          fi
+          echo "  Attempt $i/30 - retrying in 10s..."
+          sleep 10
+        done
+        echo "::error::SSH connection timed out"
+        exit 1
+
+    - name: Transfer code to pod
+      shell: bash
+      run: |
+        SSH_HOST="${{ steps.create-pod.outputs.ssh_host }}"
+        SSH_PORT="${{ steps.create-pod.outputs.ssh_port }}"
+
+        EXCLUDE_ARGS="--exclude='artifacts' --exclude='wandb' --exclude='runs' --exclude='videos' --exclude='__pycache__'"
+        if [ "${{ inputs.include_git }}" != "true" ]; then
+          EXCLUDE_ARGS="--exclude='.git' $EXCLUDE_ARGS"
+        fi
+
+        eval tar czf /tmp/factorion.tar.gz $EXCLUDE_ARGS -C "$GITHUB_WORKSPACE" .
+
+        scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
+
+        ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
+          mkdir -p /workspace/factorion
+          tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
+          ls -la /workspace/factorion/
+        SETUP
