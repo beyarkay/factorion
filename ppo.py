@@ -1360,4 +1360,7 @@ if __name__ == "__main__":
         json.dump(summary, f, indent=2)
     print(f"Summary written to {summary_path}")
 
+    if args.track:
+        wandb.finish()
+
 

@@ -58,8 +58,15 @@ def main():
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
 
-    # Fetch all runs, keep only finished ones
-    runs = [r for r in sweep.runs if r.state == "finished"]
+    # Fetch all runs that finished or crashed-but-logged-the-metric.
+    # Runs killed by the watchdog / SSH timeout after training completed often
+    # show state="crashed" even though they logged all their metrics.
+    runs = [
+        r
+        for r in sweep.runs
+        if r.state == "finished"
+        or (r.state == "crashed" and r.summary.get(metric_name) is not None)
+    ]
 
     # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
     parts = args.sweep_path.split("/")
