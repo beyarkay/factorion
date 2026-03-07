@@ -97,9 +97,9 @@ Also documented as P5 in `docs/EXPERIMENTS.md`.
 ### H3: Move the entire env to Rust (vectorized)
 
 **Estimated impact:** Very high | **Complexity:** High
+| **Status:** Feasibility confirmed (PyO3 proof-of-concept built and tested)
 
-The nuclear option with the highest performance ceiling. Currently each
-`step()` call involves:
+The highest-ceiling optimization. Currently each `step()` call involves:
 
 1. Python dict unpacking and 8+ validity checks in Python
 2. Torch tensor mutations (`_world_CWH[channel, x, y] = value`)
@@ -107,34 +107,276 @@ The nuclear option with the highest performance ceiling. Currently each
 4. Rust FFI call to `simulate_throughput`
 5. Python reward computation with multiple tensor operations
 6. Solution match computation (`_compute_solution_match`)
+7. Python info dict construction (~20 keys)
 
-If the full `step()` — action validation, world mutation, throughput simulation,
-reward computation — were moved into Rust and exposed as a **batched** interface,
-all of this overhead disappears:
+With AsyncVectorEnv (H2), each subprocess still runs all this Python. The
+subprocess IPC overhead (serializing obs/actions/rewards) adds further latency.
+
+A Rust vectorized env eliminates all of it:
 
 ```python
-# Hypothetical API:
-obs, rewards, dones, infos = rust_env.step_batch(actions)  # actions: (N, 6)
+# Python side (ppo.py) — replaces AsyncVectorEnv entirely:
+env = factorion_rs.VecFactorioEnv(num_envs=256, size=8, max_steps=16)
+obs = env.reset(seed=1)                 # returns numpy (256, 5, 8, 8)
+obs, rewards, dones, infos = env.step(actions)  # actions: numpy (256, 6)
+env.set_max_missing(3)                  # curriculum update, instant
 ```
 
-This eliminates:
+| Overhead | Current (Python + AsyncVectorEnv) | After H3 (Rust VecEnv) |
+|---|---|---|
+| Per-step logic | Python validity checks, reward math, dict building | Rust, compiled, zero-overhead |
+| Tensor ↔ numpy | `.permute().to().numpy()` per step per env | Not needed — Rust writes directly to pre-allocated buffers |
+| Subprocess IPC | Serialize/deserialize obs+actions per step | None — single process |
+| GIL | Held during all Python env logic | Released via `py.allow_threads()` |
+| `simulate_throughput` FFI | One cross-boundary call per env per step | Internal Rust function call (inlined) |
+| Memory allocation | New numpy array per env per step | Pre-allocated, reused across steps |
+| Parallelism | OS-level subprocess scheduling | rayon thread pool, work-stealing, no IPC |
 
-- All Python per-step overhead
-- All tensor/numpy conversion overhead
-- GIL contention
-- IPC serialisation (no subprocess boundary needed, unlike H2)
+#### Feasibility (confirmed)
 
-This is the approach taken by EnvPool, Brax, and Isaac Gym. For a simple grid
-env like Factorion, this is very feasible in Rust. The `factorion_rs` crate
-already handles `simulate_throughput` — extending it to the full env logic is
-a natural next step.
+A proof-of-concept `VecEnvProof` was built and tested: a `#[pyclass]` Rust
+struct holding N flat arrays, with `reset()` and `step()` methods returning
+numpy arrays via PyO3. Confirmed working:
 
-**Rough scope:**
+- `#[pyclass]` struct holds mutable env state (`Vec<f32>`, `Vec<i32>`)
+- `reset()` → `(N, C, W, H)` numpy array via `PyArray1::from_vec().reshape()`
+- `step()` → `(obs, rewards, dones)` tuple of numpy arrays
+- Returned arrays are regular mutable numpy — `torch.as_tensor()` works
+- Pattern: ~80 lines of Rust for the full PyO3 plumbing
 
-- Port `FactorioEnv.__init__`, `reset`, `step` to Rust
-- Port `generate_lesson` (currently in `factorion.py` marimo notebook) to Rust
-- Expose a `VecEnv` struct that holds N env states and steps them all in one call
-- Return observations as numpy arrays via PyO3 (zero-copy with `numpy` feature)
+#### What already exists in `factorion_rs`
+
+The crate already has substantial infrastructure to build on:
+
+| Component | Status | Location |
+|---|---|---|
+| `World` struct (flat `Vec<i64>`, WHC layout) | Done | `world.rs` |
+| `World::from_numpy()` | Done | `world.rs` |
+| `Channel`, `Direction`, `EntityKind`, `Item`, `Misc` enums | Done | `types.rs` |
+| `Direction::delta()`, `Direction::opposite()` | Done | `types.rs` |
+| `EntityKind::flow_rate()`, `EntityKind::name()` | Done | `types.rs` |
+| `build_graph()` (world → factory graph) | Done | `graph.rs` |
+| `calc_throughput()` (graph → throughput) | Done | `throughput.rs` |
+| Entity connection logic (belt, inserter, underground) | Done | `entities.rs` |
+| Recipes (`get_recipe`) | Done | `types.rs` |
+| `simulate_throughput()` PyO3 binding | Done | `lib.rs` |
+
+#### What needs to be built
+
+##### Phase 1: `generate_lesson` (~250 lines of Python → Rust)
+
+Port `generate_lesson` and `find_belt_paths_with_source_sink_orient` from
+`factorion.py:1314-1569`. This is the hardest piece:
+
+1. **Random source/sink placement** — sample two distinct positions on the
+   grid, assign random directions. Uses `random.seed(seed)` for
+   determinism; Rust equivalent: seed a `rand::rngs::StdRng`.
+
+2. **BFS pathfinding** — `find_belt_paths_with_source_sink_orient` does a
+   multi-path BFS from source front to sink back, finding all shortest
+   belt paths. ~100 lines, straightforward BFS with parent tracking and
+   backtracking. Standard `VecDeque` in Rust.
+
+3. **Path selection + belt placement** — choose a random path, place
+   transport belts with correct directions along it.
+
+4. **Entity removal for curriculum** — randomly remove N belts from the
+   placed path to create the puzzle.
+
+**Determinism requirement:** Same seed must produce identical worlds from
+both Python and Rust. This enables parity tests: generate worlds from both
+implementations and assert equality.
+
+**Testing strategy:** For each seed in 0..100, generate a lesson from Python
+and from Rust, assert the world tensors are identical. This catches any
+divergence in RNG sequences, BFS ordering, or path selection.
+
+##### Phase 2: `step()` + `reset()` (~200 lines of Python → Rust)
+
+Port `FactorioEnv.step()` from `ppo.py:351-589`:
+
+1. **Action validation** — 8 checks (masked tile, source/sink, entity+direction
+   combos, bounds). All simple integer comparisons.
+
+2. **World mutation** — set 4 channels at `(x, y)`. One array write per channel.
+
+3. **Throughput computation** — call existing `build_graph()` +
+   `calc_throughput()` directly (no FFI boundary).
+
+4. **Reward computation** — `frac_reachable`, `material_cost`,
+   `final_dir_reward`, PBRS deltas (`_compute_solution_match`). All
+   arithmetic over the world array.
+
+5. **Termination logic** — `throughput >= 1.0` or `steps > max_steps`.
+
+Port `FactorioEnv.reset()` from `ppo.py:308-349`:
+
+1. Call `generate_lesson` twice (solved + incomplete).
+2. Initialize step counter, prev_match, cum_reward.
+
+##### Phase 3: `VecFactorioEnv` wrapper + rayon parallelism
+
+```rust
+// factorion_rs/src/vec_env.rs
+
+use rayon::prelude::*;
+
+#[pyclass]
+pub struct VecFactorioEnv {
+    num_envs: usize,
+    size: usize,
+    max_steps: usize,
+    channels: usize,
+
+    // Per-env state, contiguous in memory
+    worlds: Vec<i64>,            // (N * C * W * H) flat
+    solved_worlds: Vec<i64>,     // (N * C * W * H) flat
+    steps: Vec<usize>,           // (N,)
+    seeds: Vec<u64>,             // (N,)
+    max_missing: Vec<usize>,     // (N,)
+    prev_match: Vec<[f64; 3]>,   // (N,) for PBRS deltas
+    cum_rewards: Vec<f64>,       // (N,)
+
+    // Pre-allocated output buffers (reused across steps)
+    obs_buf: Vec<f32>,           // (N * C * W * H) flat
+    reward_buf: Vec<f32>,        // (N,)
+    done_buf: Vec<bool>,         // (N,)
+}
+
+#[pymethods]
+impl VecFactorioEnv {
+    #[new]
+    fn new(num_envs: usize, size: usize, max_steps: usize) -> Self { ... }
+
+    fn reset(&mut self, py: Python, seed: u64) -> PyArray4<f32> {
+        // For each env (parallelised with rayon):
+        //   1. generate_lesson(solved, seed+i)
+        //   2. generate_lesson(incomplete, seed+i)
+        //   3. init step counter, prev_match
+        // Copy world data into obs_buf, return as numpy
+    }
+
+    fn step(
+        &mut self,
+        py: Python,
+        actions: PyReadonlyArray2<i64>,  // (N, 6)
+    ) -> (PyArray4<f32>, PyArray1<f32>, PyArray1<bool>, ...) {
+        py.allow_threads(|| {
+            // Release the GIL for the entire batch computation
+            self.worlds
+                .par_chunks_mut(self.env_size())
+                .zip(self.reward_buf.par_iter_mut())
+                .zip(self.done_buf.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, ((world, reward), done))| {
+                    // 1. Validate action
+                    // 2. Mutate world
+                    // 3. build_graph + calc_throughput (already Rust)
+                    // 4. Compute reward, PBRS deltas
+                    // 5. Check termination, auto-reset if done
+                });
+        });
+        // Return pre-allocated buffers as numpy views
+    }
+
+    fn set_max_missing(&mut self, value: usize) {
+        self.max_missing.fill(value);
+    }
+}
+```
+
+Key design decisions:
+
+- **Pre-allocated buffers**: `obs_buf`, `reward_buf`, `done_buf` are allocated
+  once in `new()` and reused every step. No allocation in the hot loop.
+- **`py.allow_threads()`**: Releases the GIL during the parallel computation.
+  Python can't call into the env while it's stepping, but that's fine — the
+  training loop is sequential (step → inference → step).
+- **rayon `par_chunks_mut`**: Each env's world slice is processed in parallel
+  with work-stealing. No manual thread management.
+- **Observation layout**: Store as `(N, C, W, H)` in the Rust buffer, matching
+  PyTorch's expected layout. No transpose needed.
+
+##### Phase 4: Integration with `ppo.py`
+
+Replace the gym/AsyncVectorEnv setup with the Rust env:
+
+```python
+# Before (current):
+envs = gym.vector.AsyncVectorEnv([make_env(...) for i in range(N)])
+obs, info = envs.reset(seed=seed, options={...})
+obs, reward, term, trunc, infos = envs.step(action_dict)
+
+# After:
+env = factorion_rs.VecFactorioEnv(num_envs=N, size=8, max_steps=16)
+obs = env.reset(seed=seed)
+obs, rewards, dones, infos = env.step(actions_array)
+```
+
+Changes to `ppo.py`:
+
+- Remove `FactorioEnv` class entirely (or keep for testing/rendering only)
+- Remove `make_env`, `_ensure_env_registered`, gym registration
+- Remove `gym.vector.AsyncVectorEnv` setup
+- Change action format from dict to flat `(N, 6)` int64 array
+- Episode statistics tracking moves to Rust (or a thin Python wrapper
+  that reads from the info arrays)
+- `AgentCNN.__init__` takes explicit `width`, `height`, `channels` args
+  instead of reading from `envs.single_observation_space`
+- Video rendering kept in Python (infrequent, uses a separate
+  `SyncVectorEnv` with the Python `FactorioEnv`)
+
+##### Phase 5: Info dict handling
+
+The current `step()` returns ~20 info keys per env. Options:
+
+**Option A (simple):** Return a flat numpy array of info values per env, with
+a fixed schema. Python unpacks by index:
+```python
+obs, rewards, dones, info_array = env.step(actions)
+# info_array shape: (N, 20) — throughput, frac_reachable, etc.
+throughputs = info_array[:, 0]
+```
+
+**Option B (structured):** Return a Python dict of numpy arrays:
+```python
+{"throughput": np.array([...]), "frac_reachable": np.array([...]), ...}
+```
+
+Option A is faster (no dict construction in the hot loop). Option B is more
+readable. Start with Option A, add convenience accessors if needed.
+
+#### Testing strategy
+
+1. **`generate_lesson` parity**: For seeds 0..100, generate worlds from both
+   Python and Rust, assert tensors are identical.
+
+2. **`step()` parity**: For seeds 0..20, reset both Python and Rust envs with
+   same seed, step with same random actions for 16 steps, assert observations,
+   rewards, and dones match at every step.
+
+3. **`VecFactorioEnv` consistency**: Reset with N=64, step 1000 times, verify
+   no panics, all rewards finite, all obs in valid range.
+
+4. **Determinism**: Same seed → same trajectory, verified across 10 runs.
+
+5. **Benchmark**: Compare SPS between AsyncVectorEnv (H2) and VecFactorioEnv
+   (H3) at N=16, 64, 256 envs.
+
+#### Dependencies
+
+- `rayon` — parallel iterators (add to `[dependencies]` in `Cargo.toml`)
+- `rand` — seeded RNG for `generate_lesson` (add to `[dependencies]`)
+- Existing: `pyo3`, `numpy`
+
+#### Implementation order
+
+1. Port `generate_lesson` + BFS pathfinder to Rust, with parity tests
+2. Port `step()` + `reset()` to a single-env `FactorioEnv` Rust struct, with
+   parity tests
+3. Wrap in `VecFactorioEnv` with rayon, expose via PyO3
+4. Update `ppo.py` to use the Rust env
+5. Benchmark and profile
 
 ### H4: Reduce `num_minibatches` / increase minibatch size
 
