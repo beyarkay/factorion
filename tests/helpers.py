@@ -22,6 +22,7 @@ _, _fns = factorion.functions.run()
 
 Channel = _objs["Channel"]
 Direction = _objs["Direction"]
+Footprint = _objs["Footprint"]
 Misc = _objs["Misc"]
 LessonKind = _objs["LessonKind"]
 entities = _objs["entities"]
@@ -45,7 +46,9 @@ def make_world(w, h=None):
     if h is None:
         h = w
     size = max(w, h)
-    return torch.zeros((size, size, 4), dtype=torch.int64)
+    world = torch.zeros((size, size, len(Channel)), dtype=torch.int64)
+    world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    return world
 
 
 def set_entity(world, x, y, entity_name, direction, item_name="empty", misc=0):

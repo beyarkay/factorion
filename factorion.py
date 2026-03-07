@@ -79,7 +79,7 @@ def datatypes(Enum, dataclass, mo):
         # Undergrounds mechanics, see class Misc(Enum)
         MISC = 3
         # 1 if you can build there, 0 if you can't
-        # FOOTPRINT = 4
+        FOOTPRINT = 4
 
 
     class Footprint(Enum):
@@ -316,8 +316,7 @@ def functions(
         world = np.zeros((width, height, channels), dtype=int)
         world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
         world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
-        if any(["Channel.FOOTPRINT" in i for i in map(str, list(Channel))]):
-            world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
         return world
 
 
@@ -414,15 +413,10 @@ def functions(
                 )
 
                 #             print(direction_arrow, direction)
-                if any(
-                    ["Channel.FOOTPRINT" in i for i in map(str, list(Channel))]
-                ):
-                    available = (
-                        world_WHC[x, y, Channel.FOOTPRINT.value]
-                        == Footprint.AVAILABLE.value
-                    )
-                else:
-                    available = True
+                available = (
+                    world_WHC[x, y, Channel.FOOTPRINT.value]
+                    == Footprint.AVAILABLE.value
+                )
                 bg_style = (
                     "background: rgba(255, 0, 0, 0.3);" if not available else ""
                 )

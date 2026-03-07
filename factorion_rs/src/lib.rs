@@ -18,8 +18,8 @@ use world::World;
 
 /// Calculate the throughput of a factory represented as a 3D tensor.
 ///
-/// Input: numpy array of shape (W, H, 4) with dtype i64, where channels are:
-///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state)
+/// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
+///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
 ///
 /// Returns: (throughput, num_unreachable) matching funge_throughput's signature.
 #[cfg(feature = "pyo3-bindings")]

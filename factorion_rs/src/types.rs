@@ -7,7 +7,10 @@ pub enum Channel {
     Direction = 1,
     Items = 2,
     Misc = 3,
+    Footprint = 4,
 }
+
+pub const NUM_CHANNELS: usize = 5;
 
 impl Channel {
     pub fn index(self) -> usize {

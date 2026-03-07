@@ -1,11 +1,11 @@
-use crate::types::{Channel, Direction, EntityKind, Item, Misc};
+use crate::types::{Channel, Direction, EntityKind, Item, Misc, NUM_CHANNELS};
 
 /// A wrapper around a 3D array representing a factory world.
 ///
 /// The world has dimensions W × H × C where:
 /// - W is width (x axis)
 /// - H is height (y axis)
-/// - C is channels (entity, direction, item, misc)
+/// - C is channels (entity, direction, item, misc, footprint)
 ///
 /// Data is stored as a flat Vec indexed as [x][y][c].
 #[derive(Debug, Clone)]
@@ -37,12 +37,19 @@ impl World {
         }
     }
 
-    /// Create an empty world of given dimensions, filled with zeros.
+    /// Create an empty world of given dimensions with default channel values.
+    /// FOOTPRINT is initialized to 1 (available); all other channels are 0.
     #[allow(dead_code)]
     pub fn empty(width: usize, height: usize) -> Self {
-        let channels = 4;
+        let channels = NUM_CHANNELS;
+        let mut data = vec![0; width * height * channels];
+        for x in 0..width {
+            for y in 0..height {
+                data[x * height * channels + y * channels + Channel::Footprint.index()] = 1;
+            }
+        }
         Self {
-            data: vec![0; width * height * channels],
+            data,
             width,
             height,
             channels,
@@ -158,7 +165,7 @@ mod tests {
     use super::*;
 
     fn make_3x3_world() -> World {
-        // 3x3 world, 4 channels, all zeros
+        // 3x3 world, NUM_CHANNELS channels, all zeros
         World::empty(3, 3)
     }
 
@@ -258,6 +265,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "Data length")]
     fn test_mismatched_dimensions() {
-        World::new(vec![0; 10], 3, 3, 4);
+        World::new(vec![0; 10], 3, 3, NUM_CHANNELS);
     }
 }
