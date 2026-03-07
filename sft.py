@@ -354,14 +354,14 @@ def train_sft(args: SFTArgs):
 
         if args.track and run is not None:
             run.log({
-                "sft/train_loss": train_loss,
-                "sft/train_acc": train_acc,
-                "sft/val_loss": val_loss,
-                "sft/val_acc": val_acc,
-                "sft/val_tile_acc": val_tile_acc,
-                "sft/val_ent_acc": val_ent_acc,
-                "sft/val_dir_acc": val_dir_acc,
-                "sft/epoch": epoch,
+                "train/loss": train_loss,
+                "train/acc": train_acc,
+                "val/loss": val_loss,
+                "val/acc": val_acc,
+                "val/tile_acc": val_tile_acc,
+                "val/ent_acc": val_ent_acc,
+                "val/dir_acc": val_dir_acc,
+                "train/epoch": epoch,
             })
 
         if val_acc >= best_val_acc:
