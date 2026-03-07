@@ -1,0 +1,47 @@
+# sft_sweep.yaml — SFT pre-training hyperparameter sweep
+
+method: bayes
+run_cap: 20
+metric:
+  name: "sft/val_acc"
+  goal: maximize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 5e-3
+
+  batch_size:
+    values: [128, 256, 512, 1024]
+
+  num_samples:
+    values: [10000, 25000, 50000, 100000]
+
+  epochs:
+    values: [10, 20, 30, 50]
+
+  max_level:
+    values: [0, 2, 4, 8]
+
+  chan1:
+    values: [32, 48, 64]
+
+  chan2:
+    values: [48, 64]
+
+  chan3:
+    values: [48, 64]
+
+  tile_head_std:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+
+program: sft.py
+
+command:
+  - bash
+  - run_sft_sweep.sh
+  - --track
+  - ${args}
