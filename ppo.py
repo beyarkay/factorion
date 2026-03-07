@@ -992,13 +992,13 @@ if __name__ == "__main__":
         }, step=0)
 
     # Accumulate episode-level metrics during rollout, log means once per iteration
-    _episode_metrics = {}
+    _episode_metrics: dict[str, list[float]] = {}
 
-    def _record_episode(metrics):
+    def _record_episode(metrics: dict[str, float]) -> None:
         for k, v in metrics.items():
             _episode_metrics.setdefault(k, []).append(v)
 
-    def _flush_episode_means():
+    def _flush_episode_means() -> dict[str, float]:
         if not _episode_metrics:
             return {}
         means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
