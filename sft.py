@@ -46,7 +46,12 @@ str2ent = _fns["str2ent"]
 def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
-    Returns list of (state_CWH, tile_idx, entity_id, direction_id) tuples.
+    Returns list of (state_CWH, tile_idx, entity_id, direction_id,
+    valid_tile_mask) tuples. The valid_tile_mask is a flat binary tensor
+    marking ALL tiles that still need entities at this step — not just the
+    one chosen. This allows multi-label tile loss to avoid penalizing the
+    model for predicting a valid-but-different tile.
+
     Actions are applied sequentially in random order, so intermediate states
     reflect realistic observations the agent would see.
     """
@@ -65,20 +70,27 @@ def extract_expert_actions(solved_CWH, task_CWH):
     random.shuffle(diff_locs)
 
     state = task_CWH.clone()
+    remaining = set(range(len(diff_locs)))
     pairs = []
 
-    for x, y in diff_locs:
-        # Record current state and target action
+    for i, (x, y) in enumerate(diff_locs):
+        # Build mask of all remaining valid tiles (including this one)
+        valid_mask = torch.zeros(W * H)
+        for j in remaining:
+            rx, ry = diff_locs[j]
+            valid_mask[rx * H + ry] = 1.0
+
         obs = state.clone()
         tile_idx = x * H + y
         entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
         direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
 
-        pairs.append((obs, tile_idx, entity_id, direction_id))
+        pairs.append((obs, tile_idx, entity_id, direction_id, valid_mask))
 
         # Apply action to state (so next observation reflects this placement)
         for ch in range(C):
             state[ch, x, y] = solved_CWH[ch, x, y]
+        remaining.discard(i)
 
     return pairs
 
@@ -135,6 +147,7 @@ def generate_dataset(args: SFTArgs):
     all_tile_idx = []
     all_entity = []
     all_direction = []
+    all_valid_masks = []
 
     seed = args.seed
     samples_so_far = 0
@@ -160,11 +173,12 @@ def generate_dataset(args: SFTArgs):
             continue
 
         pairs = extract_expert_actions(solved, task)
-        for obs, tile_idx, entity_id, direction_id in pairs:
+        for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
             all_obs.append(obs)
             all_tile_idx.append(tile_idx)
             all_entity.append(entity_id)
             all_direction.append(direction_id)
+            all_valid_masks.append(valid_mask)
             samples_so_far += 1
             if samples_so_far >= args.num_samples:
                 break
@@ -173,8 +187,9 @@ def generate_dataset(args: SFTArgs):
     tile_tensor = torch.tensor(all_tile_idx, dtype=torch.long)
     ent_tensor = torch.tensor(all_entity, dtype=torch.long)
     dir_tensor = torch.tensor(all_direction, dtype=torch.long)
+    mask_tensor = torch.stack(all_valid_masks)
 
-    return obs_tensor, tile_tensor, ent_tensor, dir_tensor
+    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor
 
 
 def train_sft(args: SFTArgs):
@@ -185,7 +200,7 @@ def train_sft(args: SFTArgs):
 
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
-    obs, tiles, ents, dirs = generate_dataset(args)
+    obs, tiles, ents, dirs, valid_masks = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
 
     # Train/val split
@@ -195,8 +210,8 @@ def train_sft(args: SFTArgs):
     perm = torch.randperm(n)
     train_idx, val_idx = perm[:n_train], perm[n_train:]
 
-    train_ds = TensorDataset(obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx])
-    val_ds = TensorDataset(obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx])
+    train_ds = TensorDataset(obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx], valid_masks[train_idx])
+    val_ds = TensorDataset(obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx], valid_masks[val_idx])
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
@@ -225,6 +240,7 @@ def train_sft(args: SFTArgs):
 
     optimizer = optim.Adam(agent.parameters(), lr=args.lr)
     ce_loss = nn.CrossEntropyLoss()
+    bce_loss = nn.BCEWithLogitsLoss()
 
     run = None
     if args.track:
@@ -252,18 +268,20 @@ def train_sft(args: SFTArgs):
         train_correct = 0
         train_total = 0
 
-        for batch_obs, batch_tile, batch_ent, batch_dir in train_loader:
+        for batch_obs, batch_tile, batch_ent, batch_dir, batch_mask in train_loader:
             batch_obs = batch_obs.float().to(device)
             batch_tile = batch_tile.to(device)
             batch_ent = batch_ent.to(device)
             batch_dir = batch_dir.to(device)
+            batch_mask = batch_mask.to(device)
 
             encoded = agent.encoder(batch_obs)
             B = encoded.shape[0]
 
-            # Tile logits
+            # Tile logits — use BCE with multi-label mask so ALL valid
+            # tiles are rewarded, not just the randomly-chosen one
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile = ce_loss(tile_logits, batch_tile)
+            loss_tile = bce_loss(tile_logits, batch_mask)
 
             # Extract features at target tile for entity/direction heads
             x_B = batch_tile // agent.height
@@ -283,11 +301,12 @@ def train_sft(args: SFTArgs):
             optimizer.step()
 
             train_loss += loss.item() * B
-            # Combined accuracy: all three predictions correct
+            # Tile accuracy: did the model predict ANY valid tile?
             pred_tile = tile_logits.argmax(dim=1)
+            tile_hit = batch_mask[batch_idx, pred_tile] > 0
             pred_ent = ent_logits.argmax(dim=1)
             pred_dir = dir_logits.argmax(dim=1)
-            correct = ((pred_tile == batch_tile) & (pred_ent == batch_ent) & (pred_dir == batch_dir))
+            correct = (tile_hit & (pred_ent == batch_ent) & (pred_dir == batch_dir))
             train_correct += correct.sum().item()
             train_total += B
 
@@ -304,17 +323,18 @@ def train_sft(args: SFTArgs):
         val_total = 0
 
         with torch.no_grad():
-            for batch_obs, batch_tile, batch_ent, batch_dir in val_loader:
+            for batch_obs, batch_tile, batch_ent, batch_dir, batch_mask in val_loader:
                 batch_obs = batch_obs.float().to(device)
                 batch_tile = batch_tile.to(device)
                 batch_ent = batch_ent.to(device)
                 batch_dir = batch_dir.to(device)
+                batch_mask = batch_mask.to(device)
 
                 encoded = agent.encoder(batch_obs)
                 B = encoded.shape[0]
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-                loss_tile = ce_loss(tile_logits, batch_tile)
+                loss_tile = bce_loss(tile_logits, batch_mask)
 
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height
@@ -330,11 +350,12 @@ def train_sft(args: SFTArgs):
                 val_loss += loss.item() * B
 
                 pred_tile = tile_logits.argmax(dim=1)
+                tile_hit = batch_mask[batch_idx, pred_tile] > 0
                 pred_ent = ent_logits.argmax(dim=1)
                 pred_dir = dir_logits.argmax(dim=1)
-                correct = ((pred_tile == batch_tile) & (pred_ent == batch_ent) & (pred_dir == batch_dir))
+                correct = (tile_hit & (pred_ent == batch_ent) & (pred_dir == batch_dir))
                 val_correct += correct.sum().item()
-                val_tile_correct += (pred_tile == batch_tile).sum().item()
+                val_tile_correct += tile_hit.sum().item()
                 val_ent_correct += (pred_ent == batch_ent).sum().item()
                 val_dir_correct += (pred_dir == batch_dir).sum().item()
                 val_total += B
