@@ -1,3 +1,8 @@
+[project]
+name = "factorion"
+version = "0.1.0"
+requires-python = ">=3.11"
+
 [tool.marimo.runtime]
 output_max_bytes = 15_000_000
 
