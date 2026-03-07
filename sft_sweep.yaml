@@ -3,7 +3,7 @@
 method: bayes
 run_cap: 20
 metric:
-  name: "sft/val_acc"
+  name: "val/acc"
   goal: maximize
 
 parameters:
