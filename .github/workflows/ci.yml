@@ -44,7 +44,7 @@ on:
       sweep_count:
         description: "Total number of sweep iterations"
         required: false
-        default: "20"
+        default: "30"
         type: string
       sweep_agents:
         description: "Number of parallel sweep agents (RunPod pods)"
@@ -577,9 +577,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SWEEP_URL="${{ steps.create.outputs.sweep_url }}"
-          SWEEP_COUNT="${{ inputs.sweep_count || '20' }}"
+          SWEEP_COUNT="${{ inputs.sweep_count || '30' }}"
           SWEEP_PODS="${{ inputs.sweep_agents || '1' }}"
-          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '10' }}"
           TOTAL_AGENTS=$(( SWEEP_PODS * AGENTS_PER_POD ))
           gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat <<EOF
           **W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_PODS} pod(s) x ${AGENTS_PER_POD} agents/pod (${TOTAL_AGENTS} total agents)
@@ -592,8 +592,8 @@ jobs:
         id: matrix
         run: |
           NUM_PODS="${{ inputs.sweep_agents || '1' }}"
-          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
-          TOTAL_COUNT="${{ inputs.sweep_count || '20' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '10' }}"
+          TOTAL_COUNT="${{ inputs.sweep_count || '30' }}"
           TOTAL_AGENTS=$(( NUM_PODS * AGENTS_PER_POD ))
           COUNT_PER=$(( TOTAL_COUNT / TOTAL_AGENTS ))
 

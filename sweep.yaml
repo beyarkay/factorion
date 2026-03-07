@@ -1,42 +1,41 @@
-# sweep.yaml — 3M-step hyperparameter sweep
+# sweep.yaml — 3M-step hyperparameter sweep (follow-up to 0r1udi17)
 #
-# Focus: reward shaping coefficients (never tuned with delta-based PBRS)
-# and entropy schedule (critical for long runs). PPO core params are
-# narrowed around known-good defaults. CNN architecture (chan1/2/3)
-# removed to reduce search space — current 48/48/48 is well-established.
+# Narrowed from sweep 0r1udi17 based on edge analysis and parameter
+# importance. Key changes:
+#   - ent_coef_start: min 0.01 → 0.005, max 0.3 → 0.1 (most important param, all top runs < 0.045)
+#   - coeff_shaping_location/entity: min 0.5 → 0.1, max 10 → 5 (top runs clustered low)
+#   - max_grad_norm: min 0.5 → 0.25 (best run was at floor)
+#   - vf_coef: max 0.9 → 1.0 (best run near ceiling)
+#   - Dropped flat_dim (64 won decisively — best run + 2 other top runs)
 
 method: bayes
+# NOTE: Also update the sweep_count default in .github/workflows/ci.yml
+# to match this value, otherwise CI will launch fewer runs than expected.
 run_cap: 30
 metric:
   name: "curriculum/score"
   goal: maximize
 
-# Early termination via Hyperband: kill runs that fall behind the top
-# performers. eta=3 means only the top 1/3 of runs survive each bracket.
-# min_iter=10 avoids killing runs before they've had a chance to warm up
-# (10 logged steps of curriculum/score ≈ ~300K training steps).
-# Note: W&B early_terminate has known quirks (wandb/wandb#7156) but is
-# worth trying — worst case it doesn't trigger and we lose nothing.
 early_terminate:
   type: hyperband
   min_iter: 10
   eta: 3
 
 parameters:
-  # ── Reward shaping (high priority — never tuned with PBRS) ──────
+  # ── Reward shaping (narrowed — top runs clustered low) ──────────
   coeff_shaping_location:
     distribution: log_uniform_values
-    min: 0.5
-    max: 10.0
+    min: 0.1
+    max: 5.0
 
   coeff_shaping_entity:
     distribution: log_uniform_values
-    min: 0.5
-    max: 10.0
+    min: 0.1
+    max: 5.0
 
   coeff_shaping_direction:
     distribution: log_uniform_values
-    min: 0.5
+    min: 0.1
     max: 10.0
 
   coeff_throughput:
@@ -44,11 +43,11 @@ parameters:
     min: 0.5
     max: 0.99
 
-  # ── Entropy schedule (high priority — drives exploration vs exploitation) ─
+  # ── Entropy schedule (most important — extend floor, narrow ceiling) ─
   ent_coef_start:
     distribution: log_uniform_values
-    min: 0.01
-    max: 0.3
+    min: 0.005
+    max: 0.1
 
   ent_coef_end:
     distribution: log_uniform_values
@@ -79,11 +78,11 @@ parameters:
   vf_coef:
     distribution: uniform
     min: 0.5
-    max: 0.9
+    max: 1.0
 
   max_grad_norm:
     distribution: uniform
-    min: 0.5
+    min: 0.25
     max: 3.0
 
   adam_epsilon:
@@ -91,14 +90,11 @@ parameters:
     min: 1e-6
     max: 2e-4
 
-  # ── Architecture (small search, high impact) ────────────────────
+  # ── Architecture ────────────────────────────────────────────────
   tile_head_std:
     distribution: log_uniform_values
     min: 0.001
     max: 0.1
-
-  flat_dim:
-    values: [64, 128, 256]
 
 program: ppo.py
 
