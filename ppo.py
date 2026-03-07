@@ -145,10 +145,16 @@ class Args:
     """the number of iterations (total_timesteps // batch_size)"""
 
 
-def make_env(env_id, idx, capture_video, size, run_name):
+def _ensure_env_registered():
+    """Register the FactorioEnv if not already registered (needed in subprocesses)."""
+    if "factorion/FactorioEnv-v0" not in gym.registry:
+        gym.register(id="factorion/FactorioEnv-v0", entry_point=FactorioEnv)
+
+def make_env(env_id, idx, capture_video, size, run_name, max_missing_entities=1):
     def thunk():
+        _ensure_env_registered()
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
+        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx, 'max_missing_entities': max_missing_entities})
         # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
@@ -218,6 +224,7 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
+        max_missing_entities: int = 1,
     ):
         super().__init__()
         # Setup the renderer if requested
@@ -227,6 +234,7 @@ class FactorioEnv(gym.Env):
             self.render_modes = [render_mode]
 
         self.size = size
+        self.max_missing_entities = max_missing_entities
         if max_steps is None:
             max_steps = self.size * self.size
 
@@ -305,6 +313,10 @@ class FactorioEnv(gym.Env):
 
         return location_match, entity_match, direction_match
 
+    def set_max_missing(self, value: int):
+        """Update the curriculum level (called via envs.call from the training loop)."""
+        self.max_missing_entities = value
+
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is None:
             seed = 0
@@ -324,7 +336,14 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
+        # Use num_missing_entities from options if explicitly provided for
+        # this reset call, otherwise sample from [0, max_missing_entities].
+        # This lets AsyncVectorEnv autoreset (which passes options=None)
+        # work correctly with curriculum progression.
+        if options is not None and 'num_missing_entities' in options:
+            self._num_missing_entities = options['num_missing_entities']
+        else:
+            self._num_missing_entities = int(self.np_random.integers(0, self.max_missing_entities + 1))
 
         self.actions = []
         # Generate the solved factory first (same seed → same layout),
@@ -738,15 +757,17 @@ class FactorioEnv(gym.Env):
 class AgentCNN(nn.Module):
     def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01):
         super().__init__()
-        base_env = envs.envs[0].unwrapped
-        self.width = base_env.size
-        self.height = base_env.size
-        self.channels = len(base_env.Channel)
+        # Derive metadata from observation/action spaces (works with both
+        # SyncVectorEnv and AsyncVectorEnv).
+        obs_shape = envs.single_observation_space.shape  # (C, W, H)
+        self.channels = obs_shape[0]
+        self.width = obs_shape[1]
+        self.height = obs_shape[2]
         # minus two for the source and the sink
         self.num_entities = 2 # len(base_env.entities) - 2 TODO for now, only allow empty or transport_belt
-        self.num_directions = len(base_env.Direction)
-        self.num_items = len(base_env.items)
-        self.num_misc = len(base_env.Misc)
+        self.num_directions = envs.single_action_space["direction"].n
+        self.num_items = envs.single_action_space["item"].n
+        self.num_misc = envs.single_action_space["misc"].n
         self.chan3 = chan3
 
         self.encoder = nn.Sequential(
@@ -936,9 +957,14 @@ if __name__ == "__main__":
     print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
-    # env setup
-    envs = gym.vector.SyncVectorEnv(
+    # env setup — AsyncVectorEnv runs each env in its own subprocess,
+    # parallelising Rust simulate_throughput calls across CPU cores.
+    # autoreset_mode="same_step" resets done envs immediately (same step),
+    # matching the old SyncVectorEnv + manual reset semantics. The default
+    # "next_step" would waste one step per episode on a no-op autoreset.
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
+        autoreset_mode="SameStep",
     )
 
     print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")
@@ -1063,36 +1089,28 @@ if __name__ == "__main__":
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
-            # Reset only the done environments with updated num_missing_entities
-            done_indices = np.where(next_done)[0]
-            for idx in done_indices:
-                obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
-                })
-                next_obs_ECWH[idx] = obs
+            # AsyncVectorEnv handles autoreset — done envs are automatically
+            # reset with the current max_missing_entities (set via envs.call).
+            # next_obs_ECWH already contains the post-reset observations.
 
             next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
             next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
 
-            if "episode" in infos:
-                # The "_episode" mask indicates which environments finished this step
-                # We can use any of the masks (_r, _l, _t) as they should be the same for a finished env
-                finished_envs_mask = infos["_episode"]
-
-                # Iterate through the boolean mask
+            # With SameStep autoreset, terminal episode info is in
+            # infos["final_info"] — a stacked dict where each value is
+            # an array indexed by env. "_final_info" is a boolean mask.
+            if "final_info" in infos:
+                fi = infos["final_info"]
                 for i in range(args.num_envs):
-                    if not finished_envs_mask[i]:
+                    if not infos["_final_info"][i]:
+                        continue
+                    if "episode" not in fi or not fi["_episode"][i]:
                         continue
                     # This environment finished, extract its stats
-                    episode_return = infos["episode"]["r"][i]
-                    episode_len = infos["episode"]["l"][i]
-                    end_of_episode_thput = infos["throughput"][i]
-                    final_frac_reachable = infos["frac_reachable"][i]
-                    # final_frac_hallucin = infos["frac_hallucin"][i]
-
-                    # episodic_returns.append(episode_return)
-                    # avg_return = sum(episodic_returns) / len(episodic_returns)
-                    # writer.add_scalar("old/charts/episodic_return_ma", avg_return, global_step)
+                    episode_return = fi["episode"]["r"][i]
+                    episode_len = fi["episode"]["l"][i]
+                    end_of_episode_thput = fi["throughput"][i]
+                    final_frac_reachable = fi["frac_reachable"][i]
 
                     end_of_episode_thputs.append(end_of_episode_thput)
 
@@ -1100,16 +1118,16 @@ if __name__ == "__main__":
                         "episode/throughput": float(end_of_episode_thput),
                         "episode/reward": float(episode_return),
                         "episode/length": float(episode_len),
-                        "episode/invalid_frac": float(infos['frac_invalid_actions'][i]),
-                        "episode/num_entities": float(infos['num_entities'][i]),
-                        "episode/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
+                        "episode/invalid_frac": float(fi['frac_invalid_actions'][i]),
+                        "episode/num_entities": float(fi['num_entities'][i]),
+                        "episode/entity_efficiency": float(fi['min_entities_required'][i]) / float(fi['num_entities'][i]),
                         "episode/frac_reachable": float(final_frac_reachable),
-                        "shaping/tile_location": float(infos['tile_match_location'][i]),
-                        "shaping/tile_entity": float(infos['tile_match_entity'][i]),
-                        "shaping/tile_direction": float(infos['tile_match_direction'][i]),
-                        "shaping/delta_location": float(infos['shaping_location_delta'][i]),
-                        "shaping/delta_entity": float(infos['shaping_entity_delta'][i]),
-                        "shaping/delta_direction": float(infos['shaping_direction_delta'][i]),
+                        "shaping/tile_location": float(fi['tile_match_location'][i]),
+                        "shaping/tile_entity": float(fi['tile_match_entity'][i]),
+                        "shaping/tile_direction": float(fi['tile_match_direction'][i]),
+                        "shaping/delta_location": float(fi['shaping_location_delta'][i]),
+                        "shaping/delta_entity": float(fi['shaping_entity_delta'][i]),
+                        "shaping/delta_direction": float(fi['shaping_direction_delta'][i]),
                     })
 
             # Log eval metrics every 256 global steps during rollout
@@ -1248,6 +1266,8 @@ if __name__ == "__main__":
                     for _ in range(moving_average_length):
                         end_of_episode_thputs.append(0)
                     max_missing_entities = min(max_missing_entities + 1, args.size*2)
+                    # Broadcast new curriculum level to all subprocess envs
+                    envs.call("set_max_missing", max_missing_entities)
                     print(f"\nNow working with {max_missing_entities=}")
             # Recompute after potential level-up so we use the reset buffer
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)

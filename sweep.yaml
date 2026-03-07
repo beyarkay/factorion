@@ -1,90 +1,28 @@
-# sweep.yaml — Delta-based reward shaping sweep
+# sweep.yaml — Performance sweep (maximise training speed)
+#
+# Sweeps over parallelism and batching parameters to find the fastest
+# configuration. The metric to maximise is perf/sps (steps per second).
+# total-timesteps is set high enough that even the largest batch configs
+# (256 envs * 512 steps = 131072 batch) get multiple training iterations.
 
 method: bayes
-run_cap: 20
+run_cap: 30
 metric:
-  name: "curriculum/score"
+  name: "perf/sps"
   goal: maximize
 
 parameters:
-  coeff_shaping_location:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  num_envs:
+    values: [16, 32, 64, 128, 256]
 
-  coeff_shaping_entity:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  num_steps:
+    values: [64, 128, 256, 512]
 
-  coeff_shaping_direction:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  num_minibatches:
+    values: [2, 4, 8, 16, 32]
 
-  coeff_throughput:
-    distribution: uniform
-    min: 0.5
-    max: 0.99
-
-  ent_coef_start:
-    distribution: log_uniform_values
-    min: 0.005
-    max: 0.2
-
-  ent_coef_end:
-    distribution: log_uniform_values
-    min: 1e-4
-    max: 0.01
-
-  learning_rate:
-    distribution: log_uniform_values
-    min: 5e-5
-    max: 1e-3
-
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
-
-  clip_coef:
-    distribution: uniform
-    min: 0.18
-    max: 0.32
-
-  gamma:
-    distribution: uniform
-    min: 0.95
-    max: 0.999
-
-  gae_lambda:
-    distribution: uniform
-    min: 0.8
-    max: 0.975
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  vf_coef:
-    distribution: uniform
-    min: 0.5
-    max: 0.9
-
-  max_grad_norm:
-    distribution: uniform
-    min: 0.75
-    max: 2.5
-
-  adam_epsilon:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 2e-4
+  update_epochs:
+    values: [2, 4, 6, 8]
 
 program: ppo.py
 
@@ -92,6 +30,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - 250_000
+  - "500000"
   - --track
   - ${args}
