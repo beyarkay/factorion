@@ -108,6 +108,27 @@ class TestExtractExpertActions:
             assert entity_id != str2ent("empty").value, "Expert actions shouldn't place empty"
             assert direction_id != Direction.NONE.value, "Expert belt actions need a direction"
 
+    def test_source_and_sink_always_present(self):
+        """Task observations should always contain source and sink entities."""
+        source_id = str2ent("source").value
+        sink_id = str2ent("sink").value
+        for seed in [1, 7, 42, 99]:
+            for level in [1, 4, 8, 16]:
+                try:
+                    task, _ = generate_lesson(
+                        size=8, kind=LessonKind.MOVE_ONE_ITEM,
+                        num_missing_entities=level, seed=seed,
+                    )
+                except Exception:
+                    continue
+                ent = task[Channel.ENTITIES.value]
+                assert (ent == source_id).any(), (
+                    f"seed={seed}, level={level}: source missing from task"
+                )
+                assert (ent == sink_id).any(), (
+                    f"seed={seed}, level={level}: sink missing from task"
+                )
+
 
 class TestGenerateDataset:
     def test_generates_correct_count(self):
