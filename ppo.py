@@ -1137,6 +1137,7 @@ if __name__ == "__main__":
                     "curriculum/level": max_missing_entities,
                     "curriculum/score": (max_missing_entities - 1) + final_thputs_100ma,
                     "curriculum/throughput_avg": final_thputs_100ma,
+                    "perf/sps": int(global_step / (time.time() - start_time)),
                 }
                 eval_metrics.update(_flush_episode_means())
                 wandb.log(eval_metrics, step=global_step)

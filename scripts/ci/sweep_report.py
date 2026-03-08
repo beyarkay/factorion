@@ -58,8 +58,12 @@ def main():
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
 
-    # Fetch all runs, keep only finished ones
-    runs = [r for r in sweep.runs if r.state == "finished"]
+    # Fetch runs that have the target metric (finished or crashed)
+    runs = [
+        r for r in sweep.runs
+        if r.state in ("finished", "crashed")
+        and r.summary.get(metric_name) is not None
+    ]
 
     # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
     parts = args.sweep_path.split("/")
@@ -100,7 +104,7 @@ def main():
     md_lines.append(
         f"| **Sweep** | [{args.sweep_path}]({sweep_url}) |"
     )
-    md_lines.append(f"| **Completed runs** | {len(runs)} |")
+    md_lines.append(f"| **Runs with data** | {len(runs)} |")
     md_lines.append(
         f"| **Metric** | `{metric_name}` ({metric_goal}) |"
     )

@@ -8,7 +8,7 @@
 method: bayes
 run_cap: 30
 metric:
-  name: "perf/sps"
+  name: "perf/sps.last"
   goal: maximize
 
 parameters:
@@ -30,6 +30,6 @@ command:
   - bash
   - run_sweep.sh
   - --total-timesteps
-  - "500000"
+  - "100000"
   - --track
   - ${args}

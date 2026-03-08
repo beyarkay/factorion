@@ -91,35 +91,24 @@ chmod +x run_sweep.sh
 export WANDB_API_KEY
 
 echo ""
-echo ">>> Launching ${AGENTS_PER_POD} parallel W&B sweep agents (${SWEEP_COUNT} iterations each)..."
+echo ">>> Launching ${AGENTS_PER_POD} sequential W&B sweep agents (${SWEEP_COUNT} iterations each)..."
 echo ">>> Sweep: ${SWEEP_ID}"
 echo ""
 
-# ── Launch sweep agents in parallel ──────────────────────────────
-# Each agent process independently pulls work from the W&B sweep controller.
-# CUDA time-slices between processes, keeping GPU utilisation high.
-PIDS=()
+# ── Launch sweep agents sequentially ──────────────────────────────
+# AsyncVectorEnv spawns subprocesses per env — running multiple agents
+# in parallel causes OOM on a single GPU. Run them one at a time.
+FAILED=0
 mkdir -p /workspace/agent_logs
 
 for i in $(seq 0 $((AGENTS_PER_POD - 1))); do
     LOG="/workspace/agent_logs/agent_${AGENT_ID}_${i}.log"
     echo ">>> Starting agent ${AGENT_ID}.${i} (log: ${LOG})"
-    wandb agent --count "$SWEEP_COUNT" "$SWEEP_ID" > "$LOG" 2>&1 &
-    PIDS+=($!)
-done
-
-echo ">>> All ${AGENTS_PER_POD} agents launched (PIDs: ${PIDS[*]})"
-echo ""
-
-# ── Wait for all agents and track failures ───────────────────────
-FAILED=0
-for i in "${!PIDS[@]}"; do
-    PID="${PIDS[$i]}"
-    if wait "$PID"; then
-        echo ">>> Agent ${AGENT_ID}.${i} (PID ${PID}) finished successfully"
+    if wandb agent --count "$SWEEP_COUNT" "$SWEEP_ID" > "$LOG" 2>&1; then
+        echo ">>> Agent ${AGENT_ID}.${i} finished successfully"
     else
         EXIT_CODE=$?
-        echo ">>> Agent ${AGENT_ID}.${i} (PID ${PID}) failed with exit code ${EXIT_CODE}"
+        echo ">>> Agent ${AGENT_ID}.${i} failed with exit code ${EXIT_CODE}"
         FAILED=$((FAILED + 1))
     fi
 done
