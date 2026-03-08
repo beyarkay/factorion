@@ -104,7 +104,8 @@ mkdir -p /workspace/agent_logs
 for i in $(seq 0 $((AGENTS_PER_POD - 1))); do
     LOG="/workspace/agent_logs/agent_${AGENT_ID}_${i}.log"
     echo ">>> Starting agent ${AGENT_ID}.${i} (log: ${LOG})"
-    if wandb agent --count "$SWEEP_COUNT" "$SWEEP_ID" > "$LOG" 2>&1; then
+    # Tee to both log file and stdout so SSH stays alive and we see progress
+    if wandb agent --count "$SWEEP_COUNT" "$SWEEP_ID" 2>&1 | tee "$LOG"; then
         echo ">>> Agent ${AGENT_ID}.${i} finished successfully"
     else
         EXIT_CODE=$?
