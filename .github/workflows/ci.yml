@@ -58,6 +58,7 @@ on:
         type: string
 
 permissions:
+  contents: write
   pull-requests: write
 
 env:
@@ -74,6 +75,9 @@ jobs:
       run_gpu: ${{ steps.check.outputs.run_gpu }}
       run_benchmark: ${{ steps.check.outputs.run_benchmark }}
       run_sweep: ${{ steps.check.outputs.run_sweep }}
+      run_sft_smoketest: ${{ steps.check.outputs.run_sft_smoketest }}
+      run_sft_benchmark: ${{ steps.check.outputs.run_sft_benchmark }}
+      run_sft_sweep: ${{ steps.check.outputs.run_sft_sweep }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +92,9 @@ jobs:
           RUN_GPU=false
           RUN_BENCHMARK=false
           RUN_SWEEP=false
+          RUN_SFT_SMOKETEST=false
+          RUN_SFT_BENCHMARK=false
+          RUN_SFT_SWEEP=false
 
           # 1. workflow_dispatch: always run GPU tests (unless skip_gpu)
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$SKIP_GPU" != "true" ]; then
@@ -126,12 +133,36 @@ jobs:
             RUN_SWEEP=true
           fi
 
+          # 6. Check PR labels for sft-smoketest
+          if echo "$LABELS" | grep -qi 'sft-smoketest'; then
+            echo "::notice::SFT smoke test triggered via PR label"
+            RUN_SFT_SMOKETEST=true
+          fi
+
+          # 7. Check PR labels for sft-benchmark
+          if echo "$LABELS" | grep -qi 'sft-benchmark'; then
+            echo "::notice::SFT benchmark triggered via PR label"
+            RUN_SFT_BENCHMARK=true
+          fi
+
+          # 8. Check PR labels for sft-sweep
+          if echo "$LABELS" | grep -qi 'sft-sweep'; then
+            echo "::notice::SFT sweep triggered via PR label"
+            RUN_SFT_SWEEP=true
+          fi
+
           echo "run_gpu=$RUN_GPU" >> "$GITHUB_OUTPUT"
           echo "run_benchmark=$RUN_BENCHMARK" >> "$GITHUB_OUTPUT"
           echo "run_sweep=$RUN_SWEEP" >> "$GITHUB_OUTPUT"
+          echo "run_sft_smoketest=$RUN_SFT_SMOKETEST" >> "$GITHUB_OUTPUT"
+          echo "run_sft_benchmark=$RUN_SFT_BENCHMARK" >> "$GITHUB_OUTPUT"
+          echo "run_sft_sweep=$RUN_SFT_SWEEP" >> "$GITHUB_OUTPUT"
           echo "GPU tests will run: $RUN_GPU"
           echo "GPU benchmark will run: $RUN_BENCHMARK"
           echo "W&B sweep will run: $RUN_SWEEP"
+          echo "SFT smoke test will run: $RUN_SFT_SMOKETEST"
+          echo "SFT benchmark will run: $RUN_SFT_BENCHMARK"
+          echo "SFT sweep will run: $RUN_SFT_SWEEP"
 
   # ──────────────────────────────────────────────
   # Job 1: Lint
@@ -226,96 +257,26 @@ jobs:
         with:
           submodules: true
 
-      - uses: actions/setup-python@v5
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install CI dependencies
-        run: pip install runpod wandb
-
-      - name: Set up SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
-          chmod 600 ~/.ssh/runpod_ci
-          # Disable strict host checking for RunPod SSH
-          cat >> ~/.ssh/config << 'EOF'
-          Host *
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            ServerAliveInterval 15
-            ServerAliveCountMax 12
-            LogLevel ERROR
-          EOF
-
-      - name: Create RunPod instance
-        id: create-pod
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          PYTHONUNBUFFERED: "1"
-        run: |
-          python scripts/ci/runpod_create.py \
-            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
-            --name-prefix ci-smoke \
-            --output-file /tmp/pod_info.json
-
-          echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SSH readiness
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
-          for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
-              echo "SSH connection established"
-              exit 0
-            fi
-            echo "  Attempt $i/30 - retrying in 10s..."
-            sleep 10
-          done
-          echo "::error::SSH connection timed out"
-          exit 1
-
-      - name: Transfer code to pod
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-
-          # Create a tarball of the repo (excluding .git and large dirs)
-          tar czf /tmp/factorion.tar.gz \
-            --exclude='.git' \
-            --exclude='artifacts' \
-            --exclude='wandb' \
-            --exclude='runs' \
-            --exclude='videos' \
-            --exclude='__pycache__' \
-            -C "$GITHUB_WORKSPACE" .
-
-          # Transfer to pod
-          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
-
-          # Extract on pod
-          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
-            mkdir -p /workspace/factorion
-            tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
-            ls -la /workspace/factorion/
-          SETUP
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-smoke
 
       - name: Run smoke test on GPU
-        id: smoke-test
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
           TOTAL_TIMESTEPS="${{ inputs.total_timesteps || '20000' }}"
 
-          # Transfer the smoke test script and run it
           scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" scripts/ci/gpu_smoke_test.sh root@"$SSH_HOST":/workspace/gpu_smoke_test.sh
 
           ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
@@ -328,36 +289,14 @@ jobs:
             RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_smoke_test.sh
 
-      - name: Fetch summary from pod
+      - name: Teardown RunPod
         if: always()
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/summary.md 2>/dev/null || echo "No summary file found on pod"
-
-      - name: Destroy RunPod instance
-        if: always()
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py \
-              --pod-info-file /tmp/pod_info.json \
-              --append-to-summary /tmp/summary.md
-          else
-            echo "::warning::No pod info file found, nothing to clean up"
-          fi
-
-      - name: Post results to PR
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -f /tmp/summary.md ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/summary.md)"
-          else
-            echo "::warning::No summary.md to post"
-          fi
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          summary_file: /tmp/summary.md
+          pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   # ──────────────────────────────────────────────
   # Job 5: GPU benchmark — multi-seed statistical comparison
@@ -371,102 +310,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-depth: 0 # full history needed to checkout main for baseline
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install CI dependencies
-        run: pip install runpod wandb
-
-      - name: Set up SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
-          chmod 600 ~/.ssh/runpod_ci
-          cat >> ~/.ssh/config << 'EOF'
-          Host *
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            ServerAliveInterval 15
-            ServerAliveCountMax 12
-            LogLevel ERROR
-          EOF
-
-      - name: Create RunPod instance
-        id: create-pod
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          PYTHONUNBUFFERED: "1"
-        run: |
-          python scripts/ci/runpod_create.py \
-            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
-            --name-prefix ci-bench \
-            --output-file /tmp/pod_info.json
-
-          echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SSH readiness
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
-          for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
-              echo "SSH connection established"
-              exit 0
-            fi
-            echo "  Attempt $i/30 - retrying in 10s..."
-            sleep 10
-          done
-          echo "::error::SSH connection timed out"
-          exit 1
-
-      - name: Transfer code to pod
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-
-          # Include .git so the benchmark script can checkout main for baseline
-          tar czf /tmp/factorion.tar.gz \
-            --exclude='artifacts' \
-            --exclude='wandb' \
-            --exclude='runs' \
-            --exclude='videos' \
-            --exclude='__pycache__' \
-            -C "$GITHUB_WORKSPACE" .
-
-          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
-
-          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
-            mkdir -p /workspace/factorion
-            tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
-            ls -la /workspace/factorion/
-          SETUP
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-bench
+          include_git: "true"
 
       - name: Run multi-seed benchmark on GPU
-        id: benchmark
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
           BENCHMARK_TIMESTEPS="${{ inputs.benchmark_timesteps || '100000' }}"
 
-          # Transfer benchmark and comparison scripts
           scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
             scripts/ci/gpu_benchmark.sh \
             root@"$SSH_HOST":/workspace/gpu_benchmark.sh
 
           # Only pass NUM_SEEDS if explicitly provided via workflow_dispatch.
           # Otherwise let gpu_benchmark.sh use its own default (5).
-          # This avoids a race where the base branch workflow YAML has a stale
-          # fallback that overrides the script's default.
           NUM_SEEDS_ENV=""
           if [ -n "${{ inputs.benchmark_seeds }}" ]; then
             NUM_SEEDS_ENV="NUM_SEEDS=${{ inputs.benchmark_seeds }}"
@@ -484,39 +356,21 @@ jobs:
             RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_benchmark.sh
 
-      - name: Fetch benchmark report from pod
+      - name: Fetch benchmark results from pod
         if: always()
         run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md /tmp/benchmark_summary.md 2>/dev/null || echo "No benchmark summary found"
-
-          # Also fetch raw results for archiving
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
           scp -r -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/benchmark_results /tmp/benchmark_results 2>/dev/null || echo "No benchmark results found"
 
-      - name: Destroy RunPod instance
+      - name: Teardown RunPod
         if: always()
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py \
-              --pod-info-file /tmp/pod_info.json \
-              --append-to-summary /tmp/benchmark_summary.md
-          else
-            echo "::warning::No pod info file found, nothing to clean up"
-          fi
-
-      - name: Post benchmark results to PR
-        if: ${{ always() && github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -f /tmp/benchmark_summary.md ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/benchmark_summary.md)"
-          else
-            echo "::warning::No benchmark summary to post"
-          fi
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          summary_file: /tmp/benchmark_summary.md
+          pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload benchmark artifacts
         if: always()
@@ -630,85 +484,23 @@ jobs:
         with:
           submodules: true
 
-      - uses: actions/setup-python@v5
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install CI dependencies
-        run: pip install runpod wandb
-
-      - name: Set up SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}" > ~/.ssh/runpod_ci
-          chmod 600 ~/.ssh/runpod_ci
-          cat >> ~/.ssh/config << 'EOF'
-          Host *
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-            LogLevel ERROR
-          EOF
-
-      - name: Create RunPod instance
-        id: create-pod
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-          PYTHONUNBUFFERED: "1"
-        run: |
-          python scripts/ci/runpod_create.py \
-            --gpu-type "${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}" \
-            --name-prefix "ci-sweep-${{ matrix.agent_id }}" \
-            --output-file /tmp/pod_info.json
-
-          echo "pod_id=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for SSH readiness
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          echo "Waiting for SSH on root@${SSH_HOST}:${SSH_PORT}..."
-          for i in $(seq 1 30); do
-            if ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" -o ConnectTimeout=5 root@"$SSH_HOST" echo "SSH ready" 2>/dev/null; then
-              echo "SSH connection established"
-              exit 0
-            fi
-            echo "  Attempt $i/30 - retrying in 10s..."
-            sleep 10
-          done
-          echo "::error::SSH connection timed out"
-          exit 1
-
-      - name: Transfer code to pod
-        run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-
-          tar czf /tmp/factorion.tar.gz \
-            --exclude='.git' \
-            --exclude='artifacts' \
-            --exclude='wandb' \
-            --exclude='runs' \
-            --exclude='videos' \
-            --exclude='__pycache__' \
-            -C "$GITHUB_WORKSPACE" .
-
-          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" /tmp/factorion.tar.gz root@"$SSH_HOST":/workspace/factorion.tar.gz
-
-          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" << 'SETUP'
-            mkdir -p /workspace/factorion
-            tar xzf /workspace/factorion.tar.gz -C /workspace/factorion
-            ls -la /workspace/factorion/
-          SETUP
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-sweep-${{ matrix.agent_id }}
 
       - name: Run sweep agent on GPU
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
-          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
-          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
-          POD_ID=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['pod_id'])")
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
           PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
           SWEEP_PATH="${{ needs.sweep-setup.outputs.sweep_path }}"
           COUNT_PER_AGENT="${{ needs.sweep-setup.outputs.count_per_agent }}"
@@ -732,18 +524,12 @@ jobs:
             RUNPOD_POD_ID="$POD_ID" \
             bash /workspace/gpu_sweep.sh
 
-      - name: Destroy RunPod instance
+      - name: Teardown RunPod
         if: always()
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          if [ -f /tmp/pod_info.json ]; then
-            python scripts/ci/runpod_destroy.py \
-              --pod-info-file /tmp/pod_info.json \
-              --cost-output-file /tmp/pod_cost.json
-          else
-            echo "::warning::No pod info file found, nothing to clean up"
-          fi
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          cost_output_file: /tmp/pod_cost.json
 
       - name: Upload pod cost data
         if: always()
@@ -854,4 +640,387 @@ jobs:
             gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/sweep_summary.md)"
           else
             echo "::warning::No sweep summary to post"
+          fi
+
+  # ──────────────────────────────────────────────
+  # Job 9: SFT smoke test (RunPod GPU)
+  # ──────────────────────────────────────────────
+  sft-smoke-test:
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_sft_smoketest == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-sft-smoke
+
+      - name: Run SFT smoke test on GPU
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" scripts/ci/sft_smoke_test.sh root@"$SSH_HOST":/workspace/sft_smoke_test.sh
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            PR_NUMBER="$PR_NUMBER" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/sft_smoke_test.sh
+
+      - name: Teardown RunPod
+        if: always()
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          summary_file: /tmp/sft_summary.md
+          pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ──────────────────────────────────────────────
+  # Job 10: SFT benchmark — multi-seed statistical comparison
+  # ──────────────────────────────────────────────
+  sft-benchmark:
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_sft_benchmark == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-sft-bench
+          include_git: "true"
+
+      - name: Run SFT benchmark on GPU
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+            scripts/ci/sft_benchmark.sh \
+            scripts/ci/compare_runs.py \
+            root@"$SSH_HOST":/workspace/
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            PR_NUMBER="$PR_NUMBER" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            BRANCH_LABEL="pr-${PR_NUMBER}" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/sft_benchmark.sh
+
+      - name: Fetch benchmark results from pod
+        if: always()
+        run: |
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          scp -r -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/sft_benchmark_results /tmp/sft_benchmark_results 2>/dev/null || echo "No SFT benchmark results found"
+
+      - name: Teardown RunPod
+        if: always()
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          summary_file: /tmp/sft_benchmark_summary.md
+          pr_number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || '' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload SFT benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sft-benchmark-results
+          path: /tmp/sft_benchmark_results/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────
+  # Job 11: SFT sweep setup
+  # ──────────────────────────────────────────────
+  sft-sweep-setup:
+    needs: [check-gpu-trigger]
+    if: ${{ needs.check-gpu-trigger.outputs.run_sft_sweep == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      sweep_id: ${{ steps.create.outputs.sweep_id }}
+      sweep_path: ${{ steps.create.outputs.sweep_path }}
+      sweep_url: ${{ steps.create.outputs.sweep_url }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count_per_agent: ${{ steps.matrix.outputs.count_per_agent }}
+      agents_per_pod: ${{ steps.matrix.outputs.agents_per_pod }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install CI dependencies
+        run: pip install wandb pyyaml
+
+      - name: Create W&B SFT sweep
+        id: create
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          python scripts/ci/create_sweep.py \
+            --config sft_sweep.yaml \
+            --project "${{ env.WANDB_CI_PROJECT }}" \
+            --output-file /tmp/sweep_info.json
+
+          SWEEP_ID=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_id'])")
+          SWEEP_PATH=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_path'])")
+          SWEEP_URL=$(python -c "import json; print(json.load(open('/tmp/sweep_info.json'))['sweep_url'])")
+
+          echo "sweep_id=$SWEEP_ID" >> "$GITHUB_OUTPUT"
+          echo "sweep_path=$SWEEP_PATH" >> "$GITHUB_OUTPUT"
+          echo "sweep_url=$SWEEP_URL" >> "$GITHUB_OUTPUT"
+          echo "SFT Sweep created: $SWEEP_PATH"
+          echo "SFT Sweep URL: $SWEEP_URL"
+
+      - name: Post SFT sweep started comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SWEEP_URL="${{ steps.create.outputs.sweep_url }}"
+          SWEEP_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          SWEEP_COUNT="${{ inputs.sweep_count || '20' }}"
+          TOTAL_AGENTS=$(( SWEEP_PODS * AGENTS_PER_POD ))
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat <<EOF
+          **SFT W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_PODS} pod(s) x ${AGENTS_PER_POD} agents/pod (${TOTAL_AGENTS} total agents)
+
+          [View SFT sweep on W&B](${SWEEP_URL})
+          EOF
+          )"
+
+      - name: Prepare agent matrix
+        id: matrix
+        run: |
+          NUM_PODS="${{ inputs.sweep_agents || '1' }}"
+          AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
+          TOTAL_COUNT="${{ inputs.sweep_count || '20' }}"
+          TOTAL_AGENTS=$(( NUM_PODS * AGENTS_PER_POD ))
+          COUNT_PER=$(( TOTAL_COUNT / TOTAL_AGENTS ))
+
+          if [ "$COUNT_PER" -lt 1 ]; then
+            COUNT_PER=1
+          fi
+
+          MATRIX=$(python3 -c "
+          import json
+          n = int('$NUM_PODS')
+          print(json.dumps({'agent_id': list(range(n))}))
+          ")
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "count_per_agent=$COUNT_PER" >> "$GITHUB_OUTPUT"
+          echo "agents_per_pod=$AGENTS_PER_POD" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────
+  # Job 12: SFT sweep agents
+  # ──────────────────────────────────────────────
+  sft-sweep:
+    needs: [sft-sweep-setup]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.sft-sweep-setup.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          name_prefix: ci-sft-sweep-${{ matrix.agent_id }}
+
+      - name: Run SFT sweep agent on GPU
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          SWEEP_PATH="${{ needs.sft-sweep-setup.outputs.sweep_path }}"
+          COUNT_PER_AGENT="${{ needs.sft-sweep-setup.outputs.count_per_agent }}"
+          AGENTS_PER_POD="${{ needs.sft-sweep-setup.outputs.agents_per_pod }}"
+          AGENT_ID="${{ matrix.agent_id }}"
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+            scripts/ci/sft_sweep.sh \
+            root@"$SSH_HOST":/workspace/sft_sweep.sh
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            SWEEP_ID="$SWEEP_PATH" \
+            SWEEP_COUNT="$COUNT_PER_AGENT" \
+            AGENTS_PER_POD="$AGENTS_PER_POD" \
+            AGENT_ID="$AGENT_ID" \
+            PR_NUMBER="$PR_NUMBER" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/sft_sweep.sh
+
+      - name: Teardown RunPod
+        if: always()
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          cost_output_file: /tmp/pod_cost.json
+
+      - name: Upload pod cost data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sft-pod-cost-${{ matrix.agent_id }}
+          path: /tmp/pod_cost.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────
+  # Job 13: SFT sweep report
+  # ──────────────────────────────────────────────
+  sft-sweep-report:
+    needs: [sft-sweep-setup, sft-sweep]
+    if: always() && needs.sft-sweep-setup.outputs.sweep_path != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install CI dependencies
+        run: pip install wandb
+
+      - name: Download pod cost artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sft-pod-cost-*
+          path: /tmp/sft-pod-costs
+          merge-multiple: false
+
+      - name: Generate SFT sweep report
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          python scripts/ci/sweep_report.py \
+            --sweep-path "${{ needs.sft-sweep-setup.outputs.sweep_path }}" \
+            --output /tmp/sft_sweep_summary.md \
+            --pr-number "${{ github.event.pull_request.number || 'manual' }}" \
+            --commit-sha "${{ github.sha }}"
+
+      - name: Create PR with best SFT hyperparameters
+        if: needs.sft-sweep.result == 'success'
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/ci/apply_sft_sweep_best.py \
+            --sweep-path "${{ needs.sft-sweep-setup.outputs.sweep_path }}" \
+            --sft-file sft.py \
+            --base-branch "${{ github.event.pull_request.base.ref || 'main' }}" \
+            --pr-number "${{ github.event.pull_request.number || '' }}" \
+            --output-pr-url /tmp/sft_sweep_pr_url.txt
+
+      - name: Append PR link to SFT sweep summary
+        if: needs.sft-sweep.result == 'success'
+        run: |
+          if [ -f /tmp/sft_sweep_pr_url.txt ] && [ -f /tmp/sft_sweep_summary.md ]; then
+            PR_URL=$(cat /tmp/sft_sweep_pr_url.txt)
+            if [ -n "$PR_URL" ]; then
+              printf '\n---\n**Apply these SFT hyperparameters:** [PR](%s)\n' "$PR_URL" >> /tmp/sft_sweep_summary.md
+            fi
+          fi
+
+      - name: Append total SFT sweep cost to summary
+        run: |
+          python3 -c "
+          import json, glob, os
+          costs = []
+          for f in sorted(glob.glob('/tmp/sft-pod-costs/sft-pod-cost-*/pod_cost.json')):
+              try:
+                  data = json.load(open(f))
+                  costs.append(data)
+              except Exception as e:
+                  print(f'::warning::Could not read {f}: {e}')
+          if not costs:
+              print('No pod cost data found')
+              exit(0)
+          total = sum(c['total_cost'] for c in costs)
+          lines = []
+          for c in costs:
+              lines.append(f\"  - Pod {c['pod_id']}: \${c['total_cost']:.2f} ({c['uptime_human']})\")
+          detail = chr(10).join(lines)
+          cost_section = f\"\n**Total SFT sweep cost:** \${total:.2f} across {len(costs)} pod(s)\n{detail}\n\"
+          summary_path = '/tmp/sft_sweep_summary.md'
+          existing = ''
+          if os.path.exists(summary_path):
+              existing = open(summary_path).read()
+          with open(summary_path, 'w') as f:
+              f.write(existing + cost_section)
+          print(f'Total SFT sweep cost: \${total:.2f}')
+          "
+
+      - name: Post SFT sweep results to PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/sft_sweep_summary.md ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat /tmp/sft_sweep_summary.md)"
+          else
+            echo "::warning::No SFT sweep summary to post"
           fi

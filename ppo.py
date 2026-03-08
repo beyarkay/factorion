@@ -135,6 +135,8 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    start_curriculum_level: int = 1
+    """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -976,7 +978,7 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    max_missing_entities = 1
+    max_missing_entities = args.start_curriculum_level
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
