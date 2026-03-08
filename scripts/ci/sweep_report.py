@@ -21,6 +21,27 @@ import sys
 import wandb
 
 
+def _get_summary_metric(summary, metric_name):
+    """Resolve a W&B metric name from a run summary.
+
+    Handles dot-notation like "perf/sps.last" where the summary stores
+    {"perf/sps": {"last": 359}}.  Falls back to a direct key lookup.
+    """
+    # Direct lookup first
+    val = summary.get(metric_name)
+    if val is not None and not isinstance(val, dict):
+        return val
+
+    # Try dot-notation: "perf/sps.last" -> summary["perf/sps"]["last"]
+    if "." in metric_name:
+        base, sub = metric_name.rsplit(".", 1)
+        val = summary.get(base)
+        if isinstance(val, dict):
+            return val.get(sub)
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate markdown report from a W&B sweep"
@@ -58,8 +79,18 @@ def main():
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
 
-    # Fetch all runs, keep only finished ones
-    runs = [r for r in sweep.runs if r.state == "finished"]
+    # Fetch runs that have the target metric (finished, crashed, or failed)
+    all_runs = list(sweep.runs)
+    print(f"Total runs in sweep: {len(all_runs)}")
+    for r in all_runs:
+        val = _get_summary_metric(r.summary, metric_name)
+        print(f"  {r.name}: state={r.state}, {metric_name}={val}")
+    runs = [
+        r for r in all_runs
+        if r.state in ("finished", "crashed", "failed")
+        and _get_summary_metric(r.summary, metric_name) is not None
+    ]
+    print(f"Runs with valid metric data: {len(runs)}")
 
     # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
     parts = args.sweep_path.split("/")
@@ -68,7 +99,8 @@ def main():
     if not runs:
         md = (
             "## W&B Hyperparameter Sweep Results\n\n"
-            "**No completed runs found in sweep.**\n\n"
+            f"**No runs with `{metric_name}` data found in sweep "
+            f"({len(all_runs)} total runs).**\n\n"
             f"[View sweep on W&B]({sweep_url})\n\n"
             f"<sub>Commit {args.commit_sha[:8]} "
             f"\u00b7 PR #{args.pr_number}</sub>\n"
@@ -80,7 +112,7 @@ def main():
 
     # Sort runs by the sweep metric
     def get_metric(run):
-        val = run.summary.get(metric_name)
+        val = _get_summary_metric(run.summary, metric_name)
         if val is None:
             return float("-inf") if reverse else float("inf")
         return val
@@ -100,7 +132,7 @@ def main():
     md_lines.append(
         f"| **Sweep** | [{args.sweep_path}]({sweep_url}) |"
     )
-    md_lines.append(f"| **Completed runs** | {len(runs)} |")
+    md_lines.append(f"| **Runs with data** | {len(runs)} |")
     md_lines.append(
         f"| **Metric** | `{metric_name}` ({metric_goal}) |"
     )
