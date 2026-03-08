@@ -13,3 +13,5 @@ __pycache__/
 .venv/
 plan.md
 summary.json
+sft_summary.json
+sft_checkpoint.pt

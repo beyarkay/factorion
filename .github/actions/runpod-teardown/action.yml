@@ -1,0 +1,64 @@
+name: "RunPod GPU Teardown"
+description: "Destroy a RunPod instance and optionally post results to a PR"
+
+inputs:
+  runpod_api_key:
+    description: "RunPod API key"
+    required: true
+  summary_file:
+    description: "Path to the summary markdown file to post"
+    default: ""
+  cost_output_file:
+    description: "Path to write pod cost JSON (for sweep cost aggregation)"
+    default: ""
+  pr_number:
+    description: "PR number to post comment to (empty to skip)"
+    default: ""
+  github_token:
+    description: "GitHub token for posting PR comments"
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Fetch summary from pod
+      if: inputs.summary_file != ''
+      shell: bash
+      run: |
+        if [ -f /tmp/pod_info.json ]; then
+          SSH_HOST=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_host'])")
+          SSH_PORT=$(python -c "import json; print(json.load(open('/tmp/pod_info.json'))['ssh_port'])")
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" root@"$SSH_HOST":/workspace/summary.md "${{ inputs.summary_file }}" 2>/dev/null || echo "No summary file found on pod"
+        fi
+
+    - name: Destroy RunPod instance
+      shell: bash
+      env:
+        RUNPOD_API_KEY: ${{ inputs.runpod_api_key }}
+      run: |
+        if [ -f /tmp/pod_info.json ]; then
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.summary_file }}" ]; then
+            EXTRA_ARGS="--append-to-summary ${{ inputs.summary_file }}"
+          fi
+          if [ -n "${{ inputs.cost_output_file }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --cost-output-file ${{ inputs.cost_output_file }}"
+          fi
+          python scripts/ci/runpod_destroy.py \
+            --pod-info-file /tmp/pod_info.json \
+            $EXTRA_ARGS
+        else
+          echo "::warning::No pod info file found, nothing to clean up"
+        fi
+
+    - name: Post results to PR
+      if: inputs.pr_number != '' && inputs.summary_file != '' && inputs.github_token != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        if [ -f "${{ inputs.summary_file }}" ]; then
+          gh pr comment "${{ inputs.pr_number }}" --body "$(cat "${{ inputs.summary_file }}")"
+        else
+          echo "::warning::No summary to post"
+        fi
