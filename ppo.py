@@ -35,6 +35,7 @@ for _ in range(moving_average_length):
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
 @dataclass
+# Best hyperparameters from W&B sweep: https://wandb.ai/beyarkay/factorion/sweeps/dd6hqgun
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
@@ -64,7 +65,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 5.86e-4
+    learning_rate: float = 0.000586
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -105,11 +106,11 @@ class Args:
     """coefficient of reward given to the cost of materials used to solve the problem"""
     coeff_validity: float = 0.01
     """coefficient of reward given to the action being valid"""
-    coeff_shaping_location: float = 1.0
+    coeff_shaping_location: float = 1
     """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only)"""
-    coeff_shaping_entity: float = 1.0
+    coeff_shaping_entity: float = 1
     """delta reward shaping: reward for correct entity types (solution-nonempty tiles only)"""
-    coeff_shaping_direction: float = 1.0
+    coeff_shaping_direction: float = 1
     """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
