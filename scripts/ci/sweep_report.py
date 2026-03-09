@@ -25,21 +25,25 @@ def _get_summary_metric(summary, metric_name):
     """Resolve a W&B metric name from a run summary.
 
     Handles dot-notation like "perf/sps.last" where the summary stores
-    {"perf/sps": {"last": 359}}.  Falls back to a direct key lookup.
+    {"perf/sps": SummarySubDict({"last": 359})}.
+    W&B's SummarySubDict supports .get() but isn't a dict subclass.
     """
-    # Direct lookup first
-    val = summary.get(metric_name)
-    if val is not None and not isinstance(val, dict):
-        return val
-
-    # Try dot-notation: "perf/sps.last" -> summary["perf/sps"]["last"]
+    # Try dot-notation first: "perf/sps.last" -> summary["perf/sps"]["last"]
     if "." in metric_name:
         base, sub = metric_name.rsplit(".", 1)
-        val = summary.get(base)
-        if isinstance(val, dict):
-            return val.get(sub)
+        container = summary.get(base)
+        if container is not None:
+            try:
+                return container.get(sub)
+            except AttributeError:
+                pass
 
-    return None
+    # Fall back to direct lookup (works for plain numeric summaries)
+    val = summary.get(metric_name)
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
 
 
 def main():
