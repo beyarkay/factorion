@@ -148,8 +148,7 @@ class Args:
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
-        # kwargs.update({'size': size, 'max_steps': 6})
+        kwargs.update({'size': size, 'idx': idx})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -324,7 +323,13 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
+        self._num_missing_entities = self._reset_options['num_missing_entities']
+        # Scale max_steps with num_missing_entities so easy episodes are short
+        # and hard episodes have enough room to solve.
+        if self._num_missing_entities == 0:
+            self.max_steps = 1  # Gymnasium requires at least one step
+        else:
+            self.max_steps = self._num_missing_entities * 2 + 1
 
         self.actions = []
         # Generate the solved factory first (same seed → same layout),
