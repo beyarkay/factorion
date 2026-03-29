@@ -64,7 +64,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 5.86e-4
+    learning_rate: float = 4.423e-4
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -72,9 +72,9 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9857
+    gamma: float = 0.9782
     """the discount factor gamma"""
-    gae_lambda: float = 0.8014
+    gae_lambda: float = 0.8641
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
@@ -82,18 +82,18 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2746
+    clip_coef: float = 0.2999
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef_start: float = 0.02041
+    ent_coef_start: float = 0.01514
     """entropy coefficient at the start of training (high = more exploration)"""
-    ent_coef_end: float = 0.0004576
+    ent_coef_end: float = 0.001605
     """entropy coefficient at the end of training (low = more exploitation)"""
-    vf_coef: float = 0.7426
+    vf_coef: float = 0.8518
     """coefficient of the value function"""
-    coeff_throughput: float = 0.8785
+    coeff_throughput: float = 0.6302
     """coefficient of the throughput when calculating reward"""
     coeff_frac_reachable: float = 0.01
     """coefficient of the fraction of unreachable nodes when calculating reward"""
@@ -105,17 +105,17 @@ class Args:
     """coefficient of reward given to the cost of materials used to solve the problem"""
     coeff_validity: float = 0.01
     """coefficient of reward given to the action being valid"""
-    coeff_shaping_location: float = 1.0
+    coeff_shaping_location: float = 1.277
     """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only)"""
-    coeff_shaping_entity: float = 1.0
+    coeff_shaping_entity: float = 0.7247
     """delta reward shaping: reward for correct entity types (solution-nonempty tiles only)"""
-    coeff_shaping_direction: float = 1.0
+    coeff_shaping_direction: float = 3.768
     """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
-    max_grad_norm: float = 1.979
+    max_grad_norm: float = 0.5602
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
-    adam_epsilon: float = 6.866e-06
+    adam_epsilon: float = 1.290e-05
     """The epsilon parameter for Adam"""
     chan1: int = 48
     """Number of channels in the first layer of the CNN encoder"""
@@ -123,10 +123,12 @@ class Args:
     """Number of channels in the second layer of the CNN encoder"""
     chan3: int = 48
     """Number of channels in the third layer of the CNN encoder"""
-    flat_dim: int = 128
+    flat_dim: int = 64
     """Output size of the fully connected layer after the encoder"""
-    tile_head_std: float = 0.06503
+    tile_head_std: float = 0.01201
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    promotion_threshold: float = 0.95
+    """throughput moving average required to advance to the next curriculum level"""
     size: int = 8
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -1242,7 +1244,7 @@ if __name__ == "__main__":
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
-                if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
+                if final_thputs_100ma > args.promotion_threshold and iteration - iteration_of_last_increase > 10:
                     iteration_of_last_increase = iteration
                     end_of_episode_thputs.clear()
                     for _ in range(moving_average_length):
@@ -1367,5 +1369,8 @@ if __name__ == "__main__":
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Summary written to {summary_path}")
+
+    if args.track:
+        wandb.finish()
 
 

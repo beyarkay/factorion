@@ -42,6 +42,7 @@ TUNABLE_PARAMS = {
     "gamma": "float",
     "learning_rate": "float",
     "max_grad_norm": "float",
+    "promotion_threshold": "float",
     "tile_head_std": "float",
     "vf_coef": "float",
 }
@@ -152,13 +153,39 @@ def main():
     metric_goal = metric_cfg.get("goal", "maximize")
     reverse = metric_goal == "maximize"
 
-    runs = [r for r in sweep.runs if r.state == "finished"]
+    def extract_metric(run):
+        """Extract a scalar metric from a run summary.
+
+        wandb.define_metric(..., summary="max") stores the value as a
+        SummarySubDict like {'max': 4.95} instead of a plain float.
+        """
+        val = run.summary.get(metric_name)
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        if hasattr(val, 'get'):
+            for key in ('max', 'last', 'min'):
+                v = val.get(key)
+                if v is not None:
+                    return float(v)
+            for v in val.values():
+                if isinstance(v, (int, float)):
+                    return float(v)
+        return None
+
+    # Include crashed runs that logged the metric (pod killed after training)
+    runs = [
+        r for r in sweep.runs
+        if r.state == "finished"
+        or (r.state == "crashed" and extract_metric(r) is not None)
+    ]
     if not runs:
-        print("No finished runs in sweep. Skipping.")
+        print("No runs with metric data in sweep. Skipping.")
         sys.exit(0)
 
     def get_metric(run):
-        val = run.summary.get(metric_name)
+        val = extract_metric(run)
         if val is None:
             return float("-inf") if reverse else float("inf")
         return val

@@ -8,12 +8,165 @@ significance level 0.05.
 
 ## Table of Contents
 
+- [Sweep 0r1udi17: 3M-step hyperparameter sweep](#sweep-0r1udi17-3m-step-hyperparameter-sweep)
 - [PR #18: Delta-based reward shaping (PBRS)](#pr-18-delta-based-reward-shaping-pbrs)
 - [PR #16: Spatial per-tile action prediction](#pr-16-spatial-per-tile-action-prediction)
 - [PR #13: Eliminate difficulty-0 episodes](#pr-13-eliminate-difficulty-0-episodes)
 - [PR #14: Re-enable early termination](#pr-14-re-enable-early-termination) (invalid benchmark)
 - [PR #11: Scale max_steps dynamically](#pr-11-scale-max_steps-dynamically)
 - [Historical logbook](#historical-logbook)
+
+---
+
+## Sweep 0r1udi17: 3M-step hyperparameter sweep
+
+**Sweep:** [0r1udi17](https://wandb.ai/beyarkay/factorion/sweeps/0r1udi17)
+| **PR:** [#29](https://github.com/beyarkay/factorion/pull/29)
+| **Date:** 2026-03-06
+| **Status:** Completed (CI timed out after 6h, but runs continued on W&B)
+
+### Setup
+
+First large-scale hyperparameter sweep after the major architectural changes (spatial
+per-tile prediction, delta-based PBRS, entropy scheduling, torch.compile). Bayesian
+optimization over 15 parameters, 3M timesteps per run, 19 runs completed (~1.8M steps
+each before the CI SSH timeout killed the pod).
+
+**Sweep config:** `run_cap=30`, Bayesian method, `curriculum/score` (maximize),
+Hyperband early termination (`eta=3`, `min_iter=10`). Runs executed on a single
+A100 80GB pod with 5 parallel agents via CUDA time-slicing.
+
+### Results
+
+6 of 19 runs reached curriculum level 4+. The best run (`n4ub5hsv`) reached
+**level 5** with a score of 4.95 in only ~1.8M steps — the first time an 8×8
+model has progressed this far in the curriculum.
+
+| Run | Score | Level | Throughput | Steps | `ent_coef_start` | `coeff_throughput` | `coeff_shaping_dir` | `clip_coef` | `flat_dim` |
+|-----|-------|-------|------------|-------|------------------|--------------------|---------------------|-------------|------------|
+| **n4ub5hsv** | **4.95** | **5** | 0.926 | 1.8M | **0.015** | 0.630 | 3.77 | 0.300 | 64 |
+| 58t4pbmb | 4.00 | 4 | 0.918 | 1.8M | 0.022 | 0.598 | 9.19 | 0.296 | 64 |
+| 0gf51a4p | 3.96 | 4 | 0.928 | 1.8M | 0.028 | 0.680 | 1.30 | 0.280 | 256 |
+| sr5brgmd | 3.96 | 4 | 0.930 | 1.7M | 0.026 | 0.846 | 0.74 | 0.344 | 128 |
+| hp86918n | 3.95 | 4 | 0.866 | 1.8M | 0.044 | 0.793 | 0.64 | 0.342 | 128 |
+| vl6gkxed | 3.95 | 4 | 0.852 | 1.8M | 0.013 | 0.505 | 1.32 | 0.187 | 128 |
+| q4j1e6p7 | 1.95 | 2 | 0.726 | 1.8M | 0.060 | 0.815 | 6.43 | 0.255 | 64 |
+| pvil1hnn | 1.95 | 2 | 0.888 | 1.8M | 0.034 | 0.684 | 2.01 | 0.175 | 64 |
+| xbp22rx1 | 1.95 | 2 | 0.940 | 1.8M | 0.048 | 0.540 | 7.85 | 0.305 | 128 |
+| ubhm2s5f | 1.95 | 2 | 0.584 | 2.1M | 0.069 | 0.678 | 7.43 | 0.231 | 128 |
+| *9 runs* | 0.83–0.95 | 1 | 0.42–0.90 | 1.8–2.1M | 0.036–0.267 | 0.60–0.97 | 0.65–9.87 | 0.19–0.33 | 64–256 |
+
+### Parameter importance (from W&B, descending)
+
+1. **`ent_coef_start`** — by far the most important
+2. `coeff_throughput`
+3. `coeff_shaping_direction`
+4. `clip_coef`
+5. `coeff_shaping_location`
+6. `tile_head_std`
+7. `max_grad_norm`
+8. `ent_coef_end`
+9. `gamma`
+10. `adam_epsilon`
+
+### Key finding: `ent_coef_start` is critical
+
+The clearest signal from the sweep: **low initial entropy is essential for
+curriculum progression.**
+
+| Group | Runs | Avg `ent_coef_start` |
+|-------|------|----------------------|
+| Level ≥ 4 | 6 | **0.025** |
+| Level ≤ 1 | 9 | 0.116 |
+
+Every run that reached level 4+ had `ent_coef_start < 0.045`. Every run stuck
+at level 1 had `ent_coef_start > 0.035` (mostly 0.08–0.27).
+
+**Why this matters:** The curriculum starts with difficulty-0 episodes where the
+agent must learn "don't break what's already correct." High initial entropy
+prevents the agent from exploiting this lesson — it keeps exploring randomly
+instead of consolidating the "preserve the factory" behavior. Without that
+foundation, it can never learn to fix things at higher difficulty levels.
+
+This is consistent with the PR #13 finding that difficulty-0 episodes are
+essential scaffolding. The entropy coefficient controls how quickly the agent
+can internalize that scaffolding.
+
+### Pattern analysis: top runs (level ≥ 4) vs bottom runs (level ≤ 1)
+
+| Parameter | Top avg | Bottom avg | Signal |
+|-----------|---------|------------|--------|
+| `ent_coef_start` | 0.025 | 0.116 | **Top much lower** |
+| `coeff_shaping_direction` | 2.8 | 4.3 | Top lower |
+| `coeff_shaping_location` | 1.3 | 2.6 | Top lower |
+| `coeff_shaping_entity` | 2.7 | 3.5 | Top lower |
+| `tile_head_std` | 0.024 | 0.012 | Top higher |
+| `adam_epsilon` | 4.3e-5 | 2.7e-5 | Top higher |
+| `clip_coef` | 0.291 | 0.264 | ~similar |
+| `learning_rate` | 4.5e-4 | 4.3e-4 | ~similar |
+| `gamma` | 0.984 | 0.981 | ~similar |
+| `flat_dim` | 128 | 149 | ~similar |
+| `gae_lambda` | 0.853 | 0.866 | ~similar |
+| `vf_coef` | 0.721 | 0.761 | ~similar |
+| `max_grad_norm` | 1.717 | 1.868 | ~similar |
+
+The shaping coefficients show a mild "less is more" pattern — moderate shaping
+(1–3×) outperforms aggressive shaping (5–10×). This makes sense: PBRS deltas
+are additive, so very large coefficients can dominate the throughput reward
+signal and destabilize training.
+
+### Best run config (`n4ub5hsv`)
+
+```
+ent_coef_start:           0.0151
+ent_coef_end:             0.00161
+coeff_throughput:         0.630
+coeff_shaping_direction:  3.77
+coeff_shaping_location:   1.28
+coeff_shaping_entity:     0.72
+clip_coef:                0.300
+learning_rate:            0.000442
+flat_dim:                 64
+gamma:                    0.978
+gae_lambda:               0.864
+vf_coef:                  0.852
+max_grad_norm:            0.560
+adam_epsilon:              1.29e-5
+tile_head_std:            0.012
+```
+
+### Range edge analysis
+
+Several swept parameters had their best/top values clustered at the edge of
+the search range, suggesting the range was too narrow:
+
+| Parameter | Sweep range | Best value | Top runs near edge | Action |
+|-----------|-------------|------------|-------------------|--------|
+| `ent_coef_start` | [0.01, 0.3] | **0.015** | 6/6 near min | **Extend min to 0.005** — the most important parameter is pinned near the floor |
+| `coeff_shaping_location` | [0.5, 10] | **1.28** | 6/6 near min | **Extend min to 0.1** — all top runs clustered in [0.68, 1.74] |
+| `coeff_shaping_entity` | [0.5, 10] | **0.72** | 3/6 near min | **Extend min to 0.1** — best run nearly at floor |
+| `coeff_shaping_direction` | [0.5, 10] | 3.77 | 4/6 near min | Keep — wide spread in top runs (0.6–9.2) |
+| `max_grad_norm` | [0.5, 3.0] | **0.56** | best near min | **Extend min to 0.25** |
+| `tile_head_std` | [0.001, 0.1] | 0.012 | 4/6 near min | Keep — min already at 0.001 |
+| `adam_epsilon` | [1e-6, 2e-4] | 1.3e-5 | 4/6 near min | Keep — range is wide enough |
+| `clip_coef` | [0.15, 0.35] | 0.30 | 2/6 near max | Keep — spread is reasonable |
+| `vf_coef` | [0.5, 0.9] | 0.85 | best near max | Could extend max to 1.0 |
+
+Parameters with no edge issues (values well within range): `learning_rate`,
+`gamma`, `gae_lambda`, `coeff_throughput`, `ent_coef_end`, `flat_dim`.
+
+### Infrastructure notes
+
+- All runs show as "crashed" in W&B because the CI job's SSH connection to
+  RunPod broke after ~6h (GitHub Actions timeout). The wandb agents were still
+  running on the pod when it was terminated. This was fixed in a follow-up
+  commit by adding SSH keepalive settings and a detached execution pattern
+  (nohup + poll).
+- The sweep used 5 parallel agents on a single A100 80GB pod. The model is
+  small (~135K params), so 10 agents would have been feasible.
+- Runs completed ~1.8M of the target 3M steps before termination. Despite
+  this, the results are informative — the top runs had already plateaued at
+  their curriculum level by ~1.5M steps.
 
 ---
 
