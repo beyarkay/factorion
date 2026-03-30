@@ -1481,6 +1481,8 @@ if __name__ == "__main__":
                         print(f"Video saved: {output_path}")
                     except FileNotFoundError:
                         print(f"ffmpeg not found, skipping video for env {env_idx}")
+                    except subprocess.CalledProcessError as e:
+                        print(f"ffmpeg failed for env {env_idx}: {e}")
 
             finally:
                 for temp_dir in temp_dirs:
