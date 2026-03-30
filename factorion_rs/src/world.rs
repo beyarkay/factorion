@@ -125,6 +125,42 @@ impl World {
         self.set(x, y, Channel::Misc, misc as i64);
     }
 
+    /// Place a multi-tile entity at (x, y), filling all tiles in its footprint.
+    /// Returns false if any tile is out of bounds or already occupied.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn place_multi_tile(
+        &mut self,
+        x: usize,
+        y: usize,
+        entity: EntityKind,
+        dir: Direction,
+        item: Item,
+        width: usize,
+        height: usize,
+    ) -> bool {
+        use crate::entities::entity_tiles;
+        let tiles = match entity_tiles(x, y, dir, width, height) {
+            Some(t) => t,
+            None => return false,
+        };
+        for tile in &tiles {
+            match tile.to_usize() {
+                Some((tx, ty)) if self.in_bounds(tile.x, tile.y) => {
+                    if self.entity_at(tx, ty) != EntityKind::Empty {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        for tile in tiles {
+            if let Some((tx, ty)) = tile.to_usize() {
+                self.place(tx, ty, entity, dir, item);
+            }
+        }
+        true
+    }
+
     /// Get the entity kind at (x, y).
     pub fn entity_at(&self, x: usize, y: usize) -> EntityKind {
         EntityKind::from_i64(self.get(x, y, Channel::Entities))

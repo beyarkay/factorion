@@ -12,7 +12,7 @@ def _():
     from torch.distributions import Categorical
     from tqdm import trange
     from tqdm.notebook import tqdm
-    from typing import List, Tuple
+    from typing import List, Optional, Tuple
     import base64
     import json
     import marimo as mo
@@ -32,6 +32,7 @@ def _():
     import traceback
     import wandb
     import zlib
+    import factorion_rs
 
     wandb.login()
     mo.md("Imports")
@@ -40,6 +41,7 @@ def _():
         Enum,
         F,
         List,
+        Optional,
         Tuple,
         base64,
         dataclass,
@@ -62,6 +64,7 @@ def _():
         tqdm,
         traceback,
         trange,
+        factorion_rs,
         wandb,
         zlib,
     )
@@ -227,11 +230,13 @@ def functions(
     LessonKind,
     List,
     Misc,
+    Optional,
     Tuple,
     base64,
     defaultdict,
     deque,
     entities,
+    factorion_rs,
     go,
     items,
     json,
@@ -1040,16 +1045,35 @@ def functions(
         )
         world_WHC = world_WHC.numpy()
         G = nx.DiGraph()
+        # Maps secondary tile (x,y) → anchor (x,y) for multi-tile entities.
+        # Used to skip secondary tiles during node creation and to remap
+        # edge endpoints so all edges point to the anchor node.
+        anchor_of = {}
 
         def dbg(s):
             if debug:
                 print(s)
+
+        def remap_node_name(name):
+            """If a node name references a secondary tile, remap to anchor."""
+            parts = name.split("\n@")
+            if len(parts) == 2:
+                coords = parts[1].split(",")
+                pos = (int(coords[0]), int(coords[1]))
+                if pos in anchor_of:
+                    ax, ay = anchor_of[pos]
+                    return f"{parts[0]}\n@{ax},{ay}"
+            return name
+
+        pending_edges = []
 
         W, H, C = world_WHC.shape
         for x in range(W):
             for y in range(H):
                 e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
                 if e.name == "empty":
+                    continue
+                if (x, y) in anchor_of:
                     continue
 
                 # TODO somehow `item` is 0 even though it should be disallowed
@@ -1071,6 +1095,15 @@ def functions(
                 dbg(
                     f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {item.name}"
                 )
+
+                # Register secondary tiles → anchor for multi-tile entities.
+                # Square entities (e.g. 3x3 assembler) are direction-independent,
+                # so use EAST as default when direction is NONE.
+                if e.width > 1 or e.height > 1:
+                    tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
+                    if tiles is not None:
+                        for tile in tiles[1:]:
+                            anchor_of[tile] = (x, y)
 
                 # Figure out coords for source and destination
                 if d == Direction.EAST:
@@ -1107,10 +1140,10 @@ def functions(
                         )
                         src_not_empty = src_entity.name != "empty"
                         if src_not_empty:
-                            G.add_edge(
+                            pending_edges.append((
                                 f"{src_entity.name}\n@{src[0]},{src[1]}",
                                 f"{e.name}\n@{x},{y}",
-                            )
+                            ))
                             dbg(
                                 f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
                             )
@@ -1126,10 +1159,10 @@ def functions(
                             or "assembling_machine" in dst_entity.name
                         )
                         if dst_is_insertable:
-                            G.add_edge(
+                            pending_edges.append((
                                 f"{e.name}\n@{x},{y}",
                                 f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            )
+                            ))
                             dbg(
                                 f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}"
                             )
@@ -1153,14 +1186,14 @@ def functions(
                             # Check that the other is not a downwards underground belt
                             and not (
                                 "underground_belt" in src_entity.name
-                                and src_misc.value == Misc.UNDERGROUND_DOWN
+                                and src_misc == Misc.UNDERGROUND_DOWN
                             )
                         )
                         if src_is_beltish:
-                            G.add_edge(
+                            pending_edges.append((
                                 f"{src_entity.name}\n@{src[0]},{src[1]}",
                                 f"{e.name}\n@{x},{y}",
-                            )
+                            ))
                             dbg(
                                 f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}",
                             )
@@ -1196,10 +1229,10 @@ def functions(
                             and not dst_opposing_belt
                             and dest_underground_ok
                         ):
-                            G.add_edge(
+                            pending_edges.append((
                                 f"{e.name}\n@{x},{y}",
                                 f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            )
+                            ))
                             dbg(
                                 f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}",
                             )
@@ -1255,7 +1288,7 @@ def functions(
                                 src = other_str
                                 dst = self_str
 
-                            G.add_edge(src, dst)
+                            pending_edges.append((src, dst))
                             dbg(f"{repr(src)} -> {repr(dst)}")
 
                 elif "underground_belt" in e.name:
@@ -1301,12 +1334,16 @@ def functions(
                                 and m == Misc.UNDERGROUND_UP
                             )
                             if going_underground or cxn_to_belt:
-                                G.add_edge(
+                                pending_edges.append((
                                     f"{e.name}\n@{x},{y}",
                                     f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                                )
+                                ))
                 else:
                     assert False, f"Don't know how to handle {e.name} at {x} {y}"
+
+        # Add edges, remapping any endpoint that references a secondary tile
+        for src, dst in pending_edges:
+            G.add_edge(remap_node_name(src), remap_node_name(dst))
 
         return G
 
@@ -1334,7 +1371,7 @@ def functions(
             pass
         elif kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
-            original_count = 500  # usually require ~50, sometimes up to 100
+            original_count = max(500, size * size * 4)
             count = original_count
             # print(f'count is {count}')
             while count > 0:
@@ -1461,20 +1498,99 @@ def functions(
         return world_CWH, min_entities_required
 
 
+    def _bfs_shortest(grid_h, grid_w, start, end, blocked):
+        """BFS from start to end, avoiding blocked cells.
+
+        Returns (dist_map, parents_map) where parents_map tracks ALL
+        equal-length parents for enumerating all shortest paths.
+        Returns (None, None) if no path exists.
+        """
+        def in_bounds(cell):
+            r, c = cell
+            return 0 <= r < grid_h and 0 <= c < grid_w
+
+        if not in_bounds(start) or not in_bounds(end):
+            return None, None
+        if start in blocked or end in blocked:
+            return None, None
+
+        deltas = list(DIR_TO_DELTA.values())
+        dist = {start: 0}
+        parents = defaultdict(list)
+        q = deque([start])
+
+        while q:
+            r, c = q.popleft()
+            if (r, c) == end:
+                break
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if not in_bounds((nr, nc)):
+                    continue
+                if (nr, nc) in blocked:
+                    continue
+                if (nr, nc) not in dist:
+                    dist[(nr, nc)] = dist[(r, c)] + 1
+                    parents[(nr, nc)].append((r, c))
+                    q.append((nr, nc))
+                elif dist[(nr, nc)] == dist[(r, c)] + 1:
+                    parents[(nr, nc)].append((r, c))
+
+        if end not in dist:
+            return None, None
+        return dist, parents
+
+    def _path_to_belts(path, end_dir):
+        """Convert a list of (x, y) cells into belt placements with directions."""
+        belts: List[Tuple[int, int, Direction]] = []
+        for (r1, c1), (r2, c2) in zip(path, path[1:]):
+            dr, dc = (r2 - r1, c2 - c1)
+            for d, delta in DIR_TO_DELTA.items():
+                if delta == (dr, dc):
+                    belts.append((r1, c1, d))
+                    break
+        belts.append((path[-1][0], path[-1][1], end_dir))
+        return belts
+
+    def find_belt_path(
+        grid_h: int,
+        grid_w: int,
+        start: Tuple[int, int],
+        end: Tuple[int, int],
+        end_dir: Direction,
+        blocked: set,
+    ) -> Optional[List[Tuple[int, int, Direction]]]:
+        """Find a single shortest belt path from start to end, avoiding blocked cells.
+
+        Returns a list of (x, y, Direction) tuples for belt placements,
+        or None if no path exists. The last belt gets end_dir as its direction.
+        """
+        dist, parents = _bfs_shortest(grid_h, grid_w, start, end, blocked)
+        if dist is None:
+            return None
+
+        # Reconstruct single path via parent chain
+        path = []
+        cell = end
+        while cell != start:
+            path.append(cell)
+            cell = parents[cell][0]  # Take first parent for single path
+        path.append(start)
+        path.reverse()
+
+        return _path_to_belts(path, end_dir)
+
     def find_belt_paths_with_source_sink_orient(
         entities: torch.Tensor,
         directions: torch.Tensor,
         source_value: int = str2ent("source").value,
         sink_value: int = str2ent("sink").value,
     ) -> List[List[Tuple[int, int, Direction]]]:
+        """Find all shortest belt-placement paths from source to sink.
+
+        Returns a list of paths, each being a list of (row, col, Direction)
+        tuples. If no valid path exists, returns [].
         """
-        Find all shortest belt‐placement paths that start immediately in front of the source
-        (in its facing direction) and end immediately behind the sink (opposite its facing),
-        without overwriting the source or sink cells themselves.  Returns a list of paths,
-        each path being a list of (row, col, Direction) tuples describing where to place
-        each belt and which way it should face.  If no valid path exists, returns [].
-        """
-        # 1. sanity checks
         if (
             entities.ndim != 2
             or directions.ndim != 2
@@ -1485,7 +1601,6 @@ def functions(
             )
         H, W = entities.shape
 
-        # 2. locate source & sink
         src_pos = (entities == source_value).nonzero(as_tuple=False)
         sink_pos = (entities == sink_value).nonzero(as_tuple=False)
         if len(src_pos) != 1 or len(sink_pos) != 1:
@@ -1493,74 +1608,31 @@ def functions(
         src = tuple(src_pos[0].tolist())
         sink = tuple(sink_pos[0].tolist())
 
-        # 3. get facing directions
         src_dir = Direction(directions[src].item())
         sink_dir = Direction(directions[sink].item())
         if src_dir == Direction.NONE or sink_dir == Direction.NONE:
-            return []  # cannot start or end if orientation is NONE
+            return []
 
-        # 4. compute start/end cells
         dr_s, dc_s = DIR_TO_DELTA[src_dir]
         start = (src[0] + dr_s, src[1] + dc_s)
         dr_k, dc_k = DIR_TO_DELTA[sink_dir]
         end = (sink[0] - dr_k, sink[1] - dc_k)
-        # print(f'source is at {src} facing {Direction(directions[src].item())}, start is at {start}')
-        # print(f'sink is at {sink} facing {Direction(directions[sink].item())}, end is at {end}')
 
-        # 5. check bounds & not overlapping source/sink
-        def in_bounds(cell):
-            r, c = cell
-            return 0 <= r < H and 0 <= c < W
-
-        if not in_bounds(start) or not in_bounds(end):
-            return []
         if start == src or start == sink or end == src or end == sink:
             return []
 
-        # 6. BFS from start to end, avoiding src & sink cells
-        deltas = list(DIR_TO_DELTA.values())
-        dist = torch.full((H, W), -1, dtype=torch.int64)
-        parents = defaultdict(list)
-        q = deque([start])
-        dist[start] = 0
-
-        while q:
-            r, c = q.popleft()
-            if (r, c) == end:
-                # add end to the thing
-                break
-            for dr, dc in deltas:
-                nr, nc = r + dr, c + dc
-                if not in_bounds((nr, nc)):
-                    continue
-                if (nr, nc) in (src, sink):
-                    continue
-                if dist[nr, nc] == -1:
-                    dist[nr, nc] = dist[r, c] + 1
-                    parents[(nr, nc)].append((r, c))
-                    q.append((nr, nc))
-                elif dist[nr, nc] == dist[r, c] + 1:
-                    parents[(nr, nc)].append((r, c))
-
-        if dist[end] < 0:
+        blocked = {src, sink}
+        dist, parents = _bfs_shortest(H, W, start, end, blocked)
+        if dist is None:
             return []
 
-        # 7. backtrack all shortest paths
+        # Backtrack all shortest paths
         all_paths: List[List[Tuple[int, int, Direction]]] = []
 
         def backtrack(cell, rev_path):
             if cell == start:
                 path = [start] + list(reversed(rev_path))
-                belts: List[Tuple[int, int, Direction]] = []
-                # build belt placements along the path
-                for (r1, c1), (r2, c2) in zip(path, path[1:]):
-                    dr, dc = (r2 - r1, c2 - c1)
-                    # find which Direction matches this delta
-                    for d, delta in DIR_TO_DELTA.items():
-                        if delta == (dr, dc):
-                            belts.append((r1, c1, d))
-                            break
-                all_paths.append(belts + [(end[0], end[1], sink_dir)])
+                all_paths.append(_path_to_belts(path, sink_dir))
                 return
             for p in parents[cell]:
                 backtrack(p, rev_path + [cell])
@@ -1578,6 +1650,7 @@ def functions(
         dict2b64,
         ent_str2b64img,
         eval_model,
+        find_belt_path,
         find_belt_paths_with_source_sink_orient,
         funge_throughput,
         generate_lesson,

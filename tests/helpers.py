@@ -28,6 +28,8 @@ LessonKind = _objs["LessonKind"]
 entities = _objs["entities"]
 items = _objs["items"]
 
+find_belt_path = _fns["find_belt_path"]
+find_belt_paths_with_source_sink_orient = _fns["find_belt_paths_with_source_sink_orient"]
 generate_lesson = _fns["generate_lesson"]
 str2ent = _fns["str2ent"]
 str2item = _fns["str2item"]
@@ -68,6 +70,29 @@ def set_assembler(world, x, y, recipe_name):
             ).value
             world[x + dx, y + dy, Channel.DIRECTION.value] = Direction.NORTH.value
             world[x + dx, y + dy, Channel.ITEMS.value] = str2item(recipe_name).value
+
+
+def set_multi_tile_entity(world, entity_name, x, y, direction, item_name="empty"):
+    """Place a multi-tile entity at anchor (x, y), filling all occupied tiles.
+
+    Uses entity_tiles to compute the footprint. Raises ValueError if any
+    tile would overlap an existing non-empty entity.
+    """
+    ent = str2ent(entity_name)
+    tiles = factorion_rs.py_entity_tiles(x, y, direction.value, ent.width, ent.height)
+    if tiles is None:
+        raise ValueError(
+            f"Cannot place {entity_name} with direction {direction}"
+        )
+    for tx, ty in tiles:
+        existing = world[tx, ty, Channel.ENTITIES.value].item()
+        if existing != str2ent("empty").value:
+            raise ValueError(
+                f"Cannot place {entity_name} at ({x},{y}): tile ({tx},{ty}) "
+                f"already has entity {entities[existing].name}"
+            )
+    for tx, ty in tiles:
+        set_entity(world, tx, ty, entity_name, direction, item_name)
 
 
 def py_throughput_safe(world):
