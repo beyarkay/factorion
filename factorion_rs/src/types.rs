@@ -155,6 +155,9 @@ impl EntityKind {
 
     /// Entity footprint (width, height) where width = perpendicular to flow,
     /// height = along flow. Returns (1, 1) for single-tile entities.
+    // TODO: Define all entity properties (name, size, flow_rate) in a single
+    // Rust registry and expose to Python, replacing the duplicated Python
+    // `entities` dict.
     pub fn size(self) -> (usize, usize) {
         match self {
             EntityKind::AssemblingMachine1 => (3, 3),

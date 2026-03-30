@@ -512,6 +512,98 @@ impl FactoryEntity for EmptyEntity {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_entity_tiles_exhaustive() {
+        let dirs = [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ];
+
+        for x in 0..10 {
+            for y in 0..10 {
+                for width in 1..=5 {
+                    for height in 1..=5 {
+                        for &dir in &dirs {
+                            let tiles = entity_tiles(x, y, dir, width, height);
+                            let tiles = tiles.unwrap();
+
+                            // Correct number of tiles
+                            assert_eq!(
+                                tiles.len(),
+                                width * height,
+                                "x={x} y={y} w={width} h={height} dir={dir:?}"
+                            );
+
+                            // First tile is always the anchor
+                            assert_eq!(
+                                tiles[0],
+                                Pos::new(x as i64, y as i64),
+                                "anchor mismatch at x={x} y={y} w={width} h={height} dir={dir:?}"
+                            );
+
+                            // No duplicate tiles
+                            let unique: std::collections::HashSet<Pos> =
+                                tiles.iter().copied().collect();
+                            assert_eq!(
+                                unique.len(),
+                                tiles.len(),
+                                "duplicates at x={x} y={y} w={width} h={height} dir={dir:?}"
+                            );
+
+                            // All tiles are contiguous (each adjacent to at least one other)
+                            for tile in &tiles[1..] {
+                                let has_neighbor = tiles.iter().any(|other| {
+                                    *other != *tile
+                                        && (tile.x - other.x).abs() + (tile.y - other.y).abs() == 1
+                                });
+                                assert!(
+                                    has_neighbor,
+                                    "isolated tile {tile:?} at x={x} y={y} w={width} h={height} dir={dir:?}"
+                                );
+                            }
+                        }
+
+                        // Square entities: all directions produce the same tiles
+                        if width == height {
+                            let baseline =
+                                entity_tiles(x, y, Direction::East, width, height).unwrap();
+                            for &dir in &dirs {
+                                let tiles = entity_tiles(x, y, dir, width, height).unwrap();
+                                assert_eq!(
+                                    tiles, baseline,
+                                    "square {width}x{height} at ({x},{y}): {dir:?} differs from East"
+                                );
+                            }
+                            // Direction::None also works for square
+                            let none_tiles =
+                                entity_tiles(x, y, Direction::None, width, height).unwrap();
+                            assert_eq!(
+                                none_tiles, baseline,
+                                "square {width}x{height} at ({x},{y}): None differs from East"
+                            );
+                        }
+
+                        // Non-square: Direction::None returns None
+                        if width != height {
+                            assert!(
+                                entity_tiles(x, y, Direction::None, width, height).is_none(),
+                                "non-square {width}x{height} with None should return None"
+                            );
+                        }
+                    }
+                }
+
+                // 1x1 always returns the anchor regardless of direction
+                for &dir in &[Direction::None, Direction::East, Direction::North] {
+                    let tiles = entity_tiles(x, y, dir, 1, 1).unwrap();
+                    assert_eq!(tiles, vec![Pos::new(x as i64, y as i64)]);
+                }
+            }
+        }
+    }
+
     /// Helper to build a small world with a few entities for testing connections.
     fn make_belt_chain_world() -> World {
         // 5x1 world: Source(east) -> Belt(east) -> Belt(east) -> Sink(east)
