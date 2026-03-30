@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::entities::make_entity;
-use crate::types::{EntityKind, Item, NodeId};
+use crate::entities::{EntityEnum, FactoryEntity};
+use crate::types::{EntityKind, Item, Misc, NodeId};
 use crate::world::World;
 
 /// A node in the factory graph.
@@ -11,6 +11,7 @@ pub struct GraphNode {
     pub id: NodeId,
     pub entity_kind: EntityKind,
     pub item: Item,
+    pub misc: Misc,
     /// Recipe item for assembling machines (determines what they craft).
     pub recipe_item: Item,
     /// Accumulated input flow rates per item type.
@@ -88,6 +89,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                 id: node_id.clone(),
                 entity_kind,
                 item,
+                misc,
                 recipe_item: if entity_kind == EntityKind::AssemblingMachine1 {
                     item
                 } else {
@@ -99,7 +101,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             node_index.insert(node_id, idx);
 
             // Get connections from the entity trait impl
-            let entity = make_entity(entity_kind, item, misc);
+            let entity = EntityEnum::new(entity_kind, item, misc);
             let edges = entity.connections((x, y), direction, world);
             edge_list.extend(edges);
         }
@@ -130,6 +132,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{Direction, Misc};

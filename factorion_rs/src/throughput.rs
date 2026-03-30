@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::entities::EntityEnum;
+use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
 use crate::types::{EntityKind, Item};
 
@@ -96,7 +96,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
             } else {
                 graph.nodes[node_idx].item
             };
-            let entity = EntityEnum::new(entity_kind, item);
+            let misc = graph.nodes[node_idx].misc;
+            let entity = EntityEnum::new(entity_kind, item, misc);
             node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
         }
 
@@ -199,10 +200,11 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::graph::build_graph;
-    use crate::types::{Direction, NodeId};
+    use crate::types::{Direction, Misc, NodeId};
     use crate::world::World;
 
     #[test]
@@ -332,6 +334,7 @@ mod tests {
                     id: NodeId::new(EntityKind::TransportBelt, 0, 0),
                     entity_kind: EntityKind::TransportBelt,
                     item: Item::Empty,
+                    misc: Misc::None,
                     recipe_item: Item::Empty,
                     input: HashMap::new(),
                     output: HashMap::new(),
@@ -340,6 +343,7 @@ mod tests {
                     id: NodeId::new(EntityKind::TransportBelt, 1, 0),
                     entity_kind: EntityKind::TransportBelt,
                     item: Item::Empty,
+                    misc: Misc::None,
                     recipe_item: Item::Empty,
                     input: HashMap::new(),
                     output: HashMap::new(),

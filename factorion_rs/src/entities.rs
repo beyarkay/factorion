@@ -13,79 +13,97 @@ pub type Edge = (NodeId, NodeId);
 /// - How it transforms input flow into output flow
 /// - Its maximum throughput rate
 pub trait FactoryEntity {
+    /// Which entity kind this is. Used to look up flow_rate from the
+    /// single source of truth in EntityKind::flow_rate().
+    fn kind(&self) -> EntityKind;
+
     /// Return the edges this entity contributes to the graph.
-    ///
-    /// `pos` is the entity's (x, y) position. `dir` is the entity's facing direction.
-    /// `world` provides read access to the grid for inspecting neighbors.
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge>;
 
     /// Given accumulated input flow rates, compute output flow rates.
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64>;
 
     /// Maximum items/second this entity can transfer.
-    fn flow_rate(&self) -> f64;
-}
-
-/// Dispatch: create the appropriate trait object for an entity kind.
-pub fn make_entity(kind: EntityKind, item: Item, misc: Misc) -> Box<dyn FactoryEntity> {
-    match kind {
-        EntityKind::TransportBelt => Box::new(TransportBelt),
-        EntityKind::Inserter => Box::new(Inserter),
-        EntityKind::AssemblingMachine1 => Box::new(AssemblingMachine { recipe_item: item }),
-        EntityKind::UndergroundBelt => Box::new(UndergroundBelt { misc }),
-        EntityKind::Sink => Box::new(Sink),
-        EntityKind::Source => Box::new(Source { item }),
-        EntityKind::Empty => Box::new(EmptyEntity),
+    /// Default delegates to EntityKind::flow_rate().
+    fn flow_rate(&self) -> f64 {
+        self.kind().flow_rate()
     }
 }
 
-/// Stack-allocated entity enum for use in hot loops (avoids Box<dyn> heap allocation).
+/// Stack-allocated entity dispatch. Wraps concrete entity structs.
 pub enum EntityEnum {
-    TransportBelt,
-    Inserter,
-    AssemblingMachine { recipe_item: Item },
-    UndergroundBelt,
-    Sink,
-    Source { item: Item },
-    Empty,
+    TransportBelt(TransportBelt),
+    Inserter(Inserter),
+    AssemblingMachine(AssemblingMachine),
+    UndergroundBelt(UndergroundBelt),
+    Sink(Sink),
+    Source(Source),
+    Empty(EmptyEntity),
 }
 
 impl EntityEnum {
-    pub fn new(kind: EntityKind, item: Item) -> Self {
+    pub fn new(kind: EntityKind, item: Item, misc: Misc) -> Self {
         match kind {
-            EntityKind::TransportBelt => EntityEnum::TransportBelt,
-            EntityKind::Inserter => EntityEnum::Inserter,
-            EntityKind::AssemblingMachine1 => EntityEnum::AssemblingMachine { recipe_item: item },
-            EntityKind::UndergroundBelt => EntityEnum::UndergroundBelt,
-            EntityKind::Sink => EntityEnum::Sink,
-            EntityKind::Source => EntityEnum::Source { item },
-            EntityKind::Empty => EntityEnum::Empty,
+            EntityKind::TransportBelt => Self::TransportBelt(TransportBelt),
+            EntityKind::Inserter => Self::Inserter(Inserter),
+            EntityKind::AssemblingMachine1 => {
+                Self::AssemblingMachine(AssemblingMachine { recipe_item: item })
+            }
+            EntityKind::UndergroundBelt => Self::UndergroundBelt(UndergroundBelt { misc }),
+            EntityKind::Sink => Self::Sink(Sink),
+            EntityKind::Source => Self::Source(Source { item }),
+            EntityKind::Empty => Self::Empty(EmptyEntity),
+        }
+    }
+}
+
+impl FactoryEntity for EntityEnum {
+    fn kind(&self) -> EntityKind {
+        match self {
+            Self::TransportBelt(e) => e.kind(),
+            Self::Inserter(e) => e.kind(),
+            Self::AssemblingMachine(e) => e.kind(),
+            Self::UndergroundBelt(e) => e.kind(),
+            Self::Sink(e) => e.kind(),
+            Self::Source(e) => e.kind(),
+            Self::Empty(e) => e.kind(),
         }
     }
 
-    pub fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+    fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         match self {
-            EntityEnum::TransportBelt => TransportBelt.transform_flow(input),
-            EntityEnum::Inserter => Inserter.transform_flow(input),
-            EntityEnum::AssemblingMachine { recipe_item } => AssemblingMachine {
-                recipe_item: *recipe_item,
-            }
-            .transform_flow(input),
-            EntityEnum::UndergroundBelt => {
-                UndergroundBelt { misc: Misc::None }.transform_flow(input)
-            }
-            EntityEnum::Sink => Sink.transform_flow(input),
-            EntityEnum::Source { item } => Source { item: *item }.transform_flow(input),
-            EntityEnum::Empty => EmptyEntity.transform_flow(input),
+            Self::TransportBelt(e) => e.connections(pos, dir, world),
+            Self::Inserter(e) => e.connections(pos, dir, world),
+            Self::AssemblingMachine(e) => e.connections(pos, dir, world),
+            Self::UndergroundBelt(e) => e.connections(pos, dir, world),
+            Self::Sink(e) => e.connections(pos, dir, world),
+            Self::Source(e) => e.connections(pos, dir, world),
+            Self::Empty(e) => e.connections(pos, dir, world),
+        }
+    }
+
+    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        match self {
+            Self::TransportBelt(e) => e.transform_flow(input),
+            Self::Inserter(e) => e.transform_flow(input),
+            Self::AssemblingMachine(e) => e.transform_flow(input),
+            Self::UndergroundBelt(e) => e.transform_flow(input),
+            Self::Sink(e) => e.transform_flow(input),
+            Self::Source(e) => e.transform_flow(input),
+            Self::Empty(e) => e.transform_flow(input),
         }
     }
 }
 
 // ── Transport Belt ──────────────────────────────────────────────────────────
 
-struct TransportBelt;
+pub struct TransportBelt;
 
 impl FactoryEntity for TransportBelt {
+    fn kind(&self) -> EntityKind {
+        EntityKind::TransportBelt
+    }
+
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         let mut edges = Vec::new();
         let (x, y) = pos;
@@ -129,8 +147,7 @@ impl FactoryEntity for TransportBelt {
                 EntityKind::TransportBelt | EntityKind::UndergroundBelt
             );
             // Don't connect to a belt facing the opposite direction
-            let opposite = Direction::South as i64 - Direction::North as i64;
-            let dst_opposing = dst_is_belt && (dst_dir as i64 - dir as i64).abs() == opposite;
+            let dst_opposing = dst_is_belt && dst_dir == dir.opposite();
 
             if dst_is_belt && !dst_opposing {
                 edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
@@ -146,17 +163,17 @@ impl FactoryEntity for TransportBelt {
             .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
             .collect()
     }
-
-    fn flow_rate(&self) -> f64 {
-        15.0
-    }
 }
 
 // ── Inserter ────────────────────────────────────────────────────────────────
 
-struct Inserter;
+pub struct Inserter;
 
 impl FactoryEntity for Inserter {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Inserter
+    }
+
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         inserter_connections(EntityKind::Inserter, pos, dir, world)
     }
@@ -167,19 +184,19 @@ impl FactoryEntity for Inserter {
             .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
             .collect()
     }
-
-    fn flow_rate(&self) -> f64 {
-        0.86
-    }
 }
 
 // ── Assembling Machine ──────────────────────────────────────────────────────
 
-struct AssemblingMachine {
+pub struct AssemblingMachine {
     recipe_item: Item,
 }
 
 impl FactoryEntity for AssemblingMachine {
+    fn kind(&self) -> EntityKind {
+        EntityKind::AssemblingMachine1
+    }
+
     fn connections(&self, pos: (usize, usize), _dir: Direction, world: &World) -> Vec<Edge> {
         let mut edges = Vec::new();
         let (x, y) = pos;
@@ -270,19 +287,19 @@ impl FactoryEntity for AssemblingMachine {
             .map(|(&item, &rate)| (item, rate * min_ratio))
             .collect()
     }
-
-    fn flow_rate(&self) -> f64 {
-        0.5
-    }
 }
 
 // ── Underground Belt ────────────────────────────────────────────────────────
 
-struct UndergroundBelt {
+pub struct UndergroundBelt {
     misc: Misc,
 }
 
 impl FactoryEntity for UndergroundBelt {
+    fn kind(&self) -> EntityKind {
+        EntityKind::UndergroundBelt
+    }
+
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         let mut edges = Vec::new();
         let (x, y) = pos;
@@ -331,10 +348,6 @@ impl FactoryEntity for UndergroundBelt {
             .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
             .collect()
     }
-
-    fn flow_rate(&self) -> f64 {
-        15.0
-    }
 }
 
 // ── Source (stack_inserter) ─────────────────────────────────────────────────
@@ -343,11 +356,15 @@ impl FactoryEntity for UndergroundBelt {
 // uses the same inserter connection logic: picks up from behind, drops onto
 // belts/assemblers ahead. Its special behavior is that it has infinite output.
 
-struct Source {
+pub struct Source {
     item: Item,
 }
 
 impl FactoryEntity for Source {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Source
+    }
+
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         // Same connection logic as inserter
         inserter_connections(EntityKind::Source, pos, dir, world)
@@ -359,10 +376,6 @@ impl FactoryEntity for Source {
         output.insert(self.item, f64::INFINITY);
         output
     }
-
-    fn flow_rate(&self) -> f64 {
-        f64::INFINITY
-    }
 }
 
 // ── Sink (bulk_inserter) ────────────────────────────────────────────────────
@@ -370,9 +383,13 @@ impl FactoryEntity for Source {
 // Same as Source: bulk_inserter contains "inserter", so it uses inserter
 // connection logic. Its special behavior is infinite throughput at the output.
 
-struct Sink;
+pub struct Sink;
 
 impl FactoryEntity for Sink {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Sink
+    }
+
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         inserter_connections(EntityKind::Sink, pos, dir, world)
     }
@@ -380,10 +397,6 @@ impl FactoryEntity for Sink {
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
         // Sinks pass through everything (infinite capacity)
         input.clone()
-    }
-
-    fn flow_rate(&self) -> f64 {
-        f64::INFINITY
     }
 }
 
@@ -438,9 +451,13 @@ fn inserter_connections(
 
 // ── Empty ───────────────────────────────────────────────────────────────────
 
-struct EmptyEntity;
+pub struct EmptyEntity;
 
 impl FactoryEntity for EmptyEntity {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Empty
+    }
+
     fn connections(&self, _pos: (usize, usize), _dir: Direction, _world: &World) -> Vec<Edge> {
         Vec::new()
     }
@@ -448,13 +465,10 @@ impl FactoryEntity for EmptyEntity {
     fn transform_flow(&self, _input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
         HashMap::new()
     }
-
-    fn flow_rate(&self) -> f64 {
-        0.0
-    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
