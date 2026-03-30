@@ -267,6 +267,9 @@ class FactorioEnv(gym.Env):
             "item": gym.spaces.Discrete(len(self.items)),
             "misc": gym.spaces.Discrete(len(self.Misc))
         })
+        # Cache source/sink IDs (non-placeable prototypes)
+        self._source_id = self.str2ent('stack_inserter').value
+        self._sink_id = self.str2ent('bulk_inserter').value
         self._reset_options = options if options is not None else {}
 
         self.steps = 0
@@ -360,9 +363,8 @@ class FactorioEnv(gym.Env):
         # (x, y), entity_id, direc = action
         assert 0 <= x < self._world_CWH.shape[1], f"x={x} out of bounds [0, {self._world_CWH.shape[1]})"
         assert 0 <= y < self._world_CWH.shape[2], f"y={y} out of bounds [0, {self._world_CWH.shape[2]})"
-        # non-placeable prototypes: source and sink
-        source_id = self.str2ent('stack_inserter').value
-        sink_id = self.str2ent('bulk_inserter').value
+        source_id = self._source_id
+        sink_id = self._sink_id
 
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
@@ -471,8 +473,7 @@ class FactorioEnv(gym.Env):
         frac_hallucin = 0
 
         # Give some small reward for having the belt be the right direction
-        sink_id = self.str2ent('bulk_inserter').value
-        sink_locs = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == sink_id)
+        sink_locs = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == self._sink_id)
         assert len(sink_locs[0]) == len(sink_locs[1]) == 1, f"Expected 1 bulk inserter, found {sink_locs} in world {self._world_CWH}"
         C, W, H = self._world_CWH.shape
         w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]

@@ -68,23 +68,46 @@ blocked side clears, it sends the owed items to balance out.
 
 ## Factorion Implementation
 
-### Current Status: Not Yet Implemented
+### Current Status: Implemented
 
-The splitter is listed as a planned entity in the README ("Factorio environment
-rewrite/overhaul" section). It does not currently exist in the `EntityKind`
-enum or in `entities.rs`.
+- **Entity enum:** `EntityKind::Splitter = 7` (Rust), entity value 7 (Python)
+- **Size:** 2 tiles wide (perpendicular to flow), 1 tile deep
+- **Flow rate:** 30.0 items/sec (2 input belts × 15 items/sec each)
+- **Footprint:** Computed via `entity_tiles(x, y, dir, 2, 1)`. Anchor is the
+  "left" tile when looking in the flow direction. Tile layout depends on
+  direction:
+  - **East/West:** anchor (x, y), second tile (x, y+1)
+  - **North/South:** anchor (x, y), second tile (x+1, y)
 
-### Implementation Notes
+### Connection Logic
 
-When added, the splitter will need:
+For each of the splitter's 2 tiles:
 
-- A new `EntityKind` variant (value TBD)
-- 1x2 footprint handling (like [[assembling-machine]]'s 3x3, but 1x2)
-- Connection logic: accept input from the two tiles behind, output to the two
-  tiles ahead
-- `transform_flow`: split input evenly across outputs (or just pass-through
-  at 15 items/sec per side if modeled as a simple flow entity)
-- No need for priority or filter mechanics per current project scope
+- **Input (behind tile):** Accepts transport belts or underground belts pointing
+  in the **same direction** as the splitter. Also accepts sources/sinks with
+  matching direction.
+- **Output (ahead of tile):** Connects to transport belts, underground belts,
+  or sinks that are **not facing the opposite direction** (sideloading allowed).
+
+### Flow Splitting
+
+`transform_flow()` caps input at the splitter's flow rate (30.0). The
+throughput calculation then divides output evenly by the number of successors
+in the flow graph. With 2 outputs, each gets half the input.
+
+### Lesson Types
+
+Three lesson generators use splitters:
+
+- `SPLITTER_SPLIT`: 1 source → belts → splitter → 2×(belts → sink)
+- `SPLITTER_MERGE`: 2×(source → belts) → splitter → belts → 1 sink
+- Both are tested across many seeds, grid sizes, and with Rust/Python parity
+
+### Not Implemented
+
+- Priority settings (input/output priority)
+- Filtering (item-type routing)
+- Memory (rebalancing after blockage clears)
 
 ## Interactions
 
