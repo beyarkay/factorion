@@ -95,6 +95,11 @@ def set_multi_tile_entity(world, entity_name, x, y, direction, item_name="empty"
         set_entity(world, tx, ty, entity_name, direction, item_name)
 
 
+def set_splitter(world, x, y, direction, item_name="empty"):
+    """Place a splitter at anchor (x, y), filling all occupied tiles."""
+    set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
+
+
 def py_throughput_safe(world):
     """Call the Python throughput pipeline (world2graph + calc_throughput) directly.
 
