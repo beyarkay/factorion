@@ -172,15 +172,34 @@ macbook pro.
 
 ## Factorio environment rewrite/overhaul
 
-Want to be able to support enough for a green circuits factory:
+Still need to add:
 
-- Transport belts
-- Source
-- Sink
-- Assembling machines
-- Splitters
-- Underground belts
-- Different recipes
+- Assembling machines: This one will be a doozy. assembling machines are 3x3,
+  and take input items _only_ by inserters (not by transport belt) and then
+  they wait for the correct number of ingredients (e.g. 3 copper cable + 2 iron
+  plate) and then consume those ingredients to create the product (e.g.
+  electronic circuit). So to represent it we'll have to represent the recipe
+  that the assembling machine has on a different channel.
+
+  Then the lessons will first choose a random recipe (I'll dump a bunch of
+  recipes into context, or maybe you can search for some?)
+
+- Underground belts: These entities are like belts but go for up to 4 tiles
+  underground e.g. `bbbd____ubbb` where b is belt, d is descending underground,
+  `_` is an empty tile, u is ascending underground, and b is belt. Note that
+  these undergrounds have two forms of rotation: the belt can be
+  ascending/descending, and can be rotated so that the opening of the
+  underground faces north/south/east/west. Probably we just have an ascending
+  underground belt entity and a descending underground belt.
+
+  Then the lessons for these are tricky, we want to ensure the agent learns
+  that underground belts are only useful to get _under_ something, but we don't
+  really have things that it makes sense to go underneath just yet. But later
+  on this'll be other parts of the factory, assembling machines, inserters, or
+  other belts. So we won't create "dummy" entities for the underground belts to
+  go under, this will need to be real scenarios in which underground belts are
+  required.
+
 - Maybe also an "ores" layer?
 - Belts having two sides
 - Some entities being sources/sinks themselves (miners, science labs, nuclear
