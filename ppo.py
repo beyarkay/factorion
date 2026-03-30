@@ -1335,7 +1335,7 @@ if __name__ == "__main__":
     if runtime > 60 * 5: # 5 minutes
         # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
         # Save the model to a file
-        run_name_dir_safe = run_name.replace('/', '-').replace(':', '-')
+        run_name_dir_safe = run_name.replace('/', '-').replace(':', '-').replace(' ', '_')
         agent_name = f"agent-{run_name_dir_safe}"
         print(f"Saving model to artifacts/{agent_name}.pt")
         os.makedirs("artifacts", exist_ok=True)
