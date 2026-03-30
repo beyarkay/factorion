@@ -153,6 +153,9 @@ def datatypes(Enum, dataclass, mo):
         6: Entity(
             name="stack_inserter", value=6, width=1, height=1, flow=float("inf")
         ),
+        # splitter: 2 tiles wide perpendicular to flow, 1 tile deep
+        # flow = 2 lanes × 15 i/s per lane = 30 i/s total
+        7: Entity(name="splitter", value=7, width=2, height=1, flow=30.0),
         #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
         #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
         #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
@@ -191,6 +194,9 @@ def datatypes(Enum, dataclass, mo):
         MOVE_TWO_ITEMS_WITH_UNDERGROUND = 2
         CREATE_COPPER_WIRE = 3
         CREATE_ELECTRONIC_CIRCUIT = 4
+        INSERTER_TRANSFER = 5
+        SPLITTER_SPLIT = 6
+        SPLITTER_MERGE = 7
 
 
     # Map Enum <--> grid deltas
@@ -667,6 +673,14 @@ def functions(
                     dbg(
                         f'  made input_ match output: {curr["input_"]=} {curr["output"]=}'
                     )
+
+                # For splitters, divide output evenly among successors
+                if proto.name == "splitter":
+                    num_successors = len(list(G.successors(node)))
+                    if num_successors > 1:
+                        for k in curr["output"]:
+                            curr["output"][k] /= num_successors
+
             dbg(f"  after: {curr=}")
             dbg(f"Calcs:")
             for n in G.nodes:
@@ -1338,6 +1352,92 @@ def functions(
                                     f"{e.name}\n@{x},{y}",
                                     f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
                                 ))
+                elif "splitter" in e.name:
+                    tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
+                    if tiles is None:
+                        continue
+
+                    for tx, ty in tiles:
+                        # Input: cell behind this tile
+                        if d == Direction.EAST:
+                            in_cell = (tx - 1, ty)
+                        elif d == Direction.WEST:
+                            in_cell = (tx + 1, ty)
+                        elif d == Direction.NORTH:
+                            in_cell = (tx, ty + 1)
+                        elif d == Direction.SOUTH:
+                            in_cell = (tx, ty - 1)
+                        else:
+                            continue
+
+                        if (
+                            0 <= in_cell[0] < W
+                            and 0 <= in_cell[1] < H
+                            and in_cell not in tiles
+                        ):
+                            in_ent = entities[
+                                world_WHC[in_cell[0], in_cell[1], Channel.ENTITIES.value]
+                            ]
+                            in_dir = Direction(
+                                world_WHC[in_cell[0], in_cell[1], Channel.DIRECTION.value]
+                            )
+                            # Only accept belt-like entities or sources/sinks
+                            # pointing in the same direction as the splitter
+                            in_is_belt = "belt" in in_ent.name and in_dir == d
+                            in_is_source_sink = in_ent.name in (
+                                "stack_inserter", "bulk_inserter"
+                            ) and in_dir == d
+                            if in_is_belt or in_is_source_sink:
+                                pending_edges.append((
+                                    f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
+                                    self_name,
+                                ))
+
+                        # Output: cell ahead of this tile
+                        if d == Direction.EAST:
+                            out_cell = (tx + 1, ty)
+                        elif d == Direction.WEST:
+                            out_cell = (tx - 1, ty)
+                        elif d == Direction.NORTH:
+                            out_cell = (tx, ty - 1)
+                        elif d == Direction.SOUTH:
+                            out_cell = (tx, ty + 1)
+                        else:
+                            continue
+
+                        if (
+                            0 <= out_cell[0] < W
+                            and 0 <= out_cell[1] < H
+                            and out_cell not in tiles
+                        ):
+                            out_ent = entities[
+                                world_WHC[
+                                    out_cell[0], out_cell[1], Channel.ENTITIES.value
+                                ]
+                            ]
+                            out_dir = Direction(
+                                world_WHC[
+                                    out_cell[0], out_cell[1], Channel.DIRECTION.value
+                                ]
+                            )
+                            # Only connect to belt-like entities or sinks,
+                            # not facing the opposite direction
+                            out_is_belt = "belt" in out_ent.name
+                            out_is_sink = out_ent.name in (
+                                "stack_inserter", "bulk_inserter"
+                            )
+                            out_not_opposing = out_dir != {
+                                Direction.NORTH: Direction.SOUTH,
+                                Direction.SOUTH: Direction.NORTH,
+                                Direction.EAST: Direction.WEST,
+                                Direction.WEST: Direction.EAST,
+                            }.get(d, Direction.NONE)
+                            if (out_is_belt or out_is_sink) and out_not_opposing:
+                                pending_edges.append((
+                                    self_name,
+                                    f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
+                                ))
+
                 else:
                     assert False, f"Don't know how to handle {e.name} at {x} {y}"
 

@@ -24,6 +24,7 @@ from helpers import (
     rs_throughput,
     py_throughput_safe,
     set_entity,
+    set_splitter,
 )
 
 
@@ -218,7 +219,7 @@ class TestGeneratedLessons:
 class TestFuzz:
     """Fuzz test: generate random factory layouts and check parity."""
 
-    # All 1x1 entity IDs. Multi-tile entities (assembler=3) are
+    # All 1x1 entity IDs. Multi-tile entities (assembler=3, splitter=7) are
     # excluded because random single-cell placement is invalid for them.
     ENTITY_VALUES = [eid for eid, e in entities.items() if e.width == 1 and e.height == 1]
     DIRECTION_VALUES = [0, 1, 2, 3, 4]
@@ -372,3 +373,366 @@ class TestFuzz:
         assert py_unreachable == rs_unreachable, (
             f"Seed {seed}: unreachable mismatch: Python={py_unreachable}, Rust={rs_unreachable}"
         )
+
+
+# ── Splitter parity tests ──────────────────────────────────────────────────
+
+# Helper: for a splitter facing `d` at anchor (ax, ay), compute the positions
+# of left/right input cells (behind) and left/right output cells (ahead).
+def _splitter_io_cells(ax, ay, d):
+    """Returns (tiles, input_cells, output_cells) for a splitter."""
+    tiles = factorion_rs.py_entity_tiles(ax, ay, d.value, 2, 1)
+    assert tiles is not None
+    dx, dy = {
+        Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+        Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+    }[d]
+    input_cells = [(t[0] - dx, t[1] - dy) for t in tiles]
+    output_cells = [(t[0] + dx, t[1] + dy) for t in tiles]
+    return tiles, input_cells, output_cells
+
+
+class TestSplitterExhaustive:
+    """Test every combination of direction x inputs x outputs."""
+
+    DIRS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
+    # Subsets of {left, right} for inputs and outputs
+    SUBSETS = [(), (0,), (1,), (0, 1)]
+
+    @pytest.mark.parametrize("d", DIRS, ids=lambda d: d.name)
+    @pytest.mark.parametrize("inputs", SUBSETS, ids=["no_in", "left_in", "right_in", "both_in"])
+    @pytest.mark.parametrize("outputs", SUBSETS, ids=["no_out", "left_out", "right_out", "both_out"])
+    def test_splitter_combination(self, d, inputs, outputs):
+        """For each direction x input subset x output subset, verify parity."""
+        world = make_world(10)
+        ax, ay = 4, 4  # anchor with room in all directions
+        set_splitter(world, ax, ay, d)
+
+        tiles, in_cells, out_cells = _splitter_io_cells(ax, ay, d)
+
+        # Place source→belt on each active input
+        for idx in inputs:
+            bx, by = in_cells[idx]
+            # belt behind the input cell
+            dx, dy = {
+                Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+                Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+            }[d]
+            sx, sy = bx - dx, by - dy
+            if 0 <= sx < 10 and 0 <= sy < 10:
+                set_entity(world, sx, sy, "source", d, "copper_cable")
+            set_entity(world, bx, by, "transport_belt", d)
+
+        # Place belt→sink on each active output
+        for idx in outputs:
+            bx, by = out_cells[idx]
+            dx, dy = {
+                Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+                Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+            }[d]
+            kx, ky = bx + dx, by + dy
+            set_entity(world, bx, by, "transport_belt", d)
+            if 0 <= kx < 10 and 0 <= ky < 10:
+                set_entity(world, kx, ky, "sink", d, "copper_cable")
+
+        # Run both implementations and check parity
+        tp, unreachable = compare_throughput(world)
+
+        n_in = len(inputs)
+        n_out = len(outputs)
+        if n_in == 0 or n_out == 0:
+            assert tp == 0.0, f"No path expected, got tp={tp}"
+        else:
+            # Each input belt contributes 15 i/s. Splitter capacity = 30 i/s
+            # (2 lanes). Split evenly among outputs, each capped at 15 by
+            # the output belt.
+            splitter_out = min(n_in * 15.0, 30.0) / n_out
+            expected_per_output = min(splitter_out, 15.0)
+            expected_total = expected_per_output * n_out
+            assert abs(tp - expected_total) < 1e-6, (
+                f"dir={d.name} in={inputs} out={outputs}: "
+                f"expected {expected_total}, got {tp}"
+            )
+
+
+class TestSplitterChaining:
+    """Test splitter→belt→splitter chains."""
+
+    def test_two_splitters_in_series(self):
+        """Source → Belt → Splitter → Belt → Splitter → 2x(Belt → Sink)."""
+        world = make_world(10, 3)
+        set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 0, Direction.EAST)
+        set_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        set_splitter(world, 4, 0, Direction.EAST)
+        set_entity(world, 5, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 5, 1, "transport_belt", Direction.EAST)
+        set_entity(world, 6, 0, "sink", Direction.EAST, "copper_cable")
+        set_entity(world, 6, 1, "sink", Direction.EAST, "copper_cable")
+
+        tp, unreachable = compare_throughput(world)
+        # First splitter: 1 input, 1 output (passthrough) = 15.0
+        # Second splitter: 1 input, 2 outputs = 7.5 each = 15.0 total
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
+
+    def test_split_then_merge(self):
+        """Source → Splitter → 2x Belt → Splitter → Belt → Sink."""
+        world = make_world(10, 3)
+        set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 0, Direction.EAST)
+        set_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 3, 1, "transport_belt", Direction.EAST)
+        set_splitter(world, 4, 0, Direction.EAST)
+        set_entity(world, 5, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 6, 0, "sink", Direction.EAST, "copper_cable")
+
+        tp, unreachable = compare_throughput(world)
+        # Split 15 into 7.5+7.5, merge back: 15.0 total, 1 output = 15.0
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
+
+    def test_splitter_fan_out_to_two_splitters(self):
+        """Splitter1 outputs each feed a separate downstream splitter via belts.
+
+        Layout (east-facing, y increases downward):
+          Source → Belt ─┐
+          Source → Belt ─┤ Splitter1 ─ Belt ─┐ Splitter2 ─ Belt → Sink
+                         └───────── Belt ────┤ Splitter3 ─ Belt → Sink
+        Splitter1 at (2,0), outputs at (3,0)/(3,1)
+        Belt at (3,0) → Splitter2 at (4,0)  (left input only)
+        Belt at (3,1) → Splitter3 at (4,2)? No, need alignment.
+        Easier: route (3,1) south then east.
+        """
+        world = make_world(10, 6)
+        # Two sources into splitter1
+        set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 0, 1, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 1, 1, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 0, Direction.EAST)  # tiles (2,0)/(2,1)
+
+        # Left output (3,0) → belt → splitter2
+        set_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        set_splitter(world, 4, 0, Direction.EAST)  # tiles (4,0)/(4,1)
+        set_entity(world, 5, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 6, 0, "sink", Direction.EAST, "copper_cable")
+
+        # Right output (3,1) → belt south → belt east → splitter3
+        set_entity(world, 3, 1, "transport_belt", Direction.SOUTH)
+        set_entity(world, 3, 2, "transport_belt", Direction.SOUTH)
+        set_entity(world, 3, 3, "transport_belt", Direction.EAST)
+        set_entity(world, 4, 3, "transport_belt", Direction.EAST)
+        set_splitter(world, 5, 3, Direction.EAST)  # tiles (5,3)/(5,4)
+        set_entity(world, 6, 3, "transport_belt", Direction.EAST)
+        set_entity(world, 7, 3, "sink", Direction.EAST, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        # 2 inputs (30 total) → splitter1 (30 cap, 2 outputs = 15 each)
+        # Each downstream splitter: 15 in, 1 output = 15 each
+        # Total at sinks = 30
+        assert abs(tp - 30.0) < 1e-6, f"Expected 30.0, got {tp}"
+
+    def test_splitter_fan_in(self):
+        """4 sources → 2 splitters → 1 splitter → sink.
+
+        Layout (east-facing):
+          A → belt ─┐ S1 ─ belt ─┐
+          B → belt ─┘             ├─ S3 ─ belt → Sink
+          C → belt ─┐ S2 ─ belt ─┘
+          D → belt ─┘
+
+        S1: 2 in (30), 1 out = 30 → belt caps at 15
+        S2: 2 in (30), 1 out = 30 → belt caps at 15
+        S3: 2 in (15+15=30), 1 out = 30 → belt caps at 15
+        Sink = 15
+        """
+        world = make_world(10, 8)
+
+        # Sources A,B → belts → S1
+        set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 0, 1, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 1, 1, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 0, Direction.EAST)  # tiles (2,0)/(2,1)
+
+        # Sources C,D → belts → S2
+        set_entity(world, 0, 4, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 0, 5, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 4, "transport_belt", Direction.EAST)
+        set_entity(world, 1, 5, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 4, Direction.EAST)  # tiles (2,4)/(2,5)
+
+        # S1 single output (top lane) → belt east → route down to S3
+        set_entity(world, 3, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 4, 0, "transport_belt", Direction.SOUTH)
+        set_entity(world, 4, 1, "transport_belt", Direction.SOUTH)
+        set_entity(world, 4, 2, "transport_belt", Direction.EAST)
+
+        # S2 single output (top lane) → belt east → route up to S3
+        set_entity(world, 3, 4, "transport_belt", Direction.EAST)
+        set_entity(world, 4, 4, "transport_belt", Direction.NORTH)
+        set_entity(world, 4, 3, "transport_belt", Direction.EAST)
+
+        # S3: inputs from (4,2) and (4,3) → anchor at (5,2)
+        set_splitter(world, 5, 2, Direction.EAST)  # tiles (5,2)/(5,3)
+
+        # S3 single output → belt → sink
+        set_entity(world, 6, 2, "transport_belt", Direction.EAST)
+        set_entity(world, 7, 2, "sink", Direction.EAST, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        # Each intermediate belt caps at 15, so S3 gets 15+15=30 in,
+        # 1 output = 30, but output belt caps at 15.
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
+
+
+class TestSplitterSecondaryTile:
+    """Test that belts feeding into a splitter's secondary tile behave correctly."""
+
+    def test_belt_into_secondary_tile_no_connection(self):
+        """A belt pointing at the splitter's secondary tile from the side
+        should NOT connect (secondary tile is not a separate graph node)."""
+        world = make_world(10)
+        set_splitter(world, 4, 4, Direction.EAST)
+        # Place a belt pointing south into (4, 5) — the secondary tile
+        set_entity(world, 4, 3, "source", Direction.SOUTH, "copper_cable")
+        set_entity(world, 4, 5, "transport_belt", Direction.SOUTH)
+        # The belt at (4,5) overlaps the splitter secondary tile, but
+        # since the secondary is skipped in graph building, this belt
+        # replaces it. The source→belt edge exists but goes nowhere useful.
+        # Just verify parity (no crash, both agree on throughput).
+        compare_throughput(world)
+
+
+# ── Edge case tests ─────────────────────────────────────────────────────────
+
+DIRS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
+
+
+class TestSplitterEdgeCases:
+    @pytest.mark.parametrize("d", DIRS, ids=lambda d: d.name)
+    def test_splitter_at_grid_edge(self, d):
+        """Splitter placed at the grid boundary where some IO cells are OOB."""
+        world = make_world(6)
+        # Place at edge so one input or output is out of bounds
+        if d == Direction.EAST:
+            ax, ay = 5, 0  # output cells at (6,0)/(6,1) — OOB
+        elif d == Direction.WEST:
+            ax, ay = 0, 0  # output cells at (-1,0)/(-1,1) — OOB
+        elif d == Direction.NORTH:
+            ax, ay = 0, 0  # output cells at (0,-1)/(1,-1) — OOB
+        elif d == Direction.SOUTH:
+            ax, ay = 0, 5  # output cells at (0,6)/(1,6) — OOB
+        set_splitter(world, ax, ay, d)
+        # Should not crash, just produce zero throughput
+        tp, _ = compare_throughput(world)
+        assert tp == 0.0
+
+    def test_adjacent_splitters_no_belt(self):
+        """Two splitters placed directly adjacent (no belt between) → zero throughput.
+
+        Splitter connections only accept belt-like entities, so direct
+        splitter→splitter produces no edges.
+        """
+        world = make_world(8)
+        set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_splitter(world, 2, 0, Direction.EAST)  # tiles (2,0)/(2,1)
+        # Splitter2 directly adjacent — its input cells are at (2,0)/(2,1)
+        # which are splitter1's tiles. Splitter connections reject non-belt entities.
+        set_splitter(world, 3, 0, Direction.EAST)  # tiles (3,0)/(3,1)
+        set_entity(world, 4, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 5, 0, "sink", Direction.EAST, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        # No connection between the two splitters
+        assert tp == 0.0
+
+    @pytest.mark.parametrize("d", DIRS, ids=lambda d: d.name)
+    def test_underground_belt_into_splitter(self, d):
+        """Underground belt (up) → splitter input should connect."""
+        world = make_world(10)
+        ax, ay = 4, 4
+        dx, dy = {
+            Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+            Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+        }[d]
+
+        tiles = factorion_rs.py_entity_tiles(ax, ay, d.value, 2, 1)
+        # Place underground belt (up) behind the first input cell
+        in_x, in_y = tiles[0][0] - dx, tiles[0][1] - dy
+        ub_x, ub_y = in_x - dx, in_y - dy
+        # Source → underground_down → ... → underground_up → splitter → belt → sink
+        src_x, src_y = ub_x - dx, ub_y - dy
+        if not all(0 <= c < 10 for c in [src_x, src_y, ub_x, ub_y, in_x, in_y]):
+            pytest.skip("Not enough room for this direction")
+
+        set_entity(world, src_x, src_y, "source", d, "copper_cable")
+        set_entity(world, ub_x, ub_y, "underground_belt", d, misc=1)  # down
+        set_entity(world, in_x, in_y, "underground_belt", d, misc=2)  # up
+        set_splitter(world, ax, ay, d)
+        # Output: belt → sink
+        out_x, out_y = tiles[0][0] + dx, tiles[0][1] + dy
+        sink_x, sink_y = out_x + dx, out_y + dy
+        if not all(0 <= c < 10 for c in [out_x, out_y, sink_x, sink_y]):
+            pytest.skip("Not enough room for output in this direction")
+        set_entity(world, out_x, out_y, "transport_belt", d)
+        set_entity(world, sink_x, sink_y, "sink", d, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        assert tp > 0, f"Expected nonzero throughput for underground→splitter ({d.name})"
+
+    @pytest.mark.parametrize("d", DIRS, ids=lambda d: d.name)
+    def test_splitter_chaining_all_directions(self, d):
+        """Splitter → belt → splitter chain in every direction."""
+        world = make_world(12)
+        dx, dy = {
+            Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+            Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+        }[d]
+        # Start from center, lay out: source → belt → S1 → belt → S2 → belt → sink
+        cx, cy = 5, 5
+        pos = (cx - 5 * dx, cy - 5 * dy)
+        if not (0 <= pos[0] < 12 and 0 <= pos[1] < 12):
+            pos = (cx, cy)
+
+        x, y = 2, 5  # fixed start that works for all dirs with enough room
+        if d == Direction.EAST:
+            x, y = 1, 4
+        elif d == Direction.WEST:
+            x, y = 10, 4
+        elif d == Direction.NORTH:
+            x, y = 4, 10
+        elif d == Direction.SOUTH:
+            x, y = 4, 1
+
+        set_entity(world, x, y, "source", d, "copper_cable")
+        x, y = x + dx, y + dy
+        set_entity(world, x, y, "transport_belt", d)
+        x, y = x + dx, y + dy
+        set_splitter(world, x, y, d)
+        # Skip over splitter's depth (1 tile along flow)
+        x, y = x + dx, y + dy
+        set_entity(world, x, y, "transport_belt", d)
+        x, y = x + dx, y + dy
+        set_splitter(world, x, y, d)
+        x, y = x + dx, y + dy
+        set_entity(world, x, y, "transport_belt", d)
+        x, y = x + dx, y + dy
+        set_entity(world, x, y, "sink", d, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0 for {d.name} chain, got {tp}"
+
+    def test_splitter_direction_none(self):
+        """Splitter with Direction.NONE should produce zero throughput."""
+        world = make_world(6)
+        # Manually place splitter tiles with NONE direction (can't use set_splitter)
+        set_entity(world, 2, 2, "splitter", Direction.NONE)
+        set_entity(world, 2, 3, "splitter", Direction.NONE)
+        set_entity(world, 0, 2, "source", Direction.EAST, "copper_cable")
+        set_entity(world, 1, 2, "transport_belt", Direction.EAST)
+        set_entity(world, 4, 2, "sink", Direction.EAST, "copper_cable")
+        tp, _ = compare_throughput(world)
+        assert tp == 0.0

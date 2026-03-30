@@ -358,12 +358,11 @@ class FactorioEnv(gym.Env):
 
 
         # (x, y), entity_id, direc = action
-        assert 0 <= x < self._world_CWH.shape[1], f"{x} isn't between 0 and {self._world_CWH.shape[1]}"
-        assert 0 <= y < self._world_CWH.shape[2], f"{y} isn't between 0 and {self._world_CWH.shape[2]}"
-        # account for two non-placeable prototypes: source and sink
-        assert 0 <= entity_id < len(self.entities) - 2, f"{entity_id} isn't between 0 and {len(self.entities)-2}"
-        assert 0 <= direc < len(self.Direction), f"{direc} isn't between 0 and {len(self.Direction)}"
-        # TODO update for new action logic
+        assert 0 <= x < self._world_CWH.shape[1], f"x={x} out of bounds [0, {self._world_CWH.shape[1]})"
+        assert 0 <= y < self._world_CWH.shape[2], f"y={y} out of bounds [0, {self._world_CWH.shape[2]})"
+        # non-placeable prototypes: source and sink
+        source_id = self.str2ent('stack_inserter').value
+        sink_id = self.str2ent('bulk_inserter').value
 
         # Mutate the world with the agent's actions
         entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
@@ -373,6 +372,7 @@ class FactorioEnv(gym.Env):
         invalid_reason = {
             'placed_on_masked_tile': False,
             'replaced_source_or_sink': False,
+            'placed_source_or_sink': False,
             'place_asm_mach_wo_recipe': False,
             'placement_wo_direction': False,
             'direction_wo_entity': False,
@@ -383,12 +383,22 @@ class FactorioEnv(gym.Env):
         }
 
         # Check that the action is actually valid
-        if self._world_CWH[self.Channel.FOOTPRINT.value, x, y] == self.Footprint.UNAVAILABLE.value:
+        if not (0 <= entity_id < len(self.entities)):
+            # entity_id out of range
+            action_is_invalid = True
+        elif not (0 <= direc < len(self.Direction)):
+            # direction out of range
+            action_is_invalid = True
+        elif entity_id in (source_id, sink_id):
+            # agent tried to place a source or sink
+            invalid_reason['placed_source_or_sink'] = True
+            action_is_invalid = True
+        elif self._world_CWH[self.Channel.FOOTPRINT.value, x, y] == self.Footprint.UNAVAILABLE.value:
             # disallow placement on masked-out tiles
             invalid_reason['placed_on_masked_tile'] = True
             action_is_invalid = True
             pass
-        elif entity_to_be_replaced in (len(self.entities)-1, len(self.entities)-2):
+        elif entity_to_be_replaced in (source_id, sink_id):
             # disallow the replacement of the source+sink
             invalid_reason['replaced_source_or_sink'] = True
             action_is_invalid = True

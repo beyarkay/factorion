@@ -38,6 +38,7 @@ pub enum EntityEnum {
     UndergroundBelt(UndergroundBelt),
     Sink(Sink),
     Source(Source),
+    Splitter(Splitter),
     Empty(EmptyEntity),
 }
 
@@ -52,6 +53,7 @@ impl EntityEnum {
             EntityKind::UndergroundBelt => Self::UndergroundBelt(UndergroundBelt { misc }),
             EntityKind::Sink => Self::Sink(Sink),
             EntityKind::Source => Self::Source(Source { item }),
+            EntityKind::Splitter => Self::Splitter(Splitter),
             EntityKind::Empty => Self::Empty(EmptyEntity),
         }
     }
@@ -66,6 +68,7 @@ impl FactoryEntity for EntityEnum {
             Self::UndergroundBelt(e) => e.kind(),
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
+            Self::Splitter(e) => e.kind(),
             Self::Empty(e) => e.kind(),
         }
     }
@@ -78,6 +81,7 @@ impl FactoryEntity for EntityEnum {
             Self::UndergroundBelt(e) => e.connections(pos, dir, world),
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
+            Self::Splitter(e) => e.connections(pos, dir, world),
             Self::Empty(e) => e.connections(pos, dir, world),
         }
     }
@@ -90,6 +94,7 @@ impl FactoryEntity for EntityEnum {
             Self::UndergroundBelt(e) => e.transform_flow(input),
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
+            Self::Splitter(e) => e.transform_flow(input),
             Self::Empty(e) => e.transform_flow(input),
         }
     }
@@ -489,6 +494,88 @@ pub fn entity_tiles(
     Some(tiles)
 }
 
+// ── Splitter ───────────────────────────────────────────────────────────────
+//
+// A splitter is 2 tiles wide (perpendicular to flow) and 1 tile deep.
+// It has up to 2 inputs (behind both tiles) and up to 2 outputs (ahead of both tiles).
+// Flow splitting (dividing output among successors) is handled in calc_throughput,
+// not here — transform_flow just caps at the flow rate.
+
+pub struct Splitter;
+
+impl FactoryEntity for Splitter {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Splitter
+    }
+
+    fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
+        let mut edges = Vec::new();
+        let (x, y) = pos;
+        let (dx, dy) = dir.delta();
+        let self_id = NodeId::new(EntityKind::Splitter, x, y);
+
+        let tiles = match entity_tiles(x, y, dir, 2, 1) {
+            Some(t) => t,
+            None => return edges,
+        };
+        let tile_set: std::collections::HashSet<Pos> = tiles.iter().copied().collect();
+
+        for &tile in &tiles {
+            // Input: cell behind this tile (opposite of facing direction)
+            let in_pos = Pos::new(tile.x - dx, tile.y - dy);
+            if let Some((ix, iy)) = in_pos.to_usize() {
+                if world.in_bounds(in_pos.x, in_pos.y) {
+                    let src_entity = world.entity_at(ix, iy);
+                    let src_dir = world.direction_at(ix, iy);
+                    // Only accept belt-like entities pointing into the splitter
+                    let src_is_belt = matches!(
+                        src_entity,
+                        EntityKind::TransportBelt | EntityKind::UndergroundBelt
+                    ) && src_dir == dir;
+                    // Also accept sources/sinks (they use inserter-style connections)
+                    let src_is_source_sink =
+                        matches!(src_entity, EntityKind::Source | EntityKind::Sink)
+                            && src_dir == dir;
+                    if (src_is_belt || src_is_source_sink) && !tile_set.contains(&in_pos) {
+                        edges.push((NodeId::new(src_entity, ix, iy), self_id.clone()));
+                    }
+                }
+            }
+
+            // Output: cell ahead of this tile (in facing direction)
+            let out_pos = Pos::new(tile.x + dx, tile.y + dy);
+            if let Some((ox, oy)) = out_pos.to_usize() {
+                if world.in_bounds(out_pos.x, out_pos.y) {
+                    let dst_entity = world.entity_at(ox, oy);
+                    let dst_dir = world.direction_at(ox, oy);
+                    // Only connect to belt-like entities or sinks, not opposing
+                    let dst_is_belt = matches!(
+                        dst_entity,
+                        EntityKind::TransportBelt | EntityKind::UndergroundBelt
+                    );
+                    let dst_is_sink = matches!(dst_entity, EntityKind::Source | EntityKind::Sink);
+                    let dst_not_opposing = dst_dir != dir.opposite();
+                    if (dst_is_belt || dst_is_sink)
+                        && dst_not_opposing
+                        && !tile_set.contains(&out_pos)
+                    {
+                        edges.push((self_id.clone(), NodeId::new(dst_entity, ox, oy)));
+                    }
+                }
+            }
+        }
+
+        edges
+    }
+
+    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        input
+            .iter()
+            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
+            .collect()
+    }
+}
+
 // ── Empty ───────────────────────────────────────────────────────────────────
 
 pub struct EmptyEntity;
@@ -853,6 +940,119 @@ mod tests {
         // The DOWN belt creates the edge to the UP belt. The UP belt's connection to
         // the next transport belt is handled by the transport belt's connections().
         assert_eq!(edges.len(), 0);
+    }
+
+    #[test]
+    fn test_splitter_connections_east() {
+        // East-facing splitter at (2,0)/(2,1), belts feeding in and out
+        let mut w = World::empty(5, 3);
+        // Input belt behind splitter tile (2,0) → at (1,0)
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        // Splitter at (2,0) and (2,1)
+        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        // Output belts ahead of splitter tiles
+        w.place(
+            3,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            3,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+
+        let splitter = Splitter;
+        let edges = splitter.connections((2, 0), Direction::East, &w);
+
+        // Should have: belt(1,0)->splitter, splitter->belt(3,0), splitter->belt(3,1)
+        let self_id = NodeId::new(EntityKind::Splitter, 2, 0);
+        assert!(edges.contains(&(
+            NodeId::new(EntityKind::TransportBelt, 1, 0),
+            self_id.clone()
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            NodeId::new(EntityKind::TransportBelt, 3, 0)
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            NodeId::new(EntityKind::TransportBelt, 3, 1)
+        )));
+        assert_eq!(edges.len(), 3);
+    }
+
+    #[test]
+    fn test_splitter_connections_north() {
+        // North-facing splitter at (0,2)/(1,2), belts feeding in and out
+        let mut w = World::empty(3, 5);
+        // Input belt behind splitter tile (0,2) → at (0,3) (south of anchor, since facing north)
+        w.place(
+            0,
+            3,
+            EntityKind::TransportBelt,
+            Direction::North,
+            Item::Empty,
+        );
+        // Splitter at (0,2) and (1,2)
+        w.place_splitter(0, 2, Direction::North, Item::Empty);
+        // Output belts ahead
+        w.place(
+            0,
+            1,
+            EntityKind::TransportBelt,
+            Direction::North,
+            Item::Empty,
+        );
+        w.place(
+            1,
+            1,
+            EntityKind::TransportBelt,
+            Direction::North,
+            Item::Empty,
+        );
+
+        let splitter = Splitter;
+        let edges = splitter.connections((0, 2), Direction::North, &w);
+
+        let self_id = NodeId::new(EntityKind::Splitter, 0, 2);
+        assert!(edges.contains(&(
+            NodeId::new(EntityKind::TransportBelt, 0, 3),
+            self_id.clone()
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            NodeId::new(EntityKind::TransportBelt, 0, 1)
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            NodeId::new(EntityKind::TransportBelt, 1, 1)
+        )));
+        assert_eq!(edges.len(), 3);
+    }
+
+    #[test]
+    fn test_splitter_transform_flow() {
+        let splitter = Splitter;
+        // 20 i/s passes through (under 30 cap)
+        let input = HashMap::from([(Item::CopperCable, 20.0)]);
+        let output = splitter.transform_flow(&input);
+        assert!((output[&Item::CopperCable] - 20.0).abs() < 1e-9);
+
+        // 40 i/s capped at 30 (2 lanes × 15)
+        let input = HashMap::from([(Item::CopperCable, 40.0)]);
+        let output = splitter.transform_flow(&input);
+        assert!((output[&Item::CopperCable] - 30.0).abs() < 1e-9);
     }
 
     #[test]
