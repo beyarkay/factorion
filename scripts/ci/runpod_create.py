@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create a RunPod GPU pod for CI.
 
-Provisions an A100 (or specified GPU) pod, waits for it to reach a running
+Provisions an RTX 4090 (or specified GPU) pod, waits for it to reach a running
 state, and writes connection info to an output JSON file.
 
 Required env vars:
@@ -21,10 +21,10 @@ import runpod
 
 # Ordered fallback list: try A100 first, then fall back to other GPUs
 GPU_FALLBACKS = [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX A6000",
     "NVIDIA A100 80GB PCIe",
     "NVIDIA A100-SXM4-80GB",
-    "NVIDIA RTX A6000",
-    "NVIDIA H100 80GB HBM3",
 ]
 
 DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
@@ -123,7 +123,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create a RunPod GPU pod for CI")
     parser.add_argument(
         "--gpu-type",
-        default="NVIDIA A100 80GB PCIe",
+        default=GPU_FALLBACKS[0],
         help="GPU type to request (falls back to cheaper GPUs if unavailable)",
     )
     parser.add_argument(
