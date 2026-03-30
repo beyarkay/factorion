@@ -28,6 +28,8 @@ LessonKind = _objs["LessonKind"]
 entities = _objs["entities"]
 items = _objs["items"]
 
+find_belt_path = _fns["find_belt_path"]
+find_belt_paths_with_source_sink_orient = _fns["find_belt_paths_with_source_sink_orient"]
 generate_lesson = _fns["generate_lesson"]
 str2ent = _fns["str2ent"]
 str2item = _fns["str2item"]
