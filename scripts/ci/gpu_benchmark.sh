@@ -31,7 +31,7 @@
 set -euo pipefail
 
 NUM_SEEDS="${NUM_SEEDS:-10}"
-MAX_PARALLEL="${MAX_PARALLEL:-5}"
+MAX_PARALLEL="${MAX_PARALLEL:-10}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
@@ -80,6 +80,34 @@ export PATH="/root/.cargo/bin:${PATH}"
 # ── CuBLAS deterministic mode ─────────────────────────────────────
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
+# ── Peak VRAM tracker ────────────────────────────────────────────
+# Samples GPU memory every 5s, writes peak to a file.
+PEAK_VRAM_FILE="/tmp/peak_vram_mib.txt"
+echo "0" > "$PEAK_VRAM_FILE"
+GPU_TOTAL_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "unknown")
+(
+    while true; do
+        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
+        prev=$(cat "$PEAK_VRAM_FILE" 2>/dev/null || echo 0)
+        if [ "$used" -gt "$prev" ] 2>/dev/null; then
+            echo "$used" > "$PEAK_VRAM_FILE"
+        fi
+        sleep 5
+    done
+) &
+PEAK_VRAM_PID=$!
+
+report_peak_vram() {
+    local label="$1"
+    local peak=$(cat "$PEAK_VRAM_FILE" 2>/dev/null || echo "unknown")
+    echo ">>> [${label}] Peak GPU VRAM: ${peak} / ${GPU_TOTAL_MIB} MiB"
+}
+
+cleanup_peak_vram() {
+    kill "$PEAK_VRAM_PID" 2>/dev/null || true
+    wait "$PEAK_VRAM_PID" 2>/dev/null || true
+}
+
 # ── Build Rust extension ──────────────────────────────────────────
 if [ -f factorion_rs/Cargo.toml ]; then
     echo ""
@@ -87,6 +115,14 @@ if [ -f factorion_rs/Cargo.toml ]; then
     (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
 else
     echo ">>> WARNING: factorion_rs not available."
+fi
+
+# ── Sanity check: verify ppo.py can import ───────────────────────
+echo ""
+echo ">>> Verifying ppo.py can import..."
+if ! python -c "from ppo import AgentCNN, FactorioEnv; print('Import OK')" 2>&1; then
+    echo ">>> ERROR: ppo.py import failed! Check Rust build and dependencies."
+    exit 1
 fi
 
 # ── Log in to W&B ─────────────────────────────────────────────────
@@ -104,6 +140,11 @@ start_status_monitor() {
             sleep 30
             echo ""
             echo "──── ${label} status $(date '+%H:%M:%S') ────"
+            # Report GPU memory usage
+            gpu_mem=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)
+            if [ -n "$gpu_mem" ]; then
+                echo "  GPU: ${gpu_mem} MiB used/total, util%"
+            fi
             for s in $(seq 1 "$num_seeds"); do
                 log="${log_dir}/seed_${s}.log"
                 if [ -f "$log" ]; then
@@ -203,6 +244,18 @@ done
 
 echo ""
 echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
+report_peak_vram "PR seeds"
+
+# Abort early if ALL seeds failed — no point running baseline
+if [ "$FAILED" -eq "$NUM_SEEDS" ]; then
+    echo ""
+    echo ">>> ERROR: All ${NUM_SEEDS} PR seeds failed! First seed log:"
+    echo "─────────────────────────────────────────────────────"
+    cat "${PR_LOG_DIR}/seed_1.log" 2>/dev/null || echo "  (no log file)"
+    echo "─────────────────────────────────────────────────────"
+    cleanup_peak_vram
+    exit 1
+fi
 
 # ── Combine per-seed results into one JSON array ──────────────────
 python3 -c "
@@ -407,6 +460,9 @@ python3 scripts/ci/compare_runs.py \
     --pr-number "${PR_NUMBER}" \
     --commit-sha "${COMMIT_SHA}" \
     --output /workspace/summary.md
+
+report_peak_vram "overall"
+cleanup_peak_vram
 
 echo ""
 echo "============================================"
