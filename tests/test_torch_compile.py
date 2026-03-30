@@ -12,7 +12,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, AgentTransformer, FactorioEnv, make_env  # noqa: E402
 
 
 ENV_ID = "factorion/FactorioEnv-v0-compile-test"
@@ -38,10 +38,14 @@ def n_channels(envs):
     return envs.single_observation_space.shape[0]
 
 
-@pytest.fixture()
-def agent(envs):
-    """Create an uncompiled AgentCNN."""
-    return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
+@pytest.fixture(params=["cnn", "transformer"])
+def agent(envs, request):
+    """Create an uncompiled agent (CNN or Transformer)."""
+    if request.param == "cnn":
+        return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
+    else:
+        return AgentTransformer(envs, chan3=64, d_model=32, nhead=4,
+                                num_layers=2, dim_feedforward=64)
 
 
 @pytest.fixture()
@@ -118,7 +122,7 @@ class TestCompiledGradientFlow:
         assert underlying.ent_head.weight.grad is not None
         assert underlying.dir_head.weight.grad is not None
 
-        for name, param in underlying.encoder.named_parameters():
+        for name, param in underlying.named_parameters():
             if param.requires_grad:
                 assert param.grad is not None, f"No gradient for {name}"
 

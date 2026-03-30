@@ -127,6 +127,16 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    agent: str = "cnn"
+    """Agent architecture: 'cnn' or 'transformer'"""
+    d_model: int = 64
+    """Transformer: token embedding dimension"""
+    nhead: int = 4
+    """Transformer: number of attention heads"""
+    num_transformer_layers: int = 3
+    """Transformer: number of encoder layers"""
+    dim_feedforward: int = 128
+    """Transformer: feedforward hidden dimension"""
     size: int = 8
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -865,6 +875,141 @@ class AgentCNN(nn.Module):
         self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
 
+
+class AgentTransformer(nn.Module):
+    def __init__(self, envs, chan3=48, d_model=64, nhead=4,
+                 num_layers=3, dim_feedforward=128, tile_head_std=0.01):
+        super().__init__()
+        base_env = envs.envs[0].unwrapped
+        self.width = base_env.size
+        self.height = base_env.size
+        self.channels = len(base_env.Channel)
+        self.num_entities = 2
+        self.num_directions = len(base_env.Direction)
+        self.num_items = len(base_env.items)
+        self.num_misc = len(base_env.Misc)
+        self.chan3 = chan3
+
+        num_tokens = self.width * self.height
+
+        # Transformer encoder components
+        self.token_proj = layer_init(nn.Linear(self.channels, d_model))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_tokens, d_model))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=0.0,
+            batch_first=True,
+            activation="gelu",
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.output_proj = layer_init(nn.Linear(d_model, chan3))
+
+        num_params_encoder = (
+            sum(p.numel() for p in self.token_proj.parameters())
+            + self.pos_embed.numel()
+            + sum(p.numel() for p in self.transformer.parameters())
+            + sum(p.numel() for p in self.output_proj.parameters())
+        )
+        print(f"Transformer encoder has {num_params_encoder} params")
+
+        flat_dim = chan3 * self.width * self.height
+
+        self.critic_head = nn.Sequential(
+            nn.Flatten(),
+            layer_init(nn.Linear(flat_dim, 1), std=1.0)
+        )
+        self.tile_logits = layer_init(nn.Conv2d(chan3, 1, kernel_size=1), std=tile_head_std)
+        self.ent_head = layer_init(nn.Linear(chan3, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(chan3, self.num_directions))
+        self.time_for_get_value = None
+        self.time_for_get_action_and_value = None
+
+        with torch.no_grad():
+            self.ent_head.bias.fill_(0.0)
+            self.ent_head.bias.data[0] = 1.0
+            self.dir_head.bias.fill_(0.0)
+            self.dir_head.bias.data[0] = 1.0
+
+    def encode(self, x_BCWH):
+        B, C, W, H = x_BCWH.shape
+        # (B, C, W, H) -> (B, W*H, C)
+        x = x_BCWH.reshape(B, C, W * H).permute(0, 2, 1)
+        x = self.token_proj(x)           # (B, W*H, d_model)
+        x = x + self.pos_embed           # add positional encoding
+        x = self.transformer(x)          # (B, W*H, d_model)
+        x = self.output_proj(x)          # (B, W*H, chan3)
+        # (B, W*H, chan3) -> (B, chan3, W, H)
+        x = x.permute(0, 2, 1).reshape(B, self.chan3, W, H)
+        return x
+
+    def get_value(self, x_BCWH):
+        t0 = time.time()
+        encoded = self.encode(x_BCWH)
+        value_B = self.critic_head(encoded).squeeze(-1)
+        self.time_for_get_value = time.time() - t0
+        return value_B
+
+    def get_action_and_value(self, x_BCWH, action=None):
+        t0 = time.time()
+
+        encoded_BCWH = self.encode(x_BCWH)
+        value_B = self.critic_head(encoded_BCWH).squeeze(-1)
+
+        B = encoded_BCWH.shape[0]
+
+        tile_logits_B1WH = self.tile_logits(encoded_BCWH)
+        tile_logits_BN = tile_logits_B1WH.reshape(B, -1)
+        dist_tile = Categorical(logits=tile_logits_BN)
+
+        if action is None:
+            tile_idx_B = dist_tile.sample()
+        else:
+            tile_idx_B = action[:, 0] * self.height + action[:, 1]
+
+        x_B = tile_idx_B // self.height
+        y_B = tile_idx_B % self.height
+
+        batch_idx = torch.arange(B, device=encoded_BCWH.device)
+        tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]
+
+        logits_e_BE = self.ent_head(tile_features_BC)
+        logits_d_BD = self.dir_head(tile_features_BC)
+        dist_e = Categorical(logits=logits_e_BE)
+        dist_d = Categorical(logits=logits_d_BD)
+
+        if action is None:
+            ent_B = dist_e.sample()
+            dir_B = dist_d.sample()
+        else:
+            ent_B = action[:, 2]
+            dir_B = action[:, 3]
+
+        logp_B = (
+            dist_tile.log_prob(tile_idx_B) +
+            dist_e.log_prob(ent_B) +
+            dist_d.log_prob(dir_B)
+        )
+        entropy_B = (
+            dist_tile.entropy() +
+            dist_e.entropy() +
+            dist_d.entropy()
+        )
+
+        action_out = {
+            "xy": torch.stack([x_B, y_B], dim=1),
+            "direction": dir_B,
+            "entity": ent_B,
+            "item": torch.zeros_like(ent_B),
+            "misc": torch.zeros_like(ent_B),
+        }
+        self.time_for_get_action_and_value = time.time() - t0
+        return action_out, logp_B, entropy_B, value_B
+
+
 if __name__ == "__main__":
     print("Starting...")
     start_time = time.time()
@@ -951,15 +1096,29 @@ if __name__ == "__main__":
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
     )
 
-    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")
-    agent = AgentCNN(
-        envs,
-        chan1=args.chan1,
-        chan2=args.chan2,
-        chan3=args.chan3,
-        flat_dim=args.flat_dim,
-        tile_head_std=args.tile_head_std,
-    )
+    if args.agent == "cnn":
+        print(f"Creating CNN agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=}")
+        agent = AgentCNN(
+            envs,
+            chan1=args.chan1,
+            chan2=args.chan2,
+            chan3=args.chan3,
+            flat_dim=args.flat_dim,
+            tile_head_std=args.tile_head_std,
+        )
+    elif args.agent == "transformer":
+        print(f"Creating Transformer agent with {args.chan3=}, {args.d_model=}, {args.nhead=}, {args.num_transformer_layers=}, {args.dim_feedforward=}")
+        agent = AgentTransformer(
+            envs,
+            chan3=args.chan3,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            num_layers=args.num_transformer_layers,
+            dim_feedforward=args.dim_feedforward,
+            tile_head_std=args.tile_head_std,
+        )
+    else:
+        raise ValueError(f"Unknown agent type: {args.agent!r}. Choose 'cnn' or 'transformer'.")
 
     if args.start_from is not None:
         if args.track:
