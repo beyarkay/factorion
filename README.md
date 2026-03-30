@@ -235,6 +235,13 @@ Ignoring:
 
 And then also want a way of visualising this nicely, for debugging.
 
+## Factorio Wiki Reference
+
+The `wiki/` directory contains pre-parsed reference docs from the Factorio wiki
+covering the game mechanics relevant to this project. AI assistants working on
+this codebase should read `wiki/README.md` to understand how Factorio entities
+work and how Factorion simplifies them.
+
 ## Experiments
 
 See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for a detailed log of GPU
