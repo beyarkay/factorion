@@ -125,6 +125,7 @@ pub enum EntityKind {
     UndergroundBelt = 4,
     Sink = 5,   // bulk_inserter in Python
     Source = 6, // stack_inserter in Python
+    Splitter = 7,
 }
 
 impl EntityKind {
@@ -136,6 +137,7 @@ impl EntityKind {
             4 => EntityKind::UndergroundBelt,
             5 => EntityKind::Sink,
             6 => EntityKind::Source,
+            7 => EntityKind::Splitter,
             _ => EntityKind::Empty,
         }
     }
@@ -150,6 +152,7 @@ impl EntityKind {
             EntityKind::UndergroundBelt => 15.0,
             EntityKind::Sink => f64::INFINITY,
             EntityKind::Source => f64::INFINITY,
+            EntityKind::Splitter => 30.0, // 2 lanes × 15 i/s
         }
     }
 
@@ -161,6 +164,7 @@ impl EntityKind {
     pub fn size(self) -> (usize, usize) {
         match self {
             EntityKind::AssemblingMachine1 => (3, 3),
+            EntityKind::Splitter => (2, 1),
             _ => (1, 1),
         }
     }
@@ -175,6 +179,7 @@ impl EntityKind {
             EntityKind::UndergroundBelt => "underground_belt",
             EntityKind::Sink => "bulk_inserter",
             EntityKind::Source => "stack_inserter",
+            EntityKind::Splitter => "splitter",
         }
     }
 }

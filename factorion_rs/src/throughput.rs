@@ -99,6 +99,16 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
             let misc = graph.nodes[node_idx].misc;
             let entity = EntityEnum::new(entity_kind, item, misc);
             node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
+
+            // For splitters, divide output evenly among successors
+            if entity_kind == EntityKind::Splitter {
+                let num_successors = graph.successors[node_idx].len();
+                if num_successors > 1 {
+                    for rate in node_outputs[node_idx].values_mut() {
+                        *rate /= num_successors as f64;
+                    }
+                }
+            }
         }
 
         already_processed.insert(node_idx);
@@ -363,6 +373,179 @@ mod tests {
         g.successors = vec![vec![1], vec![]];
         g.predecessors = vec![vec![], vec![0]];
         assert!(!has_cycle(&g));
+    }
+
+    #[test]
+    fn test_splitter_passthrough() {
+        // Source → Belt → Splitter → Belt → Sink (1 input, 1 output = no splitting)
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        w.place(
+            3,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        assert!(
+            (throughput - 15.0).abs() < 1e-9,
+            "Passthrough splitter should give 15.0, got {}",
+            throughput
+        );
+        assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_splitter_split() {
+        // Source → Belt → Splitter → Belt → Sink1
+        //                          → Belt → Sink2
+        // Each sink should get 7.5
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        // Two output belts, one per splitter tile
+        w.place(
+            3,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            3,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        // Two sinks
+        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(4, 1, EntityKind::Sink, Direction::East, Item::CopperCable);
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        // Total throughput at sinks: 7.5 + 7.5 = 15.0
+        assert!(
+            (throughput - 15.0).abs() < 1e-9,
+            "Split should give 15.0 total, got {}",
+            throughput
+        );
+        assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_splitter_merge() {
+        // Source1 → Belt → Splitter → Belt → Sink
+        // Source2 → Belt ↗
+        let mut w = World::empty(6, 2);
+        // Two sources feeding into both input lanes
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(0, 1, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            1,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        w.place(
+            3,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15
+        assert!(
+            (throughput - 15.0).abs() < 1e-9,
+            "Merge should give 15.0, got {}",
+            throughput
+        );
+        assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_splitter_full_throughput() {
+        // 2 inputs + 2 outputs = full 30 i/s throughput (15 per output)
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(0, 1, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(
+            1,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            1,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        w.place(
+            3,
+            0,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(
+            3,
+            1,
+            EntityKind::TransportBelt,
+            Direction::East,
+            Item::Empty,
+        );
+        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(4, 1, EntityKind::Sink, Direction::East, Item::CopperCable);
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        // 30 in, splitter passes 30, each output gets 15, total = 30
+        assert!(
+            (throughput - 30.0).abs() < 1e-9,
+            "Full splitter should give 30.0, got {}",
+            throughput
+        );
+        assert_eq!(unreachable, 0);
     }
 
     #[test]

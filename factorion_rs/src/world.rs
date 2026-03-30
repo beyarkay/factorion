@@ -161,6 +161,12 @@ impl World {
         true
     }
 
+    /// Place a splitter at (x, y). Convenience wrapper around place_multi_tile.
+    #[allow(dead_code)]
+    pub fn place_splitter(&mut self, x: usize, y: usize, dir: Direction, item: Item) -> bool {
+        self.place_multi_tile(x, y, EntityKind::Splitter, dir, item, 2, 1)
+    }
+
     /// Get the entity kind at (x, y).
     pub fn entity_at(&self, x: usize, y: usize) -> EntityKind {
         EntityKind::from_i64(self.get(x, y, Channel::Entities))
