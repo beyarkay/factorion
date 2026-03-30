@@ -1,31 +1,34 @@
-# sweep.yaml — Delta-based reward shaping sweep
+# sweep_transformer.yaml — Transformer hyperparameter sweep
 
 method: bayes
-run_cap: 20
+run_cap: 30
 metric:
   name: "curriculum/score"
   goal: maximize
 
 parameters:
-  coeff_shaping_location:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  # Transformer architecture
+  d_model:
+    values: [32, 64, 128]
 
-  coeff_shaping_entity:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  nhead:
+    values: [2, 4, 8]
 
-  coeff_shaping_direction:
-    distribution: log_uniform_values
-    min: 0.1
-    max: 5.0
+  num_transformer_layers:
+    values: [2, 3, 4, 6]
 
-  coeff_throughput:
-    distribution: uniform
-    min: 0.5
-    max: 0.99
+  dim_feedforward:
+    values: [64, 128, 256]
+
+  # Output channel dim (shared with heads)
+  chan3:
+    values: [48, 64]
+
+  # Training hyperparams (re-sweep for transformer)
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
 
   ent_coef_start:
     distribution: log_uniform_values
@@ -37,60 +40,28 @@ parameters:
     min: 1e-4
     max: 0.01
 
-  learning_rate:
-    distribution: log_uniform_values
-    min: 5e-5
-    max: 1e-3
-
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
-
   clip_coef:
     distribution: uniform
     min: 0.18
     max: 0.32
-
-  gamma:
-    distribution: uniform
-    min: 0.95
-    max: 0.999
-
-  gae_lambda:
-    distribution: uniform
-    min: 0.8
-    max: 0.975
 
   tile_head_std:
     distribution: log_uniform_values
     min: 0.001
     max: 0.1
 
-  vf_coef:
-    distribution: uniform
-    min: 0.5
-    max: 0.9
-
   max_grad_norm:
     distribution: uniform
-    min: 0.75
+    min: 0.5
     max: 2.5
-
-  adam_epsilon:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 2e-4
 
 program: ppo.py
 
 command:
   - bash
   - run_sweep.sh
+  - --agent
+  - transformer
   - --total-timesteps
   - 250_000
   - --track

@@ -63,6 +63,10 @@ Run a W&B sweep:
 bash run_sweep.sh
 ```
 
+### Sweep configuration
+
+There is exactly one sweep config file: `sweep.yaml`. The CI sweep pipeline (`gpu-sweep` job) always reads from this file. To change what gets swept, edit `sweep.yaml` directly — do NOT create separate sweep files. The old version is always recoverable from git history.
+
 ## Linting
 
 ```bash
