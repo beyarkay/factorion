@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{get_recipe, Direction, EntityKind, Item, Misc, NodeId};
+use crate::types::{get_recipe, Direction, EntityKind, Item, Misc, NodeId, Pos};
 use crate::world::World;
 
 /// An edge in the factory graph: (source_node, destination_node).
@@ -447,6 +447,46 @@ fn inserter_connections(
     }
 
     edges
+}
+
+/// Compute all tiles occupied by an entity given its anchor, direction, and size.
+///
+/// `width` is the entity's extent perpendicular to flow direction.
+/// `height` is the entity's extent along the flow direction.
+/// For a 1x1 entity, returns just the anchor. For a 2x1 entity facing east,
+/// returns [(x,y), (x,y+1)] since the width extends along +Y (perpendicular to east).
+///
+/// This works for any entity size: 1x1, 3x3 (assembler), 2x2 (furnace), etc.
+pub fn entity_tiles(
+    x: usize,
+    y: usize,
+    dir: Direction,
+    width: usize,
+    height: usize,
+) -> Option<Vec<Pos>> {
+    if width == 1 && height == 1 {
+        return Some(vec![Pos::new(x as i64, y as i64)]);
+    }
+    // For square entities, direction doesn't affect the footprint.
+    let effective_dir = if width == height {
+        Direction::East
+    } else {
+        dir
+    };
+    let mut tiles = Vec::with_capacity(width * height);
+    for w in 0..width {
+        for h in 0..height {
+            let (dx, dy) = match effective_dir {
+                Direction::East => (h as i64, w as i64),
+                Direction::West => (-(h as i64), w as i64),
+                Direction::North => (w as i64, -(h as i64)),
+                Direction::South => (w as i64, h as i64),
+                Direction::None => return None,
+            };
+            tiles.push(Pos::new(x as i64 + dx, y as i64 + dy));
+        }
+    }
+    Some(tiles)
 }
 
 // ── Empty ───────────────────────────────────────────────────────────────────

@@ -153,6 +153,15 @@ impl EntityKind {
         }
     }
 
+    /// Entity footprint (width, height) where width = perpendicular to flow,
+    /// height = along flow. Returns (1, 1) for single-tile entities.
+    pub fn size(self) -> (usize, usize) {
+        match self {
+            EntityKind::AssemblingMachine1 => (3, 3),
+            _ => (1, 1),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn name(self) -> &'static str {
         match self {
@@ -163,6 +172,29 @@ impl EntityKind {
             EntityKind::UndergroundBelt => "underground_belt",
             EntityKind::Sink => "bulk_inserter",
             EntityKind::Source => "stack_inserter",
+        }
+    }
+}
+
+/// A signed grid position. Used for multi-tile entity offsets where
+/// coordinates may be temporarily negative before bounds-checking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Pos {
+    pub x: i64,
+    pub y: i64,
+}
+
+impl Pos {
+    pub fn new(x: i64, y: i64) -> Self {
+        Self { x, y }
+    }
+
+    /// Convert to usize coordinates, returning None if either is negative.
+    pub fn to_usize(self) -> Option<(usize, usize)> {
+        if self.x >= 0 && self.y >= 0 {
+            Some((self.x as usize, self.y as usize))
+        } else {
+            None
         }
     }
 }

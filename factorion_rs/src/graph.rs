@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::entities::{EntityEnum, FactoryEntity};
+use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
 use crate::types::{EntityKind, Item, Misc, NodeId};
 use crate::world::World;
 
@@ -40,11 +40,13 @@ impl FactoryGraph {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn get_node(&self, idx: usize) -> &GraphNode {
         &self.nodes[idx]
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn get_node_mut(&mut self, idx: usize) -> &mut GraphNode {
         &mut self.nodes[idx]
     }
@@ -61,7 +63,12 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
     let mut edge_list: Vec<(NodeId, NodeId)> = Vec::new();
 
-    // First pass: create nodes for all non-empty cells
+    // For multi-tile entities: maps secondary tile (x,y) → anchor (x,y).
+    // Used to (a) skip secondary tiles during node creation, and
+    // (b) remap edge endpoints so all edges point to the anchor node.
+    let mut anchor_of: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+
+    // First pass: create one node per entity (anchor tile only for multi-tile)
     for x in 0..world.width() {
         for y in 0..world.height() {
             let entity_kind = world.entity_at(x, y);
@@ -69,13 +76,31 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                 continue;
             }
 
+            if anchor_of.contains_key(&(x, y)) {
+                continue;
+            }
+
             let item = world.item_at(x, y);
             let direction = world.direction_at(x, y);
             let misc = world.misc_at(x, y);
 
+            // For multi-tile entities, register secondary tiles → anchor.
+            // Square entities (e.g. 3x3 assembler) use East as default
+            // direction for tile computation since their footprint is
+            // rotation-independent.
+            let (ew, eh) = entity_kind.size();
+            if ew > 1 || eh > 1 {
+                if let Some(tiles) = entity_tiles(x, y, direction, ew, eh) {
+                    for tile in &tiles[1..] {
+                        if let Some((tx, ty)) = tile.to_usize() {
+                            anchor_of.insert((tx, ty), (x, y));
+                        }
+                    }
+                }
+            }
+
             let node_id = NodeId::new(entity_kind, x, y);
 
-            // Set initial output for sources (stack_inserters produce infinite items)
             let output = if entity_kind == EntityKind::Source {
                 let mut m = HashMap::new();
                 m.insert(item, f64::INFINITY);
@@ -100,20 +125,24 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             });
             node_index.insert(node_id, idx);
 
-            // Get connections from the entity trait impl
             let entity = EntityEnum::new(entity_kind, item, misc);
             let edges = entity.connections((x, y), direction, world);
             edge_list.extend(edges);
         }
     }
 
-    // Build adjacency lists from collected edges
+    // Build adjacency lists, remapping any edge endpoint that targets a
+    // secondary tile of a multi-tile entity to the anchor node instead.
     let n = nodes.len();
     let mut successors = vec![Vec::new(); n];
     let mut predecessors = vec![Vec::new(); n];
 
     for (src_id, dst_id) in &edge_list {
-        if let (Some(&src_idx), Some(&dst_idx)) = (node_index.get(src_id), node_index.get(dst_id)) {
+        let src_remapped = remap_to_anchor(src_id, &anchor_of);
+        let dst_remapped = remap_to_anchor(dst_id, &anchor_of);
+        if let (Some(&src_idx), Some(&dst_idx)) =
+            (node_index.get(&src_remapped), node_index.get(&dst_remapped))
+        {
             if !successors[src_idx].contains(&dst_idx) {
                 successors[src_idx].push(dst_idx);
             }
@@ -128,6 +157,16 @@ pub fn build_graph(world: &World) -> FactoryGraph {
         node_index,
         successors,
         predecessors,
+    }
+}
+
+/// If (id.x, id.y) is a secondary tile of a multi-tile entity, return a new
+/// NodeId pointing to the anchor. Otherwise return the original.
+fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usize)>) -> NodeId {
+    if let Some(&(ax, ay)) = anchor_of.get(&(id.x, id.y)) {
+        NodeId::new(id.entity_kind, ax, ay)
+    } else {
+        id.clone()
     }
 }
 
