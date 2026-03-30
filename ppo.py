@@ -127,7 +127,7 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
-    agent: str = "cnn"
+    agent: str = "transformer"
     """Agent architecture: 'cnn' or 'transformer'"""
     d_model: int = 64
     """Transformer: token embedding dimension"""
