@@ -10,12 +10,15 @@ import numpy as np
 import pytest
 import torch
 
+import factorion_rs
+
 from helpers import (
     Channel,
     Direction,
     LessonKind,
     Misc,
     compare_throughput,
+    entities,
     generate_lesson,
     make_world,
     rs_throughput,
@@ -215,26 +218,62 @@ class TestGeneratedLessons:
 class TestFuzz:
     """Fuzz test: generate random factory layouts and check parity."""
 
-    ENTITY_VALUES = [0, 1, 2, 4, 5, 6]  # skip assembler (3) — it's 3x3
+    # All 1x1 entity IDs. Multi-tile entities (assembler=3) are
+    # excluded because random single-cell placement is invalid for them.
+    ENTITY_VALUES = [eid for eid, e in entities.items() if e.width == 1 and e.height == 1]
     DIRECTION_VALUES = [0, 1, 2, 3, 4]
     ITEM_VALUES = [0, 1, 2, 3, 4]
     MISC_VALUES = [0, 1, 2]
 
+    # Multi-tile entity specs: (entity_id, width, height)
+    MULTI_TILE_ENTITIES = [
+        (eid, e.width, e.height)
+        for eid, e in entities.items()
+        if e.width > 1 or e.height > 1
+    ]
+
     @staticmethod
-    def _random_world(size, rng, density=0.3):
+    def _random_world(size, rng, density=0.3, include_multi_tile=False):
         """Create a random world with given entity density."""
-        world = torch.zeros((size, size, 4), dtype=torch.int64)
+        world = torch.zeros((size, size, len(Channel)), dtype=torch.int64)
+        world[:, :, Channel.FOOTPRINT.value] = 1
+        occupied = set()
         for x in range(size):
             for y in range(size):
+                if (x, y) in occupied:
+                    continue
                 if rng.random() < density:
-                    entity = rng.choice(TestFuzz.ENTITY_VALUES)
-                    direction = rng.choice(TestFuzz.DIRECTION_VALUES)
-                    item = rng.choice(TestFuzz.ITEM_VALUES)
-                    misc = rng.choice(TestFuzz.MISC_VALUES)
-                    world[x, y, 0] = entity
-                    world[x, y, 1] = direction
-                    world[x, y, 2] = item
-                    world[x, y, 3] = misc
+                    # Occasionally place a multi-tile entity
+                    if (
+                        include_multi_tile
+                        and TestFuzz.MULTI_TILE_ENTITIES
+                        and rng.random() < 0.15
+                    ):
+                        eid, w, h = rng.choice(TestFuzz.MULTI_TILE_ENTITIES)
+                        direction = rng.choice([1, 2, 3, 4])
+                        tiles = factorion_rs.py_entity_tiles(x, y, direction, w, h)
+                        if tiles is None:
+                            continue
+                        # Check all tiles in bounds and unoccupied
+                        all_ok = all(
+                            0 <= tx < size and 0 <= ty < size and (tx, ty) not in occupied
+                            for tx, ty in tiles
+                        )
+                        if all_ok:
+                            for tx, ty in tiles:
+                                world[tx, ty, 0] = eid
+                                world[tx, ty, 1] = direction
+                                occupied.add((tx, ty))
+                    else:
+                        entity = rng.choice(TestFuzz.ENTITY_VALUES)
+                        direction = rng.choice(TestFuzz.DIRECTION_VALUES)
+                        item = rng.choice(TestFuzz.ITEM_VALUES)
+                        misc = rng.choice(TestFuzz.MISC_VALUES)
+                        world[x, y, 0] = entity
+                        world[x, y, 1] = direction
+                        world[x, y, 2] = item
+                        world[x, y, 3] = misc
+                        occupied.add((x, y))
         return world
 
     @pytest.mark.parametrize("seed", range(100))
@@ -266,11 +305,33 @@ class TestFuzz:
             )
 
     @pytest.mark.parametrize("seed", range(50))
+    def test_fuzz_with_multi_tile(self, seed):
+        """Random layouts including correctly-placed multi-tile entities."""
+        rng = random.Random(seed + 2000)
+        size = rng.randint(5, 10)
+        world = self._random_world(size, rng, density=0.3, include_multi_tile=True)
+
+        try:
+            py_tp, py_unreachable = py_throughput_safe(world)
+        except AssertionError:
+            pytest.skip(f"Python calc_throughput assertion failed on seed {seed}")
+
+        rs_tp, rs_unreachable = rs_throughput(world)
+
+        assert abs(py_tp - rs_tp) <= 0.1, (
+            f"Seed {seed}: throughput mismatch: Python={py_tp}, Rust={rs_tp}"
+        )
+        if py_tp != 0.0 or py_unreachable != 0:
+            assert py_unreachable == rs_unreachable, (
+                f"Seed {seed}: unreachable mismatch: Python={py_unreachable}, Rust={rs_unreachable}"
+            )
+
+    @pytest.mark.parametrize("seed", range(50))
     def test_fuzz_belt_only_layouts(self, seed):
         """Random layouts using only belts, sources, and sinks."""
         rng = random.Random(seed + 1000)
         size = rng.randint(3, 7)
-        world = torch.zeros((size, size, 4), dtype=torch.int64)
+        world = make_world(size)
 
         # Place source
         sx, sy = rng.randint(0, size - 1), rng.randint(0, size - 1)
