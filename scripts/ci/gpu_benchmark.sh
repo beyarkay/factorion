@@ -117,6 +117,14 @@ else
     echo ">>> WARNING: factorion_rs not available."
 fi
 
+# ── Sanity check: verify ppo.py can import ───────────────────────
+echo ""
+echo ">>> Verifying ppo.py can import..."
+if ! python -c "from ppo import AgentCNN, FactorioEnv; print('Import OK')" 2>&1; then
+    echo ">>> ERROR: ppo.py import failed! Check Rust build and dependencies."
+    exit 1
+fi
+
 # ── Log in to W&B ─────────────────────────────────────────────────
 export WANDB_API_KEY
 
@@ -237,6 +245,17 @@ done
 echo ""
 echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
 report_peak_vram "PR seeds"
+
+# Abort early if ALL seeds failed — no point running baseline
+if [ "$FAILED" -eq "$NUM_SEEDS" ]; then
+    echo ""
+    echo ">>> ERROR: All ${NUM_SEEDS} PR seeds failed! First seed log:"
+    echo "─────────────────────────────────────────────────────"
+    cat "${PR_LOG_DIR}/seed_1.log" 2>/dev/null || echo "  (no log file)"
+    echo "─────────────────────────────────────────────────────"
+    cleanup_peak_vram
+    exit 1
+fi
 
 # ── Combine per-seed results into one JSON array ──────────────────
 python3 -c "
