@@ -1,3 +1,12 @@
+// Forbid type-system escape hatches that crash at runtime
+#![deny(clippy::panic)]
+#![deny(clippy::todo)]
+#![deny(clippy::unimplemented)]
+#![deny(clippy::unreachable)]
+// Forbid unwrap/expect in non-test code (tests use #[allow] where needed)
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+
 mod entities;
 mod graph;
 mod throughput;
