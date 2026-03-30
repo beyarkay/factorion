@@ -31,7 +31,7 @@
 set -euo pipefail
 
 NUM_SEEDS="${NUM_SEEDS:-10}"
-MAX_PARALLEL="${MAX_PARALLEL:-5}"
+MAX_PARALLEL="${MAX_PARALLEL:-10}"
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-100000}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
@@ -104,6 +104,11 @@ start_status_monitor() {
             sleep 30
             echo ""
             echo "──── ${label} status $(date '+%H:%M:%S') ────"
+            # Report GPU memory usage
+            gpu_mem=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null || true)
+            if [ -n "$gpu_mem" ]; then
+                echo "  GPU: ${gpu_mem} MiB used/total, util%"
+            fi
             for s in $(seq 1 "$num_seeds"); do
                 log="${log_dir}/seed_${s}.log"
                 if [ -f "$log" ]; then
@@ -203,6 +208,12 @@ done
 
 echo ""
 echo ">>> All ${NUM_SEEDS} PR seeds completed (${FAILED} failed)."
+
+# Report GPU memory after all seeds finish (shows peak allocation from caching)
+gpu_summary=$(nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null || true)
+if [ -n "$gpu_summary" ]; then
+    echo ">>> GPU memory after PR seeds: ${gpu_summary}"
+fi
 
 # ── Combine per-seed results into one JSON array ──────────────────
 python3 -c "
