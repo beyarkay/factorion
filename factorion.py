@@ -1792,17 +1792,40 @@ def functions(
                     continue  # connection cells overlap entity positions
 
                 # Path 1: source output → one of the splitter input cells
-                # Block entity positions, but NOT the start/end cells of each path
+                # Block entity positions, but NOT the start/end cells of each path.
+                # Also block the unused input cell AND the cell behind it to
+                # prevent sideloading into the splitter's unused input.
                 blocked_base = all_fixed
-                blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1]}
+                dd = d_delta
+                unused_input_buffer_0 = (input_cells[0][0] - dd[0], input_cells[0][1] - dd[1])
+                unused_input_buffer_1 = (input_cells[1][0] - dd[0], input_cells[1][1] - dd[1])
+
+                blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
                 path1 = find_belt_path(W, H, source_output, input_cells[0], splitter_dir, blocked1)
                 if path1 is None:
-                    blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[0]}
+                    blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[0], unused_input_buffer_0}
                     path1 = find_belt_path(W, H, source_output, input_cells[1], splitter_dir, blocked1)
                     if path1 is None:
                         continue
 
+                # Determine which input was used vs unused
+                path1_end = path1[-1][:2]
+                if path1_end == input_cells[0]:
+                    unused_input = input_cells[1]
+                    unused_buffer = unused_input_buffer_1
+                else:
+                    unused_input = input_cells[0]
+                    unused_buffer = unused_input_buffer_0
+
                 path1_cells = {(x, y) for x, y, _ in path1}
+
+                # Block unused input + buffer, plus the cells ahead of each sink
+                # (where the sink would output to) to prevent pass-through
+                # double-counting where one output path routes through a sink.
+                unused_block = {unused_input, unused_buffer}
+                sink1_output = (sink1_pos[0] + dk1[0], sink1_pos[1] + dk1[1])
+                sink2_output = (sink2_pos[0] + dk2[0], sink2_pos[1] + dk2[1])
+                sink_buffers = {sink1_output, sink2_output}
 
                 # Path 2+3: splitter outputs → sink inputs
                 # Try both assignments: (out0→sink1, out1→sink2) and (out0→sink2, out1→sink1)
@@ -1812,12 +1835,12 @@ def functions(
                     (output_cells[0], output_cells[1], sink1_input, sink1_dir, sink2_input, sink2_dir),
                     (output_cells[0], output_cells[1], sink2_input, sink2_dir, sink1_input, sink1_dir),
                 ]:
-                    blocked2 = blocked_base | path1_cells | {sk_b, out_b} | set(input_cells)
+                    blocked2 = blocked_base | path1_cells | {sk_b, out_b} | set(input_cells) | unused_block | sink_buffers
                     p2 = find_belt_path(W, H, out_a, sk_a, sk_a_dir, blocked2)
                     if p2 is None:
                         continue
                     p2_cells = {(x, y) for x, y, _ in p2}
-                    blocked3 = blocked_base | path1_cells | p2_cells | {out_a} | set(input_cells)
+                    blocked3 = blocked_base | path1_cells | p2_cells | {out_a} | set(input_cells) | unused_block | sink_buffers
                     p3 = find_belt_path(W, H, out_b, sk_b, sk_b_dir, blocked3)
                     if p3 is not None:
                         path2, path3 = p2, p3
@@ -1967,11 +1990,17 @@ def functions(
 
                 path2_cells = {(x, y) for x, y, _ in path2}
 
-                # Path 3: splitter output → sink input (try both output cells)
-                blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1]}
+                # Path 3: splitter output → sink input (try both output cells).
+                # Block the unused output cell AND the cell ahead of it to
+                # prevent sideloading from the output path into the unused output.
+                dd = d_delta
+                unused_output_buffer_0 = (output_cells[0][0] + dd[0], output_cells[0][1] + dd[1])
+                unused_output_buffer_1 = (output_cells[1][0] + dd[0], output_cells[1][1] + dd[1])
+
+                blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1], unused_output_buffer_1}
                 path3 = find_belt_path(W, H, output_cells[0], sink_input, sink_dir, blocked3)
                 if path3 is None:
-                    blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[0]}
+                    blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[0], unused_output_buffer_0}
                     path3 = find_belt_path(W, H, output_cells[1], sink_input, sink_dir, blocked3)
                     if path3 is None:
                         continue
