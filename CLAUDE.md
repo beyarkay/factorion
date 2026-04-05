@@ -52,7 +52,6 @@ Use `uv run` to run all Python commands. The `.venv` is managed by `uv` and is *
 ```bash
 uv venv --python 3.11
 uv pip install -r requirements.txt
-uv pip install maturin
 uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
 ```
 
