@@ -80,17 +80,44 @@ of the Factorio game world.
 
 ![](imgs/7x7.png)
 
-### Curriculum learning
+### Training pipeline: SFT pretraining, then RL finetuning
 
-To reduce the sparsity of the reward (even mostly-correct factories can result
-in zero throughput and therefore zero reward), a curriculum learning approach
-is taken. Basic factories (as simple as a series of transport belts that are
-all connected) are auto-generated using hand-written factory-generation code,
-and then entities are removed from the known-correct factory. At first, zero or
-one entities are removed, so the agent only has to place one entity (or ensure
-it doesn't remove an entity) in order to receive a reward. As the agent
-improves, more and more entities are removed from the known-correct factory,
-until only the input and output tiles remain.
+The project is moving toward an LLM-style two-stage training pipeline:
+
+**Stage 1 — Data generation via lessons.** Hand-written factory generators
+(`generate_lesson()` in `factorion.py`) produce known-correct factories and
+then blank out N entities from them. The result is a stream of
+*(partial-factory, correct-completion)* training pairs. Each **lesson type**
+covers a different entity/layout pattern:
+
+- `MOVE_ONE_ITEM`, `ALL_BELTS_ALREADY_IN_PLACE` — belt routing
+- `INSERTER_TRANSFER` — inserter chains (inserter is the bottleneck at
+  0.86 i/s vs 15 i/s belts)
+- `SPLITTER_SPLIT`, `SPLITTER_MERGE` — flow splitting/merging via 2×1
+  splitters
+- (planned) underground belts, crossings, assembling machines
+
+Each lesson also has an **internal difficulty knob**: `num_missing_entities`
+ranges from 0 (full solution shown) up to all placeable entities (only the
+source/sink remain). Lesson *type* and difficulty are orthogonal — the agent
+sees diverse scenarios at every difficulty level.
+
+**Stage 2 — Supervised pre-training (SFT).** A multi-head classifier (tile +
+entity + direction) is trained on the lesson pairs via cross-entropy loss.
+This gives the policy a strong prior: it already "knows" how inserters
+connect belt segments, how splitters divide flow, etc., before any RL
+happens.
+
+**Stage 3 — RL finetuning.** PPO (`ppo.py`) loads the SFT checkpoint and
+refines the policy to maximise actual throughput — pushing beyond the
+lesson-generator's solutions when a better layout exists. Starting from a
+decent pretrained policy means the sparse-reward problem (most factories
+throughput=0) bites much less than in the original RL-from-scratch setup.
+
+Historically the project trained RL from scratch with an explicit curriculum
+that ramped `num_missing_entities` over time. That scaffolding still exists
+but its role is shifting: the curriculum axis becomes a data-sampling knob
+during SFT, and RL gets to skip early levels when loading an SFT checkpoint.
 
 ### The Agent: `AgentCNN`
 
