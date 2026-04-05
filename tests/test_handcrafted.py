@@ -24,6 +24,7 @@ from helpers import (
     make_world,
     set_assembler,
     set_entity,
+    world2graph,
 )
 
 
@@ -371,6 +372,301 @@ class TestAssemblingMachines:
         set_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_plate")
         set_entity(world, 6, 4, "bulk_inserter", Direction.EAST, "copper_cable")
         compare_throughput(world)
+
+
+# ── Exhaustive assembler perimeter coverage ────────────────────────────────
+#
+# The 3x3 assembling machine has 12 non-diagonal perimeter tiles where an
+# inserter (or source/sink, which use the same connection logic) can interact
+# with it. Layout:
+#
+#     x i i i x
+#     i A A A i
+#     i A A A i
+#     i A A A i
+#     x i i i x
+#
+# `x` = diagonal corners (no interaction). `i` = the 12 interactable slots
+# (3 per side × 4 sides). For each slot, the single "toward machine" direction
+# makes the adjacent inserter/source feed INTO the assembler. The single
+# "away from machine" direction makes the adjacent inserter/sink take OUT of
+# the assembler. The other 2 facing directions ("along" the edge) still
+# register the adjacent entity as an assembler neighbour but drop/pickup cells
+# miss the body — those are excluded from the lesson generator and not tested
+# here.
+
+
+# (label, (dx, dy) offset from assembler anchor, Direction toward machine)
+# Assembler anchor is the top-left tile of the 3x3 body.
+_PERIMETER_SLOTS = [
+    # North edge (y = ay - 1): all face SOUTH to feed INTO the assembler
+    ("N_left",   (0, -1), Direction.SOUTH),
+    ("N_center", (1, -1), Direction.SOUTH),
+    ("N_right",  (2, -1), Direction.SOUTH),
+    # South edge (y = ay + 3): all face NORTH to feed INTO the assembler
+    ("S_left",   (0,  3), Direction.NORTH),
+    ("S_center", (1,  3), Direction.NORTH),
+    ("S_right",  (2,  3), Direction.NORTH),
+    # West edge (x = ax - 1): all face EAST to feed INTO the assembler
+    ("W_top",    (-1, 0), Direction.EAST),
+    ("W_mid",    (-1, 1), Direction.EAST),
+    ("W_bot",    (-1, 2), Direction.EAST),
+    # East edge (x = ax + 3): all face WEST to feed INTO the assembler
+    ("E_top",    (3,  0), Direction.WEST),
+    ("E_mid",    (3,  1), Direction.WEST),
+    ("E_bot",    (3,  2), Direction.WEST),
+]
+
+
+_OPPOSITE = {
+    Direction.NORTH: Direction.SOUTH,
+    Direction.SOUTH: Direction.NORTH,
+    Direction.EAST: Direction.WEST,
+    Direction.WEST: Direction.EAST,
+}
+
+
+_DELTA = {
+    Direction.NORTH: (0, -1),
+    Direction.SOUTH: (0, 1),
+    Direction.EAST: (1, 0),
+    Direction.WEST: (-1, 0),
+}
+
+
+def _assembler_edges(world, assembler_x, assembler_y):
+    """Return edges (src_node, dst_node) touching any tile of the 3x3 assembler."""
+    G = world2graph(world)
+    body_tiles = {
+        (assembler_x + dx, assembler_y + dy) for dx in range(3) for dy in range(3)
+    }
+
+    def tile_of(node):
+        # Nodes are f"{name}\n@{x},{y}"
+        coords = node.split("@")[1]
+        x, y = coords.split(",")
+        return (int(x), int(y))
+
+    edges = []
+    for u, v in G.edges():
+        u_is_body = tile_of(u) in body_tiles
+        v_is_body = tile_of(v) in body_tiles
+        if u_is_body or v_is_body:
+            edges.append((u, v, u_is_body, v_is_body))
+    return edges
+
+
+class TestAssemblerPerimeterConnections:
+    """DAG-level: verify every perimeter slot connects correctly in both directions."""
+
+    # Place the assembler at a fixed anchor with plenty of clearance in an 11x11 world.
+    AX = 4
+    AY = 4
+    SIZE = 11
+
+    @pytest.mark.parametrize("label,offset,toward_dir", _PERIMETER_SLOTS)
+    def test_inserter_toward_machine_creates_inserter_to_assembler_edge(
+        self, label, offset, toward_dir
+    ):
+        """Inserter facing TOWARD the assembler body → edge direction is inserter → assembler."""
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "copper_cable")
+        ix = self.AX + offset[0]
+        iy = self.AY + offset[1]
+        set_entity(world, ix, iy, "inserter", toward_dir)
+
+        edges = _assembler_edges(world, self.AX, self.AY)
+        # Exactly one edge should exist, and it should flow INTO a body tile.
+        inserter_tag = f"inserter\n@{ix},{iy}"
+        matching = [
+            (u, v) for (u, v, u_body, v_body) in edges
+            if (u == inserter_tag and v_body) or (v == inserter_tag and u_body)
+        ]
+        assert len(matching) == 1, (
+            f"slot {label}: expected 1 edge to/from inserter@{ix},{iy}, got {matching}"
+        )
+        u, v = matching[0]
+        assert u == inserter_tag, (
+            f"slot {label}: edge should be inserter→assembler, got {u}→{v}"
+        )
+
+    @pytest.mark.parametrize("label,offset,toward_dir", _PERIMETER_SLOTS)
+    def test_inserter_away_from_machine_creates_assembler_to_inserter_edge(
+        self, label, offset, toward_dir
+    ):
+        """Inserter facing AWAY from the assembler body → edge direction is assembler → inserter."""
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "copper_cable")
+        ix = self.AX + offset[0]
+        iy = self.AY + offset[1]
+        away_dir = _OPPOSITE[toward_dir]
+        set_entity(world, ix, iy, "inserter", away_dir)
+
+        edges = _assembler_edges(world, self.AX, self.AY)
+        inserter_tag = f"inserter\n@{ix},{iy}"
+        matching = [
+            (u, v) for (u, v, u_body, v_body) in edges
+            if (u == inserter_tag and v_body) or (v == inserter_tag and u_body)
+        ]
+        assert len(matching) == 1, (
+            f"slot {label}: expected 1 edge to/from inserter@{ix},{iy}, got {matching}"
+        )
+        u, v = matching[0]
+        assert v == inserter_tag, (
+            f"slot {label}: edge should be assembler→inserter, got {u}→{v}"
+        )
+
+    def test_diagonal_corners_have_no_edge(self):
+        """The 4 diagonal corners (x tiles in the diagram) must NOT connect."""
+        corners = [(-1, -1), (3, -1), (-1, 3), (3, 3)]
+        for dx, dy in corners:
+            for facing in [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]:
+                world = make_world(self.SIZE)
+                set_assembler(world, self.AX, self.AY, "copper_cable")
+                ix = self.AX + dx
+                iy = self.AY + dy
+                set_entity(world, ix, iy, "inserter", facing)
+
+                edges = _assembler_edges(world, self.AX, self.AY)
+                inserter_tag = f"inserter\n@{ix},{iy}"
+                touching = [
+                    (u, v) for (u, v, _, _) in edges if inserter_tag in (u, v)
+                ]
+                assert touching == [], (
+                    f"corner ({dx},{dy}) facing {facing.name}: unexpected edge {touching}"
+                )
+
+    @pytest.mark.parametrize(
+        "assembler_dir",
+        [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST],
+    )
+    def test_assembler_own_direction_does_not_affect_connections(self, assembler_dir):
+        """The assembler's own direction channel is ignored for connection logic."""
+        # Set up a full source→inserter→assembler→inserter→sink chain.
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "copper_cable")
+        # Overwrite assembler direction
+        from helpers import Channel
+        for dx in range(3):
+            for dy in range(3):
+                world[self.AX + dx, self.AY + dy, Channel.DIRECTION.value] = (
+                    assembler_dir.value
+                )
+        # Input: source at W edge, feeding inserter that drops INTO assembler
+        set_entity(world, self.AX - 2, self.AY + 1, "stack_inserter",
+                   Direction.EAST, "copper_plate")
+        set_entity(world, self.AX - 1, self.AY + 1, "inserter", Direction.EAST)
+        # Output: inserter picks from assembler body, drops onto sink at E edge
+        set_entity(world, self.AX + 3, self.AY + 1, "inserter", Direction.EAST)
+        set_entity(world, self.AX + 4, self.AY + 1, "bulk_inserter",
+                   Direction.EAST, "copper_cable")
+
+        tp, _ = compare_throughput(world)
+        assert tp > 0, (
+            f"throughput should be > 0 regardless of assembler direction {assembler_dir.name}"
+        )
+
+
+class TestAssemblerPerimeterThroughput:
+    """End-to-end: full source→inserter→assembler→inserter→sink chain through each perimeter slot."""
+
+    AX = 4
+    AY = 4
+    SIZE = 11
+
+    # Known-working "anchor" output slot: E-center, inserter facing EAST (away).
+    _OUT_OFFSET = (3, 1)
+    _OUT_AWAY_DIR = Direction.EAST
+
+    # Known-working "anchor" input slot: W-center, inserter facing EAST (toward).
+    _IN_OFFSET = (-1, 1)
+    _IN_TOWARD_DIR = Direction.EAST
+
+    def _place_input_chain(self, world, offset, toward_dir, item):
+        """Place source → inserter feeding into assembler body via perimeter slot."""
+        ix = self.AX + offset[0]
+        iy = self.AY + offset[1]
+        dx, dy = _DELTA[toward_dir]
+        # pickup cell is behind the inserter (from its facing)
+        sx, sy = ix - dx, iy - dy
+        set_entity(world, sx, sy, "stack_inserter", toward_dir, item)
+        set_entity(world, ix, iy, "inserter", toward_dir)
+
+    def _place_output_chain(self, world, offset, away_dir, item):
+        """Place inserter (at perimeter slot) taking from assembler body → sink."""
+        ix = self.AX + offset[0]
+        iy = self.AY + offset[1]
+        dx, dy = _DELTA[away_dir]
+        # drop cell is in front of the inserter
+        kx, ky = ix + dx, iy + dy
+        set_entity(world, ix, iy, "inserter", away_dir)
+        set_entity(world, kx, ky, "bulk_inserter", away_dir, item)
+
+    @pytest.mark.parametrize("label,offset,toward_dir", _PERIMETER_SLOTS)
+    def test_copper_cable_input_from_each_perimeter_slot(
+        self, label, offset, toward_dir
+    ):
+        """Full copper_cable chain with the input inserter at each of the 12 slots.
+
+        The output inserter is fixed at E-center. If the input slot cannot
+        reach the assembler body, the input chain is broken and throughput
+        drops to 0 — failure here indicates a connection-logic bug for that slot.
+        """
+        # Skip when input slot collides with the fixed output slot.
+        if offset == self._OUT_OFFSET:
+            pytest.skip("input slot coincides with fixed output slot")
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "copper_cable")
+        self._place_input_chain(world, offset, toward_dir, "copper_plate")
+        self._place_output_chain(world, self._OUT_OFFSET, self._OUT_AWAY_DIR,
+                                 "copper_cable")
+        tp, _ = compare_throughput(world)
+        assert tp > 0, f"slot {label}: expected > 0 throughput, got {tp}"
+
+    @pytest.mark.parametrize("label,offset,toward_dir", _PERIMETER_SLOTS)
+    def test_copper_cable_output_to_each_perimeter_slot(
+        self, label, offset, toward_dir
+    ):
+        """Full copper_cable chain with the output inserter at each of the 12 slots.
+
+        The input inserter is fixed at W-center. The output slot uses the
+        "away from machine" direction so the assembler → inserter edge is created.
+        """
+        if offset == self._IN_OFFSET:
+            pytest.skip("output slot coincides with fixed input slot")
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "copper_cable")
+        self._place_input_chain(world, self._IN_OFFSET, self._IN_TOWARD_DIR,
+                                "copper_plate")
+        away_dir = _OPPOSITE[toward_dir]
+        self._place_output_chain(world, offset, away_dir, "copper_cable")
+        tp, _ = compare_throughput(world)
+        assert tp > 0, f"slot {label}: expected > 0 throughput, got {tp}"
+
+    @pytest.mark.parametrize("label_cu,off_cu,toward_cu", _PERIMETER_SLOTS)
+    @pytest.mark.parametrize("label_fe,off_fe,toward_fe", _PERIMETER_SLOTS)
+    def test_electronic_circuit_two_inputs_pairs(
+        self, label_cu, off_cu, toward_cu, label_fe, off_fe, toward_fe
+    ):
+        """Electronic circuit needs 2 distinct inputs (copper_cable + iron_plate).
+
+        For each ordered pair of distinct input slots (12×11 = 132 combos),
+        verify the recipe runs with the output fixed at E-center.
+        """
+        if off_cu == off_fe:
+            pytest.skip("both inputs in the same slot")
+        if off_cu == self._OUT_OFFSET or off_fe == self._OUT_OFFSET:
+            pytest.skip("input slot coincides with fixed output slot")
+        world = make_world(self.SIZE)
+        set_assembler(world, self.AX, self.AY, "electronic_circuit")
+        self._place_input_chain(world, off_cu, toward_cu, "copper_cable")
+        self._place_input_chain(world, off_fe, toward_fe, "iron_plate")
+        self._place_output_chain(world, self._OUT_OFFSET, self._OUT_AWAY_DIR,
+                                 "electronic_circuit")
+        tp, _ = compare_throughput(world)
+        assert tp > 0, (
+            f"cu@{label_cu}, fe@{label_fe}: expected > 0 throughput, got {tp}"
+        )
 
 
 # ── Different items ──────────────────────────────────────────────────────────
