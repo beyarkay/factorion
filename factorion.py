@@ -1796,9 +1796,8 @@ def functions(
                 # Also block the unused input cell AND the cell behind it to
                 # prevent sideloading into the splitter's unused input.
                 blocked_base = all_fixed
-                dd = d_delta
-                unused_input_buffer_0 = (input_cells[0][0] - dd[0], input_cells[0][1] - dd[1])
-                unused_input_buffer_1 = (input_cells[1][0] - dd[0], input_cells[1][1] - dd[1])
+                unused_input_buffer_0 = (input_cells[0][0] - d_delta[0], input_cells[0][1] - d_delta[1])
+                unused_input_buffer_1 = (input_cells[1][0] - d_delta[0], input_cells[1][1] - d_delta[1])
 
                 blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
                 path1 = find_belt_path(W, H, source_output, input_cells[0], splitter_dir, blocked1)
@@ -1993,9 +1992,8 @@ def functions(
                 # Path 3: splitter output → sink input (try both output cells).
                 # Block the unused output cell AND the cell ahead of it to
                 # prevent sideloading from the output path into the unused output.
-                dd = d_delta
-                unused_output_buffer_0 = (output_cells[0][0] + dd[0], output_cells[0][1] + dd[1])
-                unused_output_buffer_1 = (output_cells[1][0] + dd[0], output_cells[1][1] + dd[1])
+                unused_output_buffer_0 = (output_cells[0][0] + d_delta[0], output_cells[0][1] + d_delta[1])
+                unused_output_buffer_1 = (output_cells[1][0] + d_delta[0], output_cells[1][1] + d_delta[1])
 
                 blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1], unused_output_buffer_1}
                 path3 = find_belt_path(W, H, output_cells[0], sink_input, sink_dir, blocked3)
