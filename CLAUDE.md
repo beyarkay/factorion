@@ -12,7 +12,17 @@ interested in `Belt speed`
 
 ## Project Overview
 
-Factorion is a reinforcement learning project that trains agents to autonomously design and build factories inspired by Factorio. The agent places entities (transport belts, assembling machines, inserters) on a grid to transform input items into desired outputs, optimizing for maximum throughput. Uses curriculum learning to gradually increase complexity.
+Factorion trains agents to autonomously design and build factories inspired by Factorio. The agent places entities (transport belts, assembling machines, inserters, splitters, …) on a grid to transform input items into desired outputs, optimizing for throughput.
+
+The training pipeline is moving toward an **LLM-style two-stage split**:
+
+1. **Data generation** — `generate_lesson()` in `factorion.py` produces *(partial-factory, correct-completion)* pairs by building a known-correct factory and blanking out N entities. Each lesson type (`MOVE_ONE_ITEM`, `INSERTER_TRANSFER`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
+2. **SFT pretraining** — supervised training on those pairs (see `sft.py` when PR #47 lands) gives the policy a strong prior over entity placement.
+3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start_from` and skip easy curriculum levels via `--start_curriculum_level`.
+
+Historically the project did RL-from-scratch with heavy scaffolding (curriculum on `num_missing_entities`, reward shaping, action masking) to handle the sparse-reward problem. Most of that scaffolding still exists but its role changes under the new pipeline: the curriculum axis becomes a data-sampling knob during SFT, and RL starts from a much better policy so sparse rewards matter less.
+
+**Implication when adding features:** new lesson types expand pretraining coverage (more diverse entity/layout patterns the pretrained model understands). They are **not** rungs of a fixed difficulty ladder — diversity matters at every `num_missing_entities` level.
 
 ## Tech Stack
 
