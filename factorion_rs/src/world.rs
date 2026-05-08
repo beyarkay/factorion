@@ -1,4 +1,4 @@
-use crate::types::{Channel, Direction, EntityKind, Item, Misc, NUM_CHANNELS};
+use crate::types::{Channel, Direction, Item, Misc, NUM_CHANNELS};
 
 /// A wrapper around a 3D array representing a factory world.
 ///
@@ -110,17 +110,18 @@ impl World {
     }
 
     /// Place an entity at (x, y) with the given direction and item.
+    /// `item = None` writes 0 to the items channel (no item set).
     #[allow(dead_code)]
-    pub fn place(&mut self, x: usize, y: usize, entity: EntityKind, dir: Direction, item: Item) {
+    pub fn place(&mut self, x: usize, y: usize, entity: Item, dir: Direction, item: Option<Item>) {
         self.set(x, y, Channel::Entities, entity as i64);
         self.set(x, y, Channel::Direction, dir as i64);
-        self.set(x, y, Channel::Items, item as i64);
+        self.set(x, y, Channel::Items, item.map_or(0, |i| i as i64));
     }
 
     /// Place an underground belt at (x, y) with the given direction and misc state.
     #[allow(dead_code)]
     pub fn place_underground(&mut self, x: usize, y: usize, dir: Direction, misc: Misc) {
-        self.set(x, y, Channel::Entities, EntityKind::UndergroundBelt as i64);
+        self.set(x, y, Channel::Entities, Item::UndergroundBelt as i64);
         self.set(x, y, Channel::Direction, dir as i64);
         self.set(x, y, Channel::Misc, misc as i64);
     }
@@ -132,9 +133,9 @@ impl World {
         &mut self,
         x: usize,
         y: usize,
-        entity: EntityKind,
+        entity: Item,
         dir: Direction,
-        item: Item,
+        item: Option<Item>,
         width: usize,
         height: usize,
     ) -> bool {
@@ -146,7 +147,7 @@ impl World {
         for tile in &tiles {
             match tile.to_usize() {
                 Some((tx, ty)) if self.in_bounds(tile.x, tile.y) => {
-                    if self.entity_at(tx, ty) != EntityKind::Empty {
+                    if self.entity_at(tx, ty).is_some() {
                         return false;
                     }
                 }
@@ -163,13 +164,22 @@ impl World {
 
     /// Place a splitter at (x, y). Convenience wrapper around place_multi_tile.
     #[allow(dead_code)]
-    pub fn place_splitter(&mut self, x: usize, y: usize, dir: Direction, item: Item) -> bool {
-        self.place_multi_tile(x, y, EntityKind::Splitter, dir, item, 2, 1)
+    pub fn place_splitter(
+        &mut self,
+        x: usize,
+        y: usize,
+        dir: Direction,
+        item: Option<Item>,
+    ) -> bool {
+        self.place_multi_tile(x, y, Item::Splitter, dir, item, 2, 1)
     }
 
-    /// Get the entity kind at (x, y).
-    pub fn entity_at(&self, x: usize, y: usize) -> EntityKind {
-        EntityKind::from_i64(self.get(x, y, Channel::Entities))
+    /// Get the entity at (x, y). Returns `None` if the tile has no
+    /// entity placed (channel value 0). The returned Item, if any,
+    /// should always satisfy `is_placeable()`; non-placeable values in
+    /// the entities channel are a data error.
+    pub fn entity_at(&self, x: usize, y: usize) -> Option<Item> {
+        Item::from_i64(self.get(x, y, Channel::Entities))
     }
 
     /// Get the direction at (x, y).
@@ -177,8 +187,8 @@ impl World {
         Direction::from_i64(self.get(x, y, Channel::Direction))
     }
 
-    /// Get the item at (x, y).
-    pub fn item_at(&self, x: usize, y: usize) -> Item {
+    /// Get the item at (x, y). Returns `None` for cells with no item set.
+    pub fn item_at(&self, x: usize, y: usize) -> Option<Item> {
         Item::from_i64(self.get(x, y, Channel::Items))
     }
 
@@ -219,9 +229,9 @@ mod tests {
         assert_eq!(w.height(), 3);
         for x in 0..3 {
             for y in 0..3 {
-                assert_eq!(w.entity_at(x, y), EntityKind::Empty);
+                assert_eq!(w.entity_at(x, y), None);
                 assert_eq!(w.direction_at(x, y), Direction::None);
-                assert_eq!(w.item_at(x, y), Item::Empty);
+                assert_eq!(w.item_at(x, y), None);
                 assert_eq!(w.misc_at(x, y), Misc::None);
             }
         }
@@ -233,17 +243,17 @@ mod tests {
         w.place(
             1,
             2,
-            EntityKind::TransportBelt,
+            Item::TransportBelt,
             Direction::East,
-            Item::CopperCable,
+            Some(Item::CopperCable),
         );
 
-        assert_eq!(w.entity_at(1, 2), EntityKind::TransportBelt);
+        assert_eq!(w.entity_at(1, 2), Some(Item::TransportBelt));
         assert_eq!(w.direction_at(1, 2), Direction::East);
-        assert_eq!(w.item_at(1, 2), Item::CopperCable);
+        assert_eq!(w.item_at(1, 2), Some(Item::CopperCable));
 
         // Other cells still empty
-        assert_eq!(w.entity_at(0, 0), EntityKind::Empty);
+        assert_eq!(w.entity_at(0, 0), None);
     }
 
     #[test]
@@ -265,33 +275,27 @@ mod tests {
         w.place(
             0,
             0,
-            EntityKind::Source,
+            Item::Source,
             Direction::East,
-            Item::ElectronicCircuit,
+            Some(Item::ElectronicCircuit),
         );
 
-        // Place a belt at (1,0) facing east
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
+        // Place a belt at (1,0) facing east — no item carried
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
 
         // Place a sink at (2,0) facing east
         w.place(
             2,
             0,
-            EntityKind::Sink,
+            Item::Sink,
             Direction::East,
-            Item::ElectronicCircuit,
+            Some(Item::ElectronicCircuit),
         );
 
-        assert_eq!(w.entity_at(0, 0), EntityKind::Source);
-        assert_eq!(w.entity_at(1, 0), EntityKind::TransportBelt);
-        assert_eq!(w.entity_at(2, 0), EntityKind::Sink);
-        assert_eq!(w.item_at(0, 0), Item::ElectronicCircuit);
+        assert_eq!(w.entity_at(0, 0), Some(Item::Source));
+        assert_eq!(w.entity_at(1, 0), Some(Item::TransportBelt));
+        assert_eq!(w.entity_at(2, 0), Some(Item::Sink));
+        assert_eq!(w.item_at(0, 0), Some(Item::ElectronicCircuit));
     }
 
     #[test]
