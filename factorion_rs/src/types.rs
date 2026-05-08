@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use nonempty::{nonempty, NonEmpty};
 
 /// Channels in the WHC tensor (3rd dimension).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,108 +82,151 @@ impl Misc {
     }
 }
 
-/// Item identifier.
+/// The unified entity-and-item identifier.
+///
+/// In Factorion's data model, **everything is an Item**. Some items are
+/// *placeable* (they can sit on the grid as entities); the rest are pure
+/// inventory items (raw materials and intermediates). The world tensor
+/// has two channels:
+///   - `ENTITIES` channel: stores the Item id of the placeable item at
+///     this tile, or 0 if no entity is placed here.
+///   - `ITEMS` channel: stores the Item id of the carried/recipe/filter
+///     item at this tile, or 0 if none.
+///
+/// There is no `Empty` variant: absence of an item is encoded as
+/// channel value 0 and decoded to `Option::<Item>::None`.
+///
+/// Integer-id layout:
+///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
+///   6..=10  — non-placeable items (CC, CP, IP, EC, IGW)
+///   11..=12 — env-spawned (Sink, Source) — MUST remain the last two
+///             ids; ppo.py sizes its entity head to `len(items)-2` to
+///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Item {
-    Empty = 0,
-    CopperCable = 1,
-    CopperPlate = 2,
-    IronPlate = 3,
-    ElectronicCircuit = 4,
-}
-
-impl Item {
-    pub fn from_i64(v: i64) -> Self {
-        match v {
-            1 => Item::CopperCable,
-            2 => Item::CopperPlate,
-            3 => Item::IronPlate,
-            4 => Item::ElectronicCircuit,
-            _ => Item::Empty,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn name(self) -> &'static str {
-        match self {
-            Item::Empty => "empty",
-            Item::CopperCable => "copper_cable",
-            Item::CopperPlate => "copper_plate",
-            Item::IronPlate => "iron_plate",
-            Item::ElectronicCircuit => "electronic_circuit",
-        }
-    }
-}
-
-/// Entity type on the grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EntityKind {
-    Empty = 0,
+    // Placeable, agent-buildable (1..=5)
     TransportBelt = 1,
     Inserter = 2,
     AssemblingMachine1 = 3,
     UndergroundBelt = 4,
     Splitter = 5,
-    // Source/Sink are placed by the env, not the agent. They live last so
-    // the policy's entity head can be sized to exclude them (last two IDs).
-    Sink = 6,   // bulk_inserter in Python
-    Source = 7, // stack_inserter in Python
+    // Non-placeable (6..=10) — recipe ingredients / products
+    CopperCable = 6,
+    CopperPlate = 7,
+    IronPlate = 8,
+    ElectronicCircuit = 9,
+    IronGearWheel = 10,
+    // Env-spawned, not agent-placeable — must remain the LAST two ids so
+    // the policy's entity head can be sized to `len(items) - 2` and
+    // structurally exclude them from sampling (see ppo.py).
+    Sink = 11,   // bulk_inserter in Python
+    Source = 12, // stack_inserter in Python
 }
 
-impl EntityKind {
-    pub fn from_i64(v: i64) -> Self {
+impl Item {
+    /// Decode a tensor value into an Item. Returns `None` for value 0
+    /// (the "no item" sentinel) and any unknown value.
+    pub fn from_i64(v: i64) -> Option<Self> {
         match v {
-            1 => EntityKind::TransportBelt,
-            2 => EntityKind::Inserter,
-            3 => EntityKind::AssemblingMachine1,
-            4 => EntityKind::UndergroundBelt,
-            5 => EntityKind::Splitter,
-            6 => EntityKind::Sink,
-            7 => EntityKind::Source,
-            _ => EntityKind::Empty,
+            1 => Some(Item::TransportBelt),
+            2 => Some(Item::Inserter),
+            3 => Some(Item::AssemblingMachine1),
+            4 => Some(Item::UndergroundBelt),
+            5 => Some(Item::Splitter),
+            6 => Some(Item::CopperCable),
+            7 => Some(Item::CopperPlate),
+            8 => Some(Item::IronPlate),
+            9 => Some(Item::ElectronicCircuit),
+            10 => Some(Item::IronGearWheel),
+            11 => Some(Item::Sink),
+            12 => Some(Item::Source),
+            _ => None,
         }
     }
 
+    pub fn name(self) -> &'static str {
+        match self {
+            Item::TransportBelt => "transport_belt",
+            Item::Inserter => "inserter",
+            Item::AssemblingMachine1 => "assembling_machine_1",
+            Item::UndergroundBelt => "underground_belt",
+            Item::Sink => "bulk_inserter",
+            Item::Source => "stack_inserter",
+            Item::Splitter => "splitter",
+            Item::CopperCable => "copper_cable",
+            Item::CopperPlate => "copper_plate",
+            Item::IronPlate => "iron_plate",
+            Item::ElectronicCircuit => "electronic_circuit",
+            Item::IronGearWheel => "iron_gear_wheel",
+        }
+    }
+
+    /// Whether this item can be placed on the grid as an entity.
+    /// Non-placeable items only ever live in the ITEMS channel
+    /// (carried on belts, set as recipes, etc.).
+    pub fn is_placeable(self) -> bool {
+        matches!(
+            self,
+            Item::TransportBelt
+                | Item::Inserter
+                | Item::AssemblingMachine1
+                | Item::UndergroundBelt
+                | Item::Sink
+                | Item::Source
+                | Item::Splitter
+        )
+    }
+
+    /// Maximum items/second this item can transfer when placed as an
+    /// entity. Returns 0.0 for non-placeable items.
     #[allow(dead_code)]
     pub fn flow_rate(self) -> f64 {
         match self {
-            EntityKind::Empty => 0.0,
-            EntityKind::TransportBelt => 15.0,
-            EntityKind::Inserter => 0.86,
-            EntityKind::AssemblingMachine1 => 0.5,
-            EntityKind::UndergroundBelt => 15.0,
-            EntityKind::Sink => f64::INFINITY,
-            EntityKind::Source => f64::INFINITY,
-            EntityKind::Splitter => 30.0, // 2 lanes × 15 i/s
+            Item::TransportBelt => 15.0,
+            Item::Inserter => 0.86,
+            Item::AssemblingMachine1 => 0.5,
+            Item::UndergroundBelt => 15.0,
+            Item::Sink => f64::INFINITY,
+            Item::Source => f64::INFINITY,
+            Item::Splitter => 30.0, // 2 lanes × 15 i/s
+            // Non-placeable: cannot transfer flow on its own.
+            Item::CopperCable
+            | Item::CopperPlate
+            | Item::IronPlate
+            | Item::ElectronicCircuit
+            | Item::IronGearWheel => 0.0,
         }
     }
 
-    /// Entity footprint (width, height) where width = perpendicular to flow,
-    /// height = along flow. Returns (1, 1) for single-tile entities.
-    // TODO: Define all entity properties (name, size, flow_rate) in a single
-    // Rust registry and expose to Python, replacing the duplicated Python
-    // `entities` dict.
+    /// Footprint (width, height) for placeable items.
+    /// Width = perpendicular to flow, height = along flow.
+    /// Non-placeable items return (1, 1).
     pub fn size(self) -> (usize, usize) {
         match self {
-            EntityKind::AssemblingMachine1 => (3, 3),
-            EntityKind::Splitter => (2, 1),
+            Item::AssemblingMachine1 => (3, 3),
+            Item::Splitter => (2, 1),
             _ => (1, 1),
         }
     }
+}
 
-    #[allow(dead_code)]
-    pub fn name(self) -> &'static str {
-        match self {
-            EntityKind::Empty => "empty",
-            EntityKind::TransportBelt => "transport_belt",
-            EntityKind::Inserter => "inserter",
-            EntityKind::AssemblingMachine1 => "assembling_machine_1",
-            EntityKind::UndergroundBelt => "underground_belt",
-            EntityKind::Sink => "bulk_inserter",
-            EntityKind::Source => "stack_inserter",
-            EntityKind::Splitter => "splitter",
-        }
-    }
+/// Every Item variant. The single source of truth — Python's `items`
+/// dict is built from this via the PyO3 `py_items` binding.
+pub fn all_items() -> &'static [Item] {
+    &[
+        Item::TransportBelt,
+        Item::Inserter,
+        Item::AssemblingMachine1,
+        Item::UndergroundBelt,
+        Item::Splitter,
+        Item::CopperCable,
+        Item::CopperPlate,
+        Item::IronPlate,
+        Item::ElectronicCircuit,
+        Item::IronGearWheel,
+        Item::Sink,
+        Item::Source,
+    ]
 }
 
 /// A signed grid position. Used for multi-tile entity offsets where
@@ -209,39 +252,124 @@ impl Pos {
     }
 }
 
-/// A crafting recipe.
+/// A crafting recipe. `consumes` and `produces` are `NonEmpty` so an
+/// empty recipe (no inputs or no outputs) is unrepresentable at compile
+/// time — there is no need for runtime checks of these invariants.
 #[derive(Debug, Clone)]
 pub struct Recipe {
-    pub consumes: HashMap<Item, f64>,
-    pub produces: HashMap<Item, f64>,
+    pub consumes: NonEmpty<(Item, f64)>,
+    pub produces: NonEmpty<(Item, f64)>,
+}
+
+impl Recipe {
+    /// Look up the consumption rate for `item`, if present.
+    #[allow(dead_code)]
+    pub fn consumes_rate(&self, item: Item) -> Option<f64> {
+        self.consumes
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map(|(_, r)| *r)
+    }
+
+    /// Look up the production rate for `item`, if present.
+    #[allow(dead_code)]
+    pub fn produces_rate(&self, item: Item) -> Option<f64> {
+        self.produces
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map(|(_, r)| *r)
+    }
+}
+
+/// All crafting recipes in the game. The single source of truth — both
+/// `get_recipe` and the Python-facing PyO3 binding read from this.
+///
+/// Quantities are the canonical wiki recipe values (per craft, not
+/// per-second). Throughput math (`transform_flow`) is scale-invariant
+/// under uniform multiplication of consumes and produces.
+pub fn all_recipes() -> Vec<(Item, Recipe)> {
+    vec![
+        // 1 copper plate -> 2 copper cables, 0.5s
+        (
+            Item::CopperCable,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 1.0)],
+                produces: nonempty![(Item::CopperCable, 2.0)],
+            },
+        ),
+        // 3 copper cable + 1 iron plate -> 1 electronic circuit, 0.5s
+        (
+            Item::ElectronicCircuit,
+            Recipe {
+                consumes: nonempty![(Item::CopperCable, 3.0), (Item::IronPlate, 1.0)],
+                produces: nonempty![(Item::ElectronicCircuit, 1.0)],
+            },
+        ),
+        // 2 iron plates -> 1 iron gear wheel, 0.5s
+        (
+            Item::IronGearWheel,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 2.0)],
+                produces: nonempty![(Item::IronGearWheel, 1.0)],
+            },
+        ),
+        // 1 iron gear wheel + 1 iron plate -> 2 transport belts, 0.5s
+        (
+            Item::TransportBelt,
+            Recipe {
+                consumes: nonempty![(Item::IronGearWheel, 1.0), (Item::IronPlate, 1.0)],
+                produces: nonempty![(Item::TransportBelt, 2.0)],
+            },
+        ),
+        // 1 EC + 1 IGW + 1 iron plate -> 1 inserter, 0.5s
+        (
+            Item::Inserter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 1.0),
+                    (Item::IronGearWheel, 1.0),
+                    (Item::IronPlate, 1.0)
+                ],
+                produces: nonempty![(Item::Inserter, 1.0)],
+            },
+        ),
+        // 3 EC + 5 IGW + 9 iron plates -> 1 assembling machine 1, 0.5s
+        (
+            Item::AssemblingMachine1,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::IronPlate, 9.0)
+                ],
+                produces: nonempty![(Item::AssemblingMachine1, 1.0)],
+            },
+        ),
+    ]
 }
 
 /// Get the recipe for a given item, if one exists.
 pub fn get_recipe(item: Item) -> Option<Recipe> {
-    match item {
-        Item::ElectronicCircuit => Some(Recipe {
-            consumes: HashMap::from([(Item::CopperCable, 6.0), (Item::IronPlate, 2.0)]),
-            produces: HashMap::from([(Item::ElectronicCircuit, 2.0)]),
-        }),
-        Item::CopperCable => Some(Recipe {
-            consumes: HashMap::from([(Item::CopperPlate, 2.0)]),
-            produces: HashMap::from([(Item::CopperCable, 4.0)]),
-        }),
-        _ => None,
-    }
+    all_recipes()
+        .into_iter()
+        .find(|(i, _)| *i == item)
+        .map(|(_, r)| r)
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Matches the Python format: "entity_name\n@x,y"
+/// Matches the Python format: "entity_name\n@x,y".
+///
+/// `entity_kind` is an `Item` (post-unification) and should always be
+/// placeable — only placeable items become graph nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
-    pub entity_kind: EntityKind,
+    pub entity_kind: Item,
     pub x: usize,
     pub y: usize,
 }
 
 impl NodeId {
-    pub fn new(entity_kind: EntityKind, x: usize, y: usize) -> Self {
+    pub fn new(entity_kind: Item, x: usize, y: usize) -> Self {
         Self { entity_kind, x, y }
     }
 
@@ -284,48 +412,159 @@ mod tests {
     }
 
     #[test]
-    fn test_entity_kind_from_i64() {
-        assert_eq!(EntityKind::from_i64(0), EntityKind::Empty);
-        assert_eq!(EntityKind::from_i64(1), EntityKind::TransportBelt);
-        assert_eq!(EntityKind::from_i64(2), EntityKind::Inserter);
-        assert_eq!(EntityKind::from_i64(3), EntityKind::AssemblingMachine1);
-        assert_eq!(EntityKind::from_i64(4), EntityKind::UndergroundBelt);
-        assert_eq!(EntityKind::from_i64(5), EntityKind::Splitter);
-        assert_eq!(EntityKind::from_i64(6), EntityKind::Sink);
-        assert_eq!(EntityKind::from_i64(7), EntityKind::Source);
-        assert_eq!(EntityKind::from_i64(-1), EntityKind::Empty);
-    }
-
-    #[test]
-    fn test_entity_flow_rates() {
-        assert_eq!(EntityKind::TransportBelt.flow_rate(), 15.0);
-        assert_eq!(EntityKind::Inserter.flow_rate(), 0.86);
-        assert_eq!(EntityKind::AssemblingMachine1.flow_rate(), 0.5);
-        assert_eq!(EntityKind::UndergroundBelt.flow_rate(), 15.0);
-        assert!(EntityKind::Sink.flow_rate().is_infinite());
-        assert!(EntityKind::Source.flow_rate().is_infinite());
-    }
-
-    #[test]
     fn test_item_from_i64() {
-        assert_eq!(Item::from_i64(0), Item::Empty);
-        assert_eq!(Item::from_i64(1), Item::CopperCable);
-        assert_eq!(Item::from_i64(4), Item::ElectronicCircuit);
+        assert_eq!(Item::from_i64(0), None);
+        assert_eq!(Item::from_i64(1), Some(Item::TransportBelt));
+        assert_eq!(Item::from_i64(5), Some(Item::Splitter));
+        assert_eq!(Item::from_i64(6), Some(Item::CopperCable));
+        assert_eq!(Item::from_i64(10), Some(Item::IronGearWheel));
+        // Source/Sink must remain the LAST two ids — see Item enum docs.
+        assert_eq!(Item::from_i64(11), Some(Item::Sink));
+        assert_eq!(Item::from_i64(12), Some(Item::Source));
+        assert_eq!(Item::from_i64(99), None);
+        assert_eq!(Item::from_i64(-1), None);
+    }
+
+    #[test]
+    fn test_item_flow_rates() {
+        assert_eq!(Item::TransportBelt.flow_rate(), 15.0);
+        assert_eq!(Item::Inserter.flow_rate(), 0.86);
+        assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
+        assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
+        assert!(Item::Sink.flow_rate().is_infinite());
+        assert!(Item::Source.flow_rate().is_infinite());
+        assert_eq!(Item::CopperCable.flow_rate(), 0.0);
+        assert_eq!(Item::IronPlate.flow_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_item_is_placeable() {
+        for placeable in [
+            Item::TransportBelt,
+            Item::Inserter,
+            Item::AssemblingMachine1,
+            Item::UndergroundBelt,
+            Item::Sink,
+            Item::Source,
+            Item::Splitter,
+        ] {
+            assert!(
+                placeable.is_placeable(),
+                "{:?} should be placeable",
+                placeable
+            );
+        }
+        for non_placeable in [
+            Item::CopperCable,
+            Item::CopperPlate,
+            Item::IronPlate,
+            Item::ElectronicCircuit,
+            Item::IronGearWheel,
+        ] {
+            assert!(
+                !non_placeable.is_placeable(),
+                "{:?} should not be placeable",
+                non_placeable
+            );
+        }
+    }
+
+    /// LOAD-BEARING INVARIANT — DO NOT REMOVE.
+    ///
+    /// Source and Sink MUST be the last two ids in the Item enum (and the
+    /// last two entries in `all_items()`). The PPO policy in ppo.py sizes
+    /// its entity head to `len(items) - 2` to structurally exclude
+    /// env-spawned source/sink from agent placement (`ppo.py` line 780).
+    /// If anyone reorders the enum and breaks this invariant, the head
+    /// will start sampling Source/Sink as agent actions, the env will
+    /// reject them, and training will silently regress.
+    ///
+    /// Mirror tests live in tests/test_recipes.py — keep both. If you
+    /// genuinely need to remove this protection, you must also rewrite
+    /// `AgentCNN.__init__`'s entity-head sizing in ppo.py.
+    #[test]
+    fn test_source_and_sink_are_last_two_ids() {
+        let all = all_items();
+        let n = all.len();
+        assert!(n >= 2, "all_items() must contain at least Source and Sink");
+        assert_eq!(
+            all[n - 2],
+            Item::Sink,
+            "Item::Sink must be the second-to-last entry in all_items() — \
+             ppo.py's entity-head sizing depends on this"
+        );
+        assert_eq!(
+            all[n - 1],
+            Item::Source,
+            "Item::Source must be the last entry in all_items() — \
+             ppo.py's entity-head sizing depends on this"
+        );
+
+        // The integer values must also be the two highest. Using `as i64`
+        // here is the canonical way to read the discriminant.
+        let max_id = all.iter().map(|&i| i as i64).max().unwrap();
+        let second_max_id = {
+            let mut ids: Vec<i64> = all.iter().map(|&i| i as i64).collect();
+            ids.sort();
+            ids[ids.len() - 2]
+        };
+        assert_eq!(
+            Item::Source as i64,
+            max_id,
+            "Item::Source must have the highest id"
+        );
+        assert_eq!(
+            Item::Sink as i64,
+            second_max_id,
+            "Item::Sink must have the second-highest id"
+        );
     }
 
     #[test]
     fn test_recipes() {
         let ec = get_recipe(Item::ElectronicCircuit).unwrap();
-        assert_eq!(ec.consumes[&Item::CopperCable], 6.0);
-        assert_eq!(ec.consumes[&Item::IronPlate], 2.0);
-        assert_eq!(ec.produces[&Item::ElectronicCircuit], 2.0);
+        assert_eq!(ec.consumes_rate(Item::CopperCable), Some(3.0));
+        assert_eq!(ec.consumes_rate(Item::IronPlate), Some(1.0));
+        assert_eq!(ec.produces_rate(Item::ElectronicCircuit), Some(1.0));
 
         let cc = get_recipe(Item::CopperCable).unwrap();
-        assert_eq!(cc.consumes[&Item::CopperPlate], 2.0);
-        assert_eq!(cc.produces[&Item::CopperCable], 4.0);
+        assert_eq!(cc.consumes_rate(Item::CopperPlate), Some(1.0));
+        assert_eq!(cc.produces_rate(Item::CopperCable), Some(2.0));
 
-        assert!(get_recipe(Item::Empty).is_none());
+        let igw = get_recipe(Item::IronGearWheel).unwrap();
+        assert_eq!(igw.consumes_rate(Item::IronPlate), Some(2.0));
+        assert_eq!(igw.produces_rate(Item::IronGearWheel), Some(1.0));
+
+        let tb = get_recipe(Item::TransportBelt).unwrap();
+        assert_eq!(tb.consumes_rate(Item::IronGearWheel), Some(1.0));
+        assert_eq!(tb.consumes_rate(Item::IronPlate), Some(1.0));
+        assert_eq!(tb.produces_rate(Item::TransportBelt), Some(2.0));
+
+        let ins = get_recipe(Item::Inserter).unwrap();
+        assert_eq!(ins.consumes_rate(Item::ElectronicCircuit), Some(1.0));
+        assert_eq!(ins.consumes_rate(Item::IronGearWheel), Some(1.0));
+        assert_eq!(ins.consumes_rate(Item::IronPlate), Some(1.0));
+        assert_eq!(ins.produces_rate(Item::Inserter), Some(1.0));
+
+        let am1 = get_recipe(Item::AssemblingMachine1).unwrap();
+        assert_eq!(am1.consumes_rate(Item::ElectronicCircuit), Some(3.0));
+        assert_eq!(am1.consumes_rate(Item::IronGearWheel), Some(5.0));
+        assert_eq!(am1.consumes_rate(Item::IronPlate), Some(9.0));
+        assert_eq!(am1.produces_rate(Item::AssemblingMachine1), Some(1.0));
+
         assert!(get_recipe(Item::IronPlate).is_none());
+        assert!(get_recipe(Item::CopperPlate).is_none());
+    }
+
+    #[test]
+    fn test_all_recipes_lists_known_items() {
+        let items: Vec<Item> = all_recipes().into_iter().map(|(i, _)| i).collect();
+        assert!(items.contains(&Item::ElectronicCircuit));
+        assert!(items.contains(&Item::CopperCable));
+        assert!(items.contains(&Item::IronGearWheel));
+        assert!(items.contains(&Item::TransportBelt));
+        assert!(items.contains(&Item::Inserter));
+        assert!(items.contains(&Item::AssemblingMachine1));
     }
 
     #[test]
@@ -338,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_node_id_label() {
-        let id = NodeId::new(EntityKind::TransportBelt, 3, 5);
+        let id = NodeId::new(Item::TransportBelt, 3, 5);
         assert_eq!(id.label(), "transport_belt\n@3,5");
     }
 }

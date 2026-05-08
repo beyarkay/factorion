@@ -71,7 +71,7 @@ def _():
 
 
 @app.cell(hide_code=True)
-def datatypes(Enum, dataclass, mo):
+def datatypes(Enum, dataclass, factorion_rs, mo):
     class Channel(Enum):
         # What entity occupies this tile?
         ENTITIES = 0
@@ -111,63 +111,45 @@ def datatypes(Enum, dataclass, mo):
         WEST = 4
 
 
+    # Unified Item dataclass. Everything in the data model is an Item;
+    # `is_placeable=True` items can be placed on the grid as entities.
+    # Width/height/flow are entity properties — non-placeable items
+    # default to 1×1 and 0 flow.
     @dataclass
     class Item:
         name: str
         value: int
-
-
-    @dataclass
-    class Entity:
-        name: str
-        value: int
-        flow: float
+        is_placeable: bool
         width: int
         height: int
+        flow: float
 
 
-    # NOTE: Don't forget to update the "value" as well as the order
+    # Items are defined in Rust (factorion_rs/src/types.rs::all_items)
+    # and exposed to Python via PyO3. To add or change an item, edit
+    # the Rust enum + all_items() and rebuild the wheel.
+    #
+    # The dict additionally contains a synthetic 0 → "empty" entry used
+    # purely as a tensor-decode sentinel for cells with no item set.
+    # `Item` itself has no Empty variant in Rust — absence of an item
+    # is `Option::None`. The Python sentinel is just for `items[v]`
+    # lookups when reading the world tensor's ENTITIES or ITEMS channel.
     items = {
-        0: Item(name="empty", value=0),
-        1: Item(name="copper_cable", value=1),
-        2: Item(name="copper_plate", value=2),
-        3: Item(name="iron_plate", value=3),
-        4: Item(name="electronic_circuit", value=4),
+        0: Item(name="empty", value=0, is_placeable=False, width=1, height=1, flow=0.0),
     }
+    for _val, _props in factorion_rs.py_items().items():
+        items[_val] = Item(value=_val, **_props)
 
-    # Also update the pretty printer
-    entities = {
-        0: Entity(name="empty", value=0, width=1, height=1, flow=0.0),
-        1: Entity(name="transport_belt", value=1, width=1, height=1, flow=15.0),
-        2: Entity(name="inserter", value=2, width=1, height=1, flow=0.86),
-        3: Entity(
-            name="assembling_machine_1", value=3, width=3, height=3, flow=0.5
-        ),
-        # underground (which is identical to a transport belt)
-        4: Entity(name="underground_belt", value=4, width=1, height=1, flow=15.0),
-        # splitter: 2 tiles wide perpendicular to flow, 1 tile deep
-        # 2 input belts × 2 lanes × 7.5 i/s per lane = 30 i/s total
-        5: Entity(name="splitter", value=5, width=2, height=1, flow=30.0),
-        # sink and source live last so the agent's entity head can exclude
-        # them via num_entities = len(entities) - 2 (they are env-spawned,
-        # not agent-placeable).
-        6: Entity(
-            name="bulk_inserter", value=6, width=1, height=1, flow=float("inf")
-        ),
-        7: Entity(
-            name="stack_inserter", value=7, width=1, height=1, flow=float("inf")
-        ),
-        #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
-        #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
-        #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
-        #     7:  Entity(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
-        # 1:  Entity(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
-        #     9:  Entity(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
-        #     11: Entity(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
-        #     12: Entity(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
-        #     13: Entity(name='splitter',              value=13, width=2, height=1, flow=15.0),
-        #     14: Entity(name='steel_chest',           value=14, width=1, height=1, flow=0.0),
-    }
+    # `entities` is an alias for `items` for backwards compatibility.
+    # Post-unification, every grid-placeable entity is also an Item, so
+    # `entities[v]` returns the same dataclass as `items[v]`. The Rust
+    # binding hands us the canonical ordering: 1..5 = agent-placeable
+    # (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
+    # Source — placed last so the policy head can exclude them via
+    # len(entities)-2), 8..12 = non-placeable items.
+    entities = items
+    # Backwards-compat alias for the now-unified Item dataclass.
+    Entity = Item
 
 
     @dataclass
@@ -176,15 +158,15 @@ def datatypes(Enum, dataclass, mo):
         produces: dict[str, float]
 
 
+    # Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
+    # and exposed to Python via PyO3. To add a recipe, edit the Rust
+    # function and rebuild the wheel — Python sees it automatically.
     recipes = {
-        "electronic_circuit": Recipe(
-            consumes={"copper_cable": 6.0, "iron_plate": 2.0},
-            produces={"electronic_circuit": 2.0},
-        ),
-        "copper_cable": Recipe(
-            consumes={"copper_plate": 2.0},
-            produces={"copper_cable": 4.0},
-        ),
+        name: Recipe(
+            consumes=dict(data["consumes"]),
+            produces=dict(data["produces"]),
+        )
+        for name, data in factorion_rs.py_recipes().items()
     }
 
 
@@ -193,6 +175,7 @@ def datatypes(Enum, dataclass, mo):
         INSERTER_TRANSFER = 2
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
+        ASSEMBLE_1IN_1OUT = 5
 
 
     # Map Enum <--> grid deltas
@@ -1508,7 +1491,9 @@ def functions(
         return G
 
 
-    def _remove_entities(world_CWH, num_missing_entities, total_entities, protected_positions=None):
+    def _remove_entities(
+        world_CWH, num_missing_entities, total_entities, protected_positions=None
+    ):
         """Remove entities from a completed lesson, respecting multi-tile units.
 
         Also sets the FOOTPRINT channel: cells empty in the completed layout
@@ -1517,10 +1502,12 @@ def functions(
         them as the buildable region the agent is meant to fill).
 
         protected_positions: optional set of (x, y) the lesson considers
-        structurally required (e.g. the central inserter in INSERTER_TRANSFER).
-        Any entity-group containing one of these tiles is excluded from the
-        removable pool, so the agent always sees those entities in its input.
-        Source/sink are protected unconditionally via the entity-id `skip` set.
+        structurally required (e.g. the central inserter in INSERTER_TRANSFER,
+        or the recipe-bearing assembler in ASSEMBLE_1IN_1OUT). Any
+        entity-group containing one of these tiles is excluded from the
+        removable pool, so the agent always sees those entities in its
+        input. Source/sink are protected unconditionally via the entity-id
+        `skip` set below.
 
         Returns min_entities_required (number of entity units removed).
         For multi-tile entities (e.g. splitters), all tiles are removed together
@@ -1533,6 +1520,7 @@ def functions(
         empty_id = str2ent("empty").value
         empty_mask = world_CWH[Channel.ENTITIES.value] == empty_id
         world_CWH[Channel.FOOTPRINT.value][empty_mask] = Footprint.UNAVAILABLE.value
+
 
         if num_missing_entities == float("inf"):
             return total_entities
@@ -2164,6 +2152,244 @@ def functions(
             if count == 0:
                 raise Exception(
                     f"Failed to find valid SPLITTER_MERGE lesson after {original_count} attempts"
+                )
+
+        elif kind.value == LessonKind.ASSEMBLE_1IN_1OUT.value:
+            # source → belt → input inserter → 3x3 assembler (with recipe) →
+            # output inserter → belt → sink. Recipe is randomly chosen from
+            # all 1-input 1-output recipes (copper_cable, iron_gear_wheel
+            # at the time of writing).
+            one_in_one_out = [
+                (name, r)
+                for name, r in recipes.items()
+                if len(r.consumes) == 1 and len(r.produces) == 1
+            ]
+            if not one_in_one_out:
+                raise Exception("No 1-input 1-output recipes available")
+
+            original_count = max(500, size * size * 12)
+            count = original_count
+            asm_ent = str2ent("assembling_machine_1")
+
+            # The 12 non-corner perimeter slots around a 3×3 assembler
+            # anchored at (ax, ay), expressed as (offset_x, offset_y,
+            # input_dir, output_dir). Input inserter direction faces
+            # *into* the assembler body; output direction faces *out*.
+            perim_slots = [
+                # North side (ddy = -1): above the top row
+                (0, -1, Direction.SOUTH, Direction.NORTH),
+                (1, -1, Direction.SOUTH, Direction.NORTH),
+                (2, -1, Direction.SOUTH, Direction.NORTH),
+                # South side (ddy = 3): below the bottom row
+                (0, 3, Direction.NORTH, Direction.SOUTH),
+                (1, 3, Direction.NORTH, Direction.SOUTH),
+                (2, 3, Direction.NORTH, Direction.SOUTH),
+                # West side (ddx = -1)
+                (-1, 0, Direction.EAST, Direction.WEST),
+                (-1, 1, Direction.EAST, Direction.WEST),
+                (-1, 2, Direction.EAST, Direction.WEST),
+                # East side (ddx = 3)
+                (3, 0, Direction.WEST, Direction.EAST),
+                (3, 1, Direction.WEST, Direction.EAST),
+                (3, 2, Direction.WEST, Direction.EAST),
+            ]
+
+            while count > 0:
+                count -= 1
+                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                    2, 0, 1
+                )
+                C, W, H = world_CWH.shape
+
+                # 3×3 assembler can't fit
+                if W < 3 or H < 3:
+                    raise Exception(
+                        f"Grid {W}×{H} too small for ASSEMBLE_1IN_1OUT (need ≥ 3×3)"
+                    )
+
+                # Pick recipe + items
+                recipe_name, recipe = random.choice(one_in_one_out)
+                input_item_name = next(iter(recipe.consumes.keys()))
+                output_item_name = next(iter(recipe.produces.keys()))
+                recipe_item_value = str2item(recipe_name).value
+                input_item_value = str2item(input_item_name).value
+                output_item_value = str2item(output_item_name).value
+
+                # Pick assembler anchor
+                ax = random.randint(0, W - 3)
+                ay = random.randint(0, H - 3)
+                asm_tiles = {
+                    (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
+                }
+
+                # Pick distinct input + output perimeter slots
+                in_slot, out_slot = random.sample(perim_slots, 2)
+                in_dx, in_dy, in_inserter_dir, _ = in_slot
+                out_dx, out_dy, _, out_inserter_dir = out_slot
+
+                in_inserter_pos = (ax + in_dx, ay + in_dy)
+                out_inserter_pos = (ax + out_dx, ay + out_dy)
+
+                in_dir_delta = DIR_TO_DELTA[in_inserter_dir]
+                out_dir_delta = DIR_TO_DELTA[out_inserter_dir]
+
+                # Belt cell that feeds the input inserter (its pickup):
+                in_pickup = (
+                    in_inserter_pos[0] - in_dir_delta[0],
+                    in_inserter_pos[1] - in_dir_delta[1],
+                )
+                # Belt cell where the output inserter drops:
+                out_drop = (
+                    out_inserter_pos[0] + out_dir_delta[0],
+                    out_inserter_pos[1] + out_dir_delta[1],
+                )
+
+                # All key cells in bounds
+                key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop]
+                if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
+                    continue
+                # Distinct + outside assembler body
+                if len(set(key_cells)) != len(key_cells):
+                    continue
+                if any(c in asm_tiles for c in key_cells):
+                    continue
+
+                # Pick source + sink positions outside everything reserved
+                reserved = asm_tiles | set(key_cells)
+                available = [
+                    (x, y)
+                    for x in range(W)
+                    for y in range(H)
+                    if (x, y) not in reserved
+                ]
+                if len(available) < 2:
+                    continue
+
+                source_pos, sink_pos = random.sample(available, 2)
+                dirs = [d for d in Direction if d != Direction.NONE]
+                source_dir = random.choice(dirs)
+                sink_dir = random.choice(dirs)
+
+                ds = DIR_TO_DELTA[source_dir]
+                dk = DIR_TO_DELTA[sink_dir]
+                source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+
+                # Source-output / sink-input must be in bounds and not overlap reserved
+                if not (0 <= source_output[0] < W and 0 <= source_output[1] < H):
+                    continue
+                if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
+                    continue
+                if source_output in reserved or sink_input in reserved:
+                    continue
+                if source_output == sink_input:
+                    continue
+
+                all_fixed = reserved | {source_pos, sink_pos}
+
+                # Path 1: source_output → in_pickup. Last belt orients toward
+                # the input inserter (matching INSERTER_TRANSFER convention).
+                blocked1 = (
+                    asm_tiles
+                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                       sink_input, out_drop}
+                )
+                path1 = find_belt_path(
+                    W, H, source_output, in_pickup, in_inserter_dir, blocked1
+                )
+                if path1 is None:
+                    continue
+                path1_cells = {(x, y) for x, y, _ in path1}
+
+                # Path 2: out_drop → sink_input. Last belt orients toward sink.
+                blocked2 = (
+                    asm_tiles
+                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                       in_pickup, source_output}
+                    | path1_cells
+                )
+                path2 = find_belt_path(
+                    W, H, out_drop, sink_input, sink_dir, blocked2
+                )
+                if path2 is None:
+                    continue
+
+                # 1 assembler + 2 inserters + belts (assembler counts as 1
+                # entity even though it occupies 9 tiles).
+                total_entities = len(path1) + len(path2) + 3
+                if total_entities > max_entities:
+                    continue
+
+                # Place source
+                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                    str2ent("source").value
+                )
+                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                    source_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = (
+                    input_item_value
+                )
+
+                # Place sink
+                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                    str2ent("sink").value
+                )
+                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                    sink_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
+                    output_item_value
+                )
+
+                # Place assembler (3×3, all tiles tagged with the recipe item)
+                for tx, ty in asm_tiles:
+                    world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
+                    world_CWH[Channel.DIRECTION.value, tx, ty] = (
+                        Direction.NORTH.value
+                    )
+                    world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
+
+                # Place input + output inserters
+                world_CWH[
+                    Channel.ENTITIES.value, in_inserter_pos[0], in_inserter_pos[1]
+                ] = str2ent("inserter").value
+                world_CWH[
+                    Channel.DIRECTION.value, in_inserter_pos[0], in_inserter_pos[1]
+                ] = in_inserter_dir.value
+
+                world_CWH[
+                    Channel.ENTITIES.value, out_inserter_pos[0], out_inserter_pos[1]
+                ] = str2ent("inserter").value
+                world_CWH[
+                    Channel.DIRECTION.value, out_inserter_pos[0], out_inserter_pos[1]
+                ] = out_inserter_dir.value
+
+                # Place belt paths
+                for x, y, d in path1 + path2:
+                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                        "transport_belt"
+                    ).value
+                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+                # Verify throughput > 0
+                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+                if tp <= 0:
+                    continue
+
+                # The assembler + its recipe is structurally required: the
+                # recipe channel cannot be inferred from belts alone, so
+                # without the assembler the lesson is ambiguous. Protect
+                # all 9 assembler tiles from blanking.
+                min_entities_required = _remove_entities(
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions=asm_tiles,
+                )
+
+                break
+            if count == 0:
+                raise Exception(
+                    f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
                 )
         else:
             raise Exception(f"Can't handle {kind}")

@@ -7,6 +7,10 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 
+// `nonempty::nonempty![...]` expands to a path through `::alloc::vec`, which
+// requires `alloc` to be visible at the crate root.
+extern crate alloc;
+
 mod entities;
 mod graph;
 mod throughput;
@@ -17,6 +21,8 @@ mod world;
 use numpy::PyReadonlyArray3;
 #[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
+#[cfg(feature = "pyo3-bindings")]
+use pyo3::types::PyDict;
 
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
@@ -25,7 +31,7 @@ use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
 use throughput::calc_throughput;
 #[cfg(feature = "pyo3-bindings")]
-use types::Direction;
+use types::{all_items, all_recipes, Direction};
 #[cfg(feature = "pyo3-bindings")]
 use world::World;
 
@@ -84,10 +90,66 @@ fn py_entity_tiles(
         .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect()))
 }
 
+/// Return every Item as a dict keyed by integer value, with full
+/// per-item properties.
+///
+/// Shape: `{int_value: {"name": str, "is_placeable": bool,
+///                      "width": int, "height": int, "flow": float}}`.
+///
+/// Single source of truth for item identity and entity properties —
+/// Python's `items` dict (and the older `entities` dict) are built from
+/// this at module load.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let outer = PyDict::new(py);
+    for &item in all_items() {
+        let entry = PyDict::new(py);
+        let (w, h) = item.size();
+        entry.set_item("name", item.name())?;
+        entry.set_item("is_placeable", item.is_placeable())?;
+        entry.set_item("width", w)?;
+        entry.set_item("height", h)?;
+        entry.set_item("flow", item.flow_rate())?;
+        outer.set_item(item as i64, entry)?;
+    }
+    Ok(outer.into())
+}
+
+/// Return all crafting recipes as a Python dict.
+///
+/// Shape: `{item_name: {"consumes": {item_name: rate, ...},
+///                      "produces": {item_name: rate, ...}}}`.
+///
+/// This is the single source of truth for recipe data — Python builds its
+/// `recipes` dict from this at module load.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let outer = PyDict::new(py);
+    for (item, recipe) in all_recipes() {
+        let entry = PyDict::new(py);
+        let consumes = PyDict::new(py);
+        for &(i, rate) in recipe.consumes.iter() {
+            consumes.set_item(i.name(), rate)?;
+        }
+        let produces = PyDict::new(py);
+        for &(i, rate) in recipe.produces.iter() {
+            produces.set_item(i.name(), rate)?;
+        }
+        entry.set_item("consumes", consumes)?;
+        entry.set_item("produces", produces)?;
+        outer.set_item(item.name(), entry)?;
+    }
+    Ok(outer.into())
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
+    m.add_function(wrap_pyfunction!(py_items, m)?)?;
+    m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
     Ok(())
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::{EntityKind, Item};
+use crate::types::Item;
 
 /// Calculate the throughput of a factory graph.
 ///
@@ -19,17 +19,17 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         return (HashMap::new(), 0);
     }
 
-    // 1. Cycle detection
+    // 1. Cycle detection — return empty map (downstream treats as 0 throughput).
     if has_cycle(graph) {
-        return (HashMap::from([(Item::Empty, 0.0)]), 0);
+        return (HashMap::new(), 0);
     }
 
     // Identify sources and sinks
     let sources: Vec<usize> = (0..graph.node_count())
-        .filter(|&i| graph.nodes[i].entity_kind == EntityKind::Source)
+        .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
         .collect();
     let sinks: Vec<usize> = (0..graph.node_count())
-        .filter(|&i| graph.nodes[i].entity_kind == EntityKind::Sink)
+        .filter(|&i| graph.nodes[i].entity_kind == Item::Sink)
         .collect();
 
     if sources.is_empty() || sinks.is_empty() {
@@ -91,17 +91,20 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
             node_inputs[node_idx] = accumulated_input.clone();
 
             // Compute output using stack-allocated enum dispatch (no heap allocation)
-            let item = if entity_kind == EntityKind::AssemblingMachine1 {
+            let item = if entity_kind == Item::AssemblingMachine1 {
                 graph.nodes[node_idx].recipe_item
             } else {
                 graph.nodes[node_idx].item
             };
             let misc = graph.nodes[node_idx].misc;
-            let entity = EntityEnum::new(entity_kind, item, misc);
-            node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
+            // entity_kind comes from a graph node, which only contains
+            // placeable items, so new() always returns Some here.
+            if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
+                node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
+            }
 
             // For splitters, divide output evenly among successors
-            if entity_kind == EntityKind::Splitter {
+            if entity_kind == Item::Splitter {
                 let num_successors = graph.successors[node_idx].len();
                 if num_successors > 1 {
                     for rate in node_outputs[node_idx].values_mut() {
@@ -233,22 +236,10 @@ mod tests {
         // Throughput limited by belt rate (15.0).
         let mut w = World::empty(4, 1);
 
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(
-            2,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -274,16 +265,10 @@ mod tests {
         // Throughput limited by inserter rate (0.86).
         let mut w = World::empty(4, 1);
 
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(1, 0, EntityKind::Inserter, Direction::East, Item::Empty);
-        w.place(
-            2,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(3, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::Inserter, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -307,15 +292,9 @@ mod tests {
         // Source and sink exist but aren't connected. A lone belt sits in the middle.
         let mut w = World::empty(5, 5);
 
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(4, 4, EntityKind::Sink, Direction::East, Item::CopperCable);
-        w.place(
-            2,
-            2,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(4, 4, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(2, 2, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -341,27 +320,27 @@ mod tests {
         let mut g = FactoryGraph {
             nodes: vec![
                 crate::graph::GraphNode {
-                    id: NodeId::new(EntityKind::TransportBelt, 0, 0),
-                    entity_kind: EntityKind::TransportBelt,
-                    item: Item::Empty,
+                    id: NodeId::new(Item::TransportBelt, 0, 0),
+                    entity_kind: Item::TransportBelt,
+                    item: None,
                     misc: Misc::None,
-                    recipe_item: Item::Empty,
+                    recipe_item: None,
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
                 crate::graph::GraphNode {
-                    id: NodeId::new(EntityKind::TransportBelt, 1, 0),
-                    entity_kind: EntityKind::TransportBelt,
-                    item: Item::Empty,
+                    id: NodeId::new(Item::TransportBelt, 1, 0),
+                    entity_kind: Item::TransportBelt,
+                    item: None,
                     misc: Misc::None,
-                    recipe_item: Item::Empty,
+                    recipe_item: None,
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
             ],
             node_index: HashMap::from([
-                (NodeId::new(EntityKind::TransportBelt, 0, 0), 0),
-                (NodeId::new(EntityKind::TransportBelt, 1, 0), 1),
+                (NodeId::new(Item::TransportBelt, 0, 0), 0),
+                (NodeId::new(Item::TransportBelt, 1, 0), 1),
             ]),
             successors: vec![vec![1], vec![0]], // 0→1→0 cycle
             predecessors: vec![vec![1], vec![0]],
@@ -379,23 +358,11 @@ mod tests {
     fn test_splitter_passthrough() {
         // Source → Belt → Splitter → Belt → Sink (1 input, 1 output = no splitting)
         let mut w = World::empty(6, 2);
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place_splitter(2, 0, Direction::East, Item::Empty);
-        w.place(
-            3,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -414,33 +381,15 @@ mod tests {
         //                          → Belt → Sink2
         // Each sink should get 7.5
         let mut w = World::empty(6, 2);
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place_splitter(2, 0, Direction::East, Item::Empty);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
         // Two output belts, one per splitter tile
-        w.place(
-            3,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(
-            3,
-            1,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 1, Item::TransportBelt, Direction::East, None);
         // Two sinks
-        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
-        w.place(4, 1, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -460,31 +409,13 @@ mod tests {
         // Source2 → Belt ↗
         let mut w = World::empty(6, 2);
         // Two sources feeding into both input lanes
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(0, 1, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(
-            1,
-            1,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place_splitter(2, 0, Direction::East, Item::Empty);
-        w.place(
-            3,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -502,39 +433,15 @@ mod tests {
     fn test_splitter_full_throughput() {
         // 2 inputs + 2 outputs = full 30 i/s throughput (15 per output)
         let mut w = World::empty(6, 2);
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(0, 1, EntityKind::Source, Direction::East, Item::CopperCable);
-        w.place(
-            1,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(
-            1,
-            1,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place_splitter(2, 0, Direction::East, Item::Empty);
-        w.place(
-            3,
-            0,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(
-            3,
-            1,
-            EntityKind::TransportBelt,
-            Direction::East,
-            Item::Empty,
-        );
-        w.place(4, 0, EntityKind::Sink, Direction::East, Item::CopperCable);
-        w.place(4, 1, EntityKind::Sink, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 1, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
@@ -551,7 +458,7 @@ mod tests {
     #[test]
     fn test_source_only_no_sink() {
         let mut w = World::empty(3, 1);
-        w.place(0, 0, EntityKind::Source, Direction::East, Item::CopperCable);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);
