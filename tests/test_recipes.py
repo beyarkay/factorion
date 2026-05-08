@@ -48,11 +48,11 @@ class TestPyItemsBinding:
         assert 0 not in rs
 
     def test_integer_values_are_stable(self):
-        """The integer encoding must not silently change — world tensors
-        on disk and trained models depend on it. Layout: 1..5 = agent-
-        placeable, 6..10 = non-placeable items, 11..12 = env-spawned
-        sink/source (the LAST two ids so the policy entity head can be
-        sized to len(items)-2 to exclude them)."""
+        """The integer encoding for the foundational items (1..10) must
+        not silently change — world tensors on disk and trained models
+        depend on it. Sink/Source are pinned to the LAST two ids
+        dynamically so adding intermediate items doesn't break them
+        (see TestSourceSinkAreLastTwoIds)."""
         rs = factorion_rs.py_items()
         assert rs[1]["name"] == "transport_belt"
         assert rs[2]["name"] == "inserter"
@@ -64,18 +64,21 @@ class TestPyItemsBinding:
         assert rs[8]["name"] == "iron_plate"
         assert rs[9]["name"] == "electronic_circuit"
         assert rs[10]["name"] == "iron_gear_wheel"
-        assert rs[11]["name"] == "bulk_inserter"
-        assert rs[12]["name"] == "stack_inserter"
 
     def test_placeability_is_correct(self):
         rs = factorion_rs.py_items()
-        # Placeable: agent-buildable (1..5) + env-spawned source/sink (11, 12)
-        for value in [1, 2, 3, 4, 5, 11, 12]:
+        ids = sorted(rs.keys())
+        sink_id, source_id = ids[-2], ids[-1]
+        # Placeable: agent-buildable (1..5) + env-spawned source/sink (last two)
+        for value in [1, 2, 3, 4, 5, sink_id, source_id]:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
-        # Non-placeable items: 6..10
-        for value in range(6, 11):
+        # Everything else (non-placeable items) — recipe ingredients,
+        # raw materials, and non-modeled buildings exposed only as items.
+        for value in ids:
+            if value in {1, 2, 3, 4, 5, sink_id, source_id}:
+                continue
             assert rs[value]["is_placeable"] is False, (
-                f"id {value} should not be placeable"
+                f"id {value} ({rs[value]['name']!r}) should not be placeable"
             )
 
     def test_assembler_size_is_3x3(self):

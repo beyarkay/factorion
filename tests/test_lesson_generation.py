@@ -17,6 +17,7 @@ from helpers import (
     generate_lesson,
     items,
     py_throughput_safe,
+    recipes,
     rs_throughput,
     str2ent,
     str2item,
@@ -1049,10 +1050,18 @@ class TestWorld2HtmlMultiTile:
 # recipes available at the time of writing produce different output:
 #   copper_cable:    1 cu_plate → 2 cu_cable
 #   iron_gear_wheel: 2 ir_plate → 1 ir_gear_wheel
-ONE_IN_ONE_OUT_RECIPES = {
-    "copper_cable": ("copper_plate", "copper_cable"),
-    "iron_gear_wheel": ("iron_plate", "iron_gear_wheel"),
-}
+# Built dynamically from the live recipe table so adding new recipes
+# automatically extends what ASSEMBLE_1IN_1OUT can pick.
+def _one_in_one_out_pairs():
+    from helpers import recipes as _recipes
+    pairs = {}
+    for name, r in _recipes.items():
+        if len(r.consumes) == 1 and len(r.produces) == 1:
+            pairs[name] = (next(iter(r.consumes)), next(iter(r.produces)))
+    return pairs
+
+
+ONE_IN_ONE_OUT_RECIPES = _one_in_one_out_pairs()
 
 
 class TestAssemble1In1OutBasic:
@@ -1391,10 +1400,11 @@ class TestAssemble1In1OutThroughputRange:
 
 
 class TestAssemble1In1OutRecipeSelection:
-    """Recipe is randomly picked across seeds — both known recipes should
-    appear at least once across many seeds."""
+    """Recipe is randomly picked across seeds — multiple distinct recipes
+    should appear across many seeds (uniform selection over all 1-in 1-out
+    recipes)."""
 
-    def test_both_recipes_appear(self):
+    def test_multiple_recipes_appear(self):
         seen_recipes = set()
         for seed in range(100):
             world, _ = generate_lesson(
@@ -1407,11 +1417,11 @@ class TestAssemble1In1OutRecipeSelection:
             sink_item = item_layer[sink_pos[0], sink_pos[1]].item()
             seen_recipes.add(sink_item)
 
-        # We have 2 recipes; we should see both (probabilistically essentially
-        # certain across 100 seeds with uniform selection).
-        expected = {str2item("copper_cable").value, str2item("iron_gear_wheel").value}
-        assert seen_recipes == expected, (
-            f"Expected to see both recipes across 100 seeds, got {seen_recipes}"
+        # We have several 1-in 1-out recipes (copper_cable, iron_gear_wheel,
+        # iron_stick, pipe, iron_chest, steel_plate, wooden_chest,
+        # stone_furnace, ...). Expect at least 2 distinct ones across 100 seeds.
+        assert len(seen_recipes) >= 2, (
+            f"Expected ≥2 distinct recipes across 100 seeds, got {seen_recipes}"
         )
 
 
@@ -1584,10 +1594,7 @@ class TestAssemble1In1OutThroughputPerRecipe:
           output inserter cap (0.86) is not binding → final = 0.43
     """
 
-    EXPECTED_TP = {
-        "copper_cable": 0.86,
-        "iron_gear_wheel": 0.43,
-    }
+    INSERTER_CAP = 0.86  # items/s — flow_rate of a basic inserter
 
     @pytest.mark.parametrize("seed", range(40))
     def test_throughput_matches_recipe_closed_form(self, seed):
@@ -1599,11 +1606,40 @@ class TestAssemble1In1OutThroughputPerRecipe:
         item = world[Channel.ITEMS.value]
         sink_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
         recipe_name = items[item[sink_pos[0], sink_pos[1]].item()].name
-        expected = self.EXPECTED_TP[recipe_name]
+
+        recipe = recipes[recipe_name]
+        assert len(recipe.consumes) == 1 and len(recipe.produces) == 1, (
+            f"ASSEMBLE_1IN_1OUT picked a non-1in1out recipe {recipe_name!r}"
+        )
+        cons_count = next(iter(recipe.consumes.values()))
+        prod_count = next(iter(recipe.produces.values()))
+
+        # Some seeds spawn the env Source directly adjacent to the
+        # assembler footprint, which the graph treats as an extra
+        # input edge bypassing the input inserter. In that case the
+        # assembler input is unconstrained (recipe ratio caps at 1)
+        # and only the output inserter caps the final throughput.
+        # Detect via graph predecessors and pick the right expectation.
+        from helpers import world2graph
+        G = world2graph(world.permute(1, 2, 0))
+        asm = next(n for n in G.nodes if "assembling_machine" in n)
+        preds = list(G.predecessors(asm))
+        source_directly_adjacent = any("stack_inserter" in p for p in preds)
+
+        if source_directly_adjacent:
+            # input ≥ recipe needs, ratio capped at 1, output = prod_count,
+            # then output inserter caps to INSERTER_CAP.
+            expected = min(self.INSERTER_CAP, prod_count)
+        else:
+            # Normal layout: input rate = INSERTER_CAP / cons_count.
+            input_rate = self.INSERTER_CAP / cons_count
+            expected = min(self.INSERTER_CAP, input_rate * prod_count)
 
         tp, _ = py_throughput_safe(world.permute(1, 2, 0))
         assert abs(tp - expected) < 1e-3, (
-            f"seed={seed}, recipe={recipe_name}: expected ≈ {expected}, got {tp}"
+            f"seed={seed}, recipe={recipe_name}, "
+            f"source_directly_adjacent={source_directly_adjacent}: "
+            f"expected ≈ {expected}, got {tp}"
         )
 
 
