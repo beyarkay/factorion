@@ -144,8 +144,7 @@ def generate_dataset(args: SFTArgs):
 
     Samples uniformly across every value of `LessonKind` (auto-discovered),
     so adding a new lesson kind to the enum is automatically picked up.
-    Returns (obs, tiles, ents, dirs, masks, kind_stats) where kind_stats is
-    {kind_name: {"samples": int, "lessons": int}}.
+    Per-kind sample/lesson counts are printed to stdout for visibility.
     """
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
     kinds = list(LessonKind)
@@ -155,7 +154,8 @@ def generate_dataset(args: SFTArgs):
     all_entity = []
     all_direction = []
     all_valid_masks = []
-    kind_stats = {k.name: {"samples": 0, "lessons": 0} for k in kinds}
+    kind_samples = {k.name: 0 for k in kinds}
+    kind_lessons = {k.name: 0 for k in kinds}
 
     seed = args.seed
     samples_so_far = 0
@@ -181,7 +181,7 @@ def generate_dataset(args: SFTArgs):
         except Exception:
             continue
 
-        kind_stats[kind.name]["lessons"] += 1
+        kind_lessons[kind.name] += 1
         pairs = extract_expert_actions(solved, task)
         for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
             all_obs.append(obs)
@@ -189,10 +189,15 @@ def generate_dataset(args: SFTArgs):
             all_entity.append(entity_id)
             all_direction.append(direction_id)
             all_valid_masks.append(valid_mask)
-            kind_stats[kind.name]["samples"] += 1
+            kind_samples[kind.name] += 1
             samples_so_far += 1
             if samples_so_far >= args.num_samples:
                 break
+
+    print("Per-kind breakdown:")
+    name_w = max(len(k) for k in kind_samples)
+    for name in sorted(kind_samples):
+        print(f"  {name:<{name_w}}  samples={kind_samples[name]:>6}  lessons={kind_lessons[name]:>6}")
 
     obs_tensor = torch.stack(all_obs)
     tile_tensor = torch.tensor(all_tile_idx, dtype=torch.long)
@@ -200,7 +205,7 @@ def generate_dataset(args: SFTArgs):
     dir_tensor = torch.tensor(all_direction, dtype=torch.long)
     mask_tensor = torch.stack(all_valid_masks)
 
-    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor, kind_stats
+    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor
 
 
 def train_sft(args: SFTArgs):
@@ -211,13 +216,8 @@ def train_sft(args: SFTArgs):
 
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
-    obs, tiles, ents, dirs, valid_masks, kind_stats = generate_dataset(args)
+    obs, tiles, ents, dirs, valid_masks = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
-    print("Per-kind breakdown:")
-    name_w = max(len(k) for k in kind_stats)
-    for name in sorted(kind_stats):
-        s = kind_stats[name]
-        print(f"  {name:<{name_w}}  samples={s['samples']:>6}  lessons={s['lessons']:>6}")
 
     # Train/val split
     n = len(obs)
@@ -426,7 +426,6 @@ def train_sft(args: SFTArgs):
         "runtime_seconds": round(total_time, 1),
         "checkpoint_path": args.checkpoint_path,
         "wandb_url": run.url if run is not None else None,
-        "kind_stats": kind_stats,
     }
     summary_path = args.summary_path or str(Path(__file__).parent / "sft_summary.json")
     with open(summary_path, "w") as f:

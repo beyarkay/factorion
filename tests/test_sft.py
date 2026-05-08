@@ -134,7 +134,7 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, masks, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, masks = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
@@ -144,7 +144,7 @@ class TestGenerateDataset:
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        obs, _, _, _, _, _ = generate_dataset(args)
+        obs, _, _, _, _ = generate_dataset(args)
         assert obs.shape[1] == len(Channel)  # channels
         assert obs.shape[2] == 5  # width
         assert obs.shape[3] == 5  # height
@@ -152,22 +152,24 @@ class TestGenerateDataset:
     def test_tile_indices_in_range(self):
         """Tile indices should be in [0, W*H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        _, tiles, _, _, _, _ = generate_dataset(args)
+        _, tiles, _, _, _ = generate_dataset(args)
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
 
     def test_samples_span_multiple_kinds(self):
-        """Dataset should draw from more than one LessonKind."""
-        args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
-        _, _, _, _, _, kind_stats = generate_dataset(args)
+        """Dataset should draw from more than one LessonKind.
 
-        kinds_with_samples = [k for k, s in kind_stats.items() if s["samples"] > 0]
-        assert len(kinds_with_samples) >= 2, (
-            f"Expected samples from >=2 kinds, got {kinds_with_samples}: {kind_stats}"
+        MOVE_ONE_ITEM places only transport_belt; INSERTER_TRANSFER and the
+        SPLITTER_* kinds place inserter and splitter. So if multi-kind
+        sampling works, the entity targets contain >= 2 distinct IDs.
+        """
+        args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
+        _, _, ents, _, _ = generate_dataset(args)
+        unique_entities = set(ents.tolist())
+        assert len(unique_entities) >= 2, (
+            f"Expected >=2 distinct entity targets (proves multi-kind sampling), "
+            f"got {sorted(unique_entities)}"
         )
-        # Every enum value should be present as a key (auto-discovery)
-        for k in LessonKind:
-            assert k.name in kind_stats
 
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
@@ -235,7 +237,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, masks, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, masks = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
