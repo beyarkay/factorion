@@ -220,18 +220,26 @@ class TestGeneratedLessons:
 class TestFuzz:
     """Fuzz test: generate random factory layouts and check parity."""
 
-    # All 1x1 entity IDs. Multi-tile entities (assembler=3, splitter=7) are
-    # excluded because random single-cell placement is invalid for them.
-    ENTITY_VALUES = [eid for eid, e in entities.items() if e.width == 1 and e.height == 1]
+    # All placeable 1x1 entity IDs. Multi-tile placeables (assembler=3,
+    # splitter=7) are excluded because random single-cell placement is
+    # invalid for them. Non-placeable items (CC, IP, etc.) are excluded
+    # because they don't belong in the ENTITIES channel.
+    ENTITY_VALUES = [
+        eid
+        for eid, e in entities.items()
+        if e.is_placeable and e.width == 1 and e.height == 1
+    ]
     DIRECTION_VALUES = [0, 1, 2, 3, 4]
-    ITEM_VALUES = [0, 1, 2, 3, 4]
+    # Non-placeable items + the "no item" sentinel (0). These are valid
+    # values for the ITEMS channel (recipe / carried item).
+    ITEM_VALUES = [0] + [eid for eid, e in entities.items() if not e.is_placeable]
     MISC_VALUES = [0, 1, 2]
 
-    # Multi-tile entity specs: (entity_id, width, height)
+    # Multi-tile placeable entity specs: (entity_id, width, height)
     MULTI_TILE_ENTITIES = [
         (eid, e.width, e.height)
         for eid, e in entities.items()
-        if e.width > 1 or e.height > 1
+        if e.is_placeable and (e.width > 1 or e.height > 1)
     ]
 
     @staticmethod

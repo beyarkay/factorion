@@ -27,6 +27,7 @@ Misc = _objs["Misc"]
 LessonKind = _objs["LessonKind"]
 entities = _objs["entities"]
 items = _objs["items"]
+recipes = _objs["recipes"]
 
 find_belt_path = _fns["find_belt_path"]
 find_belt_paths_with_source_sink_orient = _fns["find_belt_paths_with_source_sink_orient"]

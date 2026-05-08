@@ -71,7 +71,7 @@ def _():
 
 
 @app.cell(hide_code=True)
-def datatypes(Enum, dataclass, mo):
+def datatypes(Enum, dataclass, factorion_rs, mo):
     class Channel(Enum):
         # What entity occupies this tile?
         ENTITIES = 0
@@ -111,63 +111,45 @@ def datatypes(Enum, dataclass, mo):
         WEST = 4
 
 
+    # Unified Item dataclass. Everything in the data model is an Item;
+    # `is_placeable=True` items can be placed on the grid as entities.
+    # Width/height/flow are entity properties — non-placeable items
+    # default to 1×1 and 0 flow.
     @dataclass
     class Item:
         name: str
         value: int
-
-
-    @dataclass
-    class Entity:
-        name: str
-        value: int
-        flow: float
+        is_placeable: bool
         width: int
         height: int
+        flow: float
 
 
-    # NOTE: Don't forget to update the "value" as well as the order
+    # Items are defined in Rust (factorion_rs/src/types.rs::all_items)
+    # and exposed to Python via PyO3. To add or change an item, edit
+    # the Rust enum + all_items() and rebuild the wheel.
+    #
+    # The dict additionally contains a synthetic 0 → "empty" entry used
+    # purely as a tensor-decode sentinel for cells with no item set.
+    # `Item` itself has no Empty variant in Rust — absence of an item
+    # is `Option::None`. The Python sentinel is just for `items[v]`
+    # lookups when reading the world tensor's ENTITIES or ITEMS channel.
     items = {
-        0: Item(name="empty", value=0),
-        1: Item(name="copper_cable", value=1),
-        2: Item(name="copper_plate", value=2),
-        3: Item(name="iron_plate", value=3),
-        4: Item(name="electronic_circuit", value=4),
+        0: Item(name="empty", value=0, is_placeable=False, width=1, height=1, flow=0.0),
     }
+    for _val, _props in factorion_rs.py_items().items():
+        items[_val] = Item(value=_val, **_props)
 
-    # Also update the pretty printer
-    entities = {
-        0: Entity(name="empty", value=0, width=1, height=1, flow=0.0),
-        1: Entity(name="transport_belt", value=1, width=1, height=1, flow=15.0),
-        2: Entity(name="inserter", value=2, width=1, height=1, flow=0.86),
-        3: Entity(
-            name="assembling_machine_1", value=3, width=3, height=3, flow=0.5
-        ),
-        # underground (which is identical to a transport belt)
-        4: Entity(name="underground_belt", value=4, width=1, height=1, flow=15.0),
-        # splitter: 2 tiles wide perpendicular to flow, 1 tile deep
-        # 2 input belts × 2 lanes × 7.5 i/s per lane = 30 i/s total
-        5: Entity(name="splitter", value=5, width=2, height=1, flow=30.0),
-        # sink and source live last so the agent's entity head can exclude
-        # them via num_entities = len(entities) - 2 (they are env-spawned,
-        # not agent-placeable).
-        6: Entity(
-            name="bulk_inserter", value=6, width=1, height=1, flow=float("inf")
-        ),
-        7: Entity(
-            name="stack_inserter", value=7, width=1, height=1, flow=float("inf")
-        ),
-        #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
-        #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
-        #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
-        #     7:  Entity(name='electric_mining_drill', value=7,  width=3, height=3, flow=0.5),
-        # 1:  Entity(name='electronic_circuit',    value=1,  width=1, height=1, flow=0.0),
-        #     9:  Entity(name='hazard_concrete',       value=9,  width=1, height=1, flow=0.0),
-        #     11: Entity(name='iron_ore',              value=11, width=1, height=1, flow=0.0),
-        #     12: Entity(name='iron_plate',            value=12, width=1, height=1, flow=0.0),
-        #     13: Entity(name='splitter',              value=13, width=2, height=1, flow=15.0),
-        #     14: Entity(name='steel_chest',           value=14, width=1, height=1, flow=0.0),
-    }
+    # `entities` is an alias for `items` for backwards compatibility.
+    # Post-unification, every grid-placeable entity is also an Item, so
+    # `entities[v]` returns the same dataclass as `items[v]`. The Rust
+    # binding hands us the canonical ordering: 1..5 = agent-placeable
+    # (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
+    # Source — placed last so the policy head can exclude them via
+    # len(entities)-2), 8..12 = non-placeable items.
+    entities = items
+    # Backwards-compat alias for the now-unified Item dataclass.
+    Entity = Item
 
 
     @dataclass
@@ -176,15 +158,15 @@ def datatypes(Enum, dataclass, mo):
         produces: dict[str, float]
 
 
+    # Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
+    # and exposed to Python via PyO3. To add a recipe, edit the Rust
+    # function and rebuild the wheel — Python sees it automatically.
     recipes = {
-        "electronic_circuit": Recipe(
-            consumes={"copper_cable": 6.0, "iron_plate": 2.0},
-            produces={"electronic_circuit": 2.0},
-        ),
-        "copper_cable": Recipe(
-            consumes={"copper_plate": 2.0},
-            produces={"copper_cable": 4.0},
-        ),
+        name: Recipe(
+            consumes=dict(data["consumes"]),
+            produces=dict(data["produces"]),
+        )
+        for name, data in factorion_rs.py_recipes().items()
     }
 
 

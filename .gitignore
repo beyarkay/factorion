@@ -16,3 +16,4 @@ summary.json
 .env
 sft_summary.json
 sft_checkpoint.pt
+claude-resume.sh

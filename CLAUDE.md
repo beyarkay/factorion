@@ -119,6 +119,23 @@ All six must pass before the work is considered complete.
 - Experiment runs are tracked with Weights & Biases.
 - The project uses pinned dependencies in `requirements.txt`.
 
+## Rust Type System
+
+**Make invalid states unrepresentable.** Anything that can be encoded in
+the Rust type system — non-empty collections, mutually exclusive states,
+pre/post-conditions on construction — should be expressed as types
+rather than checked at runtime. Compile-time guarantees are strictly
+preferable to runtime asserts or unit tests that re-check static data.
+
+Useful crates:
+- [`nonempty`](https://docs.rs/nonempty/) — `NonEmpty<T>` for collections
+  that must contain at least one element. Use this instead of
+  `Vec<T>` + a runtime `is_empty()` check.
+
+If a runtime test reads "this hardcoded data is non-empty / has positive
+values / has the right shape", that test is a smell — express the
+invariant in the type instead, and delete the test.
+
 ## Personal Preferences
 
 - Always run smoke tests before claiming work is done.
