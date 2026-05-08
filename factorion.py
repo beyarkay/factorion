@@ -355,7 +355,13 @@ def functions(
         # world[x, y, Channel.MISC.value] = misc.value
 
 
-    def world2html(world_WHC):
+    def world2html(world_WHC, highlights=None):
+        """Render a world tensor as an HTML table.
+
+        highlights: optional {(x, y): css_color_str} to colour specific cells
+        (overrides the default unavailable-footprint shading). Useful for
+        visualising diffs, model predictions, etc.
+        """
         assert len(world_WHC.shape) == 3, (
             f"Expected 3 dimensions got {world_WHC.shape}"
         )
@@ -428,9 +434,12 @@ def functions(
                     world_WHC[x, y, Channel.FOOTPRINT.value]
                     == Footprint.AVAILABLE.value
                 )
-                bg_style = (
-                    "background: rgba(255, 0, 0, 0.3);" if not available else ""
-                )
+                if highlights and (x, y) in highlights:
+                    bg_style = f"background: {highlights[(x, y)]};"
+                else:
+                    bg_style = (
+                        "background: rgba(255, 0, 0, 0.3);" if not available else ""
+                    )
                 #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
 
                 ghost_imgs = "\n".join(
