@@ -455,17 +455,16 @@ def functions(
                 if highlights and (x, y) in highlights:
                     bg_style = f"background: {highlights[(x, y)]};"
                 elif not available:
-                    # Grey cross-hatch (two stacked diagonals) marks
-                    # UNAVAILABLE tiles. Reads as "do not build here" rather
-                    # than the previous flat red, which clashed with
-                    # foreground highlights.
+                    # Subtle grey cross-hatch (two stacked diagonals) marks
+                    # UNAVAILABLE tiles. Low opacity so it sits behind any
+                    # entity icons without competing visually.
                     bg_style = (
                         "background:"
                         " repeating-linear-gradient(45deg,"
-                        "  rgba(80,80,80,0.5), rgba(80,80,80,0.5) 2px,"
+                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
                         "  transparent 2px, transparent 8px),"
                         " repeating-linear-gradient(-45deg,"
-                        "  rgba(80,80,80,0.5), rgba(80,80,80,0.5) 2px,"
+                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
                         "  transparent 2px, transparent 8px);"
                     )
                 else:
