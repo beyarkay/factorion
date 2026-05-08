@@ -420,6 +420,18 @@ def functions(
             Direction.SOUTH.value: (0, 1),
             Direction.WEST.value: (-1, 0),
         }
+        DIR_OPPOSITE = {
+            Direction.NORTH.value: Direction.SOUTH.value,
+            Direction.SOUTH.value: Direction.NORTH.value,
+            Direction.EAST.value: Direction.WEST.value,
+            Direction.WEST.value: Direction.EAST.value,
+        }
+        BORDER_SIDES = [
+            ("n", Direction.NORTH.value, (0, -1)),
+            ("e", Direction.EAST.value, (1, 0)),
+            ("s", Direction.SOUTH.value, (0, 1)),
+            ("w", Direction.WEST.value, (-1, 0)),
+        ]
 
         for y in range(H):
             html.append("<tr>")
@@ -467,31 +479,20 @@ def functions(
                     ]
                 )
 
-                hide_n = hide_e = hide_s = hide_w = False
-                if proto.name in BELT_NAMES and direction in DIR_INT_TO_DELTA:
-                    dx, dy = DIR_INT_TO_DELTA[direction]
-                    side_lead = {(1, 0): "e", (-1, 0): "w", (0, 1): "s", (0, -1): "n"}[(dx, dy)]
-                    side_trail = {"e": "w", "w": "e", "s": "n", "n": "s"}[side_lead]
-                    fb, _ = _belt_at(x + dx, y + dy)
-                    if fb:
-                        if side_lead == "e":
-                            hide_e = True
-                        elif side_lead == "w":
-                            hide_w = True
-                        elif side_lead == "s":
-                            hide_s = True
-                        elif side_lead == "n":
-                            hide_n = True
-                    bb, bd = _belt_at(x - dx, y - dy)
-                    if bb and bd == direction:
-                        if side_trail == "e":
-                            hide_e = True
-                        elif side_trail == "w":
-                            hide_w = True
-                        elif side_trail == "s":
-                            hide_s = True
-                        elif side_trail == "n":
-                            hide_n = True
+                hide_map = {"n": False, "e": False, "s": False, "w": False}
+                if proto.name in BELT_NAMES:
+                    for side_lbl, side_dir, (sx, sy) in BORDER_SIDES:
+                        nb_is_belt, nb_dir = _belt_at(x + sx, y + sy)
+                        if not nb_is_belt:
+                            continue
+                        i_flow_out = direction == side_dir
+                        n_flow_in = nb_dir == DIR_OPPOSITE[side_dir]
+                        if i_flow_out or n_flow_in:
+                            hide_map[side_lbl] = True
+                hide_n = hide_map["n"]
+                hide_e = hide_map["e"]
+                hide_s = hide_map["s"]
+                hide_w = hide_map["w"]
 
                 def _border_css(prefix, color):
                     return "; ".join(
