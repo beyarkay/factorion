@@ -175,6 +175,7 @@ def datatypes(Enum, dataclass, factorion_rs, mo):
         INSERTER_TRANSFER = 2
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
+        ASSEMBLE_1IN_1OUT = 5
 
 
     # Map Enum <--> grid deltas
@@ -2146,6 +2147,239 @@ def functions(
             if count == 0:
                 raise Exception(
                     f"Failed to find valid SPLITTER_MERGE lesson after {original_count} attempts"
+                )
+
+        elif kind.value == LessonKind.ASSEMBLE_1IN_1OUT.value:
+            # source → belt → input inserter → 3x3 assembler (with recipe) →
+            # output inserter → belt → sink. Recipe is randomly chosen from
+            # all 1-input 1-output recipes (copper_cable, iron_gear_wheel
+            # at the time of writing).
+            one_in_one_out = [
+                (name, r)
+                for name, r in recipes.items()
+                if len(r.consumes) == 1 and len(r.produces) == 1
+            ]
+            if not one_in_one_out:
+                raise Exception("No 1-input 1-output recipes available")
+
+            original_count = max(500, size * size * 12)
+            count = original_count
+            asm_ent = str2ent("assembling_machine_1")
+
+            # The 12 non-corner perimeter slots around a 3×3 assembler
+            # anchored at (ax, ay), expressed as (offset_x, offset_y,
+            # input_dir, output_dir). Input inserter direction faces
+            # *into* the assembler body; output direction faces *out*.
+            perim_slots = [
+                # North side (ddy = -1): above the top row
+                (0, -1, Direction.SOUTH, Direction.NORTH),
+                (1, -1, Direction.SOUTH, Direction.NORTH),
+                (2, -1, Direction.SOUTH, Direction.NORTH),
+                # South side (ddy = 3): below the bottom row
+                (0, 3, Direction.NORTH, Direction.SOUTH),
+                (1, 3, Direction.NORTH, Direction.SOUTH),
+                (2, 3, Direction.NORTH, Direction.SOUTH),
+                # West side (ddx = -1)
+                (-1, 0, Direction.EAST, Direction.WEST),
+                (-1, 1, Direction.EAST, Direction.WEST),
+                (-1, 2, Direction.EAST, Direction.WEST),
+                # East side (ddx = 3)
+                (3, 0, Direction.WEST, Direction.EAST),
+                (3, 1, Direction.WEST, Direction.EAST),
+                (3, 2, Direction.WEST, Direction.EAST),
+            ]
+
+            while count > 0:
+                count -= 1
+                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                    2, 0, 1
+                )
+                C, W, H = world_CWH.shape
+
+                # 3×3 assembler can't fit
+                if W < 3 or H < 3:
+                    raise Exception(
+                        f"Grid {W}×{H} too small for ASSEMBLE_1IN_1OUT (need ≥ 3×3)"
+                    )
+
+                # Pick recipe + items
+                recipe_name, recipe = random.choice(one_in_one_out)
+                input_item_name = next(iter(recipe.consumes.keys()))
+                output_item_name = next(iter(recipe.produces.keys()))
+                recipe_item_value = str2item(recipe_name).value
+                input_item_value = str2item(input_item_name).value
+                output_item_value = str2item(output_item_name).value
+
+                # Pick assembler anchor
+                ax = random.randint(0, W - 3)
+                ay = random.randint(0, H - 3)
+                asm_tiles = {
+                    (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
+                }
+
+                # Pick distinct input + output perimeter slots
+                in_slot, out_slot = random.sample(perim_slots, 2)
+                in_dx, in_dy, in_inserter_dir, _ = in_slot
+                out_dx, out_dy, _, out_inserter_dir = out_slot
+
+                in_inserter_pos = (ax + in_dx, ay + in_dy)
+                out_inserter_pos = (ax + out_dx, ay + out_dy)
+
+                in_dir_delta = DIR_TO_DELTA[in_inserter_dir]
+                out_dir_delta = DIR_TO_DELTA[out_inserter_dir]
+
+                # Belt cell that feeds the input inserter (its pickup):
+                in_pickup = (
+                    in_inserter_pos[0] - in_dir_delta[0],
+                    in_inserter_pos[1] - in_dir_delta[1],
+                )
+                # Belt cell where the output inserter drops:
+                out_drop = (
+                    out_inserter_pos[0] + out_dir_delta[0],
+                    out_inserter_pos[1] + out_dir_delta[1],
+                )
+
+                # All key cells in bounds
+                key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop]
+                if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
+                    continue
+                # Distinct + outside assembler body
+                if len(set(key_cells)) != len(key_cells):
+                    continue
+                if any(c in asm_tiles for c in key_cells):
+                    continue
+
+                # Pick source + sink positions outside everything reserved
+                reserved = asm_tiles | set(key_cells)
+                available = [
+                    (x, y)
+                    for x in range(W)
+                    for y in range(H)
+                    if (x, y) not in reserved
+                ]
+                if len(available) < 2:
+                    continue
+
+                source_pos, sink_pos = random.sample(available, 2)
+                dirs = [d for d in Direction if d != Direction.NONE]
+                source_dir = random.choice(dirs)
+                sink_dir = random.choice(dirs)
+
+                ds = DIR_TO_DELTA[source_dir]
+                dk = DIR_TO_DELTA[sink_dir]
+                source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+
+                # Source-output / sink-input must be in bounds and not overlap reserved
+                if not (0 <= source_output[0] < W and 0 <= source_output[1] < H):
+                    continue
+                if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
+                    continue
+                if source_output in reserved or sink_input in reserved:
+                    continue
+                if source_output == sink_input:
+                    continue
+
+                all_fixed = reserved | {source_pos, sink_pos}
+
+                # Path 1: source_output → in_pickup. Last belt orients toward
+                # the input inserter (matching INSERTER_TRANSFER convention).
+                blocked1 = (
+                    asm_tiles
+                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                       sink_input, out_drop}
+                )
+                path1 = find_belt_path(
+                    W, H, source_output, in_pickup, in_inserter_dir, blocked1
+                )
+                if path1 is None:
+                    continue
+                path1_cells = {(x, y) for x, y, _ in path1}
+
+                # Path 2: out_drop → sink_input. Last belt orients toward sink.
+                blocked2 = (
+                    asm_tiles
+                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                       in_pickup, source_output}
+                    | path1_cells
+                )
+                path2 = find_belt_path(
+                    W, H, out_drop, sink_input, sink_dir, blocked2
+                )
+                if path2 is None:
+                    continue
+
+                # 1 assembler + 2 inserters + belts (assembler counts as 1
+                # entity even though it occupies 9 tiles).
+                total_entities = len(path1) + len(path2) + 3
+                if total_entities > max_entities:
+                    continue
+
+                # Place source
+                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                    str2ent("source").value
+                )
+                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                    source_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = (
+                    input_item_value
+                )
+
+                # Place sink
+                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                    str2ent("sink").value
+                )
+                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                    sink_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
+                    output_item_value
+                )
+
+                # Place assembler (3×3, all tiles tagged with the recipe item)
+                for tx, ty in asm_tiles:
+                    world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
+                    world_CWH[Channel.DIRECTION.value, tx, ty] = (
+                        Direction.NORTH.value
+                    )
+                    world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
+
+                # Place input + output inserters
+                world_CWH[
+                    Channel.ENTITIES.value, in_inserter_pos[0], in_inserter_pos[1]
+                ] = str2ent("inserter").value
+                world_CWH[
+                    Channel.DIRECTION.value, in_inserter_pos[0], in_inserter_pos[1]
+                ] = in_inserter_dir.value
+
+                world_CWH[
+                    Channel.ENTITIES.value, out_inserter_pos[0], out_inserter_pos[1]
+                ] = str2ent("inserter").value
+                world_CWH[
+                    Channel.DIRECTION.value, out_inserter_pos[0], out_inserter_pos[1]
+                ] = out_inserter_dir.value
+
+                # Place belt paths
+                for x, y, d in path1 + path2:
+                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                        "transport_belt"
+                    ).value
+                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+                # Verify throughput > 0
+                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+                if tp <= 0:
+                    continue
+
+                min_entities_required = _remove_entities(
+                    world_CWH, num_missing_entities, total_entities
+                )
+
+                break
+            if count == 0:
+                raise Exception(
+                    f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
                 )
         else:
             raise Exception(f"Can't handle {kind}")

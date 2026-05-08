@@ -1030,3 +1030,347 @@ class TestWorld2HtmlMultiTile:
             f"splitter icon, got {full_count} (secondary tile is being "
             f"double-rendered)"
         )
+
+
+
+# ── ASSEMBLE_1IN_1OUT tests ──────────────────────────────────────────────────
+#
+# An ASSEMBLE_1IN_1OUT lesson is:
+#   source(input item) → belt → input inserter → 3×3 assembler (recipe) →
+#                                                output inserter → belt → sink(output item)
+# The recipe is randomly chosen from all 1-input 1-output recipes
+# (currently: copper_cable, iron_gear_wheel).
+
+
+# Recipes with one ingredient and one product type. Both 1-in-1-out
+# recipes available at the time of writing produce different output:
+#   copper_cable:    1 cu_plate → 2 cu_cable
+#   iron_gear_wheel: 2 ir_plate → 1 ir_gear_wheel
+ONE_IN_ONE_OUT_RECIPES = {
+    "copper_cable": ("copper_plate", "copper_cable"),
+    "iron_gear_wheel": ("iron_plate", "iron_gear_wheel"),
+}
+
+
+class TestAssemble1In1OutBasic:
+    """Basic sanity checks for ASSEMBLE_1IN_1OUT lesson generation."""
+
+    def test_generates_without_error(self):
+        world, min_ent = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        assert world is not None
+        assert min_ent is not None
+
+    def test_returns_cwh_tensor(self):
+        size = 10
+        world, _ = generate_lesson(
+            size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        assert world.shape[0] == len(Channel)
+        assert world.shape[1] == size
+        assert world.shape[2] == size
+
+    def test_has_one_source_one_sink(self):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
+
+    def test_has_one_assembler(self):
+        """The assembler is a 3×3 multi-tile entity, so 9 tiles."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+        assert asm_count == 9, f"Expected 9 assembler tiles, got {asm_count}"
+
+    def test_has_two_inserters(self):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
+        assert inserter_count == 2, f"Expected 2 inserters, got {inserter_count}"
+
+    def test_has_belts(self):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
+        assert belt_count >= 2, f"Expected at least 2 belts, got {belt_count}"
+
+    def test_nonzero_throughput(self):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0, f"Expected positive throughput, got {tp}"
+
+
+class TestAssemble1In1OutManySeeds:
+    """Generate many lessons with different seeds and verify all are valid."""
+
+    @pytest.mark.parametrize("seed", range(50))
+    def test_size_10_seed(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_size_8_seed(self, seed):
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_size_12_seed(self, seed):
+        world, _ = generate_lesson(
+            size=12, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_size_15_seed(self, seed):
+        world, _ = generate_lesson(
+            size=15, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+
+class TestAssemble1In1OutParity:
+    """Python and Rust throughput must agree on generated factories."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_parity_size_10(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        world_whc = world.permute(1, 2, 0)
+        py_tp, py_ur = py_throughput_safe(world_whc)
+        rs_tp, rs_ur = rs_throughput(world_whc)
+        assert abs(py_tp - rs_tp) < 1e-6, (
+            f"seed={seed}: Python={py_tp}, Rust={rs_tp}"
+        )
+        assert py_ur == rs_ur, (
+            f"seed={seed}: unreachable Python={py_ur}, Rust={rs_ur}"
+        )
+
+
+class TestAssemble1In1OutGridSizes:
+    """Test across a range of grid sizes."""
+
+    @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
+    def test_valid_factory_per_size(self, size):
+        world, _ = generate_lesson(
+            size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=7
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
+        assert (ent_layer == str2ent("assembling_machine_1").value).sum().item() == 9
+        assert (ent_layer == str2ent("inserter").value).sum().item() == 2
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0
+
+    def test_too_small_grid_raises(self):
+        """A grid smaller than 3×3 cannot fit the assembler."""
+        with pytest.raises(Exception):
+            generate_lesson(
+                size=2, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=0
+            )
+
+
+class TestAssemble1In1OutEntityDirections:
+    """All placed entities must have a non-NONE direction."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_all_entities_have_directions(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        dir_layer = world[Channel.DIRECTION.value]
+
+        for x in range(world.shape[1]):
+            for y in range(world.shape[2]):
+                ent_val = ent_layer[x, y].item()
+                if ent_val != str2ent("empty").value:
+                    dir_val = dir_layer[x, y].item()
+                    assert dir_val != Direction.NONE.value, (
+                        f"seed={seed}: entity {entities[ent_val].name} at ({x},{y}) "
+                        f"has NONE direction"
+                    )
+
+
+class TestAssemble1In1OutNoOverlaps:
+    """Verify no entity overlaps in generated factories."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_no_double_placement(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        occupied = []
+        for x in range(world.shape[1]):
+            for y in range(world.shape[2]):
+                if ent_layer[x, y].item() != str2ent("empty").value:
+                    occupied.append((x, y))
+        assert len(occupied) == len(set(occupied)), (
+            f"seed={seed}: duplicate positions"
+        )
+
+
+class TestAssemble1In1OutItems:
+    """Item channels: source carries the ingredient, sink the product, assembler the recipe."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_source_sink_items_match_a_known_recipe(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        item_layer = world[Channel.ITEMS.value]
+
+        source_pos = (ent_layer == str2ent("source").value).nonzero(as_tuple=False)[0]
+        sink_pos = (ent_layer == str2ent("sink").value).nonzero(as_tuple=False)[0]
+
+        source_item = item_layer[source_pos[0], source_pos[1]].item()
+        sink_item = item_layer[sink_pos[0], sink_pos[1]].item()
+
+        assert source_item != str2item("empty").value, (
+            f"seed={seed}: source has no item set"
+        )
+        assert sink_item != str2item("empty").value, (
+            f"seed={seed}: sink has no item set"
+        )
+        assert source_item != sink_item, (
+            f"seed={seed}: source and sink items are equal — recipe must transform"
+        )
+
+        # The (input, output) pair must match exactly one of the known
+        # 1-in-1-out recipes.
+        valid_pairs = {
+            (str2item(inp).value, str2item(out).value)
+            for (inp, out) in ONE_IN_ONE_OUT_RECIPES.values()
+        }
+        assert (source_item, sink_item) in valid_pairs, (
+            f"seed={seed}: pair ({source_item}, {sink_item}) does not match any "
+            f"known 1-in-1-out recipe"
+        )
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_assembler_recipe_matches_output(self, seed):
+        """The assembler's ITEMS channel value (recipe) should be the same
+        item the sink consumes."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        item_layer = world[Channel.ITEMS.value]
+        asm_positions = (ent_layer == str2ent("assembling_machine_1").value).nonzero(
+            as_tuple=False
+        )
+        sink_pos = (ent_layer == str2ent("sink").value).nonzero(as_tuple=False)[0]
+        sink_item = item_layer[sink_pos[0], sink_pos[1]].item()
+
+        for pos in asm_positions:
+            asm_item = item_layer[pos[0], pos[1]].item()
+            assert asm_item == sink_item, (
+                f"seed={seed}: assembler tile at ({pos[0].item()}, {pos[1].item()}) "
+                f"has recipe {asm_item}, sink expects {sink_item}"
+            )
+
+
+class TestAssemble1In1OutMissingEntities:
+    """Test entity removal."""
+
+    @pytest.mark.parametrize("num_missing", [1, 2, 3])
+    def test_removes_correct_count(self, num_missing):
+        world, min_ent = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=num_missing,
+            seed=42,
+        )
+        assert min_ent == num_missing
+        ent_layer = world[Channel.ENTITIES.value]
+        # Source, sink remain
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
+
+    @pytest.mark.parametrize("seed", range(10))
+    def test_missing_inf_returns_positive_count(self, seed):
+        world, min_ent = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=float("inf"), seed=seed,
+        )
+        assert world is not None
+        assert min_ent is not None and min_ent > 0
+
+
+class TestAssemble1In1OutDeterminism:
+    """Same seed → identical world."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
+    def test_same_seed_same_world(self, seed):
+        w1, m1 = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        w2, m2 = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        assert torch.equal(w1, w2), f"seed={seed}: regenerated world differs"
+        assert m1 == m2
+
+
+class TestAssemble1In1OutThroughputRange:
+    """Throughput should be positive and bounded by the assembler / inserter caps."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_throughput_in_expected_range(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        # Lower bound: positive
+        assert tp > 0, f"seed={seed}: tp={tp}"
+        # Upper bound: an inserter caps at 0.86 i/s, and the output side
+        # has only one inserter, so output throughput cannot exceed 0.86 ×
+        # produces_per_craft. The two recipes give 2× (CC) and 1× (IGW)
+        # the ingredient cost, so the loosest bound is 0.86 × 2 = 1.72.
+        assert tp <= 1.72 + 1e-6, f"seed={seed}: tp={tp} exceeds inserter+recipe cap"
+
+
+class TestAssemble1In1OutRecipeSelection:
+    """Recipe is randomly picked across seeds — both known recipes should
+    appear at least once across many seeds."""
+
+    def test_both_recipes_appear(self):
+        seen_recipes = set()
+        for seed in range(100):
+            world, _ = generate_lesson(
+                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                num_missing_entities=0, seed=seed,
+            )
+            ent_layer = world[Channel.ENTITIES.value]
+            item_layer = world[Channel.ITEMS.value]
+            sink_pos = (ent_layer == str2ent("sink").value).nonzero(as_tuple=False)[0]
+            sink_item = item_layer[sink_pos[0], sink_pos[1]].item()
+            seen_recipes.add(sink_item)
+
+        # We have 2 recipes; we should see both (probabilistically essentially
+        # certain across 100 seeds with uniform selection).
+        expected = {str2item("copper_cable").value, str2item("iron_gear_wheel").value}
+        assert seen_recipes == expected, (
+            f"Expected to see both recipes across 100 seeds, got {seen_recipes}"
+        )
