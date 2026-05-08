@@ -38,10 +38,21 @@ Factorion implementation uses 0.86 items/sec.
 
 ### Lane Interaction
 
-In real Factorio, inserters interact with [[glossary#lane|belt lanes]]:
+In real Factorio, inserters interact with [[glossary#lane|belt lanes]]
+asymmetrically:
 
-- **Placing onto a belt:** Items go on the **near lane** (closest to inserter)
-- **Picking from a belt:** Grabs from the **near lane** first
+- **Placing onto a belt:** Items go on the **far lane** (the lane on the far
+  side of the belt from the inserter). When belt and inserter face the same
+  direction, this is the **right lane from the belt's perspective**.
+- **Picking from a belt:** Inserters **prefer the nearest lane** and only
+  reach to the far lane if the near one is empty. For belts parallel to the
+  inserter, "nearest" resolves to the **left lane from the belt's
+  perspective**.
+
+This asymmetry (drop far, pick near) is deliberate: it means an inserter
+inserting into a belt and a second inserter extracting from the same belt
+downstream will not short-circuit — the extracting inserter sees the item on
+the lane it doesn't read first.
 
 > **Not yet in Factorion.** No lane distinction — inserters interact with the
 > belt as a single flow.
@@ -102,7 +113,7 @@ Python legacy names) but behave as infinite-capacity item endpoints.
 
 | Mechanic | Real Factorio | Factorion |
 |---|---|---|
-| Lane awareness | Near lane pickup/drop | No lanes |
+| Lane awareness | Drop on far lane, pick from near lane preferentially | No lanes |
 | Stack size | 1 per swing (basic) | Not modeled — flow rate only |
 | Power | Requires electricity | No power simulation |
 | Variants | 5+ types | Basic only (+ Source/Sink) |

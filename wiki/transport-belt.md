@@ -21,15 +21,29 @@ entity and the backbone of every factory.
 
 ### Two-Lane System
 
-Every belt has a **left lane** and a **right lane**, each carrying items
-independently. This is fundamental to belt mechanics:
+Every belt has a **left lane** and a **right lane** (relative to the belt's
+facing direction), and the two are **completely independent**:
 
-- Each lane carries half the total throughput (7.5 items/sec per lane)
-- Items stay on their lane unless forced off by a [[splitter]] or via
-  [[glossary#sideloading]]
-- An [[inserter]] placing onto a belt drops items on the **near lane** (the
-  lane closest to the inserter)
-- An [[inserter]] picking up from a belt grabs from the **near lane** first
+> "Belts have two parallel lanes, and the density and speed of each lane is
+> constant and independent of the other one." — [Transport belts/Physics](https://wiki.factorio.com/Transport_belts/Physics)
+
+- Each lane carries half the total throughput: **7.5 items/sec per lane**,
+  15 items/sec combined
+- Each lane holds **4 items per tile** (8 total per tile)
+- Items stay on their lane unless moved by a [[splitter]] or by
+  [[glossary#sideloading|sideloading]]
+- Internally each tile has **256 positions per lane**; saturated items sit
+  64 positions apart
+
+**Inserter lane targeting** ([Inserter](https://wiki.factorio.com/Inserter)):
+
+- **Placing onto a belt:** the inserter drops onto the **far lane** (the lane
+  on the far side of the belt from the inserter). When the belt and inserter
+  face the same direction, this is the **right lane from the belt's
+  perspective**.
+- **Picking from a belt:** the inserter **prefers the nearest lane** and only
+  reaches to the far lane if the near one is empty. For belts parallel to the
+  inserter, "nearest" resolves to the left lane from the belt's perspective.
 
 > **Not yet in Factorion:** The two-lane system is not modeled. Belts are
 > treated as single-lane pipes. If lanes are added later, sideloading and
@@ -39,23 +53,32 @@ independently. This is fundamental to belt mechanics:
 
 - Belts auto-connect when placed adjacent in compatible directions
 - A belt curves when placed at a 90-degree angle to an adjacent belt
-- Curved belts **compress** the inner lane and **spread** the outer lane — this
-  affects throughput on curves
+- **Curve geometry:** the outer lane of a turn is **1.15234375× longer**
+  (295/256) than a straight belt. Items on the outer lane travel a longer
+  path at the same speed, so they exit the curve later than items on the
+  inner lane — this staggers item arrivals but doesn't reduce per-lane
+  throughput.
 - Items do not fall off the end of a belt; they stop and wait
 
-> **Not yet in Factorion:** Belt curving and curve throughput penalties are not
-> modeled.
+> **Not yet in Factorion:** Belt curving and curve geometry are not modeled.
 
 ### Sideloading
 
 When a belt feeds into the **side** of another belt (perpendicular), items
-merge onto only **one lane** of the receiving belt. This is called
-[[glossary#sideloading]] and is a key technique for lane control:
+merge onto only **one lane** of the receiving belt — the lane on the side the
+feeder belt connects from. This is called [[glossary#sideloading|sideloading]]
+and is the primary technique for **lane control**:
 
-- Belt pointing East into the side of a belt pointing North → items go onto
-  the right lane of the northbound belt
-- Used to load a single lane or merge two item types onto separate lanes of
-  one belt
+- Belt pointing East into the west side of a belt pointing North → items go
+  onto the **left lane** of the northbound belt
+- Belt pointing West into the east side of a belt pointing North → items go
+  onto the **right lane** of the northbound belt
+- Used to: isolate a single item type onto one lane, merge two item types onto
+  separate lanes of one belt, or reach "lane compression" past a long chain
+
+Sideloading also has travel-distance mechanics (late sideloads travel 68
+internal positions, early sideloads travel 188) that affect how a sideloading
+junction behaves under load.
 
 > **Not yet in Factorion:** Sideloading is not modeled (requires lanes).
 

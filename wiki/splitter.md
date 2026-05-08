@@ -32,11 +32,30 @@ can handle two full belts simultaneously (30 items/sec total).
 
 ### Lane Behavior
 
-Each [[glossary#lane]] is split independently — left lane items on the input
-are distributed to left lanes on the outputs, and same for right lanes. The
-splitting decision is independent of item type.
+Splitters **preserve lanes**. As of Factorio 0.16.16:
 
-> **Not relevant to Factorion yet.** Lanes aren't modeled.
+> "The left and right lane splitting is now completely independent. The
+> decision whether item goes to left or right output is now independent of
+> the item type." — [Splitter](https://wiki.factorio.com/Splitter)
+
+The phrase "left and right lane splitting is independent" refers to the
+**routing decisions**, not to items physically moving between lanes:
+
+- An item entering on the left lane of an input belt exits on the left lane
+  of whichever output belt it's routed to.
+- An item entering on the right lane exits on the right lane of whichever
+  output.
+- The splitter decides per-lane which of the two output belts an item goes
+  to, and these two per-lane decisions are independent of each other (and
+  independent of item type).
+
+**Lanes are preserved by every belt-like entity in the game** — straight
+belts, curves, undergrounds, splitters, and sideloads (each sideload
+deposits onto a specific lane). Swapping lanes is only possible via a
+**pair of sideloads**.
+
+> **Not relevant to Factorion yet.** Lanes aren't modeled — splitters simply
+> divide total flow equally across outputs.
 
 ### Priority Settings
 
