@@ -2,11 +2,13 @@
 
 import pytest
 import random
+import re
 import torch
 
 from helpers import (
     Channel,
     Direction,
+    Footprint,
     LessonKind,
     Misc,
     compare_throughput,
@@ -16,6 +18,7 @@ from helpers import (
     rs_throughput,
     str2ent,
     str2item,
+    world2html,
 )
 
 
@@ -89,6 +92,22 @@ class TestInserterTransferBasic:
         inserter_flow = str2ent("inserter").flow
         assert tp <= inserter_flow + 1e-6, (
             f"Throughput {tp} exceeds inserter flow rate {inserter_flow}"
+        )
+
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_inserter_always_present_after_blanking(self, num_missing, seed):
+        """The central inserter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.INSERTER_TRANSFER,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
+        assert inserter_count == 1, (
+            f"Expected 1 inserter at num_missing={num_missing}, seed={seed}; "
+            f"got {inserter_count}"
         )
 
 
@@ -559,6 +578,23 @@ class TestSplitterSplitMissingEntities:
         )
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_splitter_always_present_after_blanking(self, num_missing, seed):
+        """The central splitter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous (could be
+        solved by belts alone)."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.SPLITTER_SPLIT,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
+        assert splitter_tiles == 2, (
+            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
+            f"seed={seed}; got {splitter_tiles}"
+        )
+
 
 class TestSplitterSplitDeterminism:
     """Same seed produces identical results."""
@@ -810,6 +846,23 @@ class TestSplitterMergeMissingEntities:
         )
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_splitter_always_present_after_blanking(self, num_missing, seed):
+        """The central splitter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous (could be
+        solved by belts alone)."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.SPLITTER_MERGE,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
+        assert splitter_tiles == 2, (
+            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
+            f"seed={seed}; got {splitter_tiles}"
+        )
+
 
 class TestSplitterMergeDeterminism:
     """Same seed produces identical results."""
@@ -920,4 +973,60 @@ class TestRemoveEntitiesSplitterIntegrity:
         units_removed = full_units - partial_units
         assert units_removed == 2, (
             f"seed={seed}: removed {units_removed} entity units, expected 2"
+        )
+
+
+def _count_full_opacity_icons(html, icon_b64):
+    """Count <img> tags rendering icon_b64 at full opacity (no opacity: 20%)."""
+    pattern = (
+        r"<img src='" + re.escape(icon_b64) + r"' style='([^']+)'"
+    )
+    return sum(1 for style in re.findall(pattern, html) if "opacity: 20%" not in style)
+
+
+def _ent_b64(name):
+    # Build a tiny world with just this entity to extract its rendered b64.
+    w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
+    w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    w[1, 1, Channel.ENTITIES.value] = str2ent(name).value
+    html = world2html(w).text
+    # Extract any data:image src from the rendered cell at (1, 1).
+    matches = re.findall(r"src='(data:image/png;base64,[^']+)'", html)
+    # The entity icon for the (1,1) cell is the unique non-empty icon.
+    empty_w = torch.zeros(3, 3, len(Channel), dtype=torch.int64)
+    empty_w[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    empty_html = world2html(empty_w).text
+    empty_srcs = set(re.findall(r"src='(data:image/png;base64,[^']+)'", empty_html))
+    for src in matches:
+        if src not in empty_srcs:
+            return src
+    raise AssertionError(f"could not find unique icon for {name}")
+
+
+class TestWorld2HtmlMultiTile:
+    """Regression: world2html must render a multi-tile entity once, not once
+    per occupied cell."""
+
+    @pytest.mark.parametrize("direction", DIRS, ids=lambda d: d.name)
+    def test_splitter_renders_one_full_icon(self, direction):
+        size = 8
+        world = torch.zeros(size, size, len(Channel), dtype=torch.int64)
+        world[..., Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        # Place a splitter; entity_id at BOTH occupied cells, matching what
+        # the lessons (and the env) write.
+        from helpers import Footprint as _Fp  # noqa
+        import factorion_rs
+        anchor = (3, 3)
+        tiles = factorion_rs.py_entity_tiles(anchor[0], anchor[1], direction.value, 2, 1)
+        for tx, ty in tiles:
+            world[tx, ty, Channel.ENTITIES.value] = str2ent("splitter").value
+            world[tx, ty, Channel.DIRECTION.value] = direction.value
+
+        html = world2html(world).text
+        splitter_icon = _ent_b64("splitter")
+        full_count = _count_full_opacity_icons(html, splitter_icon)
+        assert full_count == 1, (
+            f"splitter facing {direction.name}: expected 1 full-opacity "
+            f"splitter icon, got {full_count} (secondary tile is being "
+            f"double-rendered)"
         )

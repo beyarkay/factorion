@@ -145,17 +145,18 @@ def datatypes(Enum, dataclass, mo):
         ),
         # underground (which is identical to a transport belt)
         4: Entity(name="underground_belt", value=4, width=1, height=1, flow=15.0),
-        # sink
-        5: Entity(
-            name="bulk_inserter", value=5, width=1, height=1, flow=float("inf")
-        ),
-        # source
-        6: Entity(
-            name="stack_inserter", value=6, width=1, height=1, flow=float("inf")
-        ),
         # splitter: 2 tiles wide perpendicular to flow, 1 tile deep
         # 2 input belts × 2 lanes × 7.5 i/s per lane = 30 i/s total
-        7: Entity(name="splitter", value=7, width=2, height=1, flow=30.0),
+        5: Entity(name="splitter", value=5, width=2, height=1, flow=30.0),
+        # sink and source live last so the agent's entity head can exclude
+        # them via num_entities = len(entities) - 2 (they are env-spawned,
+        # not agent-placeable).
+        6: Entity(
+            name="bulk_inserter", value=6, width=1, height=1, flow=float("inf")
+        ),
+        7: Entity(
+            name="stack_inserter", value=7, width=1, height=1, flow=float("inf")
+        ),
         #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
         #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
         #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
@@ -189,7 +190,6 @@ def datatypes(Enum, dataclass, mo):
 
     class LessonKind(Enum):
         MOVE_ONE_ITEM = 0
-        ALL_BELTS_ALREADY_IN_PLACE = 1
         INSERTER_TRANSFER = 2
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
@@ -427,11 +427,16 @@ def functions(
                 proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
                 item = items[world_WHC[x, y, Channel.ITEMS.value]]
                 direction = world_WHC[x, y, Channel.DIRECTION.value]
-                entity_icon = ent_str2b64img(proto.name)
 
-                ghost_icons = []
+                # Secondary tile of a multi-tile entity: render only the
+                # ghost overlay, not the cell's own entity icon — otherwise
+                # the secondary cell looks like a second copy of the entity.
                 if (x, y) in ghost_at:
-                    ghost_icons.append(ent_str2b64img(ghost_at[(x, y)]))
+                    entity_icon = ent_str2b64img("empty")
+                    ghost_icons = [ent_str2b64img(ghost_at[(x, y)])]
+                else:
+                    entity_icon = ent_str2b64img(proto.name)
+                    ghost_icons = []
 
                 item_icon = item_str2b64img(item.name)
                 direction_arrow = DIRECTION_ARROWS.get(direction, "")
@@ -454,10 +459,21 @@ def functions(
                 )
                 if highlights and (x, y) in highlights:
                     bg_style = f"background: {highlights[(x, y)]};"
-                else:
+                elif not available:
+                    # Subtle grey cross-hatch (two stacked diagonals) marks
+                    # UNAVAILABLE tiles. Low opacity so it sits behind any
+                    # entity icons without competing visually.
                     bg_style = (
-                        "background: rgba(255, 0, 0, 0.3);" if not available else ""
+                        "background:"
+                        " repeating-linear-gradient(45deg,"
+                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
+                        "  transparent 2px, transparent 8px),"
+                        " repeating-linear-gradient(-45deg,"
+                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
+                        "  transparent 2px, transparent 8px);"
                     )
+                else:
+                    bg_style = ""
                 #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
 
                 ghost_imgs = "\n".join(
@@ -1491,13 +1507,32 @@ def functions(
         return G
 
 
-    def _remove_entities(world_CWH, num_missing_entities, total_entities):
+    def _remove_entities(world_CWH, num_missing_entities, total_entities, protected_positions=None):
         """Remove entities from a completed lesson, respecting multi-tile units.
+
+        Also sets the FOOTPRINT channel: cells empty in the completed layout
+        become UNAVAILABLE (the agent has no business placing there); cells
+        with entities stay AVAILABLE (and remain so after blanking, marking
+        them as the buildable region the agent is meant to fill).
+
+        protected_positions: optional set of (x, y) the lesson considers
+        structurally required (e.g. the central inserter in INSERTER_TRANSFER).
+        Any entity-group containing one of these tiles is excluded from the
+        removable pool, so the agent always sees those entities in its input.
+        Source/sink are protected unconditionally via the entity-id `skip` set.
 
         Returns min_entities_required (number of entity units removed).
         For multi-tile entities (e.g. splitters), all tiles are removed together
         as a single unit.
         """
+        protected_positions = protected_positions or set()
+        # Mark non-buildable region from the completed layout, before any
+        # blanking. Blanked cells keep FOOTPRINT=AVAILABLE so the agent
+        # knows they are placement targets.
+        empty_id = str2ent("empty").value
+        empty_mask = world_CWH[Channel.ENTITIES.value] == empty_id
+        world_CWH[Channel.FOOTPRINT.value][empty_mask] = Footprint.UNAVAILABLE.value
+
         if num_missing_entities == float("inf"):
             return total_entities
 
@@ -1535,14 +1570,14 @@ def functions(
                     continue
                 ent = entities[ent_val]
                 if ent.width == 1 and ent.height == 1:
-                    entity_groups.append({(x, y)})
+                    group = {(x, y)}
                 else:
                     d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
                     tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
-                    if tiles_list is None:
-                        entity_groups.append({(x, y)})
-                    else:
-                        entity_groups.append(set(map(tuple, tiles_list)))
+                    group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
+                if group & protected_positions:
+                    continue
+                entity_groups.append(group)
 
         num_samples = min(num_missing_entities, len(entity_groups))
         if num_samples == 0:
@@ -1564,7 +1599,7 @@ def functions(
         kind=LessonKind.MOVE_ONE_ITEM,
         num_missing_entities=float("inf"),
         seed=None,
-        random_item=False,
+        random_item=True,
         max_entities=float("inf"),
     ):
         if seed is not None:
@@ -1576,11 +1611,8 @@ def functions(
             2, 0, 1
         )
         C, W, H = world_CWH.shape
-        # print(f'making world for lesson {kind}')
         # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
-        if kind.value == LessonKind.ALL_BELTS_ALREADY_IN_PLACE.value:
-            pass
-        elif kind.value == LessonKind.MOVE_ONE_ITEM.value:
+        if kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
             original_count = max(500, size * size * 4)
             count = original_count
@@ -1604,7 +1636,9 @@ def functions(
                 )
 
                 if random_item:
-                    item_value = random.choice([v.value for k, v in items.items()])
+                    item_value = random.choice(
+                        [v.value for k, v in items.items() if v.name != "empty"]
+                    )
                 else:
                     item_value = str2item("electronic_circuit").value
 
@@ -1672,7 +1706,9 @@ def functions(
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 
@@ -1754,8 +1790,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Inserter is structurally required for this lesson; without
+                # it the source/sink layout becomes ambiguous (could be
+                # solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(inserter_pos)},
                 )
 
                 break
@@ -1770,7 +1810,9 @@ def functions(
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 
@@ -1940,8 +1982,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Splitter is structurally required for the lesson; without
+                # it the source(s)/sink(s) layout becomes ambiguous (could
+                # be solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(t) for t in tiles},
                 )
 
                 break
@@ -1952,11 +1998,23 @@ def functions(
 
         elif kind.value == LessonKind.SPLITTER_MERGE.value:
             # 2x(source → belts) → splitter → belts → 1 sink
+            #
+            # KNOWN LIMITATION — see issue #75. The splitter's single
+            # output belt caps total flow at 15 i/s while sources are
+            # infinite. One fully-connected source already saturates the
+            # output belt, so the second source's path is decorative —
+            # an agent can ignore one source entirely and still hit max
+            # throughput. Fine for SFT (which doesn't see throughput),
+            # but breaks the lesson's intent under PPO. Fix when wiring
+            # up PPO on these lessons (rate-limit sources, OR redesign so
+            # both splitter outputs feed the sink).
             original_count = max(500, size * size * 10)
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 
@@ -2093,8 +2151,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Splitter is structurally required for the lesson; without
+                # it the source(s)/sink(s) layout becomes ambiguous (could
+                # be solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(t) for t in tiles},
                 )
 
                 break

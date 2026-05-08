@@ -34,6 +34,7 @@ generate_lesson = _fns["generate_lesson"]
 str2ent = _fns["str2ent"]
 str2item = _fns["str2item"]
 world2graph = _fns["world2graph"]
+world2html = _fns["world2html"]
 calc_throughput_py = _fns["calc_throughput"]
 
 

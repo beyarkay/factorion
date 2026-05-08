@@ -135,6 +135,8 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    start_curriculum_level: int = 1
+    """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -771,8 +773,11 @@ class AgentCNN(nn.Module):
         self.width = base_env.size
         self.height = base_env.size
         self.channels = len(base_env.Channel)
-        # minus two for the source and the sink
-        self.num_entities = 2 # len(base_env.entities) - 2 TODO for now, only allow empty or transport_belt
+        # Source/sink (bulk_inserter, stack_inserter) live as the last two
+        # catalog entries; they are env-spawned, never agent-placeable. Sizing
+        # the head to len(entities)-2 makes them structurally impossible to
+        # sample, so we never waste samples on placements the env rejects.
+        self.num_entities = len(base_env.entities) - 2
         self.num_directions = len(base_env.Direction)
         self.num_items = len(base_env.items)
         self.num_misc = len(base_env.Misc)
@@ -1005,7 +1010,7 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    max_missing_entities = 1
+    max_missing_entities = args.start_curriculum_level
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={

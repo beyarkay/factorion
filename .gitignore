@@ -14,3 +14,5 @@ __pycache__/
 plan.md
 summary.json
 .env
+sft_summary.json
+sft_checkpoint.pt

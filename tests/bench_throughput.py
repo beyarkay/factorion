@@ -26,18 +26,21 @@ from helpers import (
     Direction,
     LessonKind,
     Misc,
+    entities,
     generate_lesson,
     make_world,
     py_throughput_safe,
     rs_throughput,
     set_assembler,
     set_entity,
+    str2ent,
 )
 
 
 # ── World generators ─────────────────────────────────────────────────────────
 
-ENTITY_VALUES = [0, 1, 2, 4, 5, 6]  # skip assembler (3x3)
+# Single-tile entities only (excludes assembler 3x3, splitter 2x1).
+ENTITY_VALUES = [eid for eid, e in entities.items() if e.width == 1 and e.height == 1]
 DIRECTION_VALUES = [0, 1, 2, 3, 4]
 ITEM_VALUES = [0, 1, 2, 3, 4]
 MISC_VALUES = [0, 1, 2]
@@ -61,7 +64,7 @@ def random_belt_world(size, rng, density=0.4):
     world = torch.zeros((size, size, 4), dtype=torch.int64)
     # Place a source
     sx, sy = rng.randint(0, size - 1), rng.randint(0, size - 1)
-    world[sx, sy, 0] = 6  # stack_inserter/source
+    world[sx, sy, 0] = str2ent("source").value
     world[sx, sy, 1] = rng.choice([1, 2, 3, 4])
     world[sx, sy, 2] = rng.choice([1, 2, 3])
     # Place a sink
@@ -69,7 +72,7 @@ def random_belt_world(size, rng, density=0.4):
         bx, by = rng.randint(0, size - 1), rng.randint(0, size - 1)
         if (bx, by) != (sx, sy):
             break
-    world[bx, by, 0] = 5  # bulk_inserter/sink
+    world[bx, by, 0] = str2ent("sink").value
     world[bx, by, 1] = rng.choice([1, 2, 3, 4])
     world[bx, by, 2] = world[sx, sy, 2]  # same item
     # Fill belts
