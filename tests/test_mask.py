@@ -253,3 +253,152 @@ class TestThroughputWithMask:
 
         assert t1 == t2
         assert u1 == u2
+
+
+class TestMultiTilePlacement:
+    """One agent action placing a multi-tile entity must fill the entity's
+    full footprint (anchor + secondaries), matching how the lesson
+    generators and place_multi_tile represent multi-tile entities."""
+
+    DIRS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
+
+    @pytest.fixture()
+    def big_env(self, registered_env):
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 8, "test")])
+        env = envs.envs[0].unwrapped
+        env.reset(options={"num_missing_entities": 0})
+        # Manually configure the world: keep just one source and one sink
+        # (the env's reward calc asserts on that), clear everything else,
+        # and reset the FOOTPRINT mask. This gives us a clean canvas for
+        # the multi-tile placement assertions.
+        size = env.size
+        env._world_CWH[Channel.ENTITIES.value, :, :] = str2ent("empty").value
+        env._world_CWH[Channel.DIRECTION.value, :, :] = Direction.NONE.value
+        env._world_CWH[Channel.FOOTPRINT.value, :, :] = 1
+        env._world_CWH[Channel.ENTITIES.value, 0, 0] = str2ent("source").value
+        env._world_CWH[Channel.DIRECTION.value, 0, 0] = Direction.EAST.value
+        env._world_CWH[Channel.ENTITIES.value, size - 1, size - 1] = str2ent("sink").value
+        env._world_CWH[Channel.DIRECTION.value, size - 1, size - 1] = Direction.EAST.value
+        return env
+
+    @pytest.mark.parametrize("direction", DIRS, ids=lambda d: d.name)
+    def test_splitter_fills_both_tiles(self, big_env, direction):
+        """Placing a splitter at an anchor must mark BOTH occupied cells."""
+        import factorion_rs
+
+        env = big_env
+        ax, ay = 3, 3
+
+        env.step({
+            "xy": np.array([ax, ay]),
+            "entity": str2ent("splitter").value,
+            "direction": direction.value,
+            "item": 0,
+            "misc": Misc.NONE.value,
+        })
+
+        expected_tiles = factorion_rs.py_entity_tiles(
+            ax, ay, direction.value, 2, 1
+        )
+        assert expected_tiles is not None, "splitter footprint computable"
+        for tx, ty in expected_tiles:
+            assert env._world_CWH[Channel.ENTITIES.value, tx, ty] == str2ent("splitter").value, (
+                f"direction={direction.name}: tile ({tx},{ty}) should hold splitter"
+            )
+            assert env._world_CWH[Channel.DIRECTION.value, tx, ty] == direction.value, (
+                f"direction={direction.name}: tile ({tx},{ty}) should carry direction"
+            )
+
+    @pytest.mark.parametrize("direction", DIRS, ids=lambda d: d.name)
+    def test_splitter_secondary_out_of_bounds_rejected(self, big_env, direction):
+        """A splitter placed so its secondary tile lands off-grid must be
+        rejected (previously: anchor-only bounds check let this pass)."""
+        import factorion_rs
+
+        env = big_env
+
+        # Pick an anchor that's in bounds but whose secondary lands off-grid
+        # for the chosen direction. py_entity_tiles tells us the footprint.
+        size = env.size
+        candidates = [(0, 0), (0, size - 1), (size - 1, 0), (size - 1, size - 1)]
+        anchor = None
+        for ax, ay in candidates:
+            tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
+            if tiles is None:
+                continue
+            if any(not (0 <= tx < size and 0 <= ty < size) for tx, ty in tiles):
+                anchor = (ax, ay)
+                break
+        if anchor is None:
+            pytest.skip(f"no off-grid splitter footprint at corners for {direction.name}")
+        ax, ay = anchor
+
+        invalid_before = env.invalid_actions
+        env.step({
+            "xy": np.array([ax, ay]),
+            "entity": str2ent("splitter").value,
+            "direction": direction.value,
+            "item": 0,
+            "misc": Misc.NONE.value,
+        })
+        assert env.invalid_actions == invalid_before + 1, (
+            f"direction={direction.name}: secondary off-grid not rejected"
+        )
+        # World must be unchanged at the anchor.
+        assert env._world_CWH[Channel.ENTITIES.value, ax, ay] == str2ent("empty").value
+
+    @pytest.mark.parametrize("direction", DIRS, ids=lambda d: d.name)
+    def test_splitter_secondary_overlaps_source_rejected(self, big_env, direction):
+        """If a splitter's secondary tile would overlap an existing source
+        or sink, the placement must be rejected."""
+        import factorion_rs
+
+        env = big_env
+        ax, ay = 3, 3
+        tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
+        secondary = next((t for t in tiles if t != (ax, ay)), None)
+        assert secondary is not None
+        sx, sy = secondary
+        env._world_CWH[Channel.ENTITIES.value, sx, sy] = str2ent("source").value
+
+        invalid_before = env.invalid_actions
+        env.step({
+            "xy": np.array([ax, ay]),
+            "entity": str2ent("splitter").value,
+            "direction": direction.value,
+            "item": 0,
+            "misc": Misc.NONE.value,
+        })
+        assert env.invalid_actions == invalid_before + 1, (
+            f"direction={direction.name}: splitter overlapping source not rejected"
+        )
+        # Source survives.
+        assert env._world_CWH[Channel.ENTITIES.value, sx, sy] == str2ent("source").value
+        # Anchor stays empty.
+        assert env._world_CWH[Channel.ENTITIES.value, ax, ay] == str2ent("empty").value
+
+    @pytest.mark.parametrize("direction", DIRS, ids=lambda d: d.name)
+    def test_splitter_secondary_masked_rejected(self, big_env, direction):
+        """If a splitter's secondary tile is FOOTPRINT=UNAVAILABLE, the
+        whole placement must be rejected (anchor-only mask check used to
+        let this through)."""
+        import factorion_rs
+
+        env = big_env
+        ax, ay = 3, 3
+        tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
+        secondary = next(t for t in tiles if t != (ax, ay))
+        env._world_CWH[Channel.FOOTPRINT.value, secondary[0], secondary[1]] = 0
+
+        invalid_before = env.invalid_actions
+        env.step({
+            "xy": np.array([ax, ay]),
+            "entity": str2ent("splitter").value,
+            "direction": direction.value,
+            "item": 0,
+            "misc": Misc.NONE.value,
+        })
+        assert env.invalid_actions == invalid_before + 1, (
+            f"direction={direction.name}: splitter on masked secondary not rejected"
+        )
+        assert env._world_CWH[Channel.ENTITIES.value, ax, ay] == str2ent("empty").value
