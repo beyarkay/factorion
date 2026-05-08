@@ -96,8 +96,12 @@ impl Misc {
 /// There is no `Empty` variant: absence of an item is encoded as
 /// channel value 0 and decoded to `Option::<Item>::None`.
 ///
-/// Integer values are arranged so placeable items occupy ids 1..=7 and
-/// non-placeable items 8..=12.
+/// Integer-id layout:
+///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
+///   6..=10  — non-placeable items (CC, CP, IP, EC, IGW)
+///   11..=12 — env-spawned (Sink, Source) — MUST remain the last two
+///             ids; ppo.py sizes its entity head to `len(items)-2` to
+///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Item {
     // Placeable, agent-buildable (1..=5)
@@ -463,6 +467,57 @@ mod tests {
                 non_placeable
             );
         }
+    }
+
+    /// LOAD-BEARING INVARIANT — DO NOT REMOVE.
+    ///
+    /// Source and Sink MUST be the last two ids in the Item enum (and the
+    /// last two entries in `all_items()`). The PPO policy in ppo.py sizes
+    /// its entity head to `len(items) - 2` to structurally exclude
+    /// env-spawned source/sink from agent placement (`ppo.py` line 780).
+    /// If anyone reorders the enum and breaks this invariant, the head
+    /// will start sampling Source/Sink as agent actions, the env will
+    /// reject them, and training will silently regress.
+    ///
+    /// Mirror tests live in tests/test_recipes.py — keep both. If you
+    /// genuinely need to remove this protection, you must also rewrite
+    /// `AgentCNN.__init__`'s entity-head sizing in ppo.py.
+    #[test]
+    fn test_source_and_sink_are_last_two_ids() {
+        let all = all_items();
+        let n = all.len();
+        assert!(n >= 2, "all_items() must contain at least Source and Sink");
+        assert_eq!(
+            all[n - 2],
+            Item::Sink,
+            "Item::Sink must be the second-to-last entry in all_items() — \
+             ppo.py's entity-head sizing depends on this"
+        );
+        assert_eq!(
+            all[n - 1],
+            Item::Source,
+            "Item::Source must be the last entry in all_items() — \
+             ppo.py's entity-head sizing depends on this"
+        );
+
+        // The integer values must also be the two highest. Using `as i64`
+        // here is the canonical way to read the discriminant.
+        let max_id = all.iter().map(|&i| i as i64).max().unwrap();
+        let second_max_id = {
+            let mut ids: Vec<i64> = all.iter().map(|&i| i as i64).collect();
+            ids.sort();
+            ids[ids.len() - 2]
+        };
+        assert_eq!(
+            Item::Source as i64,
+            max_id,
+            "Item::Source must have the highest id"
+        );
+        assert_eq!(
+            Item::Sink as i64,
+            second_max_id,
+            "Item::Sink must have the second-highest id"
+        );
     }
 
     #[test]
