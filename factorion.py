@@ -1599,7 +1599,7 @@ def functions(
         kind=LessonKind.MOVE_ONE_ITEM,
         num_missing_entities=float("inf"),
         seed=None,
-        random_item=False,
+        random_item=True,
         max_entities=float("inf"),
     ):
         if seed is not None:
@@ -1636,7 +1636,9 @@ def functions(
                 )
 
                 if random_item:
-                    item_value = random.choice([v.value for k, v in items.items()])
+                    item_value = random.choice(
+                        [v.value for k, v in items.items() if v.name != "empty"]
+                    )
                 else:
                     item_value = str2item("electronic_circuit").value
 
@@ -1704,7 +1706,9 @@ def functions(
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 
@@ -1806,7 +1810,9 @@ def functions(
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 
@@ -2006,7 +2012,9 @@ def functions(
             count = original_count
 
             if random_item:
-                item_value = random.choice([v.value for k, v in items.items()])
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
             else:
                 item_value = str2item("electronic_circuit").value
 

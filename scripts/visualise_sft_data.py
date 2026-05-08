@@ -76,11 +76,9 @@ def main(args: VizArgs) -> None:
         try:
             solved, _ = generate_lesson(
                 size=args.size, kind=kind, num_missing_entities=0, seed=seed,
-                random_item=True,
             )
             task, _ = generate_lesson(
                 size=args.size, kind=kind, num_missing_entities=level, seed=seed,
-                random_item=True,
             )
         except Exception:
             continue
