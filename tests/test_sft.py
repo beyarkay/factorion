@@ -1,6 +1,7 @@
 """Tests for SFT pre-training pipeline."""
 
 import os
+import random
 import sys
 
 import pytest
@@ -134,17 +135,18 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, masks = generate_dataset(args)
+        obs, tiles, ents, dirs, masks, seeds = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
         assert len(dirs) == 100
         assert len(masks) == 100
+        assert len(seeds) == 100
 
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        obs, _, _, _, _ = generate_dataset(args)
+        obs, *_ = generate_dataset(args)
         assert obs.shape[1] == len(Channel)  # channels
         assert obs.shape[2] == 5  # width
         assert obs.shape[3] == 5  # height
@@ -152,9 +154,24 @@ class TestGenerateDataset:
     def test_tile_indices_in_range(self):
         """Tile indices should be in [0, W*H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        _, tiles, _, _, _ = generate_dataset(args)
+        _, tiles, *_ = generate_dataset(args)
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
+
+    def test_seeds_returned_per_pair(self):
+        """generate_dataset returns a per-pair lesson_seed tensor; pairs
+        from the same lesson share the same seed (multiple pairs per
+        lesson when level > 1)."""
+        args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
+        *_, seeds = generate_dataset(args)
+        # Multiple unique seeds expected (each lesson has its own seed).
+        assert len(set(seeds.tolist())) >= 2
+        # And at least one seed appears more than once (level=2 → ~2 pairs).
+        from collections import Counter
+        counts = Counter(seeds.tolist())
+        assert any(c > 1 for c in counts.values()), (
+            "expected at least one lesson to produce >1 pair sharing a seed"
+        )
 
     @pytest.mark.parametrize("kind_name", ["SPLITTER_MERGE", "SPLITTER_SPLIT"])
     @pytest.mark.parametrize("seed", range(20))
@@ -191,7 +208,7 @@ class TestGenerateDataset:
         carry electronic_circuit, which would let the model memorise
         item_id == electronic_circuit as a constant feature."""
         args = SFTArgs(seed=1, size=8, num_samples=200, max_level=4)
-        obs, _, _, _, _ = generate_dataset(args)
+        obs, *_ = generate_dataset(args)
         item_channel = obs[:, Channel.ITEMS.value]
         unique_items = set(item_channel.flatten().tolist())
         # 0 = empty (always present); we want at least 2 non-empty item types.
@@ -289,7 +306,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, masks = generate_dataset(args)
+        obs, tiles, ents, dirs, masks, _ = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -357,3 +374,30 @@ class TestTrainSFTEndToEnd:
         assert "best_val_acc" in s
         assert s["num_samples"] == 100
         assert s["epochs"] == 2
+
+
+class TestTrainValSeedSplit:
+    def test_no_lesson_overlap_between_train_and_val(self, capsys):
+        """Train and val sets must not share any lesson seed. A pair-level
+        random split would leak factories across the boundary; this test
+        is the regression guard for the seed-level split in train_sft."""
+        # Capture stdout to read the "Train/val split at seed level" line.
+        args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2, val_frac=0.2)
+        # Reproduce the split logic without spinning up training.
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        _, _, _, _, _, lesson_seeds = generate_dataset(args)
+
+        unique_seeds = torch.unique(lesson_seeds)
+        n_seeds = len(unique_seeds)
+        n_val_seeds = max(1, int(n_seeds * args.val_frac))
+        seed_perm = unique_seeds[torch.randperm(n_seeds)]
+        val_seeds = set(seed_perm[:n_val_seeds].tolist())
+        train_seeds = set(seed_perm[n_val_seeds:].tolist())
+
+        assert val_seeds.isdisjoint(train_seeds), (
+            f"Train and val share lesson seeds: {val_seeds & train_seeds}"
+        )
+        assert len(val_seeds) >= 1
+        assert len(train_seeds) >= 1

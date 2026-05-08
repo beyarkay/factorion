@@ -183,6 +183,11 @@ def generate_dataset(args: SFTArgs):
     Samples uniformly across every value of `LessonKind` (auto-discovered),
     so adding a new lesson kind to the enum is automatically picked up.
     Per-kind sample/lesson counts are printed to stdout for visibility.
+
+    Also returns a per-pair lesson_seed tensor so callers can split
+    train/val at the lesson level (a single lesson with level=L produces
+    ~L pairs that all share its seed; splitting at the pair level leaks
+    factories across the split).
     """
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
     kinds = list(LessonKind)
@@ -192,6 +197,7 @@ def generate_dataset(args: SFTArgs):
     all_entity = []
     all_direction = []
     all_valid_masks = []
+    all_lesson_seeds = []
     kind_samples = {k.name: 0 for k in kinds}
     kind_lessons = {k.name: 0 for k in kinds}
 
@@ -200,7 +206,12 @@ def generate_dataset(args: SFTArgs):
 
     while samples_so_far < args.num_samples:
         kind = random.choice(kinds)
-        level = random.randint(1, max_level)
+        # Always blank at the cap. Per-lesson sampling of level was wasteful:
+        # extract_expert_actions already produces the full progression
+        # (1 entity placed → 2 → … → all-blanked) within a single lesson,
+        # so a lower level just means fewer pairs per factory. Pinning to
+        # max_level gives us maximum training data per factory layout.
+        level = max_level
         seed += 1
 
         try:
@@ -227,6 +238,7 @@ def generate_dataset(args: SFTArgs):
             all_entity.append(entity_id)
             all_direction.append(direction_id)
             all_valid_masks.append(valid_mask)
+            all_lesson_seeds.append(seed)
             kind_samples[kind.name] += 1
             samples_so_far += 1
             if samples_so_far >= args.num_samples:
@@ -242,8 +254,9 @@ def generate_dataset(args: SFTArgs):
     ent_tensor = torch.tensor(all_entity, dtype=torch.long)
     dir_tensor = torch.tensor(all_direction, dtype=torch.long)
     mask_tensor = torch.stack(all_valid_masks)
+    seed_tensor = torch.tensor(all_lesson_seeds, dtype=torch.long)
 
-    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor
+    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor, seed_tensor
 
 
 def train_sft(args: SFTArgs):
@@ -254,15 +267,31 @@ def train_sft(args: SFTArgs):
 
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
-    obs, tiles, ents, dirs, valid_masks = generate_dataset(args)
+    obs, tiles, ents, dirs, valid_masks, lesson_seeds = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
 
-    # Train/val split
-    n = len(obs)
-    n_val = max(1, int(n * args.val_frac))
-    n_train = n - n_val
-    perm = torch.randperm(n)
-    train_idx, val_idx = perm[:n_train], perm[n_train:]
+    # Train/val split at the LESSON SEED level. A pair-level random split
+    # would leak factories: a lesson at level=L produces ~L pairs that all
+    # share the same factory geometry, just at different intermediate
+    # states. Splitting on pairs would put some of those intermediates in
+    # train and others in val, so val acc would measure "complete a factory
+    # whose other partial states you've trained on", not "complete a
+    # factory you've never seen". Splitting on seed guarantees val
+    # factories are entirely held out.
+    unique_seeds = torch.unique(lesson_seeds)
+    n_seeds = len(unique_seeds)
+    n_val_seeds = max(1, int(n_seeds * args.val_frac))
+    seed_perm = unique_seeds[torch.randperm(n_seeds)]
+    val_seeds = set(seed_perm[:n_val_seeds].tolist())
+
+    val_mask = torch.tensor([s.item() in val_seeds for s in lesson_seeds])
+    val_idx = val_mask.nonzero(as_tuple=False).squeeze(-1)
+    train_idx = (~val_mask).nonzero(as_tuple=False).squeeze(-1)
+    print(
+        f"Train/val split at seed level: {len(train_idx)} train pairs from "
+        f"{n_seeds - n_val_seeds} lessons, {len(val_idx)} val pairs from "
+        f"{n_val_seeds} lessons (no factory overlap)"
+    )
 
     train_ds = TensorDataset(obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx], valid_masks[train_idx])
     val_ds = TensorDataset(obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx], valid_masks[val_idx])
