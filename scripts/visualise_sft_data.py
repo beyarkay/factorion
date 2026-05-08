@@ -53,6 +53,8 @@ class VizArgs:
     """random seed"""
     output_path: str = "sft_training_data.html"
     """where to write the HTML"""
+    kind: str = ""
+    """if set, only render this LessonKind (e.g. ASSEMBLE_1IN_1OUT)"""
     final_only: bool = False
     """if set, render one solved (completed) factory per lesson instead of
     each (state, action) pair — useful for eyeballing variety in
@@ -65,7 +67,10 @@ def main(args: VizArgs) -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
-    kinds = list(LessonKind)
+    if args.kind:
+        kinds = [LessonKind[args.kind]]
+    else:
+        kinds = list(LessonKind)
 
     sections: list[str] = []
     kind_counts: dict[str, int] = {k.name: 0 for k in kinds}
