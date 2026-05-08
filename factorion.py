@@ -427,11 +427,16 @@ def functions(
                 proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
                 item = items[world_WHC[x, y, Channel.ITEMS.value]]
                 direction = world_WHC[x, y, Channel.DIRECTION.value]
-                entity_icon = ent_str2b64img(proto.name)
 
-                ghost_icons = []
+                # Secondary tile of a multi-tile entity: render only the
+                # ghost overlay, not the cell's own entity icon — otherwise
+                # the secondary cell looks like a second copy of the entity.
                 if (x, y) in ghost_at:
-                    ghost_icons.append(ent_str2b64img(ghost_at[(x, y)]))
+                    entity_icon = ent_str2b64img("empty")
+                    ghost_icons = [ent_str2b64img(ghost_at[(x, y)])]
+                else:
+                    entity_icon = ent_str2b64img(proto.name)
+                    ghost_icons = []
 
                 item_icon = item_str2b64img(item.name)
                 direction_arrow = DIRECTION_ARROWS.get(direction, "")
