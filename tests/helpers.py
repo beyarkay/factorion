@@ -22,6 +22,7 @@ _, _fns = factorion.functions.run()
 
 Channel = _objs["Channel"]
 Direction = _objs["Direction"]
+DIR_TO_DELTA = _objs["DIR_TO_DELTA"]
 Footprint = _objs["Footprint"]
 Misc = _objs["Misc"]
 LessonKind = _objs["LessonKind"]

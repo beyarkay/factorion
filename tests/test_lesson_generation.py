@@ -7,6 +7,7 @@ import torch
 
 from helpers import (
     Channel,
+    DIR_TO_DELTA,
     Direction,
     Footprint,
     LessonKind,
@@ -14,10 +15,12 @@ from helpers import (
     compare_throughput,
     entities,
     generate_lesson,
+    items,
     py_throughput_safe,
     rs_throughput,
     str2ent,
     str2item,
+    world2graph,
     world2html,
 )
 
@@ -1409,4 +1412,317 @@ class TestAssemble1In1OutRecipeSelection:
         expected = {str2item("copper_cable").value, str2item("iron_gear_wheel").value}
         assert seen_recipes == expected, (
             f"Expected to see both recipes across 100 seeds, got {seen_recipes}"
+        )
+
+
+# ── ASSEMBLE_1IN_1OUT — semantic-correctness coverage ───────────────────────
+
+
+def _asm_tiles(world):
+    """Return the set of (x, y) tiles occupied by the assembler."""
+    ent = world[Channel.ENTITIES.value]
+    asm_val = str2ent("assembling_machine_1").value
+    return {tuple(p.tolist()) for p in (ent == asm_val).nonzero(as_tuple=False)}
+
+
+def _inserters(world):
+    """Return [(pos, dir_value)] for each inserter on the grid."""
+    ent = world[Channel.ENTITIES.value]
+    dirs = world[Channel.DIRECTION.value]
+    ins_val = str2ent("inserter").value
+    out = []
+    for p in (ent == ins_val).nonzero(as_tuple=False):
+        x, y = p[0].item(), p[1].item()
+        out.append(((x, y), dirs[x, y].item()))
+    return out
+
+
+def _dir_from_value(d_val):
+    """Look up Direction enum from int value, or None for NONE."""
+    for d in Direction:
+        if d.value == d_val:
+            return d
+    return None
+
+
+class TestAssemble1In1OutInserterGeometry:
+    """Each lesson must have exactly one input inserter (drop into the
+    assembler body) and one output inserter (pickup from the assembler
+    body). Inserters must be on valid non-corner perimeter slots."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_exactly_one_input_one_output_inserter(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        asm = _asm_tiles(world)
+        assert len(asm) == 9
+
+        input_count = 0
+        output_count = 0
+        for (x, y), d_val in _inserters(world):
+            d = _dir_from_value(d_val)
+            assert d is not None, f"seed={seed}: inserter at ({x},{y}) has invalid dir"
+            dx, dy = DIR_TO_DELTA[d]
+            drop = (x + dx, y + dy)
+            pickup = (x - dx, y - dy)
+            drop_in_asm = drop in asm
+            pickup_in_asm = pickup in asm
+            assert drop_in_asm or pickup_in_asm, (
+                f"seed={seed}: inserter at ({x},{y}) dir={d.name} — neither "
+                f"drop {drop} nor pickup {pickup} is inside assembler"
+            )
+            assert not (drop_in_asm and pickup_in_asm), (
+                f"seed={seed}: inserter at ({x},{y}) has both pickup and drop "
+                f"inside assembler — impossible geometry"
+            )
+            if drop_in_asm:
+                input_count += 1
+            else:
+                output_count += 1
+
+        assert input_count == 1, f"seed={seed}: expected 1 input inserter, got {input_count}"
+        assert output_count == 1, f"seed={seed}: expected 1 output inserter, got {output_count}"
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_inserters_on_non_corner_perimeter(self, seed):
+        """Inserters must be on the 12 non-corner perimeter slots — not on
+        the 4 corner slots (which the engine ignores) and not anywhere else.
+        """
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        asm = _asm_tiles(world)
+        # Anchor = min x, min y of the assembler tiles
+        ax = min(x for x, _ in asm)
+        ay = min(y for _, y in asm)
+
+        valid_slots = set()
+        # 12 non-corner perimeter slots: 3 per side
+        for d in range(3):
+            valid_slots.add((ax + d, ay - 1))     # north side
+            valid_slots.add((ax + d, ay + 3))     # south side
+            valid_slots.add((ax - 1, ay + d))     # west side
+            valid_slots.add((ax + 3, ay + d))     # east side
+
+        for (x, y), _ in _inserters(world):
+            assert (x, y) in valid_slots, (
+                f"seed={seed}: inserter at ({x},{y}) is not on a valid "
+                f"non-corner perimeter slot of the assembler at ({ax},{ay})"
+            )
+
+
+class TestAssemble1In1OutConnectivity:
+    """The graph must form a continuous source → … → sink path that passes
+    through the assembler. No orphaned belts."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_source_reaches_sink_through_assembler(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        G = world2graph(world.permute(1, 2, 0))
+
+        # Find source / sink / assembler nodes by name substring
+        source_nodes = [n for n in G.nodes if "stack_inserter" in n]
+        sink_nodes = [n for n in G.nodes if "bulk_inserter" in n]
+        asm_nodes = [n for n in G.nodes if "assembling_machine" in n]
+        assert len(source_nodes) == 1, f"seed={seed}: {len(source_nodes)} sources"
+        assert len(sink_nodes) == 1, f"seed={seed}: {len(sink_nodes)} sinks"
+        assert len(asm_nodes) == 1, f"seed={seed}: {len(asm_nodes)} assemblers"
+
+        import networkx as nx
+        # Source must reach assembler
+        assert nx.has_path(G, source_nodes[0], asm_nodes[0]), (
+            f"seed={seed}: source cannot reach assembler"
+        )
+        # Assembler must reach sink
+        assert nx.has_path(G, asm_nodes[0], sink_nodes[0]), (
+            f"seed={seed}: assembler cannot reach sink"
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_no_orphaned_belts(self, seed):
+        """Every placed belt should be on the source → sink chain (or at
+        least connected to either endpoint via the graph)."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        G = world2graph(world.permute(1, 2, 0))
+        import networkx as nx
+
+        source_nodes = [n for n in G.nodes if "stack_inserter" in n]
+        sink_nodes = [n for n in G.nodes if "bulk_inserter" in n]
+        belt_nodes = [n for n in G.nodes if "transport_belt" in n]
+        assert source_nodes and sink_nodes
+        src, snk = source_nodes[0], sink_nodes[0]
+        for belt in belt_nodes:
+            assert nx.has_path(G, src, belt) or nx.has_path(G, belt, snk), (
+                f"seed={seed}: belt {belt} is orphaned — not reachable from "
+                f"source nor reaches sink"
+            )
+
+
+class TestAssemble1In1OutThroughputPerRecipe:
+    """Each recipe has a known closed-form throughput given a
+    1 input inserter + 1 output inserter cap of 0.86 i/s.
+
+      copper_cable: 1 cu_plate → 2 cu_cable, 0.5s
+        Input flow at full inserter cap:
+          0.86 cu_plate/s; recipe needs 1 per craft → ratio 0.86
+          produces 2 × 0.86 = 1.72 cu_cable/s
+          output inserter caps at 0.86 → final throughput = 0.86 cu_cable/s
+
+      iron_gear_wheel: 2 ir_plate → 1 ir_gear_wheel, 0.5s
+        Input flow at full inserter cap:
+          0.86 ir_plate/s; recipe needs 2 per craft → ratio 0.43
+          produces 1 × 0.43 = 0.43 ir_gear_wheel/s
+          output inserter cap (0.86) is not binding → final = 0.43
+    """
+
+    EXPECTED_TP = {
+        "copper_cable": 0.86,
+        "iron_gear_wheel": 0.43,
+    }
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_throughput_matches_recipe_closed_form(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        item = world[Channel.ITEMS.value]
+        sink_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+        recipe_name = items[item[sink_pos[0], sink_pos[1]].item()].name
+        expected = self.EXPECTED_TP[recipe_name]
+
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert abs(tp - expected) < 1e-3, (
+            f"seed={seed}, recipe={recipe_name}: expected ≈ {expected}, got {tp}"
+        )
+
+
+class TestAssemble1In1OutSourceSinkOrientation:
+    """Source / sink must face into the belt chain — the cell they output
+    to / take from must contain a belt (or directly the inserter pickup)."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_source_faces_belt(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        dirs = world[Channel.DIRECTION.value]
+        src_pos = (ent == str2ent("source").value).nonzero(as_tuple=False)[0]
+        sx, sy = src_pos[0].item(), src_pos[1].item()
+        d = _dir_from_value(dirs[sx, sy].item())
+        dx, dy = DIR_TO_DELTA[d]
+        out_x, out_y = sx + dx, sy + dy
+        downstream = ent[out_x, out_y].item()
+        # Should be a belt or inserter (the source feeds into the belt chain)
+        valid = {str2ent("transport_belt").value, str2ent("inserter").value}
+        assert downstream in valid, (
+            f"seed={seed}: source at ({sx},{sy}) faces ({out_x},{out_y}) which "
+            f"holds entity {entities[downstream].name}, not a belt/inserter"
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_sink_faces_belt(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        dirs = world[Channel.DIRECTION.value]
+        snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+        sx, sy = snk_pos[0].item(), snk_pos[1].item()
+        d = _dir_from_value(dirs[sx, sy].item())
+        dx, dy = DIR_TO_DELTA[d]
+        # Sink takes from `pos - delta(dir)` (its input cell)
+        in_x, in_y = sx - dx, sy - dy
+        upstream = ent[in_x, in_y].item()
+        valid = {str2ent("transport_belt").value, str2ent("inserter").value}
+        assert upstream in valid, (
+            f"seed={seed}: sink at ({sx},{sy}) takes from ({in_x},{in_y}) which "
+            f"holds entity {entities[upstream].name}, not a belt/inserter"
+        )
+
+
+class TestAssemble1In1OutBeltItems:
+    """Belt tiles should not have items set in the ITEMS channel — items
+    only travel through belts at runtime; the channel is for source/sink/
+    recipe metadata, not transient cargo."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_belt_items_channel_is_empty(self, seed):
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        item = world[Channel.ITEMS.value]
+        belt_val = str2ent("transport_belt").value
+        empty = str2item("empty").value
+        for p in (ent == belt_val).nonzero(as_tuple=False):
+            x, y = p[0].item(), p[1].item()
+            assert item[x, y].item() == empty, (
+                f"seed={seed}: belt at ({x},{y}) has unexpected item "
+                f"{items[item[x, y].item()].name}"
+            )
+
+
+class TestAssemble1In1OutEdgeCases:
+    """Edge cases: tiny grids, large grids."""
+
+    @pytest.mark.parametrize("size", [1, 2])
+    def test_grid_too_small_raises(self, size):
+        with pytest.raises(Exception):
+            generate_lesson(
+                size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                num_missing_entities=0, seed=0,
+            )
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_large_grid_works(self, seed):
+        world, _ = generate_lesson(
+            size=20, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0
+
+
+class TestAssemble1In1OutMaxEntities:
+    """The `max_entities` cap on belt-path length should be respected by
+    the generator (it retries until it finds a layout under the cap)."""
+
+    @pytest.mark.parametrize("seed", range(10))
+    def test_respects_max_entities(self, seed):
+        # Generate without a cap to find the natural entity count, then
+        # impose a cap of natural+5 and verify regeneration succeeds and
+        # respects the limit.
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        belts = (ent == str2ent("transport_belt").value).sum().item()
+        natural_total = belts + 3  # +1 assembler unit, +2 inserters
+
+        # Generation under the natural cap should still succeed.
+        world2, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=0, seed=seed, max_entities=natural_total + 5,
+        )
+        ent2 = world2[Channel.ENTITIES.value]
+        belts2 = (ent2 == str2ent("transport_belt").value).sum().item()
+        total2 = belts2 + 3
+        assert total2 <= natural_total + 5, (
+            f"seed={seed}: generator placed {total2} entities (cap was {natural_total + 5})"
         )
