@@ -156,6 +156,35 @@ class TestGenerateDataset:
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
 
+    @pytest.mark.parametrize("kind_name", ["SPLITTER_MERGE", "SPLITTER_SPLIT"])
+    @pytest.mark.parametrize("seed", range(20))
+    def test_multi_tile_entities_emit_one_pair(self, kind_name, seed):
+        """Splitters are one entity that occupy two tiles; extract_expert_actions
+        must emit a single (anchor) action pair per splitter, not one per cell.
+        Otherwise the model is trained to call place-splitter twice for one
+        splitter, which would place two splitters at execution time."""
+        kind = getattr(LessonKind, kind_name)
+        try:
+            solved, _ = generate_lesson(size=8, kind=kind, num_missing_entities=0, seed=seed)
+            task, _ = generate_lesson(size=8, kind=kind, num_missing_entities=20, seed=seed)
+        except Exception:
+            pytest.skip(f"{kind_name} seed {seed}: lesson generation failed")
+
+        splitter_id = str2ent("splitter").value
+        solved_splitter = (solved[Channel.ENTITIES.value] == splitter_id).sum().item()
+        task_splitter = (task[Channel.ENTITIES.value] == splitter_id).sum().item()
+        # Skip cases where this lesson didn't include / didn't blank the splitter:
+        # without a splitter diff there's nothing to verify here.
+        if solved_splitter != 2 or task_splitter != 0:
+            pytest.skip("splitter not present + blanked in this case")
+
+        pairs = extract_expert_actions(solved, task)
+        splitter_pairs = [p for p in pairs if p[2] == splitter_id]
+        assert len(splitter_pairs) == 1, (
+            f"{kind_name} seed={seed}: expected 1 splitter placement pair, "
+            f"got {len(splitter_pairs)} (one per occupied cell — bug)"
+        )
+
     def test_samples_span_multiple_kinds(self):
         """Dataset should draw from more than one LessonKind.
 

@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion  # noqa: E402
+import factorion_rs  # noqa: E402
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
@@ -39,6 +40,7 @@ _, _fns = factorion.functions.run()
 Channel = _objs["Channel"]
 Direction = _objs["Direction"]
 LessonKind = _objs["LessonKind"]
+entities = _objs["entities"]
 generate_lesson = _fns["generate_lesson"]
 str2ent = _fns["str2ent"]
 
@@ -51,6 +53,10 @@ def extract_expert_actions(solved_CWH, task_CWH):
     marking ALL tiles that still need entities at this step — not just the
     one chosen. This allows multi-label tile loss to avoid penalizing the
     model for predicting a valid-but-different tile.
+
+    Multi-tile entities (e.g. splitters) emit a single pair at the anchor
+    tile, not one per occupied cell — placing the anchor fills the whole
+    footprint at execution time.
 
     Actions are applied sequentially in random order, so intermediate states
     reflect realistic observations the agent would see.
@@ -66,18 +72,42 @@ def extract_expert_actions(solved_CWH, task_CWH):
     if len(diff_locs) == 0:
         return []
 
+    # Group multi-tile entities so each placement is one (anchor) action,
+    # not one per occupied cell. Walk in raster order; when we encounter a
+    # multi-tile entity, claim its anchor and mark the rest as secondaries
+    # to skip.
+    diff_set = {tuple(loc) for loc in diff_locs}
+    secondary_tiles: set[tuple[int, int]] = set()
+    for x, y in sorted(diff_set):
+        if (x, y) in secondary_tiles:
+            continue
+        ent_val = int(solved_CWH[Channel.ENTITIES.value, x, y])
+        proto = entities[ent_val]
+        if proto.width == 1 and proto.height == 1:
+            continue
+        d_val = int(solved_CWH[Channel.DIRECTION.value, x, y])
+        tile_list = factorion_rs.py_entity_tiles(x, y, d_val, proto.width, proto.height)
+        if tile_list is None:
+            continue
+        anchor = tuple(tile_list[0])
+        for tx, ty in tile_list:
+            if (tx, ty) != anchor:
+                secondary_tiles.add((tx, ty))
+
+    diff_locs = [loc for loc in diff_locs if tuple(loc) not in secondary_tiles]
+
     # Shuffle for diversity
     random.shuffle(diff_locs)
 
     state = task_CWH.clone()
-    remaining = set(range(len(diff_locs)))
     pairs = []
 
-    for i, (x, y) in enumerate(diff_locs):
-        # Build mask of all remaining valid tiles (including this one)
+    # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
+    remaining_locs = [tuple(loc) for loc in diff_locs]
+
+    for step, (x, y) in enumerate(diff_locs):
         valid_mask = torch.zeros(W * H)
-        for j in remaining:
-            rx, ry = diff_locs[j]
+        for rx, ry in remaining_locs[step:]:
             valid_mask[rx * H + ry] = 1.0
 
         obs = state.clone()
@@ -87,10 +117,18 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
         pairs.append((obs, tile_idx, entity_id, direction_id, valid_mask))
 
-        # Apply action to state (so next observation reflects this placement)
-        for ch in range(C):
-            state[ch, x, y] = solved_CWH[ch, x, y]
-        remaining.discard(i)
+        # Apply action: copy the entity's full footprint from solved, not
+        # just the anchor cell, so the observation reflects what placing
+        # the anchor does at execution time.
+        proto = entities[entity_id]
+        if proto.width == 1 and proto.height == 1:
+            tiles_to_apply = [(x, y)]
+        else:
+            tile_list = factorion_rs.py_entity_tiles(x, y, direction_id, proto.width, proto.height)
+            tiles_to_apply = [tuple(t) for t in tile_list] if tile_list is not None else [(x, y)]
+        for tx, ty in tiles_to_apply:
+            for ch in range(C):
+                state[ch, tx, ty] = solved_CWH[ch, tx, ty]
 
     return pairs
 
