@@ -54,16 +54,19 @@ class TestFootprintChannel:
         assert world.shape[2] == len(Channel)
         assert world.shape[2] == 5
 
-    def test_lesson_marks_buildable_region(self, env):
-        """After reset, FOOTPRINT=AVAILABLE iff the solved layout had an
-        entity at that cell. Cells empty in the completed lesson are
-        UNAVAILABLE so the agent can't place there."""
+    def test_default_lesson_footprint_is_all_available(self, env):
+        """Default lessons must NOT touch FOOTPRINT — every cell stays
+        AVAILABLE. A prior version marked every empty cell in the
+        completed layout as UNAVAILABLE, which gave the optimal
+        placement set away to the agent (AVAILABLE cells were exactly
+        the cells the agent needed to fill). Bounded build regions are
+        an opt-in per-lesson override, not a default."""
         obs, _ = env.reset(options={"num_missing_entities": 1})
         footprint = obs[Channel.FOOTPRINT.value]
-        # At least one of each value must be present for an interesting
-        # lesson (the solved factory has both entities and empty space).
-        assert (footprint == 1).any(), "Expected some AVAILABLE cells"
-        assert (footprint == 0).any(), "Expected some UNAVAILABLE cells (empty in solved)"
+        assert (footprint == 1).all(), (
+            "FOOTPRINT must be all-AVAILABLE for default lessons; "
+            "leaking the placement set is the regression."
+        )
 
     def test_observation_space_shape(self, env):
         """Observation space should have 5 channels."""
@@ -95,14 +98,10 @@ class TestMaskedPlacement:
     def test_placement_on_available_tile_succeeds(self, env):
         """Placing an entity on a FOOTPRINT=1 tile should work normally."""
         env.reset(options={"num_missing_entities": 1})
-        # Find an empty cell that's still AVAILABLE (i.e. blanked from solved,
-        # not always-empty). With num_missing_entities=1 there's exactly one.
-        empty_id = str2ent("empty").value
-        ent = env._world_CWH[Channel.ENTITIES.value]
-        fp = env._world_CWH[Channel.FOOTPRINT.value]
-        candidates = ((ent == empty_id) & (fp == 1)).nonzero(as_tuple=False)
-        assert len(candidates) > 0, "No blanked-but-available tile found"
-        tx, ty = candidates[0].tolist()
+        # Default lessons leave all tiles AVAILABLE; pick any empty cell.
+        target = find_tile(env, "empty")
+        assert target is not None, "No empty tile found"
+        tx, ty = target
 
         assert env._world_CWH[Channel.FOOTPRINT.value, tx, ty] == 1
 
