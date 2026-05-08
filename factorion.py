@@ -1992,6 +1992,16 @@ def functions(
 
         elif kind.value == LessonKind.SPLITTER_MERGE.value:
             # 2x(source → belts) → splitter → belts → 1 sink
+            #
+            # KNOWN LIMITATION — see issue #75. The splitter's single
+            # output belt caps total flow at 15 i/s while sources are
+            # infinite. One fully-connected source already saturates the
+            # output belt, so the second source's path is decorative —
+            # an agent can ignore one source entirely and still hit max
+            # throughput. Fine for SFT (which doesn't see throughput),
+            # but breaks the lesson's intent under PPO. Fix when wiring
+            # up PPO on these lessons (rate-limit sources, OR redesign so
+            # both splitter outputs feed the sink).
             original_count = max(500, size * size * 10)
             count = original_count
 
