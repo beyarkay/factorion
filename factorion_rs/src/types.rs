@@ -123,9 +123,11 @@ pub enum EntityKind {
     Inserter = 2,
     AssemblingMachine1 = 3,
     UndergroundBelt = 4,
-    Sink = 5,   // bulk_inserter in Python
-    Source = 6, // stack_inserter in Python
-    Splitter = 7,
+    Splitter = 5,
+    // Source/Sink are placed by the env, not the agent. They live last so
+    // the policy's entity head can be sized to exclude them (last two IDs).
+    Sink = 6,   // bulk_inserter in Python
+    Source = 7, // stack_inserter in Python
 }
 
 impl EntityKind {
@@ -135,9 +137,9 @@ impl EntityKind {
             2 => EntityKind::Inserter,
             3 => EntityKind::AssemblingMachine1,
             4 => EntityKind::UndergroundBelt,
-            5 => EntityKind::Sink,
-            6 => EntityKind::Source,
-            7 => EntityKind::Splitter,
+            5 => EntityKind::Splitter,
+            6 => EntityKind::Sink,
+            7 => EntityKind::Source,
             _ => EntityKind::Empty,
         }
     }
@@ -288,8 +290,9 @@ mod tests {
         assert_eq!(EntityKind::from_i64(2), EntityKind::Inserter);
         assert_eq!(EntityKind::from_i64(3), EntityKind::AssemblingMachine1);
         assert_eq!(EntityKind::from_i64(4), EntityKind::UndergroundBelt);
-        assert_eq!(EntityKind::from_i64(5), EntityKind::Sink);
-        assert_eq!(EntityKind::from_i64(6), EntityKind::Source);
+        assert_eq!(EntityKind::from_i64(5), EntityKind::Splitter);
+        assert_eq!(EntityKind::from_i64(6), EntityKind::Sink);
+        assert_eq!(EntityKind::from_i64(7), EntityKind::Source);
         assert_eq!(EntityKind::from_i64(-1), EntityKind::Empty);
     }
 

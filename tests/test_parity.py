@@ -25,6 +25,7 @@ from helpers import (
     py_throughput_safe,
     set_entity,
     set_splitter,
+    str2ent,
 )
 
 
@@ -337,7 +338,7 @@ class TestFuzz:
         # Place source
         sx, sy = rng.randint(0, size - 1), rng.randint(0, size - 1)
         sdir = rng.choice([1, 2, 3, 4])
-        world[sx, sy, 0] = 6  # source
+        world[sx, sy, 0] = str2ent("source").value
         world[sx, sy, 1] = sdir
         world[sx, sy, 2] = 1  # copper_cable
 
@@ -347,7 +348,7 @@ class TestFuzz:
             if (bx, by) != (sx, sy):
                 break
         bdir = rng.choice([1, 2, 3, 4])
-        world[bx, by, 0] = 5  # sink
+        world[bx, by, 0] = str2ent("sink").value
         world[bx, by, 1] = bdir
         world[bx, by, 2] = 1  # copper_cable
 

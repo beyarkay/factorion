@@ -145,17 +145,18 @@ def datatypes(Enum, dataclass, mo):
         ),
         # underground (which is identical to a transport belt)
         4: Entity(name="underground_belt", value=4, width=1, height=1, flow=15.0),
-        # sink
-        5: Entity(
-            name="bulk_inserter", value=5, width=1, height=1, flow=float("inf")
-        ),
-        # source
-        6: Entity(
-            name="stack_inserter", value=6, width=1, height=1, flow=float("inf")
-        ),
         # splitter: 2 tiles wide perpendicular to flow, 1 tile deep
         # 2 input belts × 2 lanes × 7.5 i/s per lane = 30 i/s total
-        7: Entity(name="splitter", value=7, width=2, height=1, flow=30.0),
+        5: Entity(name="splitter", value=5, width=2, height=1, flow=30.0),
+        # sink and source live last so the agent's entity head can exclude
+        # them via num_entities = len(entities) - 2 (they are env-spawned,
+        # not agent-placeable).
+        6: Entity(
+            name="bulk_inserter", value=6, width=1, height=1, flow=float("inf")
+        ),
+        7: Entity(
+            name="stack_inserter", value=7, width=1, height=1, flow=float("inf")
+        ),
         #     4:  Entity(name='copper_cable',          value=4,  width=1, height=1, flow=0.0),
         #     6:  Entity(name='copper_plate',          value=6,  width=1, height=1, flow=0.0),
         #     5:  Entity(name='copper_ore',            value=5,  width=1, height=1, flow=0.0),
