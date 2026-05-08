@@ -190,7 +190,6 @@ def datatypes(Enum, dataclass, mo):
 
     class LessonKind(Enum):
         MOVE_ONE_ITEM = 0
-        ALL_BELTS_ALREADY_IN_PLACE = 1
         INSERTER_TRANSFER = 2
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
@@ -1577,11 +1576,8 @@ def functions(
             2, 0, 1
         )
         C, W, H = world_CWH.shape
-        # print(f'making world for lesson {kind}')
         # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
-        if kind.value == LessonKind.ALL_BELTS_ALREADY_IN_PLACE.value:
-            pass
-        elif kind.value == LessonKind.MOVE_ONE_ITEM.value:
+        if kind.value == LessonKind.MOVE_ONE_ITEM.value:
             # Choose a random source/sink
             original_count = max(500, size * size * 4)
             count = original_count
