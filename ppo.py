@@ -1270,7 +1270,7 @@ if __name__ == "__main__":
         if args.track:
             wandb.log(iter_metrics, step=global_step)
 
-        if (iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations:
+        if args.capture_video and ((iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations):
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
             render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name) for i in range(num_render_envs)])
