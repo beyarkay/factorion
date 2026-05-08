@@ -185,6 +185,21 @@ class TestGenerateDataset:
             f"got {len(splitter_pairs)} (one per occupied cell — bug)"
         )
 
+    def test_observations_have_diverse_items(self):
+        """SFT observations should carry varied item IDs in the ITEMS
+        channel (sources/sinks). Without random_item the lessons all
+        carry electronic_circuit, which would let the model memorise
+        item_id == electronic_circuit as a constant feature."""
+        args = SFTArgs(seed=1, size=8, num_samples=200, max_level=4)
+        obs, _, _, _, _ = generate_dataset(args)
+        item_channel = obs[:, Channel.ITEMS.value]
+        unique_items = set(item_channel.flatten().tolist())
+        # 0 = empty (always present); we want at least 2 non-empty item types.
+        non_empty = unique_items - {0}
+        assert len(non_empty) >= 2, (
+            f"Expected >=2 distinct non-empty item types, got {sorted(unique_items)}"
+        )
+
     def test_samples_span_multiple_kinds(self, capsys):
         """Dataset should draw from more than one LessonKind.
 
