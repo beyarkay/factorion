@@ -2377,8 +2377,13 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # The assembler + its recipe is structurally required: the
+                # recipe channel cannot be inferred from belts alone, so
+                # without the assembler the lesson is ambiguous. Protect
+                # all 9 assembler tiles from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions=asm_tiles,
                 )
 
                 break

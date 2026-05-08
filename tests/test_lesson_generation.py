@@ -1317,6 +1317,42 @@ class TestAssemble1In1OutMissingEntities:
         assert world is not None
         assert min_ent is not None and min_ent > 0
 
+    @pytest.mark.parametrize("seed", range(10))
+    @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
+    def test_assembler_always_present(self, seed, num_missing):
+        """The assembler is structurally required and must never be removed,
+        regardless of num_missing_entities."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+        assert asm_count == 9, (
+            f"seed={seed}, num_missing={num_missing}: assembler removed "
+            f"({asm_count} tiles, expected 9)"
+        )
+
+    @pytest.mark.parametrize("seed", range(10))
+    @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
+    def test_assembler_recipe_preserved_after_removal(self, seed, num_missing):
+        """The recipe channel on assembler tiles must survive blanking."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        item_layer = world[Channel.ITEMS.value]
+        asm_positions = (ent_layer == str2ent("assembling_machine_1").value).nonzero(
+            as_tuple=False
+        )
+        for pos in asm_positions:
+            recipe_val = item_layer[pos[0], pos[1]].item()
+            assert recipe_val != str2item("empty").value, (
+                f"seed={seed}, num_missing={num_missing}: assembler tile "
+                f"({pos[0].item()},{pos[1].item()}) lost its recipe"
+            )
+
 
 class TestAssemble1In1OutDeterminism:
     """Same seed → identical world."""
