@@ -176,6 +176,7 @@ def datatypes(Enum, dataclass, factorion_rs, mo):
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
         ASSEMBLE_1IN_1OUT = 5
+        MOVE_VIA_UG_BELT = 6
 
 
     # Map Enum <--> grid deltas
@@ -2391,6 +2392,154 @@ def functions(
                 raise Exception(
                     f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
                 )
+
+        elif kind.value == LessonKind.MOVE_VIA_UG_BELT.value:
+            # Source → [belts] → UG_DOWN → wall → UG_UP → [belts] → sink
+            # along a single straight line. The wall is 1..4 empty tiles which
+            # become FOOTPRINT=UNAVAILABLE in the agent's observation, forcing
+            # the agent to bridge them with an underground belt pair (max gap
+            # = 5 ⇒ wall ≤ 4). All off-line tiles are also UNAVAILABLE, so no
+            # surface detour exists.
+            original_count = max(500, size * size * 4)
+            count = original_count
+
+            while count > 0:
+                count -= 1
+                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                    2, 0, 1
+                )
+                C, W, H = world_CWH.shape
+
+                direction = random.choice(
+                    [d for d in Direction if d != Direction.NONE]
+                )
+                is_horizontal = direction in (Direction.EAST, Direction.WEST)
+                span = W if is_horizontal else H
+                perp = H if is_horizontal else W
+
+                # Need ≥ 5 tiles along the line: source + UG_DOWN + 1-tile
+                # wall + UG_UP + sink.
+                if span < 5:
+                    raise Exception(
+                        f"Grid {W}×{H} too small for MOVE_VIA_UG_BELT (need ≥ 5 along {direction})"
+                    )
+
+                max_wall = min(4, span - 4)
+                wall_width = random.randint(1, max_wall)
+                slack = span - 4 - wall_width
+                pad_before = random.randint(0, slack)
+                pad_after = random.randint(0, slack - pad_before)
+                total_len = 4 + wall_width + pad_before + pad_after
+
+                line_perp = random.randint(0, perp - 1)
+                start = random.randint(0, span - total_len)
+
+                if random_item:
+                    item_value = random.choice(
+                        [v.value for k, v in items.items() if v.name != "empty"]
+                    )
+                else:
+                    item_value = str2item("electronic_circuit").value
+
+                # Build offsets along the line (forward = increasing pos_along).
+                # Reversed for WEST/NORTH so source still leads.
+                forward = direction in (Direction.EAST, Direction.SOUTH)
+                offsets = {}
+                i = 0
+                offsets["source"] = i
+                i += 1
+                pre_keys = []
+                for k in range(pad_before):
+                    key = f"belt_pre_{k}"
+                    offsets[key] = i
+                    pre_keys.append(key)
+                    i += 1
+                offsets["ug_down"] = i
+                i += 1
+                i += wall_width  # wall — no entities placed here
+                offsets["ug_up"] = i
+                i += 1
+                post_keys = []
+                for k in range(pad_after):
+                    key = f"belt_post_{k}"
+                    offsets[key] = i
+                    post_keys.append(key)
+                    i += 1
+                offsets["sink"] = i
+
+                if not forward:
+                    offsets = {k: total_len - 1 - v for k, v in offsets.items()}
+
+                def linepos(off, ip=is_horizontal, lp=line_perp, st=start):
+                    pa = st + off
+                    return (pa, lp) if ip else (lp, pa)
+
+                source_pos = linepos(offsets["source"])
+                sink_pos = linepos(offsets["sink"])
+                ug_down_pos = linepos(offsets["ug_down"])
+                ug_up_pos = linepos(offsets["ug_up"])
+
+                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                    str2ent("source").value
+                )
+                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                    direction.value
+                )
+                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+
+                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                    str2ent("sink").value
+                )
+                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                    direction.value
+                )
+                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
+
+                world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = (
+                    str2ent("underground_belt").value
+                )
+                world_CWH[
+                    Channel.DIRECTION.value, ug_down_pos[0], ug_down_pos[1]
+                ] = direction.value
+                world_CWH[Channel.MISC.value, ug_down_pos[0], ug_down_pos[1]] = (
+                    Misc.UNDERGROUND_DOWN.value
+                )
+
+                world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = (
+                    str2ent("underground_belt").value
+                )
+                world_CWH[
+                    Channel.DIRECTION.value, ug_up_pos[0], ug_up_pos[1]
+                ] = direction.value
+                world_CWH[Channel.MISC.value, ug_up_pos[0], ug_up_pos[1]] = (
+                    Misc.UNDERGROUND_UP.value
+                )
+
+                for key in pre_keys + post_keys:
+                    bx, by = linepos(offsets[key])
+                    world_CWH[Channel.ENTITIES.value, bx, by] = str2ent(
+                        "transport_belt"
+                    ).value
+                    world_CWH[Channel.DIRECTION.value, bx, by] = direction.value
+
+                # Sanity: the solved factory must actually deliver items.
+                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+                if tp <= 0:
+                    continue
+
+                total_entities = 2 + pad_before + pad_after
+                if total_entities > max_entities:
+                    continue
+
+                min_entities_required = _remove_entities(
+                    world_CWH, num_missing_entities, total_entities,
+                )
+                break
+            if count == 0:
+                raise Exception(
+                    f"Failed to find valid MOVE_VIA_UG_BELT lesson after {original_count} attempts"
+                )
+
         else:
             raise Exception(f"Can't handle {kind}")
         # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
