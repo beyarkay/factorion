@@ -98,8 +98,9 @@ impl Misc {
 ///
 /// Integer-id layout:
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
-///   6..=10  — non-placeable items (CC, CP, IP, EC, IGW)
-///   11..=12 — env-spawned (Sink, Source) — MUST remain the last two
+///   6..=65  — non-placeable items (recipe ingredients / products / raw
+///             materials / non-modeled buildings exposed only as items)
+///   66..=67 — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,17 +111,80 @@ pub enum Item {
     AssemblingMachine1 = 3,
     UndergroundBelt = 4,
     Splitter = 5,
-    // Non-placeable (6..=10) — recipe ingredients / products
+    // Non-placeable (6..=65) — recipe ingredients / products
     CopperCable = 6,
     CopperPlate = 7,
     IronPlate = 8,
     ElectronicCircuit = 9,
     IronGearWheel = 10,
+    // Raw materials (mining/chopping not modelled — no recipes)
+    Wood = 11,
+    Stone = 12,
+    StoneBrick = 13,
+    Concrete = 14,
+    CopperOre = 15,
+    IronOre = 16,
+    // Crafted intermediates
+    IronStick = 17,
+    Barrel = 18,
+    AdvancedCircuit = 19,
+    EngineUnit = 20,
+    // Smelting / refining (some have fluid recipes — added as Items, recipes skipped)
+    SteelPlate = 21,
+    SolidFuel = 22,
+    PlasticBar = 23,
+    Sulfur = 24,
+    Battery = 25,
+    Explosives = 26,
+    // Storage
+    WoodenChest = 27,
+    IronChest = 28,
+    StorageTank = 29,
+    // Fast belt tier
+    FastTransportBelt = 30,
+    FastUndergroundBelt = 31,
+    FastSplitter = 32,
+    // Inserter variants
+    BurnerInserter = 33,
+    LongHandedInserter = 34,
+    FastInserter = 35,
+    // Power & pipes
+    SmallElectricPole = 36,
+    MediumElectricPole = 37,
+    BigElectricPole = 38,
+    Substation = 39,
+    Pipe = 40,
+    PipeToGround = 41,
+    Pump = 42,
+    // Production buildings + modules
+    Accumulator = 43,
+    Beacon = 44,
+    Boiler = 45,
+    BurnerMiningDrill = 46,
+    ChemicalPlant = 47,
+    EfficiencyModule = 48,
+    ElectricFurnace = 49,
+    HeatExchanger = 50,
+    HeatPipe = 51,
+    Lab = 52,
+    NuclearReactor = 53,
+    OffshorePump = 54,
+    OilRefinery = 55,
+    ProductivityModule = 56,
+    Pumpjack = 57,
+    QualityModule = 58,
+    RepairPack = 59,
+    SolarPanel = 60,
+    SpeedModule = 61,
+    SteamEngine = 62,
+    SteamTurbine = 63,
+    SteelFurnace = 64,
+    StoneFurnace = 65,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 11,   // bulk_inserter in Python
-    Source = 12, // stack_inserter in Python
+    Sink = 66,   // bulk_inserter in Python
+    Source = 67, // stack_inserter in Python
 }
 
 impl Item {
@@ -138,8 +202,63 @@ impl Item {
             8 => Some(Item::IronPlate),
             9 => Some(Item::ElectronicCircuit),
             10 => Some(Item::IronGearWheel),
-            11 => Some(Item::Sink),
-            12 => Some(Item::Source),
+            11 => Some(Item::Wood),
+            12 => Some(Item::Stone),
+            13 => Some(Item::StoneBrick),
+            14 => Some(Item::Concrete),
+            15 => Some(Item::CopperOre),
+            16 => Some(Item::IronOre),
+            17 => Some(Item::IronStick),
+            18 => Some(Item::Barrel),
+            19 => Some(Item::AdvancedCircuit),
+            20 => Some(Item::EngineUnit),
+            21 => Some(Item::SteelPlate),
+            22 => Some(Item::SolidFuel),
+            23 => Some(Item::PlasticBar),
+            24 => Some(Item::Sulfur),
+            25 => Some(Item::Battery),
+            26 => Some(Item::Explosives),
+            27 => Some(Item::WoodenChest),
+            28 => Some(Item::IronChest),
+            29 => Some(Item::StorageTank),
+            30 => Some(Item::FastTransportBelt),
+            31 => Some(Item::FastUndergroundBelt),
+            32 => Some(Item::FastSplitter),
+            33 => Some(Item::BurnerInserter),
+            34 => Some(Item::LongHandedInserter),
+            35 => Some(Item::FastInserter),
+            36 => Some(Item::SmallElectricPole),
+            37 => Some(Item::MediumElectricPole),
+            38 => Some(Item::BigElectricPole),
+            39 => Some(Item::Substation),
+            40 => Some(Item::Pipe),
+            41 => Some(Item::PipeToGround),
+            42 => Some(Item::Pump),
+            43 => Some(Item::Accumulator),
+            44 => Some(Item::Beacon),
+            45 => Some(Item::Boiler),
+            46 => Some(Item::BurnerMiningDrill),
+            47 => Some(Item::ChemicalPlant),
+            48 => Some(Item::EfficiencyModule),
+            49 => Some(Item::ElectricFurnace),
+            50 => Some(Item::HeatExchanger),
+            51 => Some(Item::HeatPipe),
+            52 => Some(Item::Lab),
+            53 => Some(Item::NuclearReactor),
+            54 => Some(Item::OffshorePump),
+            55 => Some(Item::OilRefinery),
+            56 => Some(Item::ProductivityModule),
+            57 => Some(Item::Pumpjack),
+            58 => Some(Item::QualityModule),
+            59 => Some(Item::RepairPack),
+            60 => Some(Item::SolarPanel),
+            61 => Some(Item::SpeedModule),
+            62 => Some(Item::SteamEngine),
+            63 => Some(Item::SteamTurbine),
+            64 => Some(Item::SteelFurnace),
+            65 => Some(Item::StoneFurnace),
+            66 => Some(Item::Sink),
+            67 => Some(Item::Source),
             _ => None,
         }
     }
@@ -158,6 +277,61 @@ impl Item {
             Item::IronPlate => "iron_plate",
             Item::ElectronicCircuit => "electronic_circuit",
             Item::IronGearWheel => "iron_gear_wheel",
+            Item::Wood => "wood",
+            Item::Stone => "stone",
+            Item::StoneBrick => "stone_brick",
+            Item::Concrete => "concrete",
+            Item::CopperOre => "copper_ore",
+            Item::IronOre => "iron_ore",
+            Item::IronStick => "iron_stick",
+            Item::Barrel => "barrel",
+            Item::AdvancedCircuit => "advanced_circuit",
+            Item::EngineUnit => "engine_unit",
+            Item::SteelPlate => "steel_plate",
+            Item::SolidFuel => "solid_fuel",
+            Item::PlasticBar => "plastic_bar",
+            Item::Sulfur => "sulfur",
+            Item::Battery => "battery",
+            Item::Explosives => "explosives",
+            Item::WoodenChest => "wooden_chest",
+            Item::IronChest => "iron_chest",
+            Item::StorageTank => "storage_tank",
+            Item::FastTransportBelt => "fast_transport_belt",
+            Item::FastUndergroundBelt => "fast_underground_belt",
+            Item::FastSplitter => "fast_splitter",
+            Item::BurnerInserter => "burner_inserter",
+            Item::LongHandedInserter => "long_handed_inserter",
+            Item::FastInserter => "fast_inserter",
+            Item::SmallElectricPole => "small_electric_pole",
+            Item::MediumElectricPole => "medium_electric_pole",
+            Item::BigElectricPole => "big_electric_pole",
+            Item::Substation => "substation",
+            Item::Pipe => "pipe",
+            Item::PipeToGround => "pipe_to_ground",
+            Item::Pump => "pump",
+            Item::Accumulator => "accumulator",
+            Item::Beacon => "beacon",
+            Item::Boiler => "boiler",
+            Item::BurnerMiningDrill => "burner_mining_drill",
+            Item::ChemicalPlant => "chemical_plant",
+            Item::EfficiencyModule => "efficiency_module",
+            Item::ElectricFurnace => "electric_furnace",
+            Item::HeatExchanger => "heat_exchanger",
+            Item::HeatPipe => "heat_pipe",
+            Item::Lab => "lab",
+            Item::NuclearReactor => "nuclear_reactor",
+            Item::OffshorePump => "offshore_pump",
+            Item::OilRefinery => "oil_refinery",
+            Item::ProductivityModule => "productivity_module",
+            Item::Pumpjack => "pumpjack",
+            Item::QualityModule => "quality_module",
+            Item::RepairPack => "repair_pack",
+            Item::SolarPanel => "solar_panel",
+            Item::SpeedModule => "speed_module",
+            Item::SteamEngine => "steam_engine",
+            Item::SteamTurbine => "steam_turbine",
+            Item::SteelFurnace => "steel_furnace",
+            Item::StoneFurnace => "stone_furnace",
         }
     }
 
@@ -194,7 +368,62 @@ impl Item {
             | Item::CopperPlate
             | Item::IronPlate
             | Item::ElectronicCircuit
-            | Item::IronGearWheel => 0.0,
+            | Item::IronGearWheel
+            | Item::Wood
+            | Item::Stone
+            | Item::StoneBrick
+            | Item::Concrete
+            | Item::CopperOre
+            | Item::IronOre
+            | Item::IronStick
+            | Item::Barrel
+            | Item::AdvancedCircuit
+            | Item::EngineUnit
+            | Item::SteelPlate
+            | Item::SolidFuel
+            | Item::PlasticBar
+            | Item::Sulfur
+            | Item::Battery
+            | Item::Explosives
+            | Item::WoodenChest
+            | Item::IronChest
+            | Item::StorageTank
+            | Item::FastTransportBelt
+            | Item::FastUndergroundBelt
+            | Item::FastSplitter
+            | Item::BurnerInserter
+            | Item::LongHandedInserter
+            | Item::FastInserter
+            | Item::SmallElectricPole
+            | Item::MediumElectricPole
+            | Item::BigElectricPole
+            | Item::Substation
+            | Item::Pipe
+            | Item::PipeToGround
+            | Item::Pump
+            | Item::Accumulator
+            | Item::Beacon
+            | Item::Boiler
+            | Item::BurnerMiningDrill
+            | Item::ChemicalPlant
+            | Item::EfficiencyModule
+            | Item::ElectricFurnace
+            | Item::HeatExchanger
+            | Item::HeatPipe
+            | Item::Lab
+            | Item::NuclearReactor
+            | Item::OffshorePump
+            | Item::OilRefinery
+            | Item::ProductivityModule
+            | Item::Pumpjack
+            | Item::QualityModule
+            | Item::RepairPack
+            | Item::SolarPanel
+            | Item::SpeedModule
+            | Item::SteamEngine
+            | Item::SteamTurbine
+            | Item::SteelFurnace
+            | Item::StoneFurnace => 0.0,
         }
     }
 
@@ -224,6 +453,62 @@ pub fn all_items() -> &'static [Item] {
         Item::IronPlate,
         Item::ElectronicCircuit,
         Item::IronGearWheel,
+        Item::Wood,
+        Item::Stone,
+        Item::StoneBrick,
+        Item::Concrete,
+        Item::CopperOre,
+        Item::IronOre,
+        Item::IronStick,
+        Item::Barrel,
+        Item::AdvancedCircuit,
+        Item::EngineUnit,
+        Item::SteelPlate,
+        Item::SolidFuel,
+        Item::PlasticBar,
+        Item::Sulfur,
+        Item::Battery,
+        Item::Explosives,
+        Item::WoodenChest,
+        Item::IronChest,
+        Item::StorageTank,
+        Item::FastTransportBelt,
+        Item::FastUndergroundBelt,
+        Item::FastSplitter,
+        Item::BurnerInserter,
+        Item::LongHandedInserter,
+        Item::FastInserter,
+        Item::SmallElectricPole,
+        Item::MediumElectricPole,
+        Item::BigElectricPole,
+        Item::Substation,
+        Item::Pipe,
+        Item::PipeToGround,
+        Item::Pump,
+        Item::Accumulator,
+        Item::Beacon,
+        Item::Boiler,
+        Item::BurnerMiningDrill,
+        Item::ChemicalPlant,
+        Item::EfficiencyModule,
+        Item::ElectricFurnace,
+        Item::HeatExchanger,
+        Item::HeatPipe,
+        Item::Lab,
+        Item::NuclearReactor,
+        Item::OffshorePump,
+        Item::OilRefinery,
+        Item::ProductivityModule,
+        Item::Pumpjack,
+        Item::QualityModule,
+        Item::RepairPack,
+        Item::SolarPanel,
+        Item::SpeedModule,
+        Item::SteamEngine,
+        Item::SteamTurbine,
+        Item::SteelFurnace,
+        Item::StoneFurnace,
+        // Sink and Source MUST stay last — see test_source_and_sink_are_last_two_ids.
         Item::Sink,
         Item::Source,
     ]
@@ -345,6 +630,456 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 produces: nonempty![(Item::AssemblingMachine1, 1.0)],
             },
         ),
+        // ===========================================================
+        // Wiki-scraped recipes (https://wiki.factorio.com), Base game.
+        // Quantities are per-craft as listed on the wiki. Recipes that
+        // consume or produce a fluid (water, petroleum_gas, ...) are
+        // intentionally omitted — the data model has no fluid items
+        // yet. The PNGs for those items are still in factorio-icons/
+        // and the items themselves are present in the enum.
+        // ===========================================================
+
+        // Intermediates
+        // 1 iron_plate -> 2 iron_stick, 0.5s
+        (
+            Item::IronStick,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 1.0)],
+                produces: nonempty![(Item::IronStick, 2.0)],
+            },
+        ),
+        // 4 cable + 2 EC + 2 plastic -> 1 advanced_circuit, 6s
+        (
+            Item::AdvancedCircuit,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 4.0),
+                    (Item::ElectronicCircuit, 2.0),
+                    (Item::PlasticBar, 2.0)
+                ],
+                produces: nonempty![(Item::AdvancedCircuit, 1.0)],
+            },
+        ),
+        // 1 IGW + 2 pipe + 1 steel_plate -> 1 engine_unit, 10s
+        (
+            Item::EngineUnit,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 1.0),
+                    (Item::Pipe, 2.0),
+                    (Item::SteelPlate, 1.0)
+                ],
+                produces: nonempty![(Item::EngineUnit, 1.0)],
+            },
+        ),
+        // Smelting
+        // 5 iron_plate -> 1 steel_plate, 16s
+        (
+            Item::SteelPlate,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 5.0)],
+                produces: nonempty![(Item::SteelPlate, 1.0)],
+            },
+        ),
+        // Storage
+        // 2 wood -> 1 wooden_chest, 0.5s
+        (
+            Item::WoodenChest,
+            Recipe {
+                consumes: nonempty![(Item::Wood, 2.0)],
+                produces: nonempty![(Item::WoodenChest, 1.0)],
+            },
+        ),
+        // 8 iron_plate -> 1 iron_chest, 0.5s
+        (
+            Item::IronChest,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 8.0)],
+                produces: nonempty![(Item::IronChest, 1.0)],
+            },
+        ),
+        // 20 iron_plate + 5 steel_plate -> 1 storage_tank, 3s
+        (
+            Item::StorageTank,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 20.0), (Item::SteelPlate, 5.0)],
+                produces: nonempty![(Item::StorageTank, 1.0)],
+            },
+        ),
+        // Fast belt tier
+        // 5 IGW + 1 transport_belt -> 1 fast_transport_belt, 0.5s
+        (
+            Item::FastTransportBelt,
+            Recipe {
+                consumes: nonempty![(Item::IronGearWheel, 5.0), (Item::TransportBelt, 1.0)],
+                produces: nonempty![(Item::FastTransportBelt, 1.0)],
+            },
+        ),
+        // 40 IGW + 2 underground_belt -> 2 fast_underground_belt, 2s
+        (
+            Item::FastUndergroundBelt,
+            Recipe {
+                consumes: nonempty![(Item::IronGearWheel, 40.0), (Item::UndergroundBelt, 2.0)],
+                produces: nonempty![(Item::FastUndergroundBelt, 2.0)],
+            },
+        ),
+        // 10 EC + 10 IGW + 1 splitter -> 1 fast_splitter, 2s
+        (
+            Item::FastSplitter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::Splitter, 1.0)
+                ],
+                produces: nonempty![(Item::FastSplitter, 1.0)],
+            },
+        ),
+        // Inserter variants
+        // 1 IGW + 1 iron_plate -> 1 burner_inserter, 0.5s
+        (
+            Item::BurnerInserter,
+            Recipe {
+                consumes: nonempty![(Item::IronGearWheel, 1.0), (Item::IronPlate, 1.0)],
+                produces: nonempty![(Item::BurnerInserter, 1.0)],
+            },
+        ),
+        // 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
+        (
+            Item::LongHandedInserter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Inserter, 1.0),
+                    (Item::IronGearWheel, 1.0),
+                    (Item::IronPlate, 1.0)
+                ],
+                produces: nonempty![(Item::LongHandedInserter, 1.0)],
+            },
+        ),
+        // 2 EC + 1 inserter + 2 iron_plate -> 1 fast_inserter, 0.5s
+        (
+            Item::FastInserter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 2.0),
+                    (Item::Inserter, 1.0),
+                    (Item::IronPlate, 2.0)
+                ],
+                produces: nonempty![(Item::FastInserter, 1.0)],
+            },
+        ),
+        // Power & pipes
+        // 2 cable + 1 wood -> 2 small_electric_pole, 0.5s
+        (
+            Item::SmallElectricPole,
+            Recipe {
+                consumes: nonempty![(Item::CopperCable, 2.0), (Item::Wood, 1.0)],
+                produces: nonempty![(Item::SmallElectricPole, 2.0)],
+            },
+        ),
+        // 2 cable + 4 iron_stick + 2 steel_plate -> 1 medium_electric_pole, 0.5s
+        (
+            Item::MediumElectricPole,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 2.0),
+                    (Item::IronStick, 4.0),
+                    (Item::SteelPlate, 2.0)
+                ],
+                produces: nonempty![(Item::MediumElectricPole, 1.0)],
+            },
+        ),
+        // 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
+        (
+            Item::BigElectricPole,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 4.0),
+                    (Item::IronStick, 8.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::BigElectricPole, 1.0)],
+            },
+        ),
+        // 5 advanced + 6 cable + 10 steel_plate -> 1 substation, 0.5s
+        (
+            Item::Substation,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::CopperCable, 6.0),
+                    (Item::SteelPlate, 10.0)
+                ],
+                produces: nonempty![(Item::Substation, 1.0)],
+            },
+        ),
+        // 1 iron_plate -> 1 pipe, 0.5s
+        (
+            Item::Pipe,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 1.0)],
+                produces: nonempty![(Item::Pipe, 1.0)],
+            },
+        ),
+        // 5 iron_plate + 10 pipe -> 2 pipe_to_ground, 0.5s
+        (
+            Item::PipeToGround,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 5.0), (Item::Pipe, 10.0)],
+                produces: nonempty![(Item::PipeToGround, 2.0)],
+            },
+        ),
+        // 1 engine_unit + 1 pipe + 1 steel_plate -> 1 pump, 2s
+        (
+            Item::Pump,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 1.0),
+                    (Item::Pipe, 1.0),
+                    (Item::SteelPlate, 1.0)
+                ],
+                produces: nonempty![(Item::Pump, 1.0)],
+            },
+        ),
+        // Production buildings + modules
+        // 5 battery + 2 iron_plate -> 1 accumulator, 10s
+        (
+            Item::Accumulator,
+            Recipe {
+                consumes: nonempty![(Item::Battery, 5.0), (Item::IronPlate, 2.0)],
+                produces: nonempty![(Item::Accumulator, 1.0)],
+            },
+        ),
+        // 20 advanced + 10 cable + 20 EC + 10 steel_plate -> 1 beacon, 15s
+        (
+            Item::Beacon,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 20.0),
+                    (Item::CopperCable, 10.0),
+                    (Item::ElectronicCircuit, 20.0),
+                    (Item::SteelPlate, 10.0)
+                ],
+                produces: nonempty![(Item::Beacon, 1.0)],
+            },
+        ),
+        // 4 pipe + 1 stone_furnace -> 1 boiler, 0.5s
+        (
+            Item::Boiler,
+            Recipe {
+                consumes: nonempty![(Item::Pipe, 4.0), (Item::StoneFurnace, 1.0)],
+                produces: nonempty![(Item::Boiler, 1.0)],
+            },
+        ),
+        // 3 IGW + 3 iron_plate + 1 stone_furnace -> 1 burner_mining_drill, 2s
+        (
+            Item::BurnerMiningDrill,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 3.0),
+                    (Item::IronPlate, 3.0),
+                    (Item::StoneFurnace, 1.0)
+                ],
+                produces: nonempty![(Item::BurnerMiningDrill, 1.0)],
+            },
+        ),
+        // 5 EC + 5 IGW + 5 pipe + 5 steel_plate -> 1 chemical_plant, 5s
+        (
+            Item::ChemicalPlant,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::Pipe, 5.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::ChemicalPlant, 1.0)],
+            },
+        ),
+        // 5 advanced + 5 EC -> 1 efficiency_module, 15s
+        (
+            Item::EfficiencyModule,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::EfficiencyModule, 1.0)],
+            },
+        ),
+        // 5 advanced + 10 steel_plate + 10 stone_brick -> 1 electric_furnace, 5s
+        (
+            Item::ElectricFurnace,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 5.0),
+                    (Item::SteelPlate, 10.0),
+                    (Item::StoneBrick, 10.0)
+                ],
+                produces: nonempty![(Item::ElectricFurnace, 1.0)],
+            },
+        ),
+        // 100 copper_plate + 10 pipe + 10 steel_plate -> 1 heat_exchanger, 3s
+        (
+            Item::HeatExchanger,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 100.0),
+                    (Item::Pipe, 10.0),
+                    (Item::SteelPlate, 10.0)
+                ],
+                produces: nonempty![(Item::HeatExchanger, 1.0)],
+            },
+        ),
+        // 20 copper_plate + 10 steel_plate -> 1 heat_pipe, 1s
+        (
+            Item::HeatPipe,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 20.0), (Item::SteelPlate, 10.0)],
+                produces: nonempty![(Item::HeatPipe, 1.0)],
+            },
+        ),
+        // 10 EC + 10 IGW + 4 transport_belt -> 1 lab, 2s
+        (
+            Item::Lab,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::TransportBelt, 4.0)
+                ],
+                produces: nonempty![(Item::Lab, 1.0)],
+            },
+        ),
+        // 500 advanced + 500 concrete + 500 copper_plate + 500 steel_plate -> 1 nuclear_reactor, 8s
+        (
+            Item::NuclearReactor,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 500.0),
+                    (Item::Concrete, 500.0),
+                    (Item::CopperPlate, 500.0),
+                    (Item::SteelPlate, 500.0)
+                ],
+                produces: nonempty![(Item::NuclearReactor, 1.0)],
+            },
+        ),
+        // 2 IGW + 3 pipe -> 1 offshore_pump, 0.5s
+        (
+            Item::OffshorePump,
+            Recipe {
+                consumes: nonempty![(Item::IronGearWheel, 2.0), (Item::Pipe, 3.0)],
+                produces: nonempty![(Item::OffshorePump, 1.0)],
+            },
+        ),
+        // 10 EC + 10 IGW + 10 pipe + 15 steel_plate + 10 stone_brick -> 1 oil_refinery, 8s
+        (
+            Item::OilRefinery,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::Pipe, 10.0),
+                    (Item::SteelPlate, 15.0),
+                    (Item::StoneBrick, 10.0)
+                ],
+                produces: nonempty![(Item::OilRefinery, 1.0)],
+            },
+        ),
+        // 5 advanced + 5 EC -> 1 productivity_module, 15s
+        (
+            Item::ProductivityModule,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::ProductivityModule, 1.0)],
+            },
+        ),
+        // 5 EC + 10 IGW + 10 pipe + 5 steel_plate -> 1 pumpjack, 5s
+        (
+            Item::Pumpjack,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::Pipe, 10.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::Pumpjack, 1.0)],
+            },
+        ),
+        // 5 advanced + 5 EC -> 1 quality_module, 15s
+        (
+            Item::QualityModule,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::QualityModule, 1.0)],
+            },
+        ),
+        // 2 EC + 2 IGW -> 1 repair_pack, 0.5s
+        (
+            Item::RepairPack,
+            Recipe {
+                consumes: nonempty![(Item::ElectronicCircuit, 2.0), (Item::IronGearWheel, 2.0)],
+                produces: nonempty![(Item::RepairPack, 1.0)],
+            },
+        ),
+        // 5 copper_plate + 15 EC + 5 steel_plate -> 1 solar_panel, 10s
+        (
+            Item::SolarPanel,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 5.0),
+                    (Item::ElectronicCircuit, 15.0),
+                    (Item::SteelPlate, 5.0)
+                ],
+                produces: nonempty![(Item::SolarPanel, 1.0)],
+            },
+        ),
+        // 5 advanced + 5 EC -> 1 speed_module, 15s
+        (
+            Item::SpeedModule,
+            Recipe {
+                consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
+                produces: nonempty![(Item::SpeedModule, 1.0)],
+            },
+        ),
+        // 8 IGW + 10 iron_plate + 5 pipe -> 1 steam_engine, 0.5s
+        (
+            Item::SteamEngine,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 8.0),
+                    (Item::IronPlate, 10.0),
+                    (Item::Pipe, 5.0)
+                ],
+                produces: nonempty![(Item::SteamEngine, 1.0)],
+            },
+        ),
+        // 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
+        (
+            Item::SteamTurbine,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 50.0),
+                    (Item::IronGearWheel, 50.0),
+                    (Item::Pipe, 20.0)
+                ],
+                produces: nonempty![(Item::SteamTurbine, 1.0)],
+            },
+        ),
+        // 6 steel_plate + 10 stone_brick -> 1 steel_furnace, 3s
+        (
+            Item::SteelFurnace,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 6.0), (Item::StoneBrick, 10.0)],
+                produces: nonempty![(Item::SteelFurnace, 1.0)],
+            },
+        ),
+        // 5 stone -> 1 stone_furnace, 0.5s
+        (
+            Item::StoneFurnace,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 5.0)],
+                produces: nonempty![(Item::StoneFurnace, 1.0)],
+            },
+        ),
     ]
 }
 
@@ -418,10 +1153,16 @@ mod tests {
         assert_eq!(Item::from_i64(5), Some(Item::Splitter));
         assert_eq!(Item::from_i64(6), Some(Item::CopperCable));
         assert_eq!(Item::from_i64(10), Some(Item::IronGearWheel));
+        assert_eq!(Item::from_i64(11), Some(Item::Wood));
         // Source/Sink must remain the LAST two ids — see Item enum docs.
-        assert_eq!(Item::from_i64(11), Some(Item::Sink));
-        assert_eq!(Item::from_i64(12), Some(Item::Source));
-        assert_eq!(Item::from_i64(99), None);
+        // Their numeric ids are derived from `all_items()` length so this
+        // test stays correct as more items are added.
+        let all = all_items();
+        let n = all.len() as i64;
+        let last = (n - 1) + 1; // ids start at 1
+        assert_eq!(Item::from_i64(last - 1), Some(Item::Sink));
+        assert_eq!(Item::from_i64(last), Some(Item::Source));
+        assert_eq!(Item::from_i64(9999), None);
         assert_eq!(Item::from_i64(-1), None);
     }
 
