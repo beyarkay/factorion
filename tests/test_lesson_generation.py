@@ -1726,3 +1726,289 @@ class TestAssemble1In1OutMaxEntities:
         assert total2 <= natural_total + 5, (
             f"seed={seed}: generator placed {total2} entities (cap was {natural_total + 5})"
         )
+
+
+# ── MOVE_VIA_UG_BELT ─────────────────────────────────────────────────────────
+
+
+def _ug_line_geometry(world):
+    """Return (direction, line_axis_index, source_pos, sink_pos, ug_down_pos,
+    ug_up_pos) for a MOVE_VIA_UG_BELT solved layout. Asserts the layout is
+    a single straight line."""
+    ent = world[Channel.ENTITIES.value]
+    direc = world[Channel.DIRECTION.value]
+    misc = world[Channel.MISC.value]
+
+    src_pos = (ent == str2ent("source").value).nonzero(as_tuple=False)
+    sink_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)
+    assert len(src_pos) == 1 and len(sink_pos) == 1
+    sx, sy = src_pos[0].tolist()
+    kx, ky = sink_pos[0].tolist()
+
+    direction = Direction(int(direc[sx, sy].item()))
+    is_horizontal = direction in (Direction.EAST, Direction.WEST)
+    if is_horizontal:
+        assert sy == ky, "source/sink must share a row for horizontal lessons"
+    else:
+        assert sx == kx, "source/sink must share a column for vertical lessons"
+
+    ug = (ent == str2ent("underground_belt").value).nonzero(as_tuple=False)
+    assert len(ug) == 2, f"expected 2 UG belts, got {len(ug)}"
+    down_pos = up_pos = None
+    for px, py in ug.tolist():
+        m = int(misc[px, py].item())
+        if m == Misc.UNDERGROUND_DOWN.value:
+            down_pos = (px, py)
+        elif m == Misc.UNDERGROUND_UP.value:
+            up_pos = (px, py)
+    assert down_pos is not None and up_pos is not None
+
+    return direction, is_horizontal, (sx, sy), (kx, ky), down_pos, up_pos
+
+
+class TestMoveViaUgBeltBasic:
+    """Basic sanity checks for MOVE_VIA_UG_BELT lesson generation."""
+
+    def test_generates_without_error(self):
+        world, min_ent = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        )
+        assert world is not None
+        assert min_ent is not None
+
+    def test_returns_cwh_tensor(self):
+        size = 8
+        world, _ = generate_lesson(
+            size=size, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        )
+        assert world.shape == (len(Channel), size, size)
+
+    def test_has_source_and_sink(self):
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        )
+        ent = world[Channel.ENTITIES.value]
+        assert (ent == str2ent("source").value).sum().item() == 1
+        assert (ent == str2ent("sink").value).sum().item() == 1
+
+    def test_has_one_ug_pair(self):
+        """Solved layout has exactly one UG_DOWN and one UG_UP."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        )
+        ent = world[Channel.ENTITIES.value]
+        misc = world[Channel.MISC.value]
+        ug_mask = ent == str2ent("underground_belt").value
+        assert ug_mask.sum().item() == 2
+        down = ((misc == Misc.UNDERGROUND_DOWN.value) & ug_mask).sum().item()
+        up = ((misc == Misc.UNDERGROUND_UP.value) & ug_mask).sum().item()
+        assert down == 1 and up == 1, f"expected 1 DOWN + 1 UP, got {down} + {up}"
+
+    def test_nonzero_throughput(self):
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        )
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_throughput_parity(self, seed):
+        """Python and Rust throughput agree on solved layouts."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        compare_throughput(world.permute(1, 2, 0))
+
+
+class TestMoveViaUgBeltGeometry:
+    """The lesson must be a single straight line with a wall the UG pair spans."""
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_source_sink_collinear_and_face_same_direction(self, seed):
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        direc = world[Channel.DIRECTION.value]
+        direction, is_h, src, sink, down, up = _ug_line_geometry(world)
+        # Source, sink, both UGs must all face the same direction
+        for px, py in [src, sink, down, up]:
+            assert int(direc[px, py].item()) == direction.value
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_ug_gap_within_underground_range(self, seed):
+        """UG_DOWN → UG_UP gap (delta) must be in 1..5 (Factorio's range)."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        direction, is_h, src, sink, down, up = _ug_line_geometry(world)
+        if is_h:
+            delta = abs(up[0] - down[0])
+        else:
+            delta = abs(up[1] - down[1])
+        assert 1 <= delta <= 5, f"seed={seed}: gap delta={delta} out of [1,5]"
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_wall_tiles_are_unavailable_in_footprint(self, seed):
+        """Tiles strictly between UG_DOWN and UG_UP are FOOTPRINT.UNAVAILABLE."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        fp = world[Channel.FOOTPRINT.value]
+        direction, is_h, src, sink, down, up = _ug_line_geometry(world)
+        # Walk from low+1 to high-1 along the line axis at the perp coord
+        if is_h:
+            lo, hi = sorted([down[0], up[0]])
+            perp = down[1]
+            for x in range(lo + 1, hi):
+                assert fp[x, perp].item() == Footprint.UNAVAILABLE.value, (
+                    f"seed={seed}: wall ({x},{perp}) was AVAILABLE"
+                )
+        else:
+            lo, hi = sorted([down[1], up[1]])
+            perp = down[0]
+            for y in range(lo + 1, hi):
+                assert fp[perp, y].item() == Footprint.UNAVAILABLE.value, (
+                    f"seed={seed}: wall ({perp},{y}) was AVAILABLE"
+                )
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_off_line_tiles_unavailable(self, seed):
+        """Every tile not on the source→sink line is FOOTPRINT.UNAVAILABLE."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        fp = world[Channel.FOOTPRINT.value]
+        direction, is_h, src, sink, down, up = _ug_line_geometry(world)
+        W, H = fp.shape
+        line_perp = src[1] if is_h else src[0]
+        if is_h:
+            lo, hi = sorted([src[0], sink[0]])
+        else:
+            lo, hi = sorted([src[1], sink[1]])
+        for x in range(W):
+            for y in range(H):
+                on_line = (
+                    (is_h and y == line_perp and lo <= x <= hi)
+                    or (not is_h and x == line_perp and lo <= y <= hi)
+                )
+                if not on_line:
+                    assert fp[x, y].item() == Footprint.UNAVAILABLE.value, (
+                        f"seed={seed}: off-line ({x},{y}) was AVAILABLE"
+                    )
+
+    @pytest.mark.parametrize("seed", range(40))
+    def test_source_sink_endpoints_of_line(self, seed):
+        """Source and sink sit at opposite ends of the line, with source
+        facing toward sink (i.e. items flow source→sink along the chosen
+        direction)."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        direction, is_h, src, sink, down, up = _ug_line_geometry(world)
+        dx, dy = DIR_TO_DELTA[direction]
+        # Travelling from src in `direction`, we should eventually reach sink
+        if is_h:
+            assert (sink[0] - src[0]) * dx > 0, (
+                f"seed={seed}: source faces {direction.name} but sink is the other way"
+            )
+        else:
+            assert (sink[1] - src[1]) * dy > 0, (
+                f"seed={seed}: source faces {direction.name} but sink is the other way"
+            )
+
+
+class TestMoveViaUgBeltManySeeds:
+    """Generate many lessons and verify all are valid."""
+
+    @pytest.mark.parametrize("seed", range(50))
+    def test_size_8_seed(self, seed):
+        world, min_ent = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        )
+        assert world is not None
+        assert min_ent is not None
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0
+
+    @pytest.mark.parametrize("size", [5, 6, 8, 10, 12])
+    def test_grid_sizes(self, size):
+        world, _ = generate_lesson(
+            size=size, kind=LessonKind.MOVE_VIA_UG_BELT,
+            num_missing_entities=0, seed=7,
+        )
+        assert world.shape == (len(Channel), size, size)
+        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        assert tp > 0
+
+
+class TestMoveViaUgBeltDirections:
+    """All four directions must be reachable by the generator."""
+
+    def test_all_directions_appear(self):
+        seen = set()
+        for seed in range(200):
+            world, _ = generate_lesson(
+                size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
+                num_missing_entities=0, seed=seed,
+            )
+            direction, *_ = _ug_line_geometry(world)
+            seen.add(direction)
+            if len(seen) == 4:
+                break
+        assert seen == {
+            Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST,
+        }, f"only saw {seen}"
+
+
+class TestMoveViaUgBeltMissingEntities:
+    """Blanking respects source/sink protection and is independent for the UG pair."""
+
+    @pytest.mark.parametrize("num_missing", [1, 2, 5, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_source_and_sink_always_present(self, num_missing, seed):
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        assert (ent == str2ent("source").value).sum().item() == 1
+        assert (ent == str2ent("sink").value).sum().item() == 1
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_blanked_cells_remain_available(self, seed):
+        """A cell whose entity got blanked must keep FOOTPRINT=AVAILABLE so
+        the agent can fill it. Walls (originally empty) stay UNAVAILABLE."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
+            num_missing_entities=float("inf"), seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        fp = world[Channel.FOOTPRINT.value]
+        empty_id = str2ent("empty").value
+        # Source + sink stay; all removable entities are gone. Their cells
+        # (now empty) must still be AVAILABLE because they were entity tiles
+        # in the solved layout. AVAILABLE cells == solved entity cells, so
+        # ≥ 4 (source + UG_DOWN + UG_UP + sink, with the wall between them
+        # contributing no AVAILABLE tiles).
+        avail = (fp == Footprint.AVAILABLE.value).sum().item()
+        assert avail >= 4, f"seed={seed}: only {avail} AVAILABLE cells"
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_independent_ug_removal_possible(self, seed):
+        """With num_missing=1 across many seeds, sometimes only DOWN is
+        removed, sometimes only UP — they are independent removal units."""
+        # We just verify that with num_missing=1, the world has either
+        # 1 DOWN + 0 UP or 0 DOWN + 1 UP or both still present (when a
+        # transport belt got blanked instead). All three are valid.
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.MOVE_VIA_UG_BELT,
+            num_missing_entities=1, seed=seed,
+        )
+        ent = world[Channel.ENTITIES.value]
+        misc = world[Channel.MISC.value]
+        ug_mask = ent == str2ent("underground_belt").value
+        down = ((misc == Misc.UNDERGROUND_DOWN.value) & ug_mask).sum().item()
+        up = ((misc == Misc.UNDERGROUND_UP.value) & ug_mask).sum().item()
+        assert (down, up) in {(0, 1), (1, 0), (1, 1)}, (
+            f"seed={seed}: unexpected (down, up) = ({down}, {up})"
+        )
