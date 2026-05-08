@@ -578,6 +578,23 @@ class TestSplitterSplitMissingEntities:
         )
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_splitter_always_present_after_blanking(self, num_missing, seed):
+        """The central splitter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous (could be
+        solved by belts alone)."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.SPLITTER_SPLIT,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
+        assert splitter_tiles == 2, (
+            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
+            f"seed={seed}; got {splitter_tiles}"
+        )
+
 
 class TestSplitterSplitDeterminism:
     """Same seed produces identical results."""
@@ -828,6 +845,23 @@ class TestSplitterMergeMissingEntities:
             size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=float("inf"), seed=seed
         )
         assert min_ent >= 4  # at least 1 splitter + 3 belts
+
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_splitter_always_present_after_blanking(self, num_missing, seed):
+        """The central splitter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous (could be
+        solved by belts alone)."""
+        world, _ = generate_lesson(
+            size=10, kind=LessonKind.SPLITTER_MERGE,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
+        assert splitter_tiles == 2, (
+            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
+            f"seed={seed}; got {splitter_tiles}"
+        )
 
 
 class TestSplitterMergeDeterminism:

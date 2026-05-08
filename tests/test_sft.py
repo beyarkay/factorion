@@ -185,20 +185,28 @@ class TestGenerateDataset:
             f"got {len(splitter_pairs)} (one per occupied cell — bug)"
         )
 
-    def test_samples_span_multiple_kinds(self):
+    def test_samples_span_multiple_kinds(self, capsys):
         """Dataset should draw from more than one LessonKind.
 
-        MOVE_ONE_ITEM places only transport_belt; INSERTER_TRANSFER and the
-        SPLITTER_* kinds place inserter and splitter. So if multi-kind
-        sampling works, the entity targets contain >= 2 distinct IDs.
+        Now that every kind protects its structural entity (inserter,
+        splitter), every blanked target is a belt — so we can't tell
+        kinds apart from the entity_id targets. Instead, parse the
+        per-kind breakdown that generate_dataset prints and verify at
+        least two kinds contributed samples.
         """
         args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
-        _, _, ents, _, _ = generate_dataset(args)
-        unique_entities = set(ents.tolist())
-        assert len(unique_entities) >= 2, (
-            f"Expected >=2 distinct entity targets (proves multi-kind sampling), "
-            f"got {sorted(unique_entities)}"
+        generate_dataset(args)
+        out = capsys.readouterr().out
+        productive = [
+            line for line in out.splitlines()
+            if "samples=" in line and "samples=     0" not in line and "samples=    0" not in line
+        ]
+        assert len(productive) >= 2, (
+            f"Expected >=2 productive kinds in breakdown, got:\n{out}"
         )
+        # Auto-discovery: every enum value appears in the breakdown.
+        for kind in LessonKind:
+            assert kind.name in out, f"{kind.name} missing from breakdown:\n{out}"
 
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"

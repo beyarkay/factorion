@@ -1976,8 +1976,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Splitter is structurally required for the lesson; without
+                # it the source(s)/sink(s) layout becomes ambiguous (could
+                # be solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(t) for t in tiles},
                 )
 
                 break
@@ -2129,8 +2133,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Splitter is structurally required for the lesson; without
+                # it the source(s)/sink(s) layout becomes ambiguous (could
+                # be solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(t) for t in tiles},
                 )
 
                 break
