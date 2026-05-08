@@ -53,6 +53,12 @@ class VizArgs:
     """random seed"""
     output_path: str = "sft_training_data.html"
     """where to write the HTML"""
+    kind: str = ""
+    """if set, only render this LessonKind (e.g. ASSEMBLE_1IN_1OUT)"""
+    final_only: bool = False
+    """if set, render one solved (completed) factory per lesson instead of
+    each (state, action) pair — useful for eyeballing variety in
+    generated lessons rather than the SFT training stream"""
 
 
 
@@ -61,7 +67,10 @@ def main(args: VizArgs) -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
-    kinds = list(LessonKind)
+    if args.kind:
+        kinds = [LessonKind[args.kind]]
+    else:
+        kinds = list(LessonKind)
 
     sections: list[str] = []
     kind_counts: dict[str, int] = {k.name: 0 for k in kinds}
@@ -77,10 +86,27 @@ def main(args: VizArgs) -> None:
             solved, _ = generate_lesson(
                 size=args.size, kind=kind, num_missing_entities=0, seed=seed,
             )
-            task, _ = generate_lesson(
-                size=args.size, kind=kind, num_missing_entities=level, seed=seed,
-            )
+            if not args.final_only:
+                task, _ = generate_lesson(
+                    size=args.size, kind=kind, num_missing_entities=level, seed=seed,
+                )
         except Exception:
+            continue
+
+        if args.final_only:
+            world_html = world2html(solved.permute(1, 2, 0)).text
+            sections.append(
+                f"""
+                <div class="card">
+                  <div class="card-head">
+                    #{samples_so_far + 1} · {kind.name} · seed={seed}
+                  </div>
+                  {world_html}
+                </div>
+                """
+            )
+            kind_counts[kind.name] += 1
+            samples_so_far += 1
             continue
 
         pairs = extract_expert_actions(solved, task)
