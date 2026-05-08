@@ -106,17 +106,17 @@ pub enum Item {
     AssemblingMachine1 = 3,
     UndergroundBelt = 4,
     Splitter = 5,
-    // Placeable, env-only — Source/Sink are placed by the env, not the
-    // agent. They live last among placeables so the policy's entity head
-    // can be sized to exclude them.
-    Sink = 6,   // bulk_inserter in Python
-    Source = 7, // stack_inserter in Python
-    // Non-placeable (8..=12) — recipe ingredients / products
-    CopperCable = 8,
-    CopperPlate = 9,
-    IronPlate = 10,
-    ElectronicCircuit = 11,
-    IronGearWheel = 12,
+    // Non-placeable (6..=10) — recipe ingredients / products
+    CopperCable = 6,
+    CopperPlate = 7,
+    IronPlate = 8,
+    ElectronicCircuit = 9,
+    IronGearWheel = 10,
+    // Env-spawned, not agent-placeable — must remain the LAST two ids so
+    // the policy's entity head can be sized to `len(items) - 2` and
+    // structurally exclude them from sampling (see ppo.py).
+    Sink = 11,   // bulk_inserter in Python
+    Source = 12, // stack_inserter in Python
 }
 
 impl Item {
@@ -129,13 +129,13 @@ impl Item {
             3 => Some(Item::AssemblingMachine1),
             4 => Some(Item::UndergroundBelt),
             5 => Some(Item::Splitter),
-            6 => Some(Item::Sink),
-            7 => Some(Item::Source),
-            8 => Some(Item::CopperCable),
-            9 => Some(Item::CopperPlate),
-            10 => Some(Item::IronPlate),
-            11 => Some(Item::ElectronicCircuit),
-            12 => Some(Item::IronGearWheel),
+            6 => Some(Item::CopperCable),
+            7 => Some(Item::CopperPlate),
+            8 => Some(Item::IronPlate),
+            9 => Some(Item::ElectronicCircuit),
+            10 => Some(Item::IronGearWheel),
+            11 => Some(Item::Sink),
+            12 => Some(Item::Source),
             _ => None,
         }
     }
@@ -214,14 +214,14 @@ pub fn all_items() -> &'static [Item] {
         Item::Inserter,
         Item::AssemblingMachine1,
         Item::UndergroundBelt,
-        Item::Sink,
-        Item::Source,
         Item::Splitter,
         Item::CopperCable,
         Item::CopperPlate,
         Item::IronPlate,
         Item::ElectronicCircuit,
         Item::IronGearWheel,
+        Item::Sink,
+        Item::Source,
     ]
 }
 
@@ -411,15 +411,12 @@ mod tests {
     fn test_item_from_i64() {
         assert_eq!(Item::from_i64(0), None);
         assert_eq!(Item::from_i64(1), Some(Item::TransportBelt));
-        assert_eq!(Item::from_i64(2), Some(Item::Inserter));
-        assert_eq!(Item::from_i64(3), Some(Item::AssemblingMachine1));
-        assert_eq!(Item::from_i64(4), Some(Item::UndergroundBelt));
         assert_eq!(Item::from_i64(5), Some(Item::Splitter));
-        assert_eq!(Item::from_i64(6), Some(Item::Sink));
-        assert_eq!(Item::from_i64(7), Some(Item::Source));
-        assert_eq!(Item::from_i64(8), Some(Item::CopperCable));
-        assert_eq!(Item::from_i64(11), Some(Item::ElectronicCircuit));
-        assert_eq!(Item::from_i64(12), Some(Item::IronGearWheel));
+        assert_eq!(Item::from_i64(6), Some(Item::CopperCable));
+        assert_eq!(Item::from_i64(10), Some(Item::IronGearWheel));
+        // Source/Sink must remain the LAST two ids — see Item enum docs.
+        assert_eq!(Item::from_i64(11), Some(Item::Sink));
+        assert_eq!(Item::from_i64(12), Some(Item::Source));
         assert_eq!(Item::from_i64(99), None);
         assert_eq!(Item::from_i64(-1), None);
     }

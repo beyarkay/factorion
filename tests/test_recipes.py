@@ -49,27 +49,31 @@ class TestPyItemsBinding:
 
     def test_integer_values_are_stable(self):
         """The integer encoding must not silently change — world tensors
-        on disk and trained models depend on it. Placeable items are 1..7,
-        non-placeable 8..12."""
+        on disk and trained models depend on it. Layout: 1..5 = agent-
+        placeable, 6..10 = non-placeable items, 11..12 = env-spawned
+        sink/source (the LAST two ids so the policy entity head can be
+        sized to len(items)-2 to exclude them)."""
         rs = factorion_rs.py_items()
         assert rs[1]["name"] == "transport_belt"
         assert rs[2]["name"] == "inserter"
         assert rs[3]["name"] == "assembling_machine_1"
         assert rs[4]["name"] == "underground_belt"
-        assert rs[5]["name"] == "bulk_inserter"
-        assert rs[6]["name"] == "stack_inserter"
-        assert rs[7]["name"] == "splitter"
-        assert rs[8]["name"] == "copper_cable"
-        assert rs[9]["name"] == "copper_plate"
-        assert rs[10]["name"] == "iron_plate"
-        assert rs[11]["name"] == "electronic_circuit"
-        assert rs[12]["name"] == "iron_gear_wheel"
+        assert rs[5]["name"] == "splitter"
+        assert rs[6]["name"] == "copper_cable"
+        assert rs[7]["name"] == "copper_plate"
+        assert rs[8]["name"] == "iron_plate"
+        assert rs[9]["name"] == "electronic_circuit"
+        assert rs[10]["name"] == "iron_gear_wheel"
+        assert rs[11]["name"] == "bulk_inserter"
+        assert rs[12]["name"] == "stack_inserter"
 
     def test_placeability_is_correct(self):
         rs = factorion_rs.py_items()
-        for value in range(1, 8):
+        # Placeable: agent-buildable (1..5) + env-spawned source/sink (11, 12)
+        for value in [1, 2, 3, 4, 5, 11, 12]:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
-        for value in range(8, 13):
+        # Non-placeable items: 6..10
+        for value in range(6, 11):
             assert rs[value]["is_placeable"] is False, (
                 f"id {value} should not be placeable"
             )
@@ -82,7 +86,7 @@ class TestPyItemsBinding:
 
     def test_splitter_size_is_2x1(self):
         rs = factorion_rs.py_items()
-        sp = rs[7]
+        sp = rs[5]
         assert sp["width"] == 2
         assert sp["height"] == 1
 
