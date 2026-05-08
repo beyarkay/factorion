@@ -1502,7 +1502,7 @@ def functions(
         return G
 
 
-    def _remove_entities(world_CWH, num_missing_entities, total_entities):
+    def _remove_entities(world_CWH, num_missing_entities, total_entities, protected_positions=None):
         """Remove entities from a completed lesson, respecting multi-tile units.
 
         Also sets the FOOTPRINT channel: cells empty in the completed layout
@@ -1510,10 +1510,17 @@ def functions(
         with entities stay AVAILABLE (and remain so after blanking, marking
         them as the buildable region the agent is meant to fill).
 
+        protected_positions: optional set of (x, y) the lesson considers
+        structurally required (e.g. the central inserter in INSERTER_TRANSFER).
+        Any entity-group containing one of these tiles is excluded from the
+        removable pool, so the agent always sees those entities in its input.
+        Source/sink are protected unconditionally via the entity-id `skip` set.
+
         Returns min_entities_required (number of entity units removed).
         For multi-tile entities (e.g. splitters), all tiles are removed together
         as a single unit.
         """
+        protected_positions = protected_positions or set()
         # Mark non-buildable region from the completed layout, before any
         # blanking. Blanked cells keep FOOTPRINT=AVAILABLE so the agent
         # knows they are placement targets.
@@ -1558,14 +1565,14 @@ def functions(
                     continue
                 ent = entities[ent_val]
                 if ent.width == 1 and ent.height == 1:
-                    entity_groups.append({(x, y)})
+                    group = {(x, y)}
                 else:
                     d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
                     tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
-                    if tiles_list is None:
-                        entity_groups.append({(x, y)})
-                    else:
-                        entity_groups.append(set(map(tuple, tiles_list)))
+                    group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
+                if group & protected_positions:
+                    continue
+                entity_groups.append(group)
 
         num_samples = min(num_missing_entities, len(entity_groups))
         if num_samples == 0:
@@ -1774,8 +1781,12 @@ def functions(
                 if tp <= 0:
                     continue
 
+                # Inserter is structurally required for this lesson; without
+                # it the source/sink layout becomes ambiguous (could be
+                # solved by belts alone). Protect it from blanking.
                 min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities
+                    world_CWH, num_missing_entities, total_entities,
+                    protected_positions={tuple(inserter_pos)},
                 )
 
                 break

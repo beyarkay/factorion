@@ -91,6 +91,22 @@ class TestInserterTransferBasic:
             f"Throughput {tp} exceeds inserter flow rate {inserter_flow}"
         )
 
+    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
+    @pytest.mark.parametrize("seed", range(10))
+    def test_inserter_always_present_after_blanking(self, num_missing, seed):
+        """The central inserter must never be blanked, even at maximum
+        num_missing_entities — without it the lesson is ambiguous."""
+        world, _ = generate_lesson(
+            size=8, kind=LessonKind.INSERTER_TRANSFER,
+            num_missing_entities=num_missing, seed=seed,
+        )
+        ent_layer = world[Channel.ENTITIES.value]
+        inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
+        assert inserter_count == 1, (
+            f"Expected 1 inserter at num_missing={num_missing}, seed={seed}; "
+            f"got {inserter_count}"
+        )
+
 
 class TestInserterTransferManySeeds:
     """Generate many lessons with different seeds and verify all are valid."""
