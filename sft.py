@@ -140,38 +140,48 @@ class SFTArgs:
 
 
 def generate_dataset(args: SFTArgs):
-    """Generate SFT dataset from expert demonstrations."""
+    """Generate SFT dataset from expert demonstrations.
+
+    Samples uniformly across every value of `LessonKind` (auto-discovered),
+    so adding a new lesson kind to the enum is automatically picked up.
+    Returns (obs, tiles, ents, dirs, masks, kind_stats) where kind_stats is
+    {kind_name: {"samples": int, "lessons": int}}.
+    """
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
+    kinds = list(LessonKind)
 
     all_obs = []
     all_tile_idx = []
     all_entity = []
     all_direction = []
     all_valid_masks = []
+    kind_stats = {k.name: {"samples": 0, "lessons": 0} for k in kinds}
 
     seed = args.seed
     samples_so_far = 0
 
     while samples_so_far < args.num_samples:
+        kind = random.choice(kinds)
         level = random.randint(1, max_level)
         seed += 1
 
         try:
             solved, _ = generate_lesson(
                 size=args.size,
-                kind=LessonKind.MOVE_ONE_ITEM,
+                kind=kind,
                 num_missing_entities=0,
                 seed=seed,
             )
             task, _ = generate_lesson(
                 size=args.size,
-                kind=LessonKind.MOVE_ONE_ITEM,
+                kind=kind,
                 num_missing_entities=level,
                 seed=seed,
             )
         except Exception:
             continue
 
+        kind_stats[kind.name]["lessons"] += 1
         pairs = extract_expert_actions(solved, task)
         for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
             all_obs.append(obs)
@@ -179,6 +189,7 @@ def generate_dataset(args: SFTArgs):
             all_entity.append(entity_id)
             all_direction.append(direction_id)
             all_valid_masks.append(valid_mask)
+            kind_stats[kind.name]["samples"] += 1
             samples_so_far += 1
             if samples_so_far >= args.num_samples:
                 break
@@ -189,7 +200,7 @@ def generate_dataset(args: SFTArgs):
     dir_tensor = torch.tensor(all_direction, dtype=torch.long)
     mask_tensor = torch.stack(all_valid_masks)
 
-    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor
+    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor, kind_stats
 
 
 def train_sft(args: SFTArgs):
@@ -200,8 +211,13 @@ def train_sft(args: SFTArgs):
 
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
-    obs, tiles, ents, dirs, valid_masks = generate_dataset(args)
+    obs, tiles, ents, dirs, valid_masks, kind_stats = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
+    print("Per-kind breakdown:")
+    name_w = max(len(k) for k in kind_stats)
+    for name in sorted(kind_stats):
+        s = kind_stats[name]
+        print(f"  {name:<{name_w}}  samples={s['samples']:>6}  lessons={s['lessons']:>6}")
 
     # Train/val split
     n = len(obs)
@@ -410,6 +426,7 @@ def train_sft(args: SFTArgs):
         "runtime_seconds": round(total_time, 1),
         "checkpoint_path": args.checkpoint_path,
         "wandb_url": run.url if run is not None else None,
+        "kind_stats": kind_stats,
     }
     summary_path = args.summary_path or str(Path(__file__).parent / "sft_summary.json")
     with open(summary_path, "w") as f:

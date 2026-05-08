@@ -123,3 +123,4 @@ All six must pass before the work is considered complete.
 
 - Always run smoke tests before claiming work is done.
 - New code must be accompanied by end-to-end tests.
+- **Small, incremental commits.** Make each commit as small as possible while still being a logical, self-contained unit of change (e.g., "expand entity head" is one commit, "sample all lesson kinds" is another, "update tests for new return shape" is another). Do not bundle unrelated changes. Each commit should pass the pre-completion checklist on its own.
