@@ -1491,7 +1491,9 @@ def functions(
         return G
 
 
-    def _remove_entities(world_CWH, num_missing_entities, total_entities, protected_positions=None):
+    def _remove_entities(
+        world_CWH, num_missing_entities, total_entities, protected_positions=None
+    ):
         """Remove entities from a completed lesson, respecting multi-tile units.
 
         Also sets the FOOTPRINT channel: cells empty in the completed layout
@@ -1500,10 +1502,12 @@ def functions(
         them as the buildable region the agent is meant to fill).
 
         protected_positions: optional set of (x, y) the lesson considers
-        structurally required (e.g. the central inserter in INSERTER_TRANSFER).
-        Any entity-group containing one of these tiles is excluded from the
-        removable pool, so the agent always sees those entities in its input.
-        Source/sink are protected unconditionally via the entity-id `skip` set.
+        structurally required (e.g. the central inserter in INSERTER_TRANSFER,
+        or the recipe-bearing assembler in ASSEMBLE_1IN_1OUT). Any
+        entity-group containing one of these tiles is excluded from the
+        removable pool, so the agent always sees those entities in its
+        input. Source/sink are protected unconditionally via the entity-id
+        `skip` set below.
 
         Returns min_entities_required (number of entity units removed).
         For multi-tile entities (e.g. splitters), all tiles are removed together
@@ -1516,6 +1520,7 @@ def functions(
         empty_id = str2ent("empty").value
         empty_mask = world_CWH[Channel.ENTITIES.value] == empty_id
         world_CWH[Channel.FOOTPRINT.value][empty_mask] = Footprint.UNAVAILABLE.value
+
 
         if num_missing_entities == float("inf"):
             return total_entities
