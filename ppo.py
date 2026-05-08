@@ -773,10 +773,11 @@ class AgentCNN(nn.Module):
         self.width = base_env.size
         self.height = base_env.size
         self.channels = len(base_env.Channel)
-        # Match the env's declared action space (gym.spaces.Discrete(len(entities))).
-        # Source/sink IDs are catalog entries the env rejects as invalid placements;
-        # the agent learns to avoid them via reward, or via action masking (issue #36).
-        self.num_entities = len(base_env.entities)
+        # Source/sink (bulk_inserter, stack_inserter) live as the last two
+        # catalog entries; they are env-spawned, never agent-placeable. Sizing
+        # the head to len(entities)-2 makes them structurally impossible to
+        # sample, so we never waste samples on placements the env rejects.
+        self.num_entities = len(base_env.entities) - 2
         self.num_directions = len(base_env.Direction)
         self.num_items = len(base_env.items)
         self.num_misc = len(base_env.Misc)
