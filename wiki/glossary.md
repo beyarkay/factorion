@@ -9,21 +9,31 @@ how Factorion simplifies or omits them.
 ### Lane
 
 Every [[transport-belt]] (and [[underground-belt]], [[splitter]]) has two
-independent lanes — a **left lane** and a **right lane**. Each lane carries
-items independently at half the belt's total throughput. Items stay on their
-lane unless moved by a [[splitter]] or by sideloading.
+independent lanes — a **left lane** and a **right lane** (relative to the
+belt's facing direction). Each lane carries items at **7.5 items/sec**
+independently of the other; density and speed per lane are constant. Items
+stay on their lane unless moved by a [[splitter]], by [[glossary#sideloading|
+sideloading]], or by inserter placement/extraction.
 
 > **Not yet in Factorion.** Belts are modeled as single-lane pipes.
 
 ### Sideloading
 
 Feeding a belt **perpendicularly** into the side of another belt. Items merge
-onto only one lane of the receiving belt (the lane on the side the feeder belt
-connects to). This is the primary technique for controlling which lane carries
-which item type.
+onto only **one lane** of the receiving belt — the lane on the side the feeder
+belt connects from. This is the primary technique for controlling which lane
+carries which item type.
 
-Example: A belt pointing East meets the side of a belt pointing North. Items
-from the eastbound belt go onto the **right lane** of the northbound belt.
+Example: a belt pointing East into the **west** side of a belt pointing North
+lands its items on the **left lane** of the northbound belt. Reversed (West
+belt into the **east** side of a North belt) lands on the right lane.
+
+Common uses:
+- **Lane isolation:** put copper on the left lane, iron on the right lane, of
+  a single belt feeding a smelter row.
+- **Lane compression:** sideloading onto a partly-full belt can fully
+  saturate it beyond what forward-loading alone achieves.
+- **Lane swapping:** chain two sideloads to swap items from left to right.
 
 > **Not yet in Factorion.** Requires the lane system.
 

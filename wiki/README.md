@@ -18,12 +18,14 @@ implementation simplifies or diverges from the real game.
 | Inserter | Yes | [[inserter]] |
 | Assembling Machine 1 | Yes | [[assembling-machine]] |
 | Underground Belt | Yes | [[underground-belt]] |
-| Splitter | Planned | [[splitter]] |
+| Splitter | Yes | [[splitter]] |
 | Source / Sink | Yes (custom) | See [[inserter]] — they use inserter connection logic |
 
 ## Other docs
 
 - [[items-and-recipes]] — items, crafting recipes, and how Factorion models them
+- [[two-lane-system]] — the left/right lane mechanic that spans belts,
+  inserters, splitters, and sideloading (**not yet modelled in Factorion**)
 - [[glossary]] — definitions of Factorio terms used in these docs
 
 ## What's deliberately excluded
