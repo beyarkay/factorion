@@ -395,16 +395,6 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason['placed_source_or_sink'] = True
             action_is_invalid = True
-        elif self._world_CWH[self.Channel.FOOTPRINT.value, x, y] == self.Footprint.UNAVAILABLE.value:
-            # disallow placement on masked-out tiles
-            invalid_reason['placed_on_masked_tile'] = True
-            action_is_invalid = True
-            pass
-        elif entity_to_be_replaced in (source_id, sink_id):
-            # disallow the replacement of the source+sink
-            invalid_reason['replaced_source_or_sink'] = True
-            action_is_invalid = True
-            pass
         elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
@@ -431,31 +421,59 @@ class FactorioEnv(gym.Env):
             invalid_reason['placement_with_unneeded_misc'] = True
             action_is_invalid = True
             pass
-        elif x + self.entities[entity_id].width > self.size:
-            # The thing is too wide to be placed here
-            invalid_reason['too_wide'] = True
-            action_is_invalid = True
-            pass
-        elif y + self.entities[entity_id].height > self.size:
-            # The thing is too tall to be placed here
-            invalid_reason['too_tall'] = True
-            action_is_invalid = True
-            pass
         else:
-            action_is_invalid = False
-            # If all the above guards didn't catch anything, allow the
-            # placement of the entity
-            self._world_CWH[self.Channel.ENTITIES.value, x, y] = entity_id
-            self._world_CWH[self.Channel.DIRECTION.value, x, y] = direc
-            self._world_CWH[self.Channel.ITEMS.value, x, y] = item_id
-            self._world_CWH[self.Channel.MISC.value, x, y] = misc
-            self.actions[-1] = {
-                'entity': self.entities[entity_id].name,
-                'xy': (x, y),
-                'direction': self.Direction(direc),
-                'item': self.items[item_id].name,
-                'misc': self.Misc(misc),
-            }
+            # Compute the entity's full footprint (anchor for 1x1, all
+            # occupied tiles for multi-tile). py_entity_tiles handles
+            # rotation correctly; the previous x+width/y+height bounds
+            # checks were direction-agnostic and wrong for rotated splitters.
+            proto = self.entities[entity_id]
+            tiles_list = factorion_rs.py_entity_tiles(x, y, direc, proto.width, proto.height)
+            if tiles_list is None:
+                tiles_list = [(x, y)]
+            tiles_list = [tuple(t) for t in tiles_list]
+
+            # Validate every tile of the footprint. Multi-tile placements
+            # were previously only validated at the anchor, so a splitter
+            # could overlap an existing belt at its secondary tile or
+            # extend off-grid undetected.
+            out_of_bounds = any(
+                not (0 <= tx < self.size and 0 <= ty < self.size)
+                for tx, ty in tiles_list
+            )
+            if out_of_bounds:
+                invalid_reason['too_wide'] = True
+                action_is_invalid = True
+            elif any(
+                self._world_CWH[self.Channel.FOOTPRINT.value, tx, ty]
+                    == self.Footprint.UNAVAILABLE.value
+                for tx, ty in tiles_list
+            ):
+                invalid_reason['placed_on_masked_tile'] = True
+                action_is_invalid = True
+            elif any(
+                int(self._world_CWH[self.Channel.ENTITIES.value, tx, ty]) in (source_id, sink_id)
+                for tx, ty in tiles_list
+            ):
+                invalid_reason['replaced_source_or_sink'] = True
+                action_is_invalid = True
+            else:
+                action_is_invalid = False
+                # Write entity_id and direction at every tile of the
+                # footprint, matching how lessons and place_multi_tile
+                # represent multi-tile entities. Items + misc go on the
+                # anchor only (those channels are anchor-scoped).
+                for tx, ty in tiles_list:
+                    self._world_CWH[self.Channel.ENTITIES.value, tx, ty] = entity_id
+                    self._world_CWH[self.Channel.DIRECTION.value, tx, ty] = direc
+                self._world_CWH[self.Channel.ITEMS.value, x, y] = item_id
+                self._world_CWH[self.Channel.MISC.value, x, y] = misc
+                self.actions[-1] = {
+                    'entity': self.entities[entity_id].name,
+                    'xy': (x, y),
+                    'direction': self.Direction(direc),
+                    'item': self.items[item_id].name,
+                    'misc': self.Misc(misc),
+                }
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
