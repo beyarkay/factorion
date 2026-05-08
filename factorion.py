@@ -403,6 +403,24 @@ def functions(
                     if (tx, ty) != anchor:
                         ghost_at[(tx, ty)] = proto.name
 
+        # Belts share borders with adjacent connected belts so a chain like
+        # >>> renders as a single outlined strip rather than three boxes.
+        BELT_NAMES = {"transport_belt", "underground_belt"}
+
+        def _belt_at(x, y):
+            if not (0 <= x < W and 0 <= y < H):
+                return False, 0
+            p = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+            d = int(world_WHC[x, y, Channel.DIRECTION.value])
+            return p.name in BELT_NAMES, d
+
+        DIR_INT_TO_DELTA = {
+            Direction.NORTH.value: (0, -1),
+            Direction.EAST.value: (1, 0),
+            Direction.SOUTH.value: (0, 1),
+            Direction.WEST.value: (-1, 0),
+        }
+
         for y in range(H):
             html.append("<tr>")
             for x in range(W):
@@ -449,9 +467,43 @@ def functions(
                     ]
                 )
 
+                hide_n = hide_e = hide_s = hide_w = False
+                if proto.name in BELT_NAMES and direction in DIR_INT_TO_DELTA:
+                    dx, dy = DIR_INT_TO_DELTA[direction]
+                    side_lead = {(1, 0): "e", (-1, 0): "w", (0, 1): "s", (0, -1): "n"}[(dx, dy)]
+                    side_trail = {"e": "w", "w": "e", "s": "n", "n": "s"}[side_lead]
+                    fb, _ = _belt_at(x + dx, y + dy)
+                    if fb:
+                        if side_lead == "e":
+                            hide_e = True
+                        elif side_lead == "w":
+                            hide_w = True
+                        elif side_lead == "s":
+                            hide_s = True
+                        elif side_lead == "n":
+                            hide_n = True
+                    bb, bd = _belt_at(x - dx, y - dy)
+                    if bb and bd == direction:
+                        if side_trail == "e":
+                            hide_e = True
+                        elif side_trail == "w":
+                            hide_w = True
+                        elif side_trail == "s":
+                            hide_s = True
+                        elif side_trail == "n":
+                            hide_n = True
+
+                def _border_css(prefix, color):
+                    return "; ".join(
+                        f"border-{side}: 1px solid {'transparent' if hide else color}"
+                        for side, hide in (("top", hide_n), ("right", hide_e), ("bottom", hide_s), ("left", hide_w))
+                    )
+                td_border_css = _border_css("td", "black")
+                div_border_css = _border_css("div", "grey")
+
                 xy_str = f"{x},{y}"
                 cell_content = f"""
-               <div style='position: relative; width: 50px; height: 50px; {bg_style}; border: 1px solid grey;'>
+               <div style='position: relative; width: 50px; height: 50px; {bg_style}; {div_border_css};'>
         <img src='{entity_icon}' style=' position: absolute; top: 10%;   left: 10%;  width: 60%; height: 60%; '>
         {ghost_imgs}
         <img src='{item_icon}' style=' position: absolute; bottom: 5%;  right: 5%;  width: 20%; height: 20%; '>
@@ -461,7 +513,7 @@ def functions(
     </div>
                 """
                 html.append(
-                    f"<td style='border: 1px solid black; padding: 0;'>{cell_content}</td>"
+                    f"<td style='{td_border_css}; padding: 0;'>{cell_content}</td>"
                 )
             html.append("</tr>")
         html.append("</table>")
