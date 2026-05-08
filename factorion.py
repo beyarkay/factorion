@@ -495,7 +495,7 @@ def functions(
 
                 def _border_css(prefix, color):
                     return "; ".join(
-                        f"border-{side}: {'none' if hide else f'1px solid {color}'}"
+                        f"border-{side}: 1px solid {'transparent' if hide else color}"
                         for side, hide in (("top", hide_n), ("right", hide_e), ("bottom", hide_s), ("left", hide_w))
                     )
                 td_border_css = _border_css("td", "black")
