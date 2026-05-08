@@ -1505,10 +1505,22 @@ def functions(
     def _remove_entities(world_CWH, num_missing_entities, total_entities):
         """Remove entities from a completed lesson, respecting multi-tile units.
 
+        Also sets the FOOTPRINT channel: cells empty in the completed layout
+        become UNAVAILABLE (the agent has no business placing there); cells
+        with entities stay AVAILABLE (and remain so after blanking, marking
+        them as the buildable region the agent is meant to fill).
+
         Returns min_entities_required (number of entity units removed).
         For multi-tile entities (e.g. splitters), all tiles are removed together
         as a single unit.
         """
+        # Mark non-buildable region from the completed layout, before any
+        # blanking. Blanked cells keep FOOTPRINT=AVAILABLE so the agent
+        # knows they are placement targets.
+        empty_id = str2ent("empty").value
+        empty_mask = world_CWH[Channel.ENTITIES.value] == empty_id
+        world_CWH[Channel.FOOTPRINT.value][empty_mask] = Footprint.UNAVAILABLE.value
+
         if num_missing_entities == float("inf"):
             return total_entities
 

@@ -54,11 +54,16 @@ class TestFootprintChannel:
         assert world.shape[2] == len(Channel)
         assert world.shape[2] == 5
 
-    def test_default_footprint_is_available(self, env):
-        """By default all tiles should be AVAILABLE (editable)."""
+    def test_lesson_marks_buildable_region(self, env):
+        """After reset, FOOTPRINT=AVAILABLE iff the solved layout had an
+        entity at that cell. Cells empty in the completed lesson are
+        UNAVAILABLE so the agent can't place there."""
         obs, _ = env.reset(options={"num_missing_entities": 1})
         footprint = obs[Channel.FOOTPRINT.value]
-        assert (footprint == 1).all(), f"Expected all AVAILABLE, got:\n{footprint}"
+        # At least one of each value must be present for an interesting
+        # lesson (the solved factory has both entities and empty space).
+        assert (footprint == 1).any(), "Expected some AVAILABLE cells"
+        assert (footprint == 0).any(), "Expected some UNAVAILABLE cells (empty in solved)"
 
     def test_observation_space_shape(self, env):
         """Observation space should have 5 channels."""
@@ -90,9 +95,14 @@ class TestMaskedPlacement:
     def test_placement_on_available_tile_succeeds(self, env):
         """Placing an entity on a FOOTPRINT=1 tile should work normally."""
         env.reset(options={"num_missing_entities": 1})
-        target = find_tile(env, "empty")
-        assert target is not None, "No empty tile found"
-        tx, ty = target
+        # Find an empty cell that's still AVAILABLE (i.e. blanked from solved,
+        # not always-empty). With num_missing_entities=1 there's exactly one.
+        empty_id = str2ent("empty").value
+        ent = env._world_CWH[Channel.ENTITIES.value]
+        fp = env._world_CWH[Channel.FOOTPRINT.value]
+        candidates = ((ent == empty_id) & (fp == 1)).nonzero(as_tuple=False)
+        assert len(candidates) > 0, "No blanked-but-available tile found"
+        tx, ty = candidates[0].tolist()
 
         assert env._world_CWH[Channel.FOOTPRINT.value, tx, ty] == 1
 
