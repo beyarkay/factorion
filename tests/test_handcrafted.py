@@ -669,6 +669,177 @@ class TestAssemblerPerimeterThroughput:
         )
 
 
+# ── Canonical 2-in-1-out tileable factory ──────────────────────────────────
+#
+# Verbatim translation of the user-provided 7×8 tile blueprint. Two
+# assembling machines side-by-side (3×3 each at x=1..3 and x=4..6), fed by
+# two east-flowing ingredient belts that share row y=1: one regular belt
+# (A) snakes through y=0→y=1→y=0, and one belt (B) crosses under it using
+# a 5-tile underground pair. Each assembler receives one inserter from
+# each belt. Two output inserters at y=6 drop onto a single west-flowing
+# output belt at y=7 that terminates at a sink.
+#
+# The user specified that bulk/stack inserters in blueprints should always
+# be translated to Factorion native source/sink entities.
+#
+# Layout (R = source, K = sink, A = assembler tile, v/^/</>  = belt/inserter dir,
+#         u = underground entry, n = underground exit):
+#
+#          x: 0 1 2 3 4 5 6
+#     y=0:    R > v . . > >       (R=iron_plate source → belt A east)
+#     y=1:    R u > > > ^ n       (R=copper_cable source → underground belt B east)
+#     y=2:    . v v . . v v       (4 input inserters, all facing south)
+#     y=3:    . A A A A A A       (asm1 body: x=1..3; asm2 body: x=4..6)
+#     y=4:    . A A A A A A       (both assemblers: recipe=electronic_circuit)
+#     y=5:    . A A A A A A
+#     y=6:    . . . v v . .       (2 output inserters, facing south)
+#     y=7:    K < < < < < <       (K=electronic_circuit sink ← output belt west)
+#
+# Belt A (regular) snake: (1,0)E → (2,0)S → (2,1)E → (3,1)E → (4,1)E →
+#   (5,1)N → (5,0)E → (6,0)E. The dip through y=1 lets input inserters at
+#   x=2 and x=5 pick from it.
+# Belt B (underground): entry at (1,1), exit at (6,1), 5 tiles apart.
+# Note: in Factorion (matching real Factorio), inserters can pick up items
+#   directly from an underground-belt tile, so inserters at (1,2) and (6,2)
+#   feed off belt B via its entry and exit tiles respectively.
+
+
+class TestCanonical2In1OutTile:
+    """Verbatim translation of the user's canonical 7×8 ASSEMBLE_2IN_1OUT tile."""
+
+    def _build_tile(self):
+        # 8×8 world (7-wide tile + 1 margin not strictly needed)
+        world = make_world(8, 8)
+
+        # Sources (west edge) — replace the blueprint's bulk-inserters with
+        # Factorion native source entities, facing east so they output onto
+        # the adjacent belt cell at x=1.
+        set_entity(world, 0, 0, "source", Direction.EAST, "iron_plate")     # belt A
+        set_entity(world, 0, 1, "source", Direction.EAST, "copper_cable")   # belt B
+
+        # Sink (west edge of output belt) — replaces the blueprint's
+        # stack-inserter, facing west to consume from belt cell at x=1.
+        set_entity(world, 0, 7, "sink", Direction.WEST, "electronic_circuit")
+
+        # Belt A: regular transport belts snaking across y=0 and y=1
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 2, 0, "transport_belt", Direction.SOUTH)
+        set_entity(world, 2, 1, "transport_belt", Direction.EAST)
+        set_entity(world, 3, 1, "transport_belt", Direction.EAST)
+        set_entity(world, 4, 1, "transport_belt", Direction.EAST)
+        set_entity(world, 5, 1, "transport_belt", Direction.NORTH)
+        set_entity(world, 5, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 6, 0, "transport_belt", Direction.EAST)
+
+        # Belt B: underground pair. Entry at (1,1), exit at (6,1). 5 tiles apart,
+        # which is within the yellow underground max range.
+        set_entity(world, 1, 1, "underground_belt", Direction.EAST,
+                   misc=Misc.UNDERGROUND_DOWN.value)
+        set_entity(world, 6, 1, "underground_belt", Direction.EAST,
+                   misc=Misc.UNDERGROUND_UP.value)
+
+        # Assemblers (3x3 each), recipe=electronic_circuit.
+        # Anchors (top-left) at (1,3) and (4,3).
+        set_assembler(world, 1, 3, "electronic_circuit")
+        set_assembler(world, 4, 3, "electronic_circuit")
+
+        # Input inserters at y=2, all facing SOUTH (pick from y=1 belt,
+        # drop into y=3 assembler top row).
+        set_entity(world, 1, 2, "inserter", Direction.SOUTH)  # picks belt B, drops asm1 N_left
+        set_entity(world, 2, 2, "inserter", Direction.SOUTH)  # picks belt A, drops asm1 N_center
+        set_entity(world, 5, 2, "inserter", Direction.SOUTH)  # picks belt A, drops asm2 N_center
+        set_entity(world, 6, 2, "inserter", Direction.SOUTH)  # picks belt B, drops asm2 N_right
+
+        # Output inserters at y=6, facing SOUTH (pick from y=5 asm bottom row,
+        # drop onto y=7 output belt).
+        set_entity(world, 3, 6, "inserter", Direction.SOUTH)  # picks asm1 S_right
+        set_entity(world, 4, 6, "inserter", Direction.SOUTH)  # picks asm2 S_left
+
+        # Output belt at y=7, all facing WEST.
+        for x in range(1, 7):
+            set_entity(world, x, 7, "transport_belt", Direction.WEST)
+
+        return world
+
+    def test_produces_electronic_circuits(self):
+        """The tile should produce electronic circuits with nonzero throughput."""
+        world = self._build_tile()
+        tp, unreachable = compare_throughput(world)
+        assert tp > 0, f"expected > 0 throughput, got {tp}"
+        # Bottleneck analysis:
+        #   - 2 inserters per assembler, each capped at 0.86 i/s
+        #   - belt A/B each feeds 2 inserters; belt supply (15 i/s) >> demand (1.72 i/s)
+        #   - per assembler: 0.86 copper_cable + 0.86 iron_plate
+        #   - recipe: 6 CC + 2 IP → 2 EC; min_ratio = min(0.86/6, 0.86/2) = 0.86/6
+        #   - per-assembler output = 2 × 0.86/6 ≈ 0.2867 EC/s
+        #   - total = 2 × 0.2867 ≈ 0.5733 EC/s
+        #   - output inserters (2 × 0.86 = 1.72 i/s cap) and belt (15 i/s) not bottlenecked
+        expected = 2 * 2 * (0.86 / 6.0)
+        assert abs(tp - expected) < 1e-3, (
+            f"expected throughput ≈ {expected:.4f} (copper_cable-limited), got {tp}"
+        )
+
+    def test_removing_one_input_inserter_halves_throughput(self):
+        """Breaking one input feed should cut throughput of that assembler to 0.
+
+        Removing the N_left inserter of asm1 means asm1 gets no copper_cable
+        (its only belt-B feed), so asm1 produces 0. asm2 is unaffected.
+        Total throughput should drop to exactly half.
+        """
+        world = self._build_tile()
+        # Remove inserter at (1,2) (asm1's belt-B feed)
+        set_entity(world, 1, 2, "empty", Direction.NONE)
+        tp, _ = compare_throughput(world)
+        expected_full = 2 * 2 * (0.86 / 6.0)
+        expected_half = expected_full / 2
+        assert abs(tp - expected_half) < 1e-3, (
+            f"expected ≈ {expected_half:.4f} (half of {expected_full:.4f}), got {tp}"
+        )
+
+    def test_removing_underground_exit_only_breaks_asm2(self):
+        """Removing the underground EXIT at (6,1) breaks only asm2's belt-B feed.
+
+        In both real Factorio and Factorion, inserters can pick items
+        directly from an underground-belt tile (entry or exit). So
+        inserter at (1,2) picking from the underground ENTRY at (1,1)
+        still works — asm1 keeps producing. Only asm2, fed via inserter
+        (6,2) from the now-removed exit tile, loses its copper_cable.
+        Throughput halves.
+        """
+        world = self._build_tile()
+        set_entity(world, 6, 1, "empty", Direction.NONE)
+        tp, _ = compare_throughput(world)
+        expected_full = 2 * 2 * (0.86 / 6.0)
+        expected_half = expected_full / 2
+        assert abs(tp - expected_half) < 1e-3, (
+            f"expected ≈ {expected_half:.4f} (asm1 only), got {tp}"
+        )
+
+    def test_removing_underground_entry_kills_belt_b_entirely(self):
+        """Removing the underground ENTRY at (1,1) kills belt B for both assemblers.
+
+        With no entry, the source at (0,1) has no downstream cell, AND the
+        exit at (6,1) has no inflow. Both copper_cable-feeding inserters
+        ((1,2) and (6,2)) lose their pickup source → all assemblers starve
+        of copper_cable → total throughput drops to 0.
+        """
+        world = self._build_tile()
+        set_entity(world, 1, 1, "empty", Direction.NONE)
+        tp, _ = compare_throughput(world)
+        assert tp == 0, f"expected 0 (belt B fully broken), got {tp}"
+
+    def test_removing_output_inserter_halves_throughput(self):
+        """Removing one output inserter means one assembler's product is stranded."""
+        world = self._build_tile()
+        set_entity(world, 3, 6, "empty", Direction.NONE)  # asm1's output
+        tp, _ = compare_throughput(world)
+        expected_full = 2 * 2 * (0.86 / 6.0)
+        expected_half = expected_full / 2
+        assert abs(tp - expected_half) < 1e-3, (
+            f"expected ≈ {expected_half:.4f}, got {tp}"
+        )
+
+
 # ── Different items ──────────────────────────────────────────────────────────
 
 

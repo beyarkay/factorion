@@ -85,6 +85,31 @@ shared by Inserter, Source, and Sink:
 
 An inserter cannot drop onto empty tiles or onto other inserters.
 
+### Blueprint Direction Convention (gotcha)
+
+**Factorio blueprint strings encode an inserter's `direction` as the
+direction the arm points toward its *pickup* tile**, not the drop tile.
+This is the **opposite** of the Factorion convention (where `Direction`
+points toward the drop tile, matching "facing direction").
+
+Example: an inserter in a Factorio blueprint with `direction: 0` (NORTH)
+picks from its north neighbour and drops to its south neighbour. The
+same inserter inside Factorion would be stored with `Direction::South`.
+
+`blueprint2world` in `factorion.py` handles this by flipping inserter
+directions 180° on decode:
+
+```python
+if "inserter" in e["name"]:
+    e["direction"] = (e.get("direction", 0) + 8) % 16
+```
+
+When manually reading blueprint JSON without going through
+`blueprint2world`, always apply this flip before comparing to Factorion
+semantics. Non-inserter entities (belts, assemblers, etc.) do not need
+the flip — only inserters (including Source/Sink, which are bulk/stack
+inserters in the blueprint namespace).
+
 ### Source & Sink
 
 Source (`EntityKind::Source = 6`) and Sink (`EntityKind::Sink = 5`) are
