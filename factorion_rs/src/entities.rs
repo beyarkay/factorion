@@ -663,10 +663,12 @@ impl FactoryEntity for Splitter {
     }
 
     fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
-        // Splitter cap stays at 30 i/s per lane in commit 3 (the legacy
-        // whole-splitter cap re-interpreted per lane). Commit 4 will tighten
-        // each output lane to LANE_FLOW_RATE = 7.5 after the divisor.
-        cap_lanes_inplace(input, self.flow_rate())
+        // Splitter is identity per lane — items pool across input belts
+        // within their own lane label. The per-output-lane cap of
+        // LANE_FLOW_RATE (7.5) is applied AFTER the divisor in
+        // calc_throughput, so a splitter feeding two output belts splits
+        // each lane evenly across them.
+        input.clone()
     }
 }
 
@@ -1162,19 +1164,31 @@ mod tests {
     }
 
     #[test]
-    fn test_splitter_transform_flow() {
+    fn test_splitter_transform_flow_is_identity() {
+        // Splitter's transform_flow is identity per lane. The per-output-
+        // lane cap (LANE_FLOW_RATE) is applied in calc_throughput AFTER the
+        // divisor, not here.
         let splitter = Splitter;
-        // 20 i/s passes through (under 30 cap)
         let mut input = LaneFlow::default();
-        input.add(LaneTag::Port, Item::CopperCable, 20.0);
+        input.add(LaneTag::Port, Item::CopperCable, 12.0);
+        input.add(LaneTag::Starboard, Item::CopperCable, 7.0);
         let output = splitter.transform_flow(&input);
-        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 20.0).abs() < 1e-9);
+        assert_eq!(output.lane(LaneTag::Port)[&Item::CopperCable], 12.0);
+        assert_eq!(output.lane(LaneTag::Starboard)[&Item::CopperCable], 7.0);
+    }
 
-        // 40 i/s capped at 30 (legacy whole-splitter cap; per-lane will land in commit 4)
+    #[test]
+    fn test_splitter_keeps_lanes_separate() {
+        // Splitter's transform_flow does not mix port↔starboard. An asymmetric
+        // input (e.g. only port loaded) stays asymmetric on the output.
+        let splitter = Splitter;
         let mut input = LaneFlow::default();
-        input.add(LaneTag::Port, Item::CopperCable, 40.0);
+        input.add(LaneTag::Port, Item::IronPlate, 5.0);
         let output = splitter.transform_flow(&input);
-        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 30.0).abs() < 1e-9);
+        assert_eq!(output.lane(LaneTag::Port)[&Item::IronPlate], 5.0);
+        assert!(!output
+            .lane(LaneTag::Starboard)
+            .contains_key(&Item::IronPlate));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
 use crate::lane_flow::LaneFlow;
-use crate::types::{Item, LaneTag};
+use crate::types::{Item, LaneTag, LANE_FLOW_RATE};
 
 /// Calculate the throughput of a factory graph.
 ///
@@ -106,9 +106,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
             }
 
-            // For splitters, divide output evenly among same-lane successors,
-            // independently per lane. Commit 2 only routes through the port
-            // lane; commit 4 will exercise both lanes.
+            // For splitters, divide output evenly among same-lane successors
+            // and cap each output lane at LANE_FLOW_RATE — the per-belt-lane
+            // bound. Lanes are processed independently: items on the port
+            // pool are distributed across output port lanes only, and
+            // similarly for starboard.
             if entity_kind == Item::Splitter {
                 for lane in [LaneTag::Port, LaneTag::Starboard] {
                     let n_succ = graph.successors[node_idx]
@@ -119,6 +121,9 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
                         for rate in node_outputs[node_idx].lane_mut(lane).values_mut() {
                             *rate /= n_succ as f64;
                         }
+                    }
+                    for rate in node_outputs[node_idx].lane_mut(lane).values_mut() {
+                        *rate = rate.min(LANE_FLOW_RATE);
                     }
                 }
             }
@@ -495,5 +500,198 @@ mod tests {
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);
         assert!(output.is_empty());
+    }
+
+    // ── Lane-aware end-to-end edge cases (commits 3–4) ────────────────────
+
+    #[test]
+    fn test_splitter_split_per_lane_caps_at_7_5() {
+        // 1-in 2-out splitter: each output belt receives 7.5/lane after the
+        // per-lane divisor (input port=7.5, output port=3.75 each), and the
+        // per-output-lane cap (7.5) prevents anything bigger from leaking.
+        // Total throughput: 7.5 per output × 2 outputs = 15.
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 1, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        assert!(
+            (throughput - 15.0).abs() < 1e-9,
+            "1-in 2-out splitter expected 15.0 total, got {}",
+            throughput
+        );
+    }
+
+    #[test]
+    fn test_splitter_2_in_2_out_full_throughput() {
+        // 2-in 2-out splitter: each input lane gets 7.5 + 7.5 = 15 pooled,
+        // divided across 2 output lanes → 7.5 each, capped (no effect).
+        // Total: 7.5 × 2 lanes × 2 outputs = 30.
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 1, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        let throughput = output[&Item::CopperCable];
+        assert!(
+            (throughput - 30.0).abs() < 1e-9,
+            "2-in 2-out splitter expected 30.0, got {}",
+            throughput
+        );
+    }
+
+    #[test]
+    fn test_belt_chain_saturates_at_15_via_both_lanes() {
+        // Source → belt → belt → belt → Sink. Source feeds both lanes ∞;
+        // belts cap each lane at 7.5; sink aggregates → 15.
+        let mut w = World::empty(5, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!((output[&Item::CopperCable] - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_underground_belt_preserves_15_throughput() {
+        // Source → belt → UG-down → ... → UG-up → belt → Sink. Lanes
+        // preserved end-to-end through the tunnel — saturated 15 i/s.
+        let mut w = World::empty(7, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_underground(2, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(4, 0, Direction::East, Misc::UndergroundUp);
+        w.place(5, 0, Item::TransportBelt, Direction::East, None);
+        w.place(6, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!((output[&Item::IronPlate] - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_lone_curve_east_to_south_keeps_15() {
+        // S>>v
+        //    v
+        //    v
+        //    K
+        // Source at (0,0)E → 2 east belts → south curve at (3,0) → 2 south belts → Sink (3,3)S.
+        let mut w = World::empty(5, 5);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::South, None);
+        w.place(3, 1, Item::TransportBelt, Direction::South, None);
+        w.place(3, 2, Item::TransportBelt, Direction::South, None);
+        w.place(3, 3, Item::Sink, Direction::South, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!(
+            (output[&Item::CopperCable] - 15.0).abs() < 1e-6,
+            "lone E→S curve expected 15.0, got {}",
+            output[&Item::CopperCable]
+        );
+    }
+
+    #[test]
+    fn test_lone_curve_south_to_east_keeps_15() {
+        // S
+        // v
+        // v>>K
+        // South belts at column 0, then east curve at (0,2), then east belts to sink.
+        let mut w = World::empty(5, 5);
+        w.place(
+            0,
+            0,
+            Item::Source,
+            Direction::South,
+            Some(Item::CopperCable),
+        );
+        w.place(0, 1, Item::TransportBelt, Direction::South, None);
+        w.place(0, 2, Item::TransportBelt, Direction::East, None);
+        w.place(1, 2, Item::TransportBelt, Direction::East, None);
+        w.place(2, 2, Item::TransportBelt, Direction::East, None);
+        w.place(3, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!(
+            (output[&Item::CopperCable] - 15.0).abs() < 1e-6,
+            "lone S→E curve expected 15.0, got {}",
+            output[&Item::CopperCable]
+        );
+    }
+
+    #[test]
+    fn test_lone_curve_west_to_north_keeps_15() {
+        // West-going belts then curve north.
+        // K
+        // ^
+        // ^<<S
+        let mut w = World::empty(5, 5);
+        w.place(3, 2, Item::Source, Direction::West, Some(Item::CopperCable));
+        w.place(2, 2, Item::TransportBelt, Direction::West, None);
+        w.place(1, 2, Item::TransportBelt, Direction::West, None);
+        w.place(0, 2, Item::TransportBelt, Direction::North, None);
+        w.place(0, 1, Item::TransportBelt, Direction::North, None);
+        w.place(0, 0, Item::Sink, Direction::North, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!(
+            (output[&Item::CopperCable] - 15.0).abs() < 1e-6,
+            "lone W→N curve expected 15.0, got {}",
+            output[&Item::CopperCable]
+        );
+    }
+
+    #[test]
+    fn test_lone_curve_north_to_west_keeps_15() {
+        // North-going belts curve west.
+        // <<K
+        // ^
+        // ^
+        // S
+        let mut w = World::empty(5, 5);
+        w.place(
+            2,
+            4,
+            Item::Source,
+            Direction::North,
+            Some(Item::CopperCable),
+        );
+        w.place(2, 3, Item::TransportBelt, Direction::North, None);
+        w.place(2, 2, Item::TransportBelt, Direction::North, None);
+        w.place(2, 1, Item::TransportBelt, Direction::West, None);
+        w.place(1, 1, Item::TransportBelt, Direction::West, None);
+        w.place(0, 1, Item::Sink, Direction::West, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!(
+            (output[&Item::CopperCable] - 15.0).abs() < 1e-6,
+            "lone N→W curve expected 15.0, got {}",
+            output[&Item::CopperCable]
+        );
     }
 }
