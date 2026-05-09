@@ -62,7 +62,99 @@ impl Direction {
             Direction::None => Direction::None,
         }
     }
+
+    /// (dx, dy) offset to the cell on the port (left) side of a belt facing
+    /// `self`. Port and starboard are *labels on lanes* inside the same 1×1
+    /// belt tile — they have no offset within the tile. This helper returns
+    /// the offset to the *neighbouring cell* that sits on the port side.
+    ///
+    /// Derived as a 90° CCW rotation of `delta()`: (dx, dy) → (dy, -dx).
+    #[allow(dead_code)]
+    pub fn port_neighbor_offset(self) -> (i64, i64) {
+        let (dx, dy) = self.delta();
+        (dy, -dx)
+    }
+
+    /// (dx, dy) offset to the cell on the starboard (right) side of a belt
+    /// facing `self`. 90° CW rotation of `delta()`: (dx, dy) → (-dy, dx).
+    #[allow(dead_code)]
+    pub fn starboard_neighbor_offset(self) -> (i64, i64) {
+        let (dx, dy) = self.delta();
+        (-dy, dx)
+    }
+
+    /// True if `self` and `other` are perpendicular (one is N/S and the
+    /// other is E/W). False if either is `Direction::None`.
+    #[allow(dead_code)]
+    pub fn is_perpendicular(self, other: Direction) -> bool {
+        match (self, other) {
+            (Direction::None, _) | (_, Direction::None) => false,
+            (Direction::North | Direction::South, Direction::East | Direction::West) => true,
+            (Direction::East | Direction::West, Direction::North | Direction::South) => true,
+            _ => false,
+        }
+    }
+
+    /// Given a `(dx, dy)` offset relative to a belt facing `self`, return
+    /// which lane-side that cell sits on. Returns `None` for the in-line
+    /// cells (forward / backward) and any other offset.
+    #[allow(dead_code)]
+    pub fn side_of(self, dx: i64, dy: i64) -> Option<LaneSide> {
+        if (dx, dy) == self.port_neighbor_offset() {
+            Some(LaneSide::Port)
+        } else if (dx, dy) == self.starboard_neighbor_offset() {
+            Some(LaneSide::Starboard)
+        } else {
+            None
+        }
+    }
 }
+
+/// Which side of a belt's flow direction a lane is on.
+/// `Port` = left of travel direction; `Starboard` = right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaneSide {
+    Port,
+    Starboard,
+}
+
+impl LaneSide {
+    #[allow(dead_code)]
+    pub fn opposite(self) -> Self {
+        match self {
+            LaneSide::Port => LaneSide::Starboard,
+            LaneSide::Starboard => LaneSide::Port,
+        }
+    }
+}
+
+/// Tag identifying which lane an edge or flow bucket refers to.
+///
+/// Every flow has exactly two lanes: port and starboard. There is no
+/// "pooled" or lane-agnostic third bucket — if something is on both
+/// lanes, set both. Lane-agnostic entities (Source, Sink, Inserter, AM)
+/// participate by emitting edges that target whichever lanes the spec
+/// dictates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaneTag {
+    Port,
+    Starboard,
+}
+
+impl From<LaneSide> for LaneTag {
+    fn from(side: LaneSide) -> Self {
+        match side {
+            LaneSide::Port => LaneTag::Port,
+            LaneSide::Starboard => LaneTag::Starboard,
+        }
+    }
+}
+
+/// Per-lane flow rate cap on a transport belt or splitter output. Each
+/// lane carries up to 7.5 items/sec; the per-belt total of 15 i/s is
+/// reached when both lanes are saturated.
+#[allow(dead_code)]
+pub const LANE_FLOW_RATE: f64 = 7.5;
 
 /// Underground belt state flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1144,6 +1236,113 @@ mod tests {
         assert_eq!(Direction::South.opposite(), Direction::North);
         assert_eq!(Direction::East.opposite(), Direction::West);
         assert_eq!(Direction::West.opposite(), Direction::East);
+    }
+
+    #[test]
+    fn test_port_neighbor_offset() {
+        // North-facer (moving up): port (left) = west
+        assert_eq!(Direction::North.port_neighbor_offset(), (-1, 0));
+        // East-facer (moving right): port = north
+        assert_eq!(Direction::East.port_neighbor_offset(), (0, -1));
+        // South-facer (moving down): port = east
+        assert_eq!(Direction::South.port_neighbor_offset(), (1, 0));
+        // West-facer (moving left): port = south
+        assert_eq!(Direction::West.port_neighbor_offset(), (0, 1));
+    }
+
+    #[test]
+    fn test_starboard_neighbor_offset() {
+        // Starboard is always opposite of port and 90° CW of forward.
+        assert_eq!(Direction::North.starboard_neighbor_offset(), (1, 0));
+        assert_eq!(Direction::East.starboard_neighbor_offset(), (0, 1));
+        assert_eq!(Direction::South.starboard_neighbor_offset(), (-1, 0));
+        assert_eq!(Direction::West.starboard_neighbor_offset(), (0, -1));
+    }
+
+    #[test]
+    fn test_port_starboard_are_opposite() {
+        for dir in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            let (px, py) = dir.port_neighbor_offset();
+            let (sx, sy) = dir.starboard_neighbor_offset();
+            assert_eq!((px, py), (-sx, -sy), "port ≠ -starboard for {:?}", dir);
+        }
+    }
+
+    #[test]
+    fn test_is_perpendicular() {
+        assert!(Direction::North.is_perpendicular(Direction::East));
+        assert!(Direction::North.is_perpendicular(Direction::West));
+        assert!(Direction::South.is_perpendicular(Direction::East));
+        assert!(Direction::South.is_perpendicular(Direction::West));
+        assert!(Direction::East.is_perpendicular(Direction::North));
+        assert!(Direction::East.is_perpendicular(Direction::South));
+        assert!(Direction::West.is_perpendicular(Direction::North));
+        assert!(Direction::West.is_perpendicular(Direction::South));
+
+        // Parallel cases (same or opposite) → not perpendicular
+        for d in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            assert!(!d.is_perpendicular(d));
+            assert!(!d.is_perpendicular(d.opposite()));
+        }
+
+        // Direction::None is never perpendicular to anything
+        assert!(!Direction::None.is_perpendicular(Direction::East));
+        assert!(!Direction::East.is_perpendicular(Direction::None));
+        assert!(!Direction::None.is_perpendicular(Direction::None));
+    }
+
+    #[test]
+    fn test_side_of() {
+        // North-facing belt: cell at (-1, 0) is on its port side, (1, 0) starboard.
+        assert_eq!(Direction::North.side_of(-1, 0), Some(LaneSide::Port));
+        assert_eq!(Direction::North.side_of(1, 0), Some(LaneSide::Starboard));
+        // In-line offsets (forward / backward) are not lane sides.
+        assert_eq!(Direction::North.side_of(0, -1), None);
+        assert_eq!(Direction::North.side_of(0, 1), None);
+        // Non-adjacent offsets are not lane sides either.
+        assert_eq!(Direction::North.side_of(2, 0), None);
+        assert_eq!(Direction::North.side_of(0, 0), None);
+
+        // South-facing belt: port = east, starboard = west.
+        assert_eq!(Direction::South.side_of(1, 0), Some(LaneSide::Port));
+        assert_eq!(Direction::South.side_of(-1, 0), Some(LaneSide::Starboard));
+
+        // East-facing belt: port = north, starboard = south.
+        assert_eq!(Direction::East.side_of(0, -1), Some(LaneSide::Port));
+        assert_eq!(Direction::East.side_of(0, 1), Some(LaneSide::Starboard));
+
+        // West-facing belt: port = south, starboard = north.
+        assert_eq!(Direction::West.side_of(0, 1), Some(LaneSide::Port));
+        assert_eq!(Direction::West.side_of(0, -1), Some(LaneSide::Starboard));
+    }
+
+    #[test]
+    fn test_lane_side_opposite() {
+        assert_eq!(LaneSide::Port.opposite(), LaneSide::Starboard);
+        assert_eq!(LaneSide::Starboard.opposite(), LaneSide::Port);
+    }
+
+    #[test]
+    fn test_lane_tag_from_lane_side() {
+        assert_eq!(LaneTag::from(LaneSide::Port), LaneTag::Port);
+        assert_eq!(LaneTag::from(LaneSide::Starboard), LaneTag::Starboard);
+    }
+
+    #[test]
+    fn test_lane_flow_rate_constant() {
+        // Two lanes × 7.5 i/s = 15 i/s = belt total cap.
+        assert_eq!(LANE_FLOW_RATE * 2.0, Item::TransportBelt.flow_rate());
+        assert_eq!(LANE_FLOW_RATE * 2.0, Item::UndergroundBelt.flow_rate());
     }
 
     #[test]
