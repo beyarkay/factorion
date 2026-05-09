@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
+use crate::entities::{entity_tiles, is_lane_aware, EntityEnum, FactoryEntity};
 use crate::types::{Item, Misc, NodeId, PortRole};
 use crate::world::World;
 
@@ -69,17 +69,11 @@ impl FactoryGraph {
     }
 }
 
-/// Lane-aware entity kinds: each contributes TWO graph nodes per anchor
-/// tile (one port, one starboard).
-fn is_lane_aware(kind: Item) -> bool {
-    matches!(
-        kind,
-        Item::TransportBelt | Item::UndergroundBelt | Item::Splitter
-    )
-}
-
 /// Port roles to instantiate as graph nodes for an entity. Lane-aware
-/// entities expand into two nodes; lane-agnostic into one.
+/// entities (per `FactoryEntity::is_lane_aware`) expand into two nodes;
+/// lane-agnostic into one. The lane-aware predicate is sourced from
+/// the trait via the `is_lane_aware` shim in `entities` — see the doc
+/// comment there.
 fn port_roles_for(kind: Item) -> &'static [PortRole] {
     if is_lane_aware(kind) {
         &[PortRole::Port, PortRole::Starboard]

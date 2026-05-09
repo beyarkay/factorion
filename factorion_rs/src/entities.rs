@@ -14,6 +14,7 @@ pub type Edge = (NodeId, NodeId);
 /// - How it connects to neighbouring entities (graph edges)
 /// - How it transforms input flow into output flow per node
 /// - Its maximum throughput rate
+/// - Whether it exposes per-lane port-nodes
 pub trait FactoryEntity {
     /// Which entity kind this is. Used to look up flow_rate from the
     /// single source of truth in Item::flow_rate().
@@ -37,6 +38,18 @@ pub trait FactoryEntity {
     fn flow_rate(&self) -> f64 {
         self.kind().flow_rate()
     }
+
+    /// Whether this entity contributes per-lane port-nodes to the graph.
+    ///
+    /// `true` for lane-aware entities (TransportBelt, UndergroundBelt,
+    /// Splitter): each anchor tile gets one Port and one Starboard node.
+    /// `false` for lane-agnostic entities (Inserter, Source, Sink,
+    /// AssemblingMachine): a single node per anchor.
+    ///
+    /// Deliberately has NO default — adding a new entity must explicitly
+    /// declare its lane-awareness, which forces the author to think
+    /// about how it interacts with the per-lane edge rules.
+    fn is_lane_aware(&self) -> bool;
 }
 
 /// Stack-allocated entity dispatch. Wraps concrete entity structs.
@@ -105,6 +118,18 @@ impl FactoryEntity for EntityEnum {
             Self::Splitter(e) => e.transform_flow(input),
         }
     }
+
+    fn is_lane_aware(&self) -> bool {
+        match self {
+            Self::TransportBelt(e) => e.is_lane_aware(),
+            Self::Inserter(e) => e.is_lane_aware(),
+            Self::AssemblingMachine(e) => e.is_lane_aware(),
+            Self::UndergroundBelt(e) => e.is_lane_aware(),
+            Self::Sink(e) => e.is_lane_aware(),
+            Self::Source(e) => e.is_lane_aware(),
+            Self::Splitter(e) => e.is_lane_aware(),
+        }
+    }
 }
 
 // ── Helper: emit lane-preserving edges between two lane-aware entities ─────
@@ -129,12 +154,18 @@ fn push_lane_preserving(
     ));
 }
 
-/// Lane-aware entity kinds: TB, UG, Splitter contribute two port-nodes.
-fn is_lane_aware(kind: Item) -> bool {
-    matches!(
-        kind,
-        Item::TransportBelt | Item::UndergroundBelt | Item::Splitter
-    )
+/// Lookup-by-Item shim for code that has an entity kind but not an
+/// instance (graph builder, connection emitters). Constructs an enum
+/// value with throwaway item/misc and reads its `is_lane_aware()`. The
+/// trait method on each impl is the canonical source of truth — this
+/// shim is a convenience wrapper.
+///
+/// Returns `false` for non-placeable items (no entity, hence not
+/// lane-aware).
+pub(crate) fn is_lane_aware(kind: Item) -> bool {
+    EntityEnum::new(kind, None, Misc::None)
+        .map(|e| e.is_lane_aware())
+        .unwrap_or(false)
 }
 
 // ── Transport Belt ──────────────────────────────────────────────────────────
@@ -253,6 +284,10 @@ impl FactoryEntity for TransportBelt {
             .map(|(&item, &rate)| (item, rate.min(LANE_FLOW_RATE)))
             .collect()
     }
+
+    fn is_lane_aware(&self) -> bool {
+        true
+    }
 }
 
 // ── Inserter ────────────────────────────────────────────────────────────────
@@ -273,6 +308,10 @@ impl FactoryEntity for Inserter {
             .iter()
             .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
             .collect()
+    }
+
+    fn is_lane_aware(&self) -> bool {
+        false
     }
 }
 
@@ -362,6 +401,10 @@ impl FactoryEntity for AssemblingMachine {
             .map(|&(item, rate)| (item, rate * min_ratio))
             .collect()
     }
+
+    fn is_lane_aware(&self) -> bool {
+        false
+    }
 }
 
 // ── Underground Belt ────────────────────────────────────────────────────────
@@ -429,6 +472,10 @@ impl FactoryEntity for UndergroundBelt {
             .map(|(&item, &rate)| (item, rate.min(LANE_FLOW_RATE)))
             .collect()
     }
+
+    fn is_lane_aware(&self) -> bool {
+        true
+    }
 }
 
 // ── Source (stack_inserter) ─────────────────────────────────────────────────
@@ -453,6 +500,10 @@ impl FactoryEntity for Source {
         }
         output
     }
+
+    fn is_lane_aware(&self) -> bool {
+        false
+    }
 }
 
 // ── Sink (bulk_inserter) ────────────────────────────────────────────────────
@@ -471,6 +522,10 @@ impl FactoryEntity for Sink {
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
         // Sinks pass everything through (infinite capacity).
         input.clone()
+    }
+
+    fn is_lane_aware(&self) -> bool {
+        false
     }
 }
 
@@ -815,6 +870,10 @@ impl FactoryEntity for Splitter {
         // divisor are applied in throughput.rs. Each splitter port-node
         // pools all its incoming flow on that lane label.
         input.clone()
+    }
+
+    fn is_lane_aware(&self) -> bool {
+        true
     }
 }
 
@@ -1244,6 +1303,51 @@ mod tests {
         let input = HashMap::from([(Item::CopperCable, 12.0)]);
         let output = splitter.transform_flow(&input);
         assert_eq!(output[&Item::CopperCable], 12.0);
+    }
+
+    #[test]
+    fn test_is_lane_aware_per_entity() {
+        // Lane-aware: TB, UG, Splitter.
+        assert!(TransportBelt.is_lane_aware());
+        assert!(UndergroundBelt {
+            misc: Misc::UndergroundDown
+        }
+        .is_lane_aware());
+        assert!(Splitter.is_lane_aware());
+
+        // Lane-agnostic: Inserter, Source, Sink, AssemblingMachine.
+        assert!(!Inserter.is_lane_aware());
+        assert!(!Source { item: None }.is_lane_aware());
+        assert!(!Sink.is_lane_aware());
+        assert!(!AssemblingMachine { recipe_item: None }.is_lane_aware());
+    }
+
+    #[test]
+    fn test_is_lane_aware_shim_matches_trait() {
+        // The free `is_lane_aware(kind)` shim must agree with the trait
+        // method. If a future entity is added but the shim is forgotten,
+        // this test will fail.
+        for kind in [
+            Item::TransportBelt,
+            Item::UndergroundBelt,
+            Item::Splitter,
+            Item::Inserter,
+            Item::Source,
+            Item::Sink,
+            Item::AssemblingMachine1,
+        ] {
+            let entity = EntityEnum::new(kind, None, Misc::None).expect("placeable items only");
+            assert_eq!(
+                super::is_lane_aware(kind),
+                entity.is_lane_aware(),
+                "shim disagrees with trait for {:?}",
+                kind
+            );
+        }
+
+        // Non-placeable items: shim returns false (no entity → not lane-aware).
+        assert!(!super::is_lane_aware(Item::CopperPlate));
+        assert!(!super::is_lane_aware(Item::IronGearWheel));
     }
 
     #[test]
