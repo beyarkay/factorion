@@ -203,13 +203,34 @@ impl FactoryEntity for TransportBelt {
                             dst_entity,
                             (dx_u, dy_u),
                         );
+                    } else if dest_has_other_source((dx_u, dy_u), dst_dir, (x, y), world) {
+                        // Perpendicular forward into a JUNCTION (the dst
+                        // already has another source). Side-load: route
+                        // BOTH our lanes onto whichever side of dst we
+                        // physically sit on.
+                        let our_side =
+                            match dst_dir.side_of(x as i64 - dx_u as i64, y as i64 - dy_u as i64) {
+                                Some(s) => s,
+                                // Geometry shouldn't fail for a perpendicular
+                                // forward neighbour — fall back to lane-
+                                // preserving rather than guessing.
+                                None => {
+                                    push_lane_preserving(
+                                        &mut edges,
+                                        Item::TransportBelt,
+                                        (x, y),
+                                        dst_entity,
+                                        (dx_u, dy_u),
+                                    );
+                                    return edges;
+                                }
+                            };
+                        let dst_lane = NodeId::lane(dst_entity, dx_u, dy_u, our_side);
+                        edges.push((NodeId::port(Item::TransportBelt, x, y), dst_lane.clone()));
+                        edges.push((NodeId::starboard(Item::TransportBelt, x, y), dst_lane));
                     } else {
-                        // Perpendicular forward: lone-curve preserves
-                        // lanes; junction (any other source on dst) side-
-                        // loads. The full junction-detection logic ships
-                        // in commit 5; commit 4.5 keeps the lone-curve
-                        // baseline by emitting lane-preserving edges
-                        // unconditionally.
+                        // Perpendicular forward, lone curve (no other
+                        // source on dst): lane-preserving.
                         push_lane_preserving(
                             &mut edges,
                             Item::TransportBelt,
@@ -495,36 +516,40 @@ fn inserter_connections(
 
     // Drop ahead.
     //
-    // The dual-emit-vs-single distinction is critical to avoid double-
-    // counting the producer's output:
-    // - **Source** has unbounded supply, so emitting an edge to each of
-    //   the destination's port-nodes is correct — every lane saturates
-    //   independently from infinity. Same for **Sink** (its `output`
-    //   simply mirrors its accumulated input, so dual-emit preserves
-    //   the dual-lane total).
+    // Inserter / Source / Sink all share the same scan but emit
+    // different edge shapes:
+    // - **Source** has unbounded supply, so it dual-emits to BOTH
+    //   destination port-nodes — every lane saturates independently.
+    //   **Sink** mirrors its accumulated input on output, so dual-emit
+    //   preserves the dual-lane total when a sink ever has a downstream
+    //   belt.
     // - **Inserter** has a finite per-step budget (0.86 i/s) that lands
-    //   on exactly ONE lane of the destination. Emitting two edges would
-    //   duplicate that budget. Commit 5 will choose Far / Port lane
-    //   based on geometry; for now we drop onto Port (the in-line case).
+    //   on exactly ONE lane of the destination. Which lane is chosen by
+    //   geometry: perpendicular drops land on the FAR side; in-line
+    //   drops land on the PORT side. See `inserter_drop_lane`.
     let dst_x = x as i64 + dx;
     let dst_y = y as i64 + dy;
     if world.in_bounds(dst_x, dst_y) {
         let dx_u = dst_x as usize;
         let dy_u = dst_y as usize;
         if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
+            let dst_dir = world.direction_at(dx_u, dy_u);
             let dst_is_insertable = matches!(
                 dst_entity,
                 Item::TransportBelt | Item::UndergroundBelt | Item::AssemblingMachine1
             );
             if dst_is_insertable {
                 if is_lane_aware(dst_entity) {
-                    let port_target = NodeId::port(dst_entity, dx_u, dy_u);
                     if self_kind == Item::Inserter {
-                        // Single-edge drop on the destination's port lane.
-                        edges.push((self_id.clone(), port_target));
+                        // Pick the right lane by geometry.
+                        let drop_side = inserter_drop_lane((x, y), dir, (dx_u, dy_u), dst_dir);
+                        edges.push((
+                            self_id.clone(),
+                            NodeId::lane(dst_entity, dx_u, dy_u, drop_side),
+                        ));
                     } else {
                         // Source / Sink: dual emit to both port-nodes.
-                        edges.push((self_id.clone(), port_target));
+                        edges.push((self_id.clone(), NodeId::port(dst_entity, dx_u, dy_u)));
                         edges.push((self_id.clone(), NodeId::starboard(dst_entity, dx_u, dy_u)));
                     }
                 } else {
@@ -537,11 +562,119 @@ fn inserter_connections(
     edges
 }
 
-/// Reserved for commit 5 — geometry helper to choose the FAR / PORT
-/// lane on the destination belt for an inserter drop. Currently unused
-/// by the active connection logic; kept to provide a single seam where
-/// the lane choice will be made.
-#[allow(dead_code)]
+/// True if the destination belt at `dst_pos` (facing `dst_dir`) has
+/// any belt-like source feeding it OTHER than the belt at `excluding`.
+///
+/// Sources we consider:
+/// 1. **Parallel-back**: a TB or UG-up at `dst - dst_dir.delta()` facing
+///    the same direction as dst. UG-down does NOT count — it diverts
+///    flow into its tunnel rather than pushing forward.
+/// 2. **Underground tunnel**: a UG-down within 1..=5 cells back facing
+///    the same direction as dst (its forward exit lands on dst).
+/// 3. **Perpendicular from another side**: a TB at the port-side or
+///    starboard-side neighbour of dst whose forward delta lands on dst.
+///    UG-down on the side cell counts too if its tunnel exits onto dst,
+///    but for simplicity we only treat plain TBs as side-source
+///    candidates here — that matches the side-loading cases the spec
+///    enumerates.
+///
+/// `excluding` is skipped during all three checks so we don't count
+/// ourselves as our own "other source".
+fn dest_has_other_source(
+    dst_pos: (usize, usize),
+    dst_dir: Direction,
+    excluding: (usize, usize),
+    world: &World,
+) -> bool {
+    let (dx, dy) = dst_dir.delta();
+
+    // 1. Parallel-back source.
+    let bx = dst_pos.0 as i64 - dx;
+    let by = dst_pos.1 as i64 - dy;
+    if world.in_bounds(bx, by) {
+        let b = (bx as usize, by as usize);
+        if b != excluding {
+            if let Some(e) = world.entity_at(b.0, b.1) {
+                let is_back_source = match e {
+                    Item::TransportBelt => world.direction_at(b.0, b.1) == dst_dir,
+                    Item::UndergroundBelt => {
+                        world.direction_at(b.0, b.1) == dst_dir
+                            && world.misc_at(b.0, b.1) == Misc::UndergroundUp
+                    }
+                    _ => false,
+                };
+                if is_back_source {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 2. Underground tunnel: UG-down 1..=5 cells back facing dst_dir.
+    for k in 1..=5i64 {
+        let px = dst_pos.0 as i64 - k * dx;
+        let py = dst_pos.1 as i64 - k * dy;
+        if !world.in_bounds(px, py) {
+            break;
+        }
+        let p = (px as usize, py as usize);
+        if p == excluding {
+            continue;
+        }
+        if let Some(e) = world.entity_at(p.0, p.1) {
+            if e == Item::UndergroundBelt
+                && world.direction_at(p.0, p.1) == dst_dir
+                && world.misc_at(p.0, p.1) == Misc::UndergroundDown
+            {
+                return true;
+            }
+        }
+    }
+
+    // 3. Perpendicular sources on the port and starboard side cells.
+    for offset in [
+        dst_dir.port_neighbor_offset(),
+        dst_dir.starboard_neighbor_offset(),
+    ] {
+        let nx = dst_pos.0 as i64 + offset.0;
+        let ny = dst_pos.1 as i64 + offset.1;
+        if !world.in_bounds(nx, ny) {
+            continue;
+        }
+        let n = (nx as usize, ny as usize);
+        if n == excluding {
+            continue;
+        }
+        if let Some(e) = world.entity_at(n.0, n.1) {
+            if !matches!(e, Item::TransportBelt | Item::UndergroundBelt) {
+                continue;
+            }
+            let ndir = world.direction_at(n.0, n.1);
+            if !ndir.is_perpendicular(dst_dir) {
+                continue;
+            }
+            // Does this side belt's forward step land on dst?
+            let (ndx, ndy) = ndir.delta();
+            if n.0 as i64 + ndx == dst_pos.0 as i64 && n.1 as i64 + ndy == dst_pos.1 as i64 {
+                // For UG-down this would be its tunnel entry, not a
+                // forward feed — skip.
+                if e == Item::UndergroundBelt && world.misc_at(n.0, n.1) == Misc::UndergroundDown {
+                    continue;
+                }
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Choose the destination belt lane for an inserter drop:
+/// - **Perpendicular** drop (inserter direction ⊥ belt direction):
+///   the inserter sits on one side of the belt and reaches OVER the
+///   near lane to deliver onto the FAR lane.
+/// - **In-line** drop (parallel or anti-parallel): the inserter is in
+///   front of or behind the belt; items land on the PORT lane.
 fn inserter_drop_lane(
     self_pos: (usize, usize),
     self_dir: Direction,
@@ -549,14 +682,15 @@ fn inserter_drop_lane(
     dst_dir: Direction,
 ) -> LaneSide {
     if !self_dir.is_perpendicular(dst_dir) {
-        // In-line (parallel/anti-parallel): drop on PORT lane.
         return LaneSide::Port;
     }
     let dx = self_pos.0 as i64 - dst_pos.0 as i64;
     let dy = self_pos.1 as i64 - dst_pos.1 as i64;
     match dst_dir.side_of(dx, dy) {
-        Some(LaneSide::Port) => LaneSide::Starboard,
-        Some(LaneSide::Starboard) => LaneSide::Port,
+        Some(side) => side.opposite(),
+        // Geometry didn't classify the inserter as a side neighbour —
+        // shouldn't happen for valid placements, but PORT is the safe
+        // default (matches the in-line rule).
         None => LaneSide::Port,
     }
 }
@@ -1117,6 +1251,231 @@ mod tests {
         assert!(EntityEnum::new(Item::CopperCable, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::IronGearWheel, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::TransportBelt, None, Misc::None).is_some());
+    }
+
+    #[test]
+    fn test_inserter_perpendicular_drops_on_far_lane() {
+        // Inserter on the NORTH side of an east-facing belt drops on
+        // the FAR lane = starboard.
+        // Layout (north up):
+        //   I       <- (1,0) inserter facing south
+        //   >       <- (1,1) belt facing east
+        let mut w = World::empty(3, 3);
+        w.place(1, 0, Item::Inserter, Direction::South, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((1, 0), Direction::South, &w);
+
+        // Pickup behind: out of bounds → 0 edges. Drop ahead is the belt;
+        // perpendicular geometry → FAR lane = starboard of east-facing belt.
+        let ins = NodeId::single(Item::Inserter, 1, 0);
+        let stbd = NodeId::starboard(Item::TransportBelt, 1, 1);
+        let port = NodeId::port(Item::TransportBelt, 1, 1);
+        assert!(edges.contains(&(ins.clone(), stbd)));
+        assert!(!edges.iter().any(|e| e.1 == port));
+    }
+
+    #[test]
+    fn test_inserter_perpendicular_other_side_drops_on_other_far() {
+        // Symmetric case — inserter on the SOUTH side of the same belt
+        // drops on FAR = port (the opposite of stbd-side neighbour).
+        let mut w = World::empty(3, 3);
+        w.place(1, 2, Item::Inserter, Direction::North, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((1, 2), Direction::North, &w);
+
+        let ins = NodeId::single(Item::Inserter, 1, 2);
+        let port = NodeId::port(Item::TransportBelt, 1, 1);
+        let stbd = NodeId::starboard(Item::TransportBelt, 1, 1);
+        assert!(edges.contains(&(ins.clone(), port)));
+        assert!(!edges.iter().any(|e| e.1 == stbd));
+    }
+
+    #[test]
+    fn test_inserter_in_line_drops_on_port_lane() {
+        // I>>>  — inserter facing east, belt facing east. In-line drop
+        // → PORT lane.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::Inserter, Direction::East, None);
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((0, 0), Direction::East, &w);
+
+        let ins = NodeId::single(Item::Inserter, 0, 0);
+        let port = NodeId::port(Item::TransportBelt, 1, 0);
+        let stbd = NodeId::starboard(Item::TransportBelt, 1, 0);
+        assert!(edges.contains(&(ins.clone(), port)));
+        assert!(!edges.iter().any(|e| e.1 == stbd));
+    }
+
+    #[test]
+    fn test_inserter_anti_parallel_drops_on_port_lane() {
+        // Inserter facing east at (0,0), belt facing west at (1,0).
+        // Anti-parallel: still in-line → PORT lane.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::Inserter, Direction::East, None);
+        w.place(1, 0, Item::TransportBelt, Direction::West, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((0, 0), Direction::East, &w);
+
+        let ins = NodeId::single(Item::Inserter, 0, 0);
+        let port = NodeId::port(Item::TransportBelt, 1, 0);
+        let stbd = NodeId::starboard(Item::TransportBelt, 1, 0);
+        assert!(edges.contains(&(ins.clone(), port)));
+        assert!(!edges.iter().any(|e| e.1 == stbd));
+    }
+
+    #[test]
+    fn test_belt_t_junction_emits_side_load() {
+        // ASCII (north-up):
+        //   >>v<<
+        // (0,0)E, (1,0)E, (2,0)S — junction tile, (3,0)W, (4,0)W.
+        // The east-going belt (1,0) and the west-going belt (3,0) both
+        // forward-feed (2,0). Each side-loads onto its physical side of
+        // the junction.
+        let mut w = World::empty(5, 2);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::South, None);
+        w.place(3, 0, Item::TransportBelt, Direction::West, None);
+        w.place(4, 0, Item::TransportBelt, Direction::West, None);
+
+        let belt = TransportBelt;
+        // Belt (1,0) east → (2,0) south. Belt is on the WEST side of dst.
+        // South-facing dst: south.starboard = west → our_side = stbd.
+        // Both our lanes route to dst.stbd.
+        let edges = belt.connections((1, 0), Direction::East, &w);
+        let dst_stbd = NodeId::starboard(Item::TransportBelt, 2, 0);
+        let dst_port = NodeId::port(Item::TransportBelt, 2, 0);
+        // The (1,0)→(2,0) forward emit is the perpendicular case: side-load
+        // both lanes onto dst.stbd.
+        assert!(edges.contains(&(NodeId::port(Item::TransportBelt, 1, 0), dst_stbd.clone())));
+        assert!(edges.contains(&(NodeId::starboard(Item::TransportBelt, 1, 0), dst_stbd)));
+        // No edges from (1,0) onto dst.port — that side of the junction
+        // belongs to the (3,0) west belt.
+        assert!(!edges
+            .iter()
+            .any(|e| e.0 == NodeId::port(Item::TransportBelt, 1, 0) && e.1 == dst_port));
+
+        // Symmetric check on belt (3,0) west → (2,0) south. Belt is on
+        // EAST side of dst. South.port = east → our_side = port.
+        let edges = belt.connections((3, 0), Direction::West, &w);
+        let dst_port = NodeId::port(Item::TransportBelt, 2, 0);
+        let dst_stbd = NodeId::starboard(Item::TransportBelt, 2, 0);
+        assert!(edges.contains(&(NodeId::port(Item::TransportBelt, 3, 0), dst_port.clone())));
+        assert!(edges.contains(&(NodeId::starboard(Item::TransportBelt, 3, 0), dst_port)));
+        assert!(!edges
+            .iter()
+            .any(|e| e.0 == NodeId::port(Item::TransportBelt, 3, 0) && e.1 == dst_stbd));
+    }
+
+    #[test]
+    fn test_belt_parallel_plus_perpendicular_junction() {
+        // ASCII:
+        //   v       — (2,0) S, parallel-back source for (2,1)
+        //   >v      — (1,1) E forward-feeds (2,1) S
+        //   v       — (2,2) S
+        //   v       — etc.
+        // (2,1) is the junction. It has BOTH a parallel-back (2,0) and a
+        // perpendicular (1,1). The east belt (1,1) should detect the
+        // junction (because (2,0) is the other source) and side-load.
+        let mut w = World::empty(4, 4);
+        w.place(2, 0, Item::TransportBelt, Direction::South, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place(2, 1, Item::TransportBelt, Direction::South, None);
+        w.place(2, 2, Item::TransportBelt, Direction::South, None);
+
+        let belt = TransportBelt;
+        let edges = belt.connections((1, 1), Direction::East, &w);
+
+        // (1,1) is on the WEST side of (2,1). South.stbd = west → our_side = stbd.
+        // Both (1,1) lanes side-load onto (2,1).stbd.
+        let dst_stbd = NodeId::starboard(Item::TransportBelt, 2, 1);
+        assert!(edges.contains(&(NodeId::port(Item::TransportBelt, 1, 1), dst_stbd.clone())));
+        assert!(edges.contains(&(NodeId::starboard(Item::TransportBelt, 1, 1), dst_stbd)));
+        // The (1,1)→(2,1) edge does NOT go to dst.port (that's reserved
+        // for any source on the other side).
+        let dst_port = NodeId::port(Item::TransportBelt, 2, 1);
+        assert!(!edges
+            .iter()
+            .any(|e| e.0 == NodeId::port(Item::TransportBelt, 1, 1) && e.1 == dst_port));
+    }
+
+    #[test]
+    fn test_belt_lone_curve_stays_lane_preserving() {
+        // > v with no other source on (1,1) → still lane-preserving.
+        let mut w = World::empty(3, 3);
+        w.place(0, 1, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::South, None);
+
+        let belt = TransportBelt;
+        let edges = belt.connections((0, 1), Direction::East, &w);
+        // Lone curve: emit dual lane-preserving edges.
+        assert_dual_lane_preserving(
+            &edges,
+            Item::TransportBelt,
+            (0, 1),
+            Item::TransportBelt,
+            (1, 1),
+        );
+        // Nothing onto dst.<side> — that's the side-load shape.
+        let dst_port = NodeId::port(Item::TransportBelt, 1, 1);
+        let dst_stbd = NodeId::starboard(Item::TransportBelt, 1, 1);
+        assert!(edges.contains(&(NodeId::port(Item::TransportBelt, 0, 1), dst_port)));
+        assert!(edges.contains(&(NodeId::starboard(Item::TransportBelt, 0, 1), dst_stbd)));
+    }
+
+    #[test]
+    fn test_belt_underground_tunnel_creates_other_source() {
+        // UG-down at (0,0)E feeds tunnel exit at (3,0)E (UG-up there).
+        // Place a perpendicular belt at (3,1)N forward-feeding (3,0).
+        // The UG-up at (3,-)? Actually let me redo — we want (3,0) to
+        // be a junction with multiple sources: a UG tunnel coming in and
+        // a perpendicular belt.
+        //
+        // Layout:
+        //   d . . u v   (col 0..4, row 0)
+        //         B     (col 3, row 1) east belt forward to (3,0)? No,
+        // perpendicular feeders need to be a side neighbour of (3,0).
+        //
+        // Simpler: junction at (3,0) with a UG tunnel exit (UG-up at
+        // (3,0)) and a perpendicular belt at (3,1)N feeding it.
+        //
+        // Actually the perpendicular check operates on the BELT calling
+        // connections. Let me model directly: the test belt is the
+        // perpendicular one (3,1)N. Its forward = (3,0). Junction check
+        // for (3,1)→(3,0): does (3,0) have any other source? Yes: the
+        // UG-up at (3,0)?... no, (3,0) IS the dst. Its parallel-back is
+        // (3,1) (excluding=us), so no. UG tunnel: search (3, k) for
+        // k>0 — but (3,0) is east-facing? Not yet specified.
+        //
+        // Let me set up a proper case: UG-down at (0,0) east, UG-up at
+        // (3,0) east. Perpendicular belt (3,1) north feeds (3,0).
+        //
+        // For belt (3,1)→(3,0): is there another source on (3,0)?
+        // Parallel-back: (2,0) — empty, no. UG tunnel: search west
+        // (since dst_dir=east → back direction is west) for UG-down.
+        // Found at (0,0) → other source! → side-load.
+        let mut w = World::empty(5, 3);
+        w.place_underground(0, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(3, 0, Direction::East, Misc::UndergroundUp);
+        w.place(3, 1, Item::TransportBelt, Direction::North, None);
+
+        let belt = TransportBelt;
+        let edges = belt.connections((3, 1), Direction::North, &w);
+
+        // (3,1) → (3,0) is perpendicular forward. UG-down at (0,0) is in
+        // the back-search range → junction → side-load.
+        // (3,1) is on the SOUTH side of east-facing (3,0).
+        // East.stbd = south → our_side = stbd.
+        let dst_stbd = NodeId::starboard(Item::UndergroundBelt, 3, 0);
+        assert!(edges.contains(&(NodeId::port(Item::TransportBelt, 3, 1), dst_stbd.clone())));
+        assert!(edges.contains(&(NodeId::starboard(Item::TransportBelt, 3, 1), dst_stbd)));
     }
 
     #[test]
