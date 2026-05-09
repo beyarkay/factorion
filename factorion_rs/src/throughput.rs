@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::Item;
+use crate::lane_flow::LaneFlow;
+use crate::types::{Item, LaneTag};
 
 /// Calculate the throughput of a factory graph.
 ///
@@ -41,15 +42,18 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
     // 2. Kahn's algorithm: topological BFS from sources.
-    // Count "true" in-degree (only from predecessors reachable from a source).
+    // Count "true" in-degree as the number of *distinct* reachable predecessor
+    // nodes — multiple lane-tagged edges from the same predecessor count once.
     let mut in_degree: Vec<usize> = graph
         .predecessors
         .iter()
         .map(|preds| {
             preds
                 .iter()
-                .filter(|&&p| reachable_from_sources.contains(&p))
-                .count()
+                .map(|e| e.src)
+                .filter(|p| reachable_from_sources.contains(p))
+                .collect::<HashSet<_>>()
+                .len()
         })
         .collect();
 
@@ -63,10 +67,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     }
 
     // Clone the graph's nodes into a mutable working copy
-    let mut node_inputs: Vec<HashMap<Item, f64>> =
-        graph.nodes.iter().map(|n| n.input.clone()).collect();
-    let mut node_outputs: Vec<HashMap<Item, f64>> =
-        graph.nodes.iter().map(|n| n.output.clone()).collect();
+    let mut node_inputs: Vec<LaneFlow> = graph.nodes.iter().map(|n| n.input.clone()).collect();
+    let mut node_outputs: Vec<LaneFlow> = graph.nodes.iter().map(|n| n.output.clone()).collect();
 
     let mut already_processed: HashSet<usize> = HashSet::new();
 
@@ -81,11 +83,12 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
 
         // If this node's output is already set (e.g., source), skip input computation
         if node_outputs[node_idx].is_empty() {
-            // Accumulate input from all predecessors' outputs
-            let mut accumulated_input: HashMap<Item, f64> = HashMap::new();
-            for &pred in &graph.predecessors[node_idx] {
-                for (&item, &flow_rate) in &node_outputs[pred] {
-                    *accumulated_input.entry(item).or_insert(0.0) += flow_rate;
+            // Accumulate per-lane input from all predecessor edges.
+            let mut accumulated_input = LaneFlow::default();
+            for edge in &graph.predecessors[node_idx] {
+                let src_lane = node_outputs[edge.src].lane(edge.src_tag).clone();
+                for (item, rate) in src_lane {
+                    accumulated_input.add(edge.dst_tag, item, rate);
                 }
             }
             node_inputs[node_idx] = accumulated_input.clone();
@@ -103,12 +106,19 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
             }
 
-            // For splitters, divide output evenly among successors
+            // For splitters, divide output evenly among same-lane successors,
+            // independently per lane. Commit 2 only routes through the port
+            // lane; commit 4 will exercise both lanes.
             if entity_kind == Item::Splitter {
-                let num_successors = graph.successors[node_idx].len();
-                if num_successors > 1 {
-                    for rate in node_outputs[node_idx].values_mut() {
-                        *rate /= num_successors as f64;
+                for lane in [LaneTag::Port, LaneTag::Starboard] {
+                    let n_succ = graph.successors[node_idx]
+                        .iter()
+                        .filter(|e| e.src_tag == lane)
+                        .count();
+                    if n_succ > 1 {
+                        for rate in node_outputs[node_idx].lane_mut(lane).values_mut() {
+                            *rate /= n_succ as f64;
+                        }
                     }
                 }
             }
@@ -116,12 +126,15 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
 
         already_processed.insert(node_idx);
 
-        // Decrement in-degree of successors; enqueue when all predecessors processed
-        for &succ in &graph.successors[node_idx] {
+        // Decrement in-degree of distinct successor nodes; enqueue when all
+        // predecessors are processed. Multiple lane-tagged edges to the same
+        // successor still represent only one predecessor relationship.
+        let unique_succs: HashSet<usize> =
+            graph.successors[node_idx].iter().map(|e| e.dst).collect();
+        for succ in unique_succs {
             if already_processed.contains(&succ) {
                 continue;
             }
-            // Saturating sub in case of edges from unreachable predecessors
             in_degree[succ] = in_degree[succ].saturating_sub(1);
             if in_degree[succ] == 0 && !in_queue.contains(&succ) {
                 queue.push_back(succ);
@@ -130,10 +143,13 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         }
     }
 
-    // 3. Collect output at sinks
+    // 3. Collect output at sinks (sum across both lanes)
     let mut total_output: HashMap<Item, f64> = HashMap::new();
     for &sink_idx in &sinks {
-        for (&item, &rate) in &node_outputs[sink_idx] {
+        for (&item, &rate) in node_outputs[sink_idx].lane(LaneTag::Port) {
+            *total_output.entry(item).or_insert(0.0) += rate;
+        }
+        for (&item, &rate) in node_outputs[sink_idx].lane(LaneTag::Starboard) {
             *total_output.entry(item).or_insert(0.0) += rate;
         }
     }
@@ -170,7 +186,7 @@ fn has_cycle(graph: &FactoryGraph) -> bool {
 
         while let Some((node, succ_idx)) = stack.last_mut() {
             if *succ_idx < graph.successors[*node].len() {
-                let next = graph.successors[*node][*succ_idx];
+                let next = graph.successors[*node][*succ_idx].dst;
                 *succ_idx += 1;
                 if visited[next] == 1 {
                     return true; // Back edge = cycle
@@ -198,16 +214,19 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
         queue.push_back(s);
     }
     while let Some(node) = queue.pop_front() {
-        let neighbors = if reverse {
-            &graph.predecessors[node]
-        } else {
-            &graph.successors[node]
-        };
-        for &next in neighbors {
-            if visited.insert(next) {
-                queue.push_back(next);
+        if reverse {
+            for edge in &graph.predecessors[node] {
+                if visited.insert(edge.src) {
+                    queue.push_back(edge.src);
+                }
             }
-        }
+        } else {
+            for edge in &graph.successors[node] {
+                if visited.insert(edge.dst) {
+                    queue.push_back(edge.dst);
+                }
+            }
+        };
     }
     visited
 }
@@ -316,6 +335,19 @@ mod tests {
 
     #[test]
     fn test_has_cycle_detection() {
+        use crate::graph::LaneEdge;
+        let edge_0_1 = LaneEdge {
+            src: 0,
+            dst: 1,
+            src_tag: LaneTag::Port,
+            dst_tag: LaneTag::Port,
+        };
+        let edge_1_0 = LaneEdge {
+            src: 1,
+            dst: 0,
+            src_tag: LaneTag::Port,
+            dst_tag: LaneTag::Port,
+        };
         // Build a graph with a cycle manually
         let mut g = FactoryGraph {
             nodes: vec![
@@ -325,8 +357,8 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
-                    input: HashMap::new(),
-                    output: HashMap::new(),
+                    input: LaneFlow::default(),
+                    output: LaneFlow::default(),
                 },
                 crate::graph::GraphNode {
                     id: NodeId::new(Item::TransportBelt, 1, 0),
@@ -334,23 +366,23 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
-                    input: HashMap::new(),
-                    output: HashMap::new(),
+                    input: LaneFlow::default(),
+                    output: LaneFlow::default(),
                 },
             ],
             node_index: HashMap::from([
                 (NodeId::new(Item::TransportBelt, 0, 0), 0),
                 (NodeId::new(Item::TransportBelt, 1, 0), 1),
             ]),
-            successors: vec![vec![1], vec![0]], // 0→1→0 cycle
-            predecessors: vec![vec![1], vec![0]],
+            successors: vec![vec![edge_0_1], vec![edge_1_0]], // 0→1→0 cycle
+            predecessors: vec![vec![edge_1_0], vec![edge_0_1]],
         };
 
         assert!(has_cycle(&g));
 
         // Make it acyclic
-        g.successors = vec![vec![1], vec![]];
-        g.predecessors = vec![vec![], vec![0]];
+        g.successors = vec![vec![edge_0_1], vec![]];
+        g.predecessors = vec![vec![], vec![edge_0_1]];
         assert!(!has_cycle(&g));
     }
 

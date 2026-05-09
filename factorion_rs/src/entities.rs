@@ -1,16 +1,16 @@
-use std::collections::HashMap;
-
-use crate::types::{get_recipe, Direction, Item, Misc, NodeId, Pos};
+use crate::lane_flow::LaneFlow;
+use crate::types::{get_recipe, Direction, Item, LaneTag, Misc, NodeId, Pos};
 use crate::world::World;
 
-/// An edge in the factory graph: (source_node, destination_node).
-pub type Edge = (NodeId, NodeId);
+/// A lane-tagged edge in the factory graph:
+/// (source node, source-side lane, destination node, destination-side lane).
+pub type Edge = (NodeId, LaneTag, NodeId, LaneTag);
 
 /// Trait abstracting over factory entity types.
 ///
 /// Each entity type implements this trait to define:
 /// - How it connects to neighboring entities (graph edges)
-/// - How it transforms input flow into output flow
+/// - How it transforms per-lane input flow into per-lane output flow
 /// - Its maximum throughput rate
 pub trait FactoryEntity {
     /// Which entity kind this is. Used to look up flow_rate from the
@@ -20,8 +20,8 @@ pub trait FactoryEntity {
     /// Return the edges this entity contributes to the graph.
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge>;
 
-    /// Given accumulated input flow rates, compute output flow rates.
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64>;
+    /// Given accumulated per-lane input flow, compute per-lane output flow.
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow;
 
     /// Maximum items/second this entity can transfer.
     /// Default delegates to Item::flow_rate().
@@ -87,7 +87,7 @@ impl FactoryEntity for EntityEnum {
         }
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
         match self {
             Self::TransportBelt(e) => e.transform_flow(input),
             Self::Inserter(e) => e.transform_flow(input),
@@ -98,6 +98,19 @@ impl FactoryEntity for EntityEnum {
             Self::Splitter(e) => e.transform_flow(input),
         }
     }
+}
+
+/// Helper: cap each lane of `input` at `cap` and return as a new LaneFlow.
+/// Used by belt-like entities whose transform is "pass-through with cap".
+fn cap_lanes_inplace(input: &LaneFlow, cap: f64) -> LaneFlow {
+    let mut output = LaneFlow::default();
+    for (&item, &rate) in &input.port {
+        output.add(LaneTag::Port, item, rate.min(cap));
+    }
+    for (&item, &rate) in &input.starboard {
+        output.add(LaneTag::Starboard, item, rate.min(cap));
+    }
+    output
 }
 
 // ── Transport Belt ──────────────────────────────────────────────────────────
@@ -134,7 +147,12 @@ impl FactoryEntity for TransportBelt {
                         && src_misc == Misc::UndergroundDown);
 
                 if src_is_beltish {
-                    edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
+                    edges.push((
+                        NodeId::new(src_entity, sx, sy),
+                        LaneTag::Port,
+                        self_id.clone(),
+                        LaneTag::Port,
+                    ));
                 }
             }
         }
@@ -153,7 +171,12 @@ impl FactoryEntity for TransportBelt {
                 let dst_opposing = dst_is_belt && dst_dir == dir.opposite();
 
                 if dst_is_belt && !dst_opposing {
-                    edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
+                    edges.push((
+                        self_id,
+                        LaneTag::Port,
+                        NodeId::new(dst_entity, dx_u, dy_u),
+                        LaneTag::Port,
+                    ));
                 }
             }
         }
@@ -161,11 +184,8 @@ impl FactoryEntity for TransportBelt {
         edges
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        input
-            .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
-            .collect()
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        cap_lanes_inplace(input, self.flow_rate())
     }
 }
 
@@ -182,11 +202,8 @@ impl FactoryEntity for Inserter {
         inserter_connections(Item::Inserter, pos, dir, world)
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        input
-            .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
-            .collect()
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        cap_lanes_inplace(input, self.flow_rate())
     }
 }
 
@@ -255,10 +272,10 @@ impl FactoryEntity for AssemblingMachine {
 
                 if assembler_outputs_to_entity {
                     // Assembler → entity (entity takes from assembler)
-                    edges.push((self_id.clone(), other_id));
+                    edges.push((self_id.clone(), LaneTag::Port, other_id, LaneTag::Port));
                 } else {
                     // Entity → Assembler (entity feeds into assembler)
-                    edges.push((other_id, self_id.clone()));
+                    edges.push((other_id, LaneTag::Port, self_id.clone(), LaneTag::Port));
                 }
             }
         }
@@ -266,31 +283,32 @@ impl FactoryEntity for AssemblingMachine {
         edges
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        let mut output = LaneFlow::default();
         let recipe_item = match self.recipe_item {
             Some(i) => i,
-            None => return HashMap::new(),
+            None => return output,
         };
-
         let recipe = match get_recipe(recipe_item) {
             Some(r) => r,
-            None => return HashMap::new(),
+            None => return output,
         };
 
-        // Find the minimum ratio of available input to required input
+        // Find the minimum ratio of available input to required input.
+        // AssemblingMachine is lane-agnostic — it reads from the port lane only
+        // (by convention). Edges feeding it always target Port.
         let mut min_ratio: f64 = 1.0;
         for &(item, required) in recipe.consumes.iter() {
-            let available = input.get(&item).copied().unwrap_or(0.0);
+            let available = input.port.get(&item).copied().unwrap_or(0.0);
             let ratio = available / required;
             min_ratio = min_ratio.min(ratio);
         }
 
-        // Produce outputs scaled by the minimum ratio
-        recipe
-            .produces
-            .iter()
-            .map(|&(item, rate)| (item, rate * min_ratio))
-            .collect()
+        // Produce outputs scaled by the minimum ratio onto the port lane.
+        for &(item, rate) in recipe.produces.iter() {
+            output.add(LaneTag::Port, item, rate * min_ratio);
+        }
+        output
     }
 }
 
@@ -343,18 +361,20 @@ impl FactoryEntity for UndergroundBelt {
                 matches!(dst_entity, Item::TransportBelt) && self.misc == Misc::UndergroundUp;
 
             if going_underground || cxn_to_belt {
-                edges.push((self_id.clone(), NodeId::new(dst_entity, dst_xu, dst_yu)));
+                edges.push((
+                    self_id.clone(),
+                    LaneTag::Port,
+                    NodeId::new(dst_entity, dst_xu, dst_yu),
+                    LaneTag::Port,
+                ));
             }
         }
 
         edges
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        input
-            .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
-            .collect()
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        cap_lanes_inplace(input, self.flow_rate())
     }
 }
 
@@ -378,12 +398,14 @@ impl FactoryEntity for Source {
         inserter_connections(Item::Source, pos, dir, world)
     }
 
-    fn transform_flow(&self, _input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+    fn transform_flow(&self, _input: &LaneFlow) -> LaneFlow {
         // A Source with no item set produces nothing. With one set,
-        // it produces an infinite flow of that item.
-        let mut output = HashMap::new();
+        // it produces an infinite flow of that item on the port lane.
+        // (Source is lane-agnostic; by convention we use the port lane
+        // as its accumulator.)
+        let mut output = LaneFlow::default();
         if let Some(item) = self.item {
-            output.insert(item, f64::INFINITY);
+            output.lane_mut(LaneTag::Port).insert(item, f64::INFINITY);
         }
         output
     }
@@ -405,8 +427,10 @@ impl FactoryEntity for Sink {
         inserter_connections(Item::Sink, pos, dir, world)
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        // Sinks pass through everything (infinite capacity)
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        // Sinks pass through everything (infinite capacity), preserving
+        // per-lane structure. The graph-level sink aggregation sums both
+        // lanes into a single per-item total.
         input.clone()
     }
 }
@@ -433,7 +457,12 @@ fn inserter_connections(
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
+            edges.push((
+                NodeId::new(src_entity, sx, sy),
+                LaneTag::Port,
+                self_id.clone(),
+                LaneTag::Port,
+            ));
         }
     }
 
@@ -450,7 +479,12 @@ fn inserter_connections(
                 Item::TransportBelt | Item::UndergroundBelt | Item::AssemblingMachine1
             );
             if dst_is_insertable {
-                edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
+                edges.push((
+                    self_id,
+                    LaneTag::Port,
+                    NodeId::new(dst_entity, dx_u, dy_u),
+                    LaneTag::Port,
+                ));
             }
         }
     }
@@ -539,7 +573,12 @@ impl FactoryEntity for Splitter {
                         let src_is_source_sink =
                             matches!(src_entity, Item::Source | Item::Sink) && src_dir == dir;
                         if (src_is_belt || src_is_source_sink) && !tile_set.contains(&in_pos) {
-                            edges.push((NodeId::new(src_entity, ix, iy), self_id.clone()));
+                            edges.push((
+                                NodeId::new(src_entity, ix, iy),
+                                LaneTag::Port,
+                                self_id.clone(),
+                                LaneTag::Port,
+                            ));
                         }
                     }
                 }
@@ -560,7 +599,12 @@ impl FactoryEntity for Splitter {
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
-                            edges.push((self_id.clone(), NodeId::new(dst_entity, ox, oy)));
+                            edges.push((
+                                self_id.clone(),
+                                LaneTag::Port,
+                                NodeId::new(dst_entity, ox, oy),
+                                LaneTag::Port,
+                            ));
                         }
                     }
                 }
@@ -570,11 +614,8 @@ impl FactoryEntity for Splitter {
         edges
     }
 
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        input
-            .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
-            .collect()
+    fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        cap_lanes_inplace(input, self.flow_rate())
     }
 }
 
@@ -698,7 +739,9 @@ mod tests {
         // Belt at (2,0) is ahead and is a belt with same direction → edge created
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::TransportBelt, 2, 0));
+        assert_eq!(edges[0].1, LaneTag::Port);
+        assert_eq!(edges[0].2, NodeId::new(Item::TransportBelt, 2, 0));
+        assert_eq!(edges[0].3, LaneTag::Port);
     }
 
     #[test]
@@ -713,7 +756,7 @@ mod tests {
         // Sink at (3,0) ahead is not a belt → no forward edge
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::TransportBelt, 2, 0));
+        assert_eq!(edges[0].2, NodeId::new(Item::TransportBelt, 2, 0));
     }
 
     #[test]
@@ -741,15 +784,19 @@ mod tests {
         let edges = inserter.connections((1, 0), Direction::East, &w);
 
         assert_eq!(edges.len(), 2);
-        // Source → Inserter
+        // Source → Inserter (Port → Port for now; commit 5 will distinguish further)
         assert!(edges.contains(&(
             NodeId::new(Item::Source, 0, 0),
+            LaneTag::Port,
             NodeId::new(Item::Inserter, 1, 0),
+            LaneTag::Port,
         )));
         // Inserter → Belt
         assert!(edges.contains(&(
             NodeId::new(Item::Inserter, 1, 0),
+            LaneTag::Port,
             NodeId::new(Item::TransportBelt, 2, 0),
+            LaneTag::Port,
         )));
     }
 
@@ -813,8 +860,12 @@ mod tests {
         let source = Source {
             item: Some(Item::CopperCable),
         };
-        let output = source.transform_flow(&HashMap::new());
-        assert_eq!(output[&Item::CopperCable], f64::INFINITY);
+        let output = source.transform_flow(&LaneFlow::default());
+        // Source emits onto the port lane by convention.
+        assert_eq!(
+            output.lane(LaneTag::Port).get(&Item::CopperCable).copied(),
+            Some(f64::INFINITY)
+        );
     }
 
     #[test]
@@ -824,32 +875,39 @@ mod tests {
         };
 
         // Full input matches recipe exactly: 3 copper cable + 1 iron plate → 1 EC
-        let input = HashMap::from([(Item::CopperCable, 3.0), (Item::IronPlate, 1.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 3.0);
+        input.add(LaneTag::Port, Item::IronPlate, 1.0);
         let output = asm.transform_flow(&input);
-        assert!((output[&Item::ElectronicCircuit] - 1.0).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::ElectronicCircuit] - 1.0).abs() < 1e-9);
 
         // Half copper cable available: ratio = min(1.5/3, 1/1) = 0.5 → 0.5 EC
-        let input = HashMap::from([(Item::CopperCable, 1.5), (Item::IronPlate, 1.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 1.5);
+        input.add(LaneTag::Port, Item::IronPlate, 1.0);
         let output = asm.transform_flow(&input);
-        assert!((output[&Item::ElectronicCircuit] - 0.5).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::ElectronicCircuit] - 0.5).abs() < 1e-9);
 
         // Missing ingredient → 0 output
-        let input = HashMap::from([(Item::CopperCable, 3.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 3.0);
         let output = asm.transform_flow(&input);
-        assert!((output[&Item::ElectronicCircuit] - 0.0).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::ElectronicCircuit] - 0.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_belt_transform_flow() {
         let belt = TransportBelt;
-        let input = HashMap::from([(Item::CopperCable, 20.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 20.0);
         let output = belt.transform_flow(&input);
-        // Capped at flow rate of 15.0
-        assert!((output[&Item::CopperCable] - 15.0).abs() < 1e-9);
+        // Capped at flow rate of 15.0 on the port lane.
+        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 15.0).abs() < 1e-9);
 
-        let input = HashMap::from([(Item::CopperCable, 5.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 5.0);
         let output = belt.transform_flow(&input);
-        assert!((output[&Item::CopperCable] - 5.0).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 5.0).abs() < 1e-9);
     }
 
     #[test]
@@ -867,7 +925,7 @@ mod tests {
         // Should find the underground belt at (3,0)
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].0, NodeId::new(Item::UndergroundBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::UndergroundBelt, 3, 0));
+        assert_eq!(edges[0].2, NodeId::new(Item::UndergroundBelt, 3, 0));
     }
 
     #[test]
@@ -907,9 +965,24 @@ mod tests {
 
         // Should have: belt(1,0)->splitter, splitter->belt(3,0), splitter->belt(3,1)
         let self_id = NodeId::new(Item::Splitter, 2, 0);
-        assert!(edges.contains(&(NodeId::new(Item::TransportBelt, 1, 0), self_id.clone())));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 3, 0))));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 3, 1))));
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 1, 0),
+            LaneTag::Port,
+            self_id.clone(),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 3, 0),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 3, 1),
+            LaneTag::Port,
+        )));
         assert_eq!(edges.len(), 3);
     }
 
@@ -929,9 +1002,24 @@ mod tests {
         let edges = splitter.connections((0, 2), Direction::North, &w);
 
         let self_id = NodeId::new(Item::Splitter, 0, 2);
-        assert!(edges.contains(&(NodeId::new(Item::TransportBelt, 0, 3), self_id.clone())));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 0, 1))));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 1, 1))));
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 0, 3),
+            LaneTag::Port,
+            self_id.clone(),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 0, 1),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            self_id.clone(),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 1, 1),
+            LaneTag::Port,
+        )));
         assert_eq!(edges.len(), 3);
     }
 
@@ -939,14 +1027,16 @@ mod tests {
     fn test_splitter_transform_flow() {
         let splitter = Splitter;
         // 20 i/s passes through (under 30 cap)
-        let input = HashMap::from([(Item::CopperCable, 20.0)]);
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 20.0);
         let output = splitter.transform_flow(&input);
-        assert!((output[&Item::CopperCable] - 20.0).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 20.0).abs() < 1e-9);
 
-        // 40 i/s capped at 30 (2 lanes × 15)
-        let input = HashMap::from([(Item::CopperCable, 40.0)]);
+        // 40 i/s capped at 30 (legacy whole-splitter cap; per-lane will land in commit 4)
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::CopperCable, 40.0);
         let output = splitter.transform_flow(&input);
-        assert!((output[&Item::CopperCable] - 30.0).abs() < 1e-9);
+        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 30.0).abs() < 1e-9);
     }
 
     #[test]
