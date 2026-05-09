@@ -13,6 +13,7 @@ uv.lock
 factorion_rs/uv.lock
 __pycache__/
 .venv/
+uv.lock
 plan.md
 summary.json
 .env
