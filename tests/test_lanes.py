@@ -216,6 +216,46 @@ class TestLanes:
         assert tp == pytest.approx(2 * 0.86, abs=1e-6)
 
     @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_splitter_passes_lanes_through(self, rot, mirror):
+        """Source → belt → splitter → belt → sink with one input + one
+        output. Splitter pools per lane, the divisor is 1, the per-output-
+        lane cap (7.5) is non-binding → 15.0 saturated total.
+
+        The splitter is 2-wide perpendicular to its flow direction; its
+        canonical-frame body tiles must be rotated/mirrored as a SET
+        (not via the anchor alone) since `set_splitter` re-derives body
+        tiles from anchor + direction and the resulting anchor depends
+        on the post-rotation orientation.
+        """
+        from helpers import set_splitter
+
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "iron_plate"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (3, 0, "transport_belt", Direction.EAST, None),
+            (4, 0, "bulk_inserter", Direction.EAST, "iron_plate"),
+        ]
+        world = build_world(6, layout, rot, mirror)
+
+        # Canonical splitter occupies (2,0) anchor + (2,1) body, direction East.
+        # Rotate both cells, then pick the post-rotation anchor (min-x then min-y).
+        canonical_tiles = [(2, 0), (2, 1)]
+        rotated_tiles = []
+        for tx, ty in canonical_tiles:
+            rx, ry = rotate_pos(tx, ty, 6, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, 6)
+            rotated_tiles.append((rx, ry))
+        anchor_x, anchor_y = min(rotated_tiles)
+        rd = rotate_dir(Direction.EAST, rot)
+        if mirror:
+            rd = mirror_dir_x(rd)
+        set_splitter(world, anchor_x, anchor_y, rd)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(15.0, abs=1e-6)
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
     def test_underground_preserves_both_lanes(self, rot, mirror):
         """Source → belt → UG-down ... UG-up → belt → Sink. The tunnel
         is lane-preserving — both lanes survive the underground hop →

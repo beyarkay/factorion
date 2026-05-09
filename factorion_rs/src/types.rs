@@ -52,7 +52,6 @@ impl Direction {
     }
 
     /// The opposite direction.
-    #[allow(dead_code)]
     pub fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
@@ -69,7 +68,6 @@ impl Direction {
     /// the offset to the *neighbouring cell* that sits on the port side.
     ///
     /// Derived as a 90° CCW rotation of `delta()`: (dx, dy) → (dy, -dx).
-    #[allow(dead_code)]
     pub fn port_neighbor_offset(self) -> (i64, i64) {
         let (dx, dy) = self.delta();
         (dy, -dx)
@@ -77,7 +75,6 @@ impl Direction {
 
     /// (dx, dy) offset to the cell on the starboard (right) side of a belt
     /// facing `self`. 90° CW rotation of `delta()`: (dx, dy) → (-dy, dx).
-    #[allow(dead_code)]
     pub fn starboard_neighbor_offset(self) -> (i64, i64) {
         let (dx, dy) = self.delta();
         (-dy, dx)
@@ -85,7 +82,6 @@ impl Direction {
 
     /// True if `self` and `other` are perpendicular (one is N/S and the
     /// other is E/W). False if either is `Direction::None`.
-    #[allow(dead_code)]
     pub fn is_perpendicular(self, other: Direction) -> bool {
         match (self, other) {
             (Direction::None, _) | (_, Direction::None) => false,
@@ -98,7 +94,6 @@ impl Direction {
     /// Given a `(dx, dy)` offset relative to a belt facing `self`, return
     /// which lane-side that cell sits on. Returns `None` for the in-line
     /// cells (forward / backward) and any other offset.
-    #[allow(dead_code)]
     pub fn side_of(self, dx: i64, dy: i64) -> Option<LaneSide> {
         if (dx, dy) == self.port_neighbor_offset() {
             Some(LaneSide::Port)
@@ -124,7 +119,6 @@ pub enum LaneSide {
 }
 
 impl LaneSide {
-    #[allow(dead_code)]
     pub fn opposite(self) -> Self {
         match self {
             LaneSide::Port => LaneSide::Starboard,
@@ -168,7 +162,6 @@ impl From<LaneSide> for PortRole {
 /// Per-lane flow rate cap on a transport belt or splitter output. Each
 /// lane carries up to 7.5 items/sec; the per-belt total of 15 i/s is
 /// reached when both lanes are saturated.
-#[allow(dead_code)]
 pub const LANE_FLOW_RATE: f64 = 7.5;
 
 /// Underground belt state flag.
@@ -1252,7 +1245,6 @@ impl NodeId {
 
     /// Build a NodeId targeting a specific lane side of a lane-aware
     /// entity. Convenience for converting from geometry to graph identity.
-    #[allow(dead_code)]
     pub fn lane(entity_kind: Item, x: usize, y: usize, side: LaneSide) -> Self {
         Self {
             entity_kind,
