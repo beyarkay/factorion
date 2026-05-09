@@ -112,6 +112,11 @@ impl Direction {
 
 /// Which side of a belt's flow direction a lane is on.
 /// `Port` = left of travel direction; `Starboard` = right.
+///
+/// This is the geometry-side type returned by `Direction::side_of()` —
+/// it answers "is this neighbour cell on the port or starboard side of a
+/// belt facing me?". For *graph node identity* (which port-of-an-entity
+/// a node represents), use `PortRole` below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LaneSide {
     Port,
@@ -128,24 +133,34 @@ impl LaneSide {
     }
 }
 
-/// Tag identifying which lane an edge or flow bucket refers to.
+/// Identifies which I/O *port* of a multi-port entity a graph node
+/// represents.
 ///
-/// Every flow has exactly two lanes: port and starboard. There is no
-/// "pooled" or lane-agnostic third bucket — if something is on both
-/// lanes, set both. Lane-agnostic entities (Source, Sink, Inserter, AM)
-/// participate by emitting edges that target whichever lanes the spec
-/// dictates.
+/// One graph node corresponds to one logical I/O port. Lane-aware
+/// entities (TransportBelt, UndergroundBelt, Splitter) get separate
+/// nodes per lane (`Port` and `Starboard`); lane-agnostic entities
+/// (Inserter, Source, Sink, AssemblingMachine) get a single node
+/// tagged `Single`.
+///
+/// This generalises beyond the lane axis — future entities with
+/// multiple structurally distinct I/O channels (priority splitters,
+/// chemical plants with two fluid inputs and one output, etc.) can add
+/// additional `PortRole` variants without changing the edge model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LaneTag {
+pub enum PortRole {
+    /// Lane-agnostic entities expose a single node.
+    Single,
+    /// Lane-aware entities split into a port-side node...
     Port,
+    /// ...and a starboard-side node.
     Starboard,
 }
 
-impl From<LaneSide> for LaneTag {
-    fn from(side: LaneSide) -> Self {
-        match side {
-            LaneSide::Port => LaneTag::Port,
-            LaneSide::Starboard => LaneTag::Starboard,
+impl From<LaneSide> for PortRole {
+    fn from(s: LaneSide) -> Self {
+        match s {
+            LaneSide::Port => PortRole::Port,
+            LaneSide::Starboard => PortRole::Starboard,
         }
     }
 }
@@ -1184,25 +1199,83 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Matches the Python format: "entity_name\n@x,y".
 ///
-/// `entity_kind` is an `Item` (post-unification) and should always be
-/// placeable — only placeable items become graph nodes.
+/// One graph node corresponds to one logical I/O port of an entity:
+/// - Lane-aware entities (TB, UG, Splitter) place TWO nodes per anchor
+///   tile, one with `port = Port` and one with `port = Starboard`.
+/// - Lane-agnostic entities (Inserter, Source, Sink, AssemblingMachine)
+///   place a single node with `port = Single`.
+///
+/// `entity_kind` should always be placeable — only placeable items
+/// become graph nodes. The `(entity_kind, x, y, port)` tuple uniquely
+/// identifies a node.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
     pub entity_kind: Item,
     pub x: usize,
     pub y: usize,
+    pub port: PortRole,
 }
 
 impl NodeId {
-    pub fn new(entity_kind: Item, x: usize, y: usize) -> Self {
-        Self { entity_kind, x, y }
+    /// Build a NodeId for a lane-agnostic entity (Inserter, Source,
+    /// Sink, AssemblingMachine). For lane-aware entities use `port` /
+    /// `starboard`.
+    pub fn single(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Single,
+        }
+    }
+
+    /// Build a NodeId for the port-lane node of a lane-aware entity.
+    pub fn port(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Port,
+        }
+    }
+
+    /// Build a NodeId for the starboard-lane node of a lane-aware entity.
+    pub fn starboard(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Starboard,
+        }
+    }
+
+    /// Build a NodeId targeting a specific lane side of a lane-aware
+    /// entity. Convenience for converting from geometry to graph identity.
+    #[allow(dead_code)]
+    pub fn lane(entity_kind: Item, x: usize, y: usize, side: LaneSide) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: side.into(),
+        }
     }
 
     #[allow(dead_code)]
     pub fn label(&self) -> String {
-        format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
+        let suffix = match self.port {
+            PortRole::Single => "",
+            PortRole::Port => ":port",
+            PortRole::Starboard => ":stbd",
+        };
+        format!(
+            "{}{}\n@{},{}",
+            self.entity_kind.name(),
+            suffix,
+            self.x,
+            self.y
+        )
     }
 }
 
@@ -1333,9 +1406,26 @@ mod tests {
     }
 
     #[test]
-    fn test_lane_tag_from_lane_side() {
-        assert_eq!(LaneTag::from(LaneSide::Port), LaneTag::Port);
-        assert_eq!(LaneTag::from(LaneSide::Starboard), LaneTag::Starboard);
+    fn test_port_role_from_lane_side() {
+        assert_eq!(PortRole::from(LaneSide::Port), PortRole::Port);
+        assert_eq!(PortRole::from(LaneSide::Starboard), PortRole::Starboard);
+    }
+
+    #[test]
+    fn test_node_id_helpers() {
+        let single = NodeId::single(Item::Inserter, 1, 2);
+        assert_eq!(single.port, PortRole::Single);
+
+        let p = NodeId::port(Item::TransportBelt, 3, 4);
+        assert_eq!(p.port, PortRole::Port);
+
+        let s = NodeId::starboard(Item::TransportBelt, 3, 4);
+        assert_eq!(s.port, PortRole::Starboard);
+        // Same entity + tile but different port → distinct NodeIds.
+        assert_ne!(p, s);
+
+        let p2 = NodeId::lane(Item::Splitter, 0, 0, LaneSide::Port);
+        assert_eq!(p2.port, PortRole::Port);
     }
 
     #[test]
@@ -1517,7 +1607,13 @@ mod tests {
 
     #[test]
     fn test_node_id_label() {
-        let id = NodeId::new(Item::TransportBelt, 3, 5);
-        assert_eq!(id.label(), "transport_belt\n@3,5");
+        // Lane-agnostic node: no suffix.
+        let single = NodeId::single(Item::Inserter, 3, 5);
+        assert_eq!(single.label(), "inserter\n@3,5");
+        // Lane-aware nodes get a :port / :stbd suffix.
+        let p = NodeId::port(Item::TransportBelt, 3, 5);
+        assert_eq!(p.label(), "transport_belt:port\n@3,5");
+        let s = NodeId::starboard(Item::TransportBelt, 3, 5);
+        assert_eq!(s.label(), "transport_belt:stbd\n@3,5");
     }
 }

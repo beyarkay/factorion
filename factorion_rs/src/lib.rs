@@ -13,7 +13,6 @@ extern crate alloc;
 
 mod entities;
 mod graph;
-mod lane_flow;
 mod throughput;
 mod types;
 mod world;
