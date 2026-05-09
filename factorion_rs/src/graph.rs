@@ -122,13 +122,14 @@ pub fn build_graph(world: &World) -> FactoryGraph {
 
             let node_id = NodeId::new(entity_kind, x, y);
 
-            // Sources are pre-populated with their infinite-flow item.
-            // By convention they emit on the port lane (commit 2 routes
-            // everything through port; commit 3 will dual-emit).
+            // Sources are pre-populated with their infinite-flow item on
+            // BOTH lanes — Source is lane-agnostic and feeds belts so that
+            // a saturated chain reaches 7.5 + 7.5 = 15 i/s total.
             let output = if entity_kind == Item::Source {
                 let mut lf = LaneFlow::default();
                 if let Some(i) = item {
                     lf.lane_mut(LaneTag::Port).insert(i, f64::INFINITY);
+                    lf.lane_mut(LaneTag::Starboard).insert(i, f64::INFINITY);
                 }
                 lf
             } else {

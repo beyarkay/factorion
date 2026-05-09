@@ -1,5 +1,5 @@
 use crate::lane_flow::LaneFlow;
-use crate::types::{get_recipe, Direction, Item, LaneTag, Misc, NodeId, Pos};
+use crate::types::{get_recipe, Direction, Item, LaneTag, Misc, NodeId, Pos, LANE_FLOW_RATE};
 use crate::world::World;
 
 /// A lane-tagged edge in the factory graph:
@@ -147,12 +147,8 @@ impl FactoryEntity for TransportBelt {
                         && src_misc == Misc::UndergroundDown);
 
                 if src_is_beltish {
-                    edges.push((
-                        NodeId::new(src_entity, sx, sy),
-                        LaneTag::Port,
-                        self_id.clone(),
-                        LaneTag::Port,
-                    ));
+                    let src_id = NodeId::new(src_entity, sx, sy);
+                    push_lane_preserving(&mut edges, &src_id, &self_id);
                 }
             }
         }
@@ -171,12 +167,8 @@ impl FactoryEntity for TransportBelt {
                 let dst_opposing = dst_is_belt && dst_dir == dir.opposite();
 
                 if dst_is_belt && !dst_opposing {
-                    edges.push((
-                        self_id,
-                        LaneTag::Port,
-                        NodeId::new(dst_entity, dx_u, dy_u),
-                        LaneTag::Port,
-                    ));
+                    let dst_id = NodeId::new(dst_entity, dx_u, dy_u);
+                    push_lane_preserving(&mut edges, &self_id, &dst_id);
                 }
             }
         }
@@ -185,8 +177,21 @@ impl FactoryEntity for TransportBelt {
     }
 
     fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
-        cap_lanes_inplace(input, self.flow_rate())
+        cap_lanes_inplace(input, LANE_FLOW_RATE)
     }
+}
+
+/// Push the lane-preserving pair of edges (Port→Port and Starboard→Starboard)
+/// from `src` to `dst`. Used by lane-aware entities for parallel and lone-curve
+/// connections.
+fn push_lane_preserving(edges: &mut Vec<Edge>, src: &NodeId, dst: &NodeId) {
+    edges.push((src.clone(), LaneTag::Port, dst.clone(), LaneTag::Port));
+    edges.push((
+        src.clone(),
+        LaneTag::Starboard,
+        dst.clone(),
+        LaneTag::Starboard,
+    ));
 }
 
 // ── Inserter ────────────────────────────────────────────────────────────────
@@ -361,12 +366,8 @@ impl FactoryEntity for UndergroundBelt {
                 matches!(dst_entity, Item::TransportBelt) && self.misc == Misc::UndergroundUp;
 
             if going_underground || cxn_to_belt {
-                edges.push((
-                    self_id.clone(),
-                    LaneTag::Port,
-                    NodeId::new(dst_entity, dst_xu, dst_yu),
-                    LaneTag::Port,
-                ));
+                let dst_id = NodeId::new(dst_entity, dst_xu, dst_yu);
+                push_lane_preserving(&mut edges, &self_id, &dst_id);
             }
         }
 
@@ -374,7 +375,7 @@ impl FactoryEntity for UndergroundBelt {
     }
 
     fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
-        cap_lanes_inplace(input, self.flow_rate())
+        cap_lanes_inplace(input, LANE_FLOW_RATE)
     }
 }
 
@@ -399,13 +400,15 @@ impl FactoryEntity for Source {
     }
 
     fn transform_flow(&self, _input: &LaneFlow) -> LaneFlow {
-        // A Source with no item set produces nothing. With one set,
-        // it produces an infinite flow of that item on the port lane.
-        // (Source is lane-agnostic; by convention we use the port lane
-        // as its accumulator.)
+        // A Source with no item set produces nothing. With one set, it
+        // produces an infinite flow on BOTH lanes — sources feed belts
+        // lane-symmetrically so straight chains saturate at 7.5 + 7.5 = 15.
         let mut output = LaneFlow::default();
         if let Some(item) = self.item {
             output.lane_mut(LaneTag::Port).insert(item, f64::INFINITY);
+            output
+                .lane_mut(LaneTag::Starboard)
+                .insert(item, f64::INFINITY);
         }
         output
     }
@@ -457,12 +460,10 @@ fn inserter_connections(
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            edges.push((
-                NodeId::new(src_entity, sx, sy),
-                LaneTag::Port,
-                self_id.clone(),
-                LaneTag::Port,
-            ));
+            let src_id = NodeId::new(src_entity, sx, sy);
+            for (src_tag, dst_tag) in pickup_lane_pairs(self_kind, src_entity) {
+                edges.push((src_id.clone(), src_tag, self_id.clone(), dst_tag));
+            }
         }
     }
 
@@ -479,17 +480,72 @@ fn inserter_connections(
                 Item::TransportBelt | Item::UndergroundBelt | Item::AssemblingMachine1
             );
             if dst_is_insertable {
-                edges.push((
-                    self_id,
-                    LaneTag::Port,
-                    NodeId::new(dst_entity, dx_u, dy_u),
-                    LaneTag::Port,
-                ));
+                let dst_id = NodeId::new(dst_entity, dx_u, dy_u);
+                for (src_tag, dst_tag) in drop_lane_pairs(self_kind, dst_entity) {
+                    edges.push((self_id.clone(), src_tag, dst_id.clone(), dst_tag));
+                }
             }
         }
     }
 
     edges
+}
+
+/// Lane-aware entity kinds (TB, UG, Splitter). These have port and starboard
+/// lanes that carry independent flow.
+fn is_lane_aware(kind: Item) -> bool {
+    matches!(
+        kind,
+        Item::TransportBelt | Item::UndergroundBelt | Item::Splitter
+    )
+}
+
+/// Lane pairs to emit on a *pickup* edge from `src_kind` into `self_kind`
+/// (where `self_kind` is one of Inserter/Source/Sink — the inserter family).
+///
+/// - **Sink ← lane-aware (belt-like)**: dual lane-preserving so both belt
+///   lanes drain into the sink. The sink internally aggregates port +
+///   starboard for the final per-item total.
+/// - Otherwise (Inserter pickups in commit 3, or pickups from non-belts):
+///   single port → port edge. Inserter's lane-aware pickup ships in commit 5.
+fn pickup_lane_pairs(self_kind: Item, src_kind: Item) -> Vec<(LaneTag, LaneTag)> {
+    if self_kind == Item::Sink && is_lane_aware(src_kind) {
+        vec![
+            (LaneTag::Port, LaneTag::Port),
+            (LaneTag::Starboard, LaneTag::Starboard),
+        ]
+    } else {
+        vec![(LaneTag::Port, LaneTag::Port)]
+    }
+}
+
+/// Lane pairs to emit on a *drop* edge from `self_kind` (Inserter/Source/Sink)
+/// into `dst_kind`.
+///
+/// - **Source → lane-aware**: dual lane-preserving (port→port, stbd→stbd).
+///   Sources pre-populate both lanes with infinite flow.
+/// - **Source → AM**: dual edges, both source lanes feed AM's port (the
+///   lane-agnostic accumulator convention).
+/// - Otherwise (Inserter drop in commit 3): single port → port edge.
+///   Inserter's FAR / PORT lane logic ships in commit 5.
+fn drop_lane_pairs(self_kind: Item, dst_kind: Item) -> Vec<(LaneTag, LaneTag)> {
+    if self_kind == Item::Source {
+        if is_lane_aware(dst_kind) {
+            vec![
+                (LaneTag::Port, LaneTag::Port),
+                (LaneTag::Starboard, LaneTag::Starboard),
+            ]
+        } else {
+            // Source feeding a lane-agnostic entity (AM): both source lanes
+            // funnel into dst.port.
+            vec![
+                (LaneTag::Port, LaneTag::Port),
+                (LaneTag::Starboard, LaneTag::Port),
+            ]
+        }
+    } else {
+        vec![(LaneTag::Port, LaneTag::Port)]
+    }
 }
 
 /// Compute all tiles occupied by an entity given its anchor, direction, and size.
@@ -573,12 +629,8 @@ impl FactoryEntity for Splitter {
                         let src_is_source_sink =
                             matches!(src_entity, Item::Source | Item::Sink) && src_dir == dir;
                         if (src_is_belt || src_is_source_sink) && !tile_set.contains(&in_pos) {
-                            edges.push((
-                                NodeId::new(src_entity, ix, iy),
-                                LaneTag::Port,
-                                self_id.clone(),
-                                LaneTag::Port,
-                            ));
+                            let src_id = NodeId::new(src_entity, ix, iy);
+                            push_lane_preserving(&mut edges, &src_id, &self_id);
                         }
                     }
                 }
@@ -599,12 +651,8 @@ impl FactoryEntity for Splitter {
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
-                            edges.push((
-                                self_id.clone(),
-                                LaneTag::Port,
-                                NodeId::new(dst_entity, ox, oy),
-                                LaneTag::Port,
-                            ));
+                            let dst_id = NodeId::new(dst_entity, ox, oy);
+                            push_lane_preserving(&mut edges, &self_id, &dst_id);
                         }
                     }
                 }
@@ -615,6 +663,9 @@ impl FactoryEntity for Splitter {
     }
 
     fn transform_flow(&self, input: &LaneFlow) -> LaneFlow {
+        // Splitter cap stays at 30 i/s per lane in commit 3 (the legacy
+        // whole-splitter cap re-interpreted per lane). Commit 4 will tighten
+        // each output lane to LANE_FLOW_RATE = 7.5 after the divisor.
         cap_lanes_inplace(input, self.flow_rate())
     }
 }
@@ -729,34 +780,49 @@ mod tests {
 
     #[test]
     fn test_transport_belt_connections_chain() {
+        // ASCII: S>>K  (Source, Belt(1), Belt(2), Sink — all east)
+        // Belt at (1,0) emits its forward dual-lane pair to belt at (2,0).
         let w = make_belt_chain_world();
 
-        // Belt at (1,0) should connect from source behind and to belt ahead
         let belt = TransportBelt;
         let edges = belt.connections((1, 0), Direction::East, &w);
 
-        // Source is behind but it's not a belt, so belt doesn't create that edge
-        // Belt at (2,0) is ahead and is a belt with same direction → edge created
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].1, LaneTag::Port);
-        assert_eq!(edges[0].2, NodeId::new(Item::TransportBelt, 2, 0));
-        assert_eq!(edges[0].3, LaneTag::Port);
+        // Source isn't beltish so no backward edge from it.
+        // Belt at (2,0) is a parallel forward dest → dual lane-preserving pair.
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 1, 0),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 2, 0),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 1, 0),
+            LaneTag::Starboard,
+            NodeId::new(Item::TransportBelt, 2, 0),
+            LaneTag::Starboard,
+        )));
     }
 
     #[test]
     fn test_transport_belt_chain_second_belt() {
+        // ASCII: S>>K — belt at (2,0) sees belt at (1,0) behind it.
         let w = make_belt_chain_world();
 
-        // Belt at (2,0) should connect from belt behind
         let belt = TransportBelt;
         let edges = belt.connections((2, 0), Direction::East, &w);
 
-        // Belt at (1,0) behind → edge from (1,0) to (2,0)
-        // Sink at (3,0) ahead is not a belt → no forward edge
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].2, NodeId::new(Item::TransportBelt, 2, 0));
+        // Belt at (1,0) behind → dual lane-preserving backward pair.
+        // Sink at (3,0) ahead is not a belt → no forward edge.
+        assert_eq!(edges.len(), 2);
+        for tag in [LaneTag::Port, LaneTag::Starboard] {
+            assert!(edges.contains(&(
+                NodeId::new(Item::TransportBelt, 1, 0),
+                tag,
+                NodeId::new(Item::TransportBelt, 2, 0),
+                tag,
+            )));
+        }
     }
 
     #[test]
@@ -856,16 +922,31 @@ mod tests {
     }
 
     #[test]
-    fn test_source_transform_flow() {
+    fn test_source_transform_flow_populates_both_lanes() {
+        // Source feeds belts lane-symmetrically — both port AND starboard get
+        // infinite flow. This is what keeps a saturated chain at 15 i/s total.
         let source = Source {
             item: Some(Item::CopperCable),
         };
         let output = source.transform_flow(&LaneFlow::default());
-        // Source emits onto the port lane by convention.
         assert_eq!(
             output.lane(LaneTag::Port).get(&Item::CopperCable).copied(),
             Some(f64::INFINITY)
         );
+        assert_eq!(
+            output
+                .lane(LaneTag::Starboard)
+                .get(&Item::CopperCable)
+                .copied(),
+            Some(f64::INFINITY)
+        );
+    }
+
+    #[test]
+    fn test_source_with_no_item_emits_nothing() {
+        let source = Source { item: None };
+        let output = source.transform_flow(&LaneFlow::default());
+        assert!(output.is_empty());
     }
 
     #[test]
@@ -896,18 +977,64 @@ mod tests {
     }
 
     #[test]
-    fn test_belt_transform_flow() {
+    fn test_belt_transform_flow_caps_each_lane() {
+        // Each lane caps INDEPENDENTLY at LANE_FLOW_RATE (7.5). Per-belt total
+        // is 15 only when both lanes are saturated.
         let belt = TransportBelt;
         let mut input = LaneFlow::default();
         input.add(LaneTag::Port, Item::CopperCable, 20.0);
+        input.add(LaneTag::Starboard, Item::CopperCable, 3.0);
         let output = belt.transform_flow(&input);
-        // Capped at flow rate of 15.0 on the port lane.
-        assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 15.0).abs() < 1e-9);
+        // Port was over → capped at 7.5. Starboard was under → unchanged.
+        assert!(
+            (output.lane(LaneTag::Port)[&Item::CopperCable] - LANE_FLOW_RATE).abs() < 1e-9,
+            "port should cap at 7.5, got {}",
+            output.lane(LaneTag::Port)[&Item::CopperCable]
+        );
+        assert!(
+            (output.lane(LaneTag::Starboard)[&Item::CopperCable] - 3.0).abs() < 1e-9,
+            "starboard 3.0 should pass through unchanged, got {}",
+            output.lane(LaneTag::Starboard)[&Item::CopperCable]
+        );
 
+        // Under-cap input: passes through both lanes unchanged.
         let mut input = LaneFlow::default();
         input.add(LaneTag::Port, Item::CopperCable, 5.0);
         let output = belt.transform_flow(&input);
         assert!((output.lane(LaneTag::Port)[&Item::CopperCable] - 5.0).abs() < 1e-9);
+        // Starboard absent in input → absent in output (no synthetic zero entry).
+        assert!(!output
+            .lane(LaneTag::Starboard)
+            .contains_key(&Item::CopperCable));
+    }
+
+    #[test]
+    fn test_belt_propagates_only_loaded_lane() {
+        // Set up an input that has only the port lane loaded; verify the
+        // output preserves that asymmetry — port carries flow, starboard
+        // stays empty.
+        let belt = TransportBelt;
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Port, Item::IronPlate, 4.0);
+        let output = belt.transform_flow(&input);
+        assert_eq!(
+            output.lane(LaneTag::Port).get(&Item::IronPlate).copied(),
+            Some(4.0)
+        );
+        assert_eq!(output.lane(LaneTag::Starboard).get(&Item::IronPlate), None);
+
+        // Symmetric: starboard-only input → starboard-only output.
+        let mut input = LaneFlow::default();
+        input.add(LaneTag::Starboard, Item::IronPlate, 4.0);
+        let output = belt.transform_flow(&input);
+        assert_eq!(
+            output
+                .lane(LaneTag::Starboard)
+                .get(&Item::IronPlate)
+                .copied(),
+            Some(4.0)
+        );
+        assert_eq!(output.lane(LaneTag::Port).get(&Item::IronPlate), None);
     }
 
     #[test]
@@ -922,10 +1049,16 @@ mod tests {
         };
         let edges = ub.connections((1, 0), Direction::East, &w);
 
-        // Should find the underground belt at (3,0)
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::UndergroundBelt, 1, 0));
-        assert_eq!(edges[0].2, NodeId::new(Item::UndergroundBelt, 3, 0));
+        // UG-down → UG-up emits the dual lane-preserving pair.
+        assert_eq!(edges.len(), 2);
+        for tag in [LaneTag::Port, LaneTag::Starboard] {
+            assert!(edges.contains(&(
+                NodeId::new(Item::UndergroundBelt, 1, 0),
+                tag,
+                NodeId::new(Item::UndergroundBelt, 3, 0),
+                tag,
+            )));
+        }
     }
 
     #[test]
@@ -963,27 +1096,30 @@ mod tests {
         let splitter = Splitter;
         let edges = splitter.connections((2, 0), Direction::East, &w);
 
-        // Should have: belt(1,0)->splitter, splitter->belt(3,0), splitter->belt(3,1)
+        // belt(1,0)→splitter (dual), splitter→belt(3,0) (dual), splitter→belt(3,1) (dual).
+        // 3 conceptual connections × 2 lane-pairs = 6 lane-tagged edges.
         let self_id = NodeId::new(Item::Splitter, 2, 0);
-        assert!(edges.contains(&(
-            NodeId::new(Item::TransportBelt, 1, 0),
-            LaneTag::Port,
-            self_id.clone(),
-            LaneTag::Port,
-        )));
-        assert!(edges.contains(&(
-            self_id.clone(),
-            LaneTag::Port,
-            NodeId::new(Item::TransportBelt, 3, 0),
-            LaneTag::Port,
-        )));
-        assert!(edges.contains(&(
-            self_id.clone(),
-            LaneTag::Port,
-            NodeId::new(Item::TransportBelt, 3, 1),
-            LaneTag::Port,
-        )));
-        assert_eq!(edges.len(), 3);
+        for tag in [LaneTag::Port, LaneTag::Starboard] {
+            assert!(edges.contains(&(
+                NodeId::new(Item::TransportBelt, 1, 0),
+                tag,
+                self_id.clone(),
+                tag,
+            )));
+            assert!(edges.contains(&(
+                self_id.clone(),
+                tag,
+                NodeId::new(Item::TransportBelt, 3, 0),
+                tag,
+            )));
+            assert!(edges.contains(&(
+                self_id.clone(),
+                tag,
+                NodeId::new(Item::TransportBelt, 3, 1),
+                tag,
+            )));
+        }
+        assert_eq!(edges.len(), 6);
     }
 
     #[test]
@@ -1002,25 +1138,27 @@ mod tests {
         let edges = splitter.connections((0, 2), Direction::North, &w);
 
         let self_id = NodeId::new(Item::Splitter, 0, 2);
-        assert!(edges.contains(&(
-            NodeId::new(Item::TransportBelt, 0, 3),
-            LaneTag::Port,
-            self_id.clone(),
-            LaneTag::Port,
-        )));
-        assert!(edges.contains(&(
-            self_id.clone(),
-            LaneTag::Port,
-            NodeId::new(Item::TransportBelt, 0, 1),
-            LaneTag::Port,
-        )));
-        assert!(edges.contains(&(
-            self_id.clone(),
-            LaneTag::Port,
-            NodeId::new(Item::TransportBelt, 1, 1),
-            LaneTag::Port,
-        )));
-        assert_eq!(edges.len(), 3);
+        for tag in [LaneTag::Port, LaneTag::Starboard] {
+            assert!(edges.contains(&(
+                NodeId::new(Item::TransportBelt, 0, 3),
+                tag,
+                self_id.clone(),
+                tag,
+            )));
+            assert!(edges.contains(&(
+                self_id.clone(),
+                tag,
+                NodeId::new(Item::TransportBelt, 0, 1),
+                tag,
+            )));
+            assert!(edges.contains(&(
+                self_id.clone(),
+                tag,
+                NodeId::new(Item::TransportBelt, 1, 1),
+                tag,
+            )));
+        }
+        assert_eq!(edges.len(), 6);
     }
 
     #[test]
@@ -1044,5 +1182,263 @@ mod tests {
         assert!(EntityEnum::new(Item::CopperCable, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::IronGearWheel, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::TransportBelt, None, Misc::None).is_some());
+    }
+
+    // ── Lane-aware connection edge cases (commit 3) ────────────────────────
+
+    /// Helper: assert a lane-preserving (Port→Port, Stbd→Stbd) edge pair
+    /// from `src` to `dst` is present in `edges`.
+    fn assert_dual_lane_preserving(edges: &[Edge], src: NodeId, dst: NodeId) {
+        for tag in [LaneTag::Port, LaneTag::Starboard] {
+            assert!(
+                edges.contains(&(src.clone(), tag, dst.clone(), tag)),
+                "missing {:?}→{:?} edge for lane {:?} in {:?}",
+                src,
+                dst,
+                tag,
+                edges
+            );
+        }
+    }
+
+    #[test]
+    fn test_belt_dual_edges_in_all_directions() {
+        // Straight chain in each cardinal direction:
+        // North-facing: > > facing N at (1,2)→(1,1).
+        // East:  > > at (1,1)→(2,1).
+        // South: v v at (1,1)→(1,2).
+        // West:  < < at (2,1)→(1,1).
+        for (dir, src, dst) in [
+            (Direction::North, (1, 2), (1, 1)),
+            (Direction::East, (1, 1), (2, 1)),
+            (Direction::South, (1, 1), (1, 2)),
+            (Direction::West, (2, 1), (1, 1)),
+        ] {
+            let mut w = World::empty(4, 4);
+            w.place(src.0, src.1, Item::TransportBelt, dir, None);
+            w.place(dst.0, dst.1, Item::TransportBelt, dir, None);
+
+            let belt = TransportBelt;
+            let edges = belt.connections(src, dir, &w);
+
+            // Dual edges to the parallel forward dest. (Backward source is empty.)
+            assert_eq!(
+                edges.len(),
+                2,
+                "dir={:?} expected 2 forward edges, got {:?}",
+                dir,
+                edges
+            );
+            assert_dual_lane_preserving(
+                &edges,
+                NodeId::new(Item::TransportBelt, src.0, src.1),
+                NodeId::new(Item::TransportBelt, dst.0, dst.1),
+            );
+        }
+    }
+
+    #[test]
+    fn test_belt_lone_curve_emits_dual_lane_preserving() {
+        // Diagram (north-up):
+        //   > v
+        // East-belt at (0,1) feeds south-belt at (1,1). The south-belt has no
+        // OTHER source, so this is a lone curve — emit lane-preserving pair.
+        // (T-junction detection that switches to side-load lands in commit 5.)
+        let mut w = World::empty(3, 3);
+        w.place(0, 1, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::South, None);
+
+        let belt = TransportBelt;
+        let edges = belt.connections((0, 1), Direction::East, &w);
+
+        assert_eq!(edges.len(), 2, "lone curve should emit dual edges");
+        assert_dual_lane_preserving(
+            &edges,
+            NodeId::new(Item::TransportBelt, 0, 1),
+            NodeId::new(Item::TransportBelt, 1, 1),
+        );
+    }
+
+    #[test]
+    fn test_belt_no_edges_head_to_head_in_all_directions() {
+        // Two opposing belts at all 4 axis pairings — none should connect.
+        for (dir, opp) in [
+            (Direction::East, Direction::West),
+            (Direction::West, Direction::East),
+            (Direction::North, Direction::South),
+            (Direction::South, Direction::North),
+        ] {
+            let mut w = World::empty(3, 3);
+            w.place(0, 0, Item::TransportBelt, dir, None);
+            // Forward-neighbor of (0,0) facing `dir` opposes us.
+            let (dx, dy) = dir.delta();
+            let nx = (dx + 1) as usize;
+            let ny = if dy > 0 { 1 } else { 0 };
+            // Recompute correctly: forward neighbor coord
+            let _ = (nx, ny); // unused
+            let fx = (0i64 + dx).max(0) as usize;
+            let fy = (0i64 + dy).max(0) as usize;
+            if fx < 3 && fy < 3 {
+                w.place(fx, fy, Item::TransportBelt, opp, None);
+            }
+            let belt = TransportBelt;
+            let edges = belt.connections((0, 0), dir, &w);
+            assert!(
+                edges.is_empty(),
+                "head-to-head ({:?} vs {:?}) should produce no edges, got {:?}",
+                dir,
+                opp,
+                edges
+            );
+        }
+    }
+
+    #[test]
+    fn test_underground_belt_dual_edges_all_directions() {
+        // UG-down → UG-up, all four cardinal directions, distance 2.
+        for (dir, down, up) in [
+            (Direction::East, (0, 1), (2, 1)),
+            (Direction::West, (3, 1), (1, 1)),
+            (Direction::North, (1, 3), (1, 1)),
+            (Direction::South, (1, 0), (1, 2)),
+        ] {
+            let mut w = World::empty(4, 4);
+            w.place_underground(down.0, down.1, dir, Misc::UndergroundDown);
+            w.place_underground(up.0, up.1, dir, Misc::UndergroundUp);
+            let ub = UndergroundBelt {
+                misc: Misc::UndergroundDown,
+            };
+            let edges = ub.connections(down, dir, &w);
+            assert_eq!(
+                edges.len(),
+                2,
+                "UG dual edge expected for dir {:?}, got {:?}",
+                dir,
+                edges
+            );
+            assert_dual_lane_preserving(
+                &edges,
+                NodeId::new(Item::UndergroundBelt, down.0, down.1),
+                NodeId::new(Item::UndergroundBelt, up.0, up.1),
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_emits_dual_edges_to_belt() {
+        // Source's drop edge to a belt-like dest is dual lane-preserving.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+
+        let source = Source {
+            item: Some(Item::CopperCable),
+        };
+        let edges = source.connections((0, 0), Direction::East, &w);
+
+        // Pickup from (-1, 0) is out of bounds → 0 pickup edges. Drop is dual.
+        assert_eq!(edges.len(), 2);
+        assert_dual_lane_preserving(
+            &edges,
+            NodeId::new(Item::Source, 0, 0),
+            NodeId::new(Item::TransportBelt, 1, 0),
+        );
+    }
+
+    #[test]
+    fn test_source_to_assembler_routes_both_source_lanes_to_port() {
+        // Source feeding an AM (lane-agnostic): two edges, both targeting
+        // the AM's port lane (the AM accumulator convention). Source must
+        // forward into the AM anchor — World only stores entities at anchors.
+        let mut w = World::empty(5, 5);
+        w.place(
+            1,
+            1,
+            Item::AssemblingMachine1,
+            Direction::None,
+            Some(Item::CopperCable),
+        );
+        // Source at (0,1) facing East drops to (1,1) — the AM anchor.
+        w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
+
+        let source = Source {
+            item: Some(Item::CopperCable),
+        };
+        let edges = source.connections((0, 1), Direction::East, &w);
+
+        // AM is not lane-aware, so Source emits (Port→Port, Stbd→Port) —
+        // both source lanes funnel into the AM's port accumulator.
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&(
+            NodeId::new(Item::Source, 0, 1),
+            LaneTag::Port,
+            NodeId::new(Item::AssemblingMachine1, 1, 1),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            NodeId::new(Item::Source, 0, 1),
+            LaneTag::Starboard,
+            NodeId::new(Item::AssemblingMachine1, 1, 1),
+            LaneTag::Port,
+        )));
+    }
+
+    #[test]
+    fn test_sink_emits_dual_edges_from_belt() {
+        // Sink ← belt: dual lane-preserving so both belt lanes drain.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let sink = Sink;
+        let edges = sink.connections((1, 0), Direction::East, &w);
+
+        // Pickup is dual; forward drop at (2,0) is empty so no drop edges.
+        assert_eq!(edges.len(), 2);
+        assert_dual_lane_preserving(
+            &edges,
+            NodeId::new(Item::TransportBelt, 0, 0),
+            NodeId::new(Item::Sink, 1, 0),
+        );
+    }
+
+    #[test]
+    fn test_inserter_stays_single_edge_in_commit_3() {
+        // Inserter pickup/drop are still single (Port→Port) edges in commit 3.
+        // Commit 5 will add the FAR-lane drop and lane-aware pickup.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::Inserter, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((1, 0), Direction::East, &w);
+
+        // Pickup from belt (lane-aware src, but self is Inserter not Sink → single).
+        // Drop to belt (self is Inserter, not Source → single).
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 0, 0),
+            LaneTag::Port,
+            NodeId::new(Item::Inserter, 1, 0),
+            LaneTag::Port,
+        )));
+        assert!(edges.contains(&(
+            NodeId::new(Item::Inserter, 1, 0),
+            LaneTag::Port,
+            NodeId::new(Item::TransportBelt, 2, 0),
+            LaneTag::Port,
+        )));
+    }
+
+    #[test]
+    fn test_belt_to_belt_at_world_boundary() {
+        // Belt at (0,0) facing west: forward goes off-grid → no forward edge,
+        // and (-1,0) backward also off-grid. No edges either side.
+        let mut w = World::empty(3, 3);
+        w.place(0, 0, Item::TransportBelt, Direction::West, None);
+        let belt = TransportBelt;
+        let edges = belt.connections((0, 0), Direction::West, &w);
+        assert!(edges.is_empty(), "boundary belt should emit no edges");
     }
 }
