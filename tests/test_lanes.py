@@ -289,3 +289,237 @@ class TestLanes:
 
         tp, _ = rs_throughput(world)
         assert tp == pytest.approx(15.0, abs=1e-6)
+
+
+# ── Snaking underground belt patterns ───────────────────────────────────────
+
+
+class TestUndergroundPatterns:
+    """Underground-belt edge cases: tunnel ranges, snaking pairs, and
+    perpendicular feeds into a UG-down."""
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    @pytest.mark.parametrize("distance", [1, 2, 3, 4, 5])
+    def test_single_ug_pair_at_each_valid_distance(self, rot, mirror, distance):
+        """`S > d _..._ u > K` — Source → belt → UG-down → tunnel of
+        `distance` underground cells → UG-up → belt → Sink. Within the
+        UG range (1..=5) every distance saturates at 15.0."""
+        # Layout in the canonical East frame:
+        #   col 0: Source
+        #   col 1: belt (so source's drop has a clean target)
+        #   col 2: UG-down
+        #   col 2 + distance: UG-up
+        #   col 2 + distance + 1: belt
+        #   col 2 + distance + 2: Sink
+        size = max(8, 5 + distance)
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (2 + distance + 1, 0, "transport_belt", Direction.EAST, None),
+            (2 + distance + 2, 0, "bulk_inserter", Direction.EAST, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        # Place the UG pair after rotation/mirror.
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        place_ug(2, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(2 + distance, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(15.0, abs=1e-6), (
+            f"distance={distance} expected 15.0, got {tp}"
+        )
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_ug_pair_beyond_max_range_does_not_connect(self, rot, mirror):
+        """Distance 6 is past the UG range (max 5) — no tunnel pair
+        forms, so the source can't reach the sink. Throughput = 0."""
+        size = 12
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (10, 0, "transport_belt", Direction.EAST, None),
+            (11, 0, "bulk_inserter", Direction.EAST, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        # UG-down at col 2, UG-up at col 8 → distance 6 (out of range).
+        place_ug(2, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(8, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(0.0, abs=1e-6)
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_chained_ug_pairs_with_belt_between(self, rot, mirror):
+        """Two UG pairs back-to-back with a TB between the first UG-up
+        and the second UG-down. The TB picks up the first UG-up's
+        output (via TB's backward scan) and forwards into the second
+        UG-down. Saturated → 15.0.
+
+        Layout:
+          col 0: S, 1: belt, 2: d, 3-4: empty, 5: u, 6: belt, 7: d,
+          8-9: empty, 10: u, 11: belt, 12: K.
+        """
+        size = 14
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (6, 0, "transport_belt", Direction.EAST, None),
+            (11, 0, "transport_belt", Direction.EAST, None),
+            (12, 0, "bulk_inserter", Direction.EAST, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        place_ug(2, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(5, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+        place_ug(7, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(10, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(15.0, abs=1e-6), (
+            f"chained UG pairs with belt between: expected 15.0, got {tp}"
+        )
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_side_load_perpendicular_into_ug_down(self, rot, mirror):
+        """East belts forward-feed a south-going UG-down (perpendicular).
+        UG-down tunnels south to UG-up, which feeds a south belt to the
+        sink. Lone curve into the UG-down (no other source) → lane-
+        preserving → 15.0 throughput.
+
+        Diagram (canonical, before rotation/mirror):
+              col 0  col 1  col 2
+          row 0:  S>     >>     d
+          row 1:                .
+          row 2:                u
+          row 3:                v
+          row 4:                K
+        """
+        size = 6
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (2, 3, "transport_belt", Direction.SOUTH, None),
+            (2, 4, "bulk_inserter", Direction.SOUTH, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        # UG-down (south) at (2,0) — receives the perpendicular feed from
+        # the east belt at (1,0). UG-up (south) at (2,2) is its tunnel exit.
+        place_ug(2, 0, Direction.SOUTH, Misc.UNDERGROUND_DOWN)
+        place_ug(2, 2, Direction.SOUTH, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(15.0, abs=1e-6), (
+            f"perpendicular feed into UG-down: expected 15.0, got {tp}"
+        )
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_adjacent_ug_pairs_no_belt_between(self, rot, mirror):
+        """`S d u d u K` — no TB between the first UG-up and the second
+        UG-down (they sit at adjacent tiles). The current implementation
+        does NOT wire UG-up directly to UG-down (only TB::connections
+        scans backward for UG-up sources, and UG-down has no backward
+        scan), so this layout breaks the chain and throughput = 0.
+
+        FLAGGED FOR USER: should UG-up forward-feed an adjacent UG-down?
+        Pinning the current behaviour here so the answer is explicit;
+        update the expected if/when we fix it.
+        """
+        size = 8
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (6, 0, "transport_belt", Direction.EAST, None),
+            (7, 0, "bulk_inserter", Direction.EAST, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        # `Sd u d u K` (cols 2,3,4,5 are UG d/u/d/u with no TB between).
+        place_ug(2, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(3, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+        place_ug(4, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(5, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        # Current behaviour: UG-up → UG-down has no edge in the graph.
+        assert tp == pytest.approx(0.0, abs=1e-6), (
+            f"adjacent UG pairs (no TB between): current behaviour expects 0, got {tp}"
+        )
+
+    @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
+    def test_inserter_lifts_between_ug_pairs(self, rot, mirror):
+        """`S d u I d u K` — inserter bridges from the first UG-up to
+        the second UG-down. Inserter caps at 0.86 i/s → bottleneck.
+        Verifies that an inserter can pick up from a UG-up (lane-aware
+        source: dual pickup edges combining both lanes into the
+        inserter) and drop on a UG-down (in-line drop on PORT lane).
+        """
+        size = 9
+        # cols: 0:S, 1:belt, 2:d, 3:u, 4:I (faces east), 5:d, 6:u, 7:belt, 8:K
+        layout = [
+            (0, 0, "stack_inserter", Direction.EAST, "copper_cable"),
+            (1, 0, "transport_belt", Direction.EAST, None),
+            (4, 0, "inserter", Direction.EAST, None),
+            (7, 0, "transport_belt", Direction.EAST, None),
+            (8, 0, "bulk_inserter", Direction.EAST, "copper_cable"),
+        ]
+        world = build_world(size, layout, rot, mirror)
+
+        def place_ug(x, y, d, misc):
+            rx, ry = rotate_pos(x, y, size, rot)
+            rd = rotate_dir(d, rot)
+            if mirror:
+                rx, ry = mirror_pos_x(rx, ry, size)
+                rd = mirror_dir_x(rd)
+            set_entity(world, rx, ry, "underground_belt", rd, misc=misc.value)
+
+        place_ug(2, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(3, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+        place_ug(5, 0, Direction.EAST, Misc.UNDERGROUND_DOWN)
+        place_ug(6, 0, Direction.EAST, Misc.UNDERGROUND_UP)
+
+        tp, _ = rs_throughput(world)
+        assert tp == pytest.approx(0.86, abs=1e-6), (
+            f"inserter bridge between UG pairs: expected 0.86, got {tp}"
+        )
