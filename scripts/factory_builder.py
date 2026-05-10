@@ -74,6 +74,21 @@ NON_PLACEABLE_ITEMS = [
     "electronic_circuit",
     "iron_gear_wheel",
 ]
+# 10-slot hotbar mapped to keys 1..9,0 (key '0' is the last slot).
+# `None` means the slot is unbound and pressing that key is a no-op.
+# "empty" is the eraser.
+HOTBAR = [
+    "transport_belt",
+    "underground_belt",
+    "splitter",
+    "inserter",
+    "stack_inserter",
+    "bulk_inserter",
+    "assembling_machine_1",
+    None,
+    None,
+    "empty",
+]
 DIRECTIONS = ["NONE", "NORTH", "EAST", "SOUTH", "WEST"]
 MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 
@@ -166,16 +181,30 @@ ITEM_ICONS = {n: _icon_b64(n) for n in NON_PLACEABLE_ITEMS}
 
 
 def render_index(default_size: int) -> str:
-    palette_html = "".join(
-        f"""
-        <div class="pal-item" draggable="true" data-entity="{name}"
-             title="{name}">
-          <img src="{PALETTE_ICONS[name]}" alt="{name}">
-          <span>{name}</span>
-        </div>
-        """
-        for name in PLACEABLE_ENTITIES
-    )
+    def _hotbar_slot(idx: int, name: str | None) -> str:
+        key_label = str((idx + 1) % 10)
+        if name is None:
+            return (
+                f'<div class="hb-slot empty-slot" data-slot="{idx}" '
+                f'title="(unbound)"><div class="hb-key">{key_label}</div></div>'
+            )
+        if name == "empty":
+            return (
+                f'<div class="hb-slot eraser" data-slot="{idx}" '
+                f'data-entity="empty" draggable="true" title="eraser">'
+                f'<div class="hb-key">{key_label}</div>'
+                f'<img draggable="false" src="{PALETTE_ICONS["empty"]}" alt="eraser">'
+                f'<div class="hb-name">eraser</div></div>'
+            )
+        return (
+            f'<div class="hb-slot" data-slot="{idx}" data-entity="{name}" '
+            f'draggable="true" title="{name}">'
+            f'<div class="hb-key">{key_label}</div>'
+            f'<img draggable="false" src="{PALETTE_ICONS[name]}" alt="{name}">'
+            f'<div class="hb-name">{name}</div></div>'
+        )
+
+    hotbar_html = "".join(_hotbar_slot(i, n) for i, n in enumerate(HOTBAR))
     item_options = "".join(
         f'<option value="{n}">{n}</option>'
         for n in (["empty"] + PLACEABLE_ENTITIES + NON_PLACEABLE_ITEMS)
@@ -192,17 +221,35 @@ def render_index(default_size: int) -> str:
 <style>
   body {{ font-family: system-ui, sans-serif; margin: 1em; color: #222; }}
   h1 {{ margin: 0 0 0.4em; }}
-  .layout {{ display: grid; grid-template-columns: 220px 1fr 280px; gap: 1em; }}
+  .layout {{ display: grid; grid-template-columns: 1fr 280px; gap: 1em; }}
   .panel {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.6em; background: #fafafa; }}
   .panel h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
-  .pal-item {{
-    display: flex; align-items: center; gap: 0.4em;
-    padding: 0.3em 0.4em; margin-bottom: 0.3em;
-    border: 1px solid #ddd; border-radius: 4px; background: white;
-    cursor: grab; font-size: 0.85em;
+  .hotbar {{
+    display: flex; gap: 0.3em; flex-wrap: wrap;
+    user-select: none; -webkit-user-select: none;
   }}
-  .pal-item img {{ width: 28px; height: 28px; }}
-  .pal-item.eraser {{ background: #fee; }}
+  .hb-slot {{
+    position: relative; width: 64px; height: 78px;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 2px;
+    border: 2px solid #ddd; border-radius: 4px; background: white;
+    cursor: grab; font-size: 0.7em; padding: 2px;
+    user-select: none; -webkit-user-select: none;
+  }}
+  .hb-slot img {{ width: 32px; height: 32px; pointer-events: none; }}
+  .hb-slot .hb-key {{
+    position: absolute; top: 1px; left: 3px;
+    font-size: 0.7em; font-weight: bold; color: #888;
+  }}
+  .hb-slot .hb-name {{
+    font-size: 0.65em; line-height: 1; text-align: center;
+    word-break: break-all; pointer-events: none;
+  }}
+  .hb-slot.active {{ border-color: #28c850; background: #e8ffe8; }}
+  .hb-slot.eraser {{ background: #fee; }}
+  .hb-slot.empty-slot {{
+    background: #f4f4f4; cursor: default; color: #bbb;
+  }}
   .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.6em; }}
   .controls {{ display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }}
   .controls input[type=number] {{ width: 4em; }}
@@ -246,24 +293,19 @@ def render_index(default_size: int) -> str:
 
 <h1>Factory builder</h1>
 <p class="help">
-  Drag an entity from the palette onto a tile. Click a tile to edit its
-  ENTITY / DIRECTION / ITEM / MISC / FOOTPRINT in the right panel.
-  Right-click a tile to clear it. Click <b>Compute graph</b> to run
-  <code>world2graph</code> + <code>calc_throughput</code> on the design.
+  Press <b>1</b>–<b>9</b> or <b>0</b> to pick a hotbar slot, then click a
+  tile to place it. Drag a slot onto a tile to do the same. Click a tile
+  to select/edit it (ENTITY / DIRECTION / ITEM / MISC / FOOTPRINT in the
+  right panel). With a tile selected: <b>r</b> rotates clockwise,
+  <b>R</b> counter-clockwise; <b>Delete</b> / <b>Backspace</b> clears it;
+  right-click also clears. The graph recomputes automatically on every
+  change. <b>Esc</b> deselects the active hotbar slot.
 </p>
 
 <div class="layout">
 
-  <div class="panel">
-    <h3>Palette</h3>
-    {palette_html}
-    <div class="pal-item eraser" draggable="true" data-entity="empty">
-      <img src="{PALETTE_ICONS['empty']}" alt="empty">
-      <span>(eraser)</span>
-    </div>
-  </div>
-
   <div class="grid-wrap">
+    <div class="hotbar" id="hotbar">{hotbar_html}</div>
     <div class="controls">
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
       <button id="resize">resize / clear</button>
@@ -308,12 +350,15 @@ def render_index(default_size: int) -> str:
 <script>
 const PALETTE_ICONS = {json.dumps(PALETTE_ICONS)};
 const ITEM_ICONS = {json.dumps(ITEM_ICONS)};
+const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
+const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
 
 let SIZE = {default_size};
-let grid = [];          // grid[y][x] = cell dict
-let selected = null;    // {{x, y}} or null
+let grid = [];           // grid[y][x] = cell dict
+let selected = null;     // {{x, y}} or null
+let activeHotbar = null; // 0..9 or null
 
 function emptyCell() {{
   return {{
@@ -363,28 +408,30 @@ function renderGrid() {{
       inner.innerHTML = html;
       td.appendChild(inner);
 
-      td.addEventListener('click', () => {{ selected = {{x, y}}; renderGrid(); syncEditor(); }});
+      td.addEventListener('click', () => {{
+        selected = {{x, y}};
+        if (activeHotbar !== null) {{
+          const ent = HOTBAR[activeHotbar];
+          if (ent !== null) {{
+            placeEntity(x, y, ent);
+            return;
+          }}
+        }}
+        renderGrid(); syncEditor();
+      }});
       td.addEventListener('contextmenu', (ev) => {{
         ev.preventDefault();
         grid[y][x] = emptyCell();
         renderGrid();
         if (selected && selected.x === x && selected.y === y) syncEditor();
+        scheduleCompute();
       }});
       td.addEventListener('dragover', (ev) => ev.preventDefault());
       td.addEventListener('drop', (ev) => {{
         ev.preventDefault();
         const ent = ev.dataTransfer.getData('text/plain');
         if (!ent) return;
-        if (ent === 'empty') {{
-          grid[y][x] = emptyCell();
-        }} else {{
-          grid[y][x].entity = ent;
-          // Sensible default direction so the entity is immediately
-          // useful in the graph. The user can change it via the editor.
-          if (grid[y][x].direction === 'NONE') grid[y][x].direction = 'EAST';
-        }}
-        selected = {{x, y}};
-        renderGrid(); syncEditor();
+        placeEntity(x, y, ent);
       }});
       tr.appendChild(td);
     }}
@@ -415,21 +462,77 @@ function bindEditor() {{
       if (!selected) return;
       grid[selected.y][selected.x][field] = ev.target.value;
       renderGrid();
+      scheduleCompute();
     }});
   }}
   document.getElementById('clear-cell').addEventListener('click', () => {{
     if (!selected) return;
     grid[selected.y][selected.x] = emptyCell();
     renderGrid(); syncEditor();
+    scheduleCompute();
   }});
 }}
 
-function bindPalette() {{
-  document.querySelectorAll('.pal-item').forEach(el => {{
+function renderHotbar() {{
+  document.querySelectorAll('.hb-slot').forEach(el => {{
+    const idx = parseInt(el.dataset.slot, 10);
+    el.classList.toggle('active', idx === activeHotbar);
+  }});
+}}
+
+function setActiveHotbar(idx) {{
+  if (idx !== null && HOTBAR[idx] === null) return;
+  activeHotbar = (activeHotbar === idx) ? null : idx;
+  renderHotbar();
+}}
+
+function bindHotbar() {{
+  document.querySelectorAll('.hb-slot').forEach(el => {{
+    const idx = parseInt(el.dataset.slot, 10);
+    if (HOTBAR[idx] === null) return;
     el.addEventListener('dragstart', (ev) => {{
       ev.dataTransfer.setData('text/plain', el.dataset.entity);
     }});
+    el.addEventListener('click', () => setActiveHotbar(idx));
   }});
+}}
+
+function placeEntity(x, y, ent) {{
+  if (ent === 'empty') {{
+    grid[y][x] = emptyCell();
+  }} else {{
+    grid[y][x].entity = ent;
+    if (grid[y][x].direction === 'NONE') grid[y][x].direction = 'EAST';
+  }}
+  selected = {{x, y}};
+  renderGrid(); syncEditor();
+  scheduleCompute();
+}}
+
+function rotateSelected(cw) {{
+  if (!selected) return;
+  const c = grid[selected.y][selected.x];
+  let i = DIR_CYCLE.indexOf(c.direction);
+  if (i < 0) {{
+    c.direction = cw ? 'NORTH' : 'WEST';
+  }} else {{
+    c.direction = DIR_CYCLE[(i + (cw ? 1 : -1) + 4) % 4];
+  }}
+  renderGrid(); syncEditor();
+  scheduleCompute();
+}}
+
+function clearSelected() {{
+  if (!selected) return;
+  grid[selected.y][selected.x] = emptyCell();
+  renderGrid(); syncEditor();
+  scheduleCompute();
+}}
+
+let _computeTimer = null;
+function scheduleCompute() {{
+  clearTimeout(_computeTimer);
+  _computeTimer = setTimeout(computeGraph, 200);
 }}
 
 async function computeGraph() {{
@@ -471,6 +574,7 @@ document.getElementById('resize').addEventListener('click', () => {{
   grid = newGrid(SIZE);
   selected = null;
   renderGrid(); syncEditor();
+  scheduleCompute();
 }});
 document.getElementById('export').addEventListener('click', async () => {{
   const text = JSON.stringify({{ size: SIZE, grid }}, null, 2);
@@ -479,9 +583,32 @@ document.getElementById('export').addEventListener('click', async () => {{
   alert('state copied to clipboard (also logged to console)');
 }});
 
+document.addEventListener('keydown', (ev) => {{
+  const t = ev.target;
+  const tag = t && t.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (/^[0-9]$/.test(ev.key)) {{
+    const n = parseInt(ev.key, 10);
+    const idx = (n === 0) ? 9 : n - 1;
+    setActiveHotbar(idx);
+    ev.preventDefault();
+    return;
+  }}
+  if (ev.key === 'r') {{ rotateSelected(true); ev.preventDefault(); return; }}
+  if (ev.key === 'R') {{ rotateSelected(false); ev.preventDefault(); return; }}
+  if (ev.key === 'Delete' || ev.key === 'Backspace') {{
+    clearSelected(); ev.preventDefault(); return;
+  }}
+  if (ev.key === 'Escape') {{
+    if (activeHotbar !== null) setActiveHotbar(activeHotbar);
+    return;
+  }}
+}});
+
 grid = newGrid(SIZE);
 renderGrid();
-bindPalette();
+bindHotbar();
 bindEditor();
 </script>
 </body></html>"""
