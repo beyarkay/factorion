@@ -467,9 +467,17 @@ impl FactoryEntity for UndergroundBelt {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
-        // UG-up emits no edges from its own connections — its forward-
-        // edge to a TB is owned by the TB's backward scan, and there is
-        // no other valid downstream from a UG-up.
+        if self.misc == Misc::UndergroundUp {
+            // UG-up emits a forward edge ONLY for the PERPENDICULAR
+            // belt-like-dst case. Same-direction (parallel) forward is
+            // owned by the dst's backward scan (TB::connections and
+            // UG-down::connections both have one). Perpendicular
+            // forward, though, is nobody else's job — the receiving
+            // belt's backward scan only matches same-direction sources.
+            // We emit a side-load here (UG-up is a vertical exit, items
+            // pour out onto whichever side of the dst we sit on).
+            return ug_up_perpendicular_forward(pos, dir, world);
+        }
         if self.misc != Misc::UndergroundDown {
             return Vec::new();
         }
@@ -833,6 +841,50 @@ fn dest_has_other_source(
 }
 
 /// Choose the destination belt lane for an inserter drop:
+/// Forward emission for an UG-up tile facing `dir` at `pos`. Emits a
+/// side-load pair to the cell directly in front when that cell is a
+/// PERPENDICULAR belt-like (TB, UG-down, or UG-up) — same-direction
+/// (parallel) forwards are owned by the destination's own backward
+/// scan, opposing/non-belt forwards produce no edge.
+///
+/// Side-load shape: both UG-up port-nodes target the dst's <our_side>
+/// lane node, where <our_side> is the lane of the dst we physically
+/// sit on (computed via `dst_dir.side_of(self - dst)`). This matches
+/// the rule in `TB::connections` for perpendicular feeds onto UG.
+fn ug_up_perpendicular_forward(pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let (x, y) = pos;
+    let (dx, dy) = dir.delta();
+    let fx = x as i64 + dx;
+    let fy = y as i64 + dy;
+    if !world.in_bounds(fx, fy) {
+        return edges;
+    }
+    let fxu = fx as usize;
+    let fyu = fy as usize;
+    let dst_entity = match world.entity_at(fxu, fyu) {
+        Some(e) => e,
+        None => return edges,
+    };
+    if !matches!(dst_entity, Item::TransportBelt | Item::UndergroundBelt) {
+        return edges;
+    }
+    let dst_dir = world.direction_at(fxu, fyu);
+    if !dir.is_perpendicular(dst_dir) {
+        // Parallel forward → owned by dst's backward scan; opposing or
+        // Direction::None → no connection.
+        return edges;
+    }
+    let our_side = match dst_dir.side_of(x as i64 - fx, y as i64 - fy) {
+        Some(s) => s,
+        None => return edges,
+    };
+    let dst_lane = NodeId::lane(dst_entity, fxu, fyu, our_side);
+    edges.push((NodeId::port(Item::UndergroundBelt, x, y), dst_lane.clone()));
+    edges.push((NodeId::starboard(Item::UndergroundBelt, x, y), dst_lane));
+    edges
+}
+
 /// - **Perpendicular** drop (inserter direction ⊥ belt direction):
 ///   the inserter sits on one side of the belt and reaches OVER the
 ///   near lane to deliver onto the FAR lane.
@@ -1973,14 +2025,17 @@ mod tests {
 
     /// **TB ↔ UG pair coverage**: belt at centre, UG (down or up) at
     /// each adjacent position × every direction combo × both misc
-    /// states. UG itself has limited connection rules: UG-down forwards
-    /// ONLY to UG-up via tunnel (range 1..=5), UG-up emits no edges
-    /// from its own `connections()` (range is empty). All belt-side
-    /// edges come from `TransportBelt::connections`:
-    /// - belt forward = UG (down or up), not opposing → 2 edges.
-    /// - belt behind = UG-UP, same direction → 2 edges (UG-up is the
-    ///   only UG that counts as a backward beltish source; UG-down is
-    ///   excluded so its tunnel-bound flow isn't double-counted).
+    /// states. Edges between the pair come from three sources:
+    ///   1. `TB::connections` forward emit: belt forward = UG, not
+    ///      opposing → 2 edges (parallel: lane-preserving; perpendicular
+    ///      onto UG: side-load — both shapes emit 2 edges).
+    ///   2. `TB::connections` backward scan + `UG-down::connections`
+    ///      backward scan: belt behind = UG-up, same direction → 2
+    ///      edges. (UG-down behind is explicitly excluded.)
+    ///   3. `UG-up::connections` perpendicular forward emit: UG-up's
+    ///      forward = belt at perpendicular direction → 2 side-load
+    ///      edges. The same-direction case is already covered by the
+    ///      belt's own backward scan and dedups.
     #[test]
     fn test_belt_ug_pair_all_combinations() {
         let center = (2usize, 2usize);
@@ -1999,19 +2054,24 @@ mod tests {
                         let actual = count_edges_between(&g, center, other);
 
                         let b_dx = dir_belt.delta();
+                        let u_dx = dir_ug.delta();
                         let belt_forward_at_other = b_dx == offset;
                         let belt_behind_at_other = (-b_dx.0, -b_dx.1) == offset;
                         let opposing = dir_ug == dir_belt.opposite();
+                        // UG-up's forward is the belt iff belt is at
+                        // (UG_pos + dir_ug.delta()), i.e. offset (from
+                        // center to other) == -dir_ug.delta().
+                        let belt_at_ug_up_forward = (-u_dx.0, -u_dx.1) == offset;
 
-                        // Forward edges from belt to UG: count if belt
-                        // forward = UG and they don't oppose.
+                        // (1) Forward edges from belt to UG: belt
+                        // forward = UG and not opposing.
                         let belt_forward_edges = if belt_forward_at_other && !opposing {
                             2
                         } else {
                             0
                         };
-                        // Backward edges to belt from UG-up only: belt
-                        // behind = UG-up, same dir as belt.
+                        // (2) Backward edges to belt from UG-up,
+                        // same direction as belt.
                         let belt_backward_edges = if belt_behind_at_other
                             && misc == Misc::UndergroundUp
                             && dir_ug == dir_belt
@@ -2020,8 +2080,23 @@ mod tests {
                         } else {
                             0
                         };
+                        // (3) UG-up perpendicular forward emit: UG-up's
+                        // forward is the belt AND directions are
+                        // perpendicular. Same-direction parallel is
+                        // covered by (2) above and dedups, so we don't
+                        // double-count it here. Opposing produces no
+                        // edge from UG-up either.
+                        let ug_up_perp_forward_edges = if misc == Misc::UndergroundUp
+                            && belt_at_ug_up_forward
+                            && dir_ug.is_perpendicular(dir_belt)
+                        {
+                            2
+                        } else {
+                            0
+                        };
 
-                        let expected = belt_forward_edges + belt_backward_edges;
+                        let expected =
+                            belt_forward_edges + belt_backward_edges + ug_up_perp_forward_edges;
                         assert_eq!(
                             actual, expected,
                             "TB+UG: dir_belt={:?}, dir_ug={:?}, misc={:?}, offset={:?} — \
