@@ -141,3 +141,4 @@ invariant in the type instead, and delete the test.
 - Always run smoke tests before claiming work is done.
 - New code must be accompanied by end-to-end tests.
 - **Small, incremental commits.** Make each commit as small as possible while still being a logical, self-contained unit of change (e.g., "expand entity head" is one commit, "sample all lesson kinds" is another, "update tests for new return shape" is another). Do not bundle unrelated changes. Each commit should pass the pre-completion checklist on its own.
+- **If you find a bug, fix it.** Don't raise it to me to ask whether it should be fixed. If a behaviour is clearly wrong (semantically broken, contradicts the spec, or produces nonsensical output), fix it as part of the work in progress. Add a regression test. The exception is when the fix would meaningfully expand scope (e.g., requires new architecture or new entity types) — in that case flag it briefly, but for local correctness fixes, just do them.

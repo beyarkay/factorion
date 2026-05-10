@@ -226,7 +226,8 @@ impl FactoryEntity for TransportBelt {
 
                 if dst_is_belt && !dst_opposing {
                     if dir == dst_dir {
-                        // Parallel forward: lane-preserving.
+                        // Parallel forward: lane-preserving (the same
+                        // belt path continuing in a straight line).
                         push_lane_preserving(
                             &mut edges,
                             Item::TransportBelt,
@@ -234,16 +235,32 @@ impl FactoryEntity for TransportBelt {
                             dst_entity,
                             (dx_u, dy_u),
                         );
-                    } else if dest_has_other_source((dx_u, dy_u), dst_dir, (x, y), world) {
-                        // Perpendicular forward into a JUNCTION (the dst
-                        // already has another source). Side-load: route
-                        // BOTH our lanes onto whichever side of dst we
-                        // physically sit on.
-                        let our_side =
-                            match dst_dir.side_of(x as i64 - dx_u as i64, y as i64 - dy_u as i64) {
+                    } else {
+                        // Perpendicular forward. The destination's
+                        // structure determines whether this is a lane-
+                        // preserving belt curve or a side-load:
+                        //
+                        //   - TB dst, no other source on dst → lone
+                        //     curve. Items follow the bend on their
+                        //     respective lanes (Factorio's curve
+                        //     physics preserves the inside / outside
+                        //     lane partition).
+                        //   - TB dst with another source → T-junction
+                        //     side-load.
+                        //   - UG dst (down OR up) → ALWAYS side-load.
+                        //     A UG mouth is a vertical drop, not a
+                        //     smooth bend — items pour in from one
+                        //     side and pool onto that side's lane.
+                        let dst_is_ug = dst_entity == Item::UndergroundBelt;
+                        let must_side_load = dst_is_ug
+                            || dest_has_other_source((dx_u, dy_u), dst_dir, (x, y), world);
+                        if must_side_load {
+                            let our_side = match dst_dir
+                                .side_of(x as i64 - dx_u as i64, y as i64 - dy_u as i64)
+                            {
                                 Some(s) => s,
                                 // Geometry shouldn't fail for a perpendicular
-                                // forward neighbour — fall back to lane-
+                                // forward neighbour; fall back to lane-
                                 // preserving rather than guessing.
                                 None => {
                                     push_lane_preserving(
@@ -256,19 +273,18 @@ impl FactoryEntity for TransportBelt {
                                     return edges;
                                 }
                             };
-                        let dst_lane = NodeId::lane(dst_entity, dx_u, dy_u, our_side);
-                        edges.push((NodeId::port(Item::TransportBelt, x, y), dst_lane.clone()));
-                        edges.push((NodeId::starboard(Item::TransportBelt, x, y), dst_lane));
-                    } else {
-                        // Perpendicular forward, lone curve (no other
-                        // source on dst): lane-preserving.
-                        push_lane_preserving(
-                            &mut edges,
-                            Item::TransportBelt,
-                            (x, y),
-                            dst_entity,
-                            (dx_u, dy_u),
-                        );
+                            let dst_lane = NodeId::lane(dst_entity, dx_u, dy_u, our_side);
+                            edges.push((NodeId::port(Item::TransportBelt, x, y), dst_lane.clone()));
+                            edges.push((NodeId::starboard(Item::TransportBelt, x, y), dst_lane));
+                        } else {
+                            push_lane_preserving(
+                                &mut edges,
+                                Item::TransportBelt,
+                                (x, y),
+                                dst_entity,
+                                (dx_u, dy_u),
+                            );
+                        }
                     }
                 }
             }
@@ -461,6 +477,41 @@ impl FactoryEntity for UndergroundBelt {
         let mut edges = Vec::new();
         let (x, y) = pos;
         let (dx, dy) = dir.delta();
+
+        // Backward source scan, mirroring the one in TransportBelt::
+        // connections. If the cell directly behind us is a beltish
+        // entity (TB or UG-up) facing our direction, emit the lane-
+        // preserving pair from that source into us.
+        //
+        // This is necessary because UG-up's own connections returns
+        // nothing — without this scan, an UG-up directly behind a
+        // UG-down (e.g. `dud` chains) would be orphaned. TB sources
+        // are also handled by TB::connections's forward emit; the
+        // edges dedup in build_graph.
+        let src_x = x as i64 - dx;
+        let src_y = y as i64 - dy;
+        if world.in_bounds(src_x, src_y) {
+            let sx = src_x as usize;
+            let sy = src_y as usize;
+            if let Some(src_entity) = world.entity_at(sx, sy) {
+                let src_dir = world.direction_at(sx, sy);
+                let src_misc = world.misc_at(sx, sy);
+                let src_is_beltish =
+                    matches!(src_entity, Item::TransportBelt | Item::UndergroundBelt)
+                        && src_dir == dir
+                        && !(src_entity == Item::UndergroundBelt
+                            && src_misc == Misc::UndergroundDown);
+                if src_is_beltish {
+                    push_lane_preserving(
+                        &mut edges,
+                        src_entity,
+                        (sx, sy),
+                        Item::UndergroundBelt,
+                        (x, y),
+                    );
+                }
+            }
+        }
 
         // UG-down forward-feeds the NEAREST UG-up that:
         //   1. lies within 1..=5 cells along its facing direction,

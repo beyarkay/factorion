@@ -407,15 +407,19 @@ class TestUndergroundPatterns:
     @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
     def test_side_load_perpendicular_into_ug_down(self, rot, mirror):
         """East belts forward-feed a south-going UG-down (perpendicular).
-        UG-down tunnels south to UG-up, which feeds a south belt to the
-        sink. Lone curve into the UG-down (no other source) → lane-
-        preserving → 15.0 throughput.
+        Unlike a TB→TB lone curve which preserves lanes via Factorio's
+        bend physics, a UG mouth is a vertical drop — items pour in
+        from one side and pool onto that side's lane only. So the east
+        belt's BOTH lanes side-load onto the UG-down's stbd lane (since
+        the east belt sits on the south UG-down's stbd = west side).
+        The UG-down's port lane stays empty. Throughput = 7.5 (one lane
+        of the chain saturated).
 
         Diagram (canonical, before rotation/mirror):
               col 0  col 1  col 2
-          row 0:  S>     >>     d
+          row 0:  S>     >>     d   (south)
           row 1:                .
-          row 2:                u
+          row 2:                u   (south)
           row 3:                v
           row 4:                K
         """
@@ -442,21 +446,20 @@ class TestUndergroundPatterns:
         place_ug(2, 2, Direction.SOUTH, Misc.UNDERGROUND_UP)
 
         tp, _ = rs_throughput(world)
-        assert tp == pytest.approx(15.0, abs=1e-6), (
-            f"perpendicular feed into UG-down: expected 15.0, got {tp}"
+        assert tp == pytest.approx(7.5, abs=1e-6), (
+            f"perpendicular feed into UG-down (always side-load): "
+            f"expected 7.5, got {tp}"
         )
 
     @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
     def test_adjacent_ug_pairs_no_belt_between(self, rot, mirror):
         """`S d u d u K` — no TB between the first UG-up and the second
-        UG-down (they sit at adjacent tiles). The current implementation
-        does NOT wire UG-up directly to UG-down (only TB::connections
-        scans backward for UG-up sources, and UG-down has no backward
-        scan), so this layout breaks the chain and throughput = 0.
-
-        FLAGGED FOR USER: should UG-up forward-feed an adjacent UG-down?
-        Pinning the current behaviour here so the answer is explicit;
-        update the expected if/when we fix it.
+        UG-down (they sit at adjacent tiles). UG-up directly behind
+        UG-down forms a valid chain: UG-up exits, items go forward
+        onto the UG-down's mouth, which carries them through the next
+        tunnel. UG-down's connections() scans BACKWARD for a beltish
+        source (matching TB's backward scan) so the UG-up→UG-down edge
+        is wired. Saturated → 15.0.
         """
         size = 8
         layout = [
@@ -482,9 +485,8 @@ class TestUndergroundPatterns:
         place_ug(5, 0, Direction.EAST, Misc.UNDERGROUND_UP)
 
         tp, _ = rs_throughput(world)
-        # Current behaviour: UG-up → UG-down has no edge in the graph.
-        assert tp == pytest.approx(0.0, abs=1e-6), (
-            f"adjacent UG pairs (no TB between): current behaviour expects 0, got {tp}"
+        assert tp == pytest.approx(15.0, abs=1e-6), (
+            f"adjacent UG pairs (no TB between): expected 15.0, got {tp}"
         )
 
     @pytest.mark.parametrize("rot,mirror", SYMMETRY_VARIANTS, ids=SYMMETRY_IDS)
