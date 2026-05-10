@@ -363,16 +363,48 @@ impl FactoryEntity for AssemblingMachine {
                 let other_dir = world.direction_at(nx_u, ny_u);
                 let other_id = NodeId::single(other_entity, nx_u, ny_u);
 
-                let assembler_outputs_to_entity = (other_dir == Direction::North && ddy < 0)
-                    || (other_dir == Direction::South && ddy > 0)
-                    || (other_dir == Direction::West && ddx < 0)
-                    || (other_dir == Direction::East && ddx > 0);
+                // Only emit an edge when the inserter actually faces
+                // INTO or OUT OF the AM body. That requires the
+                // inserter direction to be along the perimeter axis
+                // (perpendicular to the AM edge it sits on). The 3×3
+                // body spans ddx/ddy ∈ 0..3, so the perimeter edges are:
+                //   - ddy == -1: north side
+                //   - ddy ==  3: south side
+                //   - ddx == -1: west side
+                //   - ddx ==  3: east side
+                // An inserter parallel to the perimeter edge (e.g. on
+                // the north side facing east) reaches into empty space,
+                // not the AM, and contributes no edge.
+                let on_north = ddy < 0;
+                let on_south = ddy >= 3;
+                let on_west = ddx < 0;
+                let on_east = ddx >= 3;
+
+                // Inserter "outputs to entity" means the AM is the SOURCE
+                // and the inserter's arm points AWAY from the AM body
+                // (toward where it places the items). E.g. an inserter
+                // on the north side (ddy<0) facing North reaches AWAY from
+                // the AM, so its pickup is the AM body — AM → inserter.
+                let assembler_outputs_to_entity = (other_dir == Direction::North && on_north)
+                    || (other_dir == Direction::South && on_south)
+                    || (other_dir == Direction::West && on_west)
+                    || (other_dir == Direction::East && on_east);
+
+                // Inserter "feeds the AM": its arm points INTO the AM body.
+                // E.g. on the north side facing South, drop target is the
+                // AM. Edge: inserter → AM.
+                let entity_feeds_assembler = (other_dir == Direction::South && on_north)
+                    || (other_dir == Direction::North && on_south)
+                    || (other_dir == Direction::East && on_west)
+                    || (other_dir == Direction::West && on_east);
 
                 if assembler_outputs_to_entity {
                     edges.push((self_id.clone(), other_id));
-                } else {
+                } else if entity_feeds_assembler {
                     edges.push((other_id, self_id.clone()));
                 }
+                // else: inserter faces parallel to the perimeter edge
+                // (e.g. north-side facing east) — no AM interaction.
             }
         }
 
@@ -419,26 +451,31 @@ impl FactoryEntity for UndergroundBelt {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
+        // UG-up emits no edges from its own connections — its forward-
+        // edge to a TB is owned by the TB's backward scan, and there is
+        // no other valid downstream from a UG-up.
+        if self.misc != Misc::UndergroundDown {
+            return Vec::new();
+        }
+
         let mut edges = Vec::new();
         let (x, y) = pos;
+        let (dx, dy) = dir.delta();
 
-        let max_delta = match self.misc {
-            Misc::UndergroundDown => 6usize,
-            Misc::UndergroundUp => 1,
-            _ => return edges,
-        };
-
-        for delta in 1..max_delta {
-            let (dst_x, dst_y) = match dir {
-                Direction::East => (x as i64 + delta as i64, y as i64),
-                Direction::West => (x as i64 - delta as i64, y as i64),
-                Direction::North => (x as i64, y as i64 - delta as i64),
-                Direction::South => (x as i64, y as i64 + delta as i64),
-                Direction::None => continue,
-            };
-
+        // UG-down forward-feeds the NEAREST UG-up that:
+        //   1. lies within 1..=5 cells along its facing direction,
+        //   2. is itself a UG-up (Misc::UndergroundUp),
+        //   3. faces the SAME direction as the UG-down.
+        // It must STOP at the first match — only one tunnel pair is
+        // formed. A UG-up at greater distance is part of someone else's
+        // tunnel and we must not double-emit. Likewise, an off-direction
+        // UG-up does not form a pair (matches Factorio: tunnel ends
+        // require matching direction).
+        for delta in 1..=5i64 {
+            let dst_x = x as i64 + delta * dx;
+            let dst_y = y as i64 + delta * dy;
             if !world.in_bounds(dst_x, dst_y) {
-                continue;
+                break;
             }
             let dst_xu = dst_x as usize;
             let dst_yu = dst_y as usize;
@@ -446,20 +483,18 @@ impl FactoryEntity for UndergroundBelt {
                 Some(e) => e,
                 None => continue,
             };
-
-            let going_underground =
-                dst_entity == Item::UndergroundBelt && self.misc == Misc::UndergroundDown;
-            let cxn_to_belt =
-                matches!(dst_entity, Item::TransportBelt) && self.misc == Misc::UndergroundUp;
-
-            if going_underground || cxn_to_belt {
+            if dst_entity == Item::UndergroundBelt
+                && world.misc_at(dst_xu, dst_yu) == Misc::UndergroundUp
+                && world.direction_at(dst_xu, dst_yu) == dir
+            {
                 push_lane_preserving(
                     &mut edges,
                     Item::UndergroundBelt,
                     (x, y),
-                    dst_entity,
+                    Item::UndergroundBelt,
                     (dst_xu, dst_yu),
                 );
+                break;
             }
         }
 
@@ -624,14 +659,15 @@ fn inserter_connections(
 /// 1. **Parallel-back**: a TB or UG-up at `dst - dst_dir.delta()` facing
 ///    the same direction as dst. UG-down does NOT count — it diverts
 ///    flow into its tunnel rather than pushing forward.
-/// 2. **Underground tunnel**: a UG-down within 1..=5 cells back facing
-///    the same direction as dst (its forward exit lands on dst).
-/// 3. **Perpendicular from another side**: a TB at the port-side or
-///    starboard-side neighbour of dst whose forward delta lands on dst.
-///    UG-down on the side cell counts too if its tunnel exits onto dst,
-///    but for simplicity we only treat plain TBs as side-source
-///    candidates here — that matches the side-loading cases the spec
-///    enumerates.
+/// 2. **Underground tunnel**: dst itself is a UG-up that's the exit of
+///    a same-direction UG-down within 1..=5 cells back, with no closer
+///    same-direction UG-up between them (which would be the actual
+///    tunnel exit instead). A regular TB cannot be a tunnel exit, so
+///    this case only applies when `dst` is a UG-up.
+/// 3. **Perpendicular from another side**: a TB or UG-up at the port-
+///    or starboard-side neighbour of dst whose forward delta lands on
+///    dst. UG-down on a side cell does NOT count — it can't forward-
+///    feed dst (its flow goes underground).
 ///
 /// `excluding` is skipped during all three checks so we don't count
 /// ourselves as our own "other source".
@@ -665,23 +701,44 @@ fn dest_has_other_source(
         }
     }
 
-    // 2. Underground tunnel: UG-down 1..=5 cells back facing dst_dir.
-    for k in 1..=5i64 {
-        let px = dst_pos.0 as i64 - k * dx;
-        let py = dst_pos.1 as i64 - k * dy;
-        if !world.in_bounds(px, py) {
-            break;
-        }
-        let p = (px as usize, py as usize);
-        if p == excluding {
-            continue;
-        }
-        if let Some(e) = world.entity_at(p.0, p.1) {
-            if e == Item::UndergroundBelt
-                && world.direction_at(p.0, p.1) == dst_dir
-                && world.misc_at(p.0, p.1) == Misc::UndergroundDown
-            {
-                return true;
+    // 2. Underground tunnel: dst must itself be a same-direction UG-up,
+    //    AND there must be a same-direction UG-down within 1..=5 cells
+    //    back AND no closer same-direction UG-up between them.
+    let dst_is_ug_up_same_dir = world
+        .entity_at(dst_pos.0, dst_pos.1)
+        .map(|e| {
+            e == Item::UndergroundBelt
+                && world.misc_at(dst_pos.0, dst_pos.1) == Misc::UndergroundUp
+                && world.direction_at(dst_pos.0, dst_pos.1) == dst_dir
+        })
+        .unwrap_or(false);
+    if dst_is_ug_up_same_dir {
+        for k in 1..=5i64 {
+            let px = dst_pos.0 as i64 - k * dx;
+            let py = dst_pos.1 as i64 - k * dy;
+            if !world.in_bounds(px, py) {
+                break;
+            }
+            let p = (px as usize, py as usize);
+            if p == excluding {
+                continue;
+            }
+            if let Some(e) = world.entity_at(p.0, p.1) {
+                if e != Item::UndergroundBelt {
+                    continue;
+                }
+                if world.direction_at(p.0, p.1) != dst_dir {
+                    continue;
+                }
+                let m = world.misc_at(p.0, p.1);
+                if m == Misc::UndergroundDown {
+                    return true;
+                }
+                if m == Misc::UndergroundUp {
+                    // A closer same-direction UG-up — dst is NOT this
+                    // tunnel's exit (the closer UG-up is). Stop here.
+                    break;
+                }
             }
         }
     }
@@ -2128,19 +2185,29 @@ mod tests {
                 let g = crate::graph::build_graph(&w);
                 let actual = count_edges_between(&g, ins_pos, am_anchor);
 
-                // Pre-existing AM behaviour: `AssemblingMachine::connections`
-                // scans its perimeter and emits ONE edge per inserter-like
-                // entity at a non-corner perimeter cell, regardless of
-                // whether the inserter actually faces into / out of the AM.
-                // The inserter's own connections may also emit a drop or
-                // pickup edge, but the direction always matches the AM-
-                // emitted edge (both routines use inserter direction to
-                // pick the edge orientation), so dedup keeps the count at 1.
+                // AM perimeter scan emits an edge ONLY when the inserter
+                // direction actually points into or out of the AM body
+                // (perpendicular to the perimeter edge it sits on). An
+                // inserter parallel to the perimeter (e.g. on the north
+                // side facing east) reaches into empty space, so no edge.
                 //
-                // So for any inserter on the AM perimeter (corners
-                // excluded by the perimeter scan), the expected edge
-                // count between inserter and AM is exactly 1.
-                let expected = 1;
+                // Determine which side of the AM the inserter is on,
+                // then check whether its direction is along that axis.
+                let ddx_to_anchor = ins_pos.0 as i64 - am_anchor.0 as i64;
+                let ddy_to_anchor = ins_pos.1 as i64 - am_anchor.1 as i64;
+                let on_north = ddy_to_anchor < 0;
+                let on_south = ddy_to_anchor > 2;
+                let on_west = ddx_to_anchor < 0;
+                let on_east = ddx_to_anchor > 2;
+
+                let along_axis = if on_north || on_south {
+                    matches!(dir_ins, Direction::North | Direction::South)
+                } else if on_east || on_west {
+                    matches!(dir_ins, Direction::East | Direction::West)
+                } else {
+                    false
+                };
+                let expected = if along_axis { 1 } else { 0 };
 
                 assert_eq!(
                     actual, expected,
@@ -2149,6 +2216,101 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Regression: a UG-down with TWO same-direction UG-ups in front
+    /// of it forms a tunnel pair with the NEAREST one only. The further
+    /// UG-up belongs to whatever else might use it (or to nothing) and
+    /// must NOT also be wired up.
+    #[test]
+    fn test_ug_down_picks_nearest_ug_up_only() {
+        let mut w = World::empty(8, 1);
+        w.place_underground(0, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(2, 0, Direction::East, Misc::UndergroundUp); // nearest
+        w.place_underground(5, 0, Direction::East, Misc::UndergroundUp); // further
+
+        let g = crate::graph::build_graph(&w);
+        // UG-down at (0,0) → 2 edges to UG-up at (2,0) (lane-preserving).
+        assert_eq!(count_edges_between(&g, (0, 0), (2, 0)), 2);
+        // No edges to the further UG-up.
+        assert_eq!(count_edges_between(&g, (0, 0), (5, 0)), 0);
+    }
+
+    /// Regression: a UG-down does NOT pair with a UG-up of mismatched
+    /// direction. The UG-up's tunnel exit only forms a pair when both
+    /// face the same way.
+    #[test]
+    fn test_ug_down_skips_mismatched_direction_ug_up() {
+        // UG-down East at (0,0). Two candidates ahead: UG-up North at
+        // (2,0) (mismatched) and UG-up East at (4,0) (matched).
+        let mut w = World::empty(8, 1);
+        w.place_underground(0, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(2, 0, Direction::North, Misc::UndergroundUp);
+        w.place_underground(4, 0, Direction::East, Misc::UndergroundUp);
+
+        let g = crate::graph::build_graph(&w);
+        // No edges to the mismatched (north-facing) UG-up.
+        assert_eq!(count_edges_between(&g, (0, 0), (2, 0)), 0);
+        // Edges to the matched (east-facing) UG-up — even though it's
+        // FURTHER, the mismatched one in between doesn't block the
+        // search since it can't form a pair.
+        assert_eq!(count_edges_between(&g, (0, 0), (4, 0)), 2);
+    }
+
+    /// Regression: an inserter on the AM perimeter facing PARALLEL to
+    /// the perimeter edge (so its arm doesn't reach into the AM body)
+    /// produces no edge with the AM. Previously the AM's perimeter scan
+    /// emitted an edge in this case anyway.
+    #[test]
+    fn test_inserter_parallel_to_am_perimeter_emits_no_edge() {
+        // AM at anchor (1,1). Inserter at (0,2) (west side, middle row)
+        // facing North or South — perpendicular to the west edge of the
+        // AM, so its arm sweeps along x=0 and never reaches the AM body.
+        for dir in [Direction::North, Direction::South] {
+            let mut w = World::empty(6, 6);
+            for dx in 0..3 {
+                for dy in 0..3 {
+                    w.place(
+                        1 + dx,
+                        1 + dy,
+                        Item::AssemblingMachine1,
+                        Direction::None,
+                        Some(Item::CopperCable),
+                    );
+                }
+            }
+            w.place(0, 2, Item::Inserter, dir, None);
+            let g = crate::graph::build_graph(&w);
+            assert_eq!(
+                count_edges_between(&g, (0, 2), (1, 1)),
+                0,
+                "Inserter on west AM perimeter facing {:?} should not connect",
+                dir
+            );
+        }
+    }
+
+    /// Regression: an inserter facing INTO the AM body (perpendicular
+    /// to the perimeter edge it sits on) emits exactly one edge.
+    #[test]
+    fn test_inserter_facing_into_am_emits_one_edge() {
+        // West-side inserter facing East → drops on AM body. Edge:
+        // inserter → AM.
+        let mut w = World::empty(6, 6);
+        for dx in 0..3 {
+            for dy in 0..3 {
+                w.place(
+                    1 + dx,
+                    1 + dy,
+                    Item::AssemblingMachine1,
+                    Direction::None,
+                    Some(Item::CopperCable),
+                );
+            }
+        }
+        w.place(0, 2, Item::Inserter, Direction::East, None);
+        let g = crate::graph::build_graph(&w);
+        assert_eq!(count_edges_between(&g, (0, 2), (1, 1)), 1);
     }
 
     /// **UG ↔ UG pair coverage**: an UG-down forward-feeds an UG-up at
@@ -2180,17 +2342,12 @@ mod tests {
                     let g = crate::graph::build_graph(&w);
                     let actual = count_edges_between(&g, down, up);
 
-                    // GROUND-TRUTH QUESTION: should UG-down forward-feed
-                    // an UG-up that faces a DIFFERENT direction? Real
-                    // Factorio requires matching directions to form a
-                    // tunnel pair, but the existing code (this PR did not
-                    // change this behaviour, and parity with Python is
-                    // preserved) emits the edge regardless of the UG-up's
-                    // direction — only the UG-down's direction determines
-                    // the search axis. Locking down the current behaviour
-                    // here so a later behaviour change is detected; the
-                    // direction-mismatch case is flagged in the docstring.
-                    let expected = 2;
+                    // UG-down forward-feeds the FIRST UG-up at any
+                    // distance 1..=5 along its facing direction, but
+                    // ONLY if the UG-up faces the same direction (it's
+                    // the matching tunnel exit). A mismatched-direction
+                    // UG-up does NOT form a pair.
+                    let expected = if dir_up == dir_down { 2 } else { 0 };
 
                     assert_eq!(
                         actual, expected,
