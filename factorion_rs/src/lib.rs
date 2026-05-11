@@ -119,7 +119,8 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 /// Return all crafting recipes as a Python dict.
 ///
 /// Shape: `{item_name: {"consumes": {item_name: rate, ...},
-///                      "produces": {item_name: rate, ...}}}`.
+///                      "produces": {item_name: rate, ...},
+///                      "crafting_time": seconds_per_craft}}`.
 ///
 /// This is the single source of truth for recipe data — Python builds its
 /// `recipes` dict from this at module load.
@@ -139,6 +140,7 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
         }
         entry.set_item("consumes", consumes)?;
         entry.set_item("produces", produces)?;
+        entry.set_item("crafting_time", recipe.crafting_time)?;
         outer.set_item(item.name(), entry)?;
     }
     Ok(outer.into())
