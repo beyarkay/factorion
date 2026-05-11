@@ -89,6 +89,14 @@ HOTBAR = [
     None,
     "empty",
 ]
+# Display labels for slots whose canonical entity name differs from how
+# they're shown to the user. `stack_inserter` / `bulk_inserter` are the
+# Python-facing names for `Item::Source` / `Item::Sink` (see
+# factorion_rs/src/types.rs); the UI says what they actually are.
+DISPLAY_NAME = {
+    "stack_inserter": "source",
+    "bulk_inserter": "sink",
+}
 DIRECTIONS = ["NONE", "NORTH", "EAST", "SOUTH", "WEST"]
 MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 
@@ -164,7 +172,10 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     except Exception as e:
         info = f"throughput failed: {e}"
 
-    edges = [list(e) for e in G.edges]
+    # Node names contain literal '\n' (e.g. "transport_belt\n@0,0"), so use
+    # repr() to make embedded newlines visible as \n in the edge list panel
+    # instead of breaking the line mid-name.
+    edges = [[repr(u), repr(v)] for u, v in G.edges]
     return {"png": png_b64, "info": info, "edges": edges}
 
 
@@ -196,12 +207,13 @@ def render_index(default_size: int) -> str:
                 f'<img draggable="false" src="{PALETTE_ICONS["empty"]}" alt="eraser">'
                 f'<div class="hb-name">eraser</div></div>'
             )
+        display = DISPLAY_NAME.get(name, name)
         return (
             f'<div class="hb-slot" data-slot="{idx}" data-entity="{name}" '
-            f'draggable="true" title="{name}">'
+            f'draggable="true" title="{display} ({name})">'
             f'<div class="hb-key">{key_label}</div>'
-            f'<img draggable="false" src="{PALETTE_ICONS[name]}" alt="{name}">'
-            f'<div class="hb-name">{name}</div></div>'
+            f'<img draggable="false" src="{PALETTE_ICONS[name]}" alt="{display}">'
+            f'<div class="hb-name">{display}</div></div>'
         )
 
     hotbar_html = "".join(_hotbar_slot(i, n) for i, n in enumerate(HOTBAR))
