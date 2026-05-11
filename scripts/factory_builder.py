@@ -250,7 +250,14 @@ def render_index(default_size: int) -> str:
   .hb-slot.empty-slot {{
     background: #f4f4f4; cursor: default; color: #bbb;
   }}
-  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.6em; }}
+  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.6em; min-width: 0; }}
+  .grid-graph-row {{
+    display: flex; gap: 1em; align-items: flex-start;
+    width: 100%; min-width: 0;
+  }}
+  .grid-graph-row > #grid-host {{ flex: 0 0 auto; }}
+  .graph-view {{ flex: 1 1 0; min-width: 0; }}
+  .graph-view h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
   .controls {{ display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }}
   .controls input[type=number] {{ width: 4em; }}
   table.grid {{ border-collapse: collapse; }}
@@ -312,12 +319,14 @@ def render_index(default_size: int) -> str:
       <button id="compute">Compute graph</button>
       <button id="export">copy state JSON</button>
     </div>
-    <div id="grid-host"></div>
-    <div>
-      <h3>Graph</h3>
-      <div class="info" id="info">(graph will appear after Compute graph)</div>
-      <img id="out-img" class="out-img" alt="" style="display:none">
-      <pre class="edges" id="edges" style="display:none"></pre>
+    <div class="grid-graph-row">
+      <div id="grid-host"></div>
+      <div class="graph-view">
+        <h3>Graph</h3>
+        <div class="info" id="info">(graph will appear after Compute graph)</div>
+        <img id="out-img" class="out-img" alt="" style="display:none">
+        <pre class="edges" id="edges" style="display:none"></pre>
+      </div>
     </div>
   </div>
 
