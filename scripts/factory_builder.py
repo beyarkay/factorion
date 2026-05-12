@@ -23,13 +23,16 @@ import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 
 matplotlib.use("Agg")
+import gymnasium as gym  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 import tyro  # noqa: E402
 
 os.environ.setdefault("WANDB_MODE", "disabled")
@@ -44,11 +47,13 @@ from factorion import (  # noqa: E402
     Footprint,
     Misc,
     ent_str2b64img,
+    entities,
     items,
     new_world,
     plot_flow_network,
     world2graph,
 )
+from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
 # Order shown in the palette and dropdowns.
@@ -101,6 +106,17 @@ class Args:
     """port for the local HTTP server"""
     size: int = 8
     """default grid size"""
+    checkpoint: Optional[str] = None
+    """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
+    the model's predicted next placement and exposes an Apply button."""
+    wandb_run: Optional[str] = None
+    """W&B run id (or full path 'entity/project/run_id'). The run's most
+    recent model-type artifact is downloaded to /tmp/factorion-checkpoints
+    and loaded. Mutually exclusive with --checkpoint."""
+    wandb_project: str = "factorion"
+    """W&B project to look in when --wandb-run is a bare id."""
+    wandb_entity: Optional[str] = None
+    """W&B entity (team or user). None = your default entity."""
 
 
 def build_world(grid: list[list[dict]]) -> torch.Tensor:
@@ -172,6 +188,256 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     return {"png": png_b64, "info": info, "edges": edges}
 
 
+# ── Model inference ──────────────────────────────────────────────────────────
+# AgentCNN init reads sizes from a gym env, so we keep one cached per grid
+# size — the user can resize the UI grid live and we rebuild lazily on
+# first request for that size. The state dict is loaded with strict=False
+# because the critic head's flat dim depends on W*H and we only use the
+# action heads for inference.
+
+_AGENT_DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)
+_AGENT_CACHE: dict[int, AgentCNN] = {}
+_CHECKPOINT_STATE: Optional[dict] = None
+_CHECKPOINT_PATH: Optional[str] = None
+# How the current checkpoint was loaded. Surfaced to the UI so it can
+# render meaningful info (e.g. wandb run id + link) instead of the
+# anonymous /tmp download path. Either {"kind": "local", "path": "..."}
+# or {"kind": "wandb", "run_id", "run_url", "run_name", "artifact"}.
+_CHECKPOINT_SOURCE: Optional[dict] = None
+
+# Reverse lookup: head index -> readable name. The entity head excludes the
+# last two catalog entries (source/sink) but its index space starts at 0 and
+# aligns with the first N-2 Item values, so entities[idx].name works as-is.
+_ENT_NAMES = {ent.value: ent.name for ent in entities.values()}
+_ITEM_NAMES = {it.value: it.name for it in items.values()}
+_DIR_NAMES = {d.value: d.name for d in Direction}
+_MISC_NAMES = {m.value: m.name for m in Misc}
+
+
+def _load_checkpoint(path: str) -> None:
+    """Load the checkpoint .pt and stash it. Clears the per-size agent
+    cache so subsequent /predict calls rebuild against the new
+    weights. Does NOT touch _CHECKPOINT_SOURCE — the caller knows the
+    provenance (local vs wandb) and sets it after this returns."""
+    global _CHECKPOINT_STATE, _CHECKPOINT_PATH
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    _CHECKPOINT_STATE = state
+    _CHECKPOINT_PATH = path
+    _AGENT_CACHE.clear()
+    chan1 = state["encoder.0.weight"].shape[0]
+    chan2 = state["encoder.2.weight"].shape[0]
+    chan3 = state["encoder.4.weight"].shape[0]
+    print(
+        f"Loaded checkpoint {path} "
+        f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
+    )
+
+
+def _model_info() -> dict:
+    """Snapshot of the currently-loaded model for the UI's status line.
+    Returns `loaded: False` when nothing is loaded yet, so the UI can
+    render "(none loaded)" without special-casing on the JS side."""
+    if _CHECKPOINT_STATE is None:
+        return {"loaded": False}
+    s = _CHECKPOINT_STATE
+    return {
+        "loaded": True,
+        "path": _CHECKPOINT_PATH,
+        "source": _CHECKPOINT_SOURCE,
+        "chan1": s["encoder.0.weight"].shape[0],
+        "chan2": s["encoder.2.weight"].shape[0],
+        "chan3": s["encoder.4.weight"].shape[0],
+        "device": str(_AGENT_DEVICE),
+    }
+
+
+def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> dict:
+    """Resolve `value` to a local .pt path based on `kind`, load it,
+    and return the new model info. Called by the /load_model POST
+    endpoint so the user can switch models without restarting the
+    server."""
+    global _CHECKPOINT_SOURCE
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("value cannot be empty")
+    if kind == "local":
+        if not Path(value).exists():
+            raise FileNotFoundError(f"checkpoint not found: {value}")
+        path = value
+        source = {"kind": "local", "path": value}
+    elif kind == "wandb":
+        path, source = _resolve_wandb_checkpoint(value, project, entity)
+    else:
+        raise ValueError(f"unknown kind: {kind!r} (expected 'local' or 'wandb')")
+    _load_checkpoint(path)
+    _CHECKPOINT_SOURCE = source
+    return _model_info()
+
+
+def _get_agent(size: int) -> AgentCNN:
+    if _CHECKPOINT_STATE is None:
+        raise RuntimeError("no checkpoint loaded — pass --checkpoint at launch")
+    if size in _AGENT_CACHE:
+        return _AGENT_CACHE[size]
+
+    chan1 = _CHECKPOINT_STATE["encoder.0.weight"].shape[0]
+    chan2 = _CHECKPOINT_STATE["encoder.2.weight"].shape[0]
+    chan3 = _CHECKPOINT_STATE["encoder.4.weight"].shape[0]
+
+    env_id = "factorion/FactorioEnv-v0-fb"
+    if env_id not in gym.registry:
+        gym.register(id=env_id, entry_point=FactorioEnv)
+    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
+    try:
+        agent = AgentCNN(envs, chan1=chan1, chan2=chan2, chan3=chan3)
+    finally:
+        envs.close()
+    # critic_head's flat dim depends on W*H, so its saved weights are
+    # the wrong shape whenever the UI grid size != the training size.
+    # Drop those entries before loading; we never call the critic during
+    # inference. strict=False would *not* save us here — it ignores
+    # missing/unexpected keys but still raises on shape mismatches.
+    filtered = {
+        k: v for k, v in _CHECKPOINT_STATE.items()
+        if not k.startswith("critic_head.")
+    }
+    missing, unexpected = agent.load_state_dict(filtered, strict=False)
+    ignorable = {"critic_head.1.weight", "critic_head.1.bias"}
+    real_missing = [k for k in missing if k not in ignorable]
+    real_unexpected = [k for k in unexpected if k not in ignorable]
+    if real_missing or real_unexpected:
+        print(
+            f"[warn] state_dict mismatch at size={size}: "
+            f"missing={real_missing} unexpected={real_unexpected}"
+        )
+    agent.to(_AGENT_DEVICE).eval()
+    _AGENT_CACHE[size] = agent
+    return agent
+
+
+def _top_p_named(probs: torch.Tensor, names: dict, top_p: float = 0.95) -> tuple[list[dict], float]:
+    """Sort `probs` (1-D) by descending probability, take entries until
+    cumulative mass >= top_p, return them as [{name, p}, ...] plus the
+    remaining "rest" mass. Useful for showing the model's distribution
+    over discrete choices (entities, directions, items, misc)."""
+    probs_1d = probs.flatten()
+    sorted_p, sorted_i = torch.sort(probs_1d, descending=True)
+    top: list[dict] = []
+    cum = 0.0
+    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
+        top.append({"name": names.get(i, str(i)), "p": float(p)})
+        cum += float(p)
+        if cum >= top_p:
+            break
+    return top, max(0.0, 1.0 - cum)
+
+
+def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[dict], float]:
+    """Same as _top_p_named but emits (x, y, p) entries for the tile
+    head, since each entry is a 2-D coordinate rather than a named
+    category."""
+    sorted_p, sorted_i = torch.sort(probs.flatten(), descending=True)
+    top: list[dict] = []
+    cum = 0.0
+    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
+        top.append({"x": int(i) // H, "y": int(i) % H, "p": float(p)})
+        cum += float(p)
+        if cum >= top_p:
+            break
+    return top, max(0.0, 1.0 - cum)
+
+
+CANDIDATE_TILE_THRESHOLD = 0.01
+"""Minimum p(tile) for a tile to appear as a ghost candidate in the UI.
+Tiles with `p(tile) < CANDIDATE_TILE_THRESHOLD` are dropped — they're
+too unlikely to be worth visualising, and the long tail is dominated by
+the rest mass anyway."""
+
+
+def _predict(grid: list[list[dict]]) -> dict:
+    """Run the model on `grid` and return:
+      * the argmax placement (drives the Apply button + tile border),
+      * per-head top-p=0.95 distributions conditioned on the argmax
+        tile (drives the side panel),
+      * a candidates list — every tile with p(tile) > threshold, paired
+        with its conditional argmax (entity / dir / item / misc) so the
+        UI can render ghost overlays across the whole grid.
+
+    The four per-tile heads (ent/dir/item/misc) are linear projections
+    of the encoder feature at the chosen tile, so computing them for
+    every tile is one batched matmul each — cheap."""
+    world_WHC = build_world(grid)
+    size = world_WHC.shape[0]
+    agent = _get_agent(size)
+
+    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    W = obs_CWH.shape[2]
+    H = obs_CWH.shape[3]
+
+    with torch.no_grad():
+        encoded_BCWH = agent.encoder(obs_CWH)
+        tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
+        tile_probs = F.softmax(tile_logits, dim=-1)[0]
+        tile_top, tile_rest = _tile_top_p(tile_probs, H)
+
+        # Argmax — used both as the "Apply" target and to condition the
+        # side-panel per-head distributions on the same tile the top
+        # distribution favours.
+        tile_idx = int(tile_probs.argmax().item())
+        x, y = tile_idx // H, tile_idx % H
+
+        feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
+        ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
+        dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
+        item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
+        misc_top, misc_rest = _top_p_named(F.softmax(agent.misc_head(feats), dim=-1)[0], _MISC_NAMES)
+
+        # Per-tile argmax for ent/dir/item/misc — one matmul per head
+        # against the whole spatial map, reshaped to (W*H, chan3).
+        feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
+        ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
+        dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
+        item_pick = agent.item_head(feats_all).argmax(dim=-1)
+        misc_pick = agent.misc_head(feats_all).argmax(dim=-1)
+
+        candidates: list[dict] = []
+        mask = (tile_probs > CANDIDATE_TILE_THRESHOLD).nonzero(as_tuple=False).squeeze(-1).tolist()
+        for t in mask:
+            candidates.append({
+                "x": t // H,
+                "y": t % H,
+                "p_tile": float(tile_probs[t].item()),
+                "entity": _ENT_NAMES.get(int(ent_pick[t].item()), str(int(ent_pick[t].item()))),
+                "direction": _DIR_NAMES.get(int(dir_pick[t].item()), str(int(dir_pick[t].item()))),
+                "item": _ITEM_NAMES.get(int(item_pick[t].item()), str(int(item_pick[t].item()))),
+                "misc": _MISC_NAMES.get(int(misc_pick[t].item()), str(int(misc_pick[t].item()))),
+            })
+
+    return {
+        "x": x,
+        "y": y,
+        "entity": ent_top[0]["name"],
+        "direction": dir_top[0]["name"],
+        "item": item_top[0]["name"],
+        "misc": misc_top[0]["name"],
+        "tile_top": tile_top,
+        "tile_rest": tile_rest,
+        "entity_top": ent_top,
+        "entity_rest": ent_rest,
+        "direction_top": dir_top,
+        "direction_rest": dir_rest,
+        "item_top": item_top,
+        "item_rest": item_rest,
+        "misc_top": misc_top,
+        "misc_rest": misc_rest,
+        "candidates": candidates,
+    }
+
+
 # Cache palette icons so the page payload stays small per cell.
 def _icon_b64(name: str) -> str:
     try:
@@ -219,6 +485,39 @@ def render_index(default_size: int) -> str:
     )
     misc_options = "".join(
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
+    )
+
+    # Always rendered now — the section exposes a load form so the user
+    # can switch models at runtime. When no model is loaded the
+    # prediction subsection just shows "(no model loaded)".
+    model_panel_html = (
+        '<div class="model-panel">'
+        '<h3 style="margin-top:0.8em;">'
+        '<span class="swatch"></span>Model'
+        '</h3>'
+        '<div class="model-current help" id="model-current">checking…</div>'
+        '<label>source'
+        '  <select id="model-kind">'
+        '    <option value="local">local path</option>'
+        '    <option value="wandb">wandb run id</option>'
+        '  </select>'
+        '</label>'
+        '<label>value'
+        '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
+        '</label>'
+        '<div class="model-buttons">'
+        '<button id="model-load">Load model</button>'
+        '</div>'
+        '<div id="model-load-status" class="help"></div>'
+        '<h3 style="margin-top:0.8em;">Prediction</h3>'
+        '<div id="model-info" class="help">'
+        '(prediction will appear after the next change)</div>'
+        '<pre id="model-action"></pre>'
+        '<div class="model-buttons">'
+        '<button id="model-apply">Apply prediction</button>'
+        '<button id="model-refresh">Refresh</button>'
+        '</div>'
+        '</div>'
     )
 
     return f"""<!doctype html>
@@ -271,6 +570,9 @@ def render_index(default_size: int) -> str:
     position: relative; background: #fff;
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
+  table.grid td.predicted {{
+    box-shadow: inset 0 0 0 3px #0d47a1;
+  }}
   table.grid td.unavailable {{
     background:
       repeating-linear-gradient(45deg,
@@ -292,6 +594,12 @@ def render_index(default_size: int) -> str:
     font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
   }}
   .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
+  /* "ghost" = a predicted placement drawn on top of an empty cell. One
+     ghost per candidate tile (all tiles with p(tile) > threshold).
+     Opacity is set inline per element so it can encode the model's
+     confidence — solid for high p(tile), faded for marginal ones. The
+     argmax tile additionally gets the dark-blue inset border via
+     td.predicted so the top pick stays unambiguous. */
   .editor label {{ display: block; font-size: 0.8em; margin-top: 0.4em; }}
   .editor select, .editor button {{ width: 100%; padding: 0.2em; }}
   .out-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }}
@@ -300,6 +608,23 @@ def render_index(default_size: int) -> str:
   pre.edges {{
     font-size: 0.75em; max-height: 240px; overflow: auto;
     background: #222; color: #cfc; padding: 0.5em; border-radius: 4px;
+  }}
+  .model-panel {{ margin-top: 0.8em; }}
+  .model-panel pre {{
+    font-size: 0.78em; background: #f4f4f4; padding: 0.5em;
+    border-radius: 4px; margin: 0.3em 0;
+    /* `pre` (not pre-wrap) + overflow-x:auto so long top-p lines
+       scroll horizontally instead of wrapping mid-token and breaking
+       the column alignment. */
+    white-space: pre; overflow-x: auto;
+  }}
+  .model-panel .model-buttons {{
+    display: flex; gap: 0.4em; flex-wrap: wrap; margin-top: 0.3em;
+  }}
+  .model-panel .swatch {{
+    display: inline-block; width: 0.8em; height: 0.8em; border: 1px solid #082466;
+    box-shadow: inset 0 0 0 2px #0d47a1;
+    vertical-align: middle; margin-right: 0.25em;
   }}
 </style></head><body>
 
@@ -357,6 +682,8 @@ def render_index(default_size: int) -> str:
       </select>
     </label>
     <button id="clear-cell" style="margin-top:0.6em;">clear cell</button>
+
+    {model_panel_html}
   </div>
 
 </div>
@@ -368,11 +695,16 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
+// `modelLoaded` is set by refreshModelInfo() at startup and after each
+// successful /load_model call. Prediction calls are gated on it so we
+// don't pester the server with /predict when no checkpoint is loaded.
+let modelLoaded = false;
 
 let SIZE = {default_size};
 let grid = [];           // grid[y][x] = cell dict
 let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
+let prediction = null;   // last /predict response (or null)
 
 function emptyCell() {{
   return {{
@@ -397,6 +729,12 @@ function iconFor(name) {{
 
 function renderGrid() {{
   const host = document.getElementById('grid-host');
+  // Build (x,y) -> candidate map once per render so the per-cell
+  // ghost lookup is O(1).
+  const candByXY = {{}};
+  if (prediction && prediction.candidates) {{
+    for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
+  }}
   const tbl = document.createElement('table');
   tbl.className = 'grid';
   for (let y = 0; y < SIZE; y++) {{
@@ -407,6 +745,7 @@ function renderGrid() {{
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
+      if (prediction && prediction.x === x && prediction.y === y) td.classList.add('predicted');
 
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
@@ -419,6 +758,27 @@ function renderGrid() {{
       if (arrow) html += `<div class="arrow">${{arrow}}</div>`;
       const m = MISC_GLYPH[c.misc] || '';
       if (m) html += `<div class="misc">${{m}}</div>`;
+      // Ghost overlay: render every candidate tile (all tiles where
+      // p(tile) > threshold) on top of empty cells, with opacity
+      // proportional to the tile probability so the user can see what
+      // the model is *considering*, not just the top pick. The argmax
+      // tile additionally gets the dark-blue inset border (above).
+      // Skip non-empty cells to keep the visualisation legible.
+      const cand = candByXY[x + ',' + y];
+      if (cand && c.entity === 'empty') {{
+        // Map p in [0.05, 1.0] to opacity in [0.18, 0.95] so the
+        // weakest visible ghost still has some presence and the
+        // strongest reads as near-solid.
+        const op = (0.18 + 0.77 * cand.p_tile).toFixed(2);
+        if (cand.entity && cand.entity !== 'empty')
+          html += `<img class="ent ghost" style="opacity:${{op}}" src="${{iconFor(cand.entity)}}">`;
+        if (cand.item && cand.item !== 'empty')
+          html += `<img class="itm ghost" style="opacity:${{op}}" src="${{iconFor(cand.item)}}">`;
+        const garrow = DIR_ARROW[cand.direction] || '';
+        if (garrow) html += `<div class="arrow ghost" style="opacity:${{op}}">${{garrow}}</div>`;
+        const gmisc = MISC_GLYPH[cand.misc] || '';
+        if (gmisc) html += `<div class="misc ghost" style="opacity:${{op}}">${{gmisc}}</div>`;
+      }}
       inner.innerHTML = html;
       td.appendChild(inner);
 
@@ -546,7 +906,95 @@ function clearSelected() {{
 let _computeTimer = null;
 function scheduleCompute() {{
   clearTimeout(_computeTimer);
-  _computeTimer = setTimeout(computeGraph, 200);
+  _computeTimer = setTimeout(() => {{
+    computeGraph();
+    computePrediction();
+  }}, 200);
+}}
+
+// Format a probability as a short percent string. Matches the user's
+// preferred ".3%" style (no leading zero for sub-1% values) so the
+// numbers stay compact even when the top-p tail gets long.
+function fmtPct(p) {{
+  const v = p * 100;
+  if (v >= 10) return v.toFixed(1) + '%';
+  if (v >= 1)  return v.toFixed(1) + '%';
+  return v.toFixed(1).replace(/^0/, '') + '%';
+}}
+
+function fmtTopNamed(top, rest) {{
+  const parts = top.map(t => t.name + ' (' + fmtPct(t.p) + ')');
+  parts.push('rest (' + fmtPct(rest) + ')');
+  return parts.join(', ');
+}}
+
+function fmtTopTile(top, rest) {{
+  const parts = top.map(t => '(' + t.x + ',' + t.y + ') (' + fmtPct(t.p) + ')');
+  parts.push('rest (' + fmtPct(rest) + ')');
+  return parts.join(', ');
+}}
+
+async function computePrediction() {{
+  if (!modelLoaded) {{
+    prediction = null;
+    const info = document.getElementById('model-info');
+    if (info) info.textContent = '(no model loaded)';
+    const out = document.getElementById('model-action');
+    if (out) out.textContent = '';
+    renderGrid();
+    return;
+  }}
+  const info = document.getElementById('model-info');
+  const out = document.getElementById('model-action');
+  if (info) info.textContent = 'predicting…';
+  try {{
+    const resp = await fetch('/predict', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ grid }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{
+      if (info) info.textContent = 'error: ' + data.error;
+      if (out) out.textContent = '';
+      prediction = null;
+      renderGrid();
+      return;
+    }}
+    prediction = data;
+    if (info) {{
+      info.textContent =
+        'predicted next placement at (' + data.x + ', ' + data.y + ')';
+    }}
+    if (out) {{
+      // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
+      // The <pre> uses white-space:pre + overflow-x:auto so long top-p
+      // lines scroll horizontally instead of wrapping.
+      const lines = [
+        '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
+        '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
+        '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),
+        '  item:      ' + fmtTopNamed(data.item_top, data.item_rest),
+        '  misc:      ' + fmtTopNamed(data.misc_top, data.misc_rest),
+      ];
+      out.textContent = lines.join('\\n');
+    }}
+    renderGrid();
+  }} catch (e) {{
+    if (info) info.textContent = 'predict failed: ' + e;
+  }}
+}}
+
+function applyPrediction() {{
+  if (!prediction) return;
+  const {{ x, y, entity, direction, item, misc }} = prediction;
+  grid[y][x] = {{
+    entity, direction, item, misc, footprint: grid[y][x].footprint,
+  }};
+  selected = {{ x, y }};
+  prediction = null;
+  renderGrid(); syncEditor();
+  scheduleCompute();
 }}
 
 async function computeGraph() {{
@@ -580,7 +1028,90 @@ async function computeGraph() {{
   }}
 }}
 
-document.getElementById('compute').addEventListener('click', computeGraph);
+document.getElementById('compute').addEventListener('click', () => {{
+  computeGraph();
+  computePrediction();
+}});
+document.getElementById('model-apply').addEventListener('click', applyPrediction);
+document.getElementById('model-refresh').addEventListener('click', computePrediction);
+document.getElementById('model-load').addEventListener('click', loadModel);
+
+// Minimal HTML escape so we can safely inject artifact names + run
+// URLs into innerHTML. Strings come from the wandb API, which is
+// reasonably trusted, but escaping is cheap insurance against weird
+// characters in run names.
+function escHtml(s) {{
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}}
+
+async function refreshModelInfo() {{
+  const cur = document.getElementById('model-current');
+  try {{
+    const resp = await fetch('/model_info');
+    const data = await resp.json();
+    if (data.loaded) {{
+      modelLoaded = true;
+      const shape = 'c1=' + data.chan1 + ' c2=' + data.chan2 +
+        ' c3=' + data.chan3 + ' ' + data.device;
+      const src = data.source || {{}};
+      if (src.kind === 'wandb') {{
+        // Show the artifact name (the *meaningful* identifier the user
+        // sees in the W&B UI) plus a clickable link to the run, instead
+        // of the anonymous /tmp/factorion-checkpoints download path.
+        const linkText = src.run_name ? src.run_name : src.run_id;
+        cur.innerHTML = 'loaded: ' + escHtml(src.artifact) +
+          ' from <a href="' + escHtml(src.run_url) + '" target="_blank">' +
+          escHtml(linkText) + '</a>' +
+          '  (' + escHtml(shape) + ')';
+      }} else {{
+        const path = (src && src.path) || data.path;
+        cur.textContent = 'loaded: ' + path + '  (' + shape + ')';
+      }}
+    }} else {{
+      modelLoaded = false;
+      cur.textContent = '(none loaded — paste a path or wandb run id below)';
+    }}
+  }} catch (e) {{
+    cur.textContent = 'model_info failed: ' + e;
+  }}
+}}
+
+async function loadModel() {{
+  const kind = document.getElementById('model-kind').value;
+  const value = document.getElementById('model-value').value;
+  const status = document.getElementById('model-load-status');
+  const btn = document.getElementById('model-load');
+  // wandb downloads can take seconds — disable + show a status so the
+  // user doesn't double-click and queue a second download.
+  btn.disabled = true;
+  status.textContent = 'loading…';
+  try {{
+    const resp = await fetch('/load_model', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ kind, value }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{
+      status.textContent = 'error: ' + data.error;
+      return;
+    }}
+    status.textContent = 'loaded ✓';
+    await refreshModelInfo();
+    // Recompute prediction with the new weights so the UI updates
+    // immediately instead of waiting for the next grid edit.
+    computePrediction();
+  }} catch (e) {{
+    status.textContent = 'load failed: ' + e;
+  }} finally {{
+    btn.disabled = false;
+  }}
+}}
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
   if (!Number.isFinite(n) || n < 2 || n > 20) return;
@@ -624,6 +1155,7 @@ grid = newGrid(SIZE);
 renderGrid();
 bindHotbar();
 bindEditor();
+refreshModelInfo();
 </script>
 </body></html>"""
 
@@ -634,6 +1166,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002
         sys.stderr.write("[%s] %s\n" % (self.address_string(), format % args))
 
+    def _send_json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path.startswith("/?"):
             body = render_index(self.server.default_size).encode()
@@ -643,31 +1183,117 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/model_info":
+            self._send_json(_model_info())
+            return
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/graph":
+        if self.path not in ("/graph", "/predict", "/load_model"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length).decode("utf-8")
         try:
             payload = json.loads(raw)
-            result = render_graph_png(payload["grid"])
+            if self.path == "/graph":
+                result = render_graph_png(payload["grid"])
+            elif self.path == "/predict":
+                result = _predict(payload["grid"])
+            else:
+                result = _swap_model(
+                    kind=payload.get("kind", ""),
+                    value=payload.get("value", ""),
+                    project=self.server.wandb_project,
+                    entity=self.server.wandb_entity,
+                )
         except Exception as e:
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
-        body = json.dumps(result).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_json(result)
+
+
+def _resolve_wandb_checkpoint(
+    run_spec: str, project: str, entity: Optional[str]
+) -> tuple[str, dict]:
+    """Resolve a W&B run id to (local_path, source_metadata). Downloads
+    the run's most recent model-type artifact to /tmp/factorion-checkpoints.
+
+    The metadata dict (run_id, run_url, run_name, artifact name) is
+    propagated up to _CHECKPOINT_SOURCE so the UI can show
+    "loaded: <artifact> (wandb)" with a clickable link to the run
+    instead of the anonymous tmp download path.
+
+    `run_spec` is either a bare id ("abc123") or a full path
+    ("user/factorion/abc123"). Sets WANDB_MODE back to online for the
+    duration of the call — the module's earlier setdefault to disabled
+    is for the local HTTP server, not for fetching."""
+    import wandb
+
+    prev_mode = os.environ.pop("WANDB_MODE", None)
+    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
+    try:
+        api = wandb.Api()
+        if run_spec.count("/") == 2:
+            run = api.run(run_spec)
+        else:
+            ent = entity or api.default_entity
+            run = api.run(f"{ent}/{project}/{run_spec}")
+        dest = Path("/tmp/factorion-checkpoints") / run.id
+        dest.mkdir(parents=True, exist_ok=True)
+
+        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        if not model_arts:
+            raise RuntimeError(
+                f"run {run.id} has no artifacts of type=model — "
+                f"was it trained with --track and the artifact-upload code?"
+            )
+        # Newest first. Each `download()` returns the local dir holding
+        # the artifact's files.
+        art = max(model_arts, key=lambda a: a.created_at)
+        local_dir = Path(art.download(root=str(dest / art.name.replace(":", "_"))))
+        pt_files = sorted(local_dir.glob("*.pt"))
+        if not pt_files:
+            raise RuntimeError(f"artifact {art.name} contains no .pt file")
+        path = str(pt_files[0])
+        print(f"Resolved {run_spec} -> {art.name} -> {path}")
+        source = {
+            "kind": "wandb",
+            "run_id": run.id,
+            "run_url": run.url,
+            "run_name": run.name,
+            "artifact": art.name,
+        }
+        return path, source
+    finally:
+        if prev_mode is not None:
+            os.environ["WANDB_MODE"] = prev_mode
+        if prev_disabled is not None:
+            os.environ["WANDB_DISABLED"] = prev_disabled
 
 
 def main(args: Args) -> None:
+    global _CHECKPOINT_SOURCE
+    if args.checkpoint and args.wandb_run:
+        raise SystemExit("pass either --checkpoint or --wandb-run, not both")
+    if args.wandb_run:
+        ckpt_path, source = _resolve_wandb_checkpoint(
+            args.wandb_run, args.wandb_project, args.wandb_entity,
+        )
+        _load_checkpoint(ckpt_path)
+        _CHECKPOINT_SOURCE = source
+    elif args.checkpoint:
+        _load_checkpoint(args.checkpoint)
+        _CHECKPOINT_SOURCE = {"kind": "local", "path": args.checkpoint}
+    else:
+        print("(no checkpoint — model prediction panel disabled)")
+
     httpd = HTTPServer(("127.0.0.1", args.port), Handler)
     httpd.default_size = args.size
+    # Stashed on the server so the /load_model endpoint can use the same
+    # defaults as the CLI when resolving wandb run ids.
+    httpd.wandb_project = args.wandb_project
+    httpd.wandb_entity = args.wandb_entity
     print(f"Serving factory builder on http://127.0.0.1:{args.port}")
     print("Press Ctrl-C to stop.")
     try:

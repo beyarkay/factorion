@@ -15,7 +15,15 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import Channel, Direction, LessonKind, generate_lesson, str2ent
-from sft import extract_expert_actions, generate_dataset, train_sft, SFTArgs
+from sft import (
+    SFTArgs,
+    _artifact_name,
+    _humanize_count,
+    _humanize_lr,
+    extract_expert_actions,
+    generate_dataset,
+    train_sft,
+)
 from ppo import FactorioEnv, AgentCNN, make_env
 
 
@@ -466,3 +474,57 @@ class TestTrainValSeedSplit:
         )
         assert len(val_seeds) >= 1
         assert len(train_seeds) >= 1
+
+
+class TestArtifactNameHelpers:
+    """The W&B artifact name encodes hyperparams so runs with identical
+    configs collapse into versions of one artifact. These tests pin the
+    format so accidentally renaming a hyperparam doesn't silently
+    fragment the artifact namespace."""
+
+    @pytest.mark.parametrize("n,expected", [
+        (500, "500"),
+        (1_000, "1k"),
+        (50_000, "50k"),
+        (200_000, "200k"),
+        (1_000_000, "1m"),
+        (2_500_000, "2.5m"),
+    ])
+    def test_humanize_count(self, n, expected):
+        assert _humanize_count(n) == expected
+
+    @pytest.mark.parametrize("lr,expected", [
+        (1e-3, "1e-3"),
+        (3e-4, "3e-4"),
+        (1e-4, "1e-4"),
+        (5e-4, "5e-4"),
+    ])
+    def test_humanize_lr_round(self, lr, expected):
+        """Mantissas that are clean integers don't get a decimal point."""
+        assert _humanize_lr(lr) == expected
+
+    def test_humanize_lr_zero(self):
+        assert _humanize_lr(0) == "0"
+
+    def test_artifact_name_default(self):
+        assert _artifact_name(SFTArgs()) == "sft-s8-n50k-e30-bs512-lr1e-3-c48"
+
+    def test_artifact_name_larger_run(self):
+        args = SFTArgs(
+            size=16, num_samples=200_000, epochs=50, batch_size=1024, lr=3e-4,
+        )
+        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48"
+
+    def test_artifact_name_asymmetric_channels(self):
+        """When chan1/2/3 differ, the suffix expands rather than collapsing
+        to a single c{N} — so a c32-64-64 run can't accidentally be filed
+        under the same artifact as a c48 run."""
+        args = SFTArgs(chan1=32, chan2=64, chan3=64)
+        assert _artifact_name(args) == "sft-s8-n50k-e30-bs512-lr1e-3-c32-64-64"
+
+    def test_artifact_name_stable_across_runs(self):
+        """Two SFTArgs with the same hyperparams must produce the same
+        artifact name (otherwise we lose version collapsing)."""
+        a = SFTArgs(seed=1)
+        b = SFTArgs(seed=999)  # seed isn't part of the artifact name
+        assert _artifact_name(a) == _artifact_name(b)
