@@ -12,32 +12,26 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import factorion  # noqa: E402
 import factorion_rs  # noqa: E402
-
-# ── Extract marimo cell objects ──────────────────────────────────────────────
-
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-Channel = _objs["Channel"]
-Direction = _objs["Direction"]
-DIR_TO_DELTA = _objs["DIR_TO_DELTA"]
-Footprint = _objs["Footprint"]
-Misc = _objs["Misc"]
-LessonKind = _objs["LessonKind"]
-entities = _objs["entities"]
-items = _objs["items"]
-recipes = _objs["recipes"]
-
-find_belt_path = _fns["find_belt_path"]
-find_belt_paths_with_source_sink_orient = _fns["find_belt_paths_with_source_sink_orient"]
-generate_lesson = _fns["generate_lesson"]
-str2ent = _fns["str2ent"]
-str2item = _fns["str2item"]
-world2graph = _fns["world2graph"]
-world2html = _fns["world2html"]
-calc_throughput_py = _fns["calc_throughput"]
+from factorion import (  # noqa: E402
+    DIR_TO_DELTA,
+    Channel,
+    Direction,
+    Footprint,
+    LessonKind,
+    Misc,
+    calc_throughput as calc_throughput_py,
+    entities,
+    find_belt_path,
+    find_belt_paths_with_source_sink_orient,
+    generate_lesson,
+    items,
+    recipes,
+    str2ent,
+    str2item,
+    world2graph,
+    world2html,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

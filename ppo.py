@@ -21,11 +21,20 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-import sys
-sys.path.insert(1, '/Users/brk/projects/factorion') # NOTE: must be before import factorion
-import factorion
-from PIL import Image, ImageDraw, ImageFont
 import factorion_rs
+from factorion import (
+    Channel,
+    Direction,
+    Footprint,
+    LessonKind,
+    Misc,
+    entities,
+    generate_lesson,
+    items,
+    str2ent,
+    str2item,
+)
+from PIL import Image, ImageDraw, ImageFont
 
 # episodic_returns = deque(maxlen=100)
 moving_average_length = 500
@@ -239,39 +248,29 @@ class FactorioEnv(gym.Env):
         print(f"FactorioEnv({size=}, {max_steps=}, {render_mode=}, {idx=})")
         self.max_steps = max_steps
 
-        # Import the functions from factorion
-        outputs, objs = factorion.datatypes.run()
-        for obj_name, obj in objs.items():
-            setattr(self, obj_name, obj)
-        outputs, functions = factorion.functions.run()
-        self.fns = {}
-        for func_name, func in functions.items():
-            self.fns[func_name] = func
-            setattr(self, func_name, func)
+        self._world_CWH = torch.zeros((len(Channel), self.size, self.size))
 
-        self._world_CWH = torch.zeros((len(self.Channel), self.size, self.size))
-
-        self.max_id_in_tensor = max(len(self.items), len(self.entities), len(self.Direction))
+        self.max_id_in_tensor = max(len(items), len(entities), len(Direction))
         # Observation is the world, with a square grid of tiles and one channel
         # representing the entity ID, the other representing the direction
         self.observation_space = gym.spaces.Box(
             low=0,
             high=self.max_id_in_tensor,
-            shape=(len(self.Channel), self.size, self.size),
+            shape=(len(Channel), self.size, self.size),
             dtype=int,
         )
 
 
         self.action_space = gym.spaces.Dict({
             "xy": gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),
-            "entity": gym.spaces.Discrete(len(self.entities)),
-            "direction": gym.spaces.Discrete(len(self.Direction)),
-            "item": gym.spaces.Discrete(len(self.items)),
-            "misc": gym.spaces.Discrete(len(self.Misc))
+            "entity": gym.spaces.Discrete(len(entities)),
+            "direction": gym.spaces.Discrete(len(Direction)),
+            "item": gym.spaces.Discrete(len(items)),
+            "misc": gym.spaces.Discrete(len(Misc))
         })
         # Cache source/sink IDs (non-placeable prototypes)
-        self._source_id = self.str2ent('stack_inserter').value
-        self._sink_id = self.str2ent('bulk_inserter').value
+        self._source_id = str2ent('stack_inserter').value
+        self._sink_id = str2ent('bulk_inserter').value
         self._reset_options = options if options is not None else {}
 
         self.steps = 0
@@ -294,10 +293,10 @@ class FactorioEnv(gym.Env):
     def _compute_solution_match(self):
         """Compute similarity to solved factory over solution-nonempty tiles only.
         Returns (location_match, entity_match, direction_match) each in [0, 1]."""
-        orig_ent = self._solved_world_CWH[self.Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[self.Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[self.Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[self.Channel.DIRECTION.value]
+        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
+        curr_ent = self._world_CWH[Channel.ENTITIES.value]
+        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
+        curr_dir = self._world_CWH[Channel.DIRECTION.value]
 
         mask = (orig_ent != 0)
         n = mask.sum().item()
@@ -334,15 +333,15 @@ class FactorioEnv(gym.Env):
         self.actions = []
         # Generate the solved factory first (same seed → same layout),
         # then re-generate with missing entities for the actual episode.
-        self._solved_world_CWH, _ = self.generate_lesson(
+        self._solved_world_CWH, _ = generate_lesson(
             size=self.size,
-            kind=self.LessonKind.MOVE_ONE_ITEM,
+            kind=LessonKind.MOVE_ONE_ITEM,
             num_missing_entities=0,
             seed=self._seed,
         )
-        self._world_CWH, min_entities_required = self.generate_lesson(
+        self._world_CWH, min_entities_required = generate_lesson(
             size=self.size,
-            kind=self.LessonKind.MOVE_ONE_ITEM,
+            kind=LessonKind.MOVE_ONE_ITEM,
             num_missing_entities=self._num_missing_entities,
             seed=self._seed,
         )
@@ -369,7 +368,7 @@ class FactorioEnv(gym.Env):
         sink_id = self._sink_id
 
         # Mutate the world with the agent's actions
-        entity_to_be_replaced = self._world_CWH[self.Channel.ENTITIES.value, x, y]
+        entity_to_be_replaced = self._world_CWH[Channel.ENTITIES.value, x, y]
 
         self.actions.append(None)
         action_is_invalid = False
@@ -387,37 +386,37 @@ class FactorioEnv(gym.Env):
         }
 
         # Check that the action is actually valid
-        if not (0 <= entity_id < len(self.entities)):
+        if not (0 <= entity_id < len(entities)):
             # entity_id out of range
             action_is_invalid = True
-        elif not (0 <= direc < len(self.Direction)):
+        elif not (0 <= direc < len(Direction)):
             # direction out of range
             action_is_invalid = True
         elif entity_id in (source_id, sink_id):
             # agent tried to place a source or sink
             invalid_reason['placed_source_or_sink'] = True
             action_is_invalid = True
-        elif entity_id == self.str2ent('assembling_machine_1').value and item_id == self.str2item('empty'):
+        elif entity_id == str2ent('assembling_machine_1').value and item_id == str2item('empty'):
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
             action_is_invalid = True
             pass
-        elif entity_id not in (self.str2ent('empty').value, self.str2ent('assembling_machine_1').value) and direc == self.Direction.NONE.value:
+        elif entity_id not in (str2ent('empty').value, str2ent('assembling_machine_1').value) and direc == Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['placement_wo_direction'] = True
             action_is_invalid = True
             pass
-        elif entity_id == self.str2ent('empty').value and direc != self.Direction.NONE.value:
+        elif entity_id == str2ent('empty').value and direc != Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['direction_wo_entity'] = True
             action_is_invalid = True
             pass
-        elif (misc == self.Misc.NONE.value) and (entity_id == self.str2ent('underground_belt').value):
+        elif (misc == Misc.NONE.value) and (entity_id == str2ent('underground_belt').value):
             # model is trying to place an underground belt without giving a down/up
             invalid_reason['ug_belt_wo_up_or_down'] = True
             action_is_invalid = True
             pass
-        elif (misc != self.Misc.NONE.value) and (entity_id != self.str2ent('underground_belt').value):
+        elif (misc != Misc.NONE.value) and (entity_id != str2ent('underground_belt').value):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
             invalid_reason['placement_with_unneeded_misc'] = True
@@ -428,7 +427,7 @@ class FactorioEnv(gym.Env):
             # occupied tiles for multi-tile). py_entity_tiles handles
             # rotation correctly; the previous x+width/y+height bounds
             # checks were direction-agnostic and wrong for rotated splitters.
-            proto = self.entities[entity_id]
+            proto = entities[entity_id]
             tiles_list = factorion_rs.py_entity_tiles(x, y, direc, proto.width, proto.height)
             if tiles_list is None:
                 tiles_list = [(x, y)]
@@ -446,14 +445,14 @@ class FactorioEnv(gym.Env):
                 invalid_reason['too_wide'] = True
                 action_is_invalid = True
             elif any(
-                self._world_CWH[self.Channel.FOOTPRINT.value, tx, ty]
-                    == self.Footprint.UNAVAILABLE.value
+                self._world_CWH[Channel.FOOTPRINT.value, tx, ty]
+                    == Footprint.UNAVAILABLE.value
                 for tx, ty in tiles_list
             ):
                 invalid_reason['placed_on_masked_tile'] = True
                 action_is_invalid = True
             elif any(
-                int(self._world_CWH[self.Channel.ENTITIES.value, tx, ty]) in (source_id, sink_id)
+                int(self._world_CWH[Channel.ENTITIES.value, tx, ty]) in (source_id, sink_id)
                 for tx, ty in tiles_list
             ):
                 invalid_reason['replaced_source_or_sink'] = True
@@ -465,16 +464,16 @@ class FactorioEnv(gym.Env):
                 # represent multi-tile entities. Items + misc go on the
                 # anchor only (those channels are anchor-scoped).
                 for tx, ty in tiles_list:
-                    self._world_CWH[self.Channel.ENTITIES.value, tx, ty] = entity_id
-                    self._world_CWH[self.Channel.DIRECTION.value, tx, ty] = direc
-                self._world_CWH[self.Channel.ITEMS.value, x, y] = item_id
-                self._world_CWH[self.Channel.MISC.value, x, y] = misc
+                    self._world_CWH[Channel.ENTITIES.value, tx, ty] = entity_id
+                    self._world_CWH[Channel.DIRECTION.value, tx, ty] = direc
+                self._world_CWH[Channel.ITEMS.value, x, y] = item_id
+                self._world_CWH[Channel.MISC.value, x, y] = misc
                 self.actions[-1] = {
-                    'entity': self.entities[entity_id].name,
+                    'entity': entities[entity_id].name,
                     'xy': (x, y),
-                    'direction': self.Direction(direc),
-                    'item': self.items[item_id].name,
-                    'misc': self.Misc(misc),
+                    'direction': Direction(direc),
+                    'item': items[item_id].name,
+                    'misc': Misc(misc),
                 }
 
         self.invalid_actions += 1 if action_is_invalid else 0
@@ -485,7 +484,7 @@ class FactorioEnv(gym.Env):
 
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
-        num_entities = self._world_CWH[self.Channel.ENTITIES.value].count_nonzero()
+        num_entities = self._world_CWH[Channel.ENTITIES.value].count_nonzero()
         # NOTE: weird bug with num_unreachable calculations, not planning on
         # fixing any time super soon. really the calculation should be to
         # calculate frac_reachable directly, not go via frac_unreachable
@@ -493,29 +492,29 @@ class FactorioEnv(gym.Env):
         frac_hallucin = 0
 
         # Give some small reward for having the belt be the right direction
-        sink_locs = torch.where(self._world_CWH[self.Channel.ENTITIES.value] == self._sink_id)
+        sink_locs = torch.where(self._world_CWH[Channel.ENTITIES.value] == self._sink_id)
         assert len(sink_locs[0]) == len(sink_locs[1]) == 1, f"Expected 1 bulk inserter, found {sink_locs} in world {self._world_CWH}"
         C, W, H = self._world_CWH.shape
         w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
         w_belt = torch.clamp(w_sink, 1, W-2)
         h_belt = torch.clamp(h_sink, 1, H-2)
 
-        final_belt_dir = self._world_CWH[self.Channel.DIRECTION.value, w_belt, h_belt]
-        sink_dir = self._world_CWH[self.Channel.DIRECTION.value, w_sink, h_sink]
+        final_belt_dir = self._world_CWH[Channel.DIRECTION.value, w_belt, h_belt]
+        sink_dir = self._world_CWH[Channel.DIRECTION.value, w_sink, h_sink]
 
         final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
 
         material_cost = (
-            1.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('transport_belt').value).sum()
-            + 1.5 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('underground_belt').value).sum()
-            + 2.0 * (self._world_CWH[self.Channel.DIRECTION.value] == self.str2ent('assembling_machine_1').value).sum()
+            1.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('transport_belt').value).sum()
+            + 1.5 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('underground_belt').value).sum()
+            + 2.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('assembling_machine_1').value).sum()
         )
 
         # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
-        orig_ent = self._solved_world_CWH[self.Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[self.Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[self.Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[self.Channel.DIRECTION.value]
+        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
+        curr_ent = self._world_CWH[Channel.ENTITIES.value]
+        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
+        curr_dir = self._world_CWH[Channel.DIRECTION.value]
 
         solution_nonempty = (orig_ent != 0)
         current_nonempty = (curr_ent != 0)
@@ -636,14 +635,14 @@ class FactorioEnv(gym.Env):
             self._render_cache = {"entity": {}, "item": {}, "arrow": {}}
 
             # entity icons (resized to CELL_PX)
-            for ent_id, ent in self.entities.items():
+            for ent_id, ent in entities.items():
                 p = ICON_DIR / f"{ent.name}.png"
                 if p.exists():
                     img = Image.open(p).convert("RGBA").resize(((CELL_PX // 10) * 8, (CELL_PX // 10) * 8), Image.BICUBIC)
                     self._render_cache["entity"][ent_id] = img
 
             # item (recipe) icons (resized to MINI_PX)
-            for itm_id, itm in self.items.items():
+            for itm_id, itm in items.items():
                 if itm_id == 0:  # 0 = empty → no icon
                     continue
                 p = ICON_DIR / f"{itm.name}.png"
@@ -671,16 +670,16 @@ class FactorioEnv(gym.Env):
                 fill=(0, 0, 0, 255)
             )
             # cache rotations for each cardinal direction
-            self._render_cache["arrow"][self.Direction.NORTH.value] = base
-            self._render_cache["arrow"][self.Direction.EAST.value]  = base.rotate(-90, expand=True)
-            self._render_cache["arrow"][self.Direction.SOUTH.value] = base.rotate(180, expand=True)
-            self._render_cache["arrow"][self.Direction.WEST.value]  = base.rotate(90,  expand=True)
+            self._render_cache["arrow"][Direction.NORTH.value] = base
+            self._render_cache["arrow"][Direction.EAST.value]  = base.rotate(-90, expand=True)
+            self._render_cache["arrow"][Direction.SOUTH.value] = base.rotate(180, expand=True)
+            self._render_cache["arrow"][Direction.WEST.value]  = base.rotate(90,  expand=True)
 
             # default font for fallback label
             self._render_cache["font"] = ImageFont.load_default()
 
         cache = self._render_cache
-        ENT, DIR, ITEM = self.Channel.ENTITIES.value, self.Channel.DIRECTION.value, self.Channel.ITEMS.value
+        ENT, DIR, ITEM = Channel.ENTITIES.value, Channel.DIRECTION.value, Channel.ITEMS.value
 
         # ---------------- canvas -------------------------
         HUD_PX = 32*4                                     # height of stats strip
@@ -704,7 +703,7 @@ class FactorioEnv(gym.Env):
                     canvas.paste(sprite, (x0 + CELL_PX//10, y0 + CELL_PX//10), sprite)
                 else:
                     # fallback: draw first letter
-                    letter = self.entities[ent_id].name[0].upper()
+                    letter = entities[ent_id].name[0].upper()
                     font   = cache["font"]
                     canvas_w, canvas_h   = font.getbbox(letter)[2:]
                     draw.text(
@@ -729,7 +728,7 @@ class FactorioEnv(gym.Env):
                     off = CELL_PX - MINI_PX - 2
                     canvas.paste(mini, (x0 + off, y0 + off), mini)
 
-                dir_id = self.Direction(dir_layer[gx, gy]).value
+                dir_id = Direction(dir_layer[gx, gy]).value
                 arrow  = cache["arrow"].get(dir_id)
                 if arrow is not None:
                     canvas.paste(arrow, (x0 + 2, y0 + 2), arrow)
@@ -772,15 +771,15 @@ class AgentCNN(nn.Module):
         base_env = envs.envs[0].unwrapped
         self.width = base_env.size
         self.height = base_env.size
-        self.channels = len(base_env.Channel)
+        self.channels = len(Channel)
         # Source/sink (bulk_inserter, stack_inserter) live as the last two
         # catalog entries; they are env-spawned, never agent-placeable. Sizing
         # the head to len(entities)-2 makes them structurally impossible to
         # sample, so we never waste samples on placements the env rejects.
-        self.num_entities = len(base_env.entities) - 2
-        self.num_directions = len(base_env.Direction)
-        self.num_items = len(base_env.items)
-        self.num_misc = len(base_env.Misc)
+        self.num_entities = len(entities) - 2
+        self.num_directions = len(Direction)
+        self.num_items = len(items)
+        self.num_misc = len(Misc)
         self.chan3 = chan3
 
         self.encoder = nn.Sequential(
