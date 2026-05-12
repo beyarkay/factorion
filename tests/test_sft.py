@@ -31,11 +31,14 @@ class TestExtractExpertActions:
         pairs = extract_expert_actions(solved, task)
         assert len(pairs) > 0, "Should have at least one action"
 
-        # Replay actions onto task world. The action carries all four
-        # placement channels (entity, direction, item, misc) — the agent
-        # is responsible for each.
+        # Replay placement actions onto task world. The action carries all
+        # four placement channels (entity, direction, item, misc) — the
+        # agent is responsible for each. Skip terminal pairs (eot=1) which
+        # carry sentinel placement targets, not real placements.
         state = task.clone()
-        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask in pairs:
+        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, eot in pairs:
+            if eot == 1:
+                continue
             H = state.shape[2]
             x = tile_idx // H
             y = tile_idx % H
@@ -61,7 +64,8 @@ class TestExtractExpertActions:
         assert len(pairs) == 0
 
     def test_action_count_matches_missing(self):
-        """Number of actions should equal num_missing_entities."""
+        """Number of pairs should equal num_missing_entities placement
+        actions + 1 terminal (eot=1) pair."""
         for seed in [1, 7, 42]:
             solved, _ = generate_lesson(
                 size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
@@ -72,9 +76,14 @@ class TestExtractExpertActions:
                 size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=seed,
             )
             pairs = extract_expert_actions(solved, task)
-            assert len(pairs) == min_ent, (
-                f"seed={seed}: expected {min_ent} actions, got {len(pairs)}"
+            assert len(pairs) == min_ent + 1, (
+                f"seed={seed}: expected {min_ent} placement pairs + 1 "
+                f"terminal pair, got {len(pairs)}"
             )
+            # Exactly one terminal pair, appended last.
+            eot_flags = [p[7] for p in pairs]
+            assert eot_flags[:-1] == [0] * min_ent
+            assert eot_flags[-1] == 1
 
     def test_intermediate_states_are_sequential(self):
         """Each observation should reflect previously applied actions."""
@@ -98,7 +107,9 @@ class TestExtractExpertActions:
         )
 
     def test_entity_ids_are_valid(self):
-        """All extracted entity IDs should be valid (non-empty) entity values."""
+        """All extracted placement entity IDs should be valid (non-empty)
+        entity values. Terminal pairs (eot=1) carry sentinel zeros and are
+        excluded from this check."""
         solved, _ = generate_lesson(
             size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
         )
@@ -106,7 +117,9 @@ class TestExtractExpertActions:
             size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
         )
         pairs = extract_expert_actions(solved, task)
-        for _, _, entity_id, direction_id, _, _, _ in pairs:
+        for _, _, entity_id, direction_id, _, _, _, eot in pairs:
+            if eot == 1:
+                continue
             assert entity_id != str2ent("empty").value, "Expert actions shouldn't place empty"
             assert direction_id != Direction.NONE.value, "Expert belt actions need a direction"
 
@@ -130,7 +143,9 @@ class TestExtractExpertActions:
                 )
             except Exception:
                 continue
-            for _, _, ent_id, _, _, misc_id, _ in extract_expert_actions(solved, task):
+            for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(solved, task):
+                if eot == 1:
+                    continue
                 if ent_id == ug_id:
                     assert misc_id != Misc.NONE.value, (
                         f"seed={seed}: UG belt action emitted with misc=NONE"
@@ -172,7 +187,7 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, seeds, kinds = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
@@ -180,6 +195,7 @@ class TestGenerateDataset:
         assert len(items_t) == 100
         assert len(miscs_t) == 100
         assert len(masks) == 100
+        assert len(eots) == 100
         assert len(seeds) == 100
         assert len(kinds) == 100
 
@@ -363,7 +379,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, _, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -439,6 +455,134 @@ class TestTrainSFTEndToEnd:
         assert "best_val_acc" in s
         assert s["num_samples"] == 100
         assert s["epochs"] == 2
+
+
+class TestEotHead:
+    """Tests for the binary end-of-turn head."""
+
+    def test_eot_label_per_lesson(self):
+        """A lesson with N missing entities emits N placement pairs
+        (eot=0) followed by one terminal pair (eot=1) whose obs equals
+        the fully-solved factory."""
+        solved, _ = generate_lesson(
+            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=11,
+        )
+        task, min_ent = generate_lesson(
+            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=3, seed=11,
+        )
+        pairs = extract_expert_actions(solved, task)
+        # eot flag is at index 7 in the tuple
+        eots = [p[7] for p in pairs]
+        assert sum(eots) == 1, f"Expected exactly one terminal pair, got {sum(eots)}"
+        assert eots[-1] == 1, "Terminal pair must come last"
+        # Terminal observation equals solved (entities + directions).
+        terminal_obs = pairs[-1][0]
+        assert torch.equal(
+            terminal_obs[Channel.ENTITIES.value], solved[Channel.ENTITIES.value]
+        )
+        assert torch.equal(
+            terminal_obs[Channel.DIRECTION.value], solved[Channel.DIRECTION.value]
+        )
+
+    def test_eot_tensor_in_dataset(self):
+        """generate_dataset must return a per-pair eot tensor with values
+        in {0.0, 1.0} and at least one positive (terminal) example."""
+        args = SFTArgs(seed=1, size=5, num_samples=200, max_level=4)
+        *_, eots, _seeds, _kinds = generate_dataset(args)
+        assert eots.dtype == torch.float
+        assert set(eots.unique().tolist()).issubset({0.0, 1.0})
+        assert eots.sum().item() >= 1, "Dataset must contain >=1 terminal pair"
+
+    def test_eot_head_exists_and_forwards(self, registered_env):
+        """AgentCNN must expose an eot_head producing a single logit per
+        observation."""
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        assert hasattr(agent, "eot_head"), "AgentCNN must have an eot_head"
+        # Forward a fake batch through the encoder + eot_head.
+        B, C, W, H = 4, agent.channels, agent.width, agent.height
+        x = torch.zeros((B, C, W, H), dtype=torch.float32)
+        enc = agent.encoder(x)
+        logits = agent.eot_head(enc).squeeze(-1)
+        assert logits.shape == (B,), f"eot_head output should be (B,), got {logits.shape}"
+
+    def test_eot_prob_and_should_stop_shapes(self, registered_env):
+        """`eot_prob` returns a [0,1] tensor of shape (B,); `eot_should_stop`
+        returns a bool tensor of the same shape. These are the methods
+        inference rollouts call to decide 'I'm done here'."""
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        B = 3
+        x = torch.zeros((B, agent.channels, agent.width, agent.height), dtype=torch.float32)
+        probs = agent.eot_prob(x)
+        assert probs.shape == (B,)
+        assert (probs >= 0).all() and (probs <= 1).all()
+
+        stop = agent.eot_should_stop(x, threshold=0.5)
+        assert stop.shape == (B,)
+        assert stop.dtype == torch.bool
+
+        # Threshold = 1.0 → never stop; threshold = 0.0 → always stop.
+        assert not agent.eot_should_stop(x, threshold=1.0).any()
+        assert agent.eot_should_stop(x, threshold=-0.01).all()
+
+    def test_eot_head_learns_terminal_vs_placement(self, registered_env, tmp_path):
+        """End-to-end: after a short SFT run the eot head should
+        distinguish terminal observations (solved factories) from
+        placement-step observations. This is the contract that lets the
+        rollout 'run until the model thinks it's done'."""
+        ckpt = str(tmp_path / "sft_eot.pt")
+        summary = str(tmp_path / "sft_eot_summary.json")
+        args = SFTArgs(
+            seed=3,
+            size=5,
+            num_samples=1000,
+            max_level=3,
+            epochs=20,
+            batch_size=64,
+            lr=3e-3,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+            checkpoint_path=ckpt,
+            summary_path=summary,
+        )
+        agent = train_sft(args)
+
+        # Build a fresh held-out set: solved (eot=1) and partial (eot=0)
+        # observations from a seed range that wasn't in training. Move
+        # inputs to the agent's device (which depends on what train_sft
+        # selected — CPU on CI, MPS/CUDA locally).
+        device = next(agent.parameters()).device
+        agent.eval()
+        pos_logits = []
+        neg_logits = []
+        with torch.no_grad():
+            for seed in range(10_000, 10_040):
+                solved, _ = generate_lesson(
+                    size=5, kind=LessonKind.MOVE_ONE_ITEM,
+                    num_missing_entities=0, seed=seed,
+                )
+                task, _ = generate_lesson(
+                    size=5, kind=LessonKind.MOVE_ONE_ITEM,
+                    num_missing_entities=3, seed=seed,
+                )
+                enc_pos = agent.encoder(solved.unsqueeze(0).float().to(device))
+                enc_neg = agent.encoder(task.unsqueeze(0).float().to(device))
+                pos_logits.append(agent.eot_head(enc_pos).item())
+                neg_logits.append(agent.eot_head(enc_neg).item())
+
+        pos_mean = sum(pos_logits) / len(pos_logits)
+        neg_mean = sum(neg_logits) / len(neg_logits)
+        assert pos_mean > neg_mean, (
+            f"EOT head failed to separate terminal/placement: "
+            f"pos_mean={pos_mean:.3f} <= neg_mean={neg_mean:.3f}"
+        )
 
 
 class TestTrainValSeedSplit:

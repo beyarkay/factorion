@@ -802,6 +802,20 @@ class AgentCNN(nn.Module):
             layer_init(nn.Linear(flat_dim, 1), std=1.0)
         )
 
+        # Binary end-of-turn head. Predicts whether the factory is complete
+        # (1) or still has placements left (0). At rollout time the caller
+        # samples this and stops the episode when it crosses a threshold —
+        # gives the policy an explicit way to say "I'm done" without
+        # overloading the placement action. Named `eot_head` (not
+        # `done_head`) to avoid colliding with PPO's existing `done` /
+        # `dones_SE` / `next_done` episode-termination flags below. Bias
+        # init at -2 so an untrained model defaults to "not finished"
+        # (sigmoid(-2) ≈ 0.12).
+        self.eot_head = nn.Sequential(
+            nn.Flatten(),
+            layer_init(nn.Linear(flat_dim, 1), std=1.0, bias_const=-2.0),
+        )
+
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(chan3, 1, kernel_size=1), std=tile_head_std)
 
@@ -831,6 +845,22 @@ class AgentCNN(nn.Module):
         value_B = self.critic_head(encoded).squeeze(-1)
         self.time_for_get_value = time.time() - t0
         return value_B
+
+    def eot_prob(self, x_BCWH):
+        """End-of-turn probability per observation, in [0, 1].
+
+        Kept off the `get_action_and_value` return tuple so the ~20 PPO /
+        test callsites unpacking that 4-tuple don't have to change. Use
+        this from inference rollouts to decide whether the agent thinks
+        the factory is finished.
+        """
+        encoded = self.encoder(x_BCWH)
+        return torch.sigmoid(self.eot_head(encoded).squeeze(-1))
+
+    def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
+        """Boolean stop signal per observation. Threshold defaults to 0.5;
+        lower it if the model rambles, raise it if it stops short."""
+        return self.eot_prob(x_BCWH) > threshold
 
     def get_action_and_value(self, x_BCWH, action=None):
         t0 = time.time()
