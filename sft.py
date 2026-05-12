@@ -48,11 +48,16 @@ str2ent = _fns["str2ent"]
 def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
-    Returns list of (state_CWH, tile_idx, entity_id, direction_id,
-    valid_tile_mask) tuples. The valid_tile_mask is a flat binary tensor
-    marking ALL tiles that still need entities at this step — not just the
-    one chosen. This allows multi-label tile loss to avoid penalizing the
-    model for predicting a valid-but-different tile.
+    Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
+    misc_id, valid_tile_mask) tuples. The agent's action covers all four
+    placement channels because the env (ppo.py FactorioEnv.step) rejects
+    placements with mismatched channels — e.g. an underground belt without
+    misc=DOWN/UP, or an assembling_machine_1 without an item (= recipe).
+
+    The valid_tile_mask is a flat binary tensor marking ALL tiles that still
+    need entities at this step — not just the one chosen. This allows
+    multi-label tile loss to avoid penalizing the model for predicting a
+    valid-but-different tile.
 
     Multi-tile entities (e.g. splitters) emit a single pair at the anchor
     tile, not one per occupied cell — placing the anchor fills the whole
@@ -114,8 +119,10 @@ def extract_expert_actions(solved_CWH, task_CWH):
         tile_idx = x * H + y
         entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
         direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
+        item_id = int(solved_CWH[Channel.ITEMS.value, x, y])
+        misc_id = int(solved_CWH[Channel.MISC.value, x, y])
 
-        pairs.append((obs, tile_idx, entity_id, direction_id, valid_mask))
+        pairs.append((obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask))
 
         # Apply action: copy the entity's full footprint from solved, not
         # just the anchor cell, so the observation reflects what placing
@@ -196,6 +203,8 @@ def generate_dataset(args: SFTArgs):
     all_tile_idx = []
     all_entity = []
     all_direction = []
+    all_item = []
+    all_misc = []
     all_valid_masks = []
     all_lesson_seeds = []
     all_lesson_kinds = []
@@ -233,11 +242,13 @@ def generate_dataset(args: SFTArgs):
 
         kind_lessons[kind.name] += 1
         pairs = extract_expert_actions(solved, task)
-        for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
+        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask in pairs:
             all_obs.append(obs)
             all_tile_idx.append(tile_idx)
             all_entity.append(entity_id)
             all_direction.append(direction_id)
+            all_item.append(item_id)
+            all_misc.append(misc_id)
             all_valid_masks.append(valid_mask)
             all_lesson_seeds.append(seed)
             all_lesson_kinds.append(kind.value)
@@ -255,11 +266,16 @@ def generate_dataset(args: SFTArgs):
     tile_tensor = torch.tensor(all_tile_idx, dtype=torch.long)
     ent_tensor = torch.tensor(all_entity, dtype=torch.long)
     dir_tensor = torch.tensor(all_direction, dtype=torch.long)
+    item_tensor = torch.tensor(all_item, dtype=torch.long)
+    misc_tensor = torch.tensor(all_misc, dtype=torch.long)
     mask_tensor = torch.stack(all_valid_masks)
     seed_tensor = torch.tensor(all_lesson_seeds, dtype=torch.long)
     kind_tensor = torch.tensor(all_lesson_kinds, dtype=torch.long)
 
-    return obs_tensor, tile_tensor, ent_tensor, dir_tensor, mask_tensor, seed_tensor, kind_tensor
+    return (
+        obs_tensor, tile_tensor, ent_tensor, dir_tensor,
+        item_tensor, misc_tensor, mask_tensor, seed_tensor, kind_tensor,
+    )
 
 
 def train_sft(args: SFTArgs):
@@ -270,7 +286,10 @@ def train_sft(args: SFTArgs):
 
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
-    obs, tiles, ents, dirs, valid_masks, lesson_seeds, lesson_kinds = generate_dataset(args)
+    (
+        obs, tiles, ents, dirs, items_t, miscs_t,
+        valid_masks, lesson_seeds, lesson_kinds,
+    ) = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
 
     # Train/val split at the LESSON SEED level. A pair-level random split
@@ -296,8 +315,16 @@ def train_sft(args: SFTArgs):
         f"{n_val_seeds} lessons (no factory overlap)"
     )
 
-    train_ds = TensorDataset(obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx], valid_masks[train_idx], lesson_kinds[train_idx])
-    val_ds = TensorDataset(obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx], valid_masks[val_idx], lesson_kinds[val_idx])
+    train_ds = TensorDataset(
+        obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx],
+        items_t[train_idx], miscs_t[train_idx], valid_masks[train_idx],
+        lesson_kinds[train_idx],
+    )
+    val_ds = TensorDataset(
+        obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx],
+        items_t[val_idx], miscs_t[val_idx], valid_masks[val_idx],
+        lesson_kinds[val_idx],
+    )
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
@@ -365,6 +392,8 @@ def train_sft(args: SFTArgs):
     val_tile_acc = 0.0
     val_ent_acc = 0.0
     val_dir_acc = 0.0
+    val_item_acc = 0.0
+    val_misc_acc = 0.0
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
@@ -373,16 +402,24 @@ def train_sft(args: SFTArgs):
         train_loss_tile = 0.0
         train_loss_ent = 0.0
         train_loss_dir = 0.0
+        train_loss_item = 0.0
+        train_loss_misc = 0.0
         train_correct = 0
         train_total = 0
 
         # batch_kind is carried through the loader so val can aggregate
         # per-kind metrics; we ignore it in the train pass.
-        for batch_obs, batch_tile, batch_ent, batch_dir, batch_mask, _batch_kind in train_loader:
+        for batch in train_loader:
+            (
+                batch_obs, batch_tile, batch_ent, batch_dir,
+                batch_item, batch_misc, batch_mask, _batch_kind,
+            ) = batch
             batch_obs = batch_obs.float().to(device)
             batch_tile = batch_tile.to(device)
             batch_ent = batch_ent.to(device)
             batch_dir = batch_dir.to(device)
+            batch_item = batch_item.to(device)
+            batch_misc = batch_misc.to(device)
             batch_mask = batch_mask.to(device)
 
             encoded = agent.encoder(batch_obs)
@@ -393,7 +430,7 @@ def train_sft(args: SFTArgs):
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
             loss_tile = bce_loss(tile_logits, batch_mask)
 
-            # Extract features at target tile for entity/direction heads
+            # Extract features at target tile for entity/direction/item/misc heads
             x_B = batch_tile // agent.height
             y_B = batch_tile % agent.height
             batch_idx = torch.arange(B, device=device)
@@ -401,10 +438,14 @@ def train_sft(args: SFTArgs):
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
+            item_logits = agent.item_head(tile_features)
+            misc_logits = agent.misc_head(tile_features)
             loss_ent = ce_loss(ent_logits, batch_ent)
             loss_dir = ce_loss(dir_logits, batch_dir)
+            loss_item = ce_loss(item_logits, batch_item)
+            loss_misc = ce_loss(misc_logits, batch_misc)
 
-            loss = loss_tile + loss_ent + loss_dir
+            loss = loss_tile + loss_ent + loss_dir + loss_item + loss_misc
 
             optimizer.zero_grad()
             loss.backward()
@@ -414,12 +455,22 @@ def train_sft(args: SFTArgs):
             train_loss_tile += loss_tile.item() * B
             train_loss_ent += loss_ent.item() * B
             train_loss_dir += loss_dir.item() * B
-            # Tile accuracy: did the model predict ANY valid tile?
+            train_loss_item += loss_item.item() * B
+            train_loss_misc += loss_misc.item() * B
+            # Whole-action accuracy: every action component correct.
             pred_tile = tile_logits.argmax(dim=1)
             tile_hit = batch_mask[batch_idx, pred_tile] > 0
             pred_ent = ent_logits.argmax(dim=1)
             pred_dir = dir_logits.argmax(dim=1)
-            correct = (tile_hit & (pred_ent == batch_ent) & (pred_dir == batch_dir))
+            pred_item = item_logits.argmax(dim=1)
+            pred_misc = misc_logits.argmax(dim=1)
+            correct = (
+                tile_hit
+                & (pred_ent == batch_ent)
+                & (pred_dir == batch_dir)
+                & (pred_item == batch_item)
+                & (pred_misc == batch_misc)
+            )
             train_correct += correct.sum().item()
             train_total += B
 
@@ -427,6 +478,8 @@ def train_sft(args: SFTArgs):
         train_loss_tile /= train_total
         train_loss_ent /= train_total
         train_loss_dir /= train_total
+        train_loss_item /= train_total
+        train_loss_misc /= train_total
         train_acc = train_correct / train_total
 
         # Validation
@@ -435,10 +488,14 @@ def train_sft(args: SFTArgs):
         val_loss_tile = 0.0
         val_loss_ent = 0.0
         val_loss_dir = 0.0
+        val_loss_item = 0.0
+        val_loss_misc = 0.0
         val_correct = 0
         val_tile_correct = 0
         val_ent_correct = 0
         val_dir_correct = 0
+        val_item_correct = 0
+        val_misc_correct = 0
         val_total = 0
 
         # Per-LessonKind accumulators. Indexed by kind name to make wandb
@@ -448,14 +505,22 @@ def train_sft(args: SFTArgs):
         per_kind_tile_correct = {k.name: 0 for k in LessonKind}
         per_kind_ent_correct = {k.name: 0 for k in LessonKind}
         per_kind_dir_correct = {k.name: 0 for k in LessonKind}
+        per_kind_item_correct = {k.name: 0 for k in LessonKind}
+        per_kind_misc_correct = {k.name: 0 for k in LessonKind}
         per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
 
         with torch.no_grad():
-            for batch_obs, batch_tile, batch_ent, batch_dir, batch_mask, batch_kind in val_loader:
+            for batch in val_loader:
+                (
+                    batch_obs, batch_tile, batch_ent, batch_dir,
+                    batch_item, batch_misc, batch_mask, batch_kind,
+                ) = batch
                 batch_obs = batch_obs.float().to(device)
                 batch_tile = batch_tile.to(device)
                 batch_ent = batch_ent.to(device)
                 batch_dir = batch_dir.to(device)
+                batch_item = batch_item.to(device)
+                batch_misc = batch_misc.to(device)
                 batch_mask = batch_mask.to(device)
                 batch_kind = batch_kind.to(device)
 
@@ -476,26 +541,44 @@ def train_sft(args: SFTArgs):
 
                 ent_logits = agent.ent_head(tile_features)
                 dir_logits = agent.dir_head(tile_features)
+                item_logits = agent.item_head(tile_features)
+                misc_logits = agent.misc_head(tile_features)
                 loss_ent_per = ce_loss_none(ent_logits, batch_ent)
                 loss_dir_per = ce_loss_none(dir_logits, batch_dir)
+                loss_item_per = ce_loss_none(item_logits, batch_item)
+                loss_misc_per = ce_loss_none(misc_logits, batch_misc)
 
-                loss_per_sample = loss_tile_per + loss_ent_per + loss_dir_per
+                loss_per_sample = (
+                    loss_tile_per + loss_ent_per + loss_dir_per
+                    + loss_item_per + loss_misc_per
+                )
                 val_loss += loss_per_sample.sum().item()
                 val_loss_tile += loss_tile_per.sum().item()
                 val_loss_ent += loss_ent_per.sum().item()
                 val_loss_dir += loss_dir_per.sum().item()
+                val_loss_item += loss_item_per.sum().item()
+                val_loss_misc += loss_misc_per.sum().item()
 
                 pred_tile = tile_logits.argmax(dim=1)
                 tile_hit = batch_mask[batch_idx, pred_tile] > 0
                 pred_ent = ent_logits.argmax(dim=1)
                 pred_dir = dir_logits.argmax(dim=1)
+                pred_item = item_logits.argmax(dim=1)
+                pred_misc = misc_logits.argmax(dim=1)
                 ent_correct_per = (pred_ent == batch_ent)
                 dir_correct_per = (pred_dir == batch_dir)
-                correct_per = (tile_hit & ent_correct_per & dir_correct_per)
+                item_correct_per = (pred_item == batch_item)
+                misc_correct_per = (pred_misc == batch_misc)
+                correct_per = (
+                    tile_hit & ent_correct_per & dir_correct_per
+                    & item_correct_per & misc_correct_per
+                )
                 val_correct += correct_per.sum().item()
                 val_tile_correct += tile_hit.sum().item()
                 val_ent_correct += ent_correct_per.sum().item()
                 val_dir_correct += dir_correct_per.sum().item()
+                val_item_correct += item_correct_per.sum().item()
+                val_misc_correct += misc_correct_per.sum().item()
                 val_total += B
 
                 # Per-kind aggregation: one bool-mask per kind appearing in
@@ -509,16 +592,22 @@ def train_sft(args: SFTArgs):
                     per_kind_tile_correct[k_name] += int(tile_hit[mask_k].sum().item())
                     per_kind_ent_correct[k_name] += int(ent_correct_per[mask_k].sum().item())
                     per_kind_dir_correct[k_name] += int(dir_correct_per[mask_k].sum().item())
+                    per_kind_item_correct[k_name] += int(item_correct_per[mask_k].sum().item())
+                    per_kind_misc_correct[k_name] += int(misc_correct_per[mask_k].sum().item())
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
 
         val_loss /= val_total
         val_loss_tile /= val_total
         val_loss_ent /= val_total
         val_loss_dir /= val_total
+        val_loss_item /= val_total
+        val_loss_misc /= val_total
         val_acc = val_correct / val_total
         val_tile_acc = val_tile_correct / val_total
         val_ent_acc = val_ent_correct / val_total
         val_dir_acc = val_dir_correct / val_total
+        val_item_acc = val_item_correct / val_total
+        val_misc_acc = val_misc_correct / val_total
 
         # Build per-kind metric dict for both stdout and wandb. Skip kinds
         # absent from the val split (e.g. small datasets where some kinds
@@ -534,12 +623,15 @@ def train_sft(args: SFTArgs):
             per_kind_metrics[f"val/{k.name}/tile_acc"] = per_kind_tile_correct[k.name] / n
             per_kind_metrics[f"val/{k.name}/ent_acc"] = per_kind_ent_correct[k.name] / n
             per_kind_metrics[f"val/{k.name}/dir_acc"] = per_kind_dir_correct[k.name] / n
+            per_kind_metrics[f"val/{k.name}/item_acc"] = per_kind_item_correct[k.name] / n
+            per_kind_metrics[f"val/{k.name}/misc_acc"] = per_kind_misc_correct[k.name] / n
 
         print(
             f"Epoch {epoch:3d}/{args.epochs} | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} | "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.3f} "
-            f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f})"
+            f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f} "
+            f"item={val_item_acc:.3f} misc={val_misc_acc:.3f})"
         )
         if per_kind_metrics:
             kind_summary = "  ".join(
@@ -555,15 +647,21 @@ def train_sft(args: SFTArgs):
                 "train/loss_tile": train_loss_tile,
                 "train/loss_ent": train_loss_ent,
                 "train/loss_dir": train_loss_dir,
+                "train/loss_item": train_loss_item,
+                "train/loss_misc": train_loss_misc,
                 "train/acc": train_acc,
                 "val/loss": val_loss,
                 "val/loss_tile": val_loss_tile,
                 "val/loss_ent": val_loss_ent,
                 "val/loss_dir": val_loss_dir,
+                "val/loss_item": val_loss_item,
+                "val/loss_misc": val_loss_misc,
                 "val/acc": val_acc,
                 "val/tile_acc": val_tile_acc,
                 "val/ent_acc": val_ent_acc,
                 "val/dir_acc": val_dir_acc,
+                "val/item_acc": val_item_acc,
+                "val/misc_acc": val_misc_acc,
                 "train/epoch": epoch,
                 **per_kind_metrics,
             })
@@ -583,6 +681,8 @@ def train_sft(args: SFTArgs):
         "val_tile_acc": round(val_tile_acc, 4),
         "val_ent_acc": round(val_ent_acc, 4),
         "val_dir_acc": round(val_dir_acc, 4),
+        "val_item_acc": round(val_item_acc, 4),
+        "val_misc_acc": round(val_misc_acc, 4),
         "val_loss": round(val_loss, 4),
         "num_samples": args.num_samples,
         "epochs": args.epochs,

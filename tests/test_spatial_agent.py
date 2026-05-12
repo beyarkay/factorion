@@ -82,12 +82,15 @@ class TestForwardPass:
         value = agent.get_value(obs)
         assert value.shape == (4,)
 
-    def test_item_and_misc_are_zero(self, agent):
-        """Item and misc should always be zero (hardcoded)."""
+    def test_item_and_misc_within_head_bounds(self, agent):
+        """Item and misc are now sampled from learned heads, so they must
+        be valid indices into items/Misc — not the old hardcoded 0."""
         obs = torch.randn(8, NUM_CHANNELS, 5, 5)
         action_out, _, _, _ = agent.get_action_and_value(obs)
-        assert (action_out["item"] == 0).all()
-        assert (action_out["misc"] == 0).all()
+        assert (action_out["item"] >= 0).all()
+        assert (action_out["item"] < agent.num_items).all()
+        assert (action_out["misc"] >= 0).all()
+        assert (action_out["misc"] < agent.num_misc).all()
 
 
 class TestLogProbConsistency:
@@ -130,7 +133,8 @@ class TestEntropy:
 
 class TestGradientFlow:
     def test_gradients_flow_through_all_params(self, agent):
-        """Verify gradients flow to encoder, tile_logits, ent_head, dir_head."""
+        """Verify gradients flow to encoder, tile_logits, and all four
+        per-tile heads (entity, direction, item, misc)."""
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
         loss = -(logp_B.mean()) + value_B.mean()
@@ -140,9 +144,11 @@ class TestGradientFlow:
         assert agent.tile_logits.weight.grad is not None
         assert agent.tile_logits.weight.grad.abs().sum() > 0
 
-        # Check entity/direction heads have gradients
-        assert agent.ent_head.weight.grad is not None
-        assert agent.dir_head.weight.grad is not None
+        # Check entity/direction/item/misc heads have gradients
+        for head_name in ("ent_head", "dir_head", "item_head", "misc_head"):
+            head = getattr(agent, head_name)
+            assert head.weight.grad is not None, f"No grad for {head_name}.weight"
+            assert head.weight.grad.abs().sum() > 0, f"Zero grad for {head_name}.weight"
 
         # Check encoder has gradients
         for name, param in agent.encoder.named_parameters():
@@ -150,7 +156,8 @@ class TestGradientFlow:
                 assert param.grad is not None, f"No gradient for {name}"
 
     def test_gradients_flow_during_update(self, agent):
-        """Simulate the PPO update path (action not None) and check grads."""
+        """Simulate the PPO update path (action not None) and check grads
+        propagate through every head."""
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         with torch.no_grad():
             action_out, _, _, _ = agent.get_action_and_value(obs)
@@ -158,9 +165,10 @@ class TestGradientFlow:
         y_B = action_out["xy"][:, 1]
         ent_B = action_out["entity"]
         dir_B = action_out["direction"]
+        item_B = action_out["item"]
+        misc_B = action_out["misc"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, torch.zeros_like(ent_B), torch.zeros_like(ent_B)],
-            dim=1,
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1,
         )
 
         _, logp_B, entropy_B, value_B = agent.get_action_and_value(
@@ -169,9 +177,9 @@ class TestGradientFlow:
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
-        assert agent.tile_logits.weight.grad is not None
-        assert agent.ent_head.weight.grad is not None
-        assert agent.dir_head.weight.grad is not None
+        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
+            head = getattr(agent, head_name)
+            assert head.weight.grad is not None, f"No grad for {head_name}"
 
 
 class TestBatchConsistency:

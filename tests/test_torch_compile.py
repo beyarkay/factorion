@@ -114,9 +114,9 @@ class TestCompiledGradientFlow:
 
         # Access underlying module's parameters through the compiled wrapper
         underlying = compiled_agent._orig_mod if hasattr(compiled_agent, "_orig_mod") else compiled_agent
-        assert underlying.tile_logits.weight.grad is not None
-        assert underlying.ent_head.weight.grad is not None
-        assert underlying.dir_head.weight.grad is not None
+        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
+            head = getattr(underlying, head_name)
+            assert head.weight.grad is not None, f"No grad for {head_name}"
 
         for name, param in underlying.encoder.named_parameters():
             if param.requires_grad:
