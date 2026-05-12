@@ -261,6 +261,45 @@ class TestPredictSchema:
         finally:
             path.unlink(missing_ok=True)
 
+    def test_predict_returns_eot_prob(self):
+        """_predict must surface `eot_prob` in [0, 1] so the UI can show
+        the model's "I'm done" probability."""
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            result = fb._predict(_empty_grid(4))
+            assert "eot_prob" in result
+            assert isinstance(result["eot_prob"], float)
+            assert 0.0 <= result["eot_prob"] <= 1.0
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_eot_head_loaded_on_size_match_dropped_on_mismatch(self):
+        """When the UI grid size matches the checkpoint size, the trained
+        eot_head weights must be loaded. When they differ, the head is
+        dropped (random-init) so cross-size loading doesn't crash on the
+        flat_dim shape mismatch."""
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            saved_w = fb._CHECKPOINT_STATE["eot_head.1.weight"]
+
+            # Size match → eot_head should match the checkpoint exactly.
+            # _get_agent moves the model to _AGENT_DEVICE (mps/cuda on
+            # local, cpu on CI); pull weights back to cpu for comparison.
+            agent4 = fb._get_agent(4)
+            assert torch.equal(agent4.eot_head[1].weight.cpu(), saved_w.cpu()), (
+                "eot_head must load when UI size == checkpoint size; "
+                "otherwise the UI shows a random-init eot prediction"
+            )
+
+            # Size mismatch → eot_head is the model's init, not the saved
+            # weights (and shapes differ so they can't be equal anyway).
+            agent6 = fb._get_agent(6)
+            assert agent6.eot_head[1].weight.shape != saved_w.shape
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_predict_argmax_in_tile_top(self):
         """The argmax (x, y) must appear in tile_top[0] — the UI relies
         on this invariant when drawing the dark-blue border."""
