@@ -296,17 +296,35 @@ def _get_agent(size: int) -> AgentCNN:
         agent = AgentCNN(envs, chan1=chan1, chan2=chan2, chan3=chan3)
     finally:
         envs.close()
-    # critic_head's flat dim depends on W*H, so its saved weights are
-    # the wrong shape whenever the UI grid size != the training size.
-    # Drop those entries before loading; we never call the critic during
-    # inference. strict=False would *not* save us here — it ignores
-    # missing/unexpected keys but still raises on shape mismatches.
+    # critic_head and eot_head are both Linear(flat_dim, 1) where
+    # flat_dim = chan3 * W * H, so their saved weights are the wrong
+    # shape whenever the UI grid size != the training size. strict=False
+    # would *not* save us here — it ignores missing/unexpected keys but
+    # still raises on shape mismatches, so we filter explicitly.
+    #
+    # critic_head: always dropped (the critic isn't called during
+    # inference, so loading it is wasted work even on a size match).
+    #
+    # eot_head: dropped on size mismatch (random init is fine because
+    # the UI doesn't act on the eot signal), kept on size match so the
+    # UI's eot panel shows the real trained prediction. Pre-#103
+    # checkpoints have no eot_head keys at all → load_state_dict
+    # (strict=False) leaves the freshly-initialised head in place.
+    expected_flat = chan3 * size * size
+    saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
+    keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
+    drop_prefixes: tuple[str, ...] = ("critic_head.",)
+    if not keep_eot:
+        drop_prefixes = drop_prefixes + ("eot_head.",)
     filtered = {
         k: v for k, v in _CHECKPOINT_STATE.items()
-        if not k.startswith("critic_head.")
+        if not k.startswith(drop_prefixes)
     }
     missing, unexpected = agent.load_state_dict(filtered, strict=False)
-    ignorable = {"critic_head.1.weight", "critic_head.1.bias"}
+    ignorable = {
+        "critic_head.1.weight", "critic_head.1.bias",
+        "eot_head.1.weight", "eot_head.1.bias",
+    }
     real_missing = [k for k in missing if k not in ignorable]
     real_unexpected = [k for k in unexpected if k not in ignorable]
     if real_missing or real_unexpected:
@@ -380,6 +398,10 @@ def _predict(grid: list[list[dict]]) -> dict:
 
     with torch.no_grad():
         encoded_BCWH = agent.encoder(obs_CWH)
+        # End-of-turn probability — sigmoid of the eot head's single
+        # logit. Surfaced in the side panel so the user can see when
+        # the model thinks the factory is finished.
+        eot_prob = float(torch.sigmoid(agent.eot_head(encoded_BCWH).squeeze(-1)).item())
         tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
         tile_probs = F.softmax(tile_logits, dim=-1)[0]
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
@@ -435,6 +457,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         "misc_top": misc_top,
         "misc_rest": misc_rest,
         "candidates": candidates,
+        "eot_prob": eot_prob,
     }
 
 
@@ -970,7 +993,14 @@ async function computePrediction() {{
       // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
       // The <pre> uses white-space:pre + overflow-x:auto so long top-p
       // lines scroll horizontally instead of wrapping.
+      // EOT line: model's "I'm done" probability. The {{stop}} /
+      // {{continue}} marker matches the >0.5 default threshold in
+      // agent.eot_should_stop — a quick read for whether the model
+      // would terminate an inference rollout right now.
+      const eotPct = fmtPct(data.eot_prob);
+      const eotMark = data.eot_prob > 0.5 ? '[stop]' : '[continue]';
       const lines = [
+        '  eot:       ' + eotPct + ' ' + eotMark,
         '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
         '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
         '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),
