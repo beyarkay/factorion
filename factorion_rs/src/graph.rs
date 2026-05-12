@@ -1,29 +1,38 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
-use crate::types::{Item, Misc, NodeId};
+use crate::entities::{entity_tiles, is_lane_aware, EntityEnum, FactoryEntity};
+use crate::types::{Item, Misc, NodeId, PortRole};
 use crate::world::World;
 
 /// A node in the factory graph.
+///
+/// One node corresponds to one logical I/O port of an entity (see
+/// `NodeId` / `PortRole`). Lane-aware entities (TB, UG, Splitter)
+/// contribute two nodes per anchor — one port-side and one starboard-
+/// side. Lane-agnostic entities contribute a single node.
+///
+/// Each node holds its OWN flow accumulator — `input` and `output` are
+/// flat `HashMap<Item, f64>` because the lane axis is encoded in the
+/// node's identity rather than in per-edge tags.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
     #[allow(dead_code)]
     pub id: NodeId,
     pub entity_kind: Item,
-    /// The item carried/produced/configured at this tile, if any. `None`
-    /// means the items channel was 0 (no item set).
     pub item: Option<Item>,
     pub misc: Misc,
     /// Recipe for assembling machines (determines what they craft).
     /// `None` for non-assemblers and assemblers with no recipe set.
     pub recipe_item: Option<Item>,
-    /// Accumulated input flow rates per item type.
     pub input: HashMap<Item, f64>,
-    /// Computed output flow rates per item type.
     pub output: HashMap<Item, f64>,
 }
 
 /// A directed graph representing a factory's entity connections.
+///
+/// Edges are plain `(src_index, dst_index)` — there are no per-edge
+/// lane tags. The lane that an edge represents is implicit in the
+/// node identities at either end.
 #[derive(Debug)]
 pub struct FactoryGraph {
     /// Nodes indexed by their position in this vec.
@@ -31,9 +40,9 @@ pub struct FactoryGraph {
     /// Map from NodeId to index in `nodes`.
     #[allow(dead_code)]
     pub node_index: HashMap<NodeId, usize>,
-    /// Adjacency list: edges[i] = list of node indices that node i has edges TO.
+    /// Adjacency list: successors[i] = node indices that node i has edges TO.
     pub successors: Vec<Vec<usize>>,
-    /// Reverse adjacency: predecessors[i] = list of node indices that have edges TO node i.
+    /// Reverse adjacency: predecessors[i] = node indices with edges TO node i.
     pub predecessors: Vec<Vec<usize>>,
 }
 
@@ -60,6 +69,19 @@ impl FactoryGraph {
     }
 }
 
+/// Port roles to instantiate as graph nodes for an entity. Lane-aware
+/// entities (per `FactoryEntity::is_lane_aware`) expand into two nodes;
+/// lane-agnostic into one. The lane-aware predicate is sourced from
+/// the trait via the `is_lane_aware` shim in `entities` — see the doc
+/// comment there.
+fn port_roles_for(kind: Item) -> &'static [PortRole] {
+    if is_lane_aware(kind) {
+        &[PortRole::Port, PortRole::Starboard]
+    } else {
+        &[PortRole::Single]
+    }
+}
+
 /// Build a directed graph from a World, mirroring the Python `world2graph` function.
 pub fn build_graph(world: &World) -> FactoryGraph {
     let mut nodes: Vec<GraphNode> = Vec::new();
@@ -71,7 +93,9 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     // (b) remap edge endpoints so all edges point to the anchor node.
     let mut anchor_of: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
 
-    // First pass: create one node per entity (anchor tile only for multi-tile)
+    // First pass: create one or two nodes per entity (anchor tile only
+    // for multi-tile entities). Lane-aware entities get a port and
+    // starboard node; lane-agnostic entities get a single node.
     for x in 0..world.width() {
         for y in 0..world.height() {
             // Empty cell, or a stray non-placeable item in the entities
@@ -104,33 +128,45 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                 }
             }
 
-            let node_id = NodeId::new(entity_kind, x, y);
+            // Allocate one or two nodes for this entity.
+            for &port in port_roles_for(entity_kind) {
+                let node_id = NodeId {
+                    entity_kind,
+                    x,
+                    y,
+                    port,
+                };
 
-            let output = if entity_kind == Item::Source {
-                let mut m = HashMap::new();
-                if let Some(i) = item {
-                    m.insert(i, f64::INFINITY);
-                }
-                m
-            } else {
-                HashMap::new()
-            };
-
-            let idx = nodes.len();
-            nodes.push(GraphNode {
-                id: node_id.clone(),
-                entity_kind,
-                item,
-                misc,
-                recipe_item: if entity_kind == Item::AssemblingMachine1 {
-                    item
+                // Source pre-populates its output with infinite flow on
+                // ITS configured item. Lane-aware sources don't exist —
+                // Source is always single. Each port-node starts empty
+                // otherwise.
+                let output = if entity_kind == Item::Source {
+                    let mut m = HashMap::new();
+                    if let Some(i) = item {
+                        m.insert(i, f64::INFINITY);
+                    }
+                    m
                 } else {
-                    None
-                },
-                input: HashMap::new(),
-                output,
-            });
-            node_index.insert(node_id, idx);
+                    HashMap::new()
+                };
+
+                let idx = nodes.len();
+                nodes.push(GraphNode {
+                    id: node_id.clone(),
+                    entity_kind,
+                    item,
+                    misc,
+                    recipe_item: if entity_kind == Item::AssemblingMachine1 {
+                        item
+                    } else {
+                        None
+                    },
+                    input: HashMap::new(),
+                    output,
+                });
+                node_index.insert(node_id, idx);
+            }
 
             // entity_kind is guaranteed placeable by the loop guard, so
             // EntityEnum::new always returns Some here. We still match
@@ -143,10 +179,11 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     }
 
     // Build adjacency lists, remapping any edge endpoint that targets a
-    // secondary tile of a multi-tile entity to the anchor node instead.
+    // secondary tile of a multi-tile entity to the anchor instead, while
+    // preserving the port role.
     let n = nodes.len();
-    let mut successors = vec![Vec::new(); n];
-    let mut predecessors = vec![Vec::new(); n];
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     for (src_id, dst_id) in &edge_list {
         let src_remapped = remap_to_anchor(src_id, &anchor_of);
@@ -171,11 +208,17 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     }
 }
 
-/// If (id.x, id.y) is a secondary tile of a multi-tile entity, return a new
-/// NodeId pointing to the anchor. Otherwise return the original.
+/// If (id.x, id.y) is a secondary tile of a multi-tile entity, return a
+/// new NodeId pointing to the anchor (preserving entity_kind and port).
+/// Otherwise return the original.
 fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usize)>) -> NodeId {
     if let Some(&(ax, ay)) = anchor_of.get(&(id.x, id.y)) {
-        NodeId::new(id.entity_kind, ax, ay)
+        NodeId {
+            entity_kind: id.entity_kind,
+            x: ax,
+            y: ay,
+            port: id.port,
+        }
     } else {
         id.clone()
     }
@@ -187,6 +230,11 @@ mod tests {
     use super::*;
     use crate::types::{Direction, Misc};
 
+    /// Helper: assert there's at least one edge from src→dst in `g`.
+    fn has_edge_to(g: &FactoryGraph, src: usize, dst: usize) -> bool {
+        g.successors[src].contains(&dst)
+    }
+
     #[test]
     fn test_empty_world_graph() {
         let w = World::empty(5, 5);
@@ -195,19 +243,40 @@ mod tests {
     }
 
     #[test]
-    fn test_single_belt_no_edges() {
+    fn test_single_belt_creates_two_nodes() {
+        // Lane-aware entities allocate one port-node + one starboard-node.
         let mut w = World::empty(3, 3);
         w.place(1, 1, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 1);
-        assert!(g.successors[0].is_empty());
-        assert!(g.predecessors[0].is_empty());
+        assert_eq!(g.node_count(), 2);
+        let p = g.get_index(&NodeId::port(Item::TransportBelt, 1, 1));
+        let s = g.get_index(&NodeId::starboard(Item::TransportBelt, 1, 1));
+        assert!(p.is_some());
+        assert!(s.is_some());
+        assert_ne!(p, s);
+        // Belt has no neighbours → no edges from either node.
+        for idx in [p.unwrap(), s.unwrap()] {
+            assert!(g.successors[idx].is_empty());
+            assert!(g.predecessors[idx].is_empty());
+        }
     }
 
     #[test]
-    fn test_belt_chain_graph() {
-        // Source → Belt → Belt → Sink
+    fn test_single_inserter_creates_one_node() {
+        // Lane-agnostic entities allocate a single node.
+        let mut w = World::empty(3, 3);
+        w.place(1, 1, Item::Inserter, Direction::East, None);
+        let g = build_graph(&w);
+        assert_eq!(g.node_count(), 1);
+        assert!(g.get_index(&NodeId::single(Item::Inserter, 1, 1)).is_some());
+        assert!(g.get_index(&NodeId::port(Item::Inserter, 1, 1)).is_none());
+    }
+
+    #[test]
+    fn test_belt_chain_lane_preserving() {
+        // Source → Belt → Belt → Sink. Belts emit two lane-preserving
+        // edges per parallel forward connection.
         let mut w = World::empty(5, 1);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
@@ -215,59 +284,43 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 4);
+        // 1 source + 2×2 belt + 1 sink = 6 nodes.
+        assert_eq!(g.node_count(), 6);
 
-        // Belt(1,0) → Belt(2,0) edge should exist
-        let belt1 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 1, 0))
+        let belt1_p = g
+            .get_index(&NodeId::port(Item::TransportBelt, 1, 0))
             .unwrap();
-        let belt2 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 2, 0))
+        let belt1_s = g
+            .get_index(&NodeId::starboard(Item::TransportBelt, 1, 0))
             .unwrap();
-        assert!(g.successors[belt1].contains(&belt2));
-        assert!(g.predecessors[belt2].contains(&belt1));
+        let belt2_p = g
+            .get_index(&NodeId::port(Item::TransportBelt, 2, 0))
+            .unwrap();
+        let belt2_s = g
+            .get_index(&NodeId::starboard(Item::TransportBelt, 2, 0))
+            .unwrap();
 
-        // Source uses inserter-style connections: drops onto belt at (1,0)
-        let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
-        assert!(g.successors[source].contains(&belt1));
+        // Lane-preserving belt-to-belt: port→port, stbd→stbd.
+        assert!(has_edge_to(&g, belt1_p, belt2_p));
+        assert!(has_edge_to(&g, belt1_s, belt2_s));
+        // No cross-lane wiring for parallel belts.
+        assert!(!has_edge_to(&g, belt1_p, belt2_s));
+        assert!(!has_edge_to(&g, belt1_s, belt2_p));
 
-        // Sink picks up from belt at (2,0)
-        let sink = g.get_index(&NodeId::new(Item::Sink, 3, 0)).unwrap();
-        assert!(g.predecessors[sink].contains(&belt2));
+        // Source feeds both lanes of belt1.
+        let source = g.get_index(&NodeId::single(Item::Source, 0, 0)).unwrap();
+        assert!(has_edge_to(&g, source, belt1_p));
+        assert!(has_edge_to(&g, source, belt1_s));
+
+        // Sink drains both lanes of belt2.
+        let sink = g.get_index(&NodeId::single(Item::Sink, 3, 0)).unwrap();
+        assert!(has_edge_to(&g, belt2_p, sink));
+        assert!(has_edge_to(&g, belt2_s, sink));
     }
 
     #[test]
-    fn test_inserter_chain_graph() {
-        // Source → Inserter → Belt → Inserter → Sink
-        let mut w = World::empty(5, 1);
-        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
-        w.place(1, 0, Item::Inserter, Direction::East, None);
-        w.place(2, 0, Item::TransportBelt, Direction::East, None);
-        w.place(3, 0, Item::Inserter, Direction::East, None);
-        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
-
-        let g = build_graph(&w);
-        assert_eq!(g.node_count(), 5);
-
-        // Source → Inserter(1,0)
-        let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
-        let ins1 = g.get_index(&NodeId::new(Item::Inserter, 1, 0)).unwrap();
-        assert!(g.successors[source].contains(&ins1) || g.predecessors[ins1].contains(&source));
-
-        // Inserter(1,0) → Belt(2,0)
-        let belt = g
-            .get_index(&NodeId::new(Item::TransportBelt, 2, 0))
-            .unwrap();
-        assert!(g.successors[ins1].contains(&belt));
-
-        // Belt(2,0) → Inserter(3,0)
-        let ins2 = g.get_index(&NodeId::new(Item::Inserter, 3, 0)).unwrap();
-        assert!(g.predecessors[ins2].contains(&belt));
-    }
-
-    #[test]
-    fn test_underground_belt_graph() {
-        // Belt → Underground(down) ... Underground(up) → Belt
+    fn test_underground_belt_lane_preserving() {
+        // Belt → UG-down ... UG-up → Belt — lanes preserved through tunnel.
         let mut w = World::empty(6, 1);
         w.place(0, 0, Item::TransportBelt, Direction::East, None);
         w.place_underground(1, 0, Direction::East, Misc::UndergroundDown);
@@ -275,25 +328,22 @@ mod tests {
         w.place(5, 0, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 4);
+        assert_eq!(g.node_count(), 8); // 4 entities × 2 lanes
 
-        // Underground(down,1,0) → Underground(up,4,0)
-        let ug_down = g
-            .get_index(&NodeId::new(Item::UndergroundBelt, 1, 0))
+        let down_p = g
+            .get_index(&NodeId::port(Item::UndergroundBelt, 1, 0))
             .unwrap();
-        let ug_up = g
-            .get_index(&NodeId::new(Item::UndergroundBelt, 4, 0))
+        let down_s = g
+            .get_index(&NodeId::starboard(Item::UndergroundBelt, 1, 0))
             .unwrap();
-        assert!(g.successors[ug_down].contains(&ug_up));
-
-        // Belt(0,0) should NOT connect to underground_down (belt doesn't connect to
-        // underground_down because its src_is_beltish check excludes underground_down)
-        // Actually wait: Belt at (0,0) facing east, underground at (1,0) is ahead.
-        // The belt's connections check dst: is it a belt? UndergroundBelt is belt-ish → dst_is_belt = true.
-        // Not opposing direction → should connect.
-        let belt0 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 0, 0))
+        let up_p = g
+            .get_index(&NodeId::port(Item::UndergroundBelt, 4, 0))
             .unwrap();
-        assert!(g.successors[belt0].contains(&ug_down));
+        let up_s = g
+            .get_index(&NodeId::starboard(Item::UndergroundBelt, 4, 0))
+            .unwrap();
+        assert!(has_edge_to(&g, down_p, up_p));
+        assert!(has_edge_to(&g, down_s, up_s));
+        assert!(!has_edge_to(&g, down_p, up_s));
     }
 }

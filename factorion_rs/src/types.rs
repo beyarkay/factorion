@@ -52,7 +52,6 @@ impl Direction {
     }
 
     /// The opposite direction.
-    #[allow(dead_code)]
     pub fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
@@ -62,7 +61,108 @@ impl Direction {
             Direction::None => Direction::None,
         }
     }
+
+    /// (dx, dy) offset to the cell on the port (left) side of a belt facing
+    /// `self`. Port and starboard are *labels on lanes* inside the same 1×1
+    /// belt tile — they have no offset within the tile. This helper returns
+    /// the offset to the *neighbouring cell* that sits on the port side.
+    ///
+    /// Derived as a 90° CCW rotation of `delta()`: (dx, dy) → (dy, -dx).
+    pub fn port_neighbor_offset(self) -> (i64, i64) {
+        let (dx, dy) = self.delta();
+        (dy, -dx)
+    }
+
+    /// (dx, dy) offset to the cell on the starboard (right) side of a belt
+    /// facing `self`. 90° CW rotation of `delta()`: (dx, dy) → (-dy, dx).
+    pub fn starboard_neighbor_offset(self) -> (i64, i64) {
+        let (dx, dy) = self.delta();
+        (-dy, dx)
+    }
+
+    /// True if `self` and `other` are perpendicular (one is N/S and the
+    /// other is E/W). False if either is `Direction::None`.
+    pub fn is_perpendicular(self, other: Direction) -> bool {
+        match (self, other) {
+            (Direction::None, _) | (_, Direction::None) => false,
+            (Direction::North | Direction::South, Direction::East | Direction::West) => true,
+            (Direction::East | Direction::West, Direction::North | Direction::South) => true,
+            _ => false,
+        }
+    }
+
+    /// Given a `(dx, dy)` offset relative to a belt facing `self`, return
+    /// which lane-side that cell sits on. Returns `None` for the in-line
+    /// cells (forward / backward) and any other offset.
+    pub fn side_of(self, dx: i64, dy: i64) -> Option<LaneSide> {
+        if (dx, dy) == self.port_neighbor_offset() {
+            Some(LaneSide::Port)
+        } else if (dx, dy) == self.starboard_neighbor_offset() {
+            Some(LaneSide::Starboard)
+        } else {
+            None
+        }
+    }
 }
+
+/// Which side of a belt's flow direction a lane is on.
+/// `Port` = left of travel direction; `Starboard` = right.
+///
+/// This is the geometry-side type returned by `Direction::side_of()` —
+/// it answers "is this neighbour cell on the port or starboard side of a
+/// belt facing me?". For *graph node identity* (which port-of-an-entity
+/// a node represents), use `PortRole` below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaneSide {
+    Port,
+    Starboard,
+}
+
+impl LaneSide {
+    pub fn opposite(self) -> Self {
+        match self {
+            LaneSide::Port => LaneSide::Starboard,
+            LaneSide::Starboard => LaneSide::Port,
+        }
+    }
+}
+
+/// Identifies which I/O *port* of a multi-port entity a graph node
+/// represents.
+///
+/// One graph node corresponds to one logical I/O port. Lane-aware
+/// entities (TransportBelt, UndergroundBelt, Splitter) get separate
+/// nodes per lane (`Port` and `Starboard`); lane-agnostic entities
+/// (Inserter, Source, Sink, AssemblingMachine) get a single node
+/// tagged `Single`.
+///
+/// This generalises beyond the lane axis — future entities with
+/// multiple structurally distinct I/O channels (priority splitters,
+/// chemical plants with two fluid inputs and one output, etc.) can add
+/// additional `PortRole` variants without changing the edge model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortRole {
+    /// Lane-agnostic entities expose a single node.
+    Single,
+    /// Lane-aware entities split into a port-side node...
+    Port,
+    /// ...and a starboard-side node.
+    Starboard,
+}
+
+impl From<LaneSide> for PortRole {
+    fn from(s: LaneSide) -> Self {
+        match s {
+            LaneSide::Port => PortRole::Port,
+            LaneSide::Starboard => PortRole::Starboard,
+        }
+    }
+}
+
+/// Per-lane flow rate cap on a transport belt or splitter output. Each
+/// lane carries up to 7.5 items/sec; the per-belt total of 15 i/s is
+/// reached when both lanes are saturated.
+pub const LANE_FLOW_RATE: f64 = 7.5;
 
 /// Underground belt state flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1147,25 +1247,82 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Matches the Python format: "entity_name\n@x,y".
 ///
-/// `entity_kind` is an `Item` (post-unification) and should always be
-/// placeable — only placeable items become graph nodes.
+/// One graph node corresponds to one logical I/O port of an entity:
+/// - Lane-aware entities (TB, UG, Splitter) place TWO nodes per anchor
+///   tile, one with `port = Port` and one with `port = Starboard`.
+/// - Lane-agnostic entities (Inserter, Source, Sink, AssemblingMachine)
+///   place a single node with `port = Single`.
+///
+/// `entity_kind` should always be placeable — only placeable items
+/// become graph nodes. The `(entity_kind, x, y, port)` tuple uniquely
+/// identifies a node.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
     pub entity_kind: Item,
     pub x: usize,
     pub y: usize,
+    pub port: PortRole,
 }
 
 impl NodeId {
-    pub fn new(entity_kind: Item, x: usize, y: usize) -> Self {
-        Self { entity_kind, x, y }
+    /// Build a NodeId for a lane-agnostic entity (Inserter, Source,
+    /// Sink, AssemblingMachine). For lane-aware entities use `port` /
+    /// `starboard`.
+    pub fn single(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Single,
+        }
+    }
+
+    /// Build a NodeId for the port-lane node of a lane-aware entity.
+    pub fn port(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Port,
+        }
+    }
+
+    /// Build a NodeId for the starboard-lane node of a lane-aware entity.
+    pub fn starboard(entity_kind: Item, x: usize, y: usize) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: PortRole::Starboard,
+        }
+    }
+
+    /// Build a NodeId targeting a specific lane side of a lane-aware
+    /// entity. Convenience for converting from geometry to graph identity.
+    pub fn lane(entity_kind: Item, x: usize, y: usize, side: LaneSide) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            port: side.into(),
+        }
     }
 
     #[allow(dead_code)]
     pub fn label(&self) -> String {
-        format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
+        let suffix = match self.port {
+            PortRole::Single => "",
+            PortRole::Port => ":port",
+            PortRole::Starboard => ":stbd",
+        };
+        format!(
+            "{}{}\n@{},{}",
+            self.entity_kind.name(),
+            suffix,
+            self.x,
+            self.y
+        )
     }
 }
 
@@ -1199,6 +1356,130 @@ mod tests {
         assert_eq!(Direction::South.opposite(), Direction::North);
         assert_eq!(Direction::East.opposite(), Direction::West);
         assert_eq!(Direction::West.opposite(), Direction::East);
+    }
+
+    #[test]
+    fn test_port_neighbor_offset() {
+        // North-facer (moving up): port (left) = west
+        assert_eq!(Direction::North.port_neighbor_offset(), (-1, 0));
+        // East-facer (moving right): port = north
+        assert_eq!(Direction::East.port_neighbor_offset(), (0, -1));
+        // South-facer (moving down): port = east
+        assert_eq!(Direction::South.port_neighbor_offset(), (1, 0));
+        // West-facer (moving left): port = south
+        assert_eq!(Direction::West.port_neighbor_offset(), (0, 1));
+    }
+
+    #[test]
+    fn test_starboard_neighbor_offset() {
+        // Starboard is always opposite of port and 90° CW of forward.
+        assert_eq!(Direction::North.starboard_neighbor_offset(), (1, 0));
+        assert_eq!(Direction::East.starboard_neighbor_offset(), (0, 1));
+        assert_eq!(Direction::South.starboard_neighbor_offset(), (-1, 0));
+        assert_eq!(Direction::West.starboard_neighbor_offset(), (0, -1));
+    }
+
+    #[test]
+    fn test_port_starboard_are_opposite() {
+        for dir in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            let (px, py) = dir.port_neighbor_offset();
+            let (sx, sy) = dir.starboard_neighbor_offset();
+            assert_eq!((px, py), (-sx, -sy), "port ≠ -starboard for {:?}", dir);
+        }
+    }
+
+    #[test]
+    fn test_is_perpendicular() {
+        assert!(Direction::North.is_perpendicular(Direction::East));
+        assert!(Direction::North.is_perpendicular(Direction::West));
+        assert!(Direction::South.is_perpendicular(Direction::East));
+        assert!(Direction::South.is_perpendicular(Direction::West));
+        assert!(Direction::East.is_perpendicular(Direction::North));
+        assert!(Direction::East.is_perpendicular(Direction::South));
+        assert!(Direction::West.is_perpendicular(Direction::North));
+        assert!(Direction::West.is_perpendicular(Direction::South));
+
+        // Parallel cases (same or opposite) → not perpendicular
+        for d in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            assert!(!d.is_perpendicular(d));
+            assert!(!d.is_perpendicular(d.opposite()));
+        }
+
+        // Direction::None is never perpendicular to anything
+        assert!(!Direction::None.is_perpendicular(Direction::East));
+        assert!(!Direction::East.is_perpendicular(Direction::None));
+        assert!(!Direction::None.is_perpendicular(Direction::None));
+    }
+
+    #[test]
+    fn test_side_of() {
+        // North-facing belt: cell at (-1, 0) is on its port side, (1, 0) starboard.
+        assert_eq!(Direction::North.side_of(-1, 0), Some(LaneSide::Port));
+        assert_eq!(Direction::North.side_of(1, 0), Some(LaneSide::Starboard));
+        // In-line offsets (forward / backward) are not lane sides.
+        assert_eq!(Direction::North.side_of(0, -1), None);
+        assert_eq!(Direction::North.side_of(0, 1), None);
+        // Non-adjacent offsets are not lane sides either.
+        assert_eq!(Direction::North.side_of(2, 0), None);
+        assert_eq!(Direction::North.side_of(0, 0), None);
+
+        // South-facing belt: port = east, starboard = west.
+        assert_eq!(Direction::South.side_of(1, 0), Some(LaneSide::Port));
+        assert_eq!(Direction::South.side_of(-1, 0), Some(LaneSide::Starboard));
+
+        // East-facing belt: port = north, starboard = south.
+        assert_eq!(Direction::East.side_of(0, -1), Some(LaneSide::Port));
+        assert_eq!(Direction::East.side_of(0, 1), Some(LaneSide::Starboard));
+
+        // West-facing belt: port = south, starboard = north.
+        assert_eq!(Direction::West.side_of(0, 1), Some(LaneSide::Port));
+        assert_eq!(Direction::West.side_of(0, -1), Some(LaneSide::Starboard));
+    }
+
+    #[test]
+    fn test_lane_side_opposite() {
+        assert_eq!(LaneSide::Port.opposite(), LaneSide::Starboard);
+        assert_eq!(LaneSide::Starboard.opposite(), LaneSide::Port);
+    }
+
+    #[test]
+    fn test_port_role_from_lane_side() {
+        assert_eq!(PortRole::from(LaneSide::Port), PortRole::Port);
+        assert_eq!(PortRole::from(LaneSide::Starboard), PortRole::Starboard);
+    }
+
+    #[test]
+    fn test_node_id_helpers() {
+        let single = NodeId::single(Item::Inserter, 1, 2);
+        assert_eq!(single.port, PortRole::Single);
+
+        let p = NodeId::port(Item::TransportBelt, 3, 4);
+        assert_eq!(p.port, PortRole::Port);
+
+        let s = NodeId::starboard(Item::TransportBelt, 3, 4);
+        assert_eq!(s.port, PortRole::Starboard);
+        // Same entity + tile but different port → distinct NodeIds.
+        assert_ne!(p, s);
+
+        let p2 = NodeId::lane(Item::Splitter, 0, 0, LaneSide::Port);
+        assert_eq!(p2.port, PortRole::Port);
+    }
+
+    #[test]
+    fn test_lane_flow_rate_constant() {
+        // Two lanes × 7.5 i/s = 15 i/s = belt total cap.
+        assert_eq!(LANE_FLOW_RATE * 2.0, Item::TransportBelt.flow_rate());
+        assert_eq!(LANE_FLOW_RATE * 2.0, Item::UndergroundBelt.flow_rate());
     }
 
     #[test]
@@ -1373,7 +1654,13 @@ mod tests {
 
     #[test]
     fn test_node_id_label() {
-        let id = NodeId::new(Item::TransportBelt, 3, 5);
-        assert_eq!(id.label(), "transport_belt\n@3,5");
+        // Lane-agnostic node: no suffix.
+        let single = NodeId::single(Item::Inserter, 3, 5);
+        assert_eq!(single.label(), "inserter\n@3,5");
+        // Lane-aware nodes get a :port / :stbd suffix.
+        let p = NodeId::port(Item::TransportBelt, 3, 5);
+        assert_eq!(p.label(), "transport_belt:port\n@3,5");
+        let s = NodeId::starboard(Item::TransportBelt, 3, 5);
+        assert_eq!(s.label(), "transport_belt:stbd\n@3,5");
     }
 }

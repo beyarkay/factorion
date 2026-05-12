@@ -5,9 +5,10 @@ designing a factory and visualising the flow graph it produces.
 
 Why a server (and not a single static HTML file like
 ``visualise_sft_data.py``): graph construction (``world2graph``) and
-throughput calculation (``calc_throughput``) live in Python, so the
-browser POSTs the grid to the server, which runs them and returns a
-rendered graph image.
+throughput calculation (``factorion_rs.simulate_throughput``, the
+lane-aware Rust solver) live behind Python/Rust APIs, so the browser
+POSTs the grid to the server, which runs them and returns a rendered
+graph image.
 
 Usage:
     uv run python scripts/factory_builder.py
@@ -40,6 +41,7 @@ os.environ.setdefault("WANDB_DISABLED", "true")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import factorion  # noqa: E402
+import factorion_rs  # noqa: E402
 
 _, _objs = factorion.datatypes.run()
 _, _fns = factorion.functions.run()
@@ -52,7 +54,6 @@ items = _objs["items"]
 entities = _objs["entities"]
 new_world = _fns["new_world"]
 world2graph = _fns["world2graph"]
-calc_throughput = _fns["calc_throughput"]
 plot_flow_network = _fns["plot_flow_network"]
 ent_str2b64img = _fns["ent_str2b64img"]
 
@@ -164,11 +165,13 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
         plt.close("all")
 
     try:
-        throughput, num_unreachable = calc_throughput(G)
-        tp_text = ", ".join(
-            f"{k}: {v:.2f}" for k, v in throughput.items()
-        ) or "(none)"
-        info = f"throughput: {tp_text}  ·  unreachable nodes: {num_unreachable}"
+        throughput, num_unreachable = factorion_rs.simulate_throughput(
+            world.numpy().astype(np.int64)
+        )
+        info = (
+            f"throughput: {throughput:.2f} i/s  ·  "
+            f"unreachable nodes: {num_unreachable}"
+        )
     except Exception as e:
         info = f"throughput failed: {e}"
 

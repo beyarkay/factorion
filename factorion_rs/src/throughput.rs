@@ -2,29 +2,23 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::Item;
+use crate::types::{Item, LANE_FLOW_RATE};
 
 /// Calculate the throughput of a factory graph.
 ///
-/// Returns (output_per_item, num_unreachable) matching the Python `calc_throughput`.
-///
-/// Algorithm:
-/// 1. Detect cycles → return 0 if any exist
-/// 2. BFS from sources (stack_inserters), propagating flow rates
-/// 3. At each node, compute output from input using entity trait
-/// 4. Collect output at sinks (bulk_inserters)
-/// 5. Count unreachable nodes
+/// Returns `(output_per_item, num_unreachable)` matching the Python
+/// `calc_throughput`. The flow is computed per port-node — lane info is
+/// implicit in node identities, so the solver itself is simpler than
+/// the per-edge-tagged version it replaced.
 pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     if graph.node_count() == 0 {
         return (HashMap::new(), 0);
     }
 
-    // 1. Cycle detection — return empty map (downstream treats as 0 throughput).
     if has_cycle(graph) {
         return (HashMap::new(), 0);
     }
 
-    // Identify sources and sinks
     let sources: Vec<usize> = (0..graph.node_count())
         .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
         .collect();
@@ -33,15 +27,12 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         .collect();
 
     if sources.is_empty() || sinks.is_empty() {
-        // No sources or no sinks → no throughput, but all nodes are unreachable
-        return (HashMap::new(), graph.node_count());
+        return (HashMap::new(), count_entities(graph));
     }
 
-    // Find nodes reachable from sources (for determining processing order)
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
-    // 2. Kahn's algorithm: topological BFS from sources.
-    // Count "true" in-degree (only from predecessors reachable from a source).
+    // Kahn's algorithm: in-degree counts reachable predecessors.
     let mut in_degree: Vec<usize> = graph
         .predecessors
         .iter()
@@ -56,13 +47,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut in_queue: HashSet<usize> = HashSet::new();
 
-    // Initialize: enqueue all sources (in-degree 0 among reachable nodes)
     for &s in &sources {
         queue.push_back(s);
         in_queue.insert(s);
     }
 
-    // Clone the graph's nodes into a mutable working copy
     let mut node_inputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.input.clone()).collect();
     let mut node_outputs: Vec<HashMap<Item, f64>> =
@@ -79,9 +68,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
 
         let entity_kind = graph.nodes[node_idx].entity_kind;
 
-        // If this node's output is already set (e.g., source), skip input computation
         if node_outputs[node_idx].is_empty() {
-            // Accumulate input from all predecessors' outputs
+            // Accumulate input from all predecessors' outputs.
             let mut accumulated_input: HashMap<Item, f64> = HashMap::new();
             for &pred in &graph.predecessors[node_idx] {
                 for (&item, &flow_rate) in &node_outputs[pred] {
@@ -90,20 +78,22 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
             }
             node_inputs[node_idx] = accumulated_input.clone();
 
-            // Compute output using stack-allocated enum dispatch (no heap allocation)
             let item = if entity_kind == Item::AssemblingMachine1 {
                 graph.nodes[node_idx].recipe_item
             } else {
                 graph.nodes[node_idx].item
             };
             let misc = graph.nodes[node_idx].misc;
-            // entity_kind comes from a graph node, which only contains
-            // placeable items, so new() always returns Some here.
             if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
             }
 
-            // For splitters, divide output evenly among successors
+            // Splitter post-processing: divide output evenly across
+            // successors (each output port-node gets an equal share),
+            // then cap each output at LANE_FLOW_RATE — the per-belt-lane
+            // bound. With node-per-port the divisor sees only same-lane
+            // successors of THIS port-node, so no per-lane filter is
+            // needed.
             if entity_kind == Item::Splitter {
                 let num_successors = graph.successors[node_idx].len();
                 if num_successors > 1 {
@@ -111,17 +101,18 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
                         *rate /= num_successors as f64;
                     }
                 }
+                for rate in node_outputs[node_idx].values_mut() {
+                    *rate = rate.min(LANE_FLOW_RATE);
+                }
             }
         }
 
         already_processed.insert(node_idx);
 
-        // Decrement in-degree of successors; enqueue when all predecessors processed
         for &succ in &graph.successors[node_idx] {
             if already_processed.contains(&succ) {
                 continue;
             }
-            // Saturating sub in case of edges from unreachable predecessors
             in_degree[succ] = in_degree[succ].saturating_sub(1);
             if in_degree[succ] == 0 && !in_queue.contains(&succ) {
                 queue.push_back(succ);
@@ -130,7 +121,9 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         }
     }
 
-    // 3. Collect output at sinks
+    // Sum sink outputs across all sink nodes (including both lane-port
+    // nodes if the sink is fed by a multi-lane upstream — sinks have a
+    // single node and aggregate naturally).
     let mut total_output: HashMap<Item, f64> = HashMap::new();
     for &sink_idx in &sinks {
         for (&item, &rate) in &node_outputs[sink_idx] {
@@ -138,34 +131,53 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         }
     }
 
-    // 4. Count unreachable nodes
-    // Match Python: unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
-    // Note: reachable_from includes the start nodes themselves, so sources are in
-    // reachable_from_source and sinks are in can_reach_sink. If there's a path from
-    // source to sink, both will be in the intersection. If not, they're unreachable.
-    let can_reach_sink = reachable_from(&sinks, graph, true); // reverse reachability
+    let can_reach_sink = reachable_from(&sinks, graph, true);
     let reachable_from_source = reachable_from(&sources, graph, false);
     let on_path: HashSet<usize> = can_reach_sink
         .intersection(&reachable_from_source)
         .copied()
         .collect();
 
-    let all_nodes: HashSet<usize> = (0..graph.node_count()).collect();
-    let unreachable = all_nodes.difference(&on_path).count();
+    // Unreachable counts ENTITIES (one per anchor tile), not port-nodes.
+    // A lane-aware entity contributes two port-nodes; if even one of
+    // them is on the source→sink path, the entity is "doing something"
+    // and should not count as unreachable. This matches the per-entity
+    // reachability count Python's calc_throughput returns.
+    let mut entity_to_nodes: HashMap<(Item, usize, usize), Vec<usize>> = HashMap::new();
+    for (i, node) in graph.nodes.iter().enumerate() {
+        let key = (node.entity_kind, node.id.x, node.id.y);
+        entity_to_nodes.entry(key).or_default().push(i);
+    }
+    let unreachable = entity_to_nodes
+        .values()
+        .filter(|nodes| nodes.iter().all(|&n| !on_path.contains(&n)))
+        .count();
 
     (total_output, unreachable)
+}
+
+/// Count distinct entities (anchor tiles) in the graph. Lane-aware
+/// entities contribute one count regardless of how many port-nodes
+/// they span — matches the per-entity reachability count Python's
+/// `calc_throughput` returns.
+fn count_entities(graph: &FactoryGraph) -> usize {
+    let mut entities: HashSet<(Item, usize, usize)> = HashSet::new();
+    for node in &graph.nodes {
+        entities.insert((node.entity_kind, node.id.x, node.id.y));
+    }
+    entities.len()
 }
 
 /// Check if the graph has any cycles using DFS.
 fn has_cycle(graph: &FactoryGraph) -> bool {
     let n = graph.node_count();
-    let mut visited = vec![0u8; n]; // 0=unvisited, 1=in-stack, 2=done
+    let mut visited = vec![0u8; n];
 
     for start in 0..n {
         if visited[start] != 0 {
             continue;
         }
-        let mut stack = vec![(start, 0usize)]; // (node, next_successor_index)
+        let mut stack = vec![(start, 0usize)];
         visited[start] = 1;
 
         while let Some((node, succ_idx)) = stack.last_mut() {
@@ -173,7 +185,7 @@ fn has_cycle(graph: &FactoryGraph) -> bool {
                 let next = graph.successors[*node][*succ_idx];
                 *succ_idx += 1;
                 if visited[next] == 1 {
-                    return true; // Back edge = cycle
+                    return true;
                 }
                 if visited[next] == 0 {
                     visited[next] = 1;
@@ -188,8 +200,6 @@ fn has_cycle(graph: &FactoryGraph) -> bool {
     false
 }
 
-/// Find all nodes reachable from `starts`.
-/// If `reverse` is true, traverse predecessors instead of successors.
 fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> HashSet<usize> {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -216,8 +226,8 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::graph::build_graph;
-    use crate::types::{Direction, Misc, NodeId};
+    use crate::graph::{build_graph, GraphNode};
+    use crate::types::{Direction, Misc, NodeId, PortRole};
     use crate::world::World;
 
     #[test]
@@ -231,11 +241,8 @@ mod tests {
 
     #[test]
     fn test_source_belt_belt_sink() {
-        // Source → Belt → Belt → Sink
-        // Source and Sink act as inserters (drop onto / pickup from belts).
-        // Throughput limited by belt rate (15.0).
+        // Source feeds both belt lanes; each lane caps at 7.5; sink aggregates 15.
         let mut w = World::empty(4, 1);
-
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
         w.place(2, 0, Item::TransportBelt, Direction::East, None);
@@ -243,13 +250,6 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-
-        // Belt limits throughput to 15.0
-        assert!(
-            output.contains_key(&Item::CopperCable),
-            "Expected CopperCable in output, got {:?}",
-            output
-        );
         let throughput = output[&Item::CopperCable];
         assert!(
             (throughput - 15.0).abs() < 1e-9,
@@ -261,10 +261,7 @@ mod tests {
 
     #[test]
     fn test_source_inserter_belt_sink() {
-        // Source → Inserter → Belt → Sink
-        // Throughput limited by inserter rate (0.86).
         let mut w = World::empty(4, 1);
-
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::Inserter, Direction::East, None);
         w.place(2, 0, Item::TransportBelt, Direction::East, None);
@@ -272,12 +269,6 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-
-        assert!(
-            output.contains_key(&Item::CopperCable),
-            "Expected CopperCable in output, got {:?}",
-            output
-        );
         let throughput = output[&Item::CopperCable];
         assert!(
             (throughput - 0.86).abs() < 1e-9,
@@ -289,38 +280,25 @@ mod tests {
 
     #[test]
     fn test_disconnected_entities() {
-        // Source and sink exist but aren't connected. A lone belt sits in the middle.
         let mut w = World::empty(5, 5);
-
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(4, 4, Item::Sink, Direction::East, Some(Item::CopperCable));
         w.place(2, 2, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-
-        // No path from source to sink → empty output (no sources/sinks connected)
-        // With our early return for no-path case, all 3 entities are unreachable
         assert!(output.is_empty() || output.values().all(|&v| v == 0.0));
-        // Source, sink, and belt are all disconnected → no node is on a source→sink path
-        // Python confirms: calc_throughput returns ({}, 2) for this case (but the
-        // source→sink intersection is empty since there's no path, so all nodes are
-        // unreachable except... wait, intersection is empty so unreachable = 3? No:
-        // The Python returns 2. Let me think... The Python uses reachable_from
-        // which includes start nodes. reachable_from_source = {source}.
-        // can_reach_sink = {sink}. Intersection = empty. unreachable = 3 - 0 = 3.
-        // But Python actually returns 2! That's because... hmm, let me just check
-        // the actual value matches Python.
-        assert_eq!(unreachable, 3); // all 3 entities are disconnected
+        // Three ENTITIES, all disconnected → unreachable = 3 (the belt's
+        // two port-nodes are both off-path so the entity counts once).
+        assert_eq!(unreachable, 3);
     }
 
     #[test]
     fn test_has_cycle_detection() {
-        // Build a graph with a cycle manually
         let mut g = FactoryGraph {
             nodes: vec![
-                crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 0, 0),
+                GraphNode {
+                    id: NodeId::single(Item::TransportBelt, 0, 0),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
@@ -328,8 +306,8 @@ mod tests {
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
-                crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 1, 0),
+                GraphNode {
+                    id: NodeId::single(Item::TransportBelt, 1, 0),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
@@ -339,16 +317,15 @@ mod tests {
                 },
             ],
             node_index: HashMap::from([
-                (NodeId::new(Item::TransportBelt, 0, 0), 0),
-                (NodeId::new(Item::TransportBelt, 1, 0), 1),
+                (NodeId::single(Item::TransportBelt, 0, 0), 0),
+                (NodeId::single(Item::TransportBelt, 1, 0), 1),
             ]),
-            successors: vec![vec![1], vec![0]], // 0→1→0 cycle
+            successors: vec![vec![1], vec![0]],
             predecessors: vec![vec![1], vec![0]],
         };
 
         assert!(has_cycle(&g));
 
-        // Make it acyclic
         g.successors = vec![vec![1], vec![]];
         g.predecessors = vec![vec![], vec![0]];
         assert!(!has_cycle(&g));
@@ -356,7 +333,6 @@ mod tests {
 
     #[test]
     fn test_splitter_passthrough() {
-        // Source → Belt → Splitter → Belt → Sink (1 input, 1 output = no splitting)
         let mut w = World::empty(6, 2);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
@@ -377,24 +353,18 @@ mod tests {
 
     #[test]
     fn test_splitter_split() {
-        // Source → Belt → Splitter → Belt → Sink1
-        //                          → Belt → Sink2
-        // Each sink should get 7.5
         let mut w = World::empty(6, 2);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
         w.place_splitter(2, 0, Direction::East, None);
-        // Two output belts, one per splitter tile
         w.place(3, 0, Item::TransportBelt, Direction::East, None);
         w.place(3, 1, Item::TransportBelt, Direction::East, None);
-        // Two sinks
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
         let throughput = output[&Item::CopperCable];
-        // Total throughput at sinks: 7.5 + 7.5 = 15.0
         assert!(
             (throughput - 15.0).abs() < 1e-9,
             "Split should give 15.0 total, got {}",
@@ -405,10 +375,7 @@ mod tests {
 
     #[test]
     fn test_splitter_merge() {
-        // Source1 → Belt → Splitter → Belt → Sink
-        // Source2 → Belt ↗
         let mut w = World::empty(6, 2);
-        // Two sources feeding into both input lanes
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
@@ -420,7 +387,6 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
         let throughput = output[&Item::CopperCable];
-        // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15
         assert!(
             (throughput - 15.0).abs() < 1e-9,
             "Merge should give 15.0, got {}",
@@ -431,7 +397,6 @@ mod tests {
 
     #[test]
     fn test_splitter_full_throughput() {
-        // 2 inputs + 2 outputs = full 30 i/s throughput (15 per output)
         let mut w = World::empty(6, 2);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(0, 1, Item::Source, Direction::East, Some(Item::CopperCable));
@@ -446,7 +411,6 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
         let throughput = output[&Item::CopperCable];
-        // 30 in, splitter passes 30, each output gets 15, total = 30
         assert!(
             (throughput - 30.0).abs() < 1e-9,
             "Full splitter should give 30.0, got {}",
@@ -463,5 +427,94 @@ mod tests {
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_belt_chain_saturates_at_15_via_both_lanes() {
+        let mut w = World::empty(5, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!((output[&Item::CopperCable] - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_underground_belt_preserves_15_throughput() {
+        let mut w = World::empty(7, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_underground(2, 0, Direction::East, Misc::UndergroundDown);
+        w.place_underground(4, 0, Direction::East, Misc::UndergroundUp);
+        w.place(5, 0, Item::TransportBelt, Direction::East, None);
+        w.place(6, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!((output[&Item::IronPlate] - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_lone_curve_east_to_south_keeps_15() {
+        let mut w = World::empty(5, 5);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::South, None);
+        w.place(3, 1, Item::TransportBelt, Direction::South, None);
+        w.place(3, 2, Item::TransportBelt, Direction::South, None);
+        w.place(3, 3, Item::Sink, Direction::South, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!(
+            (output[&Item::CopperCable] - 15.0).abs() < 1e-6,
+            "lone E→S curve expected 15.0, got {}",
+            output[&Item::CopperCable]
+        );
+    }
+
+    #[test]
+    fn test_lone_curve_south_to_east_keeps_15() {
+        let mut w = World::empty(5, 5);
+        w.place(
+            0,
+            0,
+            Item::Source,
+            Direction::South,
+            Some(Item::CopperCable),
+        );
+        w.place(0, 1, Item::TransportBelt, Direction::South, None);
+        w.place(0, 2, Item::TransportBelt, Direction::East, None);
+        w.place(1, 2, Item::TransportBelt, Direction::East, None);
+        w.place(2, 2, Item::TransportBelt, Direction::East, None);
+        w.place(3, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert!((output[&Item::CopperCable] - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_node_per_port_doubles_belt_node_count() {
+        // A trivial belt-chain factory: 1 source + 3 belts + 1 sink. With
+        // node-per-port: 1 + 6 + 1 = 8 nodes (each belt contributes two).
+        let mut w = World::empty(5, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        let g = build_graph(&w);
+        assert_eq!(g.node_count(), 8);
+        // Sanity-check NodeId.port enum tag for one of the belts.
+        let port_node = g
+            .get_index(&NodeId::port(Item::TransportBelt, 2, 0))
+            .unwrap();
+        assert_eq!(g.nodes[port_node].id.port, PortRole::Port);
     }
 }
