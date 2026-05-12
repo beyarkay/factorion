@@ -182,7 +182,8 @@ def _humanize_count(n: int) -> str:
     `n50k` reads better than `n50000`."""
     if n >= 1_000_000:
         v = n / 1_000_000
-        return f"{v:.1f}m".rstrip("0").rstrip(".") + ("m" if not f"{v:.1f}".endswith("m") else "")
+        s = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{s}m"
     if n >= 1_000:
         v = n / 1_000
         s = f"{v:.1f}".rstrip("0").rstrip(".")
