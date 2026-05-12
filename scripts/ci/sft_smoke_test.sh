@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-NUM_SAMPLES="${NUM_SAMPLES:-100000}"
+NUM_SAMPLES="${NUM_SAMPLES:-300000}"
 EPOCHS="${EPOCHS:-30}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
@@ -38,11 +38,11 @@ echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
-# ── Safety net: self-terminate after 2 hours if cleanup fails ─────
+# ── Safety net: self-terminate after 4 hours if cleanup fails ─────
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
-    echo ">>> Starting self-terminate watchdog (2h timeout)..."
+    echo ">>> Starting self-terminate watchdog (4h timeout)..."
     nohup bash -c "
-      sleep 7200
+      sleep 14400
       curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
         -H 'Content-Type: application/json' \
         -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
@@ -77,7 +77,7 @@ echo ">>> Starting SFT smoke test (${NUM_SAMPLES} samples, ${EPOCHS} epochs)..."
 
 python sft.py \
     --seed 1 \
-    --size 8 \
+    --size 11 \
     --num-samples "$NUM_SAMPLES" \
     --epochs "$EPOCHS" \
     --track \
