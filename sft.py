@@ -531,7 +531,6 @@ def train_sft(args: SFTArgs):
         train_correct = 0
         train_total = 0
         train_eot_correct = 0
-        train_place_total = 0
         grad_norm_sum = 0.0
         grad_norm_count = 0
 
@@ -615,16 +614,19 @@ def train_sft(args: SFTArgs):
             train_loss_item += loss_item.item() * B
             train_loss_misc += loss_misc.item() * B
             train_loss_eot += loss_eot.item() * B
-            # Whole-action accuracy: every action component correct, on
-            # placement samples only (terminal samples have no canonical
-            # placement target).
+            # Whole-action accuracy: the model agrees with the demo on
+            # every output for this sample. For placement samples (eot=0)
+            # that means all 5 placement heads correct AND EOT predicted
+            # "not done". For terminal samples (eot=1) that means EOT
+            # predicted "done"; placement targets are sentinels so they
+            # don't enter the check.
             pred_tile = tile_logits.argmax(dim=1)
             tile_hit = batch_mask[batch_idx, pred_tile] > 0
             pred_ent = ent_logits.argmax(dim=1)
             pred_dir = dir_logits.argmax(dim=1)
             pred_item = item_logits.argmax(dim=1)
             pred_misc = misc_logits.argmax(dim=1)
-            correct = (
+            place_heads_correct = (
                 tile_hit
                 & (pred_ent == batch_ent)
                 & (pred_dir == batch_dir)
@@ -632,12 +634,16 @@ def train_sft(args: SFTArgs):
                 & (pred_misc == batch_misc)
             )
             is_place = placement_mask.bool()
-            train_correct += correct[is_place].sum().item()
-            train_place_total += int(is_place.sum().item())
+            eot_pred_bool = (eot_logits > 0)
+            eot_correct_t = (eot_pred_bool == (batch_eot > 0.5))
+            correct = torch.where(
+                is_place,
+                place_heads_correct & eot_correct_t,
+                eot_correct_t,
+            )
+            train_correct += int(correct.sum().item())
             train_total += B
-            # EOT head accuracy at threshold 0.5.
-            eot_pred = (eot_logits > 0).float()
-            train_eot_correct += int((eot_pred == batch_eot).sum().item())
+            train_eot_correct += int(eot_correct_t.sum().item())
 
         train_loss /= train_total
         train_loss_tile /= train_total
@@ -646,7 +652,7 @@ def train_sft(args: SFTArgs):
         train_loss_item /= train_total
         train_loss_misc /= train_total
         train_loss_eot /= train_total
-        train_acc = train_correct / max(1, train_place_total)
+        train_acc = train_correct / train_total
         train_eot_acc = train_eot_correct / train_total
 
         # Validation
@@ -753,11 +759,27 @@ def train_sft(args: SFTArgs):
                 dir_correct_per = (pred_dir == batch_dir)
                 item_correct_per = (pred_item == batch_item)
                 misc_correct_per = (pred_misc == batch_misc)
-                correct_per = (
+                # EOT-head accuracy + recall on positives separately.
+                # Recall on positives matters because the positives are
+                # rare; "always predict 0" would give high accuracy but
+                # never trigger episode termination.
+                eot_pred_bool = (eot_logits > 0)
+                eot_correct_per = (eot_pred_bool == (batch_eot > 0.5))
+
+                # Whole-sample accuracy. Placement sample (eot=0): all 5
+                # placement heads correct AND EOT predicted "not done".
+                # Terminal sample (eot=1): EOT predicted "done"; placement
+                # targets are sentinels so they don't enter the check.
+                place_heads_correct = (
                     tile_hit & ent_correct_per & dir_correct_per
                     & item_correct_per & misc_correct_per
                 )
-                val_correct += correct_per[is_place].sum().item()
+                correct_per = torch.where(
+                    is_place,
+                    place_heads_correct & eot_correct_per,
+                    eot_correct_per,
+                )
+                val_correct += int(correct_per.sum().item())
                 val_tile_correct += tile_hit[is_place].sum().item()
                 val_ent_correct += ent_correct_per[is_place].sum().item()
                 val_dir_correct += dir_correct_per[is_place].sum().item()
@@ -766,15 +788,9 @@ def train_sft(args: SFTArgs):
                 val_total += B
                 val_place_total += int(is_place.sum().item())
 
-                # EOT-head accuracy + recall on positives separately.
-                # Recall on positives matters because the positives are
-                # rare; "always predict 0" would give high accuracy but
-                # never trigger episode termination.
-                eot_pred = (eot_logits > 0).float()
-                eot_correct = (eot_pred == batch_eot)
-                val_eot_correct += int(eot_correct.sum().item())
+                val_eot_correct += int(eot_correct_per.sum().item())
                 is_pos = batch_eot > 0.5
-                val_eot_pos_correct += int(eot_correct[is_pos].sum().item())
+                val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
                 val_eot_pos_total += int(is_pos.sum().item())
 
                 # Per-kind aggregation: bucket placement metrics by kind on
@@ -807,7 +823,7 @@ def train_sft(args: SFTArgs):
         val_loss_item /= place_norm
         val_loss_misc /= place_norm
         val_loss_eot /= val_total
-        val_acc = val_correct / place_norm
+        val_acc = val_correct / val_total
         val_tile_acc = val_tile_correct / place_norm
         val_ent_acc = val_ent_correct / place_norm
         val_dir_acc = val_dir_correct / place_norm
