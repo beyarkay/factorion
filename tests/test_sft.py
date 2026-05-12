@@ -135,13 +135,14 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, masks, seeds = generate_dataset(args)
+        obs, tiles, ents, dirs, masks, seeds, kinds = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
         assert len(dirs) == 100
         assert len(masks) == 100
         assert len(seeds) == 100
+        assert len(kinds) == 100
 
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
@@ -163,7 +164,7 @@ class TestGenerateDataset:
         from the same lesson share the same seed (multiple pairs per
         lesson when level > 1)."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        *_, seeds = generate_dataset(args)
+        _, _, _, _, _, seeds, _ = generate_dataset(args)
         # Multiple unique seeds expected (each lesson has its own seed).
         assert len(set(seeds.tolist())) >= 2
         # And at least one seed appears more than once (level=2 → ~2 pairs).
@@ -215,6 +216,23 @@ class TestGenerateDataset:
         non_empty = unique_items - {0}
         assert len(non_empty) >= 2, (
             f"Expected >=2 distinct non-empty item types, got {sorted(unique_items)}"
+        )
+
+    def test_kinds_returned_per_pair(self):
+        """generate_dataset must return a per-pair kind tensor with the
+        same length as the rest. Values must be valid LessonKind enum
+        values, and at least two distinct kinds should appear (proves the
+        per-kind val aggregation in train_sft has something to bucket)."""
+        args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
+        obs, tiles, *_, kinds = generate_dataset(args)
+        assert len(kinds) == len(obs)
+        valid_values = {k.value for k in LessonKind}
+        assert set(kinds.tolist()).issubset(valid_values), (
+            f"kind tensor contains values outside LessonKind: "
+            f"{set(kinds.tolist()) - valid_values}"
+        )
+        assert len(set(kinds.tolist())) >= 2, (
+            f"expected >=2 distinct kinds, got {sorted(set(kinds.tolist()))}"
         )
 
     def test_samples_span_multiple_kinds(self, capsys):
@@ -306,7 +324,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, masks, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, masks, _, _ = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -387,7 +405,7 @@ class TestTrainValSeedSplit:
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-        _, _, _, _, _, lesson_seeds = generate_dataset(args)
+        _, _, _, _, _, lesson_seeds, _ = generate_dataset(args)
 
         unique_seeds = torch.unique(lesson_seeds)
         n_seeds = len(unique_seeds)
