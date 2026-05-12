@@ -1,1698 +1,1353 @@
-import marimo
+"""factorion: environment utilities (datatypes + helpers).
 
-__generated_with = "0.8.22"
-app = marimo.App(width="medium")
+Plain Python module — was previously a marimo notebook, but the notebook
+interface was never used outside of factorion.py itself, so the cell
+wrappers have been stripped and identifiers are exported directly.
+"""
+
+import base64
+import json
+import random
+import zlib
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Optional, Tuple
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import plotly.graph_objects as go
+import torch
+import tqdm
+import wandb
+from torch.distributions import Categorical
+
+import factorion_rs
+
+wandb.login()
 
 
-@app.cell
-def _():
-    from collections import deque, defaultdict
-    from dataclasses import dataclass
-    from enum import Enum
-    from torch.distributions import Categorical
-    from tqdm import trange
-    from tqdm.notebook import tqdm
-    from typing import List, Optional, Tuple
-    import base64
-    import json
-    import marimo as mo
-    import math
-    import matplotlib.pyplot as plt
-    import networkx as nx
-    import numpy as np
-    import pandas as pd
-    import plotly.graph_objects as go
-    import random
-    import sys
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-    import torch.nn.init as init
-    import torch.optim as optim
-    import traceback
-    import wandb
-    import zlib
-    import factorion_rs
+class Html:
+    """Minimal HTML wrapper, replaces ``marimo.Html`` for renderers that
+    inspected ``.text`` or ``.data`` on the returned object.
+    """
 
-    wandb.login()
-    mo.md("Imports")
-    return (
-        Categorical,
-        Enum,
-        F,
-        List,
-        Optional,
-        Tuple,
-        base64,
-        dataclass,
-        defaultdict,
-        deque,
-        go,
-        init,
-        json,
-        math,
-        mo,
-        nn,
-        np,
-        nx,
-        optim,
-        pd,
-        plt,
-        random,
-        sys,
-        torch,
-        tqdm,
-        traceback,
-        trange,
-        factorion_rs,
-        wandb,
-        zlib,
+    def __init__(self, text):
+        self.text = text
+        self.data = text
+
+    def __str__(self):
+        return self.text
+
+    def _repr_html_(self):
+        return self.text
+
+
+class Channel(Enum):
+    # What entity occupies this tile?
+    ENTITIES = 0
+    # what direction is the entity facing?
+    DIRECTION = 1
+    # What recipe OR filter is set?
+    ITEMS = 2
+    # Undergrounds mechanics, see class Misc(Enum)
+    MISC = 3
+    # 1 if you can build there, 0 if you can't
+    FOOTPRINT = 4
+
+
+class Footprint(Enum):
+    UNAVAILABLE = 0
+    AVAILABLE = 1
+
+
+class Misc(Enum):
+    NONE = 0
+    UNDERGROUND_DOWN = 1
+    UNDERGROUND_UP = 2
+
+
+class Dim(Enum):
+    X = 0
+    Y = 1
+
+
+class Direction(Enum):
+    """Directions the entity can be facing"""
+
+    NONE = 0
+    NORTH = 1
+    EAST = 2
+    SOUTH = 3
+    WEST = 4
+
+
+# Unified Item dataclass. Everything in the data model is an Item;
+# `is_placeable=True` items can be placed on the grid as entities.
+# Width/height/flow are entity properties — non-placeable items
+# default to 1×1 and 0 flow.
+@dataclass
+class Item:
+    name: str
+    value: int
+    is_placeable: bool
+    width: int
+    height: int
+    flow: float
+
+
+# Items are defined in Rust (factorion_rs/src/types.rs::all_items)
+# and exposed to Python via PyO3. To add or change an item, edit
+# the Rust enum + all_items() and rebuild the wheel.
+#
+# The dict additionally contains a synthetic 0 → "empty" entry used
+# purely as a tensor-decode sentinel for cells with no item set.
+# `Item` itself has no Empty variant in Rust — absence of an item
+# is `Option::None`. The Python sentinel is just for `items[v]`
+# lookups when reading the world tensor's ENTITIES or ITEMS channel.
+items = {
+    0: Item(name="empty", value=0, is_placeable=False, width=1, height=1, flow=0.0),
+}
+for _val, _props in factorion_rs.py_items().items():
+    items[_val] = Item(value=_val, **_props)
+
+# `entities` is an alias for `items` for backwards compatibility.
+# Post-unification, every grid-placeable entity is also an Item, so
+# `entities[v]` returns the same dataclass as `items[v]`. The Rust
+# binding hands us the canonical ordering: 1..5 = agent-placeable
+# (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
+# Source — placed last so the policy head can exclude them via
+# len(entities)-2), 8..12 = non-placeable items.
+entities = items
+# Backwards-compat alias for the now-unified Item dataclass.
+Entity = Item
+
+
+@dataclass
+class Recipe:
+    consumes: dict[str, float]
+    produces: dict[str, float]
+    crafting_time: float  # canonical wiki seconds per craft
+
+
+# Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
+# and exposed to Python via PyO3. To add a recipe, edit the Rust
+# function and rebuild the wheel — Python sees it automatically.
+recipes = {
+    name: Recipe(
+        consumes=dict(data["consumes"]),
+        produces=dict(data["produces"]),
+        crafting_time=data["crafting_time"],
+    )
+    for name, data in factorion_rs.py_recipes().items()
+}
+
+
+class LessonKind(Enum):
+    MOVE_ONE_ITEM = 0
+    INSERTER_TRANSFER = 2
+    SPLITTER_SPLIT = 3
+    SPLITTER_MERGE = 4
+    ASSEMBLE_1IN_1OUT = 5
+    MOVE_VIA_UG_BELT = 6
+
+
+# Map Enum <--> grid deltas
+DIR_TO_DELTA = {
+    Direction.NORTH: (0, -1),
+    Direction.EAST: (1, 0),
+    Direction.SOUTH: (0, 1),
+    Direction.WEST: (-1, 0),
+}
+
+
+def b64_to_dict(blueprint_string):
+    decoded = base64.b64decode(
+        blueprint_string.strip()[1:]
+    )  # Skip the version byte
+    json_data = zlib.decompress(decoded).decode("utf-8")
+    return json.loads(json_data)
+
+
+def dict2b64(dictionary):
+    compressed = zlib.compress(json.dumps(dictionary).encode("utf-8"))
+    b64_encoded = base64.b64encode(compressed).decode("utf-8")
+    blueprint_string = "0" + b64_encoded  # Add version byte
+    return blueprint_string
+
+
+def str2item(s):
+    assert s is not None, "input cannot be None"
+    return next(
+        (v for k, v in items.items() if v.name == s.replace("-", "_")), None
     )
 
 
-@app.cell(hide_code=True)
-def datatypes(Enum, dataclass, factorion_rs, mo):
-    class Channel(Enum):
-        # What entity occupies this tile?
-        ENTITIES = 0
-        # what direction is the entity facing?
-        DIRECTION = 1
-        # What recipe OR filter is set?
-        ITEMS = 2
-        # Undergrounds mechanics, see class Misc(Enum)
-        MISC = 3
-        # 1 if you can build there, 0 if you can't
-        FOOTPRINT = 4
-
-
-    class Footprint(Enum):
-        UNAVAILABLE = 0
-        AVAILABLE = 1
-
-
-    class Misc(Enum):
-        NONE = 0
-        UNDERGROUND_DOWN = 1
-        UNDERGROUND_UP = 2
-
-
-    class Dim(Enum):
-        X = 0
-        Y = 1
-
-
-    class Direction(Enum):
-        """Directions the entity can be facing"""
-
-        NONE = 0
-        NORTH = 1
-        EAST = 2
-        SOUTH = 3
-        WEST = 4
-
-
-    # Unified Item dataclass. Everything in the data model is an Item;
-    # `is_placeable=True` items can be placed on the grid as entities.
-    # Width/height/flow are entity properties — non-placeable items
-    # default to 1×1 and 0 flow.
-    @dataclass
-    class Item:
-        name: str
-        value: int
-        is_placeable: bool
-        width: int
-        height: int
-        flow: float
-
-
-    # Items are defined in Rust (factorion_rs/src/types.rs::all_items)
-    # and exposed to Python via PyO3. To add or change an item, edit
-    # the Rust enum + all_items() and rebuild the wheel.
-    #
-    # The dict additionally contains a synthetic 0 → "empty" entry used
-    # purely as a tensor-decode sentinel for cells with no item set.
-    # `Item` itself has no Empty variant in Rust — absence of an item
-    # is `Option::None`. The Python sentinel is just for `items[v]`
-    # lookups when reading the world tensor's ENTITIES or ITEMS channel.
-    items = {
-        0: Item(name="empty", value=0, is_placeable=False, width=1, height=1, flow=0.0),
-    }
-    for _val, _props in factorion_rs.py_items().items():
-        items[_val] = Item(value=_val, **_props)
-
-    # `entities` is an alias for `items` for backwards compatibility.
-    # Post-unification, every grid-placeable entity is also an Item, so
-    # `entities[v]` returns the same dataclass as `items[v]`. The Rust
-    # binding hands us the canonical ordering: 1..5 = agent-placeable
-    # (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
-    # Source — placed last so the policy head can exclude them via
-    # len(entities)-2), 8..12 = non-placeable items.
-    entities = items
-    # Backwards-compat alias for the now-unified Item dataclass.
-    Entity = Item
-
-
-    @dataclass
-    class Recipe:
-        consumes: dict[str, float]
-        produces: dict[str, float]
-        crafting_time: float  # canonical wiki seconds per craft
-
-
-    # Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
-    # and exposed to Python via PyO3. To add a recipe, edit the Rust
-    # function and rebuild the wheel — Python sees it automatically.
-    recipes = {
-        name: Recipe(
-            consumes=dict(data["consumes"]),
-            produces=dict(data["produces"]),
-            crafting_time=data["crafting_time"],
-        )
-        for name, data in factorion_rs.py_recipes().items()
-    }
-
-
-    class LessonKind(Enum):
-        MOVE_ONE_ITEM = 0
-        INSERTER_TRANSFER = 2
-        SPLITTER_SPLIT = 3
-        SPLITTER_MERGE = 4
-        ASSEMBLE_1IN_1OUT = 5
-        MOVE_VIA_UG_BELT = 6
-
-
-    # Map Enum <--> grid deltas
-    DIR_TO_DELTA = {
-        Direction.NORTH: (0, -1),
-        Direction.EAST: (1, 0),
-        Direction.SOUTH: (0, 1),
-        Direction.WEST: (-1, 0),
-    }
-
-    mo.md("Datatypes")
-    return (
-        Channel,
-        DIR_TO_DELTA,
-        Dim,
-        Direction,
-        Entity,
-        Footprint,
-        Item,
-        LessonKind,
-        Misc,
-        Recipe,
-        entities,
-        items,
-        recipes,
-    )
-
-
-@app.cell
-def functions(
-    Categorical,
-    Channel,
-    DIR_TO_DELTA,
-    Direction,
-    Entity,
-    Footprint,
-    LessonKind,
-    List,
-    Misc,
-    Optional,
-    Tuple,
-    base64,
-    defaultdict,
-    deque,
-    entities,
-    factorion_rs,
-    go,
-    items,
-    json,
-    mo,
-    np,
-    nx,
-    plt,
-    random,
-    recipes,
-    torch,
-    traceback,
-    zlib,
-):
-    def b64_to_dict(blueprint_string):
-        decoded = base64.b64decode(
-            blueprint_string.strip()[1:]
-        )  # Skip the version byte
-        json_data = zlib.decompress(decoded).decode("utf-8")
-        return json.loads(json_data)
-
-
-    def dict2b64(dictionary):
-        compressed = zlib.compress(json.dumps(dictionary).encode("utf-8"))
-        b64_encoded = base64.b64encode(compressed).decode("utf-8")
-        blueprint_string = "0" + b64_encoded  # Add version byte
-        return blueprint_string
-
-
-    def str2item(s):
-        assert s is not None, "input cannot be None"
-        return next(
-            (v for k, v in items.items() if v.name == s.replace("-", "_")), None
-        )
-
-
-    def str2ent(s):
-        if s is None:
-            print(f"WARN: given string  is None")
-            return None
-        if s == "source":
-            s = "stack_inserter"
-        elif s == "sink":
-            s = "bulk_inserter"
-
-        for v in entities.values():
-            if v.name == s.replace("-", "_"):
-                return v
-        # TODO I'm almost certianly going to regret hardcoding this
-        if s == "electronic_circuit":
-            return Entity(
-                name="electronic_circuit",
-                value=len(entities),
-                width=1,
-                height=1,
-                flow=0.0,
-            )
-        print(f"WARN: unknown entity {s}")
+def str2ent(s):
+    if s is None:
+        print(f"WARN: given string  is None")
         return None
+    if s == "source":
+        s = "stack_inserter"
+    elif s == "sink":
+        s = "bulk_inserter"
 
-
-    def _str2b64img(path, base_path="factorio-icons"):
-        try:
-            with open(f"{base_path}/{path}.png", "rb") as image_file:
-                return "data:image/png;base64," + base64.b64encode(
-                    image_file.read()
-                ).decode("utf-8")
-        except:
-            return ""
-
-
-    def ent_str2b64img(ent, base_path="factorio-icons"):
-        return _str2b64img(str2ent(ent).name)
-
-
-    def item_str2b64img(item, base_path="factorio-icons"):
-        return _str2b64img(str2item(item).name)
-
-
-    def new_world(width=8, height=8):
-        channels = len(Channel)
-        #     print(f"Making world w={width}, h={height}, c={channels}")
-        world = np.zeros((width, height, channels), dtype=int)
-        world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
-        world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
-        world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
-        return world
-
-
-    def add_entity(
-        world,
-        proto_str,
-        x,
-        y,
-        direction=Direction.NONE,
-        recipe="empty",
-        misc=Misc.NONE,
-    ):
-        proto = str2ent(proto_str)
-        EMPTY = str2ent("empty")
-        if proto is None:
-            proto = EMPTY
-        recipe_proto = str2ent(recipe)
-        if recipe_proto is None:
-            recipe_proto = EMPTY
-        assert world[x, y, Channel.ENTITIES.value] == EMPTY.value, (
-            f"Can't place {proto_str} at {x},{y} because {entities[world[x, y, Channel.ENTITIES.value]]} is there"
+    for v in entities.values():
+        if v.name == s.replace("-", "_"):
+            return v
+    # TODO I'm almost certianly going to regret hardcoding this
+    if s == "electronic_circuit":
+        return Entity(
+            name="electronic_circuit",
+            value=len(entities),
+            width=1,
+            height=1,
+            flow=0.0,
         )
-        assert 0 <= x < len(world), f"{x=} is not in [0, {len(world)})"
-        assert 0 <= y < len(world[0]), f"{y=} is not in [0, {len(world[0])})"
-
-        world[x, y, Channel.ENTITIES.value] = proto.value
-        world[x, y, Channel.DIRECTION.value] = direction.value
-        # world[x, y, Channel.ITEMS.value] = recipe_proto.value
-        # world[x, y, Channel.MISC.value] = misc.value
+    print(f"WARN: unknown entity {s}")
+    return None
 
 
-    def world2html(world_WHC, highlights=None):
-        """Render a world tensor as an HTML table.
-
-        highlights: optional {(x, y): css_color_str} to colour specific cells
-        (overrides the default unavailable-footprint shading). Useful for
-        visualising diffs, model predictions, etc.
-        """
-        assert len(world_WHC.shape) == 3, (
-            f"Expected 3 dimensions got {world_WHC.shape}"
-        )
-        assert world_WHC.shape[0] == world_WHC.shape[1], (
-            f"Expected square got {world_WHC.shape}"
-        )
-        if type(world_WHC) is not np.ndarray:
-            world_WHC = np.array(world_WHC)
-        DIRECTION_ARROWS = {
-            Direction.NONE.value: "",
-            Direction.NORTH.value: "↑",
-            Direction.EAST.value: "→",
-            Direction.SOUTH.value: "↓",
-            Direction.WEST.value: "←",
-            # 0: "↘",
-            # 10: "↙",
-            # 14: "↖",
-        }
-        html = ["<table style='border-collapse: collapse;'>"]
-        W, H, C = world_WHC.shape
-        # Pre-compute which cells are secondary tiles of multi-tile entities,
-        # mapping (x, y) → anchor entity name for ghost rendering
-        ghost_at = {}
-        visited_tiles = set()
-        for y in range(H):
-            for x in range(W):
-                if (x, y) in visited_tiles:
-                    continue
-                proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-                if proto.width == 1 and proto.height == 1:
-                    continue
-                d_val = world_WHC[x, y, Channel.DIRECTION.value]
-                tile_list = factorion_rs.py_entity_tiles(x, y, int(d_val), proto.width, proto.height)
-                if tile_list is None:
-                    continue
-                anchor = tuple(tile_list[0])
-                for tx, ty in tile_list:
-                    visited_tiles.add((tx, ty))
-                    if (tx, ty) != anchor:
-                        ghost_at[(tx, ty)] = proto.name
-
-        # Belts share borders with adjacent connected belts so a chain like
-        # >>> renders as a single outlined strip rather than three boxes.
-        BELT_NAMES = {"transport_belt", "underground_belt"}
-
-        def _belt_at(x, y):
-            if not (0 <= x < W and 0 <= y < H):
-                return False, 0
-            p = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-            d = int(world_WHC[x, y, Channel.DIRECTION.value])
-            return p.name in BELT_NAMES, d
-
-        DIR_INT_TO_DELTA = {
-            Direction.NORTH.value: (0, -1),
-            Direction.EAST.value: (1, 0),
-            Direction.SOUTH.value: (0, 1),
-            Direction.WEST.value: (-1, 0),
-        }
-        DIR_OPPOSITE = {
-            Direction.NORTH.value: Direction.SOUTH.value,
-            Direction.SOUTH.value: Direction.NORTH.value,
-            Direction.EAST.value: Direction.WEST.value,
-            Direction.WEST.value: Direction.EAST.value,
-        }
-        BORDER_SIDES = [
-            ("n", Direction.NORTH.value, (0, -1)),
-            ("e", Direction.EAST.value, (1, 0)),
-            ("s", Direction.SOUTH.value, (0, 1)),
-            ("w", Direction.WEST.value, (-1, 0)),
-        ]
-
-        for y in range(H):
-            html.append("<tr>")
-            for x in range(W):
-                proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-                item = items[world_WHC[x, y, Channel.ITEMS.value]]
-                direction = world_WHC[x, y, Channel.DIRECTION.value]
-
-                # Secondary tile of a multi-tile entity: render only the
-                # ghost overlay, not the cell's own entity icon — otherwise
-                # the secondary cell looks like a second copy of the entity.
-                if (x, y) in ghost_at:
-                    entity_icon = ent_str2b64img("empty")
-                    ghost_icons = [ent_str2b64img(ghost_at[(x, y)])]
-                else:
-                    entity_icon = ent_str2b64img(proto.name)
-                    ghost_icons = []
-
-                item_icon = item_str2b64img(item.name)
-                direction_arrow = DIRECTION_ARROWS.get(direction, "")
-                if any(["Channel.MISC" in i for i in map(str, list(Channel))]):
-                    misc = Misc(world_WHC[x, y, Channel.MISC.value])
-                else:
-                    misc = Misc.NONE
-                underground_symbol = (
-                    "⭳"
-                    if misc == Misc.UNDERGROUND_DOWN
-                    else "⭱"
-                    if misc == Misc.UNDERGROUND_UP
-                    else ""
-                )
-
-                #             print(direction_arrow, direction)
-                available = (
-                    world_WHC[x, y, Channel.FOOTPRINT.value]
-                    == Footprint.AVAILABLE.value
-                )
-                if highlights and (x, y) in highlights:
-                    bg_style = f"background: {highlights[(x, y)]};"
-                elif not available:
-                    # Subtle grey cross-hatch (two stacked diagonals) marks
-                    # UNAVAILABLE tiles. Low opacity so it sits behind any
-                    # entity icons without competing visually.
-                    bg_style = (
-                        "background:"
-                        " repeating-linear-gradient(45deg,"
-                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
-                        "  transparent 2px, transparent 8px),"
-                        " repeating-linear-gradient(-45deg,"
-                        "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
-                        "  transparent 2px, transparent 8px);"
-                    )
-                else:
-                    bg_style = ""
-                #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
-
-                ghost_imgs = "\n".join(
-                    [
-                        f"<img src='{ghost_icon}' style=' position: absolute; top: 10%;  left: 10%;  width: 60%; height: 60%; opacity: 20%;'>"
-                        for ghost_icon in ghost_icons
-                    ]
-                )
-
-                hide_map = {"n": False, "e": False, "s": False, "w": False}
-                if proto.name in BELT_NAMES:
-                    for side_lbl, side_dir, (sx, sy) in BORDER_SIDES:
-                        nb_is_belt, nb_dir = _belt_at(x + sx, y + sy)
-                        if not nb_is_belt:
-                            continue
-                        i_flow_out = direction == side_dir
-                        n_flow_in = nb_dir == DIR_OPPOSITE[side_dir]
-                        if i_flow_out or n_flow_in:
-                            hide_map[side_lbl] = True
-                hide_n = hide_map["n"]
-                hide_e = hide_map["e"]
-                hide_s = hide_map["s"]
-                hide_w = hide_map["w"]
-
-                def _border_css(prefix, color):
-                    return "; ".join(
-                        f"border-{side}: 1px solid {'transparent' if hide else color}"
-                        for side, hide in (("top", hide_n), ("right", hide_e), ("bottom", hide_s), ("left", hide_w))
-                    )
-                td_border_css = _border_css("td", "black")
-                div_border_css = _border_css("div", "grey")
-
-                xy_str = f"{x},{y}"
-                cell_content = f"""
-               <div style='position: relative; width: 50px; height: 50px; {bg_style}; {div_border_css};'>
-        <img src='{entity_icon}' style=' position: absolute; top: 10%;   left: 10%;  width: 60%; height: 60%; '>
-        {ghost_imgs}
-        <img src='{item_icon}' style=' position: absolute; bottom: 5%;  right: 5%;  width: 20%; height: 20%; '>
-        <div style='position: absolute; top: 0; left: 0; font-size: 8px; opacity: 50%'>{xy_str}</div>
-        <div style='position: absolute; bottom: 0; left: 0; font-size: 20px;'>{direction_arrow}</div>
-        <div style=' position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);  font-size: 20px; font-weight: bold; color: white; '>{underground_symbol}</div>
-    </div>
-                """
-                html.append(
-                    f"<td style='{td_border_css}; padding: 0;'>{cell_content}</td>"
-                )
-            html.append("</tr>")
-        html.append("</table>")
-        return mo.Html("".join(html))
+def _str2b64img(path, base_path="factorio-icons"):
+    try:
+        with open(f"{base_path}/{path}.png", "rb") as image_file:
+            return "data:image/png;base64," + base64.b64encode(
+                image_file.read()
+            ).decode("utf-8")
+    except:
+        return ""
 
 
-    def blueprint2world(bp):
-        obj = b64_to_dict(bp)
+def ent_str2b64img(ent, base_path="factorio-icons"):
+    return _str2b64img(str2ent(ent).name)
 
-        min_x = float("inf")
-        min_y = float("inf")
-        max_y = -float("inf")
-        max_x = -float("inf")
 
-        for e in obj["blueprint"]["entities"]:
-            # NOTE: might be OBOEs here
-            e["position"]["x"] = int(e["position"]["x"] - 0.5)
-            e["position"]["y"] = int(e["position"]["y"] - 0.5)
+def item_str2b64img(item, base_path="factorio-icons"):
+    return _str2b64img(str2item(item).name)
 
-        for e in obj["blueprint"].get("entities", []) + obj["blueprint"].get(
-            "tiles", []
-        ):
-            min_x = min(min_x, e["position"]["x"])
-            min_y = min(min_y, e["position"]["y"])
-            max_y = max(max_y, e["position"]["y"])
-            max_x = max(max_x, e["position"]["x"])
 
-        for e in obj["blueprint"].get("entities", []):
-            e["position"]["x"] -= min_x
-            e["position"]["y"] -= min_y
-            if "direction" not in e and e["name"] == "transport-belt":
-                # transport belts have an implicit direction
-                e["direction"] = 0
-            # inserter's direction is towards their source, which we don't want, so flip them around
-            if "inserter" in e["name"]:
-                #             print(e)
-                e["direction"] = (e.get("direction", 0) + 8) % 16
+def new_world(width=8, height=8):
+    channels = len(Channel)
+    #     print(f"Making world w={width}, h={height}, c={channels}")
+    world = np.zeros((width, height, channels), dtype=int)
+    world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
+    world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
+    world[:, :, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+    return world
 
-        # Add one, because of the 0.5 alignment of entities vs tiles
-        world = new_world(width=max_x - min_x + 1, height=max_y - min_y + 1)
 
-        # Use Hazard concrete to indicate the footprint
-        world[:, :, Channel.FOOTPRINT.value] = Footprint.UNAVAILABLE.value
-        for t in obj["blueprint"].get("tiles", []):
-            if t["name"] == "refined-hazard-concrete-left":
-                x = t["position"]["x"] - min_x
-                y = t["position"]["y"] - min_y
-                world[x, y, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+def add_entity(
+    world,
+    proto_str,
+    x,
+    y,
+    direction=Direction.NONE,
+    recipe="empty",
+    misc=Misc.NONE,
+):
+    proto = str2ent(proto_str)
+    EMPTY = str2ent("empty")
+    if proto is None:
+        proto = EMPTY
+    recipe_proto = str2ent(recipe)
+    if recipe_proto is None:
+        recipe_proto = EMPTY
+    assert world[x, y, Channel.ENTITIES.value] == EMPTY.value, (
+        f"Can't place {proto_str} at {x},{y} because {entities[world[x, y, Channel.ENTITIES.value]]} is there"
+    )
+    assert 0 <= x < len(world), f"{x=} is not in [0, {len(world)})"
+    assert 0 <= y < len(world[0]), f"{y=} is not in [0, {len(world[0])})"
+
+    world[x, y, Channel.ENTITIES.value] = proto.value
+    world[x, y, Channel.DIRECTION.value] = direction.value
+    # world[x, y, Channel.ITEMS.value] = recipe_proto.value
+    # world[x, y, Channel.MISC.value] = misc.value
+
+
+def world2html(world_WHC, highlights=None):
+    """Render a world tensor as an HTML table.
+
+    highlights: optional {(x, y): css_color_str} to colour specific cells
+    (overrides the default unavailable-footprint shading). Useful for
+    visualising diffs, model predictions, etc.
+    """
+    assert len(world_WHC.shape) == 3, (
+        f"Expected 3 dimensions got {world_WHC.shape}"
+    )
+    assert world_WHC.shape[0] == world_WHC.shape[1], (
+        f"Expected square got {world_WHC.shape}"
+    )
+    if type(world_WHC) is not np.ndarray:
+        world_WHC = np.array(world_WHC)
+    DIRECTION_ARROWS = {
+        Direction.NONE.value: "",
+        Direction.NORTH.value: "↑",
+        Direction.EAST.value: "→",
+        Direction.SOUTH.value: "↓",
+        Direction.WEST.value: "←",
+        # 0: "↘",
+        # 10: "↙",
+        # 14: "↖",
+    }
+    html = ["<table style='border-collapse: collapse;'>"]
+    W, H, C = world_WHC.shape
+    # Pre-compute which cells are secondary tiles of multi-tile entities,
+    # mapping (x, y) → anchor entity name for ghost rendering
+    ghost_at = {}
+    visited_tiles = set()
+    for y in range(H):
+        for x in range(W):
+            if (x, y) in visited_tiles:
+                continue
+            proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+            if proto.width == 1 and proto.height == 1:
+                continue
+            d_val = world_WHC[x, y, Channel.DIRECTION.value]
+            tile_list = factorion_rs.py_entity_tiles(x, y, int(d_val), proto.width, proto.height)
+            if tile_list is None:
+                continue
+            anchor = tuple(tile_list[0])
+            for tx, ty in tile_list:
+                visited_tiles.add((tx, ty))
+                if (tx, ty) != anchor:
+                    ghost_at[(tx, ty)] = proto.name
+
+    # Belts share borders with adjacent connected belts so a chain like
+    # >>> renders as a single outlined strip rather than three boxes.
+    BELT_NAMES = {"transport_belt", "underground_belt"}
+
+    def _belt_at(x, y):
+        if not (0 <= x < W and 0 <= y < H):
+            return False, 0
+        p = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+        d = int(world_WHC[x, y, Channel.DIRECTION.value])
+        return p.name in BELT_NAMES, d
+
+    DIR_INT_TO_DELTA = {
+        Direction.NORTH.value: (0, -1),
+        Direction.EAST.value: (1, 0),
+        Direction.SOUTH.value: (0, 1),
+        Direction.WEST.value: (-1, 0),
+    }
+    DIR_OPPOSITE = {
+        Direction.NORTH.value: Direction.SOUTH.value,
+        Direction.SOUTH.value: Direction.NORTH.value,
+        Direction.EAST.value: Direction.WEST.value,
+        Direction.WEST.value: Direction.EAST.value,
+    }
+    BORDER_SIDES = [
+        ("n", Direction.NORTH.value, (0, -1)),
+        ("e", Direction.EAST.value, (1, 0)),
+        ("s", Direction.SOUTH.value, (0, 1)),
+        ("w", Direction.WEST.value, (-1, 0)),
+    ]
+
+    for y in range(H):
+        html.append("<tr>")
+        for x in range(W):
+            proto = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+            item = items[world_WHC[x, y, Channel.ITEMS.value]]
+            direction = world_WHC[x, y, Channel.DIRECTION.value]
+
+            # Secondary tile of a multi-tile entity: render only the
+            # ghost overlay, not the cell's own entity icon — otherwise
+            # the secondary cell looks like a second copy of the entity.
+            if (x, y) in ghost_at:
+                entity_icon = ent_str2b64img("empty")
+                ghost_icons = [ent_str2b64img(ghost_at[(x, y)])]
             else:
-                print(f"Ignoring tile {t}")
+                entity_icon = ent_str2b64img(proto.name)
+                ghost_icons = []
 
-        for e in obj["blueprint"].get("entities", []):
-            entity = str2ent(e["name"])
-            if entity is None:
-                entity = str2ent("empty")
-
-            if "recipe" in e:
-                recipe = str2ent(e["recipe"])
-            else:
-                if len(e.get("filters", [])) == 1:
-                    recipe = str2ent(e["filters"][0]["name"])
-                else:
-                    recipe = str2ent("empty")
-
-            # underground belts. Output = emerging, input = descending
-            if e.get("type", None) == "output":
-                misc = Misc.UNDERGROUND_UP
-            elif e.get("type", None) == "input":
-                misc = Misc.UNDERGROUND_DOWN
+            item_icon = item_str2b64img(item.name)
+            direction_arrow = DIRECTION_ARROWS.get(direction, "")
+            if any(["Channel.MISC" in i for i in map(str, list(Channel))]):
+                misc = Misc(world_WHC[x, y, Channel.MISC.value])
             else:
                 misc = Misc.NONE
-
-            direction = Direction(e.get("direction", -1))
-
-            add_entity(
-                world,
-                e["name"],
-                e["position"]["x"],
-                e["position"]["y"],
-                recipe=recipe.name,
-                direction=direction,
-                misc=misc,
+            underground_symbol = (
+                "⭳"
+                if misc == Misc.UNDERGROUND_DOWN
+                else "⭱"
+                if misc == Misc.UNDERGROUND_UP
+                else ""
             )
-        return world
 
-
-    def plot_flow_network(G):
-        # Extract x, y coordinates from node names
-        pos = {
-            node: (int(x), -int(y))
-            for node, (x, y) in ((n, n.split("@")[1].split(",")) for n in G.nodes)
-        }
-        plt.figure(
-            figsize=(
-                (len(G.nodes) ** 0.5) * 3,
-                (len(G.nodes) ** 0.5) * 3,
+            #             print(direction_arrow, direction)
+            available = (
+                world_WHC[x, y, Channel.FOOTPRINT.value]
+                == Footprint.AVAILABLE.value
             )
-        )
+            if highlights and (x, y) in highlights:
+                bg_style = f"background: {highlights[(x, y)]};"
+            elif not available:
+                # Subtle grey cross-hatch (two stacked diagonals) marks
+                # UNAVAILABLE tiles. Low opacity so it sits behind any
+                # entity icons without competing visually.
+                bg_style = (
+                    "background:"
+                    " repeating-linear-gradient(45deg,"
+                    "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
+                    "  transparent 2px, transparent 8px),"
+                    " repeating-linear-gradient(-45deg,"
+                    "  rgba(80,80,80,0.1), rgba(80,80,80,0.1) 2px,"
+                    "  transparent 2px, transparent 8px);"
+                )
+            else:
+                bg_style = ""
+            #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
 
-        # Draw the graph
-        nx.draw(
-            G,
-            pos,
-            with_labels=True,
-            node_size=2000,
-            node_color="lightblue",
-            font_size=12,
-            font_weight="bold",
-        )
-
-        # Add throughput labels
-        #     labels = {node: G.nodes[node].get("throughput", {}) for node in G.nodes}
-        #     nx.draw_networkx_labels(G, pos, labels=labels, font_color="red")
-
-        plt.show()
-
-
-    def calc_throughput(G, debug=False):
-        foobar = 1
-
-        def dbg(s):
-            if debug:
-                print(s)
-
-        if len(list(nx.simple_cycles(G))) > 0:
-            dbg(f"Returning 0 reward due to cycles: {list(nx.simple_cycles(G))}")
-            return {"foobar": 0.0}, 0
-        # Now go through the graph and propogate the ingredients from producers to consumers.
-        # the flow rate should depend on the intermediate rates.
-        stack_inserters = [
-            node for node, data in G.nodes(data=True) if "stack_inserter" in node
-        ]
-        nodes = stack_inserters[:]
-        reachable_from_stack_inserters = []
-        for s in stack_inserters:
-            reachable_from_stack_inserters.extend(list(nx.descendants(G, s)))
-        reachable_from_stack_inserters = list(set(reachable_from_stack_inserters))
-        dbg(f"{reachable_from_stack_inserters=}")
-        already_processed = []
-        count = len(G.nodes) * len(G.nodes)  # a reasonable upper bound
-
-        dbg(f"Pre-calcs:")
-        for n in G.nodes:
-            dbg(f"- {repr(n)}: {G.nodes[n]}")
-
-        while nodes and count > 0:
-            dbg(f"Nodes: {nodes[::-1]}, already processed: {already_processed}")
-            count -= 1
-            node = nodes.pop()
-            true_dependencies = filter(
-                lambda n: n in reachable_from_stack_inserters, G.predecessors(node)
-            )
-            if any([n not in already_processed for n in true_dependencies]):
-                unprocessed = [
-                    n for n in G.predecessors(node) if n not in already_processed
+            ghost_imgs = "\n".join(
+                [
+                    f"<img src='{ghost_icon}' style=' position: absolute; top: 10%;  left: 10%;  width: 60%; height: 60%; opacity: 20%;'>"
+                    for ghost_icon in ghost_icons
                 ]
-                #             dbg(f"These nodes still need to be processed: {unprocessed}")
-                assert len(nodes) > 0, "there are no nodes"
-                # Move the node to the back (NOTE: doesn't do loop detection)
-                # TODO: need some way to detect if the unprocessed
-                # nodes are actually never going to do anything. Maybe trim?
-                #             nodes = list(set(
-                #                 unprocessed + nodes
-                #             ))
-                nodes.insert(0, node)
-                dbg(
-                    f"  Moved {repr(nodes[0])} to front of queue, some dependants {unprocessed} haven't been processed"
-                )
-                continue
-            assert node not in already_processed, (
-                f"Node {node} isn't in {already_processed=}"
             )
-            dbg(f"\nChecking node {repr(node)}")
 
-            curr = G.nodes[node]
-            proto = str2ent(node.split("\n@")[0])
-            dbg(f"  {curr=}")
-            # Don't bother checking the initial sources for input rates
-            if len(curr["output"]) == 0:
-                # Given all the predecessors' output *rates*, calculate this node's input rate
-                curr["input_"] = {}
-                for prev in G.predecessors(node):
-                    for item, flow_rate in G.nodes[prev]["output"].items():
-                        if item not in curr["input_"]:
-                            curr["input_"][item] = 0
-                        curr["input_"][item] += flow_rate
-                dbg(f"  curr[input_] is now: {curr['input_']}")
+            hide_map = {"n": False, "e": False, "s": False, "w": False}
+            if proto.name in BELT_NAMES:
+                for side_lbl, side_dir, (sx, sy) in BORDER_SIDES:
+                    nb_is_belt, nb_dir = _belt_at(x + sx, y + sy)
+                    if not nb_is_belt:
+                        continue
+                    i_flow_out = direction == side_dir
+                    n_flow_in = nb_dir == DIR_OPPOSITE[side_dir]
+                    if i_flow_out or n_flow_in:
+                        hide_map[side_lbl] = True
+            hide_n = hide_map["n"]
+            hide_e = hide_map["e"]
+            hide_s = hide_map["s"]
+            hide_w = hide_map["w"]
 
-                if "assembling_machine" in node:
-                    dbg(f"  asm machine: {curr}")
-                    if curr["recipe"] == "empty":
-                        print(
-                            f"asesmbling machine {repr(node)} has {curr['recipe']=}, is not equal to empty"
-                        )
-                    min_ratio = 1
-                    # TODO crafting speed???
-                    # dbg(f"{recipes=}")
-                    curr["output"] = {}
-                    if curr["recipe"] in recipes:
-                        for item, rate in recipes[curr["recipe"]].consumes.items():
-                            ratio = curr["input_"].get(item, 0) / rate
-                            min_ratio = min(min_ratio, ratio)
-                        dbg(
-                            f"    Recipe consumables: {recipes[curr['recipe']].consumes}"
-                        )
-                        dbg(
-                            f"    Recipe products: {recipes[curr['recipe']].produces}"
-                        )
-                        curr["output"] = {
-                            k: v * min_ratio
-                            for k, v in recipes[curr["recipe"]].produces.items()
-                        }
-                    dbg(f"  Minimum ratio for {curr} is {min_ratio}")
-                else:
-                    # Given this node's total input, calculate it's total output
-                    for k, v in curr["input_"].items():
-                        curr["output"][k] = min(v, proto.flow)
-                    dbg(
-                        f'  made input_ match output: {curr["input_"]=} {curr["output"]=}'
-                    )
-
-                # For splitters, divide output evenly among successors
-                if proto.name == "splitter":
-                    num_successors = len(list(G.successors(node)))
-                    if num_successors > 1:
-                        for k in curr["output"]:
-                            curr["output"][k] /= num_successors
-
-            dbg(f"  after: {curr=}")
-            dbg(f"Calcs:")
-            for n in G.nodes:
-                dbg(f"- {repr(n)}: {G.nodes[n]}")
-
-            nodes = list(
-                set(
-                    [n for n in G.neighbors(node) if n not in already_processed]
-                    + nodes
+            def _border_css(prefix, color):
+                return "; ".join(
+                    f"border-{side}: 1px solid {'transparent' if hide else color}"
+                    for side, hide in (("top", hide_n), ("right", hide_e), ("bottom", hide_s), ("left", hide_w))
                 )
+            td_border_css = _border_css("td", "black")
+            div_border_css = _border_css("div", "grey")
+
+            xy_str = f"{x},{y}"
+            cell_content = f"""
+           <div style='position: relative; width: 50px; height: 50px; {bg_style}; {div_border_css};'>
+    <img src='{entity_icon}' style=' position: absolute; top: 10%;   left: 10%;  width: 60%; height: 60%; '>
+    {ghost_imgs}
+    <img src='{item_icon}' style=' position: absolute; bottom: 5%;  right: 5%;  width: 20%; height: 20%; '>
+    <div style='position: absolute; top: 0; left: 0; font-size: 8px; opacity: 50%'>{xy_str}</div>
+    <div style='position: absolute; bottom: 0; left: 0; font-size: 20px;'>{direction_arrow}</div>
+    <div style=' position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);  font-size: 20px; font-weight: bold; color: white; '>{underground_symbol}</div>
+</div>
+            """
+            html.append(
+                f"<td style='{td_border_css}; padding: 0;'>{cell_content}</td>"
             )
-            dbg(f"Nodes: {nodes}")
-            already_processed.append(node)
-
-        assert count > 0, '"Recursion" depth reached, halting'
-
-        output = {}
-        dbg("iterating G.nodes")
-        for n in G.nodes:
-            dbg(f"- {repr(n)}: {G.nodes[n]}")
-            if "bulk_inserter" not in n:
-                continue
-            dbg(f"{repr(n)} is bulk inserter, examining")
-            for k, v in G.nodes[n]["output"].items():
-                if k not in output:
-                    output[k] = 0
-                output[k] += v
-                dbg(
-                    f"- Added {v} to output[{k}] to make {output[k]} from {repr(n)}"
-                )
-
-        sources = [n for n in G if "stack_inserter" in n]
-        sinks = [n for n in G if "bulk_inserter" in n]
-
-        can_reach_sink = set().union(*(nx.ancestors(G, s) | {s} for s in sinks))
-        reachable_from_source = set().union(
-            *(nx.descendants(G, s) | {s} for s in sources)
-        )
-        unreachable = set(G.nodes) - (
-            can_reach_sink.intersection(reachable_from_source)
-        )
-
-        dbg(f"{can_reach_sink=}")
-        dbg(f"{reachable_from_source=}")
-        dbg(
-            f"source -> ({len(reachable_from_source)} nodes) ... ({len(can_reach_sink)} nodes) -> sink"
-        )
-        dbg(
-            f"Final Throughput: {output}, {len(unreachable)} unreachable nodes: {unreachable}"
-        )
-        # NOTE: there's a subtle bug here that doesn't have much affect on the
-        # reward being able to go down. The "unreachable" calculation tries to
-        # not count the sink/source, since the model can't place those, but it
-        # does so in a way that makes the end result weird if the sink and the
-        # source are the only entities on the map. Not planning on fixing this
-        # one anytime soon.
-        return output, len(unreachable)
+        html.append("</tr>")
+    html.append("</table>")
+    return Html("".join(html))
 
 
-    def show_two_factories(
-        one, two, title_one="First Factory", title_two="Second Factory"
+def blueprint2world(bp):
+    obj = b64_to_dict(bp)
+
+    min_x = float("inf")
+    min_y = float("inf")
+    max_y = -float("inf")
+    max_x = -float("inf")
+
+    for e in obj["blueprint"]["entities"]:
+        # NOTE: might be OBOEs here
+        e["position"]["x"] = int(e["position"]["x"] - 0.5)
+        e["position"]["y"] = int(e["position"]["y"] - 0.5)
+
+    for e in obj["blueprint"].get("entities", []) + obj["blueprint"].get(
+        "tiles", []
     ):
-        return mo.Html(f"""<table>
-        <th>{title_one}</th>
-        <th>{title_two}</th>
-        <tr>
-        <td>{world2html(one).data}</td>
-        <td>{world2html(two).data}</td>
-        </tr></table>""")
+        min_x = min(min_x, e["position"]["x"])
+        min_y = min(min_y, e["position"]["y"])
+        max_y = max(max_y, e["position"]["y"])
+        max_x = max(max_x, e["position"]["x"])
+
+    for e in obj["blueprint"].get("entities", []):
+        e["position"]["x"] -= min_x
+        e["position"]["y"] -= min_y
+        if "direction" not in e and e["name"] == "transport-belt":
+            # transport belts have an implicit direction
+            e["direction"] = 0
+        # inserter's direction is towards their source, which we don't want, so flip them around
+        if "inserter" in e["name"]:
+            #             print(e)
+            e["direction"] = (e.get("direction", 0) + 8) % 16
+
+    # Add one, because of the 0.5 alignment of entities vs tiles
+    world = new_world(width=max_x - min_x + 1, height=max_y - min_y + 1)
+
+    # Use Hazard concrete to indicate the footprint
+    world[:, :, Channel.FOOTPRINT.value] = Footprint.UNAVAILABLE.value
+    for t in obj["blueprint"].get("tiles", []):
+        if t["name"] == "refined-hazard-concrete-left":
+            x = t["position"]["x"] - min_x
+            y = t["position"]["y"] - min_y
+            world[x, y, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        else:
+            print(f"Ignoring tile {t}")
+
+    for e in obj["blueprint"].get("entities", []):
+        entity = str2ent(e["name"])
+        if entity is None:
+            entity = str2ent("empty")
+
+        if "recipe" in e:
+            recipe = str2ent(e["recipe"])
+        else:
+            if len(e.get("filters", [])) == 1:
+                recipe = str2ent(e["filters"][0]["name"])
+            else:
+                recipe = str2ent("empty")
+
+        # underground belts. Output = emerging, input = descending
+        if e.get("type", None) == "output":
+            misc = Misc.UNDERGROUND_UP
+        elif e.get("type", None) == "input":
+            misc = Misc.UNDERGROUND_DOWN
+        else:
+            misc = Misc.NONE
+
+        direction = Direction(e.get("direction", -1))
+
+        add_entity(
+            world,
+            e["name"],
+            e["position"]["x"],
+            e["position"]["y"],
+            recipe=recipe.name,
+            direction=direction,
+            misc=misc,
+        )
+    return world
 
 
-    def plot_loss_history(loss_history):
-        # Create a figure
-        fig = go.Figure()
-        # Add traces for each key in loss_history
-        for k in loss_history[-1].keys():
-            fig.add_trace(
-                go.Scatter(
-                    x=list(
-                        range(len(loss_history))
-                    ),  # X-axis: range of iterations
-                    y=[
-                        float(v[k]) if k in v else np.nan for v in loss_history
-                    ],  # Y-axis: values for the current key
-                    mode="lines",  # Plot as lines
-                    name=k,  # Legend label
-                    line=dict(width=0.5),  # Set line width
-                )
+def plot_flow_network(G):
+    # Extract x, y coordinates from node names
+    pos = {
+        node: (int(x), -int(y))
+        for node, (x, y) in ((n, n.split("@")[1].split(",")) for n in G.nodes)
+    }
+    plt.figure(
+        figsize=(
+            (len(G.nodes) ** 0.5) * 3,
+            (len(G.nodes) ** 0.5) * 3,
+        )
+    )
+
+    # Draw the graph
+    nx.draw(
+        G,
+        pos,
+        with_labels=True,
+        node_size=2000,
+        node_color="lightblue",
+        font_size=12,
+        font_weight="bold",
+    )
+
+    # Add throughput labels
+    #     labels = {node: G.nodes[node].get("throughput", {}) for node in G.nodes}
+    #     nx.draw_networkx_labels(G, pos, labels=labels, font_color="red")
+
+    plt.show()
+
+
+def plot_loss_history(loss_history):
+    # Create a figure
+    fig = go.Figure()
+    # Add traces for each key in loss_history
+    for k in loss_history[-1].keys():
+        fig.add_trace(
+            go.Scatter(
+                x=list(
+                    range(len(loss_history))
+                ),  # X-axis: range of iterations
+                y=[
+                    float(v[k]) if k in v else np.nan for v in loss_history
+                ],  # Y-axis: values for the current key
+                mode="lines",  # Plot as lines
+                name=k,  # Legend label
+                line=dict(width=0.5),  # Set line width
             )
-        # Update layout for better readability
-        fig.update_layout(
-            title="Loss History",  # Title of the plot
-            xaxis_title="Iteration",  # X-axis label
-            yaxis_title="Loss",  # Y-axis label
-            width=800,  # Set figure width
-            height=500,  # Set figure height
         )
-        # Show the plot
-        fig.show()
+    # Update layout for better readability
+    fig.update_layout(
+        title="Loss History",  # Title of the plot
+        xaxis_title="Iteration",  # X-axis label
+        yaxis_title="Loss",  # Y-axis label
+        width=800,  # Set figure width
+        height=500,  # Set figure height
+    )
+    # Show the plot
+    fig.show()
 
 
-    def normalise_world(world_T, og_world):
-        assert torch.is_tensor(world_T), (
-            f"world_T is {type(world_T)}, not a tensor"
-        )
-        assert torch.is_tensor(og_world), (
-            f"og_world is {type(og_world)}, not a tensor"
-        )
-        assert len(world_T.shape) == 3, (
-            f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
-        )
-        assert len(og_world.shape) == 3, (
-            f"Expected og_world to have 3 dimensions, but is of shape {og_world.shape}"
-        )
-        assert world_T.shape[0] == world_T.shape[1], (
-            f"Expected world_T to be square, but is of shape {world_T.shape}"
-        )
-        assert og_world.shape[0] == og_world.shape[1], (
-            f"Expected og_world to be square, but is of shape {og_world.shape}"
-        )
+def normalise_world(world_T, og_world):
+    assert torch.is_tensor(world_T), (
+        f"world_T is {type(world_T)}, not a tensor"
+    )
+    assert torch.is_tensor(og_world), (
+        f"og_world is {type(og_world)}, not a tensor"
+    )
+    assert len(world_T.shape) == 3, (
+        f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
+    )
+    assert len(og_world.shape) == 3, (
+        f"Expected og_world to have 3 dimensions, but is of shape {og_world.shape}"
+    )
+    assert world_T.shape[0] == world_T.shape[1], (
+        f"Expected world_T to be square, but is of shape {world_T.shape}"
+    )
+    assert og_world.shape[0] == og_world.shape[1], (
+        f"Expected og_world to be square, but is of shape {og_world.shape}"
+    )
 
-        empty_entity_value = str2ent("empty").value
+    empty_entity_value = str2ent("empty").value
 
-        bulk_inserter_mask = (
-            world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
-        )
-        world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
-            empty_entity_value
-        )
+    bulk_inserter_mask = (
+        world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
+    )
+    world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
+        empty_entity_value
+    )
 
-        stack_inserter_mask = (
-            world_T[:, :, Channel.ENTITIES.value]
-            == str2ent("stack_inserter").value
-        )
-        world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
-            empty_entity_value
-        )
+    stack_inserter_mask = (
+        world_T[:, :, Channel.ENTITIES.value]
+        == str2ent("stack_inserter").value
+    )
+    world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
+        empty_entity_value
+    )
 
-        green_circ_mask = (
-            world_T[:, :, Channel.ENTITIES.value]
-            == str2ent("electronic_circuit").value
-        )
-        world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
+    green_circ_mask = (
+        world_T[:, :, Channel.ENTITIES.value]
+        == str2ent("electronic_circuit").value
+    )
+    world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
 
-        # Remove all transport belts without direction
-        belt_mask = (
-            world_T[:, :, Channel.ENTITIES.value]
-            == str2ent("transport_belt").value
-        )
-        no_direction_mask = (
-            world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
-        )
-        world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = (
-            empty_entity_value
-        )
+    # Remove all transport belts without direction
+    belt_mask = (
+        world_T[:, :, Channel.ENTITIES.value]
+        == str2ent("transport_belt").value
+    )
+    no_direction_mask = (
+        world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
+    )
+    world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = (
+        empty_entity_value
+    )
 
-        # # Ensure belts don't have recipes
-        # belt_entity_value = str2ent('transport_belt').value
-        # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
-        # world_T[:, :, Channel.ITEMS.value][belt_entities] = empty_entity_value
+    # # Ensure belts don't have recipes
+    # belt_entity_value = str2ent('transport_belt').value
+    # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
+    # world_T[:, :, Channel.ITEMS.value][belt_entities] = empty_entity_value
 
-        # # Ensure all empty entities have no recipe, no direction
-        # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
-        # world_T[:, :, Channel.ITEMS.value][no_entity] = empty_entity_value
-        # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
+    # # Ensure all empty entities have no recipe, no direction
+    # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
+    # world_T[:, :, Channel.ITEMS.value][no_entity] = empty_entity_value
+    # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
 
-        # Ensure the model can't just overwrite existing factories with a simpler thing.
-        tworld = og_world.clone().detach().to(torch.int64)
-        # tworld = torch.tensor(og_world, dtype=torch.int64)
-        original_had_something = (
-            tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
-        )
-        for ch in list(Channel):
-            replacements = tworld[:, :, ch.value][original_had_something]
-            world_T[:, :, ch.value][original_had_something] = replacements
-        return world_T
-
-
-    def get_min_belts(world_CWH):
-        assert world_CWH.shape[1] == world_CWH.shape[2], (
-            "Wrong shape: {world_CWH.shape}"
-        )
-        C, W, H = world_CWH.shape
-
-        stack_inserter_id = str2ent("stack_inserter").value
-        bulk_inserter_id = str2ent("bulk_inserter").value
-        coords1 = torch.where(
-            world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
-        )
-        assert len(coords1[0]) == len(coords1[1]) == 1, (
-            f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
-        )
-        w1, h1 = coords1[0][0], coords1[1][0]
-
-        coords2 = torch.where(
-            world_CWH[Channel.ENTITIES.value] == stack_inserter_id
-        )
-        assert len(coords2[0]) == len(coords2[1]) == 1, (
-            f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
-        )
-        w2, h2 = coords2[0][0], coords2[1][0]
-
-        # we want an estimate for how many belts are required, so get the
-        # coords of the transport belt tile closest to the source/sink
-        w1 = torch.clamp(w1, 1, W - 2)
-        h1 = torch.clamp(h1, 1, H - 2)
-        w2 = torch.clamp(w2, 1, W - 2)
-        h2 = torch.clamp(h2, 1, H - 2)
-
-        manhat_dist = torch.abs(w1 - w2) + torch.abs(h1 - h2)
-        min_belts = manhat_dist + 1
-        return min_belts
+    # Ensure the model can't just overwrite existing factories with a simpler thing.
+    tworld = og_world.clone().detach().to(torch.int64)
+    # tworld = torch.tensor(og_world, dtype=torch.int64)
+    original_had_something = (
+        tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
+    )
+    for ch in list(Channel):
+        replacements = tworld[:, :, ch.value][original_had_something]
+        world_T[:, :, ch.value][original_had_something] = replacements
+    return world_T
 
 
-    def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
-        stack_inserter_value = str2ent("stack_inserter").value
-        bulk_inserter_value = str2ent("bulk_inserter").value
-        empty_value = str2ent("empty").value
+def get_min_belts(world_CWH):
+    assert world_CWH.shape[1] == world_CWH.shape[2], (
+        "Wrong shape: {world_CWH.shape}"
+    )
+    C, W, H = world_CWH.shape
 
-        if seed is not None:
-            np.random.seed(seed)
-        assert min_belts != [1], f"min_belts of [1] is sometimes unsatisfiable"
-        if min_belts is None:
-            min_belts = list(range(0, 64))
-        w = new_world(width=n, height=n)
-        boundary_tiles = []
-        for i in range(n):
-            for j in range(n):
-                if i in (0, n - 1) and j in (0, n - 1):
-                    continue
-                if i in (0, n - 1) or j in (0, n - 1):
-                    boundary_tiles.append((i, j))
+    stack_inserter_id = str2ent("stack_inserter").value
+    bulk_inserter_id = str2ent("bulk_inserter").value
+    coords1 = torch.where(
+        world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
+    )
+    assert len(coords1[0]) == len(coords1[1]) == 1, (
+        f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
+    )
+    w1, h1 = coords1[0][0], coords1[1][0]
 
-        # Put a source and a sink on one of the boundaries
-        source = boundary_tiles[np.random.choice(len(boundary_tiles))]
-        w[source[0], source[1], Channel.ENTITIES.value] = stack_inserter_value
-        # TODO not the most efficient, but it'll be okay for now
-        limit = 1000
-        while limit > 0:
-            # Find random location for the sink
-            sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
-            # Ensure the sink isn't on top of the source
-            if source == sink:
+    coords2 = torch.where(
+        world_CWH[Channel.ENTITIES.value] == stack_inserter_id
+    )
+    assert len(coords2[0]) == len(coords2[1]) == 1, (
+        f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
+    )
+    w2, h2 = coords2[0][0], coords2[1][0]
+
+    # we want an estimate for how many belts are required, so get the
+    # coords of the transport belt tile closest to the source/sink
+    w1 = torch.clamp(w1, 1, W - 2)
+    h1 = torch.clamp(h1, 1, H - 2)
+    w2 = torch.clamp(w2, 1, W - 2)
+    h2 = torch.clamp(h2, 1, H - 2)
+
+    manhat_dist = torch.abs(w1 - w2) + torch.abs(h1 - h2)
+    min_belts = manhat_dist + 1
+    return min_belts
+
+
+def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
+    stack_inserter_value = str2ent("stack_inserter").value
+    bulk_inserter_value = str2ent("bulk_inserter").value
+    empty_value = str2ent("empty").value
+
+    if seed is not None:
+        np.random.seed(seed)
+    assert min_belts != [1], f"min_belts of [1] is sometimes unsatisfiable"
+    if min_belts is None:
+        min_belts = list(range(0, 64))
+    w = new_world(width=n, height=n)
+    boundary_tiles = []
+    for i in range(n):
+        for j in range(n):
+            if i in (0, n - 1) and j in (0, n - 1):
                 continue
-            # Add the sink to the world
-            w[sink[0], sink[1], Channel.ENTITIES.value] = bulk_inserter_value
-            # Calculate the manhatten distance
-            min_belt = get_min_belts(torch.tensor(w).permute(2, 0, 1))
-            # If manhatten distance is acceptable and source != sink, we've got
-            # our world
-            if (source != sink) and (min_belt in min_belts):
-                break
-            # else, remove the sink from the world and try again
-            w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
-        assert limit > 0, "Infinite loop blocked"
+            if i in (0, n - 1) or j in (0, n - 1):
+                boundary_tiles.append((i, j))
 
-        # Add the source + sink to the world
-        # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
-        # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
-        if source_item is not None:
-            w[source[0], source[1], Channel.ITEMS.value] = source_item
-        if sink_item is not None:
-            w[sink[0], sink[1], Channel.ITEMS.value] = sink_item
+    # Put a source and a sink on one of the boundaries
+    source = boundary_tiles[np.random.choice(len(boundary_tiles))]
+    w[source[0], source[1], Channel.ENTITIES.value] = stack_inserter_value
+    # TODO not the most efficient, but it'll be okay for now
+    limit = 1000
+    while limit > 0:
+        # Find random location for the sink
+        sink = boundary_tiles[np.random.choice(len(boundary_tiles))]
+        # Ensure the sink isn't on top of the source
+        if source == sink:
+            continue
+        # Add the sink to the world
+        w[sink[0], sink[1], Channel.ENTITIES.value] = bulk_inserter_value
+        # Calculate the manhatten distance
+        min_belt = get_min_belts(torch.tensor(w).permute(2, 0, 1))
+        # If manhatten distance is acceptable and source != sink, we've got
+        # our world
+        if (source != sink) and (min_belt in min_belts):
+            break
+        # else, remove the sink from the world and try again
+        w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
+    assert limit > 0, "Infinite loop blocked"
 
-        # Figure out the direction of the source + sink
-        for x, y, is_source in [(*source, True), (*sink, False)]:
-            if x == 0:
-                w[x, y, Channel.DIRECTION.value] = (
-                    Direction.EAST if is_source else Direction.WEST
-                ).value
-            if x == n - 1:
-                w[x, y, Channel.DIRECTION.value] = (
-                    Direction.WEST if is_source else Direction.EAST
-                ).value
-            if y == 0:
-                w[x, y, Channel.DIRECTION.value] = (
-                    Direction.SOUTH if is_source else Direction.NORTH
-                ).value
-            if y == n - 1:
-                w[x, y, Channel.DIRECTION.value] = (
-                    Direction.NORTH if is_source else Direction.SOUTH
-                ).value
+    # Add the source + sink to the world
+    # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
+    # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
+    if source_item is not None:
+        w[source[0], source[1], Channel.ITEMS.value] = source_item
+    if sink_item is not None:
+        w[sink[0], sink[1], Channel.ITEMS.value] = sink_item
 
-        return torch.tensor(w).to(torch.float)
+    # Figure out the direction of the source + sink
+    for x, y, is_source in [(*source, True), (*sink, False)]:
+        if x == 0:
+            w[x, y, Channel.DIRECTION.value] = (
+                Direction.EAST if is_source else Direction.WEST
+            ).value
+        if x == n - 1:
+            w[x, y, Channel.DIRECTION.value] = (
+                Direction.WEST if is_source else Direction.EAST
+            ).value
+        if y == 0:
+            w[x, y, Channel.DIRECTION.value] = (
+                Direction.SOUTH if is_source else Direction.NORTH
+            ).value
+        if y == n - 1:
+            w[x, y, Channel.DIRECTION.value] = (
+                Direction.NORTH if is_source else Direction.SOUTH
+            ).value
+
+    return torch.tensor(w).to(torch.float)
 
 
-    def sample_world(probabilities):
-        assert torch.is_tensor(probabilities), (
-            f"probabilities is {type(probabilities)} not torch.Tensor"
+def sample_world(probabilities):
+    assert torch.is_tensor(probabilities), (
+        f"probabilities is {type(probabilities)} not torch.Tensor"
+    )
+    distribution = Categorical(probs=probabilities)
+    samples = distribution.sample()
+    # make the directions fit the expected values
+    d_direction = samples[:, :, Channel.DIRECTION.value]
+    mask = d_direction > 0
+    d_direction[mask] = d_direction[mask] * 4 - 4
+    d_direction[~mask] = -1
+    return samples
+
+
+def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
+    torch.manual_seed(42)
+    evals = []
+    iterator = torch.randint(0, 2**16 - 1, (num_evaluations,)).tolist()
+    if pbar:
+        iterator = tqdm.tqdm(iterator)
+    for seed in iterator:
+        original_world = get_new_world(seed, n=4)
+        probabilities = actor(original_world)
+        normalised_world = normalise_world(
+            sample_world(probabilities), original_world
         )
-        distribution = Categorical(probs=probabilities)
-        samples = distribution.sample()
-        # make the directions fit the expected values
-        d_direction = samples[:, :, Channel.DIRECTION.value]
-        mask = d_direction > 0
-        d_direction[mask] = d_direction[mask] * 4 - 4
-        d_direction[~mask] = -1
-        return samples
+        # value = critic(normalised_world)
+        value = critic(normalised_world.to(torch.float))
+        # Maybe having throughput being calculated as a black box is the problem?
+        throughput = torch.tensor(
+            funge_throughput(normalised_world)[0] / 15.0,
+            dtype=value.dtype,
+        )
+        num_entities = (
+            normalised_world[:, :, Channel.ENTITIES.value]
+            != str2ent("empty").value
+        ).sum()
+        evals.append(
+            {
+                "seed": seed,
+                "original_world": original_world,
+                "normalised_world": normalised_world,
+                "throughput": throughput,
+                "num_entities": num_entities,
+            }
+        )
+
+    avg_throughput = sum([eval["throughput"] for eval in evals]) / len(evals)
+    avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(
+        evals
+    )
+
+    return evals, avg_throughput, float(avg_num_entities)
 
 
-    def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
-        torch.manual_seed(42)
-        evals = []
-        iterator = torch.randint(0, 2**16 - 1, (num_evaluations,)).tolist()
-        if pbar:
-            iterator = mo.status.progress_bar(iterator)
-        for seed in iterator:
-            original_world = get_new_world(seed, n=4)
-            probabilities = actor(original_world)
-            normalised_world = normalise_world(
-                sample_world(probabilities), original_world
+def funge_throughput(world, debug=False):
+    assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
+    assert len(world.shape) == 3, (
+        f"Expected world to have 3 dimensions, but is of shape {world.shape}"
+    )
+    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+
+
+def world2graph(world_WHC, debug=False):
+    assert torch.is_tensor(world_WHC), (
+        f"world is {type(world_WHC)}, not a tensor"
+    )
+    assert len(world_WHC.shape) == 3, (
+        f"Expected world to have 3 dimensions, but is of shape {world_WHC.shape}"
+    )
+    assert world_WHC.shape[0] == world_WHC.shape[1], (
+        f"Expected world to be square, but is of shape {world_WHC.shape}"
+    )
+    world_WHC = world_WHC.numpy()
+    G = nx.DiGraph()
+    # Maps secondary tile (x,y) → anchor (x,y) for multi-tile entities.
+    # Used to skip secondary tiles during node creation and to remap
+    # edge endpoints so all edges point to the anchor node.
+    anchor_of = {}
+
+    def dbg(s):
+        if debug:
+            print(s)
+
+    def remap_node_name(name):
+        """If a node name references a secondary tile, remap to anchor."""
+        parts = name.split("\n@")
+        if len(parts) == 2:
+            coords = parts[1].split(",")
+            pos = (int(coords[0]), int(coords[1]))
+            if pos in anchor_of:
+                ax, ay = anchor_of[pos]
+                return f"{parts[0]}\n@{ax},{ay}"
+        return name
+
+    pending_edges = []
+
+    W, H, C = world_WHC.shape
+    for x in range(W):
+        for y in range(H):
+            e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
+            if e.name == "empty":
+                continue
+            if (x, y) in anchor_of:
+                continue
+
+            # TODO somehow `item` is 0 even though it should be disallowed
+            item = items[world_WHC[x, y, Channel.ITEMS.value]]
+            d = Direction(world_WHC[x, y, Channel.DIRECTION.value])
+
+            input_ = {}
+            output = {}
+            if e.name == "stack_inserter":
+                output = {item.name: float("inf")}
+
+            self_name = f"{e.name}\n@{x},{y}"
+            G.add_node(
+                self_name,
+                input_=input_,
+                output=output,
+                recipe=item.name if "assembling_machine" in e.name else None,
             )
-            # value = critic(normalised_world)
-            value = critic(normalised_world.to(torch.float))
-            # Maybe having throughput being calculated as a black box is the problem?
-            throughput = torch.tensor(
-                funge_throughput(normalised_world)[0] / 15.0,
-                dtype=value.dtype,
-            )
-            num_entities = (
-                normalised_world[:, :, Channel.ENTITIES.value]
-                != str2ent("empty").value
-            ).sum()
-            evals.append(
-                {
-                    "seed": seed,
-                    "original_world": original_world,
-                    "normalised_world": normalised_world,
-                    "throughput": throughput,
-                    "num_entities": num_entities,
-                }
+            dbg(
+                f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {item.name}"
             )
 
-        avg_throughput = sum([eval["throughput"] for eval in evals]) / len(evals)
-        avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(
-            evals
-        )
+            # Register secondary tiles → anchor for multi-tile entities.
+            # Square entities (e.g. 3x3 assembler) are direction-independent,
+            # so use EAST as default when direction is NONE.
+            if e.width > 1 or e.height > 1:
+                tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
+                if tiles is not None:
+                    for tile in tiles[1:]:
+                        anchor_of[tile] = (x, y)
 
-        return evals, avg_throughput, float(avg_num_entities)
-
-
-    def funge_throughput(world, debug=False):
-        assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
-        assert len(world.shape) == 3, (
-            f"Expected world to have 3 dimensions, but is of shape {world.shape}"
-        )
-        assert world.shape[0] == world.shape[1], (
-            f"Expected world to be square, but is of shape {world.shape}"
-        )
-        try:
-            throughput, num_unreachable = calc_throughput(
-                world2graph(world, debug=debug), debug=debug
-            )
-            if len(throughput) == 0:
-                return 0, num_unreachable
-            actual_throughput = list(throughput.values())[0]
-            assert actual_throughput < float("inf"), (
-                f"throughput is +inf, probably a bug, world is: {torch.tensor(world).permute(2, 0, 1)}"
-            )
-            return actual_throughput, num_unreachable
-        except AssertionError:
-            breakpoint()
-            traceback.print_exc()
-            return 0, 0
-
-
-    def world2graph(world_WHC, debug=False):
-        assert torch.is_tensor(world_WHC), (
-            f"world is {type(world_WHC)}, not a tensor"
-        )
-        assert len(world_WHC.shape) == 3, (
-            f"Expected world to have 3 dimensions, but is of shape {world_WHC.shape}"
-        )
-        assert world_WHC.shape[0] == world_WHC.shape[1], (
-            f"Expected world to be square, but is of shape {world_WHC.shape}"
-        )
-        world_WHC = world_WHC.numpy()
-        G = nx.DiGraph()
-        # Maps secondary tile (x,y) → anchor (x,y) for multi-tile entities.
-        # Used to skip secondary tiles during node creation and to remap
-        # edge endpoints so all edges point to the anchor node.
-        anchor_of = {}
-
-        def dbg(s):
-            if debug:
-                print(s)
-
-        def remap_node_name(name):
-            """If a node name references a secondary tile, remap to anchor."""
-            parts = name.split("\n@")
-            if len(parts) == 2:
-                coords = parts[1].split(",")
-                pos = (int(coords[0]), int(coords[1]))
-                if pos in anchor_of:
-                    ax, ay = anchor_of[pos]
-                    return f"{parts[0]}\n@{ax},{ay}"
-            return name
-
-        pending_edges = []
-
-        W, H, C = world_WHC.shape
-        for x in range(W):
-            for y in range(H):
-                e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-                if e.name == "empty":
-                    continue
-                if (x, y) in anchor_of:
-                    continue
-
-                # TODO somehow `item` is 0 even though it should be disallowed
-                item = items[world_WHC[x, y, Channel.ITEMS.value]]
-                d = Direction(world_WHC[x, y, Channel.DIRECTION.value])
-
-                input_ = {}
-                output = {}
-                if e.name == "stack_inserter":
-                    output = {item.name: float("inf")}
-
-                self_name = f"{e.name}\n@{x},{y}"
-                G.add_node(
-                    self_name,
-                    input_=input_,
-                    output=output,
-                    recipe=item.name if "assembling_machine" in e.name else None,
-                )
-                dbg(
-                    f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {item.name}"
-                )
-
-                # Register secondary tiles → anchor for multi-tile entities.
-                # Square entities (e.g. 3x3 assembler) are direction-independent,
-                # so use EAST as default when direction is NONE.
-                if e.width > 1 or e.height > 1:
-                    tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
-                    if tiles is not None:
-                        for tile in tiles[1:]:
-                            anchor_of[tile] = (x, y)
-
-                # Figure out coords for source and destination
-                if d == Direction.EAST:
-                    src = [x - 1, y]
-                    dst = [x + 1, y]
-                elif d == Direction.WEST:
-                    src = [x + 1, y]
-                    dst = [x - 1, y]
-                elif d == Direction.NORTH:
-                    src = [x, y + 1]
-                    dst = [x, y - 1]
-                elif d == Direction.SOUTH:
-                    src = [x, y - 1]
-                    dst = [x, y + 1]
-                elif d == Direction.NONE:
-                    # If there's no direction, logic will be handled in the handlers
-                    src = [x, y]
-                    dst = [x, y]
-                else:
-                    assert False, f"Can't handle direction {d} for entity {e}"
-                # Connect the inserters' & belts' nodes
-                # Here we connect nodes twice, once on source->me and again on me->destination.
-                x_src_valid = 0 <= src[0] < len(world_WHC)
-                y_src_valid = 0 <= src[1] < len(world_WHC[0])
-                x_dst_valid = 0 <= dst[0] < len(world_WHC)
-                y_dst_valid = 0 <= dst[1] < len(world_WHC[0])
-                if "inserter" in e.name:
-                    if x_src_valid and y_src_valid:
-                        src_entity = entities[
-                            world_WHC[src[0], src[1], Channel.ENTITIES.value]
-                        ]
-                        src_direction = Direction(
-                            world_WHC[src[0], src[1], Channel.DIRECTION.value]
+            # Figure out coords for source and destination
+            if d == Direction.EAST:
+                src = [x - 1, y]
+                dst = [x + 1, y]
+            elif d == Direction.WEST:
+                src = [x + 1, y]
+                dst = [x - 1, y]
+            elif d == Direction.NORTH:
+                src = [x, y + 1]
+                dst = [x, y - 1]
+            elif d == Direction.SOUTH:
+                src = [x, y - 1]
+                dst = [x, y + 1]
+            elif d == Direction.NONE:
+                # If there's no direction, logic will be handled in the handlers
+                src = [x, y]
+                dst = [x, y]
+            else:
+                assert False, f"Can't handle direction {d} for entity {e}"
+            # Connect the inserters' & belts' nodes
+            # Here we connect nodes twice, once on source->me and again on me->destination.
+            x_src_valid = 0 <= src[0] < len(world_WHC)
+            y_src_valid = 0 <= src[1] < len(world_WHC[0])
+            x_dst_valid = 0 <= dst[0] < len(world_WHC)
+            y_dst_valid = 0 <= dst[1] < len(world_WHC[0])
+            if "inserter" in e.name:
+                if x_src_valid and y_src_valid:
+                    src_entity = entities[
+                        world_WHC[src[0], src[1], Channel.ENTITIES.value]
+                    ]
+                    src_direction = Direction(
+                        world_WHC[src[0], src[1], Channel.DIRECTION.value]
+                    )
+                    src_not_empty = src_entity.name != "empty"
+                    if src_not_empty:
+                        pending_edges.append((
+                            f"{src_entity.name}\n@{src[0]},{src[1]}",
+                            f"{e.name}\n@{x},{y}",
+                        ))
+                        dbg(
+                            f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
                         )
-                        src_not_empty = src_entity.name != "empty"
-                        if src_not_empty:
-                            pending_edges.append((
-                                f"{src_entity.name}\n@{src[0]},{src[1]}",
-                                f"{e.name}\n@{x},{y}",
-                            ))
-                            dbg(
-                                f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
-                            )
-                    if x_dst_valid and y_dst_valid:
-                        dst_entity = entities[
-                            world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                        ]
-                        # TODO: This doesn't allow for the case where
-                        # an inserter can put things on the ground to
-                        # be picked up by another inserter
-                        dst_is_insertable = (
-                            "belt" in dst_entity.name
-                            or "assembling_machine" in dst_entity.name
+                if x_dst_valid and y_dst_valid:
+                    dst_entity = entities[
+                        world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
+                    ]
+                    # TODO: This doesn't allow for the case where
+                    # an inserter can put things on the ground to
+                    # be picked up by another inserter
+                    dst_is_insertable = (
+                        "belt" in dst_entity.name
+                        or "assembling_machine" in dst_entity.name
+                    )
+                    if dst_is_insertable:
+                        pending_edges.append((
+                            f"{e.name}\n@{x},{y}",
+                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                        ))
+                        dbg(
+                            f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}"
                         )
-                        if dst_is_insertable:
-                            pending_edges.append((
-                                f"{e.name}\n@{x},{y}",
-                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            ))
-                            dbg(
-                                f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}"
-                            )
 
-                elif "transport_belt" in e.name:
-                    if x_src_valid and y_src_valid:
-                        src_entity = entities[
-                            world_WHC[src[0], src[1], Channel.ENTITIES.value]
-                        ]
-                        src_direction = Direction(
-                            world_WHC[src[0], src[1], Channel.DIRECTION.value]
+            elif "transport_belt" in e.name:
+                if x_src_valid and y_src_valid:
+                    src_entity = entities[
+                        world_WHC[src[0], src[1], Channel.ENTITIES.value]
+                    ]
+                    src_direction = Direction(
+                        world_WHC[src[0], src[1], Channel.DIRECTION.value]
+                    )
+                    src_misc = Misc(
+                        world_WHC[src[0], src[1], Channel.MISC.value]
+                    )
+                    src_is_beltish = (
+                        "belt" in src_entity.name
+                        # Check the other belt is directly behind me and
+                        # pointing the same direction
+                        and src_direction == d
+                        # Check that the other is not a downwards underground belt
+                        and not (
+                            "underground_belt" in src_entity.name
+                            and src_misc == Misc.UNDERGROUND_DOWN
                         )
-                        src_misc = Misc(
-                            world_WHC[src[0], src[1], Channel.MISC.value]
+                    )
+                    if src_is_beltish:
+                        pending_edges.append((
+                            f"{src_entity.name}\n@{src[0]},{src[1]}",
+                            f"{e.name}\n@{x},{y}",
+                        ))
+                        dbg(
+                            f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}",
                         )
-                        src_is_beltish = (
-                            "belt" in src_entity.name
-                            # Check the other belt is directly behind me and
-                            # pointing the same direction
-                            and src_direction == d
-                            # Check that the other is not a downwards underground belt
-                            and not (
-                                "underground_belt" in src_entity.name
-                                and src_misc == Misc.UNDERGROUND_DOWN
-                            )
-                        )
-                        if src_is_beltish:
-                            pending_edges.append((
-                                f"{src_entity.name}\n@{src[0]},{src[1]}",
-                                f"{e.name}\n@{x},{y}",
-                            ))
-                            dbg(
-                                f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}",
-                            )
 
-                    if x_dst_valid and y_dst_valid:
-                        dst_entity = entities[
-                            world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                        ]
-                        dst_direction = Direction(
-                            world_WHC[dst[0], dst[1], Channel.DIRECTION.value]
+                if x_dst_valid and y_dst_valid:
+                    dst_entity = entities[
+                        world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
+                    ]
+                    dst_direction = Direction(
+                        world_WHC[dst[0], dst[1], Channel.DIRECTION.value]
+                    )
+                    dst_misc = Misc(
+                        world_WHC[dst[0], dst[1], Channel.MISC.value]
+                    )
+                    dst_not_empty = dst_entity.name != "empty"
+                    dst_is_belt = "belt" in dst_entity.name
+                    opposite = Direction.SOUTH.value - Direction.NORTH.value
+                    dst_opposing_belt = (
+                        dst_is_belt
+                        and abs(dst_direction.value - d.value) == opposite
+                    )
+                    # various underground belt checks
+                    # TODO figure out these checks
+                    dest_underground_ok = (
+                        True
+                        # "underground_belt" not in dst_entity.name
+                        # or (
+                        #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
+                        # )
+                    )
+                    if (
+                        dst_is_belt
+                        and not dst_opposing_belt
+                        and dest_underground_ok
+                    ):
+                        pending_edges.append((
+                            f"{e.name}\n@{x},{y}",
+                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                        ))
+                        dbg(
+                            f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}",
                         )
-                        dst_misc = Misc(
-                            world_WHC[dst[0], dst[1], Channel.MISC.value]
-                        )
-                        dst_not_empty = dst_entity.name != "empty"
-                        dst_is_belt = "belt" in dst_entity.name
-                        opposite = Direction.SOUTH.value - Direction.NORTH.value
-                        dst_opposing_belt = (
-                            dst_is_belt
-                            and abs(dst_direction.value - d.value) == opposite
-                        )
-                        # various underground belt checks
-                        # TODO figure out these checks
-                        dest_underground_ok = (
-                            True
-                            # "underground_belt" not in dst_entity.name
-                            # or (
-                            #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
-                            # )
-                        )
-                        if (
-                            dst_is_belt
-                            and not dst_opposing_belt
-                            and dest_underground_ok
-                        ):
-                            pending_edges.append((
-                                f"{e.name}\n@{x},{y}",
-                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            ))
-                            dbg(
-                                f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}",
-                            )
 
-                # connect up the assembling machines
-                elif "assembling_machine" in e.name:
-                    dbg(f"Connecting assembler {e}")
-                    # search the blocks around the 3x3 assembling machine for inputs
-                    for dx in range(-1, 4):
-                        if not (0 <= x + dx < W):
+            # connect up the assembling machines
+            elif "assembling_machine" in e.name:
+                dbg(f"Connecting assembler {e}")
+                # search the blocks around the 3x3 assembling machine for inputs
+                for dx in range(-1, 4):
+                    if not (0 <= x + dx < W):
+                        # omit tiles outside the world
+                        continue
+                    for dy in range(-1, 4):
+                        if not (0 <= y + dy < H):
                             # omit tiles outside the world
                             continue
-                        for dy in range(-1, 4):
-                            if not (0 <= y + dy < H):
-                                # omit tiles outside the world
-                                continue
-                            if 0 <= dx < 3 and 0 <= dy < 3:
-                                # omit tiles inside the assembler
-                                continue
-                            if dx in (-1, 3) and dy in (-1, 3):
-                                # Omit corners
-                                continue
-                            other_e = entities[
-                                world_WHC[x + dx, y + dy, Channel.ENTITIES.value]
-                            ]
-                            other_d = Direction(
-                                world_WHC[x + dx, y + dy, Channel.DIRECTION.value]
-                            )
-                            # Only inserters can insert into an assembling machine
-                            if "inserter" not in other_e.name:
-                                continue
-                            #                         if f"{other_e.name}\n@{x + dx},{y + dy}" == 'inserter\n@2,0':
-                            #                             print(other_e, e, other_d, dy, dx)
-
-                            # dbg(f"{dx=},{dy=}")
-                            # dbg(f"{x+dx=},{y+dy=},{other_e=}")
-                            other_str = f"{other_e.name}\n@{x + dx},{y + dy}"
-                            self_str = f"{e.name}\n@{x},{y}"
-
-                            # Direction is self -> other
-                            if (
-                                (other_d == Direction.NORTH and dy < 0)
-                                or (other_d == Direction.SOUTH and dy > 0)
-                                or (other_d == Direction.WEST and dx < 0)
-                                or (other_d == Direction.EAST and dx > 0)
-                            ):
-                                #                             print(f'self -> other')
-                                src = self_str
-                                dst = other_str
-                            else:
-                                # Direction is other -> self
-                                #                             print(f'other -> self')
-                                src = other_str
-                                dst = self_str
-
-                            pending_edges.append((src, dst))
-                            dbg(f"{repr(src)} -> {repr(dst)}")
-
-                elif "underground_belt" in e.name:
-                    m = Misc(world_WHC[x, y, Channel.MISC.value])
-                    # Only down-undergrounds look for their upgoing counterparts,
-                    # not the other way aroud
-                    assert e.name == "underground_belt", (
-                        "don't know how to handle other undergrounds yet"
-                    )
-                    if m == Misc.UNDERGROUND_DOWN:
-                        max_delta = 6
-                    elif m == Misc.UNDERGROUND_UP:
-                        max_delta = 1
-                    else:
-                        assert False, (
-                            f"Underground belts must be either UP or DOWN, not {m}"
+                        if 0 <= dx < 3 and 0 <= dy < 3:
+                            # omit tiles inside the assembler
+                            continue
+                        if dx in (-1, 3) and dy in (-1, 3):
+                            # Omit corners
+                            continue
+                        other_e = entities[
+                            world_WHC[x + dx, y + dy, Channel.ENTITIES.value]
+                        ]
+                        other_d = Direction(
+                            world_WHC[x + dx, y + dy, Channel.DIRECTION.value]
                         )
-                    for delta in range(1, max_delta):
-                        if d == Direction.EAST:
-                            src = [x - 1, y]
-                            dst = [x + delta, y]
-                        elif d == Direction.WEST:
-                            src = [x + 1, y]
-                            dst = [x - delta, y]
-                        elif d == Direction.NORTH:
-                            src = [x, y + 1]
-                            dst = [x, y - delta]
-                        elif d == Direction.SOUTH:
-                            src = [x, y - 1]
-                            dst = [x, y + delta]
-                        x_valid = 0 <= dst[0] < len(world_WHC)
-                        y_valid = 0 <= dst[1] < len(world_WHC[0])
-                        if x_valid and y_valid:
-                            dst_entity = entities[
-                                world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                            ]
-                            going_underground = (
-                                dst_entity.name == "underground_belt"
-                                and m == Misc.UNDERGROUND_DOWN
-                            )
-                            cxn_to_belt = (
-                                "transport_belt" in dst_entity.name
-                                and m == Misc.UNDERGROUND_UP
-                            )
-                            if going_underground or cxn_to_belt:
-                                pending_edges.append((
-                                    f"{e.name}\n@{x},{y}",
-                                    f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                                ))
-                elif "splitter" in e.name:
-                    tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
-                    if tiles is None:
-                        continue
+                        # Only inserters can insert into an assembling machine
+                        if "inserter" not in other_e.name:
+                            continue
+                        #                         if f"{other_e.name}\n@{x + dx},{y + dy}" == 'inserter\n@2,0':
+                        #                             print(other_e, e, other_d, dy, dx)
 
-                    dx, dy = DIR_TO_DELTA.get(d, (0, 0))
-                    opposite_dir = {
-                        Direction.NORTH: Direction.SOUTH,
-                        Direction.SOUTH: Direction.NORTH,
-                        Direction.EAST: Direction.WEST,
-                        Direction.WEST: Direction.EAST,
-                    }.get(d, Direction.NONE)
+                        # dbg(f"{dx=},{dy=}")
+                        # dbg(f"{x+dx=},{y+dy=},{other_e=}")
+                        other_str = f"{other_e.name}\n@{x + dx},{y + dy}"
+                        self_str = f"{e.name}\n@{x},{y}"
 
-                    for tx, ty in tiles:
-                        # Input: cell behind this tile
-                        in_cell = (tx - dx, ty - dy)
+                        # Direction is self -> other
                         if (
-                            0 <= in_cell[0] < W
-                            and 0 <= in_cell[1] < H
-                            and in_cell not in tiles
+                            (other_d == Direction.NORTH and dy < 0)
+                            or (other_d == Direction.SOUTH and dy > 0)
+                            or (other_d == Direction.WEST and dx < 0)
+                            or (other_d == Direction.EAST and dx > 0)
                         ):
-                            in_ent = entities[
-                                world_WHC[in_cell[0], in_cell[1], Channel.ENTITIES.value]
-                            ]
-                            in_dir = Direction(
-                                world_WHC[in_cell[0], in_cell[1], Channel.DIRECTION.value]
-                            )
-                            # Only accept belt-like entities or sources/sinks
-                            # pointing in the same direction as the splitter
-                            in_is_belt = "belt" in in_ent.name and in_dir == d
-                            in_is_source_sink = in_ent.name in (
-                                "stack_inserter", "bulk_inserter"
-                            ) and in_dir == d
-                            if in_is_belt or in_is_source_sink:
-                                pending_edges.append((
-                                    f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
-                                    self_name,
-                                ))
+                            #                             print(f'self -> other')
+                            src = self_str
+                            dst = other_str
+                        else:
+                            # Direction is other -> self
+                            #                             print(f'other -> self')
+                            src = other_str
+                            dst = self_str
 
-                        # Output: cell ahead of this tile
-                        out_cell = (tx + dx, ty + dy)
-                        if (
-                            0 <= out_cell[0] < W
-                            and 0 <= out_cell[1] < H
-                            and out_cell not in tiles
-                        ):
-                            out_ent = entities[
-                                world_WHC[
-                                    out_cell[0], out_cell[1], Channel.ENTITIES.value
-                                ]
-                            ]
-                            out_dir = Direction(
-                                world_WHC[
-                                    out_cell[0], out_cell[1], Channel.DIRECTION.value
-                                ]
-                            )
-                            # Only connect to belt-like entities or sinks,
-                            # not facing the opposite direction
-                            out_is_belt = "belt" in out_ent.name
-                            out_is_sink = out_ent.name in (
-                                "stack_inserter", "bulk_inserter"
-                            )
-                            if (out_is_belt or out_is_sink) and out_dir != opposite_dir:
-                                pending_edges.append((
-                                    self_name,
-                                    f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
-                                ))
+                        pending_edges.append((src, dst))
+                        dbg(f"{repr(src)} -> {repr(dst)}")
 
+            elif "underground_belt" in e.name:
+                m = Misc(world_WHC[x, y, Channel.MISC.value])
+                # Only down-undergrounds look for their upgoing counterparts,
+                # not the other way aroud
+                assert e.name == "underground_belt", (
+                    "don't know how to handle other undergrounds yet"
+                )
+                if m == Misc.UNDERGROUND_DOWN:
+                    max_delta = 6
+                elif m == Misc.UNDERGROUND_UP:
+                    max_delta = 1
                 else:
-                    assert False, f"Don't know how to handle {e.name} at {x} {y}"
-
-        # Add edges, remapping any endpoint that references a secondary tile
-        for src, dst in pending_edges:
-            G.add_edge(remap_node_name(src), remap_node_name(dst))
-
-        return G
-
-
-    def _remove_entities(
-        world_CWH, num_missing_entities, total_entities, protected_positions=None
-    ):
-        """Remove entities from a completed lesson, respecting multi-tile units.
-
-        protected_positions: optional set of (x, y) the lesson considers
-        structurally required (e.g. the central inserter in INSERTER_TRANSFER,
-        or the recipe-bearing assembler in ASSEMBLE_1IN_1OUT). Any
-        entity-group containing one of these tiles is excluded from the
-        removable pool, so the agent always sees those entities in its
-        input. Source/sink are protected unconditionally via the entity-id
-        `skip` set below.
-
-        FOOTPRINT is left as new_world() set it (all-AVAILABLE). A previous
-        version marked every empty cell in the completed layout as
-        UNAVAILABLE, but that effectively gave away the answer: the
-        AVAILABLE cells were exactly the optimal placement set, so the
-        agent's task collapsed to "place anything in any AVAILABLE-and-empty
-        cell." Specific lessons can override FOOTPRINT to model bounded
-        build regions (e.g. hazard-concrete imports), but the *default*
-        must not encode the solution.
-
-        Returns min_entities_required (number of entity units removed).
-        For multi-tile entities (e.g. splitters), all tiles are removed together
-        as a single unit.
-        """
-        protected_positions = protected_positions or set()
-
-        if num_missing_entities == float("inf"):
-            return total_entities
-
-        C, W, H = world_CWH.shape
-        skip = {str2ent("source").value, str2ent("sink").value, str2ent("empty").value}
-
-        # Pass 1: identify which cells are secondary tiles of multi-tile entities.
-        # Map secondary → anchor so we skip them in pass 2.
-        secondary_tiles = set()
-        for x in range(W):
-            for y in range(H):
-                if (x, y) in secondary_tiles:
+                    assert False, (
+                        f"Underground belts must be either UP or DOWN, not {m}"
+                    )
+                for delta in range(1, max_delta):
+                    if d == Direction.EAST:
+                        src = [x - 1, y]
+                        dst = [x + delta, y]
+                    elif d == Direction.WEST:
+                        src = [x + 1, y]
+                        dst = [x - delta, y]
+                    elif d == Direction.NORTH:
+                        src = [x, y + 1]
+                        dst = [x, y - delta]
+                    elif d == Direction.SOUTH:
+                        src = [x, y - 1]
+                        dst = [x, y + delta]
+                    x_valid = 0 <= dst[0] < len(world_WHC)
+                    y_valid = 0 <= dst[1] < len(world_WHC[0])
+                    if x_valid and y_valid:
+                        dst_entity = entities[
+                            world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
+                        ]
+                        going_underground = (
+                            dst_entity.name == "underground_belt"
+                            and m == Misc.UNDERGROUND_DOWN
+                        )
+                        cxn_to_belt = (
+                            "transport_belt" in dst_entity.name
+                            and m == Misc.UNDERGROUND_UP
+                        )
+                        if going_underground or cxn_to_belt:
+                            pending_edges.append((
+                                f"{e.name}\n@{x},{y}",
+                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                            ))
+            elif "splitter" in e.name:
+                tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
+                if tiles is None:
                     continue
-                ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
-                if ent_val in skip:
-                    continue
-                ent = entities[ent_val]
-                if ent.width == 1 and ent.height == 1:
-                    continue
+
+                dx, dy = DIR_TO_DELTA.get(d, (0, 0))
+                opposite_dir = {
+                    Direction.NORTH: Direction.SOUTH,
+                    Direction.SOUTH: Direction.NORTH,
+                    Direction.EAST: Direction.WEST,
+                    Direction.WEST: Direction.EAST,
+                }.get(d, Direction.NONE)
+
+                for tx, ty in tiles:
+                    # Input: cell behind this tile
+                    in_cell = (tx - dx, ty - dy)
+                    if (
+                        0 <= in_cell[0] < W
+                        and 0 <= in_cell[1] < H
+                        and in_cell not in tiles
+                    ):
+                        in_ent = entities[
+                            world_WHC[in_cell[0], in_cell[1], Channel.ENTITIES.value]
+                        ]
+                        in_dir = Direction(
+                            world_WHC[in_cell[0], in_cell[1], Channel.DIRECTION.value]
+                        )
+                        # Only accept belt-like entities or sources/sinks
+                        # pointing in the same direction as the splitter
+                        in_is_belt = "belt" in in_ent.name and in_dir == d
+                        in_is_source_sink = in_ent.name in (
+                            "stack_inserter", "bulk_inserter"
+                        ) and in_dir == d
+                        if in_is_belt or in_is_source_sink:
+                            pending_edges.append((
+                                f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
+                                self_name,
+                            ))
+
+                    # Output: cell ahead of this tile
+                    out_cell = (tx + dx, ty + dy)
+                    if (
+                        0 <= out_cell[0] < W
+                        and 0 <= out_cell[1] < H
+                        and out_cell not in tiles
+                    ):
+                        out_ent = entities[
+                            world_WHC[
+                                out_cell[0], out_cell[1], Channel.ENTITIES.value
+                            ]
+                        ]
+                        out_dir = Direction(
+                            world_WHC[
+                                out_cell[0], out_cell[1], Channel.DIRECTION.value
+                            ]
+                        )
+                        # Only connect to belt-like entities or sinks,
+                        # not facing the opposite direction
+                        out_is_belt = "belt" in out_ent.name
+                        out_is_sink = out_ent.name in (
+                            "stack_inserter", "bulk_inserter"
+                        )
+                        if (out_is_belt or out_is_sink) and out_dir != opposite_dir:
+                            pending_edges.append((
+                                self_name,
+                                f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
+                            ))
+
+            else:
+                assert False, f"Don't know how to handle {e.name} at {x} {y}"
+
+    # Add edges, remapping any endpoint that references a secondary tile
+    for src, dst in pending_edges:
+        G.add_edge(remap_node_name(src), remap_node_name(dst))
+
+    return G
+
+
+def _remove_entities(
+    world_CWH, num_missing_entities, total_entities, protected_positions=None
+):
+    """Remove entities from a completed lesson, respecting multi-tile units.
+
+    protected_positions: optional set of (x, y) the lesson considers
+    structurally required (e.g. the central inserter in INSERTER_TRANSFER,
+    or the recipe-bearing assembler in ASSEMBLE_1IN_1OUT). Any
+    entity-group containing one of these tiles is excluded from the
+    removable pool, so the agent always sees those entities in its
+    input. Source/sink are protected unconditionally via the entity-id
+    `skip` set below.
+
+    FOOTPRINT is left as new_world() set it (all-AVAILABLE). A previous
+    version marked every empty cell in the completed layout as
+    UNAVAILABLE, but that effectively gave away the answer: the
+    AVAILABLE cells were exactly the optimal placement set, so the
+    agent's task collapsed to "place anything in any AVAILABLE-and-empty
+    cell." Specific lessons can override FOOTPRINT to model bounded
+    build regions (e.g. hazard-concrete imports), but the *default*
+    must not encode the solution.
+
+    Returns min_entities_required (number of entity units removed).
+    For multi-tile entities (e.g. splitters), all tiles are removed together
+    as a single unit.
+    """
+    protected_positions = protected_positions or set()
+
+    if num_missing_entities == float("inf"):
+        return total_entities
+
+    C, W, H = world_CWH.shape
+    skip = {str2ent("source").value, str2ent("sink").value, str2ent("empty").value}
+
+    # Pass 1: identify which cells are secondary tiles of multi-tile entities.
+    # Map secondary → anchor so we skip them in pass 2.
+    secondary_tiles = set()
+    for x in range(W):
+        for y in range(H):
+            if (x, y) in secondary_tiles:
+                continue
+            ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
+            if ent_val in skip:
+                continue
+            ent = entities[ent_val]
+            if ent.width == 1 and ent.height == 1:
+                continue
+            d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
+            tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
+            if tiles_list is not None:
+                for tx, ty in tiles_list:
+                    if (tx, ty) != (x, y):
+                        secondary_tiles.add((tx, ty))
+
+    # Pass 2: build entity groups from anchors only
+    entity_groups = []
+    for x in range(W):
+        for y in range(H):
+            if (x, y) in secondary_tiles:
+                continue
+            ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
+            if ent_val in skip:
+                continue
+            ent = entities[ent_val]
+            if ent.width == 1 and ent.height == 1:
+                group = {(x, y)}
+            else:
                 d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
                 tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
-                if tiles_list is not None:
-                    for tx, ty in tiles_list:
-                        if (tx, ty) != (x, y):
-                            secondary_tiles.add((tx, ty))
+                group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
+            if group & protected_positions:
+                continue
+            entity_groups.append(group)
 
-        # Pass 2: build entity groups from anchors only
-        entity_groups = []
-        for x in range(W):
-            for y in range(H):
-                if (x, y) in secondary_tiles:
-                    continue
-                ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
-                if ent_val in skip:
-                    continue
-                ent = entities[ent_val]
-                if ent.width == 1 and ent.height == 1:
-                    group = {(x, y)}
-                else:
-                    d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
-                    tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
-                    group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
-                if group & protected_positions:
-                    continue
-                entity_groups.append(group)
+    num_samples = min(num_missing_entities, len(entity_groups))
+    if num_samples == 0:
+        return 0
 
-        num_samples = min(num_missing_entities, len(entity_groups))
-        if num_samples == 0:
-            return 0
+    sampled_groups = random.sample(entity_groups, num_samples)
+    for group in sampled_groups:
+        for x, y in group:
+            world_CWH[Channel.ENTITIES.value, x, y] = str2ent("empty").value
+            world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
+            world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
+            world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
 
-        sampled_groups = random.sample(entity_groups, num_samples)
-        for group in sampled_groups:
-            for x, y in group:
-                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("empty").value
-                world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
-                world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
-                world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
-
-        return num_samples
+    return num_samples
 
 
-    def generate_lesson(
-        size=5,
-        kind=LessonKind.MOVE_ONE_ITEM,
-        num_missing_entities=float("inf"),
-        seed=None,
-        random_item=True,
-        max_entities=float("inf"),
-    ):
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-            torch.manual_seed(seed)
-        min_entities_required = None
-        world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
-            2, 0, 1
-        )
-        C, W, H = world_CWH.shape
-        # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
-        if kind.value == LessonKind.MOVE_ONE_ITEM.value:
-            # Choose a random source/sink
-            original_count = max(500, size * size * 4)
-            count = original_count
-            # print(f'count is {count}')
-            while count > 0:
-                # print(f"{count} attmempting to place source/sink")
-                count -= 1
-                pos1 = torch.randint(0, H * W, (1,))
-                pos2 = torch.randint(0, H * W, (1,))
-                if pos1 == pos2:
-                    # restart the loop until we find non-equal source/sink
-                    continue
+def generate_lesson(
+    size=5,
+    kind=LessonKind.MOVE_ONE_ITEM,
+    num_missing_entities=float("inf"),
+    seed=None,
+    random_item=True,
+    max_entities=float("inf"),
+):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+    min_entities_required = None
+    world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+        2, 0, 1
+    )
+    C, W, H = world_CWH.shape
+    # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
+    if kind.value == LessonKind.MOVE_ONE_ITEM.value:
+        # Choose a random source/sink
+        original_count = max(500, size * size * 4)
+        count = original_count
+        # print(f'count is {count}')
+        while count > 0:
+            # print(f"{count} attmempting to place source/sink")
+            count -= 1
+            pos1 = torch.randint(0, H * W, (1,))
+            pos2 = torch.randint(0, H * W, (1,))
+            if pos1 == pos2:
+                # restart the loop until we find non-equal source/sink
+                continue
 
-                source_WH = divmod(pos1.item(), W)
-                sink_WH = divmod(pos2.item(), W)
-                source_dir = random.choice(
-                    [d for d in Direction if d != Direction.NONE]
-                )
-                sink_dir = random.choice(
-                    [d for d in Direction if d != Direction.NONE]
-                )
-
-                if random_item:
-                    item_value = random.choice(
-                        [v.value for k, v in items.items() if v.name != "empty"]
-                    )
-                else:
-                    item_value = str2item("electronic_circuit").value
-
-                world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
-                    str2ent("source").value
-                )
-                world_CWH[Channel.ENTITIES.value, sink_WH[0], sink_WH[1]] = (
-                    str2ent("sink").value
-                )
-
-                world_CWH[Channel.ITEMS.value, source_WH[0], source_WH[1]] = (
-                    item_value
-                )
-                world_CWH[Channel.ITEMS.value, sink_WH[0], sink_WH[1]] = item_value
-
-                world_CWH[Channel.DIRECTION.value, source_WH[0], source_WH[1]] = (
-                    source_dir.value
-                )
-                world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
-                    sink_dir.value
-                )
-                # print(world_CWH)
-                # print(f"world so far: ")
-                # print(world_CWH[0])
-
-                paths = find_belt_paths_with_source_sink_orient(
-                    entities=world_CWH[Channel.ENTITIES.value],
-                    directions=world_CWH[Channel.DIRECTION.value],
-                )
-                # Remove all paths that would require placing too many entities
-                # print('found paths', len(paths))
-                paths = list(filter(lambda p: len(p) <= max_entities, paths))
-                # print('filtered paths', len(paths))
-
-                if len(paths) == 0:
-                    world_CWH = torch.tensor(
-                        new_world(width=size, height=size)
-                    ).permute(2, 0, 1)
-                    # Restart the loop until we get a source+sink that can be connected
-                    continue
-                else:
-                    # Choose a valid path at random and add it to the map
-                    if num_missing_entities != float("inf"):
-                        chosen_path = random.choice(paths)
-                        min_entities_required = len(chosen_path)
-                        for x, y, d in chosen_path:
-                            world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                                "transport_belt"
-                            ).value
-                            world_CWH[Channel.DIRECTION.value, x, y] = d.value
-                    else:
-                        min_entities_required = min([len(p) for p in paths])
-
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, min_entities_required
-                )
-                break
-            if count == 0:
-                raise Exception(
-                    f"Failed to find valid lesson after {original_count} attempts"
-                )
-        elif kind.value == LessonKind.INSERTER_TRANSFER.value:
-            # Source → belts → inserter → belts → sink
-            original_count = max(500, size * size * 8)
-            count = original_count
+            source_WH = divmod(pos1.item(), W)
+            sink_WH = divmod(pos2.item(), W)
+            source_dir = random.choice(
+                [d for d in Direction if d != Direction.NONE]
+            )
+            sink_dir = random.choice(
+                [d for d in Direction if d != Direction.NONE]
+            )
 
             if random_item:
                 item_value = random.choice(
@@ -1701,1390 +1356,1157 @@ def functions(
             else:
                 item_value = str2item("electronic_circuit").value
 
-            while count > 0:
-                count -= 1
-                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
-                C, W, H = world_CWH.shape
+            world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
+                str2ent("source").value
+            )
+            world_CWH[Channel.ENTITIES.value, sink_WH[0], sink_WH[1]] = (
+                str2ent("sink").value
+            )
 
-                # Pick 3 distinct random positions
-                positions = random.sample(range(W * H), 3)
-                source_pos = divmod(positions[0], W)
-                sink_pos = divmod(positions[1], W)
-                inserter_pos = divmod(positions[2], W)
+            world_CWH[Channel.ITEMS.value, source_WH[0], source_WH[1]] = (
+                item_value
+            )
+            world_CWH[Channel.ITEMS.value, sink_WH[0], sink_WH[1]] = item_value
 
-                dirs = [d for d in Direction if d != Direction.NONE]
-                source_dir = random.choice(dirs)
-                sink_dir = random.choice(dirs)
-                inserter_dir = random.choice(dirs)
+            world_CWH[Channel.DIRECTION.value, source_WH[0], source_WH[1]] = (
+                source_dir.value
+            )
+            world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
+                sink_dir.value
+            )
+            # print(world_CWH)
+            # print(f"world so far: ")
+            # print(world_CWH[0])
 
-                # Compute connection cells
-                ds = DIR_TO_DELTA[source_dir]
-                dk = DIR_TO_DELTA[sink_dir]
-                di = DIR_TO_DELTA[inserter_dir]
+            paths = find_belt_paths_with_source_sink_orient(
+                entities=world_CWH[Channel.ENTITIES.value],
+                directions=world_CWH[Channel.DIRECTION.value],
+            )
+            # Remove all paths that would require placing too many entities
+            # print('found paths', len(paths))
+            paths = list(filter(lambda p: len(p) <= max_entities, paths))
+            # print('filtered paths', len(paths))
 
-                source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
-                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
-                inserter_pickup = (inserter_pos[0] - di[0], inserter_pos[1] - di[1])
-                inserter_drop = (inserter_pos[0] + di[0], inserter_pos[1] + di[1])
+            if len(paths) == 0:
+                world_CWH = torch.tensor(
+                    new_world(width=size, height=size)
+                ).permute(2, 0, 1)
+                # Restart the loop until we get a source+sink that can be connected
+                continue
+            else:
+                # Choose a valid path at random and add it to the map
+                if num_missing_entities != float("inf"):
+                    chosen_path = random.choice(paths)
+                    min_entities_required = len(chosen_path)
+                    for x, y, d in chosen_path:
+                        world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                            "transport_belt"
+                        ).value
+                        world_CWH[Channel.DIRECTION.value, x, y] = d.value
+                else:
+                    min_entities_required = min([len(p) for p in paths])
 
-                # All key cells must be in bounds and distinct
-                key_cells = [source_pos, sink_pos, inserter_pos,
-                             source_output, sink_input, inserter_pickup, inserter_drop]
-                if any(not (0 <= r < W and 0 <= c < H) for r, c in key_cells):
-                    continue
-                if len(set(key_cells)) != len(key_cells):
-                    continue
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, min_entities_required
+            )
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid lesson after {original_count} attempts"
+            )
+    elif kind.value == LessonKind.INSERTER_TRANSFER.value:
+        # Source → belts → inserter → belts → sink
+        original_count = max(500, size * size * 8)
+        count = original_count
 
-                # Fixed cells that belts cannot occupy
-                fixed = {source_pos, sink_pos, inserter_pos}
+        if random_item:
+            item_value = random.choice(
+                [v.value for k, v in items.items() if v.name != "empty"]
+            )
+        else:
+            item_value = str2item("electronic_circuit").value
 
-                # Path 1: source output → inserter pickup cell
-                blocked1 = fixed | {inserter_drop, sink_input}
-                path1 = find_belt_path(W, H, source_output, inserter_pickup, inserter_dir, blocked1)
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
+            C, W, H = world_CWH.shape
+
+            # Pick 3 distinct random positions
+            positions = random.sample(range(W * H), 3)
+            source_pos = divmod(positions[0], W)
+            sink_pos = divmod(positions[1], W)
+            inserter_pos = divmod(positions[2], W)
+
+            dirs = [d for d in Direction if d != Direction.NONE]
+            source_dir = random.choice(dirs)
+            sink_dir = random.choice(dirs)
+            inserter_dir = random.choice(dirs)
+
+            # Compute connection cells
+            ds = DIR_TO_DELTA[source_dir]
+            dk = DIR_TO_DELTA[sink_dir]
+            di = DIR_TO_DELTA[inserter_dir]
+
+            source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+            sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+            inserter_pickup = (inserter_pos[0] - di[0], inserter_pos[1] - di[1])
+            inserter_drop = (inserter_pos[0] + di[0], inserter_pos[1] + di[1])
+
+            # All key cells must be in bounds and distinct
+            key_cells = [source_pos, sink_pos, inserter_pos,
+                         source_output, sink_input, inserter_pickup, inserter_drop]
+            if any(not (0 <= r < W and 0 <= c < H) for r, c in key_cells):
+                continue
+            if len(set(key_cells)) != len(key_cells):
+                continue
+
+            # Fixed cells that belts cannot occupy
+            fixed = {source_pos, sink_pos, inserter_pos}
+
+            # Path 1: source output → inserter pickup cell
+            blocked1 = fixed | {inserter_drop, sink_input}
+            path1 = find_belt_path(W, H, source_output, inserter_pickup, inserter_dir, blocked1)
+            if path1 is None:
+                continue
+
+            # Path 2: inserter drop → sink input cell
+            path1_cells = {(x, y) for x, y, _ in path1}
+            blocked2 = fixed | {inserter_pickup} | path1_cells
+            path2 = find_belt_path(W, H, inserter_drop, sink_input, sink_dir, blocked2)
+            if path2 is None:
+                continue
+
+            # Enforce max_entities constraint
+            total_entities = len(path1) + len(path2) + 1  # +1 for the inserter
+            if total_entities > max_entities:
+                continue
+
+            # Place source and sink
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
+            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
+            world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
+
+            # Place inserter
+            world_CWH[Channel.ENTITIES.value, inserter_pos[0], inserter_pos[1]] = str2ent("inserter").value
+            world_CWH[Channel.DIRECTION.value, inserter_pos[0], inserter_pos[1]] = inserter_dir.value
+
+            # Place belt paths
+            for x, y, d in path1 + path2:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+            # Verify throughput > 0
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
+
+            # Inserter is structurally required for this lesson; without
+            # it the source/sink layout becomes ambiguous (could be
+            # solved by belts alone). Protect it from blanking.
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, total_entities,
+                protected_positions={tuple(inserter_pos)},
+            )
+
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid INSERTER_TRANSFER lesson after {original_count} attempts"
+            )
+
+    elif kind.value == LessonKind.SPLITTER_SPLIT.value:
+        # 1 source → belts → splitter → 2x(belts → sink)
+        original_count = max(500, size * size * 10)
+        count = original_count
+
+        if random_item:
+            item_value = random.choice(
+                [v.value for k, v in items.items() if v.name != "empty"]
+            )
+        else:
+            item_value = str2item("electronic_circuit").value
+
+        splitter_ent = str2ent("splitter")
+
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
+            C, W, H = world_CWH.shape
+
+            dirs = [d for d in Direction if d != Direction.NONE]
+            splitter_dir = random.choice(dirs)
+
+            # Pick splitter anchor position; both tiles must fit
+            tiles = None
+            for _ in range(20):
+                sx = random.randint(0, W - 1)
+                sy = random.randint(0, H - 1)
+                tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
+                if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
+                    break
+                tiles = None
+            if tiles is None:
+                continue
+
+            tile_set = set(map(tuple, tiles))
+            d_delta = DIR_TO_DELTA[splitter_dir]
+
+            # Compute input/output cells for each splitter tile
+            input_cells = []
+            output_cells = []
+            for tx, ty in tiles:
+                inp = (tx - d_delta[0], ty - d_delta[1])
+                out = (tx + d_delta[0], ty + d_delta[1])
+                input_cells.append(inp)
+                output_cells.append(out)
+
+            # All input/output cells must be in bounds and not overlap splitter tiles
+            all_io = input_cells + output_cells
+            if any(not (0 <= r < W and 0 <= c < H) for r, c in all_io):
+                continue
+            if any(c in tile_set for c in all_io):
+                continue
+
+            # Pick 1 source and 2 sinks at random positions (avoiding splitter tiles and I/O cells)
+            reserved = tile_set | set(all_io)
+            available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
+            if len(available) < 3:
+                continue
+
+            chosen = random.sample(available, 3)
+            source_pos = chosen[0]
+            sink1_pos = chosen[1]
+            sink2_pos = chosen[2]
+
+            source_dir = random.choice(dirs)
+            sink1_dir = random.choice(dirs)
+            sink2_dir = random.choice(dirs)
+
+            # Compute connection cells for source and sinks
+            ds = DIR_TO_DELTA[source_dir]
+            dk1 = DIR_TO_DELTA[sink1_dir]
+            dk2 = DIR_TO_DELTA[sink2_dir]
+
+            source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+            sink1_input = (sink1_pos[0] - dk1[0], sink1_pos[1] - dk1[1])
+            sink2_input = (sink2_pos[0] - dk2[0], sink2_pos[1] - dk2[1])
+
+            # All connection cells must be in bounds
+            conn_cells = [source_output, sink1_input, sink2_input]
+            if any(not (0 <= r < W and 0 <= c < H) for r, c in conn_cells):
+                continue
+
+            # Connection cells must not overlap entity positions or each other
+            all_fixed = tile_set | {source_pos, sink1_pos, sink2_pos}
+            conn_set = set(conn_cells)
+            if len(conn_set) != len(conn_cells):
+                continue  # connection cells overlap each other
+            if conn_set & all_fixed:
+                continue  # connection cells overlap entity positions
+
+            # Path 1: source output → one of the splitter input cells
+            # Block entity positions, but NOT the start/end cells of each path.
+            # Also block the unused input cell AND the cell behind it to
+            # prevent sideloading into the splitter's unused input.
+            blocked_base = all_fixed
+            unused_input_buffer_0 = (input_cells[0][0] - d_delta[0], input_cells[0][1] - d_delta[1])
+            unused_input_buffer_1 = (input_cells[1][0] - d_delta[0], input_cells[1][1] - d_delta[1])
+
+            blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
+            path1 = find_belt_path(W, H, source_output, input_cells[0], splitter_dir, blocked1)
+            if path1 is None:
+                blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[0], unused_input_buffer_0}
+                path1 = find_belt_path(W, H, source_output, input_cells[1], splitter_dir, blocked1)
                 if path1 is None:
                     continue
 
-                # Path 2: inserter drop → sink input cell
-                path1_cells = {(x, y) for x, y, _ in path1}
-                blocked2 = fixed | {inserter_pickup} | path1_cells
-                path2 = find_belt_path(W, H, inserter_drop, sink_input, sink_dir, blocked2)
-                if path2 is None:
+            # Determine which input was used vs unused
+            path1_end = path1[-1][:2]
+            if path1_end == input_cells[0]:
+                unused_input = input_cells[1]
+                unused_buffer = unused_input_buffer_1
+            else:
+                unused_input = input_cells[0]
+                unused_buffer = unused_input_buffer_0
+
+            path1_cells = {(x, y) for x, y, _ in path1}
+
+            # Block unused input + buffer, plus the cells ahead of each sink
+            # (where the sink would output to) to prevent pass-through
+            # double-counting where one output path routes through a sink.
+            unused_block = {unused_input, unused_buffer}
+            sink1_output = (sink1_pos[0] + dk1[0], sink1_pos[1] + dk1[1])
+            sink2_output = (sink2_pos[0] + dk2[0], sink2_pos[1] + dk2[1])
+            sink_buffers = {sink1_output, sink2_output}
+
+            # Path 2+3: splitter outputs → sink inputs
+            # Try both assignments: (out0→sink1, out1→sink2) and (out0→sink2, out1→sink1)
+            path2 = None
+            path3 = None
+            for out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir in [
+                (output_cells[0], output_cells[1], sink1_input, sink1_dir, sink2_input, sink2_dir),
+                (output_cells[0], output_cells[1], sink2_input, sink2_dir, sink1_input, sink1_dir),
+            ]:
+                blocked2 = blocked_base | path1_cells | {sk_b, out_b} | set(input_cells) | unused_block | sink_buffers
+                p2 = find_belt_path(W, H, out_a, sk_a, sk_a_dir, blocked2)
+                if p2 is None:
                     continue
+                p2_cells = {(x, y) for x, y, _ in p2}
+                blocked3 = blocked_base | path1_cells | p2_cells | {out_a} | set(input_cells) | unused_block | sink_buffers
+                p3 = find_belt_path(W, H, out_b, sk_b, sk_b_dir, blocked3)
+                if p3 is not None:
+                    path2, path3 = p2, p3
+                    break
+            if path2 is None or path3 is None:
+                continue
 
-                # Enforce max_entities constraint
-                total_entities = len(path1) + len(path2) + 1  # +1 for the inserter
-                if total_entities > max_entities:
-                    continue
+            path2_cells = {(x, y) for x, y, _ in path2}
 
-                # Place source and sink
-                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
-                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
-                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+            # Enforce max_entities
+            total_entities = len(path1) + len(path2) + len(path3) + 1  # +1 for splitter (2 tiles but 1 entity)
+            if total_entities > max_entities:
+                continue
 
+            # Place source and sinks
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
+            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
+            world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+
+            for sink_pos, sink_dir in [(sink1_pos, sink1_dir), (sink2_pos, sink2_dir)]:
                 world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
                 world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
                 world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
-                # Place inserter
-                world_CWH[Channel.ENTITIES.value, inserter_pos[0], inserter_pos[1]] = str2ent("inserter").value
-                world_CWH[Channel.DIRECTION.value, inserter_pos[0], inserter_pos[1]] = inserter_dir.value
+            # Place splitter (all tiles)
+            for tx, ty in tiles:
+                world_CWH[Channel.ENTITIES.value, tx, ty] = splitter_ent.value
+                world_CWH[Channel.DIRECTION.value, tx, ty] = splitter_dir.value
 
-                # Place belt paths
-                for x, y, d in path1 + path2:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+            # Place belt paths
+            for x, y, d in path1 + path2 + path3:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
-                # Verify throughput > 0
-                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-                if tp <= 0:
-                    continue
+            # Verify throughput > 0
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
 
-                # Inserter is structurally required for this lesson; without
-                # it the source/sink layout becomes ambiguous (could be
-                # solved by belts alone). Protect it from blanking.
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities,
-                    protected_positions={tuple(inserter_pos)},
-                )
+            # Splitter is structurally required for the lesson; without
+            # it the source(s)/sink(s) layout becomes ambiguous (could
+            # be solved by belts alone). Protect it from blanking.
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, total_entities,
+                protected_positions={tuple(t) for t in tiles},
+            )
 
-                break
-            if count == 0:
-                raise Exception(
-                    f"Failed to find valid INSERTER_TRANSFER lesson after {original_count} attempts"
-                )
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid SPLITTER_SPLIT lesson after {original_count} attempts"
+            )
 
-        elif kind.value == LessonKind.SPLITTER_SPLIT.value:
-            # 1 source → belts → splitter → 2x(belts → sink)
-            original_count = max(500, size * size * 10)
-            count = original_count
+    elif kind.value == LessonKind.SPLITTER_MERGE.value:
+        # 2x(source → belts) → splitter → belts → 1 sink
+        #
+        # KNOWN LIMITATION — see issue #75. The splitter's single
+        # output belt caps total flow at 15 i/s while sources are
+        # infinite. One fully-connected source already saturates the
+        # output belt, so the second source's path is decorative —
+        # an agent can ignore one source entirely and still hit max
+        # throughput. Fine for SFT (which doesn't see throughput),
+        # but breaks the lesson's intent under PPO. Fix when wiring
+        # up PPO on these lessons (rate-limit sources, OR redesign so
+        # both splitter outputs feed the sink).
+        original_count = max(500, size * size * 10)
+        count = original_count
 
-            if random_item:
-                item_value = random.choice(
-                    [v.value for k, v in items.items() if v.name != "empty"]
-                )
-            else:
-                item_value = str2item("electronic_circuit").value
+        if random_item:
+            item_value = random.choice(
+                [v.value for k, v in items.items() if v.name != "empty"]
+            )
+        else:
+            item_value = str2item("electronic_circuit").value
 
-            splitter_ent = str2ent("splitter")
+        splitter_ent = str2ent("splitter")
 
-            while count > 0:
-                count -= 1
-                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
-                C, W, H = world_CWH.shape
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
+            C, W, H = world_CWH.shape
 
-                dirs = [d for d in Direction if d != Direction.NONE]
-                splitter_dir = random.choice(dirs)
+            dirs = [d for d in Direction if d != Direction.NONE]
+            splitter_dir = random.choice(dirs)
 
-                # Pick splitter anchor position; both tiles must fit
+            # Pick splitter anchor; both tiles must fit
+            tiles = None
+            for _ in range(20):
+                sx = random.randint(0, W - 1)
+                sy = random.randint(0, H - 1)
+                tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
+                if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
+                    break
                 tiles = None
-                for _ in range(20):
-                    sx = random.randint(0, W - 1)
-                    sy = random.randint(0, H - 1)
-                    tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
-                    if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
-                        break
-                    tiles = None
-                if tiles is None:
-                    continue
+            if tiles is None:
+                continue
 
-                tile_set = set(map(tuple, tiles))
-                d_delta = DIR_TO_DELTA[splitter_dir]
+            tile_set = set(map(tuple, tiles))
+            d_delta = DIR_TO_DELTA[splitter_dir]
 
-                # Compute input/output cells for each splitter tile
-                input_cells = []
-                output_cells = []
-                for tx, ty in tiles:
-                    inp = (tx - d_delta[0], ty - d_delta[1])
-                    out = (tx + d_delta[0], ty + d_delta[1])
-                    input_cells.append(inp)
-                    output_cells.append(out)
+            input_cells = [(tx - d_delta[0], ty - d_delta[1]) for tx, ty in tiles]
+            output_cells = [(tx + d_delta[0], ty + d_delta[1]) for tx, ty in tiles]
 
-                # All input/output cells must be in bounds and not overlap splitter tiles
-                all_io = input_cells + output_cells
-                if any(not (0 <= r < W and 0 <= c < H) for r, c in all_io):
-                    continue
-                if any(c in tile_set for c in all_io):
-                    continue
+            all_io = input_cells + output_cells
+            if any(not (0 <= r < W and 0 <= c < H) for r, c in all_io):
+                continue
+            if any(c in tile_set for c in all_io):
+                continue
 
-                # Pick 1 source and 2 sinks at random positions (avoiding splitter tiles and I/O cells)
-                reserved = tile_set | set(all_io)
-                available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
-                if len(available) < 3:
-                    continue
+            # Pick 2 sources and 1 sink
+            reserved = tile_set | set(all_io)
+            available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
+            if len(available) < 3:
+                continue
 
-                chosen = random.sample(available, 3)
-                source_pos = chosen[0]
-                sink1_pos = chosen[1]
-                sink2_pos = chosen[2]
+            chosen = random.sample(available, 3)
+            source1_pos = chosen[0]
+            source2_pos = chosen[1]
+            sink_pos = chosen[2]
 
-                source_dir = random.choice(dirs)
-                sink1_dir = random.choice(dirs)
-                sink2_dir = random.choice(dirs)
+            source1_dir = random.choice(dirs)
+            source2_dir = random.choice(dirs)
+            sink_dir = random.choice(dirs)
 
-                # Compute connection cells for source and sinks
-                ds = DIR_TO_DELTA[source_dir]
-                dk1 = DIR_TO_DELTA[sink1_dir]
-                dk2 = DIR_TO_DELTA[sink2_dir]
+            ds1 = DIR_TO_DELTA[source1_dir]
+            ds2 = DIR_TO_DELTA[source2_dir]
+            dk = DIR_TO_DELTA[sink_dir]
 
-                source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
-                sink1_input = (sink1_pos[0] - dk1[0], sink1_pos[1] - dk1[1])
-                sink2_input = (sink2_pos[0] - dk2[0], sink2_pos[1] - dk2[1])
+            source1_output = (source1_pos[0] + ds1[0], source1_pos[1] + ds1[1])
+            source2_output = (source2_pos[0] + ds2[0], source2_pos[1] + ds2[1])
+            sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
 
-                # All connection cells must be in bounds
-                conn_cells = [source_output, sink1_input, sink2_input]
-                if any(not (0 <= r < W and 0 <= c < H) for r, c in conn_cells):
-                    continue
+            conn_cells = [source1_output, source2_output, sink_input]
+            if any(not (0 <= r < W and 0 <= c < H) for r, c in conn_cells):
+                continue
 
-                # Connection cells must not overlap entity positions or each other
-                all_fixed = tile_set | {source_pos, sink1_pos, sink2_pos}
-                conn_set = set(conn_cells)
-                if len(conn_set) != len(conn_cells):
-                    continue  # connection cells overlap each other
-                if conn_set & all_fixed:
-                    continue  # connection cells overlap entity positions
+            all_fixed = tile_set | {source1_pos, source2_pos, sink_pos}
+            conn_set = set(conn_cells)
+            if len(conn_set) != len(conn_cells):
+                continue
+            if conn_set & all_fixed:
+                continue
 
-                # Path 1: source output → one of the splitter input cells
-                # Block entity positions, but NOT the start/end cells of each path.
-                # Also block the unused input cell AND the cell behind it to
-                # prevent sideloading into the splitter's unused input.
-                blocked_base = all_fixed
-                unused_input_buffer_0 = (input_cells[0][0] - d_delta[0], input_cells[0][1] - d_delta[1])
-                unused_input_buffer_1 = (input_cells[1][0] - d_delta[0], input_cells[1][1] - d_delta[1])
-
-                blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
-                path1 = find_belt_path(W, H, source_output, input_cells[0], splitter_dir, blocked1)
+            # Path 1: source1 output → splitter input 0
+            blocked_base = all_fixed
+            blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[1]}
+            path1 = find_belt_path(W, H, source1_output, input_cells[0], splitter_dir, blocked1)
+            if path1 is None:
+                blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[0]}
+                path1 = find_belt_path(W, H, source1_output, input_cells[1], splitter_dir, blocked1)
                 if path1 is None:
-                    blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[0], unused_input_buffer_0}
-                    path1 = find_belt_path(W, H, source_output, input_cells[1], splitter_dir, blocked1)
-                    if path1 is None:
-                        continue
-
-                # Determine which input was used vs unused
-                path1_end = path1[-1][:2]
-                if path1_end == input_cells[0]:
-                    unused_input = input_cells[1]
-                    unused_buffer = unused_input_buffer_1
-                else:
-                    unused_input = input_cells[0]
-                    unused_buffer = unused_input_buffer_0
-
-                path1_cells = {(x, y) for x, y, _ in path1}
-
-                # Block unused input + buffer, plus the cells ahead of each sink
-                # (where the sink would output to) to prevent pass-through
-                # double-counting where one output path routes through a sink.
-                unused_block = {unused_input, unused_buffer}
-                sink1_output = (sink1_pos[0] + dk1[0], sink1_pos[1] + dk1[1])
-                sink2_output = (sink2_pos[0] + dk2[0], sink2_pos[1] + dk2[1])
-                sink_buffers = {sink1_output, sink2_output}
-
-                # Path 2+3: splitter outputs → sink inputs
-                # Try both assignments: (out0→sink1, out1→sink2) and (out0→sink2, out1→sink1)
-                path2 = None
-                path3 = None
-                for out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir in [
-                    (output_cells[0], output_cells[1], sink1_input, sink1_dir, sink2_input, sink2_dir),
-                    (output_cells[0], output_cells[1], sink2_input, sink2_dir, sink1_input, sink1_dir),
-                ]:
-                    blocked2 = blocked_base | path1_cells | {sk_b, out_b} | set(input_cells) | unused_block | sink_buffers
-                    p2 = find_belt_path(W, H, out_a, sk_a, sk_a_dir, blocked2)
-                    if p2 is None:
-                        continue
-                    p2_cells = {(x, y) for x, y, _ in p2}
-                    blocked3 = blocked_base | path1_cells | p2_cells | {out_a} | set(input_cells) | unused_block | sink_buffers
-                    p3 = find_belt_path(W, H, out_b, sk_b, sk_b_dir, blocked3)
-                    if p3 is not None:
-                        path2, path3 = p2, p3
-                        break
-                if path2 is None or path3 is None:
                     continue
 
-                path2_cells = {(x, y) for x, y, _ in path2}
+            path1_cells = {(x, y) for x, y, _ in path1}
+            path1_end = path1[-1][:2]
+            remaining_input = input_cells[1] if path1_end == input_cells[0] else input_cells[0]
 
-                # Enforce max_entities
-                total_entities = len(path1) + len(path2) + len(path3) + 1  # +1 for splitter (2 tiles but 1 entity)
-                if total_entities > max_entities:
-                    continue
+            # Path 2: source2 output → remaining splitter input
+            blocked2 = blocked_base | set(output_cells) | path1_cells | {sink_input}
+            path2 = find_belt_path(W, H, source2_output, remaining_input, splitter_dir, blocked2)
+            if path2 is None:
+                continue
 
-                # Place source and sinks
-                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
-                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
-                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+            path2_cells = {(x, y) for x, y, _ in path2}
 
-                for sink_pos, sink_dir in [(sink1_pos, sink1_dir), (sink2_pos, sink2_dir)]:
-                    world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
-                    world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
-                    world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
+            # Path 3: splitter output → sink input (try both output cells).
+            # Block the unused output cell AND the cell ahead of it to
+            # prevent sideloading from the output path into the unused output.
+            unused_output_buffer_0 = (output_cells[0][0] + d_delta[0], output_cells[0][1] + d_delta[1])
+            unused_output_buffer_1 = (output_cells[1][0] + d_delta[0], output_cells[1][1] + d_delta[1])
 
-                # Place splitter (all tiles)
-                for tx, ty in tiles:
-                    world_CWH[Channel.ENTITIES.value, tx, ty] = splitter_ent.value
-                    world_CWH[Channel.DIRECTION.value, tx, ty] = splitter_dir.value
-
-                # Place belt paths
-                for x, y, d in path1 + path2 + path3:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
-
-                # Verify throughput > 0
-                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-                if tp <= 0:
-                    continue
-
-                # Splitter is structurally required for the lesson; without
-                # it the source(s)/sink(s) layout becomes ambiguous (could
-                # be solved by belts alone). Protect it from blanking.
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities,
-                    protected_positions={tuple(t) for t in tiles},
-                )
-
-                break
-            if count == 0:
-                raise Exception(
-                    f"Failed to find valid SPLITTER_SPLIT lesson after {original_count} attempts"
-                )
-
-        elif kind.value == LessonKind.SPLITTER_MERGE.value:
-            # 2x(source → belts) → splitter → belts → 1 sink
-            #
-            # KNOWN LIMITATION — see issue #75. The splitter's single
-            # output belt caps total flow at 15 i/s while sources are
-            # infinite. One fully-connected source already saturates the
-            # output belt, so the second source's path is decorative —
-            # an agent can ignore one source entirely and still hit max
-            # throughput. Fine for SFT (which doesn't see throughput),
-            # but breaks the lesson's intent under PPO. Fix when wiring
-            # up PPO on these lessons (rate-limit sources, OR redesign so
-            # both splitter outputs feed the sink).
-            original_count = max(500, size * size * 10)
-            count = original_count
-
-            if random_item:
-                item_value = random.choice(
-                    [v.value for k, v in items.items() if v.name != "empty"]
-                )
-            else:
-                item_value = str2item("electronic_circuit").value
-
-            splitter_ent = str2ent("splitter")
-
-            while count > 0:
-                count -= 1
-                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
-                C, W, H = world_CWH.shape
-
-                dirs = [d for d in Direction if d != Direction.NONE]
-                splitter_dir = random.choice(dirs)
-
-                # Pick splitter anchor; both tiles must fit
-                tiles = None
-                for _ in range(20):
-                    sx = random.randint(0, W - 1)
-                    sy = random.randint(0, H - 1)
-                    tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
-                    if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
-                        break
-                    tiles = None
-                if tiles is None:
-                    continue
-
-                tile_set = set(map(tuple, tiles))
-                d_delta = DIR_TO_DELTA[splitter_dir]
-
-                input_cells = [(tx - d_delta[0], ty - d_delta[1]) for tx, ty in tiles]
-                output_cells = [(tx + d_delta[0], ty + d_delta[1]) for tx, ty in tiles]
-
-                all_io = input_cells + output_cells
-                if any(not (0 <= r < W and 0 <= c < H) for r, c in all_io):
-                    continue
-                if any(c in tile_set for c in all_io):
-                    continue
-
-                # Pick 2 sources and 1 sink
-                reserved = tile_set | set(all_io)
-                available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
-                if len(available) < 3:
-                    continue
-
-                chosen = random.sample(available, 3)
-                source1_pos = chosen[0]
-                source2_pos = chosen[1]
-                sink_pos = chosen[2]
-
-                source1_dir = random.choice(dirs)
-                source2_dir = random.choice(dirs)
-                sink_dir = random.choice(dirs)
-
-                ds1 = DIR_TO_DELTA[source1_dir]
-                ds2 = DIR_TO_DELTA[source2_dir]
-                dk = DIR_TO_DELTA[sink_dir]
-
-                source1_output = (source1_pos[0] + ds1[0], source1_pos[1] + ds1[1])
-                source2_output = (source2_pos[0] + ds2[0], source2_pos[1] + ds2[1])
-                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
-
-                conn_cells = [source1_output, source2_output, sink_input]
-                if any(not (0 <= r < W and 0 <= c < H) for r, c in conn_cells):
-                    continue
-
-                all_fixed = tile_set | {source1_pos, source2_pos, sink_pos}
-                conn_set = set(conn_cells)
-                if len(conn_set) != len(conn_cells):
-                    continue
-                if conn_set & all_fixed:
-                    continue
-
-                # Path 1: source1 output → splitter input 0
-                blocked_base = all_fixed
-                blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[1]}
-                path1 = find_belt_path(W, H, source1_output, input_cells[0], splitter_dir, blocked1)
-                if path1 is None:
-                    blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[0]}
-                    path1 = find_belt_path(W, H, source1_output, input_cells[1], splitter_dir, blocked1)
-                    if path1 is None:
-                        continue
-
-                path1_cells = {(x, y) for x, y, _ in path1}
-                path1_end = path1[-1][:2]
-                remaining_input = input_cells[1] if path1_end == input_cells[0] else input_cells[0]
-
-                # Path 2: source2 output → remaining splitter input
-                blocked2 = blocked_base | set(output_cells) | path1_cells | {sink_input}
-                path2 = find_belt_path(W, H, source2_output, remaining_input, splitter_dir, blocked2)
-                if path2 is None:
-                    continue
-
-                path2_cells = {(x, y) for x, y, _ in path2}
-
-                # Path 3: splitter output → sink input (try both output cells).
-                # Block the unused output cell AND the cell ahead of it to
-                # prevent sideloading from the output path into the unused output.
-                unused_output_buffer_0 = (output_cells[0][0] + d_delta[0], output_cells[0][1] + d_delta[1])
-                unused_output_buffer_1 = (output_cells[1][0] + d_delta[0], output_cells[1][1] + d_delta[1])
-
-                blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1], unused_output_buffer_1}
-                path3 = find_belt_path(W, H, output_cells[0], sink_input, sink_dir, blocked3)
+            blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1], unused_output_buffer_1}
+            path3 = find_belt_path(W, H, output_cells[0], sink_input, sink_dir, blocked3)
+            if path3 is None:
+                blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[0], unused_output_buffer_0}
+                path3 = find_belt_path(W, H, output_cells[1], sink_input, sink_dir, blocked3)
                 if path3 is None:
-                    blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[0], unused_output_buffer_0}
-                    path3 = find_belt_path(W, H, output_cells[1], sink_input, sink_dir, blocked3)
-                    if path3 is None:
-                        continue
-
-                total_entities = len(path1) + len(path2) + len(path3) + 1
-                if total_entities > max_entities:
                     continue
 
-                # Place sources and sink
-                for src_pos, src_dir in [(source1_pos, source1_dir), (source2_pos, source2_dir)]:
-                    world_CWH[Channel.ENTITIES.value, src_pos[0], src_pos[1]] = str2ent("source").value
-                    world_CWH[Channel.DIRECTION.value, src_pos[0], src_pos[1]] = src_dir.value
-                    world_CWH[Channel.ITEMS.value, src_pos[0], src_pos[1]] = item_value
+            total_entities = len(path1) + len(path2) + len(path3) + 1
+            if total_entities > max_entities:
+                continue
 
-                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
-                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
-                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
+            # Place sources and sink
+            for src_pos, src_dir in [(source1_pos, source1_dir), (source2_pos, source2_dir)]:
+                world_CWH[Channel.ENTITIES.value, src_pos[0], src_pos[1]] = str2ent("source").value
+                world_CWH[Channel.DIRECTION.value, src_pos[0], src_pos[1]] = src_dir.value
+                world_CWH[Channel.ITEMS.value, src_pos[0], src_pos[1]] = item_value
 
-                # Place splitter
-                for tx, ty in tiles:
-                    world_CWH[Channel.ENTITIES.value, tx, ty] = splitter_ent.value
-                    world_CWH[Channel.DIRECTION.value, tx, ty] = splitter_dir.value
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
-                # Place belt paths
-                for x, y, d in path1 + path2 + path3:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+            # Place splitter
+            for tx, ty in tiles:
+                world_CWH[Channel.ENTITIES.value, tx, ty] = splitter_ent.value
+                world_CWH[Channel.DIRECTION.value, tx, ty] = splitter_dir.value
 
-                # Verify throughput > 0
-                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-                if tp <= 0:
-                    continue
+            # Place belt paths
+            for x, y, d in path1 + path2 + path3:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
-                # Splitter is structurally required for the lesson; without
-                # it the source(s)/sink(s) layout becomes ambiguous (could
-                # be solved by belts alone). Protect it from blanking.
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities,
-                    protected_positions={tuple(t) for t in tiles},
-                )
+            # Verify throughput > 0
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
 
-                break
-            if count == 0:
+            # Splitter is structurally required for the lesson; without
+            # it the source(s)/sink(s) layout becomes ambiguous (could
+            # be solved by belts alone). Protect it from blanking.
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, total_entities,
+                protected_positions={tuple(t) for t in tiles},
+            )
+
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid SPLITTER_MERGE lesson after {original_count} attempts"
+            )
+
+    elif kind.value == LessonKind.ASSEMBLE_1IN_1OUT.value:
+        # source → belt → input inserter → 3x3 assembler (with recipe) →
+        # output inserter → belt → sink. Recipe is randomly chosen from
+        # all 1-input 1-output recipes (copper_cable, iron_gear_wheel
+        # at the time of writing).
+        one_in_one_out = [
+            (name, r)
+            for name, r in recipes.items()
+            if len(r.consumes) == 1 and len(r.produces) == 1
+        ]
+        if not one_in_one_out:
+            raise Exception("No 1-input 1-output recipes available")
+
+        original_count = max(500, size * size * 12)
+        count = original_count
+        asm_ent = str2ent("assembling_machine_1")
+
+        # The 12 non-corner perimeter slots around a 3×3 assembler
+        # anchored at (ax, ay), expressed as (offset_x, offset_y,
+        # input_dir, output_dir). Input inserter direction faces
+        # *into* the assembler body; output direction faces *out*.
+        perim_slots = [
+            # North side (ddy = -1): above the top row
+            (0, -1, Direction.SOUTH, Direction.NORTH),
+            (1, -1, Direction.SOUTH, Direction.NORTH),
+            (2, -1, Direction.SOUTH, Direction.NORTH),
+            # South side (ddy = 3): below the bottom row
+            (0, 3, Direction.NORTH, Direction.SOUTH),
+            (1, 3, Direction.NORTH, Direction.SOUTH),
+            (2, 3, Direction.NORTH, Direction.SOUTH),
+            # West side (ddx = -1)
+            (-1, 0, Direction.EAST, Direction.WEST),
+            (-1, 1, Direction.EAST, Direction.WEST),
+            (-1, 2, Direction.EAST, Direction.WEST),
+            # East side (ddx = 3)
+            (3, 0, Direction.WEST, Direction.EAST),
+            (3, 1, Direction.WEST, Direction.EAST),
+            (3, 2, Direction.WEST, Direction.EAST),
+        ]
+
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
+            C, W, H = world_CWH.shape
+
+            # 3×3 assembler can't fit
+            if W < 3 or H < 3:
                 raise Exception(
-                    f"Failed to find valid SPLITTER_MERGE lesson after {original_count} attempts"
+                    f"Grid {W}×{H} too small for ASSEMBLE_1IN_1OUT (need ≥ 3×3)"
                 )
 
-        elif kind.value == LessonKind.ASSEMBLE_1IN_1OUT.value:
-            # source → belt → input inserter → 3x3 assembler (with recipe) →
-            # output inserter → belt → sink. Recipe is randomly chosen from
-            # all 1-input 1-output recipes (copper_cable, iron_gear_wheel
-            # at the time of writing).
-            one_in_one_out = [
-                (name, r)
-                for name, r in recipes.items()
-                if len(r.consumes) == 1 and len(r.produces) == 1
+            # Pick recipe + items
+            recipe_name, recipe = random.choice(one_in_one_out)
+            input_item_name = next(iter(recipe.consumes.keys()))
+            output_item_name = next(iter(recipe.produces.keys()))
+            recipe_item_value = str2item(recipe_name).value
+            input_item_value = str2item(input_item_name).value
+            output_item_value = str2item(output_item_name).value
+
+            # Pick assembler anchor
+            ax = random.randint(0, W - 3)
+            ay = random.randint(0, H - 3)
+            asm_tiles = {
+                (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
+            }
+
+            # Pick distinct input + output perimeter slots
+            in_slot, out_slot = random.sample(perim_slots, 2)
+            in_dx, in_dy, in_inserter_dir, _ = in_slot
+            out_dx, out_dy, _, out_inserter_dir = out_slot
+
+            in_inserter_pos = (ax + in_dx, ay + in_dy)
+            out_inserter_pos = (ax + out_dx, ay + out_dy)
+
+            in_dir_delta = DIR_TO_DELTA[in_inserter_dir]
+            out_dir_delta = DIR_TO_DELTA[out_inserter_dir]
+
+            # Belt cell that feeds the input inserter (its pickup):
+            in_pickup = (
+                in_inserter_pos[0] - in_dir_delta[0],
+                in_inserter_pos[1] - in_dir_delta[1],
+            )
+            # Belt cell where the output inserter drops:
+            out_drop = (
+                out_inserter_pos[0] + out_dir_delta[0],
+                out_inserter_pos[1] + out_dir_delta[1],
+            )
+
+            # All key cells in bounds
+            key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop]
+            if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
+                continue
+            # Distinct + outside assembler body
+            if len(set(key_cells)) != len(key_cells):
+                continue
+            if any(c in asm_tiles for c in key_cells):
+                continue
+
+            # Pick source + sink positions outside everything reserved
+            reserved = asm_tiles | set(key_cells)
+            available = [
+                (x, y)
+                for x in range(W)
+                for y in range(H)
+                if (x, y) not in reserved
             ]
-            if not one_in_one_out:
-                raise Exception("No 1-input 1-output recipes available")
+            if len(available) < 2:
+                continue
 
-            original_count = max(500, size * size * 12)
-            count = original_count
-            asm_ent = str2ent("assembling_machine_1")
+            source_pos, sink_pos = random.sample(available, 2)
+            dirs = [d for d in Direction if d != Direction.NONE]
+            source_dir = random.choice(dirs)
+            sink_dir = random.choice(dirs)
 
-            # The 12 non-corner perimeter slots around a 3×3 assembler
-            # anchored at (ax, ay), expressed as (offset_x, offset_y,
-            # input_dir, output_dir). Input inserter direction faces
-            # *into* the assembler body; output direction faces *out*.
-            perim_slots = [
-                # North side (ddy = -1): above the top row
-                (0, -1, Direction.SOUTH, Direction.NORTH),
-                (1, -1, Direction.SOUTH, Direction.NORTH),
-                (2, -1, Direction.SOUTH, Direction.NORTH),
-                # South side (ddy = 3): below the bottom row
-                (0, 3, Direction.NORTH, Direction.SOUTH),
-                (1, 3, Direction.NORTH, Direction.SOUTH),
-                (2, 3, Direction.NORTH, Direction.SOUTH),
-                # West side (ddx = -1)
-                (-1, 0, Direction.EAST, Direction.WEST),
-                (-1, 1, Direction.EAST, Direction.WEST),
-                (-1, 2, Direction.EAST, Direction.WEST),
-                # East side (ddx = 3)
-                (3, 0, Direction.WEST, Direction.EAST),
-                (3, 1, Direction.WEST, Direction.EAST),
-                (3, 2, Direction.WEST, Direction.EAST),
-            ]
+            ds = DIR_TO_DELTA[source_dir]
+            dk = DIR_TO_DELTA[sink_dir]
+            source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+            sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
 
-            while count > 0:
-                count -= 1
-                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
-                    2, 0, 1
+            # Source-output / sink-input must be in bounds and not overlap reserved
+            if not (0 <= source_output[0] < W and 0 <= source_output[1] < H):
+                continue
+            if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
+                continue
+            if source_output in reserved or sink_input in reserved:
+                continue
+            if source_output == sink_input:
+                continue
+
+            all_fixed = reserved | {source_pos, sink_pos}
+
+            # Path 1: source_output → in_pickup. Last belt orients toward
+            # the input inserter (matching INSERTER_TRANSFER convention).
+            blocked1 = (
+                asm_tiles
+                | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                   sink_input, out_drop}
+            )
+            path1 = find_belt_path(
+                W, H, source_output, in_pickup, in_inserter_dir, blocked1
+            )
+            if path1 is None:
+                continue
+            path1_cells = {(x, y) for x, y, _ in path1}
+
+            # Path 2: out_drop → sink_input. Last belt orients toward sink.
+            blocked2 = (
+                asm_tiles
+                | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
+                   in_pickup, source_output}
+                | path1_cells
+            )
+            path2 = find_belt_path(
+                W, H, out_drop, sink_input, sink_dir, blocked2
+            )
+            if path2 is None:
+                continue
+
+            # 1 assembler + 2 inserters + belts (assembler counts as 1
+            # entity even though it occupies 9 tiles).
+            total_entities = len(path1) + len(path2) + 3
+            if total_entities > max_entities:
+                continue
+
+            # Place source
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                str2ent("source").value
+            )
+            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                source_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = (
+                input_item_value
+            )
+
+            # Place sink
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                str2ent("sink").value
+            )
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                sink_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
+                output_item_value
+            )
+
+            # Place assembler (3×3, all tiles tagged with the recipe item)
+            for tx, ty in asm_tiles:
+                world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
+                world_CWH[Channel.DIRECTION.value, tx, ty] = (
+                    Direction.NORTH.value
                 )
-                C, W, H = world_CWH.shape
+                world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
 
-                # 3×3 assembler can't fit
-                if W < 3 or H < 3:
-                    raise Exception(
-                        f"Grid {W}×{H} too small for ASSEMBLE_1IN_1OUT (need ≥ 3×3)"
-                    )
+            # Place input + output inserters
+            world_CWH[
+                Channel.ENTITIES.value, in_inserter_pos[0], in_inserter_pos[1]
+            ] = str2ent("inserter").value
+            world_CWH[
+                Channel.DIRECTION.value, in_inserter_pos[0], in_inserter_pos[1]
+            ] = in_inserter_dir.value
 
-                # Pick recipe + items
-                recipe_name, recipe = random.choice(one_in_one_out)
-                input_item_name = next(iter(recipe.consumes.keys()))
-                output_item_name = next(iter(recipe.produces.keys()))
-                recipe_item_value = str2item(recipe_name).value
-                input_item_value = str2item(input_item_name).value
-                output_item_value = str2item(output_item_name).value
+            world_CWH[
+                Channel.ENTITIES.value, out_inserter_pos[0], out_inserter_pos[1]
+            ] = str2ent("inserter").value
+            world_CWH[
+                Channel.DIRECTION.value, out_inserter_pos[0], out_inserter_pos[1]
+            ] = out_inserter_dir.value
 
-                # Pick assembler anchor
-                ax = random.randint(0, W - 3)
-                ay = random.randint(0, H - 3)
-                asm_tiles = {
-                    (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
-                }
+            # Place belt paths
+            for x, y, d in path1 + path2:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
-                # Pick distinct input + output perimeter slots
-                in_slot, out_slot = random.sample(perim_slots, 2)
-                in_dx, in_dy, in_inserter_dir, _ = in_slot
-                out_dx, out_dy, _, out_inserter_dir = out_slot
+            # Verify throughput > 0
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
 
-                in_inserter_pos = (ax + in_dx, ay + in_dy)
-                out_inserter_pos = (ax + out_dx, ay + out_dy)
+            # The assembler + its recipe is structurally required: the
+            # recipe channel cannot be inferred from belts alone, so
+            # without the assembler the lesson is ambiguous. Protect
+            # all 9 assembler tiles from blanking.
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, total_entities,
+                protected_positions=asm_tiles,
+            )
 
-                in_dir_delta = DIR_TO_DELTA[in_inserter_dir]
-                out_dir_delta = DIR_TO_DELTA[out_inserter_dir]
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
+            )
 
-                # Belt cell that feeds the input inserter (its pickup):
-                in_pickup = (
-                    in_inserter_pos[0] - in_dir_delta[0],
-                    in_inserter_pos[1] - in_dir_delta[1],
-                )
-                # Belt cell where the output inserter drops:
-                out_drop = (
-                    out_inserter_pos[0] + out_dir_delta[0],
-                    out_inserter_pos[1] + out_dir_delta[1],
-                )
+    elif kind.value == LessonKind.MOVE_VIA_UG_BELT.value:
+        # A 1..4-tile-thick wall spans the grid perpendicular to a chosen
+        # flow direction. UG_DOWN sits on the source side flush against
+        # the wall; UG_UP sits directly opposite on the sink side. Source
+        # and sink are placed randomly on their respective sides, and
+        # transport belts route source→UG_DOWN and UG_UP→sink via
+        # find_belt_path. FOOTPRINT marks ONLY the wall tiles as
+        # UNAVAILABLE — every other tile is freely buildable.
+        original_count = max(500, size * size * 8)
+        count = original_count
 
-                # All key cells in bounds
-                key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop]
-                if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
-                    continue
-                # Distinct + outside assembler body
-                if len(set(key_cells)) != len(key_cells):
-                    continue
-                if any(c in asm_tiles for c in key_cells):
-                    continue
+        if random_item:
+            item_value = random.choice(
+                [v.value for k, v in items.items() if v.name != "empty"]
+            )
+        else:
+            item_value = str2item("electronic_circuit").value
 
-                # Pick source + sink positions outside everything reserved
-                reserved = asm_tiles | set(key_cells)
-                available = [
-                    (x, y)
-                    for x in range(W)
-                    for y in range(H)
-                    if (x, y) not in reserved
-                ]
-                if len(available) < 2:
-                    continue
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
+            C, W, H = world_CWH.shape
 
-                source_pos, sink_pos = random.sample(available, 2)
-                dirs = [d for d in Direction if d != Direction.NONE]
-                source_dir = random.choice(dirs)
-                sink_dir = random.choice(dirs)
+            flow_dir = random.choice(
+                [d for d in Direction if d != Direction.NONE]
+            )
+            is_horizontal = flow_dir in (Direction.EAST, Direction.WEST)
+            flow_span = W if is_horizontal else H
+            perp_span = H if is_horizontal else W
 
-                ds = DIR_TO_DELTA[source_dir]
-                dk = DIR_TO_DELTA[sink_dir]
-                source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
-                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
-
-                # Source-output / sink-input must be in bounds and not overlap reserved
-                if not (0 <= source_output[0] < W and 0 <= source_output[1] < H):
-                    continue
-                if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
-                    continue
-                if source_output in reserved or sink_input in reserved:
-                    continue
-                if source_output == sink_input:
-                    continue
-
-                all_fixed = reserved | {source_pos, sink_pos}
-
-                # Path 1: source_output → in_pickup. Last belt orients toward
-                # the input inserter (matching INSERTER_TRANSFER convention).
-                blocked1 = (
-                    asm_tiles
-                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
-                       sink_input, out_drop}
-                )
-                path1 = find_belt_path(
-                    W, H, source_output, in_pickup, in_inserter_dir, blocked1
-                )
-                if path1 is None:
-                    continue
-                path1_cells = {(x, y) for x, y, _ in path1}
-
-                # Path 2: out_drop → sink_input. Last belt orients toward sink.
-                blocked2 = (
-                    asm_tiles
-                    | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
-                       in_pickup, source_output}
-                    | path1_cells
-                )
-                path2 = find_belt_path(
-                    W, H, out_drop, sink_input, sink_dir, blocked2
-                )
-                if path2 is None:
-                    continue
-
-                # 1 assembler + 2 inserters + belts (assembler counts as 1
-                # entity even though it occupies 9 tiles).
-                total_entities = len(path1) + len(path2) + 3
-                if total_entities > max_entities:
-                    continue
-
-                # Place source
-                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
-                    str2ent("source").value
-                )
-                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
-                    source_dir.value
-                )
-                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = (
-                    input_item_value
-                )
-
-                # Place sink
-                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
-                    str2ent("sink").value
-                )
-                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
-                    sink_dir.value
-                )
-                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
-                    output_item_value
-                )
-
-                # Place assembler (3×3, all tiles tagged with the recipe item)
-                for tx, ty in asm_tiles:
-                    world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
-                    world_CWH[Channel.DIRECTION.value, tx, ty] = (
-                        Direction.NORTH.value
-                    )
-                    world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
-
-                # Place input + output inserters
-                world_CWH[
-                    Channel.ENTITIES.value, in_inserter_pos[0], in_inserter_pos[1]
-                ] = str2ent("inserter").value
-                world_CWH[
-                    Channel.DIRECTION.value, in_inserter_pos[0], in_inserter_pos[1]
-                ] = in_inserter_dir.value
-
-                world_CWH[
-                    Channel.ENTITIES.value, out_inserter_pos[0], out_inserter_pos[1]
-                ] = str2ent("inserter").value
-                world_CWH[
-                    Channel.DIRECTION.value, out_inserter_pos[0], out_inserter_pos[1]
-                ] = out_inserter_dir.value
-
-                # Place belt paths
-                for x, y, d in path1 + path2:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                        "transport_belt"
-                    ).value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
-
-                # Verify throughput > 0
-                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-                if tp <= 0:
-                    continue
-
-                # The assembler + its recipe is structurally required: the
-                # recipe channel cannot be inferred from belts alone, so
-                # without the assembler the lesson is ambiguous. Protect
-                # all 9 assembler tiles from blanking.
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities,
-                    protected_positions=asm_tiles,
-                )
-
-                break
-            if count == 0:
+            # Need ≥1 source-side tile + wall (≥1) + ≥1 sink-side tile
+            if flow_span < 3:
                 raise Exception(
-                    f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
+                    f"Grid {W}×{H} too small for MOVE_VIA_UG_BELT (need ≥ 3 along {flow_dir})"
                 )
 
-        elif kind.value == LessonKind.MOVE_VIA_UG_BELT.value:
-            # A 1..4-tile-thick wall spans the grid perpendicular to a chosen
-            # flow direction. UG_DOWN sits on the source side flush against
-            # the wall; UG_UP sits directly opposite on the sink side. Source
-            # and sink are placed randomly on their respective sides, and
-            # transport belts route source→UG_DOWN and UG_UP→sink via
-            # find_belt_path. FOOTPRINT marks ONLY the wall tiles as
-            # UNAVAILABLE — every other tile is freely buildable.
-            original_count = max(500, size * size * 8)
-            count = original_count
+            max_wall = min(4, flow_span - 2)
+            wall_thickness = random.randint(1, max_wall)
+            wall_lo = random.randint(1, flow_span - 1 - wall_thickness)
+            wall_hi = wall_lo + wall_thickness - 1
 
-            if random_item:
-                item_value = random.choice(
-                    [v.value for k, v in items.items() if v.name != "empty"]
-                )
+            forward = flow_dir in (Direction.EAST, Direction.SOUTH)
+            if forward:
+                ug_down_flow = wall_lo - 1
+                ug_up_flow = wall_hi + 1
+                src_lo, src_hi = 0, wall_lo - 1
+                snk_lo, snk_hi = wall_hi + 1, flow_span - 1
             else:
-                item_value = str2item("electronic_circuit").value
+                ug_down_flow = wall_hi + 1
+                ug_up_flow = wall_lo - 1
+                src_lo, src_hi = wall_hi + 1, flow_span - 1
+                snk_lo, snk_hi = 0, wall_lo - 1
 
-            while count > 0:
-                count -= 1
-                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
-                    2, 0, 1
+            ug_perp = random.randint(0, perp_span - 1)
+
+            def fp_to_xy(fc, pc, ih=is_horizontal):
+                return (fc, pc) if ih else (pc, fc)
+
+            ug_down_pos = fp_to_xy(ug_down_flow, ug_perp)
+            ug_up_pos = fp_to_xy(ug_up_flow, ug_perp)
+
+            wall_tiles = set()
+            for fc in range(wall_lo, wall_hi + 1):
+                for pc in range(perp_span):
+                    wall_tiles.add(fp_to_xy(fc, pc))
+
+            source_cells = []
+            for fc in range(src_lo, src_hi + 1):
+                for pc in range(perp_span):
+                    cell = fp_to_xy(fc, pc)
+                    if cell != ug_down_pos:
+                        source_cells.append(cell)
+            sink_cells = []
+            for fc in range(snk_lo, snk_hi + 1):
+                for pc in range(perp_span):
+                    cell = fp_to_xy(fc, pc)
+                    if cell != ug_up_pos:
+                        sink_cells.append(cell)
+            if not source_cells or not sink_cells:
+                continue
+
+            source_pos = random.choice(source_cells)
+            sink_pos = random.choice(sink_cells)
+            dirs = [d for d in Direction if d != Direction.NONE]
+            source_dir = random.choice(dirs)
+            sink_dir = random.choice(dirs)
+
+            ds = DIR_TO_DELTA[source_dir]
+            dk = DIR_TO_DELTA[sink_dir]
+            source_drop = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+            sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+
+            if not (0 <= source_drop[0] < W and 0 <= source_drop[1] < H):
+                continue
+            if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
+                continue
+
+            # source_drop must be on source side or land directly on UG_DOWN
+            if source_drop in wall_tiles:
+                continue
+            if source_drop in (ug_up_pos, sink_pos):
+                continue
+            sd_flow = source_drop[0] if is_horizontal else source_drop[1]
+            if not (
+                src_lo <= sd_flow <= src_hi or source_drop == ug_down_pos
+            ):
+                continue
+
+            # sink_input must be on sink side or land directly on UG_UP
+            if sink_input in wall_tiles:
+                continue
+            if sink_input in (ug_down_pos, source_pos):
+                continue
+            si_flow = sink_input[0] if is_horizontal else sink_input[1]
+            if not (
+                snk_lo <= si_flow <= snk_hi or sink_input == ug_up_pos
+            ):
+                continue
+
+            flow_delta = DIR_TO_DELTA[flow_dir]
+
+            # Path 1: source_drop → UG_DOWN_input (on source side)
+            if source_drop == ug_down_pos:
+                path1 = []
+            else:
+                ug_down_input = (
+                    ug_down_pos[0] - flow_delta[0],
+                    ug_down_pos[1] - flow_delta[1],
                 )
-                C, W, H = world_CWH.shape
-
-                flow_dir = random.choice(
-                    [d for d in Direction if d != Direction.NONE]
-                )
-                is_horizontal = flow_dir in (Direction.EAST, Direction.WEST)
-                flow_span = W if is_horizontal else H
-                perp_span = H if is_horizontal else W
-
-                # Need ≥1 source-side tile + wall (≥1) + ≥1 sink-side tile
-                if flow_span < 3:
-                    raise Exception(
-                        f"Grid {W}×{H} too small for MOVE_VIA_UG_BELT (need ≥ 3 along {flow_dir})"
-                    )
-
-                max_wall = min(4, flow_span - 2)
-                wall_thickness = random.randint(1, max_wall)
-                wall_lo = random.randint(1, flow_span - 1 - wall_thickness)
-                wall_hi = wall_lo + wall_thickness - 1
-
-                forward = flow_dir in (Direction.EAST, Direction.SOUTH)
-                if forward:
-                    ug_down_flow = wall_lo - 1
-                    ug_up_flow = wall_hi + 1
-                    src_lo, src_hi = 0, wall_lo - 1
-                    snk_lo, snk_hi = wall_hi + 1, flow_span - 1
-                else:
-                    ug_down_flow = wall_hi + 1
-                    ug_up_flow = wall_lo - 1
-                    src_lo, src_hi = wall_hi + 1, flow_span - 1
-                    snk_lo, snk_hi = 0, wall_lo - 1
-
-                ug_perp = random.randint(0, perp_span - 1)
-
-                def fp_to_xy(fc, pc, ih=is_horizontal):
-                    return (fc, pc) if ih else (pc, fc)
-
-                ug_down_pos = fp_to_xy(ug_down_flow, ug_perp)
-                ug_up_pos = fp_to_xy(ug_up_flow, ug_perp)
-
-                wall_tiles = set()
-                for fc in range(wall_lo, wall_hi + 1):
-                    for pc in range(perp_span):
-                        wall_tiles.add(fp_to_xy(fc, pc))
-
-                source_cells = []
-                for fc in range(src_lo, src_hi + 1):
-                    for pc in range(perp_span):
-                        cell = fp_to_xy(fc, pc)
-                        if cell != ug_down_pos:
-                            source_cells.append(cell)
-                sink_cells = []
+                blocked1 = wall_tiles | {
+                    source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input,
+                }
+                # Restrict path1 to source side: block all sink-side cells.
                 for fc in range(snk_lo, snk_hi + 1):
                     for pc in range(perp_span):
-                        cell = fp_to_xy(fc, pc)
-                        if cell != ug_up_pos:
-                            sink_cells.append(cell)
-                if not source_cells or not sink_cells:
+                        blocked1.add(fp_to_xy(fc, pc))
+                if source_drop in blocked1 or ug_down_input in blocked1:
                     continue
-
-                source_pos = random.choice(source_cells)
-                sink_pos = random.choice(sink_cells)
-                dirs = [d for d in Direction if d != Direction.NONE]
-                source_dir = random.choice(dirs)
-                sink_dir = random.choice(dirs)
-
-                ds = DIR_TO_DELTA[source_dir]
-                dk = DIR_TO_DELTA[sink_dir]
-                source_drop = (source_pos[0] + ds[0], source_pos[1] + ds[1])
-                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
-
-                if not (0 <= source_drop[0] < W and 0 <= source_drop[1] < H):
-                    continue
-                if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
-                    continue
-
-                # source_drop must be on source side or land directly on UG_DOWN
-                if source_drop in wall_tiles:
-                    continue
-                if source_drop in (ug_up_pos, sink_pos):
-                    continue
-                sd_flow = source_drop[0] if is_horizontal else source_drop[1]
-                if not (
-                    src_lo <= sd_flow <= src_hi or source_drop == ug_down_pos
-                ):
-                    continue
-
-                # sink_input must be on sink side or land directly on UG_UP
-                if sink_input in wall_tiles:
-                    continue
-                if sink_input in (ug_down_pos, source_pos):
-                    continue
-                si_flow = sink_input[0] if is_horizontal else sink_input[1]
-                if not (
-                    snk_lo <= si_flow <= snk_hi or sink_input == ug_up_pos
-                ):
-                    continue
-
-                flow_delta = DIR_TO_DELTA[flow_dir]
-
-                # Path 1: source_drop → UG_DOWN_input (on source side)
-                if source_drop == ug_down_pos:
-                    path1 = []
-                else:
-                    ug_down_input = (
-                        ug_down_pos[0] - flow_delta[0],
-                        ug_down_pos[1] - flow_delta[1],
-                    )
-                    blocked1 = wall_tiles | {
-                        source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input,
-                    }
-                    # Restrict path1 to source side: block all sink-side cells.
-                    for fc in range(snk_lo, snk_hi + 1):
-                        for pc in range(perp_span):
-                            blocked1.add(fp_to_xy(fc, pc))
-                    if source_drop in blocked1 or ug_down_input in blocked1:
-                        continue
-                    path1 = find_belt_path(
-                        W, H, source_drop, ug_down_input, flow_dir, blocked1
-                    )
-                    if path1 is None:
-                        continue
-
-                # Path 2: UG_UP_drop → sink_input (on sink side)
-                if sink_input == ug_up_pos:
-                    path2 = []
-                else:
-                    ug_up_drop = (
-                        ug_up_pos[0] + flow_delta[0],
-                        ug_up_pos[1] + flow_delta[1],
-                    )
-                    path1_cells = {(x, y) for x, y, _ in path1}
-                    blocked2 = (
-                        wall_tiles
-                        | {source_pos, sink_pos, ug_down_pos, ug_up_pos, source_drop}
-                        | path1_cells
-                    )
-                    # Restrict path2 to sink side: block all source-side cells.
-                    for fc in range(src_lo, src_hi + 1):
-                        for pc in range(perp_span):
-                            blocked2.add(fp_to_xy(fc, pc))
-                    if ug_up_drop in blocked2 or sink_input in blocked2:
-                        continue
-                    path2 = find_belt_path(
-                        W, H, ug_up_drop, sink_input, sink_dir, blocked2
-                    )
-                    if path2 is None:
-                        continue
-
-                # Place source/sink
-                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
-                    str2ent("source").value
+                path1 = find_belt_path(
+                    W, H, source_drop, ug_down_input, flow_dir, blocked1
                 )
-                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
-                    source_dir.value
-                )
-                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
-
-                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
-                    str2ent("sink").value
-                )
-                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
-                    sink_dir.value
-                )
-                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
-
-                # Place UG pair (always facing flow_dir)
-                world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = (
-                    str2ent("underground_belt").value
-                )
-                world_CWH[Channel.DIRECTION.value, ug_down_pos[0], ug_down_pos[1]] = (
-                    flow_dir.value
-                )
-                world_CWH[Channel.MISC.value, ug_down_pos[0], ug_down_pos[1]] = (
-                    Misc.UNDERGROUND_DOWN.value
-                )
-
-                world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = (
-                    str2ent("underground_belt").value
-                )
-                world_CWH[Channel.DIRECTION.value, ug_up_pos[0], ug_up_pos[1]] = (
-                    flow_dir.value
-                )
-                world_CWH[Channel.MISC.value, ug_up_pos[0], ug_up_pos[1]] = (
-                    Misc.UNDERGROUND_UP.value
-                )
-
-                # Place belts
-                for x, y, d in path1 + path2:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                        "transport_belt"
-                    ).value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
-
-                # Sanity: the solved factory must deliver items.
-                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-                if tp <= 0:
+                if path1 is None:
                     continue
 
-                total_entities = 2 + len(path1) + len(path2)
-                if total_entities > max_entities:
-                    continue
-
-                min_entities_required = _remove_entities(
-                    world_CWH, num_missing_entities, total_entities,
+            # Path 2: UG_UP_drop → sink_input (on sink side)
+            if sink_input == ug_up_pos:
+                path2 = []
+            else:
+                ug_up_drop = (
+                    ug_up_pos[0] + flow_delta[0],
+                    ug_up_pos[1] + flow_delta[1],
                 )
-                # _remove_entities paints all empty tiles UNAVAILABLE; we
-                # override that here so only the wall is UNAVAILABLE and the
-                # agent can route belts freely on either side.
-                world_CWH[Channel.FOOTPRINT.value, :, :] = Footprint.AVAILABLE.value
-                for wx, wy in wall_tiles:
-                    world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
-                        Footprint.UNAVAILABLE.value
-                    )
-
-                break
-            if count == 0:
-                raise Exception(
-                    f"Failed to find valid MOVE_VIA_UG_BELT lesson after {original_count} attempts"
+                path1_cells = {(x, y) for x, y, _ in path1}
+                blocked2 = (
+                    wall_tiles
+                    | {source_pos, sink_pos, ug_down_pos, ug_up_pos, source_drop}
+                    | path1_cells
                 )
-
-        else:
-            raise Exception(f"Can't handle {kind}")
-        # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
-
-        return world_CWH, min_entities_required
-
-
-    def _bfs_shortest(grid_h, grid_w, start, end, blocked):
-        """BFS from start to end, avoiding blocked cells.
-
-        Returns (dist_map, parents_map) where parents_map tracks ALL
-        equal-length parents for enumerating all shortest paths.
-        Returns (None, None) if no path exists.
-        """
-        def in_bounds(cell):
-            r, c = cell
-            return 0 <= r < grid_h and 0 <= c < grid_w
-
-        if not in_bounds(start) or not in_bounds(end):
-            return None, None
-        if start in blocked or end in blocked:
-            return None, None
-
-        deltas = list(DIR_TO_DELTA.values())
-        dist = {start: 0}
-        parents = defaultdict(list)
-        q = deque([start])
-
-        while q:
-            r, c = q.popleft()
-            if (r, c) == end:
-                break
-            for dr, dc in deltas:
-                nr, nc = r + dr, c + dc
-                if not in_bounds((nr, nc)):
+                # Restrict path2 to sink side: block all source-side cells.
+                for fc in range(src_lo, src_hi + 1):
+                    for pc in range(perp_span):
+                        blocked2.add(fp_to_xy(fc, pc))
+                if ug_up_drop in blocked2 or sink_input in blocked2:
                     continue
-                if (nr, nc) in blocked:
+                path2 = find_belt_path(
+                    W, H, ug_up_drop, sink_input, sink_dir, blocked2
+                )
+                if path2 is None:
                     continue
-                if (nr, nc) not in dist:
-                    dist[(nr, nc)] = dist[(r, c)] + 1
-                    parents[(nr, nc)].append((r, c))
-                    q.append((nr, nc))
-                elif dist[(nr, nc)] == dist[(r, c)] + 1:
-                    parents[(nr, nc)].append((r, c))
 
-        if end not in dist:
-            return None, None
-        return dist, parents
-
-    def _path_to_belts(path, end_dir):
-        """Convert a list of (x, y) cells into belt placements with directions."""
-        belts: List[Tuple[int, int, Direction]] = []
-        for (r1, c1), (r2, c2) in zip(path, path[1:]):
-            dr, dc = (r2 - r1, c2 - c1)
-            for d, delta in DIR_TO_DELTA.items():
-                if delta == (dr, dc):
-                    belts.append((r1, c1, d))
-                    break
-        belts.append((path[-1][0], path[-1][1], end_dir))
-        return belts
-
-    def find_belt_path(
-        grid_h: int,
-        grid_w: int,
-        start: Tuple[int, int],
-        end: Tuple[int, int],
-        end_dir: Direction,
-        blocked: set,
-    ) -> Optional[List[Tuple[int, int, Direction]]]:
-        """Find a single shortest belt path from start to end, avoiding blocked cells.
-
-        Returns a list of (x, y, Direction) tuples for belt placements,
-        or None if no path exists. The last belt gets end_dir as its direction.
-        """
-        dist, parents = _bfs_shortest(grid_h, grid_w, start, end, blocked)
-        if dist is None:
-            return None
-
-        # Reconstruct single path via parent chain
-        path = []
-        cell = end
-        while cell != start:
-            path.append(cell)
-            cell = parents[cell][0]  # Take first parent for single path
-        path.append(start)
-        path.reverse()
-
-        return _path_to_belts(path, end_dir)
-
-    def find_belt_paths_with_source_sink_orient(
-        entities: torch.Tensor,
-        directions: torch.Tensor,
-        source_value: int = str2ent("source").value,
-        sink_value: int = str2ent("sink").value,
-    ) -> List[List[Tuple[int, int, Direction]]]:
-        """Find all shortest belt-placement paths from source to sink.
-
-        Returns a list of paths, each being a list of (row, col, Direction)
-        tuples. If no valid path exists, returns [].
-        """
-        if (
-            entities.ndim != 2
-            or directions.ndim != 2
-            or entities.shape != directions.shape
-        ):
-            raise ValueError(
-                "entities and directions must be 2D tensors of the same shape"
+            # Place source/sink
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                str2ent("source").value
             )
-        H, W = entities.shape
+            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                source_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
 
-        src_pos = (entities == source_value).nonzero(as_tuple=False)
-        sink_pos = (entities == sink_value).nonzero(as_tuple=False)
-        if len(src_pos) != 1 or len(sink_pos) != 1:
-            raise ValueError("must have exactly one source and one sink")
-        src = tuple(src_pos[0].tolist())
-        sink = tuple(sink_pos[0].tolist())
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                str2ent("sink").value
+            )
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                sink_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
-        src_dir = Direction(directions[src].item())
-        sink_dir = Direction(directions[sink].item())
-        if src_dir == Direction.NONE or sink_dir == Direction.NONE:
-            return []
+            # Place UG pair (always facing flow_dir)
+            world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = (
+                str2ent("underground_belt").value
+            )
+            world_CWH[Channel.DIRECTION.value, ug_down_pos[0], ug_down_pos[1]] = (
+                flow_dir.value
+            )
+            world_CWH[Channel.MISC.value, ug_down_pos[0], ug_down_pos[1]] = (
+                Misc.UNDERGROUND_DOWN.value
+            )
 
-        dr_s, dc_s = DIR_TO_DELTA[src_dir]
-        start = (src[0] + dr_s, src[1] + dc_s)
-        dr_k, dc_k = DIR_TO_DELTA[sink_dir]
-        end = (sink[0] - dr_k, sink[1] - dc_k)
+            world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = (
+                str2ent("underground_belt").value
+            )
+            world_CWH[Channel.DIRECTION.value, ug_up_pos[0], ug_up_pos[1]] = (
+                flow_dir.value
+            )
+            world_CWH[Channel.MISC.value, ug_up_pos[0], ug_up_pos[1]] = (
+                Misc.UNDERGROUND_UP.value
+            )
 
-        if start == src or start == sink or end == src or end == sink:
-            return []
+            # Place belts
+            for x, y, d in path1 + path2:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
-        blocked = {src, sink}
-        dist, parents = _bfs_shortest(H, W, start, end, blocked)
-        if dist is None:
-            return []
+            # Sanity: the solved factory must deliver items.
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
 
-        # Backtrack all shortest paths
-        all_paths: List[List[Tuple[int, int, Direction]]] = []
+            total_entities = 2 + len(path1) + len(path2)
+            if total_entities > max_entities:
+                continue
 
-        def backtrack(cell, rev_path):
-            if cell == start:
-                path = [start] + list(reversed(rev_path))
-                all_paths.append(_path_to_belts(path, sink_dir))
-                return
-            for p in parents[cell]:
-                backtrack(p, rev_path + [cell])
+            min_entities_required = _remove_entities(
+                world_CWH, num_missing_entities, total_entities,
+            )
+            # _remove_entities paints all empty tiles UNAVAILABLE; we
+            # override that here so only the wall is UNAVAILABLE and the
+            # agent can route belts freely on either side.
+            world_CWH[Channel.FOOTPRINT.value, :, :] = Footprint.AVAILABLE.value
+            for wx, wy in wall_tiles:
+                world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
+                    Footprint.UNAVAILABLE.value
+                )
 
-        backtrack(end, [])
-        return all_paths
+            break
+        if count == 0:
+            raise Exception(
+                f"Failed to find valid MOVE_VIA_UG_BELT lesson after {original_count} attempts"
+            )
 
+    else:
+        raise Exception(f"Can't handle {kind}")
+    # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
 
-    mo.md("Functions")
-    return (
-        add_entity,
-        b64_to_dict,
-        blueprint2world,
-        calc_throughput,
-        dict2b64,
-        ent_str2b64img,
-        eval_model,
-        find_belt_path,
-        find_belt_paths_with_source_sink_orient,
-        funge_throughput,
-        generate_lesson,
-        get_min_belts,
-        get_new_world,
-        item_str2b64img,
-        new_world,
-        normalise_world,
-        plot_flow_network,
-        plot_loss_history,
-        sample_world,
-        show_two_factories,
-        str2ent,
-        str2item,
-        world2graph,
-        world2html,
-    )
+    return world_CWH, min_entities_required
 
 
-@app.cell
-def _(LessonKind, generate_lesson, world2html):
-    def __():
-        # np.random.seed(42)
-        # torch.manual_seed(42)
-        # random.seed(42)
+def _bfs_shortest(grid_h, grid_w, start, end, blocked):
+    """BFS from start to end, avoiding blocked cells.
 
-        world_CWH, _ = generate_lesson(
-            size=16,
-            kind=LessonKind.MOVE_ONE_ITEM,
-            num_missing_entities=float("inf"),
+    Returns (dist_map, parents_map) where parents_map tracks ALL
+    equal-length parents for enumerating all shortest paths.
+    Returns (None, None) if no path exists.
+    """
+    def in_bounds(cell):
+        r, c = cell
+        return 0 <= r < grid_h and 0 <= c < grid_w
+
+    if not in_bounds(start) or not in_bounds(end):
+        return None, None
+    if start in blocked or end in blocked:
+        return None, None
+
+    deltas = list(DIR_TO_DELTA.values())
+    dist = {start: 0}
+    parents = defaultdict(list)
+    q = deque([start])
+
+    while q:
+        r, c = q.popleft()
+        if (r, c) == end:
+            break
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if not in_bounds((nr, nc)):
+                continue
+            if (nr, nc) in blocked:
+                continue
+            if (nr, nc) not in dist:
+                dist[(nr, nc)] = dist[(r, c)] + 1
+                parents[(nr, nc)].append((r, c))
+                q.append((nr, nc))
+            elif dist[(nr, nc)] == dist[(r, c)] + 1:
+                parents[(nr, nc)].append((r, c))
+
+    if end not in dist:
+        return None, None
+    return dist, parents
+
+def _path_to_belts(path, end_dir):
+    """Convert a list of (x, y) cells into belt placements with directions."""
+    belts: List[Tuple[int, int, Direction]] = []
+    for (r1, c1), (r2, c2) in zip(path, path[1:]):
+        dr, dc = (r2 - r1, c2 - c1)
+        for d, delta in DIR_TO_DELTA.items():
+            if delta == (dr, dc):
+                belts.append((r1, c1, d))
+                break
+    belts.append((path[-1][0], path[-1][1], end_dir))
+    return belts
+
+def find_belt_path(
+    grid_h: int,
+    grid_w: int,
+    start: Tuple[int, int],
+    end: Tuple[int, int],
+    end_dir: Direction,
+    blocked: set,
+) -> Optional[List[Tuple[int, int, Direction]]]:
+    """Find a single shortest belt path from start to end, avoiding blocked cells.
+
+    Returns a list of (x, y, Direction) tuples for belt placements,
+    or None if no path exists. The last belt gets end_dir as its direction.
+    """
+    dist, parents = _bfs_shortest(grid_h, grid_w, start, end, blocked)
+    if dist is None:
+        return None
+
+    # Reconstruct single path via parent chain
+    path = []
+    cell = end
+    while cell != start:
+        path.append(cell)
+        cell = parents[cell][0]  # Take first parent for single path
+    path.append(start)
+    path.reverse()
+
+    return _path_to_belts(path, end_dir)
+
+def find_belt_paths_with_source_sink_orient(
+    entities: torch.Tensor,
+    directions: torch.Tensor,
+    source_value: int = str2ent("source").value,
+    sink_value: int = str2ent("sink").value,
+) -> List[List[Tuple[int, int, Direction]]]:
+    """Find all shortest belt-placement paths from source to sink.
+
+    Returns a list of paths, each being a list of (row, col, Direction)
+    tuples. If no valid path exists, returns [].
+    """
+    if (
+        entities.ndim != 2
+        or directions.ndim != 2
+        or entities.shape != directions.shape
+    ):
+        raise ValueError(
+            "entities and directions must be 2D tensors of the same shape"
         )
+    H, W = entities.shape
 
-        # print(world_CWH[Channel.ENTITIES.value])
-        # print(world_CWH[Channel.DIRECTION.value])
+    src_pos = (entities == source_value).nonzero(as_tuple=False)
+    sink_pos = (entities == sink_value).nonzero(as_tuple=False)
+    if len(src_pos) != 1 or len(sink_pos) != 1:
+        raise ValueError("must have exactly one source and one sink")
+    src = tuple(src_pos[0].tolist())
+    sink = tuple(sink_pos[0].tolist())
 
-        return world2html(world_WHC=world_CWH.permute(1, 2, 0))
+    src_dir = Direction(directions[src].item())
+    sink_dir = Direction(directions[sink].item())
+    if src_dir == Direction.NONE or sink_dir == Direction.NONE:
+        return []
 
+    dr_s, dc_s = DIR_TO_DELTA[src_dir]
+    start = (src[0] + dr_s, src[1] + dc_s)
+    dr_k, dc_k = DIR_TO_DELTA[sink_dir]
+    end = (sink[0] - dr_k, sink[1] - dc_k)
 
-    # __()
-    return
+    if start == src or start == sink or end == src or end == sink:
+        return []
 
+    blocked = {src, sink}
+    dist, parents = _bfs_shortest(H, W, start, end, blocked)
+    if dist is None:
+        return []
 
-@app.cell
-def _(
-    Channel,
-    Direction,
-    Misc,
-    calc_throughput,
-    new_world,
-    np,
-    plot_flow_network,
-    str2ent,
-    str2item,
-    torch,
-    traceback,
-    world2graph,
-    world2html,
-):
-    def blank2(n=7, seed=42):
-        asm_mach_value = str2ent("assembling_machine_1").value
-        belt_value = str2ent("transport_belt").value
-        bulk_inserter_value = str2ent("bulk_inserter").value
-        empty_value = str2ent("empty").value
-        inserter_value = str2ent("inserter").value
-        stack_inserter_value = str2ent("stack_inserter").value
-        underground_value = str2ent("underground_belt").value
+    # Backtrack all shortest paths
+    all_paths: List[List[Tuple[int, int, Direction]]] = []
 
-        cable_value = str2item("copper_cable").value
-        copper_value = str2item("copper_plate").value
-        iron_value = str2item("iron_plate").value
-        green_circuit_value = str2item("electronic_circuit").value
+    def backtrack(cell, rev_path):
+        if cell == start:
+            path = [start] + list(reversed(rev_path))
+            all_paths.append(_path_to_belts(path, sink_dir))
+            return
+        for p in parents[cell]:
+            backtrack(p, rev_path + [cell])
 
-        np.random.seed(seed)
-        world_WHC = torch.tensor(new_world(width=12, height=12))
+    backtrack(end, [])
+    return all_paths
 
-        world_WHC[0, 0, Channel.ENTITIES.value] = stack_inserter_value
-        world_WHC[0, 0, Channel.ITEMS.value] = copper_value
-        world_WHC[0, 0, Channel.DIRECTION.value] = Direction.EAST.value
-        world_WHC[0, 10, Channel.ENTITIES.value] = stack_inserter_value
-        world_WHC[0, 10, Channel.ITEMS.value] = iron_value
-        world_WHC[0, 10, Channel.DIRECTION.value] = Direction.EAST.value
-        world_WHC[0, 11, Channel.ENTITIES.value] = bulk_inserter_value
-        world_WHC[0, 11, Channel.ITEMS.value] = green_circuit_value
-        world_WHC[0, 11, Channel.DIRECTION.value] = Direction.WEST.value
-        print(world_WHC.permute(2, 0, 1))
-
-        world_WHC[0, 2, Channel.ENTITIES.value] = asm_mach_value
-        world_WHC[3, 2, Channel.ENTITIES.value] = asm_mach_value
-        world_WHC[6, 2, Channel.ENTITIES.value] = asm_mach_value
-        world_WHC[0, 2, Channel.ITEMS.value] = cable_value
-        world_WHC[3, 2, Channel.ITEMS.value] = cable_value
-        world_WHC[6, 2, Channel.ITEMS.value] = cable_value
-
-        world_WHC[1, 6, Channel.ENTITIES.value] = asm_mach_value
-        world_WHC[1, 6, Channel.ITEMS.value] = green_circuit_value
-        world_WHC[5, 6, Channel.ENTITIES.value] = asm_mach_value
-        world_WHC[5, 6, Channel.ITEMS.value] = green_circuit_value
-
-        world_WHC[2, 10, Channel.ENTITIES.value] = underground_value
-        world_WHC[2, 10, Channel.DIRECTION.value] = Direction.EAST.value
-        world_WHC[2, 10, Channel.MISC.value] = Misc.UNDERGROUND_DOWN.value
-
-        world_WHC[6, 10, Channel.ENTITIES.value] = underground_value
-        world_WHC[6, 10, Channel.DIRECTION.value] = Direction.EAST.value
-        world_WHC[6, 10, Channel.MISC.value] = Misc.UNDERGROUND_UP.value
-
-        inserter_locs = [
-            (1, 1, Direction.SOUTH),
-            (4, 1, Direction.SOUTH),
-            (7, 1, Direction.SOUTH),
-            (2, 5, Direction.SOUTH),
-            (3, 5, Direction.SOUTH),
-            (5, 5, Direction.SOUTH),
-            (6, 5, Direction.SOUTH),
-            (2, 9, Direction.NORTH),
-            (3, 9, Direction.SOUTH),
-            (5, 9, Direction.SOUTH),
-            (6, 9, Direction.NORTH),
-        ]
-        for x, y, d in inserter_locs:
-            world_WHC[x, y, Channel.ENTITIES.value] = inserter_value
-            world_WHC[x, y, Channel.DIRECTION.value] = d.value
-
-        belt_locs = [
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-            (5, 0, Direction.EAST),
-            (6, 0, Direction.EAST),
-            (7, 0, Direction.EAST),
-            (1, 10, Direction.EAST),
-            (7, 10, Direction.EAST),
-            (1, 11, Direction.WEST),
-            (2, 11, Direction.WEST),
-            (3, 11, Direction.WEST),
-            (3, 10, Direction.SOUTH),
-            (4, 10, Direction.WEST),
-            (5, 10, Direction.WEST),
-        ]
-        for x, y, d in belt_locs:
-            world_WHC[x, y, Channel.ENTITIES.value] = belt_value
-            world_WHC[x, y, Channel.DIRECTION.value] = d.value
-
-        G = world2graph(world_WHC, debug=True)
-        try:
-            thput, _num_unreachable = calc_throughput(G, debug=False)
-            print(thput)
-        except Exception as e:
-            print("err")
-            print(traceback.format_exc())
-
-        print(world_WHC.permute(2, 0, 1))
-        return world2html(world_WHC), plot_flow_network(G)
-
-        # return , world_WHC.permute(2, 1, 0)
-
-
-    blank2()
-    return (blank2,)
-
-
-@app.cell
-def _(items):
-    items
-    return
-
-
-@app.cell
-def _(torch):
-    import gymnasium as gym
-    from ppo import AgentCNN, FactorioEnv
-
-    path = "cleanrl/artifacts/agent-1.000000-factorion-FactorioEnv-v0__ppo__1__1745516456.pt"
-    path = "cleanrl/artifacts/agent-0.994240-factorion-FactorioEnv-v0__ppo__1__2025-04-24T22-15-15.pt"
-
-    path = "cleanrl/artifacts/agent-1.023271-factorion-FactorioEnv-v0__ppo__1__2025-04-25T04-00-29.pt"
-
-    path = "cleanrl/artifacts/agent-0.966447-factorion-FactorioEnv-v0__ppo__1__2025-04-25T11-17-30.pt"
-    path = "cleanrl/agent-1.023271-factorion-FactorioEnv-v0__ppo__1__2025-04-25T04-00-29.pt"
-
-    path = (
-        "artifacts/agent-factorion-FactorioEnv-v0__ppo__1__2025-10-19T07-39-15.pt"
-    )
-
-
-    def make_env():
-        def _thunk():
-            return FactorioEnv()
-
-        return _thunk
-
-
-    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(1)])
-
-    agent = AgentCNN(
-        envs,
-        chan1=32,
-        chan2=32,
-        chan3=32,
-        flat_dim=128,
-    )
-    agent.load_state_dict(torch.load(path, weights_only=False))
-    agent.eval()
-    return AgentCNN, FactorioEnv, agent, envs, gym, make_env, path
-
-
-@app.cell
-def __(FactorioEnv, random, world2html):
-    env_ = FactorioEnv(size=7)
-    env_.reset(random.randint(0, 1235))
-    world2html(env_._world_CWH.permute(1, 2, 0))
-    return (env_,)
-
-
-@app.cell
-def _(FactorioEnv, agent, torch, world2html):
-    size = 5
-    # world_CWH = get_new_world(seed=None, n=size).permute(2, 0, 1)
-
-    # world_CWH, min_entities_required = generate_lesson(
-    #     size=size,
-    #     kind=LessonKind.MOVE_ONE_ITEM,
-    #     num_missing_entities=2,
-    #     seed=42,
-    #     # max_entities=self.max_entities,
-    # )
-    env = FactorioEnv(size=size)
-    env.reset(13453)
-    world2html(env._world_CWH.permute(1, 2, 0))
-    # world_CWH.dtype = torch.float32
-    # world2html(world_CWH.permute(1, 2, 0)),
-
-
-    worlds = [env._world_CWH]
-    actions = []
-    for i in range(5):
-        print('world[-1]', worlds[-1][0])
-        with torch.no_grad():
-            action_BCWH, logprob, entropy, value = agent.get_action_and_value(
-                torch.Tensor(worlds[-1]).clone().unsqueeze(0).to(torch.float32)
-            )
-
-        d = {
-            "xy": action_BCWH["xy"][0].tolist(), # tensor([[2, 1]]),
-            "direction": action_BCWH["direction"][0].item(), # tensor([2]),
-            "entity": action_BCWH["entity"][0].item(), #tensor([1]),
-            "item": action_BCWH["item"][0].item(), # tensor([0]),
-            "misc": action_BCWH["misc"][0].item(), #tensor([0]),
-        }
-        print('action: ', d)
-        actions.append(d)
-        # break
-
-        observation, reward, terminated, truncated, info = env.step(d)
-        print('next state: ', torch.Tensor(observation)[0])
-        # break
-        worlds.append(torch.Tensor(observation).clone())
-
-
-    [(i, world2html(w.permute(1, 2, 0)), a) for i, w, a in zip(range(len(worlds)), worlds, actions)]
-    return (
-        action_BCWH,
-        actions,
-        d,
-        entropy,
-        env,
-        i,
-        info,
-        logprob,
-        observation,
-        reward,
-        size,
-        terminated,
-        truncated,
-        value,
-        worlds,
-    )
-
-
-@app.cell
-def __():
-    return
-
-
-@app.cell
-def __():
-    return
-
-
-if __name__ == "__main__":
-    app.run()

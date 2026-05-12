@@ -21,15 +21,16 @@ for _mod in ["tensorboard", "torch.utils.tensorboard"]:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from factorion import Channel, Direction, Misc, entities, items  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
 def make_valid_action(env, rng):
     """Build a random action that satisfies step()'s assertions."""
-    n_ent = len(env.entities) - 2  # source/sink excluded
-    n_dir = len(env.Direction)
-    n_items = len(env.items)
-    n_misc = len(env.Misc)
+    n_ent = len(entities) - 2  # source/sink excluded
+    n_dir = len(Direction)
+    n_items = len(items)
+    n_misc = len(Misc)
     return {
         "xy": rng.integers(0, env.size, size=2),
         "entity": rng.integers(0, n_ent),
@@ -44,12 +45,12 @@ class TestGridSizes:
         """Create a FactorioEnv with size=8 and run random steps."""
         env = FactorioEnv(size=8, max_steps=16)
         obs, info = env.reset(seed=42, options={'num_missing_entities': 2})
-        assert obs.shape == (len(env.Channel), 8, 8)
+        assert obs.shape == (len(Channel), 8, 8)
         rng = np.random.default_rng(42)
         for _ in range(10):
             action = make_valid_action(env, rng)
             obs, reward, terminated, truncated, info = env.step(action)
-            assert obs.shape == (len(env.Channel), 8, 8)
+            assert obs.shape == (len(Channel), 8, 8)
             if terminated or truncated:
                 obs, info = env.reset()
         env.close()
@@ -58,12 +59,12 @@ class TestGridSizes:
         """Create a FactorioEnv with size=12 and run random steps."""
         env = FactorioEnv(size=12, max_steps=24)
         obs, info = env.reset(seed=42, options={'num_missing_entities': 2})
-        assert obs.shape == (len(env.Channel), 12, 12)
+        assert obs.shape == (len(Channel), 12, 12)
         rng = np.random.default_rng(42)
         for _ in range(10):
             action = make_valid_action(env, rng)
             obs, reward, terminated, truncated, info = env.step(action)
-            assert obs.shape == (len(env.Channel), 12, 12)
+            assert obs.shape == (len(Channel), 12, 12)
             if terminated or truncated:
                 obs, info = env.reset()
         env.close()

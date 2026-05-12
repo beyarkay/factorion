@@ -27,16 +27,13 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import factorion  # noqa: E402
+from factorion import (  # noqa: E402
+    Channel,
+    LessonKind,
+    generate_lesson,
+    world2html,
+)
 from sft import extract_expert_actions  # noqa: E402
-
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-Channel = _objs["Channel"]
-LessonKind = _objs["LessonKind"]
-generate_lesson = _fns["generate_lesson"]
-world2html = _fns["world2html"]
 
 TARGET_COLOR = "rgba(40, 200, 80, 0.55)"  # green: the single tile this pair trains on
 

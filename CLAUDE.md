@@ -31,13 +31,12 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - **ML Framework**: PyTorch (`torch`)
 - **Experiment Tracking**: Weights & Biases (`wandb`)
 - **CLI Parsing**: tyro (dataclass-based)
-- **Notebook**: marimo (for `factorion.py`)
 - **Graphs**: networkx (throughput calculation)
 
 ## Project Structure
 
 - `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
-- `factorion.py` — Marimo notebook with environment utilities: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, throughput calculation.
+- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, throughput calculation. Import symbols directly (`from factorion import generate_lesson, Channel, ...`).
 - `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config.
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
 - `factorio-data/` — Git submodule with Factorio game data.
