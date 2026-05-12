@@ -342,7 +342,7 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
     return top, max(0.0, 1.0 - cum)
 
 
-CANDIDATE_TILE_THRESHOLD = 0.05
+CANDIDATE_TILE_THRESHOLD = 0.01
 """Minimum p(tile) for a tile to appear as a ghost candidate in the UI.
 Tiles with `p(tile) < CANDIDATE_TILE_THRESHOLD` are dropped — they're
 too unlikely to be worth visualising, and the long tail is dominated by
