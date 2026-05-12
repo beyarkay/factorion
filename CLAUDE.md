@@ -107,8 +107,9 @@ Before claiming work is done, run all of the following:
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
 5. **Python linter**: `uv run ruff check .`
 6. **PPO smoke test**: `WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+7. **SFT smoke test**: `WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --chan1 16 --chan2 16 --chan3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
 
-All six must pass before the work is considered complete.
+All seven must pass before the work is considered complete.
 
 ## Code Conventions
 

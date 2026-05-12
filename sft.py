@@ -164,7 +164,27 @@ class SFTArgs:
     batch_size: int = 512
     """training batch size"""
     lr: float = 1e-3
-    """learning rate"""
+    """peak learning rate (after warmup, before cosine decay)"""
+    warmup_frac: float = 0.05
+    """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
+    min_lr_ratio: float = 0.01
+    """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
+    weight_decay: float = 0.0
+    """AdamW weight decay"""
+    max_grad_norm: float = 1.0
+    """grad L2-norm clip (0 disables clipping)"""
+    lw_tile: float = 1.0
+    """loss weight for the tile-selection (BCE) head"""
+    lw_ent: float = 1.0
+    """loss weight for the entity (CE) head"""
+    lw_dir: float = 1.0
+    """loss weight for the direction (CE) head"""
+    lw_item: float = 1.0
+    """loss weight for the item / recipe (CE) head"""
+    lw_misc: float = 1.0
+    """loss weight for the misc (CE) head"""
+    lw_eot: float = 1.0
+    """loss weight for the EOT (end-of-trajectory) BCE head"""
     val_frac: float = 0.1
     """fraction of data for validation"""
     checkpoint_path: str = "sft_checkpoint.pt"
@@ -337,6 +357,31 @@ def generate_dataset(args: SFTArgs):
     )
 
 
+def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
+    """Linear warmup → cosine decay scheduler, stepped once per optimizer step.
+
+    Warmup goes from `lr * 1e-3` up to `lr` over the first
+    `total_steps * warmup_frac` steps; cosine then decays from `lr` to
+    `lr * min_lr_ratio` over the rest. `warmup_frac=0` skips warmup.
+    """
+    warmup_steps = (
+        max(1, int(round(total_steps * args.warmup_frac))) if args.warmup_frac > 0 else 0
+    )
+    cosine_steps = max(1, total_steps - warmup_steps)
+    eta_min = args.lr * args.min_lr_ratio
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cosine_steps, eta_min=eta_min,
+    )
+    if warmup_steps <= 0:
+        return cosine
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_steps,
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps],
+    )
+
+
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
     random.seed(args.seed)
@@ -410,7 +455,14 @@ def train_sft(args: SFTArgs):
     )
     agent.to(device)
 
-    optimizer = optim.Adam(agent.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(agent.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # Scheduler spans every optimizer step (not every epoch) so warmup_frac
+    # is a fraction of the *whole* run regardless of dataset size.
+    steps_per_epoch = max(1, len(train_loader))
+    total_steps = args.epochs * steps_per_epoch
+    scheduler = build_lr_schedule(optimizer, total_steps, args)
+
     # All losses use reduction="none" so we can (a) mask placement losses
     # off on terminal (eot=1) samples and (b) aggregate per-LessonKind in
     # the val loop without re-running the forward pass.
@@ -480,6 +532,8 @@ def train_sft(args: SFTArgs):
         train_total = 0
         train_eot_correct = 0
         train_place_total = 0
+        grad_norm_sum = 0.0
+        grad_norm_count = 0
 
         # batch_kind is carried through the loader so val can aggregate
         # per-kind metrics; we ignore it in the train pass.
@@ -536,11 +590,23 @@ def train_sft(args: SFTArgs):
             loss_item = (loss_item_per * placement_mask).sum() / n_place
             loss_misc = (loss_misc_per * placement_mask).sum() / n_place
 
-            loss = loss_tile + loss_ent + loss_dir + loss_item + loss_misc + loss_eot
+            loss = (
+                args.lw_tile * loss_tile
+                + args.lw_ent * loss_ent
+                + args.lw_dir * loss_dir
+                + args.lw_item * loss_item
+                + args.lw_misc * loss_misc
+                + args.lw_eot * loss_eot
+            )
 
             optimizer.zero_grad()
             loss.backward()
+            if args.max_grad_norm > 0:
+                grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                grad_norm_sum += float(grad_norm)
+                grad_norm_count += 1
             optimizer.step()
+            scheduler.step()
 
             train_loss += loss.item() * B
             train_loss_tile += loss_tile.item() * B
@@ -662,8 +728,12 @@ def train_sft(args: SFTArgs):
                 loss_misc_per = ce_loss_none(misc_logits, batch_misc) * placement_mask
 
                 loss_per_sample = (
-                    loss_tile_per + loss_ent_per + loss_dir_per
-                    + loss_item_per + loss_misc_per + loss_eot_per
+                    args.lw_tile * loss_tile_per
+                    + args.lw_ent * loss_ent_per
+                    + args.lw_dir * loss_dir_per
+                    + args.lw_item * loss_item_per
+                    + args.lw_misc * loss_misc_per
+                    + args.lw_eot * loss_eot_per
                 )
                 val_loss += loss_per_sample.sum().item()
                 val_loss_tile += loss_tile_per.sum().item()
@@ -810,6 +880,8 @@ def train_sft(args: SFTArgs):
                 "val/eot_acc": val_eot_acc,
                 "val/eot_pos_recall": val_eot_pos_recall,
                 "train/epoch": epoch,
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/grad_norm": (grad_norm_sum / grad_norm_count) if grad_norm_count > 0 else float("nan"),
                 **per_kind_metrics,
             })
 

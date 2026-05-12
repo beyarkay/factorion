@@ -20,6 +20,7 @@ from sft import (
     _artifact_name,
     _humanize_count,
     _humanize_lr,
+    build_lr_schedule,
     extract_expert_actions,
     generate_dataset,
     train_sft,
@@ -672,3 +673,58 @@ class TestArtifactNameHelpers:
         a = SFTArgs(seed=1)
         b = SFTArgs(seed=999)  # seed isn't part of the artifact name
         assert _artifact_name(a) == _artifact_name(b)
+
+
+class TestLRSchedule:
+    """The warmup→cosine schedule should ramp the LR up from a low value,
+    reach `args.lr` at the warmup boundary, and decay toward
+    `args.lr * args.min_lr_ratio` by the final step."""
+
+    def _step_n(self, scheduler, optimizer, n):
+        lrs = []
+        for _ in range(n):
+            lrs.append(optimizer.param_groups[0]["lr"])
+            optimizer.step()
+            scheduler.step()
+        lrs.append(optimizer.param_groups[0]["lr"])
+        return lrs
+
+    def test_warmup_then_cosine(self):
+        args = SFTArgs(lr=1e-3, warmup_frac=0.1, min_lr_ratio=0.01)
+        model = torch.nn.Linear(4, 4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        total_steps = 100
+        scheduler = build_lr_schedule(optimizer, total_steps, args)
+
+        lrs = self._step_n(scheduler, optimizer, total_steps)
+
+        # Step 0 starts at warmup floor (lr * start_factor = lr * 1e-3)
+        assert lrs[0] == pytest.approx(args.lr * 1e-3, rel=0.01)
+        # Around the warmup→cosine handoff (~step 10) the LR should be at
+        # or near the peak lr
+        assert max(lrs[8:13]) >= args.lr * 0.95
+        # Final LR should be very close to the cosine floor
+        assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-4)
+
+    def test_no_warmup_path(self):
+        args = SFTArgs(lr=2e-3, warmup_frac=0.0, min_lr_ratio=0.1)
+        model = torch.nn.Linear(4, 4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        scheduler = build_lr_schedule(optimizer, 50, args)
+
+        lrs = self._step_n(scheduler, optimizer, 50)
+
+        # Cosine starts at peak and decays monotonically(-ish)
+        assert lrs[0] == pytest.approx(args.lr, rel=0.01)
+        assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-4)
+
+    def test_handles_one_step(self):
+        # cosine_steps = max(1, total_steps - warmup_steps) guards against
+        # tiny runs where total_steps <= warmup_steps. Should still build a
+        # valid scheduler.
+        args = SFTArgs(lr=1e-3, warmup_frac=0.5)
+        model = torch.nn.Linear(4, 4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        scheduler = build_lr_schedule(optimizer, 1, args)
+        optimizer.step()
+        scheduler.step()  # must not raise
