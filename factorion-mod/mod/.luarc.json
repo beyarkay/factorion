@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.2",
+  "diagnostics.globals": [
+    "data",
+    "defines",
+    "game",
+    "helpers",
+    "log",
+    "rcon",
+    "remote",
+    "script",
+    "settings",
+    "storage",
+    "table_size"
+  ],
+  "diagnostics.disable": [],
+  "workspace.library": [],
+  "workspace.checkThirdParty": false
+}
