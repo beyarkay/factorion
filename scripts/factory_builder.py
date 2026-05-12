@@ -304,15 +304,31 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
     return top, max(0.0, 1.0 - cum)
 
 
+CANDIDATE_TILE_THRESHOLD = 0.05
+"""Minimum p(tile) for a tile to appear as a ghost candidate in the UI.
+Tiles with `p(tile) < CANDIDATE_TILE_THRESHOLD` are dropped — they're
+too unlikely to be worth visualising, and the long tail is dominated by
+the rest mass anyway."""
+
+
 def _predict(grid: list[list[dict]]) -> dict:
-    """Run the model on `grid` and return the argmax placement plus
-    per-head top-p=0.95 distributions, so the UI can show what
-    alternatives the model was considering, not just the top pick."""
+    """Run the model on `grid` and return:
+      * the argmax placement (drives the Apply button + tile border),
+      * per-head top-p=0.95 distributions conditioned on the argmax
+        tile (drives the side panel),
+      * a candidates list — every tile with p(tile) > threshold, paired
+        with its conditional argmax (entity / dir / item / misc) so the
+        UI can render ghost overlays across the whole grid.
+
+    The four per-tile heads (ent/dir/item/misc) are linear projections
+    of the encoder feature at the chosen tile, so computing them for
+    every tile is one batched matmul each — cheap."""
     world_WHC = build_world(grid)
     size = world_WHC.shape[0]
     agent = _get_agent(size)
 
     obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    W = obs_CWH.shape[2]
     H = obs_CWH.shape[3]
 
     with torch.no_grad():
@@ -322,31 +338,45 @@ def _predict(grid: list[list[dict]]) -> dict:
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
 
         # Argmax — used both as the "Apply" target and to condition the
-        # per-tile heads on the same tile the top distribution favours.
+        # side-panel per-head distributions on the same tile the top
+        # distribution favours.
         tile_idx = int(tile_probs.argmax().item())
         x, y = tile_idx // H, tile_idx % H
 
         feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
-        ent_probs = F.softmax(agent.ent_head(feats), dim=-1)[0]
-        dir_probs = F.softmax(agent.dir_head(feats), dim=-1)[0]
-        item_probs = F.softmax(agent.item_head(feats), dim=-1)[0]
-        misc_probs = F.softmax(agent.misc_head(feats), dim=-1)[0]
+        ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
+        dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
+        item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
+        misc_top, misc_rest = _top_p_named(F.softmax(agent.misc_head(feats), dim=-1)[0], _MISC_NAMES)
 
-        ent_top, ent_rest = _top_p_named(ent_probs, _ENT_NAMES)
-        dir_top, dir_rest = _top_p_named(dir_probs, _DIR_NAMES)
-        item_top, item_rest = _top_p_named(item_probs, _ITEM_NAMES)
-        misc_top, misc_rest = _top_p_named(misc_probs, _MISC_NAMES)
+        # Per-tile argmax for ent/dir/item/misc — one matmul per head
+        # against the whole spatial map, reshaped to (W*H, chan3).
+        feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
+        ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
+        dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
+        item_pick = agent.item_head(feats_all).argmax(dim=-1)
+        misc_pick = agent.misc_head(feats_all).argmax(dim=-1)
+
+        candidates: list[dict] = []
+        mask = (tile_probs > CANDIDATE_TILE_THRESHOLD).nonzero(as_tuple=False).squeeze(-1).tolist()
+        for t in mask:
+            candidates.append({
+                "x": t // H,
+                "y": t % H,
+                "p_tile": float(tile_probs[t].item()),
+                "entity": _ENT_NAMES.get(int(ent_pick[t].item()), str(int(ent_pick[t].item()))),
+                "direction": _DIR_NAMES.get(int(dir_pick[t].item()), str(int(dir_pick[t].item()))),
+                "item": _ITEM_NAMES.get(int(item_pick[t].item()), str(int(item_pick[t].item()))),
+                "misc": _MISC_NAMES.get(int(misc_pick[t].item()), str(int(misc_pick[t].item()))),
+            })
 
     return {
-        # Argmax pick — drives the dark-blue border on the predicted
-        # tile and the Apply Prediction button.
         "x": x,
         "y": y,
         "entity": ent_top[0]["name"],
         "direction": dir_top[0]["name"],
         "item": item_top[0]["name"],
         "misc": misc_top[0]["name"],
-        # Top-p=0.95 distributions for the UI.
         "tile_top": tile_top,
         "tile_rest": tile_rest,
         "entity_top": ent_top,
@@ -357,6 +387,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         "item_rest": item_rest,
         "misc_top": misc_top,
         "misc_rest": misc_rest,
+        "candidates": candidates,
     }
 
 
@@ -501,6 +532,12 @@ def render_index(default_size: int, model_enabled: bool) -> str:
     font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
   }}
   .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
+  /* "ghost" = a predicted placement drawn on top of an empty cell. One
+     ghost per candidate tile (all tiles with p(tile) > threshold).
+     Opacity is set inline per element so it can encode the model's
+     confidence — solid for high p(tile), faded for marginal ones. The
+     argmax tile additionally gets the dark-blue inset border via
+     td.predicted so the top pick stays unambiguous. */
   .editor label {{ display: block; font-size: 0.8em; margin-top: 0.4em; }}
   .editor select, .editor button {{ width: 100%; padding: 0.2em; }}
   .out-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }}
@@ -627,6 +664,12 @@ function iconFor(name) {{
 
 function renderGrid() {{
   const host = document.getElementById('grid-host');
+  // Build (x,y) -> candidate map once per render so the per-cell
+  // ghost lookup is O(1).
+  const candByXY = {{}};
+  if (prediction && prediction.candidates) {{
+    for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
+  }}
   const tbl = document.createElement('table');
   tbl.className = 'grid';
   for (let y = 0; y < SIZE; y++) {{
@@ -650,6 +693,27 @@ function renderGrid() {{
       if (arrow) html += `<div class="arrow">${{arrow}}</div>`;
       const m = MISC_GLYPH[c.misc] || '';
       if (m) html += `<div class="misc">${{m}}</div>`;
+      // Ghost overlay: render every candidate tile (all tiles where
+      // p(tile) > threshold) on top of empty cells, with opacity
+      // proportional to the tile probability so the user can see what
+      // the model is *considering*, not just the top pick. The argmax
+      // tile additionally gets the dark-blue inset border (above).
+      // Skip non-empty cells to keep the visualisation legible.
+      const cand = candByXY[x + ',' + y];
+      if (cand && c.entity === 'empty') {{
+        // Map p in [0.05, 1.0] to opacity in [0.18, 0.95] so the
+        // weakest visible ghost still has some presence and the
+        // strongest reads as near-solid.
+        const op = (0.18 + 0.77 * cand.p_tile).toFixed(2);
+        if (cand.entity && cand.entity !== 'empty')
+          html += `<img class="ent ghost" style="opacity:${{op}}" src="${{iconFor(cand.entity)}}">`;
+        if (cand.item && cand.item !== 'empty')
+          html += `<img class="itm ghost" style="opacity:${{op}}" src="${{iconFor(cand.item)}}">`;
+        const garrow = DIR_ARROW[cand.direction] || '';
+        if (garrow) html += `<div class="arrow ghost" style="opacity:${{op}}">${{garrow}}</div>`;
+        const gmisc = MISC_GLYPH[cand.misc] || '';
+        if (gmisc) html += `<div class="misc ghost" style="opacity:${{op}}">${{gmisc}}</div>`;
+      }}
       inner.innerHTML = html;
       td.appendChild(inner);
 
