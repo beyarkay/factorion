@@ -805,18 +805,25 @@ class AgentCNN(nn.Module):
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(chan3, 1, kernel_size=1), std=tile_head_std)
 
-        # Per-tile entity/direction heads (conditioned on selected tile features)
+        # Per-tile entity/direction/item/misc heads (conditioned on selected
+        # tile features). The env's step() requires all four to be set
+        # consistently — e.g. an underground_belt placement must carry
+        # misc=UNDERGROUND_DOWN/UP, and an assembling_machine_1 placement
+        # must carry a recipe in `item`.
         self.ent_head = layer_init(nn.Linear(chan3, self.num_entities))
         self.dir_head = layer_init(nn.Linear(chan3, self.num_directions))
+        self.item_head = layer_init(nn.Linear(chan3, self.num_items))
+        self.misc_head = layer_init(nn.Linear(chan3, self.num_misc))
         self.time_for_get_value = None
         self.time_for_get_action_and_value = None
 
-        # Bias the entity/direction heads towards predicting empty space
+        # Bias every head toward its "empty / NONE" slot (value 0) so a
+        # freshly-initialised policy mostly proposes no-ops, matching the
+        # prior used for entity/direction.
         with torch.no_grad():
-            self.ent_head.bias.fill_(0.0)
-            self.ent_head.bias.data[0] = 1.0
-            self.dir_head.bias.fill_(0.0)
-            self.dir_head.bias.data[0] = 1.0
+            for head in (self.ent_head, self.dir_head, self.item_head, self.misc_head):
+                head.bias.fill_(0.0)
+                head.bias.data[0] = 1.0
 
     def get_value(self, x_BCWH):
         t0 = time.time()
@@ -853,38 +860,49 @@ class AgentCNN(nn.Module):
         batch_idx = torch.arange(B, device=encoded_BCWH.device)
         tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
 
-        # --- Entity and direction heads (conditioned on tile features) ---
+        # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)
         logits_d_BD = self.dir_head(tile_features_BC)
+        logits_i_BI = self.item_head(tile_features_BC)
+        logits_m_BM = self.misc_head(tile_features_BC)
         dist_e = Categorical(logits=logits_e_BE)
         dist_d = Categorical(logits=logits_d_BD)
+        dist_i = Categorical(logits=logits_i_BI)
+        dist_m = Categorical(logits=logits_m_BM)
 
         if action is None:
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
+            item_B = dist_i.sample()
+            misc_B = dist_m.sample()
         else:
             ent_B = action[:, 2]
             dir_B = action[:, 3]
+            item_B = action[:, 4]
+            misc_B = action[:, 5]
 
         # --- Log probs and entropy ---
         logp_B = (
             dist_tile.log_prob(tile_idx_B) +
             dist_e.log_prob(ent_B) +
-            dist_d.log_prob(dir_B)
+            dist_d.log_prob(dir_B) +
+            dist_i.log_prob(item_B) +
+            dist_m.log_prob(misc_B)
         )
         entropy_B = (
             dist_tile.entropy() +
             dist_e.entropy() +
-            dist_d.entropy()
+            dist_d.entropy() +
+            dist_i.entropy() +
+            dist_m.entropy()
         )
 
-        # --- Output action dict (format unchanged) ---
         action_out = {
             "xy": torch.stack([x_B, y_B], dim=1),
             "direction": dir_B,
             "entity": ent_B,
-            "item": torch.zeros_like(ent_B),
-            "misc": torch.zeros_like(ent_B),
+            "item": item_B,
+            "misc": misc_B,
         }
         self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
