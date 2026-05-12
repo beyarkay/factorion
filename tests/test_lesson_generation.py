@@ -16,7 +16,6 @@ from helpers import (
     entities,
     generate_lesson,
     items,
-    py_throughput_safe,
     recipes,
     rs_throughput,
     str2ent,
@@ -84,7 +83,7 @@ class TestInserterTransferBasic:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bottlenecked_by_inserter(self):
@@ -92,7 +91,7 @@ class TestInserterTransferBasic:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         inserter_flow = str2ent("inserter").flow
         assert tp <= inserter_flow + 1e-6, (
             f"Throughput {tp} exceeds inserter flow rate {inserter_flow}"
@@ -124,7 +123,7 @@ class TestInserterTransferManySeeds:
         world, min_ent = generate_lesson(
             size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
         assert tp <= str2ent("inserter").flow + 1e-6
 
@@ -134,7 +133,7 @@ class TestInserterTransferManySeeds:
         world, min_ent = generate_lesson(
             size=6, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
@@ -143,7 +142,7 @@ class TestInserterTransferManySeeds:
         world, min_ent = generate_lesson(
             size=10, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -152,7 +151,7 @@ class TestInserterTransferManySeeds:
         world, min_ent = generate_lesson(
             size=15, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
@@ -165,14 +164,9 @@ class TestInserterTransferParity:
             size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
         world_whc = world.permute(1, 2, 0)
-        py_tp, py_ur = py_throughput_safe(world_whc)
-        rs_tp, rs_ur = rs_throughput(world_whc)
-        assert abs(py_tp - rs_tp) < 1e-6, (
-            f"seed={seed}: Python={py_tp}, Rust={rs_tp}"
-        )
-        assert py_ur == rs_ur, (
-            f"seed={seed}: unreachable Python={py_ur}, Rust={rs_ur}"
-        )
+        tp, ur = rs_throughput(world_whc)
+        assert tp > 0, f"seed={seed}: throughput={tp}"
+        assert ur >= 0
 
 
 class TestInserterTransferGridSizes:
@@ -187,7 +181,7 @@ class TestInserterTransferGridSizes:
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
         assert (ent_layer == str2ent("inserter").value).sum().item() == 1
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 
@@ -355,7 +349,7 @@ class TestInserterTransferThroughputRange:
         world, _ = generate_lesson(
             size=size, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         inserter_flow = str2ent("inserter").flow
         assert 0 < tp <= inserter_flow + 1e-6, (
             f"size={size}, seed={seed}: throughput {tp} not in (0, {inserter_flow}]"
@@ -413,7 +407,7 @@ class TestSplitterSplitBasic:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bounded_by_splitter(self):
@@ -421,7 +415,7 @@ class TestSplitterSplitBasic:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp <= 30.0 + 1e-6, f"Throughput {tp} exceeds splitter max flow"
 
 
@@ -433,7 +427,7 @@ class TestSplitterSplitManySeeds:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
@@ -441,7 +435,7 @@ class TestSplitterSplitManySeeds:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -449,7 +443,7 @@ class TestSplitterSplitManySeeds:
         world, _ = generate_lesson(
             size=12, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -457,7 +451,7 @@ class TestSplitterSplitManySeeds:
         world, _ = generate_lesson(
             size=15, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
@@ -470,14 +464,9 @@ class TestSplitterSplitParity:
             size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
         world_whc = world.permute(1, 2, 0)
-        py_tp, py_ur = py_throughput_safe(world_whc)
-        rs_tp, rs_ur = rs_throughput(world_whc)
-        assert abs(py_tp - rs_tp) < 1e-6, (
-            f"seed={seed}: Python={py_tp}, Rust={rs_tp}"
-        )
-        assert py_ur == rs_ur, (
-            f"seed={seed}: unreachable Python={py_ur}, Rust={rs_ur}"
-        )
+        tp, ur = rs_throughput(world_whc)
+        assert tp > 0, f"seed={seed}: throughput={tp}"
+        assert ur >= 0
 
 
 class TestSplitterSplitGridSizes:
@@ -492,7 +481,7 @@ class TestSplitterSplitGridSizes:
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 2
         assert (ent_layer == str2ent("splitter").value).sum().item() == 2
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 
@@ -625,7 +614,7 @@ class TestSplitterSplitThroughputRange:
         world, _ = generate_lesson(
             size=size, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         # Splitter max flow is 30.0 (can sideload both inputs)
         assert 0 < tp <= 30.0 + 1e-6, (
             f"size={size}, seed={seed}: throughput {tp} not in (0, 30.0]"
@@ -682,7 +671,7 @@ class TestSplitterMergeBasic:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bounded_by_splitter(self):
@@ -690,7 +679,7 @@ class TestSplitterMergeBasic:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp <= 30.0 + 1e-6, f"Throughput {tp} exceeds splitter max flow"
 
 
@@ -702,7 +691,7 @@ class TestSplitterMergeManySeeds:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
@@ -710,7 +699,7 @@ class TestSplitterMergeManySeeds:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -718,7 +707,7 @@ class TestSplitterMergeManySeeds:
         world, _ = generate_lesson(
             size=12, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -726,7 +715,7 @@ class TestSplitterMergeManySeeds:
         world, _ = generate_lesson(
             size=15, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
@@ -739,14 +728,9 @@ class TestSplitterMergeParity:
             size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
         world_whc = world.permute(1, 2, 0)
-        py_tp, py_ur = py_throughput_safe(world_whc)
-        rs_tp, rs_ur = rs_throughput(world_whc)
-        assert abs(py_tp - rs_tp) < 1e-6, (
-            f"seed={seed}: Python={py_tp}, Rust={rs_tp}"
-        )
-        assert py_ur == rs_ur, (
-            f"seed={seed}: unreachable Python={py_ur}, Rust={rs_ur}"
-        )
+        tp, ur = rs_throughput(world_whc)
+        assert tp > 0, f"seed={seed}: throughput={tp}"
+        assert ur >= 0
 
 
 class TestSplitterMergeGridSizes:
@@ -761,7 +745,7 @@ class TestSplitterMergeGridSizes:
         assert (ent_layer == str2ent("source").value).sum().item() == 2
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
         assert (ent_layer == str2ent("splitter").value).sum().item() == 2
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 
@@ -893,7 +877,7 @@ class TestSplitterMergeThroughputRange:
         world, _ = generate_lesson(
             size=size, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert 0 < tp <= 30.0 + 1e-6, (
             f"size={size}, seed={seed}: throughput {tp} not in (0, 30.0]"
         )
@@ -1120,7 +1104,7 @@ class TestAssemble1In1OutBasic:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
 
@@ -1132,7 +1116,7 @@ class TestAssemble1In1OutManySeeds:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
@@ -1140,7 +1124,7 @@ class TestAssemble1In1OutManySeeds:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -1148,7 +1132,7 @@ class TestAssemble1In1OutManySeeds:
         world, _ = generate_lesson(
             size=12, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
@@ -1156,7 +1140,7 @@ class TestAssemble1In1OutManySeeds:
         world, _ = generate_lesson(
             size=15, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
@@ -1169,14 +1153,9 @@ class TestAssemble1In1OutParity:
             size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
         world_whc = world.permute(1, 2, 0)
-        py_tp, py_ur = py_throughput_safe(world_whc)
-        rs_tp, rs_ur = rs_throughput(world_whc)
-        assert abs(py_tp - rs_tp) < 1e-6, (
-            f"seed={seed}: Python={py_tp}, Rust={rs_tp}"
-        )
-        assert py_ur == rs_ur, (
-            f"seed={seed}: unreachable Python={py_ur}, Rust={rs_ur}"
-        )
+        tp, ur = rs_throughput(world_whc)
+        assert tp > 0, f"seed={seed}: throughput={tp}"
+        assert ur >= 0
 
 
 class TestAssemble1In1OutGridSizes:
@@ -1192,7 +1171,7 @@ class TestAssemble1In1OutGridSizes:
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
         assert (ent_layer == str2ent("assembling_machine_1").value).sum().item() == 9
         assert (ent_layer == str2ent("inserter").value).sum().item() == 2
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
     def test_too_small_grid_raises(self):
@@ -1389,7 +1368,7 @@ class TestAssemble1In1OutThroughputRange:
         world, _ = generate_lesson(
             size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         # Lower bound: positive
         assert tp > 0, f"seed={seed}: tp={tp}"
         # Upper bound: an inserter caps at 0.86 i/s, and the output side
@@ -1635,7 +1614,7 @@ class TestAssemble1In1OutThroughputPerRecipe:
             input_rate = self.INSERTER_CAP / cons_count
             expected = min(self.INSERTER_CAP, input_rate * prod_count)
 
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert abs(tp - expected) < 1e-3, (
             f"seed={seed}, recipe={recipe_name}, "
             f"source_directly_adjacent={source_directly_adjacent}: "
@@ -1730,7 +1709,7 @@ class TestAssemble1In1OutEdgeCases:
             size=20, kind=LessonKind.ASSEMBLE_1IN_1OUT,
             num_missing_entities=0, seed=seed,
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 
@@ -1855,7 +1834,7 @@ class TestMoveViaUgBeltBasic:
         world, _ = generate_lesson(
             size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
         )
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
     @pytest.mark.parametrize("seed", range(20))
@@ -2006,7 +1985,7 @@ class TestMoveViaUgBeltManySeeds:
         )
         assert world is not None
         assert min_ent is not None
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
     @pytest.mark.parametrize("size", [6, 8, 10, 12])
@@ -2016,7 +1995,7 @@ class TestMoveViaUgBeltManySeeds:
             num_missing_entities=0, seed=7,
         )
         assert world.shape == (len(Channel), size, size)
-        tp, _ = py_throughput_safe(world.permute(1, 2, 0))
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 

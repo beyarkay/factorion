@@ -3,11 +3,9 @@
 Spins up a tiny local HTTP server that serves a drag-and-drop UI for
 designing a factory and visualising the flow graph it produces.
 
-Why a server (and not a single static HTML file like
-``visualise_sft_data.py``): graph construction (``world2graph``) and
-throughput calculation (``calc_throughput``) live in Python, so the
-browser POSTs the grid to the server, which runs them and returns a
-rendered graph image.
+The browser POSTs the grid to the server, which runs ``world2graph`` for
+visualisation and ``factorion_rs.simulate_throughput`` for throughput,
+then returns a rendered graph image.
 
 Usage:
     uv run python scripts/factory_builder.py
@@ -39,12 +37,12 @@ os.environ.setdefault("WANDB_DISABLED", "true")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     Channel,
     Direction,
     Footprint,
     Misc,
-    calc_throughput,
     ent_str2b64img,
     items,
     new_world,
@@ -160,11 +158,10 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
         plt.close("all")
 
     try:
-        throughput, num_unreachable = calc_throughput(G)
-        tp_text = ", ".join(
-            f"{k}: {v:.2f}" for k, v in throughput.items()
-        ) or "(none)"
-        info = f"throughput: {tp_text}  ·  unreachable nodes: {num_unreachable}"
+        throughput, num_unreachable = factorion_rs.simulate_throughput(
+            world.numpy().astype(np.int64)
+        )
+        info = f"throughput: {throughput:.4f}  ·  unreachable nodes: {num_unreachable}"
     except Exception as e:
         info = f"throughput failed: {e}"
 

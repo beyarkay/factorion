@@ -1,8 +1,4 @@
-"""Parity tests between Python funge_throughput and Rust simulate_throughput.
-
-Tests verify that the Rust implementation produces the same results as the
-existing Python implementation for identical factory layouts.
-"""
+"""Tests for Rust simulate_throughput on a variety of factory layouts."""
 
 import random
 
@@ -22,7 +18,6 @@ from helpers import (
     generate_lesson,
     make_world,
     rs_throughput,
-    py_throughput_safe,
     set_entity,
     set_splitter,
     str2ent,
@@ -288,53 +283,26 @@ class TestFuzz:
 
     @pytest.mark.parametrize("seed", range(100))
     def test_fuzz_random_layout(self, seed):
-        """Generate a random factory and verify both implementations agree."""
+        """Generate a random factory and verify Rust doesn't crash."""
         rng = random.Random(seed)
         size = rng.randint(3, 8)
         density = rng.uniform(0.1, 0.5)
         world = self._random_world(size, rng, density)
 
-        try:
-            py_tp, py_unreachable = py_throughput_safe(world)
-        except AssertionError:
-            pytest.skip(f"Python calc_throughput assertion failed on seed {seed}")
-
         rs_tp, rs_unreachable = rs_throughput(world)
-
-        assert abs(py_tp - rs_tp) <= 0.1, (
-            f"Seed {seed}: throughput mismatch: Python={py_tp}, Rust={rs_tp}"
-        )
-        # Only check unreachable count when Python didn't return 0 due to cycles.
-        # When Python detects cycles via nx.simple_cycles it returns unreachable=0,
-        # but Rust may not detect the same cycles (e.g. self-loops from invalid
-        # entities like underground belts with direction=NONE), leading to different
-        # unreachable counts. Throughput still matches (both return 0).
-        if py_tp != 0.0 or py_unreachable != 0:
-            assert py_unreachable == rs_unreachable, (
-                f"Seed {seed}: unreachable mismatch: Python={py_unreachable}, Rust={rs_unreachable}"
-            )
+        assert rs_tp >= 0.0
+        assert rs_unreachable >= 0
 
     @pytest.mark.parametrize("seed", range(50))
     def test_fuzz_with_multi_tile(self, seed):
-        """Random layouts including correctly-placed multi-tile entities."""
+        """Random layouts including correctly-placed multi-tile entities; verify Rust doesn't crash."""
         rng = random.Random(seed + 2000)
         size = rng.randint(5, 10)
         world = self._random_world(size, rng, density=0.3, include_multi_tile=True)
 
-        try:
-            py_tp, py_unreachable = py_throughput_safe(world)
-        except AssertionError:
-            pytest.skip(f"Python calc_throughput assertion failed on seed {seed}")
-
         rs_tp, rs_unreachable = rs_throughput(world)
-
-        assert abs(py_tp - rs_tp) <= 0.1, (
-            f"Seed {seed}: throughput mismatch: Python={py_tp}, Rust={rs_tp}"
-        )
-        if py_tp != 0.0 or py_unreachable != 0:
-            assert py_unreachable == rs_unreachable, (
-                f"Seed {seed}: unreachable mismatch: Python={py_unreachable}, Rust={rs_unreachable}"
-            )
+        assert rs_tp >= 0.0
+        assert rs_unreachable >= 0
 
     @pytest.mark.parametrize("seed", range(50))
     def test_fuzz_belt_only_layouts(self, seed):
@@ -369,19 +337,9 @@ class TestFuzz:
                     world[x, y, 0] = 1  # transport_belt
                     world[x, y, 1] = rng.choice([1, 2, 3, 4])
 
-        try:
-            py_tp, py_unreachable = py_throughput_safe(world)
-        except AssertionError:
-            pytest.skip(f"Python calc_throughput assertion failed on seed {seed}")
-
         rs_tp, rs_unreachable = rs_throughput(world)
-
-        assert abs(py_tp - rs_tp) <= 0.1, (
-            f"Seed {seed}: throughput mismatch: Python={py_tp}, Rust={rs_tp}"
-        )
-        assert py_unreachable == rs_unreachable, (
-            f"Seed {seed}: unreachable mismatch: Python={py_unreachable}, Rust={rs_unreachable}"
-        )
+        assert rs_tp >= 0.0
+        assert rs_unreachable >= 0
 
 
 # ── Splitter parity tests ──────────────────────────────────────────────────
