@@ -203,6 +203,11 @@ _AGENT_DEVICE = torch.device(
 _AGENT_CACHE: dict[int, AgentCNN] = {}
 _CHECKPOINT_STATE: Optional[dict] = None
 _CHECKPOINT_PATH: Optional[str] = None
+# How the current checkpoint was loaded. Surfaced to the UI so it can
+# render meaningful info (e.g. wandb run id + link) instead of the
+# anonymous /tmp download path. Either {"kind": "local", "path": "..."}
+# or {"kind": "wandb", "run_id", "run_url", "run_name", "artifact"}.
+_CHECKPOINT_SOURCE: Optional[dict] = None
 
 # Reverse lookup: head index -> readable name. The entity head excludes the
 # last two catalog entries (source/sink) but its index space starts at 0 and
@@ -214,10 +219,10 @@ _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
 def _load_checkpoint(path: str) -> None:
-    """Load the checkpoint and stash it. Clears the per-size agent
+    """Load the checkpoint .pt and stash it. Clears the per-size agent
     cache so subsequent /predict calls rebuild against the new
-    weights — important when this is invoked at runtime by the UI to
-    swap models, not just once at startup."""
+    weights. Does NOT touch _CHECKPOINT_SOURCE — the caller knows the
+    provenance (local vs wandb) and sets it after this returns."""
     global _CHECKPOINT_STATE, _CHECKPOINT_PATH
     state = torch.load(path, map_location="cpu", weights_only=True)
     _CHECKPOINT_STATE = state
@@ -242,6 +247,7 @@ def _model_info() -> dict:
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
+        "source": _CHECKPOINT_SOURCE,
         "chan1": s["encoder.0.weight"].shape[0],
         "chan2": s["encoder.2.weight"].shape[0],
         "chan3": s["encoder.4.weight"].shape[0],
@@ -254,6 +260,7 @@ def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> d
     and return the new model info. Called by the /load_model POST
     endpoint so the user can switch models without restarting the
     server."""
+    global _CHECKPOINT_SOURCE
     value = (value or "").strip()
     if not value:
         raise ValueError("value cannot be empty")
@@ -261,11 +268,13 @@ def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> d
         if not Path(value).exists():
             raise FileNotFoundError(f"checkpoint not found: {value}")
         path = value
+        source = {"kind": "local", "path": value}
     elif kind == "wandb":
-        path = _resolve_wandb_checkpoint(value, project, entity)
+        path, source = _resolve_wandb_checkpoint(value, project, entity)
     else:
         raise ValueError(f"unknown kind: {kind!r} (expected 'local' or 'wandb')")
     _load_checkpoint(path)
+    _CHECKPOINT_SOURCE = source
     return _model_info()
 
 
@@ -1027,6 +1036,19 @@ document.getElementById('model-apply').addEventListener('click', applyPrediction
 document.getElementById('model-refresh').addEventListener('click', computePrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
 
+// Minimal HTML escape so we can safely inject artifact names + run
+// URLs into innerHTML. Strings come from the wandb API, which is
+// reasonably trusted, but escaping is cheap insurance against weird
+// characters in run names.
+function escHtml(s) {{
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}}
+
 async function refreshModelInfo() {{
   const cur = document.getElementById('model-current');
   try {{
@@ -1034,9 +1056,22 @@ async function refreshModelInfo() {{
     const data = await resp.json();
     if (data.loaded) {{
       modelLoaded = true;
-      cur.textContent = 'loaded: ' + data.path +
-        '  (c1=' + data.chan1 + ' c2=' + data.chan2 + ' c3=' + data.chan3 +
-        ' ' + data.device + ')';
+      const shape = 'c1=' + data.chan1 + ' c2=' + data.chan2 +
+        ' c3=' + data.chan3 + ' ' + data.device;
+      const src = data.source || {{}};
+      if (src.kind === 'wandb') {{
+        // Show the artifact name (the *meaningful* identifier the user
+        // sees in the W&B UI) plus a clickable link to the run, instead
+        // of the anonymous /tmp/factorion-checkpoints download path.
+        const linkText = src.run_name ? src.run_name : src.run_id;
+        cur.innerHTML = 'loaded: ' + escHtml(src.artifact) +
+          ' from <a href="' + escHtml(src.run_url) + '" target="_blank">' +
+          escHtml(linkText) + '</a>' +
+          '  (' + escHtml(shape) + ')';
+      }} else {{
+        const path = (src && src.path) || data.path;
+        cur.textContent = 'loaded: ' + path + '  (' + shape + ')';
+      }}
     }} else {{
       modelLoaded = false;
       cur.textContent = '(none loaded — paste a path or wandb run id below)';
@@ -1180,9 +1215,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def _resolve_wandb_checkpoint(
     run_spec: str, project: str, entity: Optional[str]
-) -> str:
-    """Resolve a W&B run id to a local checkpoint path. Downloads the
-    run's first model-type artifact to /tmp/factorion-checkpoints.
+) -> tuple[str, dict]:
+    """Resolve a W&B run id to (local_path, source_metadata). Downloads
+    the run's most recent model-type artifact to /tmp/factorion-checkpoints.
+
+    The metadata dict (run_id, run_url, run_name, artifact name) is
+    propagated up to _CHECKPOINT_SOURCE so the UI can show
+    "loaded: <artifact> (wandb)" with a clickable link to the run
+    instead of the anonymous tmp download path.
 
     `run_spec` is either a bare id ("abc123") or a full path
     ("user/factorion/abc123"). Sets WANDB_MODE back to online for the
@@ -1217,7 +1257,14 @@ def _resolve_wandb_checkpoint(
             raise RuntimeError(f"artifact {art.name} contains no .pt file")
         path = str(pt_files[0])
         print(f"Resolved {run_spec} -> {art.name} -> {path}")
-        return path
+        source = {
+            "kind": "wandb",
+            "run_id": run.id,
+            "run_url": run.url,
+            "run_name": run.name,
+            "artifact": art.name,
+        }
+        return path, source
     finally:
         if prev_mode is not None:
             os.environ["WANDB_MODE"] = prev_mode
@@ -1226,15 +1273,18 @@ def _resolve_wandb_checkpoint(
 
 
 def main(args: Args) -> None:
+    global _CHECKPOINT_SOURCE
     if args.checkpoint and args.wandb_run:
         raise SystemExit("pass either --checkpoint or --wandb-run, not both")
-    ckpt_path: Optional[str] = args.checkpoint
     if args.wandb_run:
-        ckpt_path = _resolve_wandb_checkpoint(
+        ckpt_path, source = _resolve_wandb_checkpoint(
             args.wandb_run, args.wandb_project, args.wandb_entity,
         )
-    if ckpt_path:
         _load_checkpoint(ckpt_path)
+        _CHECKPOINT_SOURCE = source
+    elif args.checkpoint:
+        _load_checkpoint(args.checkpoint)
+        _CHECKPOINT_SOURCE = {"kind": "local", "path": args.checkpoint}
     else:
         print("(no checkpoint — model prediction panel disabled)")
 
