@@ -177,6 +177,51 @@ class SFTArgs:
     """path to write summary JSON (default: sft_summary.json next to sft.py)"""
 
 
+def _humanize_count(n: int) -> str:
+    """50_000 -> '50k', 2_500_000 -> '2.5m'. Used in artifact names so
+    `n50k` reads better than `n50000`."""
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        return f"{v:.1f}m".rstrip("0").rstrip(".") + ("m" if not f"{v:.1f}".endswith("m") else "")
+    if n >= 1_000:
+        v = n / 1_000
+        s = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{s}k"
+    return str(n)
+
+
+def _humanize_lr(lr: float) -> str:
+    """1e-3 -> '1e-3', 0.0005 -> '5e-4'. Keeps artifact names short and
+    visually obvious."""
+    if lr == 0:
+        return "0"
+    exp = int(np.floor(np.log10(lr)))
+    mantissa = lr / (10 ** exp)
+    if abs(mantissa - round(mantissa)) < 1e-6:
+        return f"{int(round(mantissa))}e{exp}"
+    return f"{mantissa:.2g}e{exp}"
+
+
+def _artifact_name(args: "SFTArgs") -> str:
+    """Build a descriptive W&B artifact name from the training config.
+
+    Identical-config runs collapse into versions of the same artifact;
+    config-changing runs (different size / sample count / lr / channels)
+    get their own artifact. `best_val_acc` deliberately goes to the alias
+    instead, since baking a varying number into the name would defeat
+    versioning."""
+    chans = (args.chan1, args.chan2, args.chan3)
+    chan_str = f"c{args.chan1}" if len(set(chans)) == 1 else f"c{args.chan1}-{args.chan2}-{args.chan3}"
+    return (
+        f"sft-s{args.size}"
+        f"-n{_humanize_count(args.num_samples)}"
+        f"-e{args.epochs}"
+        f"-bs{args.batch_size}"
+        f"-lr{_humanize_lr(args.lr)}"
+        f"-{chan_str}"
+    )
+
+
 def generate_dataset(args: SFTArgs):
     """Generate SFT dataset from expert demonstrations.
 
@@ -693,6 +738,37 @@ def train_sft(args: SFTArgs):
     print(f"Summary written to {summary_path}")
 
     if args.track and run is not None:
+        # Upload the best checkpoint + summary so a Mac can grab the trained
+        # model with `wandb artifact get` without rummaging through the pod.
+        #
+        # Name encodes hyperparams so runs with identical config collapse
+        # into versions of one artifact, while different configs land in
+        # separate artifacts — easier to navigate than a wall of
+        # `sft-checkpoint-vN`. val_acc varies per run, so it stays as an
+        # alias instead of being baked into the name.
+        artifact = wandb.Artifact(
+            name=_artifact_name(args),
+            type="model",
+            metadata={
+                "best_val_acc": best_val_acc,
+                "size": args.size,
+                "chan1": args.chan1,
+                "chan2": args.chan2,
+                "chan3": args.chan3,
+                "num_samples": args.num_samples,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "lr": args.lr,
+                "seed": args.seed,
+            },
+        )
+        artifact.add_file(args.checkpoint_path)
+        artifact.add_file(summary_path)
+        run.log_artifact(
+            artifact,
+            aliases=["latest", f"val{best_val_acc:.3f}"],
+        )
+        print(f"Logged W&B artifact: {artifact.name}")
         run.finish()
 
     return agent
