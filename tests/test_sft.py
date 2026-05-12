@@ -31,17 +31,18 @@ class TestExtractExpertActions:
         pairs = extract_expert_actions(solved, task)
         assert len(pairs) > 0, "Should have at least one action"
 
-        # Replay actions onto task world
+        # Replay actions onto task world. The action carries all four
+        # placement channels (entity, direction, item, misc) — the agent
+        # is responsible for each.
         state = task.clone()
-        for obs, tile_idx, entity_id, direction_id, valid_mask in pairs:
+        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask in pairs:
             H = state.shape[2]
             x = tile_idx // H
             y = tile_idx % H
             state[Channel.ENTITIES.value, x, y] = entity_id
             state[Channel.DIRECTION.value, x, y] = direction_id
-            # Copy other channels from solved
-            state[Channel.ITEMS.value, x, y] = solved[Channel.ITEMS.value, x, y]
-            state[Channel.MISC.value, x, y] = solved[Channel.MISC.value, x, y]
+            state[Channel.ITEMS.value, x, y] = item_id
+            state[Channel.MISC.value, x, y] = misc_id
 
         # Entity and direction channels should match solved
         assert torch.equal(
@@ -105,9 +106,45 @@ class TestExtractExpertActions:
             size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
         )
         pairs = extract_expert_actions(solved, task)
-        for _, _, entity_id, direction_id, _ in pairs:
+        for _, _, entity_id, direction_id, _, _, _ in pairs:
             assert entity_id != str2ent("empty").value, "Expert actions shouldn't place empty"
             assert direction_id != Direction.NONE.value, "Expert belt actions need a direction"
+
+    def test_ug_belt_action_carries_misc(self):
+        """A MOVE_VIA_UG_BELT lesson with the UG pair blanked must produce
+        action pairs whose misc_id is UNDERGROUND_DOWN or UNDERGROUND_UP —
+        not NONE. Without this the env rejects every UG placement at step
+        time (ug_belt_wo_up_or_down)."""
+        from helpers import Misc
+        ug_id = str2ent("underground_belt").value
+        found_down = found_up = False
+        for seed in range(50):
+            try:
+                solved, _ = generate_lesson(
+                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
+                    num_missing_entities=0, seed=seed,
+                )
+                task, _ = generate_lesson(
+                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
+                    num_missing_entities=2, seed=seed,
+                )
+            except Exception:
+                continue
+            for _, _, ent_id, _, _, misc_id, _ in extract_expert_actions(solved, task):
+                if ent_id == ug_id:
+                    assert misc_id != Misc.NONE.value, (
+                        f"seed={seed}: UG belt action emitted with misc=NONE"
+                    )
+                    if misc_id == Misc.UNDERGROUND_DOWN.value:
+                        found_down = True
+                    if misc_id == Misc.UNDERGROUND_UP.value:
+                        found_up = True
+            if found_down and found_up:
+                break
+        assert found_down and found_up, (
+            f"Expected to see both DOWN and UP actions across seeds; "
+            f"found_down={found_down}, found_up={found_up}"
+        )
 
     def test_source_and_sink_always_present(self):
         """Task observations should always contain source and sink entities."""
@@ -135,11 +172,13 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, masks, seeds, kinds = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, seeds, kinds = generate_dataset(args)
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
         assert len(dirs) == 100
+        assert len(items_t) == 100
+        assert len(miscs_t) == 100
         assert len(masks) == 100
         assert len(seeds) == 100
         assert len(kinds) == 100
@@ -164,7 +203,7 @@ class TestGenerateDataset:
         from the same lesson share the same seed (multiple pairs per
         lesson when level > 1)."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        _, _, _, _, _, seeds, _ = generate_dataset(args)
+        *_, seeds, _kinds = generate_dataset(args)
         # Multiple unique seeds expected (each lesson has its own seed).
         assert len(set(seeds.tolist())) >= 2
         # And at least one seed appears more than once (level=2 → ~2 pairs).
@@ -324,7 +363,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, masks, _, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, _, _ = generate_dataset(args)
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -351,7 +390,15 @@ class TestSFTLossConvergence:
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
-            loss = loss_tile + ce_loss(ent_logits, ents) + ce_loss(dir_logits, dirs)
+            item_logits = agent.item_head(tile_features)
+            misc_logits = agent.misc_head(tile_features)
+            loss = (
+                loss_tile
+                + ce_loss(ent_logits, ents)
+                + ce_loss(dir_logits, dirs)
+                + ce_loss(item_logits, items_t)
+                + ce_loss(misc_logits, miscs_t)
+            )
 
             optimizer.zero_grad()
             loss.backward()
@@ -405,7 +452,7 @@ class TestTrainValSeedSplit:
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-        _, _, _, _, _, lesson_seeds, _ = generate_dataset(args)
+        *_, lesson_seeds, _kinds = generate_dataset(args)
 
         unique_seeds = torch.unique(lesson_seeds)
         n_seeds = len(unique_seeds)
