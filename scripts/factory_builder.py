@@ -272,54 +272,91 @@ def _get_agent(size: int) -> AgentCNN:
     return agent
 
 
-def _predict_greedy(grid: list[list[dict]]) -> dict:
-    """Greedy argmax inference. Returns the predicted placement with
-    readable names plus per-head top-1 probabilities so the UI can show
-    how confident the model is."""
+def _top_p_named(probs: torch.Tensor, names: dict, top_p: float = 0.95) -> tuple[list[dict], float]:
+    """Sort `probs` (1-D) by descending probability, take entries until
+    cumulative mass >= top_p, return them as [{name, p}, ...] plus the
+    remaining "rest" mass. Useful for showing the model's distribution
+    over discrete choices (entities, directions, items, misc)."""
+    probs_1d = probs.flatten()
+    sorted_p, sorted_i = torch.sort(probs_1d, descending=True)
+    top: list[dict] = []
+    cum = 0.0
+    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
+        top.append({"name": names.get(i, str(i)), "p": float(p)})
+        cum += float(p)
+        if cum >= top_p:
+            break
+    return top, max(0.0, 1.0 - cum)
+
+
+def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[dict], float]:
+    """Same as _top_p_named but emits (x, y, p) entries for the tile
+    head, since each entry is a 2-D coordinate rather than a named
+    category."""
+    sorted_p, sorted_i = torch.sort(probs.flatten(), descending=True)
+    top: list[dict] = []
+    cum = 0.0
+    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
+        top.append({"x": int(i) // H, "y": int(i) % H, "p": float(p)})
+        cum += float(p)
+        if cum >= top_p:
+            break
+    return top, max(0.0, 1.0 - cum)
+
+
+def _predict(grid: list[list[dict]]) -> dict:
+    """Run the model on `grid` and return the argmax placement plus
+    per-head top-p=0.95 distributions, so the UI can show what
+    alternatives the model was considering, not just the top pick."""
     world_WHC = build_world(grid)
     size = world_WHC.shape[0]
     agent = _get_agent(size)
 
     obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
-    C, W, H = obs_CWH.shape[1], obs_CWH.shape[2], obs_CWH.shape[3]
+    H = obs_CWH.shape[3]
 
     with torch.no_grad():
         encoded_BCWH = agent.encoder(obs_CWH)
         tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
-        tile_probs = F.softmax(tile_logits, dim=-1)
-        tile_idx = int(tile_logits.argmax(dim=-1).item())
-        tile_prob = float(tile_probs[0, tile_idx].item())
-        x = tile_idx // H
-        y = tile_idx % H
+        tile_probs = F.softmax(tile_logits, dim=-1)[0]
+        tile_top, tile_rest = _tile_top_p(tile_probs, H)
+
+        # Argmax — used both as the "Apply" target and to condition the
+        # per-tile heads on the same tile the top distribution favours.
+        tile_idx = int(tile_probs.argmax().item())
+        x, y = tile_idx // H, tile_idx % H
 
         feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
-        ent_logits = agent.ent_head(feats)
-        dir_logits = agent.dir_head(feats)
-        item_logits = agent.item_head(feats)
-        misc_logits = agent.misc_head(feats)
+        ent_probs = F.softmax(agent.ent_head(feats), dim=-1)[0]
+        dir_probs = F.softmax(agent.dir_head(feats), dim=-1)[0]
+        item_probs = F.softmax(agent.item_head(feats), dim=-1)[0]
+        misc_probs = F.softmax(agent.misc_head(feats), dim=-1)[0]
 
-        ent_idx = int(ent_logits.argmax(dim=-1).item())
-        dir_idx = int(dir_logits.argmax(dim=-1).item())
-        item_idx = int(item_logits.argmax(dim=-1).item())
-        misc_idx = int(misc_logits.argmax(dim=-1).item())
-
-        ent_prob = float(F.softmax(ent_logits, dim=-1)[0, ent_idx].item())
-        dir_prob = float(F.softmax(dir_logits, dim=-1)[0, dir_idx].item())
-        item_prob = float(F.softmax(item_logits, dim=-1)[0, item_idx].item())
-        misc_prob = float(F.softmax(misc_logits, dim=-1)[0, misc_idx].item())
+        ent_top, ent_rest = _top_p_named(ent_probs, _ENT_NAMES)
+        dir_top, dir_rest = _top_p_named(dir_probs, _DIR_NAMES)
+        item_top, item_rest = _top_p_named(item_probs, _ITEM_NAMES)
+        misc_top, misc_rest = _top_p_named(misc_probs, _MISC_NAMES)
 
     return {
+        # Argmax pick — drives the dark-blue border on the predicted
+        # tile and the Apply Prediction button.
         "x": x,
         "y": y,
-        "tile_prob": tile_prob,
-        "entity": _ENT_NAMES.get(ent_idx, str(ent_idx)),
-        "entity_prob": ent_prob,
-        "direction": _DIR_NAMES.get(dir_idx, str(dir_idx)),
-        "direction_prob": dir_prob,
-        "item": _ITEM_NAMES.get(item_idx, str(item_idx)),
-        "item_prob": item_prob,
-        "misc": _MISC_NAMES.get(misc_idx, str(misc_idx)),
-        "misc_prob": misc_prob,
+        "entity": ent_top[0]["name"],
+        "direction": dir_top[0]["name"],
+        "item": item_top[0]["name"],
+        "misc": misc_top[0]["name"],
+        # Top-p=0.95 distributions for the UI.
+        "tile_top": tile_top,
+        "tile_rest": tile_rest,
+        "entity_top": ent_top,
+        "entity_rest": ent_rest,
+        "direction_top": dir_top,
+        "direction_rest": dir_rest,
+        "item_top": item_top,
+        "item_rest": item_rest,
+        "misc_top": misc_top,
+        "misc_rest": misc_rest,
     }
 
 
@@ -441,7 +478,7 @@ def render_index(default_size: int, model_enabled: bool) -> str:
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
   table.grid td.predicted {{
-    box-shadow: inset 0 0 0 3px #ff9500;
+    box-shadow: inset 0 0 0 3px #0d47a1;
   }}
   table.grid td.unavailable {{
     background:
@@ -464,20 +501,6 @@ def render_index(default_size: int, model_enabled: bool) -> str:
     font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
   }}
   .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
-  /* "ghost" overlay = the model's predicted placement, drawn on top of
-     whatever is actually in the cell. Faded + blue-tinted so it can't be
-     mistaken for a real placement. hue-rotate flips the icon's warm
-     palette toward blue; opacity + the tile's orange inset border
-     together signal "this is suggested, not committed". */
-  .cell-inner img.ent.ghost,
-  .cell-inner img.itm.ghost {{
-    opacity: 0.55;
-    filter: hue-rotate(180deg) saturate(2.2) brightness(1.1);
-  }}
-  .cell-inner .arrow.ghost {{ color: #1976d2; opacity: 0.7; }}
-  .cell-inner .misc.ghost {{
-    color: #1976d2; text-shadow: 0 0 2px white; opacity: 0.75;
-  }}
   .editor label {{ display: block; font-size: 0.8em; margin-top: 0.4em; }}
   .editor select, .editor button {{ width: 100%; padding: 0.2em; }}
   .out-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }}
@@ -490,15 +513,18 @@ def render_index(default_size: int, model_enabled: bool) -> str:
   .model-panel {{ margin-top: 0.8em; }}
   .model-panel pre {{
     font-size: 0.78em; background: #f4f4f4; padding: 0.5em;
-    border-radius: 4px; margin: 0.3em 0; white-space: pre-wrap;
+    border-radius: 4px; margin: 0.3em 0;
+    /* `pre` (not pre-wrap) + overflow-x:auto so long top-p lines
+       scroll horizontally instead of wrapping mid-token and breaking
+       the column alignment. */
+    white-space: pre; overflow-x: auto;
   }}
   .model-panel .model-buttons {{
     display: flex; gap: 0.4em; flex-wrap: wrap; margin-top: 0.3em;
   }}
   .model-panel .swatch {{
-    display: inline-block; width: 0.8em; height: 0.8em; border: 1px solid #b07000;
-    background: rgba(255,149,0,0.0);
-    box-shadow: inset 0 0 0 2px #ff9500;
+    display: inline-block; width: 0.8em; height: 0.8em; border: 1px solid #082466;
+    box-shadow: inset 0 0 0 2px #0d47a1;
     vertical-align: middle; margin-right: 0.25em;
   }}
 </style></head><body>
@@ -624,21 +650,6 @@ function renderGrid() {{
       if (arrow) html += `<div class="arrow">${{arrow}}</div>`;
       const m = MISC_GLYPH[c.misc] || '';
       if (m) html += `<div class="misc">${{m}}</div>`;
-      // Ghost overlay: predicted (entity, direction, item, misc) drawn
-      // on top of the actual cell content with a blue tint + opacity.
-      // We render every non-empty head independently so the ghost is
-      // informative even when, say, the model wants to change direction
-      // on an existing entity.
-      if (prediction && prediction.x === x && prediction.y === y) {{
-        if (prediction.entity && prediction.entity !== 'empty')
-          html += `<img class="ent ghost" src="${{iconFor(prediction.entity)}}">`;
-        if (prediction.item && prediction.item !== 'empty')
-          html += `<img class="itm ghost" src="${{iconFor(prediction.item)}}">`;
-        const garrow = DIR_ARROW[prediction.direction] || '';
-        if (garrow) html += `<div class="arrow ghost">${{garrow}}</div>`;
-        const gmisc = MISC_GLYPH[prediction.misc] || '';
-        if (gmisc) html += `<div class="misc ghost">${{gmisc}}</div>`;
-      }}
       inner.innerHTML = html;
       td.appendChild(inner);
 
@@ -772,6 +783,28 @@ function scheduleCompute() {{
   }}, 200);
 }}
 
+// Format a probability as a short percent string. Matches the user's
+// preferred ".3%" style (no leading zero for sub-1% values) so the
+// numbers stay compact even when the top-p tail gets long.
+function fmtPct(p) {{
+  const v = p * 100;
+  if (v >= 10) return v.toFixed(1) + '%';
+  if (v >= 1)  return v.toFixed(1) + '%';
+  return v.toFixed(1).replace(/^0/, '') + '%';
+}}
+
+function fmtTopNamed(top, rest) {{
+  const parts = top.map(t => t.name + ' (' + fmtPct(t.p) + ')');
+  parts.push('rest (' + fmtPct(rest) + ')');
+  return parts.join(', ');
+}}
+
+function fmtTopTile(top, rest) {{
+  const parts = top.map(t => '(' + t.x + ',' + t.y + ') (' + fmtPct(t.p) + ')');
+  parts.push('rest (' + fmtPct(rest) + ')');
+  return parts.join(', ');
+}}
+
 async function computePrediction() {{
   if (!MODEL_ENABLED) return;
   const info = document.getElementById('model-info');
@@ -793,22 +826,19 @@ async function computePrediction() {{
     }}
     prediction = data;
     if (info) {{
-      info.innerHTML =
-        'predicted next placement at (' + data.x + ', ' + data.y +
-        ') · tile p=' + data.tile_prob.toFixed(3);
+      info.textContent =
+        'predicted next placement at (' + data.x + ', ' + data.y + ')';
     }}
     if (out) {{
+      // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
+      // The <pre> uses white-space:pre + overflow-x:auto so long top-p
+      // lines scroll horizontally instead of wrapping.
       const lines = [
-        '  xy:        (' + data.x + ', ' + data.y +
-          ')    p=' + data.tile_prob.toFixed(3),
-        '  entity:    ' + data.entity.padEnd(22) +
-          'p=' + data.entity_prob.toFixed(3),
-        '  direction: ' + data.direction.padEnd(22) +
-          'p=' + data.direction_prob.toFixed(3),
-        '  item:      ' + data.item.padEnd(22) +
-          'p=' + data.item_prob.toFixed(3),
-        '  misc:      ' + data.misc.padEnd(22) +
-          'p=' + data.misc_prob.toFixed(3),
+        '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
+        '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
+        '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),
+        '  item:      ' + fmtTopNamed(data.item_top, data.item_rest),
+        '  misc:      ' + fmtTopNamed(data.misc_top, data.misc_rest),
       ];
       out.textContent = lines.join('\\n');
     }}
@@ -947,7 +977,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
             else:
-                result = _predict_greedy(payload["grid"])
+                result = _predict(payload["grid"])
         except Exception as e:
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
