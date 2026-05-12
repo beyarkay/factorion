@@ -3,13 +3,10 @@ name = "factorion"
 version = "0.1.0"
 requires-python = ">=3.11"
 
-[tool.marimo.runtime]
-output_max_bytes = 15_000_000
-
 [tool.ruff]
-# Existing code has many pre-existing violations in the marimo notebook
-# and training script. Ignoring rules that are pervasive but low-risk,
-# while keeping rules that catch real bugs.
+# Existing code has many pre-existing violations in the training script.
+# Ignoring rules that are pervasive but low-risk, while keeping rules
+# that catch real bugs.
 extend-exclude = [
     ".claude",  # local Claude Code state and per-agent worktrees
 ]

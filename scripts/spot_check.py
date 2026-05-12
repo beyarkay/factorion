@@ -23,16 +23,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["WANDB_DISABLED"] = "true"
 
-import factorion  # noqa: E402
 import factorion_rs  # noqa: E402
-
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-LessonKind = _objs["LessonKind"]
-generate_lesson = _fns["generate_lesson"]
-world2html = _fns["world2html"]
-str2ent = _fns["str2ent"]
+from factorion import (  # noqa: E402
+    LessonKind,
+    generate_lesson,
+    world2html,
+)
 
 
 class Scenario(Enum):

@@ -39,22 +39,18 @@ os.environ.setdefault("WANDB_DISABLED", "true")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import factorion  # noqa: E402
-
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-Channel = _objs["Channel"]
-Direction = _objs["Direction"]
-Misc = _objs["Misc"]
-Footprint = _objs["Footprint"]
-items = _objs["items"]
-entities = _objs["entities"]
-new_world = _fns["new_world"]
-world2graph = _fns["world2graph"]
-calc_throughput = _fns["calc_throughput"]
-plot_flow_network = _fns["plot_flow_network"]
-ent_str2b64img = _fns["ent_str2b64img"]
+from factorion import (  # noqa: E402
+    Channel,
+    Direction,
+    Footprint,
+    Misc,
+    calc_throughput,
+    ent_str2b64img,
+    items,
+    new_world,
+    plot_flow_network,
+    world2graph,
+)
 
 
 # Order shown in the palette and dropdowns.

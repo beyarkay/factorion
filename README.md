@@ -235,10 +235,7 @@ Still need to add:
 
 Also:
 
-- run the factory outside of the training loop, in a notebook
 - have the factory logic live in FactorioEnv
-- probably get rid of factorion.py, replace it with non-marimo solution +
-  jupyter notebook
 - Speed is important, look at rust with pyO3
 - don't always assume 1x1 sized entities
 

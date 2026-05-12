@@ -27,22 +27,15 @@ import tyro
 from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-import factorion  # noqa: E402
 import factorion_rs  # noqa: E402
+from factorion import (  # noqa: E402
+    Channel,
+    LessonKind,
+    entities,
+    generate_lesson,
+)
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
-
-
-# ── Extract marimo cell objects ──────────────────────────────────────────────
-_, _objs = factorion.datatypes.run()
-_, _fns = factorion.functions.run()
-
-Channel = _objs["Channel"]
-Direction = _objs["Direction"]
-LessonKind = _objs["LessonKind"]
-entities = _objs["entities"]
-generate_lesson = _fns["generate_lesson"]
-str2ent = _fns["str2ent"]
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
