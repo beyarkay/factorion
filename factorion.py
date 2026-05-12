@@ -156,6 +156,7 @@ def datatypes(Enum, dataclass, factorion_rs, mo):
     class Recipe:
         consumes: dict[str, float]
         produces: dict[str, float]
+        crafting_time: float  # canonical wiki seconds per craft
 
 
     # Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
@@ -165,6 +166,7 @@ def datatypes(Enum, dataclass, factorion_rs, mo):
         name: Recipe(
             consumes=dict(data["consumes"]),
             produces=dict(data["produces"]),
+            crafting_time=data["crafting_time"],
         )
         for name, data in factorion_rs.py_recipes().items()
     }

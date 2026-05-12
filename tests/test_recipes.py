@@ -214,12 +214,30 @@ class TestPyRecipesBinding:
         }
         assert am1["produces"] == {"assembling_machine_1": 1.0}
 
+    def test_every_recipe_has_crafting_time(self):
+        rs = factorion_rs.py_recipes()
+        for name, data in rs.items():
+            assert "crafting_time" in data, f"{name} missing crafting_time"
+            assert data["crafting_time"] > 0, (
+                f"{name}: crafting_time must be positive, got {data['crafting_time']}"
+            )
+
+    def test_canonical_crafting_times(self):
+        rs = factorion_rs.py_recipes()
+        # Spot-check a handful of canonical wiki values.
+        assert rs["copper_cable"]["crafting_time"] == 0.5
+        assert rs["electronic_circuit"]["crafting_time"] == 0.5
+        assert rs["steel_plate"]["crafting_time"] == 16.0
+        assert rs["advanced_circuit"]["crafting_time"] == 6.0
+        assert rs["engine_unit"]["crafting_time"] == 10.0
+
 
 class TestPythonRecipesDict:
     def test_recipe_is_dataclass_with_attributes(self):
         ec = recipes["electronic_circuit"]
         assert hasattr(ec, "consumes")
         assert hasattr(ec, "produces")
+        assert hasattr(ec, "crafting_time")
 
     def test_canonical_electronic_circuit(self):
         ec = recipes["electronic_circuit"]
@@ -242,4 +260,7 @@ class TestRustPythonRecipeParity:
             )
             assert py_recipe.produces == rs[name]["produces"], (
                 f"{name}.produces mismatch"
+            )
+            assert py_recipe.crafting_time == rs[name]["crafting_time"], (
+                f"{name}.crafting_time mismatch"
             )
