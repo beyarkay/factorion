@@ -23,13 +23,16 @@ import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 
 matplotlib.use("Agg")
+import gymnasium as gym  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 import tyro  # noqa: E402
 
 os.environ.setdefault("WANDB_MODE", "disabled")
@@ -44,11 +47,13 @@ from factorion import (  # noqa: E402
     Footprint,
     Misc,
     ent_str2b64img,
+    entities,
     items,
     new_world,
     plot_flow_network,
     world2graph,
 )
+from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
 # Order shown in the palette and dropdowns.
@@ -101,6 +106,17 @@ class Args:
     """port for the local HTTP server"""
     size: int = 8
     """default grid size"""
+    checkpoint: Optional[str] = None
+    """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
+    the model's predicted next placement and exposes an Apply button."""
+    wandb_run: Optional[str] = None
+    """W&B run id (or full path 'entity/project/run_id'). The run's most
+    recent model-type artifact is downloaded to /tmp/factorion-checkpoints
+    and loaded. Mutually exclusive with --checkpoint."""
+    wandb_project: str = "factorion"
+    """W&B project to look in when --wandb-run is a bare id."""
+    wandb_entity: Optional[str] = None
+    """W&B entity (team or user). None = your default entity."""
 
 
 def build_world(grid: list[list[dict]]) -> torch.Tensor:
@@ -172,6 +188,141 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     return {"png": png_b64, "info": info, "edges": edges}
 
 
+# ── Model inference ──────────────────────────────────────────────────────────
+# AgentCNN init reads sizes from a gym env, so we keep one cached per grid
+# size — the user can resize the UI grid live and we rebuild lazily on
+# first request for that size. The state dict is loaded with strict=False
+# because the critic head's flat dim depends on W*H and we only use the
+# action heads for inference.
+
+_AGENT_DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
+    else "cpu"
+)
+_AGENT_CACHE: dict[int, AgentCNN] = {}
+_CHECKPOINT_STATE: Optional[dict] = None
+_CHECKPOINT_PATH: Optional[str] = None
+
+# Reverse lookup: head index -> readable name. The entity head excludes the
+# last two catalog entries (source/sink) but its index space starts at 0 and
+# aligns with the first N-2 Item values, so entities[idx].name works as-is.
+_ENT_NAMES = {ent.value: ent.name for ent in entities.values()}
+_ITEM_NAMES = {it.value: it.name for it in items.values()}
+_DIR_NAMES = {d.value: d.name for d in Direction}
+_MISC_NAMES = {m.value: m.name for m in Misc}
+
+
+def _load_checkpoint(path: str) -> None:
+    """Load the checkpoint once and stash it. Lazy per-size agents are
+    built from this on demand."""
+    global _CHECKPOINT_STATE, _CHECKPOINT_PATH
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    _CHECKPOINT_STATE = state
+    _CHECKPOINT_PATH = path
+    # Sanity print so the user can confirm the shape matches what they
+    # trained — they may have run sft.py with non-default chan widths.
+    chan1 = state["encoder.0.weight"].shape[0]
+    chan2 = state["encoder.2.weight"].shape[0]
+    chan3 = state["encoder.4.weight"].shape[0]
+    print(
+        f"Loaded checkpoint {path} "
+        f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
+    )
+
+
+def _get_agent(size: int) -> AgentCNN:
+    if _CHECKPOINT_STATE is None:
+        raise RuntimeError("no checkpoint loaded — pass --checkpoint at launch")
+    if size in _AGENT_CACHE:
+        return _AGENT_CACHE[size]
+
+    chan1 = _CHECKPOINT_STATE["encoder.0.weight"].shape[0]
+    chan2 = _CHECKPOINT_STATE["encoder.2.weight"].shape[0]
+    chan3 = _CHECKPOINT_STATE["encoder.4.weight"].shape[0]
+
+    env_id = "factorion/FactorioEnv-v0-fb"
+    if env_id not in gym.registry:
+        gym.register(id=env_id, entry_point=FactorioEnv)
+    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
+    try:
+        agent = AgentCNN(envs, chan1=chan1, chan2=chan2, chan3=chan3)
+    finally:
+        envs.close()
+    # critic_head's flat dim depends on W*H, so its saved weights are
+    # the wrong shape whenever the UI grid size != the training size.
+    # Drop those entries before loading; we never call the critic during
+    # inference. strict=False would *not* save us here — it ignores
+    # missing/unexpected keys but still raises on shape mismatches.
+    filtered = {
+        k: v for k, v in _CHECKPOINT_STATE.items()
+        if not k.startswith("critic_head.")
+    }
+    missing, unexpected = agent.load_state_dict(filtered, strict=False)
+    ignorable = {"critic_head.1.weight", "critic_head.1.bias"}
+    real_missing = [k for k in missing if k not in ignorable]
+    real_unexpected = [k for k in unexpected if k not in ignorable]
+    if real_missing or real_unexpected:
+        print(
+            f"[warn] state_dict mismatch at size={size}: "
+            f"missing={real_missing} unexpected={real_unexpected}"
+        )
+    agent.to(_AGENT_DEVICE).eval()
+    _AGENT_CACHE[size] = agent
+    return agent
+
+
+def _predict_greedy(grid: list[list[dict]]) -> dict:
+    """Greedy argmax inference. Returns the predicted placement with
+    readable names plus per-head top-1 probabilities so the UI can show
+    how confident the model is."""
+    world_WHC = build_world(grid)
+    size = world_WHC.shape[0]
+    agent = _get_agent(size)
+
+    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    C, W, H = obs_CWH.shape[1], obs_CWH.shape[2], obs_CWH.shape[3]
+
+    with torch.no_grad():
+        encoded_BCWH = agent.encoder(obs_CWH)
+        tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
+        tile_probs = F.softmax(tile_logits, dim=-1)
+        tile_idx = int(tile_logits.argmax(dim=-1).item())
+        tile_prob = float(tile_probs[0, tile_idx].item())
+        x = tile_idx // H
+        y = tile_idx % H
+
+        feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
+        ent_logits = agent.ent_head(feats)
+        dir_logits = agent.dir_head(feats)
+        item_logits = agent.item_head(feats)
+        misc_logits = agent.misc_head(feats)
+
+        ent_idx = int(ent_logits.argmax(dim=-1).item())
+        dir_idx = int(dir_logits.argmax(dim=-1).item())
+        item_idx = int(item_logits.argmax(dim=-1).item())
+        misc_idx = int(misc_logits.argmax(dim=-1).item())
+
+        ent_prob = float(F.softmax(ent_logits, dim=-1)[0, ent_idx].item())
+        dir_prob = float(F.softmax(dir_logits, dim=-1)[0, dir_idx].item())
+        item_prob = float(F.softmax(item_logits, dim=-1)[0, item_idx].item())
+        misc_prob = float(F.softmax(misc_logits, dim=-1)[0, misc_idx].item())
+
+    return {
+        "x": x,
+        "y": y,
+        "tile_prob": tile_prob,
+        "entity": _ENT_NAMES.get(ent_idx, str(ent_idx)),
+        "entity_prob": ent_prob,
+        "direction": _DIR_NAMES.get(dir_idx, str(dir_idx)),
+        "direction_prob": dir_prob,
+        "item": _ITEM_NAMES.get(item_idx, str(item_idx)),
+        "item_prob": item_prob,
+        "misc": _MISC_NAMES.get(misc_idx, str(misc_idx)),
+        "misc_prob": misc_prob,
+    }
+
+
 # Cache palette icons so the page payload stays small per cell.
 def _icon_b64(name: str) -> str:
     try:
@@ -184,7 +335,7 @@ PALETTE_ICONS = {n: _icon_b64(n) for n in PLACEABLE_ENTITIES + ["empty"]}
 ITEM_ICONS = {n: _icon_b64(n) for n in NON_PLACEABLE_ITEMS}
 
 
-def render_index(default_size: int) -> str:
+def render_index(default_size: int, model_enabled: bool) -> str:
     def _hotbar_slot(idx: int, name: str | None) -> str:
         key_label = str((idx + 1) % 10)
         if name is None:
@@ -220,6 +371,24 @@ def render_index(default_size: int) -> str:
     misc_options = "".join(
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
     )
+
+    if model_enabled:
+        model_panel_html = (
+            '<div class="model-panel">'
+            '<h3 style="margin-top:0.8em;">'
+            '<span class="swatch"></span>Model prediction'
+            '</h3>'
+            '<div id="model-info" class="help">'
+            '(prediction will appear after the next change)</div>'
+            '<pre id="model-action">{}</pre>'
+            '<div class="model-buttons">'
+            '<button id="model-apply">Apply prediction</button>'
+            '<button id="model-refresh">Refresh</button>'
+            '</div>'
+            '</div>'
+        )
+    else:
+        model_panel_html = ""
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Factory builder</title>
@@ -271,6 +440,9 @@ def render_index(default_size: int) -> str:
     position: relative; background: #fff;
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
+  table.grid td.predicted {{
+    box-shadow: inset 0 0 0 3px #ff9500;
+  }}
   table.grid td.unavailable {{
     background:
       repeating-linear-gradient(45deg,
@@ -300,6 +472,20 @@ def render_index(default_size: int) -> str:
   pre.edges {{
     font-size: 0.75em; max-height: 240px; overflow: auto;
     background: #222; color: #cfc; padding: 0.5em; border-radius: 4px;
+  }}
+  .model-panel {{ margin-top: 0.8em; }}
+  .model-panel pre {{
+    font-size: 0.78em; background: #f4f4f4; padding: 0.5em;
+    border-radius: 4px; margin: 0.3em 0; white-space: pre-wrap;
+  }}
+  .model-panel .model-buttons {{
+    display: flex; gap: 0.4em; flex-wrap: wrap; margin-top: 0.3em;
+  }}
+  .model-panel .swatch {{
+    display: inline-block; width: 0.8em; height: 0.8em; border: 1px solid #b07000;
+    background: rgba(255,149,0,0.0);
+    box-shadow: inset 0 0 0 2px #ff9500;
+    vertical-align: middle; margin-right: 0.25em;
   }}
 </style></head><body>
 
@@ -357,6 +543,8 @@ def render_index(default_size: int) -> str:
       </select>
     </label>
     <button id="clear-cell" style="margin-top:0.6em;">clear cell</button>
+
+    {model_panel_html}
   </div>
 
 </div>
@@ -368,11 +556,13 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
+const MODEL_ENABLED = {json.dumps(model_enabled)};
 
 let SIZE = {default_size};
 let grid = [];           // grid[y][x] = cell dict
 let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
+let prediction = null;   // last /predict response (or null)
 
 function emptyCell() {{
   return {{
@@ -407,6 +597,7 @@ function renderGrid() {{
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
+      if (prediction && prediction.x === x && prediction.y === y) td.classList.add('predicted');
 
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
@@ -546,7 +737,68 @@ function clearSelected() {{
 let _computeTimer = null;
 function scheduleCompute() {{
   clearTimeout(_computeTimer);
-  _computeTimer = setTimeout(computeGraph, 200);
+  _computeTimer = setTimeout(() => {{
+    computeGraph();
+    if (MODEL_ENABLED) computePrediction();
+  }}, 200);
+}}
+
+async function computePrediction() {{
+  if (!MODEL_ENABLED) return;
+  const info = document.getElementById('model-info');
+  const out = document.getElementById('model-action');
+  if (info) info.textContent = 'predicting…';
+  try {{
+    const resp = await fetch('/predict', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ grid }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{
+      if (info) info.textContent = 'error: ' + data.error;
+      if (out) out.textContent = '';
+      prediction = null;
+      renderGrid();
+      return;
+    }}
+    prediction = data;
+    if (info) {{
+      info.innerHTML =
+        'predicted next placement at (' + data.x + ', ' + data.y +
+        ') · tile p=' + data.tile_prob.toFixed(3);
+    }}
+    if (out) {{
+      const lines = [
+        '  xy:        (' + data.x + ', ' + data.y +
+          ')    p=' + data.tile_prob.toFixed(3),
+        '  entity:    ' + data.entity.padEnd(22) +
+          'p=' + data.entity_prob.toFixed(3),
+        '  direction: ' + data.direction.padEnd(22) +
+          'p=' + data.direction_prob.toFixed(3),
+        '  item:      ' + data.item.padEnd(22) +
+          'p=' + data.item_prob.toFixed(3),
+        '  misc:      ' + data.misc.padEnd(22) +
+          'p=' + data.misc_prob.toFixed(3),
+      ];
+      out.textContent = lines.join('\\n');
+    }}
+    renderGrid();
+  }} catch (e) {{
+    if (info) info.textContent = 'predict failed: ' + e;
+  }}
+}}
+
+function applyPrediction() {{
+  if (!prediction) return;
+  const {{ x, y, entity, direction, item, misc }} = prediction;
+  grid[y][x] = {{
+    entity, direction, item, misc, footprint: grid[y][x].footprint,
+  }};
+  selected = {{ x, y }};
+  prediction = null;
+  renderGrid(); syncEditor();
+  scheduleCompute();
 }}
 
 async function computeGraph() {{
@@ -580,7 +832,14 @@ async function computeGraph() {{
   }}
 }}
 
-document.getElementById('compute').addEventListener('click', computeGraph);
+document.getElementById('compute').addEventListener('click', () => {{
+  computeGraph();
+  if (MODEL_ENABLED) computePrediction();
+}});
+if (MODEL_ENABLED) {{
+  document.getElementById('model-apply').addEventListener('click', applyPrediction);
+  document.getElementById('model-refresh').addEventListener('click', computePrediction);
+}}
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
   if (!Number.isFinite(n) || n < 2 || n > 20) return;
@@ -636,7 +895,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path.startswith("/?"):
-            body = render_index(self.server.default_size).encode()
+            body = render_index(
+                self.server.default_size,
+                model_enabled=_CHECKPOINT_STATE is not None,
+            ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -646,14 +908,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path != "/graph":
+        if self.path not in ("/graph", "/predict"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length).decode("utf-8")
         try:
             payload = json.loads(raw)
-            result = render_graph_png(payload["grid"])
+            if self.path == "/graph":
+                result = render_graph_png(payload["grid"])
+            else:
+                result = _predict_greedy(payload["grid"])
         except Exception as e:
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
@@ -665,7 +930,66 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _resolve_wandb_checkpoint(
+    run_spec: str, project: str, entity: Optional[str]
+) -> str:
+    """Resolve a W&B run id to a local checkpoint path. Downloads the
+    run's first model-type artifact to /tmp/factorion-checkpoints.
+
+    `run_spec` is either a bare id ("abc123") or a full path
+    ("user/factorion/abc123"). Sets WANDB_MODE back to online for the
+    duration of the call — the module's earlier setdefault to disabled
+    is for the local HTTP server, not for fetching."""
+    import wandb
+
+    prev_mode = os.environ.pop("WANDB_MODE", None)
+    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
+    try:
+        api = wandb.Api()
+        if run_spec.count("/") == 2:
+            run = api.run(run_spec)
+        else:
+            ent = entity or api.default_entity
+            run = api.run(f"{ent}/{project}/{run_spec}")
+        dest = Path("/tmp/factorion-checkpoints") / run.id
+        dest.mkdir(parents=True, exist_ok=True)
+
+        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        if not model_arts:
+            raise RuntimeError(
+                f"run {run.id} has no artifacts of type=model — "
+                f"was it trained with --track and the artifact-upload code?"
+            )
+        # Newest first. Each `download()` returns the local dir holding
+        # the artifact's files.
+        art = max(model_arts, key=lambda a: a.created_at)
+        local_dir = Path(art.download(root=str(dest / art.name.replace(":", "_"))))
+        pt_files = sorted(local_dir.glob("*.pt"))
+        if not pt_files:
+            raise RuntimeError(f"artifact {art.name} contains no .pt file")
+        path = str(pt_files[0])
+        print(f"Resolved {run_spec} -> {art.name} -> {path}")
+        return path
+    finally:
+        if prev_mode is not None:
+            os.environ["WANDB_MODE"] = prev_mode
+        if prev_disabled is not None:
+            os.environ["WANDB_DISABLED"] = prev_disabled
+
+
 def main(args: Args) -> None:
+    if args.checkpoint and args.wandb_run:
+        raise SystemExit("pass either --checkpoint or --wandb-run, not both")
+    ckpt_path: Optional[str] = args.checkpoint
+    if args.wandb_run:
+        ckpt_path = _resolve_wandb_checkpoint(
+            args.wandb_run, args.wandb_project, args.wandb_entity,
+        )
+    if ckpt_path:
+        _load_checkpoint(ckpt_path)
+    else:
+        print("(no checkpoint — model prediction panel disabled)")
+
     httpd = HTTPServer(("127.0.0.1", args.port), Handler)
     httpd.default_size = args.size
     print(f"Serving factory builder on http://127.0.0.1:{args.port}")
