@@ -178,6 +178,7 @@ def datatypes(Enum, dataclass, factorion_rs, mo):
         SPLITTER_SPLIT = 3
         SPLITTER_MERGE = 4
         ASSEMBLE_1IN_1OUT = 5
+        MOVE_VIA_UG_BELT = 6
 
 
     # Map Enum <--> grid deltas
@@ -2390,6 +2391,251 @@ def functions(
                 raise Exception(
                     f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
                 )
+
+        elif kind.value == LessonKind.MOVE_VIA_UG_BELT.value:
+            # A 1..4-tile-thick wall spans the grid perpendicular to a chosen
+            # flow direction. UG_DOWN sits on the source side flush against
+            # the wall; UG_UP sits directly opposite on the sink side. Source
+            # and sink are placed randomly on their respective sides, and
+            # transport belts route source→UG_DOWN and UG_UP→sink via
+            # find_belt_path. FOOTPRINT marks ONLY the wall tiles as
+            # UNAVAILABLE — every other tile is freely buildable.
+            original_count = max(500, size * size * 8)
+            count = original_count
+
+            if random_item:
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
+            else:
+                item_value = str2item("electronic_circuit").value
+
+            while count > 0:
+                count -= 1
+                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                    2, 0, 1
+                )
+                C, W, H = world_CWH.shape
+
+                flow_dir = random.choice(
+                    [d for d in Direction if d != Direction.NONE]
+                )
+                is_horizontal = flow_dir in (Direction.EAST, Direction.WEST)
+                flow_span = W if is_horizontal else H
+                perp_span = H if is_horizontal else W
+
+                # Need ≥1 source-side tile + wall (≥1) + ≥1 sink-side tile
+                if flow_span < 3:
+                    raise Exception(
+                        f"Grid {W}×{H} too small for MOVE_VIA_UG_BELT (need ≥ 3 along {flow_dir})"
+                    )
+
+                max_wall = min(4, flow_span - 2)
+                wall_thickness = random.randint(1, max_wall)
+                wall_lo = random.randint(1, flow_span - 1 - wall_thickness)
+                wall_hi = wall_lo + wall_thickness - 1
+
+                forward = flow_dir in (Direction.EAST, Direction.SOUTH)
+                if forward:
+                    ug_down_flow = wall_lo - 1
+                    ug_up_flow = wall_hi + 1
+                    src_lo, src_hi = 0, wall_lo - 1
+                    snk_lo, snk_hi = wall_hi + 1, flow_span - 1
+                else:
+                    ug_down_flow = wall_hi + 1
+                    ug_up_flow = wall_lo - 1
+                    src_lo, src_hi = wall_hi + 1, flow_span - 1
+                    snk_lo, snk_hi = 0, wall_lo - 1
+
+                ug_perp = random.randint(0, perp_span - 1)
+
+                def fp_to_xy(fc, pc, ih=is_horizontal):
+                    return (fc, pc) if ih else (pc, fc)
+
+                ug_down_pos = fp_to_xy(ug_down_flow, ug_perp)
+                ug_up_pos = fp_to_xy(ug_up_flow, ug_perp)
+
+                wall_tiles = set()
+                for fc in range(wall_lo, wall_hi + 1):
+                    for pc in range(perp_span):
+                        wall_tiles.add(fp_to_xy(fc, pc))
+
+                source_cells = []
+                for fc in range(src_lo, src_hi + 1):
+                    for pc in range(perp_span):
+                        cell = fp_to_xy(fc, pc)
+                        if cell != ug_down_pos:
+                            source_cells.append(cell)
+                sink_cells = []
+                for fc in range(snk_lo, snk_hi + 1):
+                    for pc in range(perp_span):
+                        cell = fp_to_xy(fc, pc)
+                        if cell != ug_up_pos:
+                            sink_cells.append(cell)
+                if not source_cells or not sink_cells:
+                    continue
+
+                source_pos = random.choice(source_cells)
+                sink_pos = random.choice(sink_cells)
+                dirs = [d for d in Direction if d != Direction.NONE]
+                source_dir = random.choice(dirs)
+                sink_dir = random.choice(dirs)
+
+                ds = DIR_TO_DELTA[source_dir]
+                dk = DIR_TO_DELTA[sink_dir]
+                source_drop = (source_pos[0] + ds[0], source_pos[1] + ds[1])
+                sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+
+                if not (0 <= source_drop[0] < W and 0 <= source_drop[1] < H):
+                    continue
+                if not (0 <= sink_input[0] < W and 0 <= sink_input[1] < H):
+                    continue
+
+                # source_drop must be on source side or land directly on UG_DOWN
+                if source_drop in wall_tiles:
+                    continue
+                if source_drop in (ug_up_pos, sink_pos):
+                    continue
+                sd_flow = source_drop[0] if is_horizontal else source_drop[1]
+                if not (
+                    src_lo <= sd_flow <= src_hi or source_drop == ug_down_pos
+                ):
+                    continue
+
+                # sink_input must be on sink side or land directly on UG_UP
+                if sink_input in wall_tiles:
+                    continue
+                if sink_input in (ug_down_pos, source_pos):
+                    continue
+                si_flow = sink_input[0] if is_horizontal else sink_input[1]
+                if not (
+                    snk_lo <= si_flow <= snk_hi or sink_input == ug_up_pos
+                ):
+                    continue
+
+                flow_delta = DIR_TO_DELTA[flow_dir]
+
+                # Path 1: source_drop → UG_DOWN_input (on source side)
+                if source_drop == ug_down_pos:
+                    path1 = []
+                else:
+                    ug_down_input = (
+                        ug_down_pos[0] - flow_delta[0],
+                        ug_down_pos[1] - flow_delta[1],
+                    )
+                    blocked1 = wall_tiles | {
+                        source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input,
+                    }
+                    # Restrict path1 to source side: block all sink-side cells.
+                    for fc in range(snk_lo, snk_hi + 1):
+                        for pc in range(perp_span):
+                            blocked1.add(fp_to_xy(fc, pc))
+                    if source_drop in blocked1 or ug_down_input in blocked1:
+                        continue
+                    path1 = find_belt_path(
+                        W, H, source_drop, ug_down_input, flow_dir, blocked1
+                    )
+                    if path1 is None:
+                        continue
+
+                # Path 2: UG_UP_drop → sink_input (on sink side)
+                if sink_input == ug_up_pos:
+                    path2 = []
+                else:
+                    ug_up_drop = (
+                        ug_up_pos[0] + flow_delta[0],
+                        ug_up_pos[1] + flow_delta[1],
+                    )
+                    path1_cells = {(x, y) for x, y, _ in path1}
+                    blocked2 = (
+                        wall_tiles
+                        | {source_pos, sink_pos, ug_down_pos, ug_up_pos, source_drop}
+                        | path1_cells
+                    )
+                    # Restrict path2 to sink side: block all source-side cells.
+                    for fc in range(src_lo, src_hi + 1):
+                        for pc in range(perp_span):
+                            blocked2.add(fp_to_xy(fc, pc))
+                    if ug_up_drop in blocked2 or sink_input in blocked2:
+                        continue
+                    path2 = find_belt_path(
+                        W, H, ug_up_drop, sink_input, sink_dir, blocked2
+                    )
+                    if path2 is None:
+                        continue
+
+                # Place source/sink
+                world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
+                    str2ent("source").value
+                )
+                world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                    source_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
+
+                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                    str2ent("sink").value
+                )
+                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                    sink_dir.value
+                )
+                world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
+
+                # Place UG pair (always facing flow_dir)
+                world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = (
+                    str2ent("underground_belt").value
+                )
+                world_CWH[Channel.DIRECTION.value, ug_down_pos[0], ug_down_pos[1]] = (
+                    flow_dir.value
+                )
+                world_CWH[Channel.MISC.value, ug_down_pos[0], ug_down_pos[1]] = (
+                    Misc.UNDERGROUND_DOWN.value
+                )
+
+                world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = (
+                    str2ent("underground_belt").value
+                )
+                world_CWH[Channel.DIRECTION.value, ug_up_pos[0], ug_up_pos[1]] = (
+                    flow_dir.value
+                )
+                world_CWH[Channel.MISC.value, ug_up_pos[0], ug_up_pos[1]] = (
+                    Misc.UNDERGROUND_UP.value
+                )
+
+                # Place belts
+                for x, y, d in path1 + path2:
+                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                        "transport_belt"
+                    ).value
+                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+                # Sanity: the solved factory must deliver items.
+                tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+                if tp <= 0:
+                    continue
+
+                total_entities = 2 + len(path1) + len(path2)
+                if total_entities > max_entities:
+                    continue
+
+                min_entities_required = _remove_entities(
+                    world_CWH, num_missing_entities, total_entities,
+                )
+                # _remove_entities paints all empty tiles UNAVAILABLE; we
+                # override that here so only the wall is UNAVAILABLE and the
+                # agent can route belts freely on either side.
+                world_CWH[Channel.FOOTPRINT.value, :, :] = Footprint.AVAILABLE.value
+                for wx, wy in wall_tiles:
+                    world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
+                        Footprint.UNAVAILABLE.value
+                    )
+
+                break
+            if count == 0:
+                raise Exception(
+                    f"Failed to find valid MOVE_VIA_UG_BELT lesson after {original_count} attempts"
+                )
+
         else:
             raise Exception(f"Can't handle {kind}")
         # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
