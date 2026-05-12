@@ -464,6 +464,20 @@ def render_index(default_size: int, model_enabled: bool) -> str:
     font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
   }}
   .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
+  /* "ghost" overlay = the model's predicted placement, drawn on top of
+     whatever is actually in the cell. Faded + blue-tinted so it can't be
+     mistaken for a real placement. hue-rotate flips the icon's warm
+     palette toward blue; opacity + the tile's orange inset border
+     together signal "this is suggested, not committed". */
+  .cell-inner img.ent.ghost,
+  .cell-inner img.itm.ghost {{
+    opacity: 0.55;
+    filter: hue-rotate(180deg) saturate(2.2) brightness(1.1);
+  }}
+  .cell-inner .arrow.ghost {{ color: #1976d2; opacity: 0.7; }}
+  .cell-inner .misc.ghost {{
+    color: #1976d2; text-shadow: 0 0 2px white; opacity: 0.75;
+  }}
   .editor label {{ display: block; font-size: 0.8em; margin-top: 0.4em; }}
   .editor select, .editor button {{ width: 100%; padding: 0.2em; }}
   .out-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }}
@@ -610,6 +624,21 @@ function renderGrid() {{
       if (arrow) html += `<div class="arrow">${{arrow}}</div>`;
       const m = MISC_GLYPH[c.misc] || '';
       if (m) html += `<div class="misc">${{m}}</div>`;
+      // Ghost overlay: predicted (entity, direction, item, misc) drawn
+      // on top of the actual cell content with a blue tint + opacity.
+      // We render every non-empty head independently so the ghost is
+      // informative even when, say, the model wants to change direction
+      // on an existing entity.
+      if (prediction && prediction.x === x && prediction.y === y) {{
+        if (prediction.entity && prediction.entity !== 'empty')
+          html += `<img class="ent ghost" src="${{iconFor(prediction.entity)}}">`;
+        if (prediction.item && prediction.item !== 'empty')
+          html += `<img class="itm ghost" src="${{iconFor(prediction.item)}}">`;
+        const garrow = DIR_ARROW[prediction.direction] || '';
+        if (garrow) html += `<div class="arrow ghost">${{garrow}}</div>`;
+        const gmisc = MISC_GLYPH[prediction.misc] || '';
+        if (gmisc) html += `<div class="misc ghost">${{gmisc}}</div>`;
+      }}
       inner.innerHTML = html;
       td.appendChild(inner);
 
