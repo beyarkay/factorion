@@ -214,14 +214,15 @@ _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
 def _load_checkpoint(path: str) -> None:
-    """Load the checkpoint once and stash it. Lazy per-size agents are
-    built from this on demand."""
+    """Load the checkpoint and stash it. Clears the per-size agent
+    cache so subsequent /predict calls rebuild against the new
+    weights — important when this is invoked at runtime by the UI to
+    swap models, not just once at startup."""
     global _CHECKPOINT_STATE, _CHECKPOINT_PATH
     state = torch.load(path, map_location="cpu", weights_only=True)
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
-    # Sanity print so the user can confirm the shape matches what they
-    # trained — they may have run sft.py with non-default chan widths.
+    _AGENT_CACHE.clear()
     chan1 = state["encoder.0.weight"].shape[0]
     chan2 = state["encoder.2.weight"].shape[0]
     chan3 = state["encoder.4.weight"].shape[0]
@@ -229,6 +230,43 @@ def _load_checkpoint(path: str) -> None:
         f"Loaded checkpoint {path} "
         f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
     )
+
+
+def _model_info() -> dict:
+    """Snapshot of the currently-loaded model for the UI's status line.
+    Returns `loaded: False` when nothing is loaded yet, so the UI can
+    render "(none loaded)" without special-casing on the JS side."""
+    if _CHECKPOINT_STATE is None:
+        return {"loaded": False}
+    s = _CHECKPOINT_STATE
+    return {
+        "loaded": True,
+        "path": _CHECKPOINT_PATH,
+        "chan1": s["encoder.0.weight"].shape[0],
+        "chan2": s["encoder.2.weight"].shape[0],
+        "chan3": s["encoder.4.weight"].shape[0],
+        "device": str(_AGENT_DEVICE),
+    }
+
+
+def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> dict:
+    """Resolve `value` to a local .pt path based on `kind`, load it,
+    and return the new model info. Called by the /load_model POST
+    endpoint so the user can switch models without restarting the
+    server."""
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("value cannot be empty")
+    if kind == "local":
+        if not Path(value).exists():
+            raise FileNotFoundError(f"checkpoint not found: {value}")
+        path = value
+    elif kind == "wandb":
+        path = _resolve_wandb_checkpoint(value, project, entity)
+    else:
+        raise ValueError(f"unknown kind: {kind!r} (expected 'local' or 'wandb')")
+    _load_checkpoint(path)
+    return _model_info()
 
 
 def _get_agent(size: int) -> AgentCNN:
@@ -403,7 +441,7 @@ PALETTE_ICONS = {n: _icon_b64(n) for n in PLACEABLE_ENTITIES + ["empty"]}
 ITEM_ICONS = {n: _icon_b64(n) for n in NON_PLACEABLE_ITEMS}
 
 
-def render_index(default_size: int, model_enabled: bool) -> str:
+def render_index(default_size: int) -> str:
     def _hotbar_slot(idx: int, name: str | None) -> str:
         key_label = str((idx + 1) % 10)
         if name is None:
@@ -440,23 +478,38 @@ def render_index(default_size: int, model_enabled: bool) -> str:
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
     )
 
-    if model_enabled:
-        model_panel_html = (
-            '<div class="model-panel">'
-            '<h3 style="margin-top:0.8em;">'
-            '<span class="swatch"></span>Model prediction'
-            '</h3>'
-            '<div id="model-info" class="help">'
-            '(prediction will appear after the next change)</div>'
-            '<pre id="model-action">{}</pre>'
-            '<div class="model-buttons">'
-            '<button id="model-apply">Apply prediction</button>'
-            '<button id="model-refresh">Refresh</button>'
-            '</div>'
-            '</div>'
-        )
-    else:
-        model_panel_html = ""
+    # Always rendered now — the section exposes a load form so the user
+    # can switch models at runtime. When no model is loaded the
+    # prediction subsection just shows "(no model loaded)".
+    model_panel_html = (
+        '<div class="model-panel">'
+        '<h3 style="margin-top:0.8em;">'
+        '<span class="swatch"></span>Model'
+        '</h3>'
+        '<div class="model-current help" id="model-current">checking…</div>'
+        '<label>source'
+        '  <select id="model-kind">'
+        '    <option value="local">local path</option>'
+        '    <option value="wandb">wandb run id</option>'
+        '  </select>'
+        '</label>'
+        '<label>value'
+        '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
+        '</label>'
+        '<div class="model-buttons">'
+        '<button id="model-load">Load model</button>'
+        '</div>'
+        '<div id="model-load-status" class="help"></div>'
+        '<h3 style="margin-top:0.8em;">Prediction</h3>'
+        '<div id="model-info" class="help">'
+        '(prediction will appear after the next change)</div>'
+        '<pre id="model-action"></pre>'
+        '<div class="model-buttons">'
+        '<button id="model-apply">Apply prediction</button>'
+        '<button id="model-refresh">Refresh</button>'
+        '</div>'
+        '</div>'
+    )
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Factory builder</title>
@@ -633,7 +686,10 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
-const MODEL_ENABLED = {json.dumps(model_enabled)};
+// `modelLoaded` is set by refreshModelInfo() at startup and after each
+// successful /load_model call. Prediction calls are gated on it so we
+// don't pester the server with /predict when no checkpoint is loaded.
+let modelLoaded = false;
 
 let SIZE = {default_size};
 let grid = [];           // grid[y][x] = cell dict
@@ -843,7 +899,7 @@ function scheduleCompute() {{
   clearTimeout(_computeTimer);
   _computeTimer = setTimeout(() => {{
     computeGraph();
-    if (MODEL_ENABLED) computePrediction();
+    computePrediction();
   }}, 200);
 }}
 
@@ -870,7 +926,15 @@ function fmtTopTile(top, rest) {{
 }}
 
 async function computePrediction() {{
-  if (!MODEL_ENABLED) return;
+  if (!modelLoaded) {{
+    prediction = null;
+    const info = document.getElementById('model-info');
+    if (info) info.textContent = '(no model loaded)';
+    const out = document.getElementById('model-action');
+    if (out) out.textContent = '';
+    renderGrid();
+    return;
+  }}
   const info = document.getElementById('model-info');
   const out = document.getElementById('model-action');
   if (info) info.textContent = 'predicting…';
@@ -957,11 +1021,61 @@ async function computeGraph() {{
 
 document.getElementById('compute').addEventListener('click', () => {{
   computeGraph();
-  if (MODEL_ENABLED) computePrediction();
+  computePrediction();
 }});
-if (MODEL_ENABLED) {{
-  document.getElementById('model-apply').addEventListener('click', applyPrediction);
-  document.getElementById('model-refresh').addEventListener('click', computePrediction);
+document.getElementById('model-apply').addEventListener('click', applyPrediction);
+document.getElementById('model-refresh').addEventListener('click', computePrediction);
+document.getElementById('model-load').addEventListener('click', loadModel);
+
+async function refreshModelInfo() {{
+  const cur = document.getElementById('model-current');
+  try {{
+    const resp = await fetch('/model_info');
+    const data = await resp.json();
+    if (data.loaded) {{
+      modelLoaded = true;
+      cur.textContent = 'loaded: ' + data.path +
+        '  (c1=' + data.chan1 + ' c2=' + data.chan2 + ' c3=' + data.chan3 +
+        ' ' + data.device + ')';
+    }} else {{
+      modelLoaded = false;
+      cur.textContent = '(none loaded — paste a path or wandb run id below)';
+    }}
+  }} catch (e) {{
+    cur.textContent = 'model_info failed: ' + e;
+  }}
+}}
+
+async function loadModel() {{
+  const kind = document.getElementById('model-kind').value;
+  const value = document.getElementById('model-value').value;
+  const status = document.getElementById('model-load-status');
+  const btn = document.getElementById('model-load');
+  // wandb downloads can take seconds — disable + show a status so the
+  // user doesn't double-click and queue a second download.
+  btn.disabled = true;
+  status.textContent = 'loading…';
+  try {{
+    const resp = await fetch('/load_model', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ kind, value }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{
+      status.textContent = 'error: ' + data.error;
+      return;
+    }}
+    status.textContent = 'loaded ✓';
+    await refreshModelInfo();
+    // Recompute prediction with the new weights so the UI updates
+    // immediately instead of waiting for the next grid edit.
+    computePrediction();
+  }} catch (e) {{
+    status.textContent = 'load failed: ' + e;
+  }} finally {{
+    btn.disabled = false;
+  }}
 }}
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
@@ -1006,6 +1120,7 @@ grid = newGrid(SIZE);
 renderGrid();
 bindHotbar();
 bindEditor();
+refreshModelInfo();
 </script>
 </body></html>"""
 
@@ -1016,22 +1131,30 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # noqa: A002
         sys.stderr.write("[%s] %s\n" % (self.address_string(), format % args))
 
+    def _send_json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path.startswith("/?"):
-            body = render_index(
-                self.server.default_size,
-                model_enabled=_CHECKPOINT_STATE is not None,
-            ).encode()
+            body = render_index(self.server.default_size).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/model_info":
+            self._send_json(_model_info())
+            return
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path not in ("/graph", "/predict"):
+        if self.path not in ("/graph", "/predict", "/load_model"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -1040,17 +1163,19 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(raw)
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
-            else:
+            elif self.path == "/predict":
                 result = _predict(payload["grid"])
+            else:
+                result = _swap_model(
+                    kind=payload.get("kind", ""),
+                    value=payload.get("value", ""),
+                    project=self.server.wandb_project,
+                    entity=self.server.wandb_entity,
+                )
         except Exception as e:
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
-        body = json.dumps(result).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_json(result)
 
 
 def _resolve_wandb_checkpoint(
@@ -1115,6 +1240,10 @@ def main(args: Args) -> None:
 
     httpd = HTTPServer(("127.0.0.1", args.port), Handler)
     httpd.default_size = args.size
+    # Stashed on the server so the /load_model endpoint can use the same
+    # defaults as the CLI when resolving wandb run ids.
+    httpd.wandb_project = args.wandb_project
+    httpd.wandb_entity = args.wandb_entity
     print(f"Serving factory builder on http://127.0.0.1:{args.port}")
     print("Press Ctrl-C to stop.")
     try:
