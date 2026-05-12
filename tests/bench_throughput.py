@@ -1,4 +1,4 @@
-"""Benchmarks comparing Python and Rust throughput calculation.
+"""Benchmarks for Rust simulate_throughput.
 
 Run with:
     python tests/bench_throughput.py
@@ -29,7 +29,6 @@ from helpers import (
     entities,
     generate_lesson,
     make_world,
-    py_throughput_safe,
     rs_throughput,
     set_assembler,
     set_entity,
@@ -231,28 +230,11 @@ def handcrafted_inserter_chain(n_inserters):
 
 
 def bench(name, worlds, n_repeats=3):
-    """Benchmark Python vs Rust on a list of worlds."""
+    """Benchmark Rust simulate_throughput on a list of worlds."""
     # Warmup
     for w in worlds[:2]:
-        try:
-            py_throughput_safe(w)
-        except Exception:
-            pass
         rs_throughput(w)
 
-    # Time Python
-    py_times = []
-    py_errors = 0
-    for _ in range(n_repeats):
-        t0 = time.perf_counter()
-        for w in worlds:
-            try:
-                py_throughput_safe(w)
-            except Exception:
-                py_errors += 1
-        py_times.append(time.perf_counter() - t0)
-
-    # Time Rust
     rs_times = []
     for _ in range(n_repeats):
         t0 = time.perf_counter()
@@ -260,49 +242,36 @@ def bench(name, worlds, n_repeats=3):
             rs_throughput(w)
         rs_times.append(time.perf_counter() - t0)
 
-    py_avg = sum(py_times) / len(py_times)
     rs_avg = sum(rs_times) / len(rs_times)
-    speedup = py_avg / rs_avg if rs_avg > 0 else float("inf")
 
     return {
         "name": name,
         "n_worlds": len(worlds),
         "n_repeats": n_repeats,
-        "py_total_s": py_avg,
         "rs_total_s": rs_avg,
-        "py_per_world_ms": (py_avg / len(worlds)) * 1000,
         "rs_per_world_ms": (rs_avg / len(worlds)) * 1000,
-        "speedup": speedup,
-        "py_errors": py_errors // n_repeats,
     }
 
 
 def print_results(results):
     """Pretty-print benchmark results."""
-    print(f"\n{'=' * 90}")
-    print(f"{'Benchmark':<40} {'Worlds':>6} {'Python':>10} {'Rust':>10} {'Speedup':>10}")
-    print(f"{'':40} {'':>6} {'(ms/world)':>10} {'(ms/world)':>10} {'':>10}")
-    print(f"{'-' * 90}")
+    print(f"\n{'=' * 70}")
+    print(f"{'Benchmark':<40} {'Worlds':>6} {'Rust (ms/world)':>16}")
+    print(f"{'-' * 70}")
 
     for r in results:
         print(
             f"{r['name']:<40} {r['n_worlds']:>6} "
-            f"{r['py_per_world_ms']:>9.3f}{'*' if r['py_errors'] else ' '} "
-            f"{r['rs_per_world_ms']:>9.3f}  "
-            f"{r['speedup']:>9.1f}x"
+            f"{r['rs_per_world_ms']:>15.3f}"
         )
 
-    print(f"{'=' * 90}")
-    print("* = some Python calls raised exceptions (counted as 0ms)")
+    print(f"{'=' * 70}")
     print()
 
-    py_total = sum(r["py_total_s"] for r in results)
     rs_total = sum(r["rs_total_s"] for r in results)
     total_worlds = sum(r["n_worlds"] for r in results)
     print(f"Total worlds benchmarked: {total_worlds}")
-    print(f"Total Python time: {py_total:.3f}s")
     print(f"Total Rust time:   {rs_total:.3f}s")
-    print(f"Overall speedup:   {py_total / rs_total:.1f}x")
 
 
 def main():
