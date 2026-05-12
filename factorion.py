@@ -1443,13 +1443,14 @@ def functions(
                             in_dir = Direction(
                                 world_WHC[in_cell[0], in_cell[1], Channel.DIRECTION.value]
                             )
-                            # Only accept belt-like entities or sources/sinks
-                            # pointing in the same direction as the splitter
+                            # Only accept belt-like entities, sources/sinks,
+                            # or adjacent splitters pointing in the same direction
                             in_is_belt = "belt" in in_ent.name and in_dir == d
                             in_is_source_sink = in_ent.name in (
                                 "stack_inserter", "bulk_inserter"
                             ) and in_dir == d
-                            if in_is_belt or in_is_source_sink:
+                            in_is_splitter = "splitter" in in_ent.name and in_dir == d
+                            if in_is_belt or in_is_source_sink or in_is_splitter:
                                 pending_edges.append((
                                     f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
                                     self_name,
@@ -1472,13 +1473,14 @@ def functions(
                                     out_cell[0], out_cell[1], Channel.DIRECTION.value
                                 ]
                             )
-                            # Only connect to belt-like entities or sinks,
-                            # not facing the opposite direction
+                            # Connect to belt-like entities, sinks, or adjacent
+                            # splitters — but not if they face the opposite direction
                             out_is_belt = "belt" in out_ent.name
                             out_is_sink = out_ent.name in (
                                 "stack_inserter", "bulk_inserter"
                             )
-                            if (out_is_belt or out_is_sink) and out_dir != opposite_dir:
+                            out_is_splitter = "splitter" in out_ent.name
+                            if (out_is_belt or out_is_sink or out_is_splitter) and out_dir != opposite_dir:
                                 pending_edges.append((
                                     self_name,
                                     f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",

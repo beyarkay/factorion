@@ -531,14 +531,18 @@ impl FactoryEntity for Splitter {
                 if world.in_bounds(in_pos.x, in_pos.y) {
                     if let Some(src_entity) = world.entity_at(ix, iy) {
                         let src_dir = world.direction_at(ix, iy);
-                        // Only accept belt-like entities pointing into the splitter
+                        // Only accept belt-like entities or adjacent splitters pointing into the splitter
                         let src_is_belt =
                             matches!(src_entity, Item::TransportBelt | Item::UndergroundBelt)
                                 && src_dir == dir;
                         // Also accept sources/sinks (they use inserter-style connections)
                         let src_is_source_sink =
                             matches!(src_entity, Item::Source | Item::Sink) && src_dir == dir;
-                        if (src_is_belt || src_is_source_sink) && !tile_set.contains(&in_pos) {
+                        let src_is_splitter =
+                            matches!(src_entity, Item::Splitter) && src_dir == dir;
+                        if (src_is_belt || src_is_source_sink || src_is_splitter)
+                            && !tile_set.contains(&in_pos)
+                        {
                             edges.push((NodeId::new(src_entity, ix, iy), self_id.clone()));
                         }
                     }
@@ -551,12 +555,14 @@ impl FactoryEntity for Splitter {
                 if world.in_bounds(out_pos.x, out_pos.y) {
                     if let Some(dst_entity) = world.entity_at(ox, oy) {
                         let dst_dir = world.direction_at(ox, oy);
-                        // Only connect to belt-like entities or sinks, not opposing
+                        // Connect to belt-like entities, sinks, or adjacent splitters,
+                        // but not if they face the opposite direction
                         let dst_is_belt =
                             matches!(dst_entity, Item::TransportBelt | Item::UndergroundBelt);
                         let dst_is_sink = matches!(dst_entity, Item::Source | Item::Sink);
+                        let dst_is_splitter = matches!(dst_entity, Item::Splitter);
                         let dst_not_opposing = dst_dir != dir.opposite();
-                        if (dst_is_belt || dst_is_sink)
+                        if (dst_is_belt || dst_is_sink || dst_is_splitter)
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
@@ -933,6 +939,36 @@ mod tests {
         assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 0, 1))));
         assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 1, 1))));
         assert_eq!(edges.len(), 3);
+    }
+
+    #[test]
+    fn test_splitter_to_splitter_connections() {
+        // Two east-facing splitters directly adjacent: splitter1 at (2,0)/(2,1),
+        // splitter2 at (3,0)/(3,1). Verify that splitter1's output connects to splitter2.
+        let mut w = World::empty(6, 2);
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None); // tiles (2,0)/(2,1)
+        w.place_splitter(3, 0, Direction::East, None); // tiles (3,0)/(3,1)
+        w.place(4, 0, Item::TransportBelt, Direction::East, None);
+
+        let splitter1_id = NodeId::new(Item::Splitter, 2, 0);
+        let splitter2_id = NodeId::new(Item::Splitter, 3, 0);
+
+        let splitter = Splitter;
+
+        // splitter1 should output to splitter2
+        let edges1 = splitter.connections((2, 0), Direction::East, &w);
+        assert!(
+            edges1.contains(&(splitter1_id.clone(), splitter2_id.clone())),
+            "splitter1 output should connect to splitter2; edges: {edges1:?}"
+        );
+
+        // splitter2 should accept input from splitter1
+        let edges2 = splitter.connections((3, 0), Direction::East, &w);
+        assert!(
+            edges2.contains(&(splitter1_id.clone(), splitter2_id.clone())),
+            "splitter2 input should connect from splitter1; edges: {edges2:?}"
+        );
     }
 
     #[test]

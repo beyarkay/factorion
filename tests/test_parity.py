@@ -638,25 +638,23 @@ class TestSplitterEdgeCases:
         tp, _ = compare_throughput(world)
         assert tp == 0.0
 
-    def test_adjacent_splitters_no_belt(self):
-        """Two splitters placed directly adjacent (no belt between) → zero throughput.
+    def test_adjacent_splitters_direct(self):
+        """Two splitters placed directly adjacent (no belt between) connect and pass throughput.
 
-        Splitter connections only accept belt-like entities, so direct
-        splitter→splitter produces no edges.
+        Source → Belt → Splitter1 → Splitter2 → Belt → Sink
+        Splitter1 has 1 input, 1 effective output (splitter2). Splitter2 has 1 effective
+        output (belt at (4,0)). Expected throughput = 15.0 i/s.
         """
         world = make_world(8)
         set_entity(world, 0, 0, "source", Direction.EAST, "copper_cable")
         set_entity(world, 1, 0, "transport_belt", Direction.EAST)
         set_splitter(world, 2, 0, Direction.EAST)  # tiles (2,0)/(2,1)
-        # Splitter2 directly adjacent — its input cells are at (2,0)/(2,1)
-        # which are splitter1's tiles. Splitter connections reject non-belt entities.
         set_splitter(world, 3, 0, Direction.EAST)  # tiles (3,0)/(3,1)
         set_entity(world, 4, 0, "transport_belt", Direction.EAST)
         set_entity(world, 5, 0, "sink", Direction.EAST, "copper_cable")
 
         tp, _ = compare_throughput(world)
-        # No connection between the two splitters
-        assert tp == 0.0
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
 
     @pytest.mark.parametrize("d", DIRS, ids=lambda d: d.name)
     def test_underground_belt_into_splitter(self, d):
