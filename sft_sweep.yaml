@@ -1,42 +1,106 @@
 # sft_sweep.yaml — SFT pre-training hyperparameter sweep
+#
+# Compute-budget knobs that are monotonic-ish in val/acc (num_samples,
+# epochs, chan{1,2,3}) are pinned to the smoketest production config so
+# Bayes can't trivially saturate them and every run is directly
+# comparable to the prod checkpoint. The sweep instead optimises knobs
+# with a genuine interior optimum:
+#   - cosine LR schedule (issue #101): lr, warmup_frac, min_lr_ratio
+#   - regularisation: weight_decay, max_grad_norm
+#   - per-head loss weights (5 placement heads + EOT): lw_*
+#   - data-shape tradeoffs: batch_size, max_level, tile_head_std
 
 method: bayes
-run_cap: 20
+run_cap: 60
 metric:
   name: "val/acc"
   goal: maximize
 
 parameters:
+  # Pinned because val/acc is monotonic in these: more data, more epochs,
+  # and a lower max_level all make the val task trivially easier and
+  # Bayes would just saturate them. Channels are NOT pinned — bigger
+  # encoders can overfit a fixed dataset (no dropout in AgentCNN), so
+  # there's a real interior optimum.
+  size:
+    value: 11
+  num_samples:
+    value: 300000
+  epochs:
+    value: 30
+  max_level:
+    value: 0  # auto = 2*size = 22 entities blanked
+
+  # ── LR schedule (issue #101) ─────────────────────────────────────
   lr:
     distribution: log_uniform_values
     min: 1e-4
-    max: 5e-3
+    max: 3e-3
+  warmup_frac:
+    values: [0.0, 0.02, 0.05, 0.1]
+  min_lr_ratio:
+    distribution: log_uniform_values
+    min: 1e-3
+    max: 1e-1
 
+  # ── Regularisation ────────────────────────────────────────────────
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-2
+  max_grad_norm:
+    distribution: uniform
+    min: 0.5
+    max: 3.0
+
+  # ── Data-shape tradeoffs ──────────────────────────────────────────
   batch_size:
-    values: [128, 256, 512, 1024]
-
-  num_samples:
-    values: [10000, 25000, 50000, 100000]
-
-  epochs:
-    values: [10, 20, 30, 50]
-
-  max_level:
-    values: [0, 2, 4, 8]
-
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
-
+    values: [256, 512, 1024]
   tile_head_std:
     distribution: log_uniform_values
     min: 0.001
     max: 0.1
+
+  # ── Encoder capacity ──────────────────────────────────────────────
+  # AgentCNN has no dropout, so bigger encoders can overfit the (fixed)
+  # 300k-sample SFT dataset. Genuine interior optimum.
+  chan1:
+    values: [32, 48, 64]
+  chan2:
+    values: [48, 64]
+  chan3:
+    values: [48, 64]
+
+  # ── Per-head loss weights ─────────────────────────────────────────
+  # With 6 losses summed, equal weighting (= 1.0 each) implicitly
+  # assumes each head's gradient signal is equally informative — almost
+  # certainly wrong now that recipe/item and EOT heads exist alongside
+  # entity/direction. Log-uniform around 1.0 lets Bayes search find a
+  # useful re-balancing without blowing up scale.
+  lw_tile:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
+  lw_ent:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
+  lw_dir:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
+  lw_item:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
+  lw_misc:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
+  lw_eot:
+    distribution: log_uniform_values
+    min: 0.3
+    max: 3.0
 
 program: sft.py
 
