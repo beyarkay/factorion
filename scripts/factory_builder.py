@@ -601,15 +601,17 @@ def render_index(default_size: int) -> str:
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
 
-    # Always rendered now — the section exposes a load form so the user
-    # can switch models at runtime. When no model is loaded the
-    # prediction subsection just shows "(no model loaded)".
+    # Model loader is collapsed by default — switching models is rare
+    # compared to using the prediction; surface the active model
+    # inline and tuck the form into a <details>.
     model_panel_html = (
         '<div class="model-panel">'
         '<h3 style="margin-top:0.8em;">'
         '<span class="swatch"></span>Model'
         '</h3>'
         '<div class="model-current help" id="model-current">checking…</div>'
+        '<details class="model-loader">'
+        '<summary>switch model</summary>'
         '<label>source'
         '  <select id="model-kind">'
         '    <option value="local">local path</option>'
@@ -623,13 +625,13 @@ def render_index(default_size: int) -> str:
         '<button id="model-load">Load model</button>'
         '</div>'
         '<div id="model-load-status" class="help"></div>'
+        '</details>'
         '<h3 style="margin-top:0.8em;">Prediction</h3>'
-        '<div id="model-info" class="help">'
-        '(prediction will appear after the next change)</div>'
+        '<div id="model-info" class="help">(no prediction yet)</div>'
         '<pre id="model-action"></pre>'
         '<div class="model-buttons">'
-        '<button id="model-apply">Apply prediction</button>'
-        '<button id="model-refresh">Refresh</button>'
+        '<button id="model-apply" title="Apply the predicted placement at the highlighted tile">'
+        'Apply prediction</button>'
         '</div>'
         '</div>'
     )
@@ -740,18 +742,32 @@ def render_index(default_size: int) -> str:
     box-shadow: inset 0 0 0 2px #0d47a1;
     vertical-align: middle; margin-right: 0.25em;
   }}
+  .kbd-help {{
+    display: inline-block; font-size: 0.6em; font-weight: normal;
+    color: #555; background: #eee; border: 1px solid #bbb;
+    border-radius: 4px; padding: 0 0.4em; vertical-align: middle;
+    margin-left: 0.5em; cursor: help; user-select: none;
+  }}
+  .kbd-help:hover, .kbd-help:focus {{ background: #fff5cc; outline: none; }}
+  .sel-coord {{ font-family: monospace; color: #888; font-weight: normal; }}
+  details summary {{
+    cursor: pointer; font-size: 0.85em; color: #555;
+    user-select: none; padding: 0.2em 0;
+  }}
+  details.edges-details {{ margin-top: 0.4em; }}
+  details.model-loader summary {{ margin: 0.3em 0; }}
 </style></head><body>
 
-<h1>Factory builder</h1>
-<p class="help">
-  Press <b>1</b>–<b>9</b> or <b>0</b> to pick a hotbar slot, then click a
-  tile to place it. Drag a slot onto a tile to do the same. Click a tile
-  to select/edit it (ENTITY / DIRECTION / ITEM / MISC / FOOTPRINT in the
-  right panel). With a tile selected: <b>r</b> rotates clockwise,
-  <b>R</b> counter-clockwise; <b>Delete</b> / <b>Backspace</b> clears it;
-  right-click also clears. The graph recomputes automatically on every
-  change. <b>Esc</b> deselects the active hotbar slot.
-</p>
+<h1>Factory builder
+  <span class="kbd-help" tabindex="0" title="Hotbar: 1–9, 0
+Place: click / drag slot onto tile
+Select / edit: click a tile
+Rotate selected: r (cw), R (ccw)
+Clear selected: Delete / Backspace / right-click
+Deselect hotbar: Esc
+Generate lesson: g
+Apply prediction: a">[?]</span>
+</h1>
 
 <div class="layout">
 
@@ -759,9 +775,8 @@ def render_index(default_size: int) -> str:
     <div class="hotbar" id="hotbar">{hotbar_html}</div>
     <div class="controls">
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
-      <button id="resize">resize / clear</button>
-      <button id="compute">Compute graph</button>
-      <button id="export">copy state JSON</button>
+      <button id="resize" title="Resize the grid and clear all cells">resize / clear</button>
+      <button id="export" title="Copy {{size, grid}} JSON to clipboard">copy state JSON</button>
     </div>
     <div class="controls">
       <label>lesson
@@ -775,16 +790,18 @@ def render_index(default_size: int) -> str:
       <div id="grid-host"></div>
       <div class="graph-view">
         <h3>Graph</h3>
-        <div class="info" id="info">(graph will appear after Compute graph)</div>
+        <div class="info" id="info"></div>
         <img id="out-img" class="out-img" alt="" style="display:none">
-        <pre class="edges" id="edges" style="display:none"></pre>
+        <details class="edges-details">
+          <summary>graph edges</summary>
+          <pre class="edges" id="edges"></pre>
+        </details>
       </div>
     </div>
   </div>
 
   <div class="panel editor" id="editor">
-    <h3>Selected cell</h3>
-    <div id="sel-info" class="help">(click a cell to edit)</div>
+    <h3>Selected cell <span id="sel-info" class="sel-coord"></span></h3>
     <label>entity
       <select id="ed-entity">{item_options}</select>
     </label>
@@ -941,7 +958,7 @@ function renderGrid() {{
 
 function syncEditor() {{
   const info = document.getElementById('sel-info');
-  if (!selected) {{ info.textContent = '(click a cell to edit)'; return; }}
+  if (!selected) {{ info.textContent = ''; return; }}
   const c = grid[selected.y][selected.x];
   info.textContent = `(${{selected.x}}, ${{selected.y}})`;
   document.getElementById('ed-entity').value = c.entity;
@@ -1140,7 +1157,7 @@ async function computeGraph() {{
   if (data.error) {{
     document.getElementById('info').textContent = 'error: ' + data.error;
     document.getElementById('out-img').style.display = 'none';
-    document.getElementById('edges').style.display = 'none';
+    document.getElementById('edges').textContent = '';
     return;
   }}
   document.getElementById('info').textContent = data.info || '';
@@ -1154,18 +1171,12 @@ async function computeGraph() {{
   const edges = document.getElementById('edges');
   if (data.edges && data.edges.length) {{
     edges.textContent = data.edges.map(e => e[0] + '  →  ' + e[1]).join('\\n');
-    edges.style.display = 'block';
   }} else {{
-    edges.style.display = 'none';
+    edges.textContent = '(no edges)';
   }}
 }}
 
-document.getElementById('compute').addEventListener('click', () => {{
-  computeGraph();
-  computePrediction();
-}});
 document.getElementById('model-apply').addEventListener('click', applyPrediction);
-document.getElementById('model-refresh').addEventListener('click', computePrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
 
 // Minimal HTML escape so we can safely inject artifact names + run
