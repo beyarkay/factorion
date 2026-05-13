@@ -706,10 +706,10 @@ def render_index(default_size: int) -> str:
   }}
   .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 7px; opacity: 0.5; }}
   .cell-inner .p-badge {{
-    position: absolute; bottom: 1px; right: 1px;
-    font-size: 9px; font-weight: bold; line-height: 1;
-    padding: 1px 2px; border-radius: 2px;
-    color: #222; pointer-events: none;
+    position: absolute; bottom: 0; right: 2px;
+    font-size: 10px; font-weight: bold; line-height: 1;
+    text-shadow: 0 0 1px white, 0 0 1px white;
+    pointer-events: none;
   }}
   /* "ghost" = a predicted placement drawn on top of an empty cell. One
      ghost per candidate tile (all tiles with p(tile) > threshold).
@@ -879,8 +879,10 @@ function newGrid(n) {{
 function pBadgeColor(p) {{
   const q = Math.max(0, Math.min(p, 1));
   const hue = 25 + (1 - q) * 25;            // 25° orange -> 50° yellow
-  const sat = Math.round(Math.min(q * 1.5, 1) * 80);  // 0% at p=0 -> 80% at p≥0.67
-  return `hsl(${{hue}}, ${{sat}}%, 50%)`;
+  const sat = Math.round(Math.min(q * 1.5, 1) * 90);  // 0% at p=0 -> 90% at p≥0.67
+  // Slightly darker than 50% so the digits stay legible as foreground
+  // text on a (usually) white cell background.
+  return `hsl(${{hue}}, ${{sat}}%, 42%)`;
 }}
 
 function iconFor(name) {{
@@ -953,7 +955,7 @@ function renderGrid() {{
         const pct = cand.p_tile >= 0.01
           ? Math.round(cand.p_tile * 100) + '%'
           : '<1%';
-        html += `<div class="p-badge" style="background:${{pBadgeColor(cand.p_tile)}}">${{pct}}</div>`;
+        html += `<div class="p-badge" style="color:${{pBadgeColor(cand.p_tile)}}">${{pct}}</div>`;
       }}
       inner.innerHTML = html;
       td.appendChild(inner);
