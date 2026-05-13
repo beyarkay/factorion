@@ -370,8 +370,9 @@ class FactorioEnv(gym.Env):
                     f"build_factory returned None for kind={kind} "
                     f"seed={self._seed}"
                 )
-        self._world_CWH, self._solved_world_CWH, min_entities_required = (
-            blank_entities(factory, num_missing_entities=self._num_missing_entities)
+        self._solved_world_CWH = factory.world_CWH
+        self._world_CWH, min_entities_required = blank_entities(
+            factory, num_missing_entities=self._num_missing_entities
         )
 
         self.min_entities_required = min_entities_required

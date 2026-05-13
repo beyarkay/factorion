@@ -313,7 +313,8 @@ def generate_dataset(args: SFTArgs):
         factory = build_factory(size=args.size, kind=kind, seed=seed)
         if factory is None:
             continue
-        task, solved, _ = blank_entities(factory, num_missing_entities=level)
+        solved = factory.world_CWH
+        task, _ = blank_entities(factory, num_missing_entities=level)
 
         kind_lessons[kind.name] += 1
         pairs = extract_expert_actions(solved, task)

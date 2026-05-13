@@ -2397,18 +2397,20 @@ def blank_entities(
     num_missing_entities: float = float("inf"),
     *,
     seed: Optional[int] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, int]:
+) -> Tuple[torch.Tensor, int]:
     """Blank up to ``num_missing_entities`` entity units from a factory.
 
-    Returns ``(partial_world_CWH, solved_world_CWH, min_entities_required)``:
+    Returns ``(partial_world_CWH, min_entities_required)``:
 
     - ``partial_world_CWH``: clone of the factory with some entities removed,
       ready to be fed to the agent as the lesson input.
-    - ``solved_world_CWH``: the factory's complete layout (shares storage with
-      ``factory.world_CWH`` — do not mutate; clone first if you need to).
     - ``min_entities_required``: actual number of entity units removed
       (may be less than ``num_missing_entities`` if the factory has fewer
       removable units, e.g. when many entities are protected).
+
+    The complete (solved) layout stays accessible as ``factory.world_CWH``;
+    it isn't returned here to avoid aliasing the factory's tensor into
+    caller code.
 
     Blanking respects multi-tile entities (splitters, assemblers) as
     single removable units, and never removes ``factory.protected_positions``,
@@ -2431,7 +2433,7 @@ def blank_entities(
         factory.total_entities,
         protected_positions=set(factory.protected_positions),
     )
-    return partial, factory.world_CWH, min_entities_required
+    return partial, min_entities_required
 
 
 def generate_lesson(
@@ -2461,7 +2463,7 @@ def generate_lesson(
             f"Failed to find valid {kind.name} lesson "
             f"(rejection-sampling exhausted); advance the seed and retry"
         )
-    partial, _, min_entities_required = blank_entities(
+    partial, min_entities_required = blank_entities(
         factory, num_missing_entities
     )
     return partial, min_entities_required
