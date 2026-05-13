@@ -45,7 +45,9 @@ from factorion import (  # noqa: E402
     Channel,
     Direction,
     Footprint,
+    LessonKind,
     Misc,
+    build_factory,
     ent_str2b64img,
     entities,
     items,
@@ -104,12 +106,12 @@ MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 class Args:
     port: int = 8765
     """port for the local HTTP server"""
-    size: int = 8
+    size: int = 11
     """default grid size"""
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
     the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = None
+    wandb_run: Optional[str] = "xlnqmtzt"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
     and loaded. Mutually exclusive with --checkpoint."""
@@ -145,6 +147,74 @@ def build_world(grid: list[list[dict]]) -> torch.Tensor:
             footprint = cell.get("footprint", "AVAILABLE")
             world[x, y, Channel.FOOTPRINT.value] = Footprint[footprint].value
     return torch.tensor(world)
+
+
+def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
+    """Inverse of :func:`build_world`: convert a (C, W, H) world tensor
+    into the JSON grid format the JS frontend uses
+    (``grid[y][x] = {entity, direction, item, misc, footprint}``)."""
+    _, W, H = world_CWH.shape
+    name_for_value = {it.value: it.name for it in items.values()}
+    dir_for_value = {d.value: d.name for d in Direction}
+    misc_for_value = {m.value: m.name for m in Misc}
+    footprint_for_value = {f.value: f.name for f in Footprint}
+    rows: list[list[dict]] = []
+    for y in range(H):
+        row: list[dict] = []
+        for x in range(W):
+            ent_v = int(world_CWH[Channel.ENTITIES.value, x, y].item())
+            dir_v = int(world_CWH[Channel.DIRECTION.value, x, y].item())
+            item_v = int(world_CWH[Channel.ITEMS.value, x, y].item())
+            misc_v = int(world_CWH[Channel.MISC.value, x, y].item())
+            foot_v = int(world_CWH[Channel.FOOTPRINT.value, x, y].item())
+            row.append({
+                "entity": name_for_value.get(ent_v, "empty"),
+                "direction": dir_for_value.get(dir_v, "NONE"),
+                "item": name_for_value.get(item_v, "empty"),
+                "misc": misc_for_value.get(misc_v, "NONE"),
+                "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
+            })
+        rows.append(row)
+    return rows
+
+
+# Cap retries so a misconfigured (size, kind) pair fails fast with a
+# clear error rather than spinning forever. build_factory's rejection
+# sampler usually succeeds in a handful of tries; 200 is generous.
+_LESSON_RETRY_BUDGET = 200
+
+
+def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
+    """Build a complete factory of the given lesson kind + seed and
+    return its grid in the JSON format the frontend expects.
+
+    `build_factory` returns None when its random layout search doesn't
+    find a valid configuration. We follow the docstring's recommended
+    retry idiom: advance the seed and try again. The seed that actually
+    produced the factory is returned as ``used_seed`` so the UI can show
+    it; ``next_seed = used_seed + 1`` is what the UI advances to so
+    repeated clicks produce distinct variants."""
+    try:
+        kind = LessonKind[kind_name]
+    except KeyError as e:
+        raise ValueError(f"unknown lesson kind: {kind_name!r}") from e
+    attempt_seed = int(seed)
+    for _ in range(_LESSON_RETRY_BUDGET):
+        factory = build_factory(size=size, kind=kind, seed=attempt_seed)
+        if factory is not None:
+            return {
+                "size": size,
+                "grid": world_CWH_to_grid(factory.world_CWH),
+                "used_seed": attempt_seed,
+                "next_seed": attempt_seed + 1,
+                "total_entities": int(factory.total_entities),
+            }
+        attempt_seed += 1
+    raise RuntimeError(
+        f"build_factory returned None for {_LESSON_RETRY_BUDGET} consecutive "
+        f"seeds (kind={kind_name}, size={size}, start_seed={seed}) — the "
+        f"grid may be too small for this lesson."
+    )
 
 
 def render_graph_png(grid: list[list[dict]]) -> dict:
@@ -255,24 +325,25 @@ def _model_info() -> dict:
     }
 
 
-def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> dict:
-    """Resolve `value` to a local .pt path based on `kind`, load it,
-    and return the new model info. Called by the /load_model POST
-    endpoint so the user can switch models without restarting the
-    server."""
+def _swap_model(value: str, project: str, entity: Optional[str]) -> dict:
+    """Resolve `value` to a local .pt path, load it, return new model
+    info. Called by the /load_model POST endpoint so the user can
+    switch models without restarting the server.
+
+    Auto-detects local-vs-wandb: an existing path on disk is loaded as
+    local; otherwise the value is treated as a wandb run id. If both
+    fail the error from the wandb resolver bubbles up (wandb's error
+    is usually the more informative one — "no such file" tells the
+    user nothing they don't already know)."""
     global _CHECKPOINT_SOURCE
     value = (value or "").strip()
     if not value:
         raise ValueError("value cannot be empty")
-    if kind == "local":
-        if not Path(value).exists():
-            raise FileNotFoundError(f"checkpoint not found: {value}")
+    if Path(value).exists():
         path = value
         source = {"kind": "local", "path": value}
-    elif kind == "wandb":
-        path, source = _resolve_wandb_checkpoint(value, project, entity)
     else:
-        raise ValueError(f"unknown kind: {kind!r} (expected 'local' or 'wandb')")
+        path, source = _resolve_wandb_checkpoint(value, project, entity)
     _load_checkpoint(path)
     _CHECKPOINT_SOURCE = source
     return _model_info()
@@ -470,7 +541,15 @@ def _icon_b64(name: str) -> str:
 
 
 PALETTE_ICONS = {n: _icon_b64(n) for n in PLACEABLE_ENTITIES + ["empty"]}
-ITEM_ICONS = {n: _icon_b64(n) for n in NON_PLACEABLE_ITEMS}
+# Generated lessons can put *any* item in the ITEMS channel (recipe /
+# filter), so cache an icon for every known item — not just the curated
+# few in NON_PLACEABLE_ITEMS. _icon_b64 already silently returns "" for
+# items without a PNG asset.
+ITEM_ICONS = {
+    it.name: _icon_b64(it.name)
+    for it in items.values()
+    if it.name != "empty" and it.name not in PALETTE_ICONS
+}
 
 
 def render_index(default_size: int) -> str:
@@ -503,42 +582,51 @@ def render_index(default_size: int) -> str:
         f'<option value="{n}">{n}</option>'
         for n in (["empty"] + PLACEABLE_ENTITIES + NON_PLACEABLE_ITEMS)
     )
+    # The recipe/filter dropdown can hold any item, not just the curated
+    # palette set — generated lessons routinely set obscure recipes
+    # (e.g. burner_mining_drill) and we want them visible + editable.
+    all_item_names = sorted(
+        {it.name for it in items.values() if it.name != "empty"}
+    )
+    all_item_options = "".join(
+        f'<option value="{n}">{n}</option>'
+        for n in (["empty"] + all_item_names)
+    )
     direction_options = "".join(
         f'<option value="{d}">{d}</option>' for d in DIRECTIONS
     )
     misc_options = "".join(
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
     )
+    lesson_options = "".join(
+        f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
+    )
 
-    # Always rendered now — the section exposes a load form so the user
-    # can switch models at runtime. When no model is loaded the
-    # prediction subsection just shows "(no model loaded)".
+    # Model loader is collapsed by default — switching models is rare
+    # compared to using the prediction; surface the active model
+    # inline and tuck the form into a <details>.
     model_panel_html = (
         '<div class="model-panel">'
         '<h3 style="margin-top:0.8em;">'
         '<span class="swatch"></span>Model'
         '</h3>'
         '<div class="model-current help" id="model-current">checking…</div>'
-        '<label>source'
-        '  <select id="model-kind">'
-        '    <option value="local">local path</option>'
-        '    <option value="wandb">wandb run id</option>'
-        '  </select>'
-        '</label>'
-        '<label>value'
+        '<div class="model-loader">'
+        '<label>switch model'
         '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
         '</label>'
         '<div class="model-buttons">'
-        '<button id="model-load">Load model</button>'
+        '<button id="model-load" title="Local path if the file exists, else wandb run id">'
+        'Load model</button>'
         '</div>'
         '<div id="model-load-status" class="help"></div>'
+        '</div>'
         '<h3 style="margin-top:0.8em;">Prediction</h3>'
-        '<div id="model-info" class="help">'
-        '(prediction will appear after the next change)</div>'
+        '<div id="model-info" class="help">(no prediction yet)</div>'
         '<pre id="model-action"></pre>'
         '<div class="model-buttons">'
-        '<button id="model-apply">Apply prediction</button>'
-        '<button id="model-refresh">Refresh</button>'
+        '<button id="model-apply" title="Apply the predicted placement at the highlighted tile">'
+        'Apply prediction <span class="kbd">a</span></button>'
         '</div>'
         '</div>'
     )
@@ -546,24 +634,24 @@ def render_index(default_size: int) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Factory builder</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; margin: 1em; color: #222; }}
-  h1 {{ margin: 0 0 0.4em; }}
-  .layout {{ display: grid; grid-template-columns: 1fr 280px; gap: 1em; }}
-  .panel {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.6em; background: #fafafa; }}
-  .panel h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
+  body {{ font-family: system-ui, sans-serif; margin: 0.6em; color: #222; }}
+  h1 {{ margin: 0 0 0.3em; font-size: 1.3em; }}
+  .layout {{ display: grid; grid-template-columns: 1fr 260px; gap: 0.8em; }}
+  .panel {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.5em; background: #fafafa; }}
+  .panel h3 {{ margin: 0 0 0.3em; font-size: 0.85em; text-transform: uppercase; color: #555; }}
   .hotbar {{
-    display: flex; gap: 0.3em; flex-wrap: wrap;
+    display: flex; gap: 0.25em; flex-wrap: wrap;
     user-select: none; -webkit-user-select: none;
   }}
   .hb-slot {{
-    position: relative; width: 64px; height: 78px;
+    position: relative; width: 52px; height: 66px;
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 2px;
     border: 2px solid #ddd; border-radius: 4px; background: white;
-    cursor: grab; font-size: 0.7em; padding: 2px;
+    cursor: grab; font-size: 0.65em; padding: 2px;
     user-select: none; -webkit-user-select: none;
   }}
-  .hb-slot img {{ width: 32px; height: 32px; pointer-events: none; }}
+  .hb-slot img {{ width: 26px; height: 26px; pointer-events: none; }}
   .hb-slot .hb-key {{
     position: absolute; top: 1px; left: 3px;
     font-size: 0.7em; font-weight: bold; color: #888;
@@ -577,19 +665,19 @@ def render_index(default_size: int) -> str:
   .hb-slot.empty-slot {{
     background: #f4f4f4; cursor: default; color: #bbb;
   }}
-  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.6em; min-width: 0; }}
+  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.4em; min-width: 0; }}
   .grid-graph-row {{
-    display: flex; gap: 1em; align-items: flex-start;
+    display: flex; gap: 0.8em; align-items: flex-start;
     width: 100%; min-width: 0;
   }}
   .grid-graph-row > #grid-host {{ flex: 0 0 auto; }}
   .graph-view {{ flex: 1 1 0; min-width: 0; }}
-  .graph-view h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
-  .controls {{ display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }}
+  .graph-view h3 {{ margin: 0 0 0.3em; font-size: 0.85em; text-transform: uppercase; color: #555; }}
+  .controls {{ display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }}
   .controls input[type=number] {{ width: 4em; }}
   table.grid {{ border-collapse: collapse; }}
   table.grid td {{
-    width: 56px; height: 56px; border: 1px solid #bbb; padding: 0;
+    width: 44px; height: 44px; border: 1px solid #bbb; padding: 0;
     position: relative; background: #fff;
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
@@ -609,14 +697,20 @@ def render_index(default_size: int) -> str:
   .cell-inner img.ent {{ position: absolute; top: 10%; left: 10%; width: 60%; height: 60%; }}
   .cell-inner img.itm {{ position: absolute; bottom: 4%; right: 4%; width: 30%; height: 30%; }}
   .cell-inner .arrow {{
-    position: absolute; bottom: 0; left: 2px;
-    font-size: 16px; line-height: 16px; color: #222;
+    position: absolute; bottom: -1px; left: 2px;
+    font-size: 13px; line-height: 13px; color: #222;
   }}
   .cell-inner .misc {{
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
+    font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 14px;
   }}
-  .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
+  .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 7px; opacity: 0.5; }}
+  .cell-inner .p-badge {{
+    position: absolute; bottom: 0; right: 2px;
+    font-size: 10px; font-weight: bold; line-height: 1;
+    text-shadow: 0 0 1px white, 0 0 1px white;
+    pointer-events: none;
+  }}
   /* "ghost" = a predicted placement drawn on top of an empty cell. One
      ghost per candidate tile (all tiles with p(tile) > threshold).
      Opacity is set inline per element so it can encode the model's
@@ -649,18 +743,39 @@ def render_index(default_size: int) -> str:
     box-shadow: inset 0 0 0 2px #0d47a1;
     vertical-align: middle; margin-right: 0.25em;
   }}
+  .kbd-help {{
+    display: inline-block; font-size: 0.6em; font-weight: normal;
+    color: #555; background: #eee; border: 1px solid #bbb;
+    border-radius: 4px; padding: 0 0.4em; vertical-align: middle;
+    margin-left: 0.5em; cursor: help; user-select: none;
+  }}
+  .kbd-help:hover, .kbd-help:focus {{ background: #fff5cc; outline: none; }}
+  .sel-coord {{ font-family: monospace; color: #888; font-weight: normal; }}
+  .kbd {{
+    display: inline-block; min-width: 1em; padding: 0 0.3em;
+    margin-left: 0.3em; font-size: 0.8em; font-family: monospace;
+    color: #333; background: #f4f4f4; border: 1px solid #bbb;
+    border-radius: 3px; line-height: 1.2;
+  }}
+  .action-row button {{ display: inline-flex; align-items: center; }}
+  details summary {{
+    cursor: pointer; font-size: 0.85em; color: #555;
+    user-select: none; padding: 0.2em 0;
+  }}
+  details.edges-details {{ margin-top: 0.4em; }}
 </style></head><body>
 
-<h1>Factory builder</h1>
-<p class="help">
-  Press <b>1</b>–<b>9</b> or <b>0</b> to pick a hotbar slot, then click a
-  tile to place it. Drag a slot onto a tile to do the same. Click a tile
-  to select/edit it (ENTITY / DIRECTION / ITEM / MISC / FOOTPRINT in the
-  right panel). With a tile selected: <b>r</b> rotates clockwise,
-  <b>R</b> counter-clockwise; <b>Delete</b> / <b>Backspace</b> clears it;
-  right-click also clears. The graph recomputes automatically on every
-  change. <b>Esc</b> deselects the active hotbar slot.
-</p>
+<h1>Factory builder
+  <span class="kbd-help" tabindex="0" title="Hotbar: 1–9, 0
+Place: click / drag slot onto tile
+Select / edit: click a tile
+Rotate selected: r (cw), R (ccw)
+Clear selected: Delete / Backspace / right-click
+Deselect hotbar: Esc
+Generate lesson: g
+Apply prediction: a
+Resize / clear grid: c">[?]</span>
+</h1>
 
 <div class="layout">
 
@@ -668,24 +783,35 @@ def render_index(default_size: int) -> str:
     <div class="hotbar" id="hotbar">{hotbar_html}</div>
     <div class="controls">
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
-      <button id="resize">resize / clear</button>
-      <button id="compute">Compute graph</button>
-      <button id="export">copy state JSON</button>
+      <button id="resize" title="Resize the grid and clear all cells">resize / clear <span class="kbd">c</span></button>
+      <button id="export" title="Copy {{size, grid}} JSON to clipboard">copy state JSON</button>
+    </div>
+    <div class="controls action-row">
+      <label>lesson
+        <select id="lesson-kind">{lesson_options}</select>
+      </label>
+      <label>seed <input id="lesson-seed" type="number" value="0" step="1"></label>
+      <button id="lesson-generate" title="Build a fully-formed factory of the chosen lesson kind at the given seed, then bump the seed for the next click">
+        Generate lesson <span class="kbd">g</span>
+      </button>
+      <span id="lesson-status" class="help"></span>
     </div>
     <div class="grid-graph-row">
       <div id="grid-host"></div>
       <div class="graph-view">
         <h3>Graph</h3>
-        <div class="info" id="info">(graph will appear after Compute graph)</div>
+        <div class="info" id="info"></div>
         <img id="out-img" class="out-img" alt="" style="display:none">
-        <pre class="edges" id="edges" style="display:none"></pre>
+        <details class="edges-details">
+          <summary>graph edges</summary>
+          <pre class="edges" id="edges"></pre>
+        </details>
       </div>
     </div>
   </div>
 
   <div class="panel editor" id="editor">
-    <h3>Selected cell</h3>
-    <div id="sel-info" class="help">(click a cell to edit)</div>
+    <h3>Selected cell <span id="sel-info" class="sel-coord"></span></h3>
     <label>entity
       <select id="ed-entity">{item_options}</select>
     </label>
@@ -693,7 +819,7 @@ def render_index(default_size: int) -> str:
       <select id="ed-direction">{direction_options}</select>
     </label>
     <label>item (recipe / filter)
-      <select id="ed-item">{item_options}</select>
+      <select id="ed-item">{all_item_options}</select>
     </label>
     <label>misc
       <select id="ed-misc">{misc_options}</select>
@@ -716,7 +842,7 @@ const PALETTE_ICONS = {json.dumps(PALETTE_ICONS)};
 const ITEM_ICONS = {json.dumps(ITEM_ICONS)};
 const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
-const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
+const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
 // successful /load_model call. Prediction calls are gated on it so we
@@ -746,6 +872,19 @@ function newGrid(n) {{
   return g;
 }}
 
+// Color for the per-tile p% badge. Saturated orange at high p,
+// desaturates and shifts toward yellow as confidence drops, and lands
+// at neutral grey for near-zero — the eye reads "strong / hedging /
+// noise" before reading the digits.
+function pBadgeColor(p) {{
+  const q = Math.max(0, Math.min(p, 1));
+  const hue = 25 + (1 - q) * 25;            // 25° orange -> 50° yellow
+  const sat = Math.round(Math.min(q * 1.5, 1) * 90);  // 0% at p=0 -> 90% at p≥0.67
+  // Slightly darker than 50% so the digits stay legible as foreground
+  // text on a (usually) white cell background.
+  return `hsl(${{hue}}, ${{sat}}%, 42%)`;
+}}
+
 function iconFor(name) {{
   return PALETTE_ICONS[name] || ITEM_ICONS[name] || '';
 }}
@@ -754,8 +893,11 @@ function renderGrid() {{
   const host = document.getElementById('grid-host');
   // Build (x,y) -> candidate map once per render so the per-cell
   // ghost lookup is O(1).
+  // When the model's EOT probability crosses 0.5 it's saying "I'm done
+  // placing things" — the candidate ghosts would just be misleading
+  // hallucinations of a forced placement, so suppress them.
   const candByXY = {{}};
-  if (prediction && prediction.candidates) {{
+  if (prediction && prediction.candidates && !(prediction.eot_prob > 0.5)) {{
     for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
   }}
   const tbl = document.createElement('table');
@@ -768,7 +910,13 @@ function renderGrid() {{
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
-      if (prediction && prediction.x === x && prediction.y === y) td.classList.add('predicted');
+      // The blue argmax border tracks the same suppression rule as the
+      // ghost overlays: if the model says it's done (eot > 0.5), don't
+      // visually nominate a "next placement" tile.
+      if (
+        prediction && prediction.x === x && prediction.y === y
+        && !(prediction.eot_prob > 0.5)
+      ) td.classList.add('predicted');
 
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
@@ -801,6 +949,13 @@ function renderGrid() {{
         if (garrow) html += `<div class="arrow ghost" style="opacity:${{op}}">${{garrow}}</div>`;
         const gmisc = MISC_GLYPH[cand.misc] || '';
         if (gmisc) html += `<div class="misc ghost" style="opacity:${{op}}">${{gmisc}}</div>`;
+        // Percentage badge bottom-right: same data the ghost opacity
+        // encodes, but as a precise number for tiles where the eye
+        // can't tell a 60% ghost from a 75% ghost.
+        const pct = cand.p_tile >= 0.01
+          ? Math.round(cand.p_tile * 100) + '%'
+          : '<1%';
+        html += `<div class="p-badge" style="color:${{pBadgeColor(cand.p_tile)}}">${{pct}}</div>`;
       }}
       inner.innerHTML = html;
       td.appendChild(inner);
@@ -823,12 +978,38 @@ function renderGrid() {{
         if (selected && selected.x === x && selected.y === y) syncEditor();
         scheduleCompute();
       }});
+      // Populated cells are draggable: dragging one onto another tile
+      // moves the *entire* cell state (entity, direction, item, misc,
+      // footprint) and clears the source. Hotbar and tile drags share
+      // the text/plain MIME via a {{kind}}-tagged JSON payload.
+      if (c.entity !== 'empty') {{
+        td.draggable = true;
+        td.addEventListener('dragstart', (ev) => {{
+          ev.dataTransfer.setData(
+            'text/plain',
+            JSON.stringify({{ kind: 'tile', from: {{ x, y }} }}),
+          );
+          ev.dataTransfer.effectAllowed = 'move';
+        }});
+      }}
       td.addEventListener('dragover', (ev) => ev.preventDefault());
       td.addEventListener('drop', (ev) => {{
         ev.preventDefault();
-        const ent = ev.dataTransfer.getData('text/plain');
-        if (!ent) return;
-        placeEntity(x, y, ent);
+        const raw = ev.dataTransfer.getData('text/plain');
+        if (!raw) return;
+        let payload;
+        try {{ payload = JSON.parse(raw); }} catch (_) {{ return; }}
+        if (payload.kind === 'palette') {{
+          placeEntity(x, y, payload.entity);
+        }} else if (payload.kind === 'tile') {{
+          const fx = payload.from.x, fy = payload.from.y;
+          if (fx === x && fy === y) return;
+          grid[y][x] = Object.assign({{}}, grid[fy][fx]);
+          grid[fy][fx] = emptyCell();
+          selected = {{ x, y }};
+          renderGrid(); syncEditor();
+          scheduleCompute();
+        }}
       }});
       tr.appendChild(td);
     }}
@@ -839,7 +1020,7 @@ function renderGrid() {{
 
 function syncEditor() {{
   const info = document.getElementById('sel-info');
-  if (!selected) {{ info.textContent = '(click a cell to edit)'; return; }}
+  if (!selected) {{ info.textContent = ''; return; }}
   const c = grid[selected.y][selected.x];
   info.textContent = `(${{selected.x}}, ${{selected.y}})`;
   document.getElementById('ed-entity').value = c.entity;
@@ -888,7 +1069,10 @@ function bindHotbar() {{
     const idx = parseInt(el.dataset.slot, 10);
     if (HOTBAR[idx] === null) return;
     el.addEventListener('dragstart', (ev) => {{
-      ev.dataTransfer.setData('text/plain', el.dataset.entity);
+      ev.dataTransfer.setData(
+        'text/plain',
+        JSON.stringify({{ kind: 'palette', entity: el.dataset.entity }}),
+      );
     }});
     el.addEventListener('click', () => setActiveHotbar(idx));
   }});
@@ -1038,7 +1222,7 @@ async function computeGraph() {{
   if (data.error) {{
     document.getElementById('info').textContent = 'error: ' + data.error;
     document.getElementById('out-img').style.display = 'none';
-    document.getElementById('edges').style.display = 'none';
+    document.getElementById('edges').textContent = '';
     return;
   }}
   document.getElementById('info').textContent = data.info || '';
@@ -1052,18 +1236,12 @@ async function computeGraph() {{
   const edges = document.getElementById('edges');
   if (data.edges && data.edges.length) {{
     edges.textContent = data.edges.map(e => e[0] + '  →  ' + e[1]).join('\\n');
-    edges.style.display = 'block';
   }} else {{
-    edges.style.display = 'none';
+    edges.textContent = '(no edges)';
   }}
 }}
 
-document.getElementById('compute').addEventListener('click', () => {{
-  computeGraph();
-  computePrediction();
-}});
 document.getElementById('model-apply').addEventListener('click', applyPrediction);
-document.getElementById('model-refresh').addEventListener('click', computePrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
 
 // Minimal HTML escape so we can safely inject artifact names + run
@@ -1090,13 +1268,11 @@ async function refreshModelInfo() {{
         ' c3=' + data.chan3 + ' ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{
-        // Show the artifact name (the *meaningful* identifier the user
-        // sees in the W&B UI) plus a clickable link to the run, instead
-        // of the anonymous /tmp/factorion-checkpoints download path.
-        const linkText = src.run_name ? src.run_name : src.run_id;
-        cur.innerHTML = 'loaded: ' + escHtml(src.artifact) +
-          ' from <a href="' + escHtml(src.run_url) + '" target="_blank">' +
-          escHtml(linkText) + '</a>' +
+        // Show the run id directly — that's what the user types into
+        // the switch form, so keeping the displayed identifier the
+        // same as the input format avoids a translation step.
+        cur.innerHTML = 'loaded wandb <a href="' + escHtml(src.run_url) +
+          '" target="_blank">' + escHtml(src.run_id) + '</a>' +
           '  (' + escHtml(shape) + ')';
       }} else {{
         const path = (src && src.path) || data.path;
@@ -1112,7 +1288,6 @@ async function refreshModelInfo() {{
 }}
 
 async function loadModel() {{
-  const kind = document.getElementById('model-kind').value;
   const value = document.getElementById('model-value').value;
   const status = document.getElementById('model-load-status');
   const btn = document.getElementById('model-load');
@@ -1124,7 +1299,7 @@ async function loadModel() {{
     const resp = await fetch('/load_model', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ kind, value }}),
+      body: JSON.stringify({{ value }}),
     }});
     const data = await resp.json();
     if (data.error) {{
@@ -1142,6 +1317,41 @@ async function loadModel() {{
     btn.disabled = false;
   }}
 }}
+async function generateLesson() {{
+  const kind = document.getElementById('lesson-kind').value;
+  const seed = parseInt(document.getElementById('lesson-seed').value, 10);
+  const status = document.getElementById('lesson-status');
+  const btn = document.getElementById('lesson-generate');
+  if (!Number.isFinite(seed)) {{ status.textContent = 'invalid seed'; return; }}
+  btn.disabled = true;
+  status.textContent = 'building…';
+  try {{
+    const resp = await fetch('/load_lesson', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ kind, seed, size: SIZE }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{ status.textContent = 'error: ' + data.error; return; }}
+    SIZE = data.size;
+    grid = data.grid;
+    selected = null;
+    prediction = null;
+    document.getElementById('size').value = SIZE;
+    document.getElementById('lesson-seed').value = data.next_seed;
+    status.textContent =
+      'built ' + kind + ' (seed=' + data.used_seed +
+      ', ' + data.total_entities + ' entities)';
+    renderGrid(); syncEditor();
+    scheduleCompute();
+  }} catch (e) {{
+    status.textContent = 'failed: ' + e;
+  }} finally {{
+    btn.disabled = false;
+  }}
+}}
+document.getElementById('lesson-generate').addEventListener('click', generateLesson);
+
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
   if (!Number.isFinite(n) || n < 2 || n > 20) return;
@@ -1174,6 +1384,11 @@ document.addEventListener('keydown', (ev) => {{
   if (ev.key === 'R') {{ rotateSelected(false); ev.preventDefault(); return; }}
   if (ev.key === 'Delete' || ev.key === 'Backspace') {{
     clearSelected(); ev.preventDefault(); return;
+  }}
+  if (ev.key === 'g') {{ generateLesson(); ev.preventDefault(); return; }}
+  if (ev.key === 'a') {{ applyPrediction(); ev.preventDefault(); return; }}
+  if (ev.key === 'c') {{
+    document.getElementById('resize').click(); ev.preventDefault(); return;
   }}
   if (ev.key === 'Escape') {{
     if (activeHotbar !== null) setActiveHotbar(activeHotbar);
@@ -1219,7 +1434,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path not in ("/graph", "/predict", "/load_model"):
+        if self.path not in ("/graph", "/predict", "/load_model", "/load_lesson"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -1230,9 +1445,14 @@ class Handler(BaseHTTPRequestHandler):
                 result = render_graph_png(payload["grid"])
             elif self.path == "/predict":
                 result = _predict(payload["grid"])
+            elif self.path == "/load_lesson":
+                result = _load_lesson(
+                    kind_name=payload["kind"],
+                    seed=int(payload["seed"]),
+                    size=int(payload["size"]),
+                )
             else:
                 result = _swap_model(
-                    kind=payload.get("kind", ""),
                     value=payload.get("value", ""),
                     project=self.server.wandb_project,
                     entity=self.server.wandb_entity,
