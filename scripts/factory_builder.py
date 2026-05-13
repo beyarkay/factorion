@@ -639,24 +639,24 @@ def render_index(default_size: int) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Factory builder</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; margin: 1em; color: #222; }}
-  h1 {{ margin: 0 0 0.4em; }}
-  .layout {{ display: grid; grid-template-columns: 1fr 280px; gap: 1em; }}
-  .panel {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.6em; background: #fafafa; }}
-  .panel h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
+  body {{ font-family: system-ui, sans-serif; margin: 0.6em; color: #222; }}
+  h1 {{ margin: 0 0 0.3em; font-size: 1.3em; }}
+  .layout {{ display: grid; grid-template-columns: 1fr 260px; gap: 0.8em; }}
+  .panel {{ border: 1px solid #ccc; border-radius: 6px; padding: 0.5em; background: #fafafa; }}
+  .panel h3 {{ margin: 0 0 0.3em; font-size: 0.85em; text-transform: uppercase; color: #555; }}
   .hotbar {{
-    display: flex; gap: 0.3em; flex-wrap: wrap;
+    display: flex; gap: 0.25em; flex-wrap: wrap;
     user-select: none; -webkit-user-select: none;
   }}
   .hb-slot {{
-    position: relative; width: 64px; height: 78px;
+    position: relative; width: 52px; height: 66px;
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 2px;
     border: 2px solid #ddd; border-radius: 4px; background: white;
-    cursor: grab; font-size: 0.7em; padding: 2px;
+    cursor: grab; font-size: 0.65em; padding: 2px;
     user-select: none; -webkit-user-select: none;
   }}
-  .hb-slot img {{ width: 32px; height: 32px; pointer-events: none; }}
+  .hb-slot img {{ width: 26px; height: 26px; pointer-events: none; }}
   .hb-slot .hb-key {{
     position: absolute; top: 1px; left: 3px;
     font-size: 0.7em; font-weight: bold; color: #888;
@@ -670,19 +670,19 @@ def render_index(default_size: int) -> str:
   .hb-slot.empty-slot {{
     background: #f4f4f4; cursor: default; color: #bbb;
   }}
-  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.6em; min-width: 0; }}
+  .grid-wrap {{ display: flex; flex-direction: column; align-items: flex-start; gap: 0.4em; min-width: 0; }}
   .grid-graph-row {{
-    display: flex; gap: 1em; align-items: flex-start;
+    display: flex; gap: 0.8em; align-items: flex-start;
     width: 100%; min-width: 0;
   }}
   .grid-graph-row > #grid-host {{ flex: 0 0 auto; }}
   .graph-view {{ flex: 1 1 0; min-width: 0; }}
-  .graph-view h3 {{ margin: 0 0 0.4em; font-size: 0.9em; text-transform: uppercase; color: #555; }}
-  .controls {{ display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; }}
+  .graph-view h3 {{ margin: 0 0 0.3em; font-size: 0.85em; text-transform: uppercase; color: #555; }}
+  .controls {{ display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }}
   .controls input[type=number] {{ width: 4em; }}
   table.grid {{ border-collapse: collapse; }}
   table.grid td {{
-    width: 56px; height: 56px; border: 1px solid #bbb; padding: 0;
+    width: 44px; height: 44px; border: 1px solid #bbb; padding: 0;
     position: relative; background: #fff;
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
@@ -702,14 +702,14 @@ def render_index(default_size: int) -> str:
   .cell-inner img.ent {{ position: absolute; top: 10%; left: 10%; width: 60%; height: 60%; }}
   .cell-inner img.itm {{ position: absolute; bottom: 4%; right: 4%; width: 30%; height: 30%; }}
   .cell-inner .arrow {{
-    position: absolute; bottom: 0; left: 2px;
-    font-size: 16px; line-height: 16px; color: #222;
+    position: absolute; bottom: -1px; left: 2px;
+    font-size: 13px; line-height: 13px; color: #222;
   }}
   .cell-inner .misc {{
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 18px;
+    font-weight: bold; color: white; text-shadow: 0 0 2px black; font-size: 14px;
   }}
-  .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 8px; opacity: 0.5; }}
+  .cell-inner .xy {{ position: absolute; top: 0; left: 1px; font-size: 7px; opacity: 0.5; }}
   /* "ghost" = a predicted placement drawn on top of an empty cell. One
      ghost per candidate tile (all tiles with p(tile) > threshold).
      Opacity is set inline per element so it can encode the model's
