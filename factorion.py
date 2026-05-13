@@ -1225,9 +1225,8 @@ def _remove_entities(
     """Remove entities from a completed lesson, respecting multi-tile units.
 
     protected_positions: optional set of (x, y) the lesson considers
-    structurally required (e.g. the central inserter in INSERTER_TRANSFER,
-    or the recipe-bearing assembler in ASSEMBLE_1IN_1OUT). Any
-    entity-group containing one of these tiles is excluded from the
+    structurally required (e.g. the central inserter in INSERTER_TRANSFER).
+    Any entity-group containing one of these tiles is excluded from the
     removable pool, so the agent always sees those entities in its
     input. Source/sink are protected unconditionally via the entity-id
     `skip` set below.
@@ -2102,13 +2101,15 @@ def generate_lesson(
             if tp <= 0:
                 continue
 
-            # The assembler + its recipe is structurally required: the
-            # recipe channel cannot be inferred from belts alone, so
-            # without the assembler the lesson is ambiguous. Protect
-            # all 9 assembler tiles from blanking.
+            # The assembler is a valid blanking target: when removed,
+            # the recipe is still inferable from the source (input item)
+            # and sink (output item), which are never blanked. Forcing
+            # the model to place the assembler is the only way the item
+            # head learns to predict non-zero recipes — otherwise every
+            # expert action is on a belt/inserter/splitter, all of which
+            # have empty ITEMS channels.
             min_entities_required = _remove_entities(
                 world_CWH, num_missing_entities, total_entities,
-                protected_positions=asm_tiles,
             )
 
             break

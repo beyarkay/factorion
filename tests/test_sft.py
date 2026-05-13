@@ -268,6 +268,43 @@ class TestGenerateDataset:
             f"got {len(splitter_pairs)} (one per occupied cell — bug)"
         )
 
+    def test_assembler_blanking_yields_nonzero_item_targets(self):
+        """ASSEMBLE_1IN_1OUT lessons must occasionally emit an expert action
+        whose item_id is a real recipe (non-zero). Without this, the item
+        head never learns to predict recipes — see issue #107. We sweep many
+        seeds at a large num_missing_entities so the assembler gets sampled
+        for blanking, then assert at least one non-zero item target appears."""
+        nonzero_item_targets = 0
+        asm_id = str2ent("assembling_machine_1").value
+        asm_pair_count = 0
+        for seed in range(60):
+            try:
+                solved, _ = generate_lesson(
+                    size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                    num_missing_entities=0, seed=seed,
+                )
+                task, _ = generate_lesson(
+                    size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                    num_missing_entities=20, seed=seed,
+                )
+            except Exception:
+                continue
+            for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(solved, task):
+                if eot == 1:
+                    continue
+                if ent_id == asm_id:
+                    asm_pair_count += 1
+                    if item_id != 0:
+                        nonzero_item_targets += 1
+        assert asm_pair_count > 0, (
+            "Assembler was never emitted as an expert action across 60 seeds — "
+            "the lesson generator stopped blanking it"
+        )
+        assert nonzero_item_targets > 0, (
+            f"Got {asm_pair_count} assembler placement pairs but 0 had a "
+            f"non-zero item_id target — recipe channel is being stripped"
+        )
+
     def test_observations_have_diverse_items(self):
         """SFT observations should carry varied item IDs in the ITEMS
         channel (sources/sinks). Without random_item the lessons all
