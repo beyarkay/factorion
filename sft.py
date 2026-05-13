@@ -34,7 +34,17 @@ from factorion import (  # noqa: E402
     blank_entities,
     build_factory,
     entities,
+    str2ent,
 )
+
+# Entities whose env-side semantics REQUIRE a non-zero `item` (= recipe).
+# The item head's CE loss is restricted to placements of these entities,
+# because ~99% of placement samples are belts/inserters/splitters/UG
+# belts with item_id=0 — averaging CE over all of them washes out the
+# rare recipe signal and the head collapses to "always predict NONE".
+# See issue #107 follow-up: val/ASSEMBLE_1IN_1OUT/item_acc was stuck at
+# the trivial 0.952 baseline.
+NEEDS_ITEM_ENT_IDS = frozenset({str2ent("assembling_machine_1").value})
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
@@ -621,6 +631,12 @@ def train_sft(args: SFTArgs):
     )
     agent.to(device)
 
+    # Used by torch.isin() in the train/val loops to gate the item-head
+    # loss to placements of recipe-bearing entities.
+    _needs_item_ids_tensor = torch.tensor(
+        sorted(NEEDS_ITEM_ENT_IDS), dtype=torch.long, device=device
+    )
+
     optimizer = optim.AdamW(agent.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # Scheduler spans every optimizer step (not every epoch) so warmup_frac
@@ -752,7 +768,16 @@ def train_sft(args: SFTArgs):
             loss_misc_per = ce_loss_none(misc_logits, batch_misc)
             loss_ent = (loss_ent_per * placement_mask).sum() / n_place
             loss_dir = (loss_dir_per * placement_mask).sum() / n_place
-            loss_item = (loss_item_per * placement_mask).sum() / n_place
+            # Item loss is gated on entities that actually carry a recipe
+            # (see NEEDS_ITEM_ENT_IDS comment at module top). n_item can be
+            # 0 on batches with no recipe-bearing placements; clamp the
+            # denominator so the term cleanly contributes 0 to the joint
+            # loss in that case.
+            needs_item_mask = (
+                batch_ent.unsqueeze(-1) == _needs_item_ids_tensor
+            ).any(dim=-1).float() * placement_mask
+            n_item = needs_item_mask.sum().clamp(min=1.0)
+            loss_item = (loss_item_per * needs_item_mask).sum() / n_item
             loss_misc = (loss_misc_per * placement_mask).sum() / n_place
 
             loss = (
@@ -896,7 +921,13 @@ def train_sft(args: SFTArgs):
                 misc_logits = agent.misc_head(tile_features)
                 loss_ent_per = ce_loss_none(ent_logits, batch_ent) * placement_mask
                 loss_dir_per = ce_loss_none(dir_logits, batch_dir) * placement_mask
-                loss_item_per = ce_loss_none(item_logits, batch_item) * placement_mask
+                # Item loss is gated on recipe-bearing entities — match
+                # the train-loop gating so val/loss_item is a faithful
+                # estimate of the loss the model is actually optimising.
+                needs_item_mask = (
+                    batch_ent.unsqueeze(-1) == _needs_item_ids_tensor
+                ).any(dim=-1).float() * placement_mask
+                loss_item_per = ce_loss_none(item_logits, batch_item) * needs_item_mask
                 loss_misc_per = ce_loss_none(misc_logits, batch_misc) * placement_mask
 
                 loss_per_sample = (
