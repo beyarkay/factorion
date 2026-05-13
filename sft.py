@@ -194,6 +194,8 @@ class SFTArgs:
     """run greedy rollout eval (log final throughput on val factories) every N epochs (0 disables)"""
     eval_rollouts_max_seeds: int = 100
     """cap on number of val seeds per rollout eval — bounds eval cost"""
+    eval_rollouts_num_envs: int = 8
+    """parallel envs for rollout eval; batches the CNN forward across them"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     chan1: int = 48
@@ -396,13 +398,21 @@ def run_rollout_eval(
     device,
     max_seeds: int = 100,
     eot_threshold: float = 0.5,
+    num_envs: int = 8,
 ) -> tuple[float, dict[str, float], dict[str, int]]:
     """Greedy rollout eval on the held-out val factories.
 
-    For each held-out (seed, kind), spin up FactorioEnv, take greedy
-    argmax actions on every head, and let the EOT head decide when to
-    stop. Final throughput is read directly from the Rust solver after
-    the rollout ends (env step → eot threshold → env max_steps cap).
+    Runs K=num_envs FactorioEnvs in parallel and batches the CNN forward
+    across them, so the cost per eval is ~K× cheaper than the serial
+    version (the big win on GPU/MPS where the batch=1 forward dominates).
+    Envs are refilled from the seed queue as they finish, so all K slots
+    stay busy until the queue drains.
+
+    For each held-out (seed, kind) we greedy-argmax every head and let
+    the EOT head decide when to stop. Final throughput is the last
+    `info['throughput']` the env reported — the env already calls the
+    Rust solver every step, so we don't re-run it. An env that EOTs
+    before stepping inherits the reset-time throughput of 0.
 
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
     in `val/throughput` over training is directly comparable to the
@@ -412,12 +422,8 @@ def run_rollout_eval(
         overall_throughput, per_kind_throughput (keyed by LessonKind.name),
         per_kind_n (sample count per kind in the eval).
     """
-    agent.eval()
     was_training = agent.training
-
-    # Reuse the env id registered in train_sft. SyncVectorEnv-of-one is
-    # unnecessary; we work directly on a FactorioEnv instance.
-    env = FactorioEnv(size=args.size, idx=0)
+    agent.eval()
 
     max_level = args.max_level if args.max_level > 0 else 2 * args.size
 
@@ -432,50 +438,99 @@ def run_rollout_eval(
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
 
+    if not seeds_sorted:
+        if was_training:
+            agent.train()
+        per_kind = {kn: 0.0 for kn in per_kind_throughputs}
+        per_kind_n = {kn: 0 for kn in per_kind_throughputs}
+        return 0.0, per_kind, per_kind_n
+
+    # Cap K at the number of seeds — spinning up more envs than work
+    # items wastes memory.
+    K = max(1, min(num_envs, len(seeds_sorted)))
+    envs = [FactorioEnv(size=args.size, idx=i) for i in range(K)]
+
+    # Pop seeds off the front; each slot harvests its result then pulls
+    # the next one. `current` holds the (seed, kind, last_throughput)
+    # owned by each slot; `active[i]=False` means the slot has no more
+    # work and should be skipped.
+    queue = list(seeds_sorted)
+    active = [True] * K
+    current: list[tuple[int, LessonKind, float]] = [(0, LessonKind.MOVE_ONE_ITEM, 0.0)] * K
+    obs_stack = []
+
+    for i in range(K):
+        s = queue.pop(0)
+        k = LessonKind(val_seeds_to_kind[s])
+        obs, info = envs[i].reset(seed=s, options={
+            'num_missing_entities': max_level, 'kind': k,
+        })
+        current[i] = (s, k, float(info.get('throughput', 0.0)))
+        obs_stack.append(obs)
+
+    obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
+    batch_idx_K = torch.arange(K, device=device)
+
     with torch.no_grad():
-        for seed in seeds_sorted:
-            kind = LessonKind(val_seeds_to_kind[seed])
+        while any(active):
+            # Single CNN forward across all K slots. Inactive slots'
+            # outputs are discarded; the per-eval cost of K-1 stale
+            # forwards at the tail is negligible compared to the
+            # batching win earlier in the queue.
+            encoded = agent.encoder(obs_batch)
+            eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
 
-            obs, _info = env.reset(seed=seed, options={
-                'num_missing_entities': max_level,
-                'kind': kind,
-            })
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            tile_logits = agent.tile_logits(encoded).reshape(K, -1)
+            tile_idx_K = tile_logits.argmax(dim=1)
+            x_K = tile_idx_K // args.size
+            y_K = tile_idx_K % args.size
+            tile_features = encoded[batch_idx_K, :, x_K, y_K]
 
-            for _ in range(env.max_steps):
-                encoded = agent.encoder(obs_t)
-                eot_p = float(torch.sigmoid(agent.eot_head(encoded).squeeze(-1))[0])
-                if eot_p > eot_threshold:
-                    break
+            ent_K = agent.ent_head(tile_features).argmax(dim=1)
+            dir_K = agent.dir_head(tile_features).argmax(dim=1)
+            item_K = agent.item_head(tile_features).argmax(dim=1)
+            misc_K = agent.misc_head(tile_features).argmax(dim=1)
 
-                tile_logits = agent.tile_logits(encoded).reshape(1, -1)
-                tile_idx = int(tile_logits.argmax(dim=1)[0])
-                x = tile_idx // env.size
-                y = tile_idx % env.size
-                tile_features = encoded[0, :, x, y].unsqueeze(0)
+            for i in range(K):
+                if not active[i]:
+                    continue
 
-                action = {
-                    'xy': np.array([x, y], dtype=int),
-                    'entity': int(agent.ent_head(tile_features).argmax(dim=1)[0]),
-                    'direction': int(agent.dir_head(tile_features).argmax(dim=1)[0]),
-                    'item': int(agent.item_head(tile_features).argmax(dim=1)[0]),
-                    'misc': int(agent.misc_head(tile_features).argmax(dim=1)[0]),
-                }
+                finished_via_eot = float(eot_probs[i]) > eot_threshold
+                if not finished_via_eot:
+                    action = {
+                        'xy': np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                        'entity': int(ent_K[i]),
+                        'direction': int(dir_K[i]),
+                        'item': int(item_K[i]),
+                        'misc': int(misc_K[i]),
+                    }
+                    next_obs, _r, terminated, truncated, info = envs[i].step(action)
+                    s, k, _last = current[i]
+                    current[i] = (s, k, float(info.get('throughput', 0.0)))
+                    finished_via_env = bool(terminated or truncated)
+                    if not finished_via_env:
+                        obs_batch[i] = torch.as_tensor(
+                            next_obs, dtype=torch.float32, device=device,
+                        )
+                        continue
 
-                next_obs, _reward, terminated, truncated, _info = env.step(action)
-                if terminated or truncated:
-                    break
-                obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
+                # Slot is finished — harvest and refill (or deactivate).
+                s, k, last_thp = current[i]
+                per_kind_throughputs[k.name].append(last_thp)
+                all_throughputs.append(last_thp)
 
-            # Read final throughput directly from the Rust solver: handles
-            # the corner case of immediate EOT (env never stepped → info
-            # would be stale) and matches the env's normalisation.
-            world_np = env._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
-            thp, _ = factorion_rs.simulate_throughput(world_np)
-            final_throughput = float(thp) / 15.0
-
-            per_kind_throughputs[kind.name].append(final_throughput)
-            all_throughputs.append(final_throughput)
+                if queue:
+                    s = queue.pop(0)
+                    k = LessonKind(val_seeds_to_kind[s])
+                    obs, info = envs[i].reset(seed=s, options={
+                        'num_missing_entities': max_level, 'kind': k,
+                    })
+                    current[i] = (s, k, float(info.get('throughput', 0.0)))
+                    obs_batch[i] = torch.as_tensor(
+                        obs, dtype=torch.float32, device=device,
+                    )
+                else:
+                    active[i] = False
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
     per_kind = {
@@ -983,6 +1038,7 @@ def train_sft(args: SFTArgs):
                 val_seeds_to_kind,
                 device,
                 max_seeds=args.eval_rollouts_max_seeds,
+                num_envs=args.eval_rollouts_num_envs,
             )
             per_kind_metrics["val/throughput"] = overall_thp
             for kn, thp in per_kind_thp.items():
