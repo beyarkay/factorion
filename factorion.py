@@ -476,84 +476,183 @@ def world2html(world_WHC, highlights=None):
     return Html("".join(html))
 
 
+# Factorio 2.0 blueprints encode direction as a 16-step enum (0=N, 4=E,
+# 8=S, 12=W; diagonals at 2/6/10/14). The model uses Direction
+# (NONE=0, N=1, E=2, S=3, W=4). Missing `direction` in a blueprint
+# entity means "facing north" — that's how the encoder elides the
+# default. Diagonals are not representable in the model and are
+# rejected at decode time.
+_BP_DIR_TO_MODEL = {
+    0: Direction.NORTH,
+    4: Direction.EAST,
+    8: Direction.SOUTH,
+    12: Direction.WEST,
+}
+
+# Arrow virtual signals in a constant-combinator marker encode the
+# source/sink direction (see factorion-mod/server/blueprint.py).
+_ARROW_TO_DIR = {
+    "up-arrow": Direction.NORTH,
+    "right-arrow": Direction.EAST,
+    "down-arrow": Direction.SOUTH,
+    "left-arrow": Direction.WEST,
+}
+
+
+def _parse_combinator_marker(e):
+    """Decode a source/sink constant-combinator emitted by the
+    factorion-mod encoder. The marker carries up to three filters in
+    its first section: an item filter (the item that flows), a virtual
+    signal (`signal-output` → source, `signal-input` → sink), and an
+    arrow virtual signal (`up/right/down/left-arrow` → direction).
+    Returns (role, item_name, direction) or None if the combinator
+    isn't a recognized marker."""
+    sections = (
+        e.get("control_behavior", {}).get("sections", {}).get("sections", [])
+    )
+    if not sections:
+        return None
+    filters = sections[0].get("filters", [])
+    role = None
+    item_name = None
+    direction = Direction.NORTH
+    for f in filters:
+        name = f.get("name")
+        if name == "signal-output":
+            role = "source"
+        elif name == "signal-input":
+            role = "sink"
+        elif name in _ARROW_TO_DIR:
+            direction = _ARROW_TO_DIR[name]
+        elif f.get("type") != "virtual":
+            item_name = name
+    if role is None:
+        return None
+    return role, item_name, direction
+
+
 def blueprint2world(bp):
+    """Decode a Factorio 2.0 blueprint string into a (C, W, H) world
+    tensor matching the encoder in factorion-mod/server/blueprint.py.
+
+    Conventions:
+      - Position in a Factorio blueprint is the entity's *center*; for
+        an N×M entity rotated to occupy w×h tiles, top-left tile is
+        floor(center - (w/2, h/2)).
+      - Direction is a 16-step enum (0/4/8/12 = N/E/S/W). Diagonal
+        values (2/6/10/14) are rejected.
+      - Inserter direction in a blueprint points to the drop tile;
+        flip by +8 (mod 16) to get the pickup-pointing model
+        direction.
+      - Source/sink markers are encoded as `constant-combinator`
+        entities carrying signal-output/signal-input + arrow + item
+        filters; they decode to `stack_inserter` / `bulk_inserter`
+        with the corresponding ITEMS / DIRECTION channel values.
+    """
     obj = b64_to_dict(bp)
+    raw_entities = obj.get("blueprint", {}).get("entities", [])
 
-    min_x = float("inf")
-    min_y = float("inf")
-    max_y = -float("inf")
-    max_x = -float("inf")
+    # First pass: resolve each blueprint entity to a placement
+    # (entity_name, top_left_x, top_left_y, w, h, direction, item_value, misc).
+    # Coordinates are in the blueprint's own frame; we translate to a
+    # (0,0)-origin grid after the bounds are known.
+    placements = []
+    for e in raw_entities:
+        name = e["name"]
+        cx = e["position"]["x"]
+        cy = e["position"]["y"]
 
-    for e in obj["blueprint"]["entities"]:
-        # NOTE: might be OBOEs here
-        e["position"]["x"] = int(e["position"]["x"] - 0.5)
-        e["position"]["y"] = int(e["position"]["y"] - 0.5)
+        if name == "constant-combinator":
+            parsed = _parse_combinator_marker(e)
+            if parsed is None:
+                print(
+                    f"WARN: skipping unrecognized constant-combinator at "
+                    f"({cx},{cy})"
+                )
+                continue
+            role, item_name, model_dir = parsed
+            ent_name = "stack_inserter" if role == "source" else "bulk_inserter"
+            tlx = int(cx - 0.5)
+            tly = int(cy - 0.5)
+            item_val = 0
+            if item_name is not None:
+                item_meta = str2item(item_name)
+                if item_meta is not None:
+                    item_val = item_meta.value
+            placements.append(
+                (ent_name, tlx, tly, 1, 1, model_dir, item_val, Misc.NONE)
+            )
+            continue
 
-    for e in obj["blueprint"].get("entities", []) + obj["blueprint"].get(
-        "tiles", []
-    ):
-        min_x = min(min_x, e["position"]["x"])
-        min_y = min(min_y, e["position"]["y"])
-        max_y = max(max_y, e["position"]["y"])
-        max_x = max(max_x, e["position"]["x"])
+        proto = str2ent(name)
+        if proto is None:
+            print(f"WARN: skipping unknown entity {name} at ({cx},{cy})")
+            continue
 
-    for e in obj["blueprint"].get("entities", []):
-        e["position"]["x"] -= min_x
-        e["position"]["y"] -= min_y
-        if "direction" not in e and e["name"] == "transport-belt":
-            # transport belts have an implicit direction
-            e["direction"] = 0
-        # inserter's direction is towards their source, which we don't want, so flip them around
-        if "inserter" in e["name"]:
-            #             print(e)
-            e["direction"] = (e.get("direction", 0) + 8) % 16
+        bp_dir = e.get("direction", 0)
+        if "inserter" in proto.name:
+            # Blueprint direction = drop tile; model direction = pickup.
+            bp_dir = (bp_dir + 8) % 16
+        if bp_dir not in _BP_DIR_TO_MODEL:
+            print(
+                f"WARN: skipping {name} with non-cardinal direction "
+                f"{bp_dir} at ({cx},{cy})"
+            )
+            continue
+        model_dir = _BP_DIR_TO_MODEL[bp_dir]
 
-    # Add one, because of the 0.5 alignment of entities vs tiles
-    world = new_world(width=max_x - min_x + 1, height=max_y - min_y + 1)
+        # Multi-tile entities rotate footprint when facing E/W.
+        w, h = proto.width, proto.height
+        if model_dir in (Direction.EAST, Direction.WEST):
+            w, h = h, w
+        tlx = int(cx - w / 2)
+        tly = int(cy - h / 2)
 
-    # Use Hazard concrete to indicate the footprint
-    world[:, :, Channel.FOOTPRINT.value] = Footprint.UNAVAILABLE.value
-    for t in obj["blueprint"].get("tiles", []):
-        if t["name"] == "refined-hazard-concrete-left":
-            x = t["position"]["x"] - min_x
-            y = t["position"]["y"] - min_y
-            world[x, y, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
-        else:
-            print(f"Ignoring tile {t}")
+        item_val = 0
+        if "assembling_machine" in proto.name:
+            recipe = e.get("recipe")
+            if recipe is not None:
+                recipe_meta = str2item(recipe)
+                if recipe_meta is not None:
+                    item_val = recipe_meta.value
 
-    for e in obj["blueprint"].get("entities", []):
-        entity = str2ent(e["name"])
-        if entity is None:
-            entity = str2ent("empty")
-
-        if "recipe" in e:
-            recipe = str2ent(e["recipe"])
-        else:
-            if len(e.get("filters", [])) == 1:
-                recipe = str2ent(e["filters"][0]["name"])
-            else:
-                recipe = str2ent("empty")
-
-        # underground belts. Output = emerging, input = descending
-        if e.get("type", None) == "output":
-            misc = Misc.UNDERGROUND_UP
-        elif e.get("type", None) == "input":
+        misc = Misc.NONE
+        if e.get("type") == "input":
             misc = Misc.UNDERGROUND_DOWN
-        else:
-            misc = Misc.NONE
+        elif e.get("type") == "output":
+            misc = Misc.UNDERGROUND_UP
 
-        direction = Direction(e.get("direction", -1))
-
-        add_entity(
-            world,
-            e["name"],
-            e["position"]["x"],
-            e["position"]["y"],
-            recipe=recipe.name,
-            direction=direction,
-            misc=misc,
+        placements.append(
+            (proto.name, tlx, tly, w, h, model_dir, item_val, misc)
         )
-    return world
+
+    if not placements:
+        raise ValueError("blueprint contains no recognized entities")
+
+    min_x = min(p[1] for p in placements)
+    min_y = min(p[2] for p in placements)
+    max_x = max(p[1] + p[3] for p in placements)
+    max_y = max(p[2] + p[4] for p in placements)
+    W = max_x - min_x
+    H = max_y - min_y
+
+    world = new_world(width=W, height=H)  # (W, H, C)
+    for name, tlx, tly, w, h, model_dir, item_val, misc in placements:
+        ent = str2ent(name)
+        ox = tlx - min_x
+        oy = tly - min_y
+        for dx in range(w):
+            for dy in range(h):
+                x, y = ox + dx, oy + dy
+                world[x, y, Channel.ENTITIES.value] = ent.value
+                world[x, y, Channel.DIRECTION.value] = model_dir.value
+                if item_val:
+                    world[x, y, Channel.ITEMS.value] = item_val
+                if misc != Misc.NONE:
+                    world[x, y, Channel.MISC.value] = misc.value
+
+    # Return (C, W, H) to match the encoder's input shape.
+    return np.transpose(world, (2, 0, 1))
 
 
 def plot_flow_network(G):
