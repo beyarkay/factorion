@@ -110,11 +110,15 @@ def _make_entity(
     type_: str | None = None,
 ) -> dict:
     e: dict = {"name": name, "position": {"x": cx, "y": cy}}
-    if direction is not None and direction != 0:
-        # Inserter pickup→drop flip
+    if direction is not None:
+        # Inserter pickup→drop flip must happen *before* eliding the
+        # default direction=0; otherwise a model-NORTH inserter (whose
+        # drop side is SOUTH = bp 8) would be emitted with no
+        # `direction` field and round-trip as SOUTH.
         if "inserter" in name:
             direction = (direction + 8) % 16
-        e["direction"] = direction
+        if direction != 0:
+            e["direction"] = direction
     if recipe is not None:
         e["recipe"] = recipe
     if type_ is not None:
