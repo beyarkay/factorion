@@ -7,6 +7,11 @@ non-empty world tensor. To add a new blueprint to the test suite,
 paste the b64 string into a new file under `tests/blueprints/`; pytest
 will pick it up on the next run.
 
+Lines starting with `#` (after any leading whitespace) are treated as
+comments and stripped; blank lines are ignored. A blueprint may also
+be hard-wrapped across multiple non-comment lines — they're
+concatenated on read.
+
 Fixtures that warrant stronger assertions (specific entity counts,
 recipes, directions) get their own named test functions below, which
 load the same fixture file by name.
@@ -37,9 +42,22 @@ if _SERVER_DIR not in sys.path:
 _BP_DIR = Path(__file__).parent / "blueprints"
 
 
+def _read_bp(path: Path) -> str:
+    """Read a blueprint fixture, stripping full-line `#` comments and
+    blank lines. Non-comment lines are concatenated so a blueprint can
+    be hard-wrapped across multiple lines if needed."""
+    parts = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts.append(stripped)
+    return "".join(parts)
+
+
 def _load_bp(name: str) -> str:
     """Read a blueprint fixture by stem (e.g. "gears_factory")."""
-    return (_BP_DIR / f"{name}.txt").read_text().strip()
+    return _read_bp(_BP_DIR / f"{name}.txt")
 
 
 # --- Generic smoke check over every fixture --------------------------------
@@ -54,7 +72,7 @@ def test_blueprint_fixture_decodes(bp_path):
     """Every fixture in tests/blueprints/ must decode into a 5-channel,
     non-empty world tensor. New blueprints get this check for free —
     add specific assertions in a named test below if you want more."""
-    bp = bp_path.read_text().strip()
+    bp = _read_bp(bp_path)
     w = blueprint2world(bp)
     assert w.ndim == 3 and w.shape[0] == 5, (
         f"unexpected tensor shape for {bp_path.name}: {w.shape}"
