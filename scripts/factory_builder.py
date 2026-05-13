@@ -978,12 +978,38 @@ function renderGrid() {{
         if (selected && selected.x === x && selected.y === y) syncEditor();
         scheduleCompute();
       }});
+      // Populated cells are draggable: dragging one onto another tile
+      // moves the *entire* cell state (entity, direction, item, misc,
+      // footprint) and clears the source. Hotbar and tile drags share
+      // the text/plain MIME via a {{kind}}-tagged JSON payload.
+      if (c.entity !== 'empty') {{
+        td.draggable = true;
+        td.addEventListener('dragstart', (ev) => {{
+          ev.dataTransfer.setData(
+            'text/plain',
+            JSON.stringify({{ kind: 'tile', from: {{ x, y }} }}),
+          );
+          ev.dataTransfer.effectAllowed = 'move';
+        }});
+      }}
       td.addEventListener('dragover', (ev) => ev.preventDefault());
       td.addEventListener('drop', (ev) => {{
         ev.preventDefault();
-        const ent = ev.dataTransfer.getData('text/plain');
-        if (!ent) return;
-        placeEntity(x, y, ent);
+        const raw = ev.dataTransfer.getData('text/plain');
+        if (!raw) return;
+        let payload;
+        try {{ payload = JSON.parse(raw); }} catch (_) {{ return; }}
+        if (payload.kind === 'palette') {{
+          placeEntity(x, y, payload.entity);
+        }} else if (payload.kind === 'tile') {{
+          const fx = payload.from.x, fy = payload.from.y;
+          if (fx === x && fy === y) return;
+          grid[y][x] = Object.assign({{}}, grid[fy][fx]);
+          grid[fy][fx] = emptyCell();
+          selected = {{ x, y }};
+          renderGrid(); syncEditor();
+          scheduleCompute();
+        }}
       }});
       tr.appendChild(td);
     }}
@@ -1043,7 +1069,10 @@ function bindHotbar() {{
     const idx = parseInt(el.dataset.slot, 10);
     if (HOTBAR[idx] === null) return;
     el.addEventListener('dragstart', (ev) => {{
-      ev.dataTransfer.setData('text/plain', el.dataset.entity);
+      ev.dataTransfer.setData(
+        'text/plain',
+        JSON.stringify({{ kind: 'palette', entity: el.dataset.entity }}),
+      );
     }});
     el.addEventListener('click', () => setActiveHotbar(idx));
   }});
