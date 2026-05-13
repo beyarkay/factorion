@@ -127,38 +127,59 @@ script.on_event(defines.events.on_player_selected_area, function(event)
       player.print("[Factorion] Set a footprint first.")
       return
     end
+    local added_positions = {}
     for _, tile in pairs(event.tiles or {}) do
       table.insert(state.sources, { x = tile.position.x, y = tile.position.y })
+      table.insert(added_positions,
+        string.format("(%d,%d)", tile.position.x, tile.position.y))
     end
-    player.print(string.format("[Factorion] +%d source(s); total %d.",
-      #(event.tiles or {}), #state.sources))
+    player.print(string.format("[Factorion] +%d source(s) at %s; total %d.",
+      #(event.tiles or {}), table.concat(added_positions, ","), #state.sources))
   end
 end)
 
-script.on_event(defines.events.on_player_alt_selected_area, function(event)
+-- The "alt" variants of selection events have moved around between
+-- Factorio versions. Wire up all three secondary modes so whichever the
+-- player's modifier hits (Shift, Ctrl-Shift, etc.) records sinks.
+
+local function handle_sink_select(event, mode_name)
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   if not player then return end
 
   if event.item == "factorion-footprint-tool" then
-    -- alt-drag = clear footprint
+    -- any secondary on the footprint = clear it
     state.footprint = nil
     state.sources = {}
     state.sinks = {}
-    player.print("[Factorion] Footprint cleared.")
+    player.print(string.format("[Factorion] Footprint cleared (via %s).", mode_name))
 
   elseif event.item == "factorion-marker-tool" then
-    -- right-click = sinks
     if not state.footprint then
       player.print("[Factorion] Set a footprint first.")
       return
     end
+    local added_positions = {}
     for _, tile in pairs(event.tiles or {}) do
       table.insert(state.sinks, { x = tile.position.x, y = tile.position.y })
+      table.insert(added_positions,
+        string.format("(%d,%d)", tile.position.x, tile.position.y))
     end
-    player.print(string.format("[Factorion] +%d sink(s); total %d.",
-      #(event.tiles or {}), #state.sinks))
+    player.print(string.format(
+      "[Factorion] +%d sink(s) at %s; total %d. (via %s)",
+      #(event.tiles or {}), table.concat(added_positions, ","),
+      #state.sinks, mode_name))
   end
+end
+
+script.on_event(defines.events.on_player_alt_selected_area, function(e)
+  handle_sink_select(e, "alt_select")
+end)
+script.on_event(defines.events.on_player_reverse_selected_area, function(e)
+  handle_sink_select(e, "reverse_select")
+end)
+script.on_event(defines.events.on_player_alt_reverse_selected_area, function(e)
+  handle_sink_select(e, "alt_reverse_select")
 end)
 
 script.on_event("factorion-reset", function(event)
@@ -283,19 +304,36 @@ script.on_event("factorion-execute", function(event)
   end
 
   local request = gather_request(state, event.player_index)
-  table.insert(storage.outbox, json_encode(request))
+  local request_json = json_encode(request)
+  table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = event.player_index
   state.pending = { request_id = request.request_id, tick = game.tick }
 
+  -- Log the full payload to factorio-current.log so we can inspect it
+  -- from outside the game when things look wrong.
+  log("[Factorion] enqueued request " .. request.request_id ..
+      " (footprint=" .. tostring(#request.footprint) ..
+      ", sources=" .. tostring(#request.sources) ..
+      ", sinks=" .. tostring(#request.sinks) ..
+      ") json=" .. request_json)
+
   player.print(string.format(
-    "[Factorion] Request %s queued (outbox depth %d). " ..
-    "Waiting for the server to poll and reply…",
-    request.request_id, #storage.outbox))
+    "[Factorion] Request %s queued (footprint=%d sources=%d sinks=%d, " ..
+    "outbox depth %d). Waiting for server…",
+    request.request_id, #request.footprint,
+    #request.sources, #request.sinks, #storage.outbox))
 end)
 
 -- ----------------------------------------------------------------------------
 -- RCON interface: server pushes the prediction back here
 -- ----------------------------------------------------------------------------
+
+-- Re-registration safety: remote.add_interface errors if the name already
+-- exists. On /c game.reload_script() the old interface is still bound, so
+-- the new methods (e.g. dump_state) would never get added. Remove first.
+if remote.interfaces["factorion"] then
+  remote.remove_interface("factorion")
+end
 
 remote.add_interface("factorion", {
   -- The server's poll: pop and return the oldest pending request JSON, or
@@ -337,7 +375,8 @@ remote.add_interface("factorion", {
       player.print("[Factorion] No cursor_stack available.")
       return false
     end
-    if not cursor.is_empty() then
+    -- LuaItemStack:is_empty() was removed in 2.0; use valid_for_read instead.
+    if cursor.valid_for_read then
       cursor.clear()
     end
     if not cursor.set_stack({ name = "blueprint", count = 1 }) then
@@ -397,6 +436,38 @@ remote.add_interface("factorion", {
     return string.format("outbox=%d pending=%d players=%d",
       #storage.outbox, pending_n,
       storage.players and table_size(storage.players) or 0)
+  end,
+
+  -- Headless / debug: dump full state for a given player (or all players).
+  dump_state = function(player_index)
+    storage.players = storage.players or {}
+    local parts = {}
+    for k, p in pairs(storage.players) do
+      if player_index == nil or k == player_index then
+        local fp = p.footprint and string.format("x=%d,y=%d,w=%d,h=%d",
+            p.footprint.x, p.footprint.y, p.footprint.w, p.footprint.h)
+          or "nil"
+        table.insert(parts, string.format(
+          "player[%s]: footprint={%s} #sources=%d #sinks=%d",
+          tostring(k), fp, #(p.sources or {}), #(p.sinks or {})))
+        if p.sources and #p.sources > 0 then
+          local s = {}
+          for _, src in ipairs(p.sources) do
+            table.insert(s, string.format("(%d,%d)", src.x, src.y))
+          end
+          table.insert(parts, "  sources: " .. table.concat(s, ","))
+        end
+        if p.sinks and #p.sinks > 0 then
+          local s = {}
+          for _, snk in ipairs(p.sinks) do
+            table.insert(s, string.format("(%d,%d)", snk.x, snk.y))
+          end
+          table.insert(parts, "  sinks: " .. table.concat(s, ","))
+        end
+      end
+    end
+    if #parts == 0 then return "(no player state)" end
+    return table.concat(parts, "\n")
   end,
 })
 

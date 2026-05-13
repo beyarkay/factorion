@@ -267,25 +267,67 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
 
 def run_inference(
     agent: AgentCNN, req: dict, max_steps: int, device, eot_threshold: float = 0.5,
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict]:
     """Iteratively place entities until eot_head signals "done", the model
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
+
+    # Dump the initial obs summary so we can see what the model is starting from
+    src_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
+               for s in req.get("sources", [])]
+    snk_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
+               for s in req.get("sinks", [])]
+    log.info("  initial sources (x,y,dir,item): %s", src_ids)
+    log.info("  initial sinks   (x,y,dir,item): %s", snk_ids)
+    fp_count = int(obs[Channel.FOOTPRINT.value].sum())
+    log.info("  footprint tiles: %d", fp_count)
+
+    stats = {
+        "steps_taken": 0,
+        "stop_reason": "max_steps",
+        "first_eot_prob": None,
+        "final_eot_prob": None,
+    }
+
     for step in range(max_steps):
         # Ask the model first: do you think we're done?
         with torch.no_grad():
             x = torch.from_numpy(obs).unsqueeze(0).to(device)
-            stop = bool(agent.eot_should_stop(x, threshold=eot_threshold).item())
-        if stop:
-            log.info("Stopped after %d placements (eot_head fired).", step)
+            eot_p = float(agent.eot_prob(x).item())
+        if step == 0:
+            stats["first_eot_prob"] = eot_p
+        stats["final_eot_prob"] = eot_p
+        if eot_p > eot_threshold:
+            log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
+            stats["stop_reason"] = "eot"
+            stats["steps_taken"] = step
             break
         action = _argmax_action(agent, obs, device)
+        ent_id = action["entity"]
+        ent_name = entities[ent_id].name if ent_id in entities else "?"
+        item_id = action["item"]
+        item_name = entities[item_id].name if item_id in entities else "?"
+        log.info(
+            "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
+            step, eot_p, ent_name, ent_id,
+            action["xy"][0], action["xy"][1],
+            action["direction"], item_name, item_id, action["misc"],
+        )
         if not _apply_placement(obs, action):
-            log.info("Stopped after %d placements (model emitted empty).", step)
+            log.info("  → empty/no-op placement, stopping")
+            stats["stop_reason"] = "empty"
+            stats["steps_taken"] = step + 1
             break
+        stats["steps_taken"] = step + 1
     else:
         log.info("Reached max_steps=%d without eot/empty.", max_steps)
-    return obs
+
+    # Summarise final state
+    ent_ch = obs[Channel.ENTITIES.value]
+    placed = int((ent_ch != 0).sum())
+    log.info("Final: %d non-empty tiles in ENTITIES channel", placed)
+    stats["nonzero_entities_tiles"] = placed
+    return obs, stats
 
 
 # --------------------------------------------------------------------------- #
@@ -352,9 +394,50 @@ def handle_request(
              len(req.get("sources", [])), len(req.get("sinks", [])))
 
     t0 = time.time()
-    obs_CWH = run_inference(agent, req, max_steps=max_steps, device=device)
-    bp_str = world_tensor_to_blueprint_string(obs_CWH)
-    log.info("Inference %.2fs; blueprint %d chars", time.time() - t0, len(bp_str))
+    obs_CWH, stats = run_inference(agent, req, max_steps=max_steps, device=device)
+
+    # Embed prediction metadata in the blueprint itself so it's visible in
+    # the player's cursor / inventory — particularly useful for empty
+    # results, where the player would otherwise see a blank blueprint with
+    # no clue why.
+    placeable_count = sum(
+        1 for x in range(obs_CWH.shape[1]) for y in range(obs_CWH.shape[2])
+        if int(obs_CWH[Channel.ENTITIES.value, x, y]) not in (0, _source_id(), _sink_id())
+    )
+    label = f"Factorion: {placeable_count} entities"
+    description = (
+        f"request_id={req['request_id']}\n"
+        f"grid={req['grid_size']}x{req['grid_size']} "
+        f"sources={len(req.get('sources', []))} sinks={len(req.get('sinks', []))}\n"
+        f"steps_taken={stats['steps_taken']} stop_reason={stats['stop_reason']}\n"
+        f"eot_prob first={stats['first_eot_prob']:.3f} final={stats['final_eot_prob']:.3f}\n"
+        f"placeable_entities_in_blueprint={placeable_count}\n"
+        f"non_empty_tiles={stats['nonzero_entities_tiles']}"
+    )
+    bp_str = world_tensor_to_blueprint_string(
+        obs_CWH, label=label, description=description,
+    )
+    log.info("Inference %.2fs; blueprint %d chars  label=%r",
+             time.time() - t0, len(bp_str), label)
+
+    # Decode the blueprint so we can log what's actually inside (entity
+    # counts, names, positions) — easier than eyeballing the b64.
+    try:
+        from factorion import b64_to_dict
+        decoded = b64_to_dict(bp_str)
+        entities_list = decoded.get("blueprint", {}).get("entities", [])
+        log.info("  blueprint contains %d entities:", len(entities_list))
+        for e in entities_list[:40]:  # cap to 40 to avoid log spam
+            log.info("    %s @ (%s,%s) dir=%s%s%s",
+                     e.get("name"), e["position"]["x"], e["position"]["y"],
+                     e.get("direction", "-"),
+                     " recipe=" + e["recipe"] if "recipe" in e else "",
+                     " type=" + e["type"] if "type" in e else "")
+        if len(entities_list) > 40:
+            log.info("    ... and %d more", len(entities_list) - 40)
+        log.info("  blueprint string: %s", bp_str)
+    except Exception:
+        log.exception("Could not decode blueprint for logging")
 
     # Single-quoted Lua string: blueprint b64 alphabet [A-Za-z0-9+/=] plus
     # our "0" version prefix contains no single quotes, so this is safe.
@@ -363,7 +446,9 @@ def handle_request(
     )
     resp = rcon.exec(cmd)
     if resp:
-        log.info("RCON: %s", resp.strip())
+        log.info("RCON reply: %s", resp.strip())
+    else:
+        log.info("RCON reply: (empty — success)")
 
 
 # --------------------------------------------------------------------------- #

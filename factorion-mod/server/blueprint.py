@@ -54,7 +54,12 @@ def _make_entity(
     return e
 
 
-def world_tensor_to_blueprint_dict(world_CWH: np.ndarray) -> dict:
+def world_tensor_to_blueprint_dict(
+    world_CWH: np.ndarray,
+    *,
+    label: str | None = None,
+    description: str | None = None,
+) -> dict:
     """Convert a (channels, W, H) numpy tensor to a Factorio blueprint dict.
 
     Skips:
@@ -138,14 +143,24 @@ def world_tensor_to_blueprint_dict(world_CWH: np.ndarray) -> dict:
     for i, e in enumerate(out_entities, start=1):
         e["entity_number"] = i
 
-    return {
-        "blueprint": {
-            "entities": out_entities,
-            "item": "blueprint",
-            "version": 281479275675648,  # Factorio 2.0 version stamp
-        }
+    bp: dict = {
+        "entities": out_entities,
+        "item": "blueprint",
+        "version": 281479275675648,  # Factorio 2.0 version stamp
     }
+    if label is not None:
+        bp["label"] = label
+    if description is not None:
+        bp["description"] = description
+    return {"blueprint": bp}
 
 
-def world_tensor_to_blueprint_string(world_CWH: np.ndarray) -> str:
-    return dict2b64(world_tensor_to_blueprint_dict(world_CWH))
+def world_tensor_to_blueprint_string(
+    world_CWH: np.ndarray,
+    *,
+    label: str | None = None,
+    description: str | None = None,
+) -> str:
+    return dict2b64(world_tensor_to_blueprint_dict(
+        world_CWH, label=label, description=description,
+    ))
