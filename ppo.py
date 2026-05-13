@@ -331,17 +331,21 @@ class FactorioEnv(gym.Env):
         self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
 
         self.actions = []
+        # Lesson kind is settable per-reset so SFT rollout eval can sweep
+        # every LessonKind on the same env. PPO callers don't pass it and
+        # get the historical MOVE_ONE_ITEM default.
+        kind = self._reset_options.get('kind', LessonKind.MOVE_ONE_ITEM)
         # Generate the solved factory first (same seed → same layout),
         # then re-generate with missing entities for the actual episode.
         self._solved_world_CWH, _ = generate_lesson(
             size=self.size,
-            kind=LessonKind.MOVE_ONE_ITEM,
+            kind=kind,
             num_missing_entities=0,
             seed=self._seed,
         )
         self._world_CWH, min_entities_required = generate_lesson(
             size=self.size,
-            kind=LessonKind.MOVE_ONE_ITEM,
+            kind=kind,
             num_missing_entities=self._num_missing_entities,
             seed=self._seed,
         )
@@ -491,18 +495,22 @@ class FactorioEnv(gym.Env):
         frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
         frac_hallucin = 0
 
-        # Give some small reward for having the belt be the right direction
+        # Give some small reward for having the belt be the right direction.
+        # Only meaningful when the layout has exactly one sink (the
+        # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT,
+        # INSERTER_TRANSFER) place multiple sinks or none, so this shaping
+        # term gets zeroed instead of asserting.
         sink_locs = torch.where(self._world_CWH[Channel.ENTITIES.value] == self._sink_id)
-        assert len(sink_locs[0]) == len(sink_locs[1]) == 1, f"Expected 1 bulk inserter, found {sink_locs} in world {self._world_CWH}"
         C, W, H = self._world_CWH.shape
-        w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
-        w_belt = torch.clamp(w_sink, 1, W-2)
-        h_belt = torch.clamp(h_sink, 1, H-2)
-
-        final_belt_dir = self._world_CWH[Channel.DIRECTION.value, w_belt, h_belt]
-        sink_dir = self._world_CWH[Channel.DIRECTION.value, w_sink, h_sink]
-
-        final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
+        if len(sink_locs[0]) == 1:
+            w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
+            w_belt = torch.clamp(w_sink, 1, W-2)
+            h_belt = torch.clamp(h_sink, 1, H-2)
+            final_belt_dir = self._world_CWH[Channel.DIRECTION.value, w_belt, h_belt]
+            sink_dir = self._world_CWH[Channel.DIRECTION.value, w_sink, h_sink]
+            final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
+        else:
+            final_dir_reward = 0.0
 
         material_cost = (
             1.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('transport_belt').value).sum()

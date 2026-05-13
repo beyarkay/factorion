@@ -190,6 +190,10 @@ class SFTArgs:
     """loss weight for the EOT (end-of-trajectory) BCE head"""
     val_frac: float = 0.1
     """fraction of data for validation"""
+    eval_rollouts_every_n_epochs: int = 5
+    """run greedy rollout eval (log final throughput on val factories) every N epochs (0 disables)"""
+    eval_rollouts_max_seeds: int = 100
+    """cap on number of val seeds per rollout eval — bounds eval cost"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     chan1: int = 48
@@ -385,6 +389,106 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
     )
 
 
+def run_rollout_eval(
+    agent,
+    args: SFTArgs,
+    val_seeds_to_kind: dict[int, int],
+    device,
+    max_seeds: int = 100,
+    eot_threshold: float = 0.5,
+) -> tuple[float, dict[str, float], dict[str, int]]:
+    """Greedy rollout eval on the held-out val factories.
+
+    For each held-out (seed, kind), spin up FactorioEnv, take greedy
+    argmax actions on every head, and let the EOT head decide when to
+    stop. Final throughput is read directly from the Rust solver after
+    the rollout ends (env step → eot threshold → env max_steps cap).
+
+    The (seed, kind) pairs are exactly the val_accuracy set — so a rise
+    in `val/throughput` over training is directly comparable to the
+    existing per-kind val accuracy curves.
+
+    Returns:
+        overall_throughput, per_kind_throughput (keyed by LessonKind.name),
+        per_kind_n (sample count per kind in the eval).
+    """
+    agent.eval()
+    was_training = agent.training
+
+    # Reuse the env id registered in train_sft. SyncVectorEnv-of-one is
+    # unnecessary; we work directly on a FactorioEnv instance.
+    env = FactorioEnv(size=args.size, idx=0)
+
+    max_level = args.max_level if args.max_level > 0 else 2 * args.size
+
+    # Deterministic, run-stable subsample of val seeds. Sorting first
+    # makes the selection independent of dict iteration order, then we
+    # shuffle with args.seed so different runs see the same selection.
+    seeds_sorted = sorted(val_seeds_to_kind.keys())
+    rng = random.Random(args.seed)
+    rng.shuffle(seeds_sorted)
+    seeds_sorted = seeds_sorted[:max_seeds]
+
+    per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
+    all_throughputs: list[float] = []
+
+    with torch.no_grad():
+        for seed in seeds_sorted:
+            kind = LessonKind(val_seeds_to_kind[seed])
+
+            obs, _info = env.reset(seed=seed, options={
+                'num_missing_entities': max_level,
+                'kind': kind,
+            })
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+
+            for _ in range(env.max_steps):
+                encoded = agent.encoder(obs_t)
+                eot_p = float(torch.sigmoid(agent.eot_head(encoded).squeeze(-1))[0])
+                if eot_p > eot_threshold:
+                    break
+
+                tile_logits = agent.tile_logits(encoded).reshape(1, -1)
+                tile_idx = int(tile_logits.argmax(dim=1)[0])
+                x = tile_idx // env.size
+                y = tile_idx % env.size
+                tile_features = encoded[0, :, x, y].unsqueeze(0)
+
+                action = {
+                    'xy': np.array([x, y], dtype=int),
+                    'entity': int(agent.ent_head(tile_features).argmax(dim=1)[0]),
+                    'direction': int(agent.dir_head(tile_features).argmax(dim=1)[0]),
+                    'item': int(agent.item_head(tile_features).argmax(dim=1)[0]),
+                    'misc': int(agent.misc_head(tile_features).argmax(dim=1)[0]),
+                }
+
+                next_obs, _reward, terminated, truncated, _info = env.step(action)
+                if terminated or truncated:
+                    break
+                obs_t = torch.as_tensor(next_obs, dtype=torch.float32, device=device).unsqueeze(0)
+
+            # Read final throughput directly from the Rust solver: handles
+            # the corner case of immediate EOT (env never stepped → info
+            # would be stale) and matches the env's normalisation.
+            world_np = env._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            thp, _ = factorion_rs.simulate_throughput(world_np)
+            final_throughput = float(thp) / 15.0
+
+            per_kind_throughputs[kind.name].append(final_throughput)
+            all_throughputs.append(final_throughput)
+
+    overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
+    per_kind = {
+        kn: (float(np.mean(ts)) if ts else 0.0)
+        for kn, ts in per_kind_throughputs.items()
+    }
+    per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
+
+    if was_training:
+        agent.train()
+    return overall, per_kind, per_kind_n
+
+
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
     random.seed(args.seed)
@@ -421,6 +525,16 @@ def train_sft(args: SFTArgs):
         f"{n_seeds - n_val_seeds} lessons, {len(val_idx)} val pairs from "
         f"{n_val_seeds} lessons (no factory overlap)"
     )
+
+    # (seed -> kind_int) for every held-out lesson. generate_dataset bumps
+    # `seed` once per lesson, so each val seed maps to a unique kind. This
+    # is the set of factories the rollout eval will replay end-to-end —
+    # same lessons as val accuracy, so the two metrics are directly
+    # comparable.
+    val_seeds_to_kind: dict[int, int] = {}
+    for s, k in zip(lesson_seeds.tolist(), lesson_kinds.tolist()):
+        if s in val_seeds:
+            val_seeds_to_kind[s] = k
 
     train_ds = TensorDataset(
         obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx],
@@ -855,6 +969,29 @@ def train_sft(args: SFTArgs):
             per_kind_metrics[f"val/{k.name}/item_acc"] = per_kind_item_correct[k.name] / n
             per_kind_metrics[f"val/{k.name}/misc_acc"] = per_kind_misc_correct[k.name] / n
 
+        # Rollout eval: every N epochs greedy-play the held-out factories
+        # and record final throughput. Same lessons as val accuracy, so
+        # val/throughput is directly comparable to val/acc curves.
+        do_rollout = (
+            args.eval_rollouts_every_n_epochs > 0
+            and (epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs)
+        )
+        if do_rollout and len(val_seeds_to_kind) > 0:
+            overall_thp, per_kind_thp, per_kind_thp_n = run_rollout_eval(
+                agent,
+                args,
+                val_seeds_to_kind,
+                device,
+                max_seeds=args.eval_rollouts_max_seeds,
+            )
+            per_kind_metrics["val/throughput"] = overall_thp
+            for kn, thp in per_kind_thp.items():
+                if per_kind_thp_n[kn] > 0:
+                    per_kind_metrics[f"val/{kn}/throughput"] = thp
+        else:
+            overall_thp = None
+            per_kind_thp_n = {}
+
         print(
             f"Epoch {epoch:3d}/{args.epochs} | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
@@ -863,6 +1000,7 @@ def train_sft(args: SFTArgs):
             f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f} "
             f"item={val_item_acc:.3f} misc={val_misc_acc:.3f} "
             f"eot={val_eot_acc:.3f} eot+={val_eot_pos_recall:.3f})"
+            + (f"  val_thp={overall_thp:.3f}" if overall_thp is not None else "")
         )
         if per_kind_metrics:
             kind_summary = "  ".join(

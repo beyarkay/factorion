@@ -23,6 +23,7 @@ from sft import (
     build_lr_schedule,
     extract_expert_actions,
     generate_dataset,
+    run_rollout_eval,
     train_sft,
 )
 from ppo import FactorioEnv, AgentCNN, make_env
@@ -464,6 +465,94 @@ class TestTrainSFTEndToEnd:
         assert "best_val_acc" in s
         assert s["num_samples"] == 100
         assert s["epochs"] == 2
+
+
+class TestRunRolloutEval:
+    """End-to-end coverage of greedy rollout eval on held-out val factories."""
+
+    def _build_val_seeds_to_kind(self, size, num_kinds=4, start_seed=10_000):
+        """Iterate seeds until we have `num_kinds` (seed -> kind) pairs each
+        of which produces a valid lesson at max_level. Mirrors the
+        try/except-continue pattern that generate_dataset uses for malformed
+        seeds, so this fixture doesn't get flaky when an enum value lands a
+        bad seed."""
+        from factorion import generate_lesson  # noqa: E402
+        kinds = list(LessonKind)
+        out: dict[int, int] = {}
+        seed = start_seed
+        max_level = 2 * size
+        while len(out) < num_kinds and seed < start_seed + 1000:
+            kind = kinds[len(out) % len(kinds)]
+            try:
+                generate_lesson(size=size, kind=kind, num_missing_entities=max_level, seed=seed)
+            except Exception:
+                seed += 1
+                continue
+            out[seed] = kind.value
+            seed += 1
+        return out
+
+    def test_returns_throughput_in_unit_range(self, registered_env):
+        """Untrained agent on tiny grid should return well-formed throughput
+        numbers — overall in [0, 1] and per-kind in [0, 1] for any kind that
+        was eval'd."""
+        size = 5
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
+                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
+        assert len(val_seeds_to_kind) >= 1, "Sanity: at least one valid lesson"
+
+        overall, per_kind, per_kind_n = run_rollout_eval(
+            agent, args, val_seeds_to_kind, device=torch.device("cpu"),
+            max_seeds=len(val_seeds_to_kind),
+        )
+
+        assert 0.0 <= overall <= 1.5, f"overall throughput out of range: {overall}"
+        total_n = sum(per_kind_n.values())
+        assert total_n == len(val_seeds_to_kind), (
+            f"per-kind n totals {total_n}, expected {len(val_seeds_to_kind)}"
+        )
+        for kn, thp in per_kind.items():
+            assert 0.0 <= thp <= 1.5, f"{kn}: throughput out of range: {thp}"
+
+    def test_max_seeds_caps_eval(self, registered_env):
+        """max_seeds should bound the rollout count even when the val set
+        is larger."""
+        size = 5
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
+                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=6)
+        assert len(val_seeds_to_kind) >= 3
+
+        _overall, _per_kind, per_kind_n = run_rollout_eval(
+            agent, args, val_seeds_to_kind, device=torch.device("cpu"),
+            max_seeds=2,
+        )
+        assert sum(per_kind_n.values()) == 2
+
+    def test_empty_val_seeds_is_safe(self, registered_env):
+        """Empty val_seeds_to_kind should return zero/empty results without
+        crashing (defensive — the caller already guards on len(...)>0)."""
+        size = 5
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
+                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        overall, per_kind, per_kind_n = run_rollout_eval(
+            agent, args, {}, device=torch.device("cpu"),
+        )
+        assert overall == 0.0
+        assert sum(per_kind_n.values()) == 0
 
 
 class TestEotHead:
