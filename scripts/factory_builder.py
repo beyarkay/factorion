@@ -773,7 +773,8 @@ Rotate selected: r (cw), R (ccw)
 Clear selected: Delete / Backspace / right-click
 Deselect hotbar: Esc
 Generate lesson: g
-Apply prediction: a">[?]</span>
+Apply prediction: a
+Resize / clear grid: c">[?]</span>
 </h1>
 
 <div class="layout">
@@ -782,7 +783,7 @@ Apply prediction: a">[?]</span>
     <div class="hotbar" id="hotbar">{hotbar_html}</div>
     <div class="controls">
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
-      <button id="resize" title="Resize the grid and clear all cells">resize / clear</button>
+      <button id="resize" title="Resize the grid and clear all cells">resize / clear <span class="kbd">c</span></button>
       <button id="export" title="Copy {{size, grid}} JSON to clipboard">copy state JSON</button>
     </div>
     <div class="controls action-row">
@@ -1355,6 +1356,9 @@ document.addEventListener('keydown', (ev) => {{
   }}
   if (ev.key === 'g') {{ generateLesson(); ev.preventDefault(); return; }}
   if (ev.key === 'a') {{ applyPrediction(); ev.preventDefault(); return; }}
+  if (ev.key === 'c') {{
+    document.getElementById('resize').click(); ev.preventDefault(); return;
+  }}
   if (ev.key === 'Escape') {{
     if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
