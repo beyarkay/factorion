@@ -137,7 +137,7 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
-    size: int = 8
+    size: int = 12
     """The width and height of the factory"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
@@ -225,7 +225,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 5,
+        size: int = 12,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,

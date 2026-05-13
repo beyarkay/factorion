@@ -1433,7 +1433,7 @@ def _remove_entities(
 
 
 def build_factory(
-    size: int = 5,
+    size: int = 12,
     kind: LessonKind = LessonKind.MOVE_ONE_ITEM,
     *,
     seed: Optional[int] = None,

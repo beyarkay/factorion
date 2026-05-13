@@ -1,6 +1,6 @@
 """Tests that FactorioEnv works with various grid sizes.
 
-Verifies that creating environments with size=8 (new default) and size=12
+Verifies that creating environments with size=8 and size=12 (the default)
 and running random steps doesn't crash.
 """
 
@@ -69,8 +69,8 @@ class TestGridSizes:
                 obs, info = env.reset()
         env.close()
 
-    def test_default_size_is_8(self):
-        """Verify the default size in Args is 8."""
+    def test_default_size_is_12(self):
+        """Verify the default size in Args is 12."""
         from ppo import Args
         args = Args()
-        assert args.size == 8
+        assert args.size == 12
