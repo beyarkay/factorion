@@ -750,6 +750,13 @@ def render_index(default_size: int) -> str:
   }}
   .kbd-help:hover, .kbd-help:focus {{ background: #fff5cc; outline: none; }}
   .sel-coord {{ font-family: monospace; color: #888; font-weight: normal; }}
+  .kbd {{
+    display: inline-block; min-width: 1em; padding: 0 0.3em;
+    margin-left: 0.3em; font-size: 0.8em; font-family: monospace;
+    color: #333; background: #f4f4f4; border: 1px solid #bbb;
+    border-radius: 3px; line-height: 1.2;
+  }}
+  .action-row button {{ display: inline-flex; align-items: center; }}
   details summary {{
     cursor: pointer; font-size: 0.85em; color: #555;
     user-select: none; padding: 0.2em 0;
@@ -778,12 +785,17 @@ Apply prediction: a">[?]</span>
       <button id="resize" title="Resize the grid and clear all cells">resize / clear</button>
       <button id="export" title="Copy {{size, grid}} JSON to clipboard">copy state JSON</button>
     </div>
-    <div class="controls">
+    <div class="controls action-row">
       <label>lesson
         <select id="lesson-kind">{lesson_options}</select>
       </label>
       <label>seed <input id="lesson-seed" type="number" value="0" step="1"></label>
-      <button id="lesson-generate">Generate lesson</button>
+      <button id="lesson-generate" title="Build a fully-formed factory of the chosen lesson kind at the given seed, then bump the seed for the next click">
+        Generate lesson <span class="kbd">g</span>
+      </button>
+      <button id="grid-apply" title="Apply the model's predicted placement at the highlighted tile">
+        Apply prediction <span class="kbd">a</span>
+      </button>
       <span id="lesson-status" class="help"></span>
     </div>
     <div class="grid-graph-row">
@@ -1289,6 +1301,7 @@ async function generateLesson() {{
   }}
 }}
 document.getElementById('lesson-generate').addEventListener('click', generateLesson);
+document.getElementById('grid-apply').addEventListener('click', applyPrediction);
 
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
@@ -1323,6 +1336,8 @@ document.addEventListener('keydown', (ev) => {{
   if (ev.key === 'Delete' || ev.key === 'Backspace') {{
     clearSelected(); ev.preventDefault(); return;
   }}
+  if (ev.key === 'g') {{ generateLesson(); ev.preventDefault(); return; }}
+  if (ev.key === 'a') {{ applyPrediction(); ev.preventDefault(); return; }}
   if (ev.key === 'Escape') {{
     if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
