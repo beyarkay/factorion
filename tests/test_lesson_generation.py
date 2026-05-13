@@ -1602,6 +1602,44 @@ class TestAssemble1In1OutInserterGeometry:
                 f"non-corner perimeter slot of the assembler at ({ax},{ay})"
             )
 
+    @pytest.mark.parametrize("seed", range(50))
+    def test_source_and_sink_not_on_assembler_perimeter(self, seed):
+        """REGRESSION: AssemblingMachine::connections in factorion_rs treats
+        Source/Sink as inserter-like. If a Source happens to land on an
+        unused perimeter slot, it creates a phantom infinite-rate edge
+        directly into the assembler, bypassing the input inserter
+        bottleneck. The Sink mirror would drain at infinite rate, masking
+        any output-inserter cap. The generator must never place Source or
+        Sink on any of the 12 non-corner perimeter slots.
+        """
+        f = build_factory(
+            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
+        )
+        assert f is not None
+        world = f.world_CWH
+        asm = _asm_tiles(world)
+        ax = min(x for x, _ in asm)
+        ay = min(y for _, y in asm)
+        # Only the 12 non-corner perimeter slots are problematic; corners
+        # are skipped by AssemblingMachine::connections.
+        bad_slots = set()
+        for d in range(3):
+            bad_slots.add((ax + d, ay - 1))   # north
+            bad_slots.add((ax + d, ay + 3))   # south
+            bad_slots.add((ax - 1, ay + d))   # west
+            bad_slots.add((ax + 3, ay + d))   # east
+
+        ent = world[Channel.ENTITIES.value]
+        for v in [str2ent("source").value, str2ent("sink").value]:
+            for p in (ent == v).nonzero(as_tuple=False):
+                pos = (p[0].item(), p[1].item())
+                assert pos not in bad_slots, (
+                    f"seed={seed}: {entities[v].name} at {pos} is on a "
+                    f"non-corner perimeter slot of the assembler at "
+                    f"({ax},{ay}) — would create a phantom infinite-rate "
+                    f"edge, bypassing the inserter bottleneck"
+                )
+
 
 class TestAssemble1In1OutConnectivity:
     """The graph must form a continuous source → … → sink path that passes

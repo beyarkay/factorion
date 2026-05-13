@@ -2009,8 +2009,21 @@ def build_factory(
             if any(c in asm_tiles for c in key_cells):
                 continue
 
+            # Compute ALL 12 non-corner perimeter slots and exclude them
+            # from the source/sink candidate set. A Source/Sink placed on
+            # a perimeter slot is treated as an inserter by
+            # AssemblingMachine::connections (Source/Sink are inserter-
+            # like), which would feed/drain the assembler at infinite
+            # rate — bypassing the input/output inserter bottleneck and
+            # breaking the closed-form throughput.
+            all_perim = {
+                (ax + ddx, ay + ddy)
+                for ddx, ddy, _, _ in perim_slots
+                if 0 <= ax + ddx < W and 0 <= ay + ddy < H
+            }
+
             # Pick source + sink positions outside everything reserved
-            reserved = asm_tiles | set(key_cells)
+            reserved = asm_tiles | set(key_cells) | all_perim
             available = [
                 (x, y)
                 for x in range(W)
