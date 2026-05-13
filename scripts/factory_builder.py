@@ -45,7 +45,9 @@ from factorion import (  # noqa: E402
     Channel,
     Direction,
     Footprint,
+    LessonKind,
     Misc,
+    build_factory,
     ent_str2b64img,
     entities,
     items,
@@ -145,6 +147,74 @@ def build_world(grid: list[list[dict]]) -> torch.Tensor:
             footprint = cell.get("footprint", "AVAILABLE")
             world[x, y, Channel.FOOTPRINT.value] = Footprint[footprint].value
     return torch.tensor(world)
+
+
+def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
+    """Inverse of :func:`build_world`: convert a (C, W, H) world tensor
+    into the JSON grid format the JS frontend uses
+    (``grid[y][x] = {entity, direction, item, misc, footprint}``)."""
+    _, W, H = world_CWH.shape
+    name_for_value = {it.value: it.name for it in items.values()}
+    dir_for_value = {d.value: d.name for d in Direction}
+    misc_for_value = {m.value: m.name for m in Misc}
+    footprint_for_value = {f.value: f.name for f in Footprint}
+    rows: list[list[dict]] = []
+    for y in range(H):
+        row: list[dict] = []
+        for x in range(W):
+            ent_v = int(world_CWH[Channel.ENTITIES.value, x, y].item())
+            dir_v = int(world_CWH[Channel.DIRECTION.value, x, y].item())
+            item_v = int(world_CWH[Channel.ITEMS.value, x, y].item())
+            misc_v = int(world_CWH[Channel.MISC.value, x, y].item())
+            foot_v = int(world_CWH[Channel.FOOTPRINT.value, x, y].item())
+            row.append({
+                "entity": name_for_value.get(ent_v, "empty"),
+                "direction": dir_for_value.get(dir_v, "NONE"),
+                "item": name_for_value.get(item_v, "empty"),
+                "misc": misc_for_value.get(misc_v, "NONE"),
+                "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
+            })
+        rows.append(row)
+    return rows
+
+
+# Cap retries so a misconfigured (size, kind) pair fails fast with a
+# clear error rather than spinning forever. build_factory's rejection
+# sampler usually succeeds in a handful of tries; 200 is generous.
+_LESSON_RETRY_BUDGET = 200
+
+
+def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
+    """Build a complete factory of the given lesson kind + seed and
+    return its grid in the JSON format the frontend expects.
+
+    `build_factory` returns None when its random layout search doesn't
+    find a valid configuration. We follow the docstring's recommended
+    retry idiom: advance the seed and try again. The seed that actually
+    produced the factory is returned as ``used_seed`` so the UI can show
+    it; ``next_seed = used_seed + 1`` is what the UI advances to so
+    repeated clicks produce distinct variants."""
+    try:
+        kind = LessonKind[kind_name]
+    except KeyError as e:
+        raise ValueError(f"unknown lesson kind: {kind_name!r}") from e
+    attempt_seed = int(seed)
+    for _ in range(_LESSON_RETRY_BUDGET):
+        factory = build_factory(size=size, kind=kind, seed=attempt_seed)
+        if factory is not None:
+            return {
+                "size": size,
+                "grid": world_CWH_to_grid(factory.world_CWH),
+                "used_seed": attempt_seed,
+                "next_seed": attempt_seed + 1,
+                "total_entities": int(factory.total_entities),
+            }
+        attempt_seed += 1
+    raise RuntimeError(
+        f"build_factory returned None for {_LESSON_RETRY_BUDGET} consecutive "
+        f"seeds (kind={kind_name}, size={size}, start_seed={seed}) — the "
+        f"grid may be too small for this lesson."
+    )
 
 
 def render_graph_png(grid: list[list[dict]]) -> dict:
@@ -470,7 +540,15 @@ def _icon_b64(name: str) -> str:
 
 
 PALETTE_ICONS = {n: _icon_b64(n) for n in PLACEABLE_ENTITIES + ["empty"]}
-ITEM_ICONS = {n: _icon_b64(n) for n in NON_PLACEABLE_ITEMS}
+# Generated lessons can put *any* item in the ITEMS channel (recipe /
+# filter), so cache an icon for every known item — not just the curated
+# few in NON_PLACEABLE_ITEMS. _icon_b64 already silently returns "" for
+# items without a PNG asset.
+ITEM_ICONS = {
+    it.name: _icon_b64(it.name)
+    for it in items.values()
+    if it.name != "empty" and it.name not in PALETTE_ICONS
+}
 
 
 def render_index(default_size: int) -> str:
@@ -503,11 +581,24 @@ def render_index(default_size: int) -> str:
         f'<option value="{n}">{n}</option>'
         for n in (["empty"] + PLACEABLE_ENTITIES + NON_PLACEABLE_ITEMS)
     )
+    # The recipe/filter dropdown can hold any item, not just the curated
+    # palette set — generated lessons routinely set obscure recipes
+    # (e.g. burner_mining_drill) and we want them visible + editable.
+    all_item_names = sorted(
+        {it.name for it in items.values() if it.name != "empty"}
+    )
+    all_item_options = "".join(
+        f'<option value="{n}">{n}</option>'
+        for n in (["empty"] + all_item_names)
+    )
     direction_options = "".join(
         f'<option value="{d}">{d}</option>' for d in DIRECTIONS
     )
     misc_options = "".join(
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
+    )
+    lesson_options = "".join(
+        f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
 
     # Always rendered now — the section exposes a load form so the user
@@ -672,6 +763,14 @@ def render_index(default_size: int) -> str:
       <button id="compute">Compute graph</button>
       <button id="export">copy state JSON</button>
     </div>
+    <div class="controls">
+      <label>lesson
+        <select id="lesson-kind">{lesson_options}</select>
+      </label>
+      <label>seed <input id="lesson-seed" type="number" value="0" step="1"></label>
+      <button id="lesson-generate">Generate lesson</button>
+      <span id="lesson-status" class="help"></span>
+    </div>
     <div class="grid-graph-row">
       <div id="grid-host"></div>
       <div class="graph-view">
@@ -693,7 +792,7 @@ def render_index(default_size: int) -> str:
       <select id="ed-direction">{direction_options}</select>
     </label>
     <label>item (recipe / filter)
-      <select id="ed-item">{item_options}</select>
+      <select id="ed-item">{all_item_options}</select>
     </label>
     <label>misc
       <select id="ed-misc">{misc_options}</select>
@@ -1142,6 +1241,41 @@ async function loadModel() {{
     btn.disabled = false;
   }}
 }}
+async function generateLesson() {{
+  const kind = document.getElementById('lesson-kind').value;
+  const seed = parseInt(document.getElementById('lesson-seed').value, 10);
+  const status = document.getElementById('lesson-status');
+  const btn = document.getElementById('lesson-generate');
+  if (!Number.isFinite(seed)) {{ status.textContent = 'invalid seed'; return; }}
+  btn.disabled = true;
+  status.textContent = 'building…';
+  try {{
+    const resp = await fetch('/load_lesson', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ kind, seed, size: SIZE }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{ status.textContent = 'error: ' + data.error; return; }}
+    SIZE = data.size;
+    grid = data.grid;
+    selected = null;
+    prediction = null;
+    document.getElementById('size').value = SIZE;
+    document.getElementById('lesson-seed').value = data.next_seed;
+    status.textContent =
+      'built ' + kind + ' (seed=' + data.used_seed +
+      ', ' + data.total_entities + ' entities)';
+    renderGrid(); syncEditor();
+    scheduleCompute();
+  }} catch (e) {{
+    status.textContent = 'failed: ' + e;
+  }} finally {{
+    btn.disabled = false;
+  }}
+}}
+document.getElementById('lesson-generate').addEventListener('click', generateLesson);
+
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
   if (!Number.isFinite(n) || n < 2 || n > 20) return;
@@ -1219,7 +1353,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path not in ("/graph", "/predict", "/load_model"):
+        if self.path not in ("/graph", "/predict", "/load_model", "/load_lesson"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -1230,6 +1364,12 @@ class Handler(BaseHTTPRequestHandler):
                 result = render_graph_png(payload["grid"])
             elif self.path == "/predict":
                 result = _predict(payload["grid"])
+            elif self.path == "/load_lesson":
+                result = _load_lesson(
+                    kind_name=payload["kind"],
+                    seed=int(payload["seed"]),
+                    size=int(payload["size"]),
+                )
             else:
                 result = _swap_model(
                     kind=payload.get("kind", ""),
