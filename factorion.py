@@ -798,6 +798,131 @@ def _count_removable_entity_units(world_CWH):
     return count
 
 
+_OPPOSITE_DIR = {
+    Direction.NORTH: Direction.SOUTH,
+    Direction.SOUTH: Direction.NORTH,
+    Direction.EAST: Direction.WEST,
+    Direction.WEST: Direction.EAST,
+}
+
+
+def _extend_belt_chains(world_CWH):
+    """Look for the pattern ``empty+ <source|sink> belt`` and, for each
+    match, push the marker backward into the empty run while filling
+    the vacated tiles with belts in the chain's flow direction.
+
+    Per-marker rules:
+      - The scan direction is fixed by the marker: a source pushes
+        items along its ``direction``, so the belt sits in that
+        direction and empties extend the opposite way. A sink receives
+        items in its ``direction``, so the feeder belt sits in the
+        opposite direction and empties extend on the sink's output
+        side.
+      - The adjacent belt must face the marker's flow direction
+        (coherence check); mis-aligned chains are left alone since
+        extending them would just compound a broken flow.
+      - The run of empties behind the marker is counted up to the
+        first non-empty cell (or the world edge); call its length
+        ``K``. We sample ``J ∼ Uniform{0, …, K}`` and apply the
+        extension only when ``J > 0`` — so some matches turn into
+        no-ops (giving augmentation variety) and the maximum is never
+        guaranteed.
+
+    Multiple markers are processed in shuffled order. Each marker is
+    handled at most once; extensions only relocate the marker that
+    triggered them and fill cells behind it, so other markers'
+    positions stay valid.
+    """
+    out = world_CWH.clone()
+    _, W, H = out.shape
+
+    src_id = str2ent("stack_inserter").value
+    snk_id = str2ent("bulk_inserter").value
+    tb_id = str2ent("transport_belt").value
+    empty_id = str2ent("empty").value
+    marker_ids = {src_id, snk_id}
+
+    ent_ch = out[Channel.ENTITIES.value]
+    dir_ch = out[Channel.DIRECTION.value]
+    item_ch = out[Channel.ITEMS.value]
+
+    markers = [
+        (x, y)
+        for x in range(W)
+        for y in range(H)
+        if int(ent_ch[x, y]) in marker_ids
+    ]
+    random.shuffle(markers)
+
+    for mx, my in markers:
+        marker_id_val = int(ent_ch[mx, my])
+        if marker_id_val not in marker_ids:
+            continue  # another extension already cleared this tile
+
+        marker_dir_val = int(dir_ch[mx, my])
+        try:
+            marker_dir_enum = Direction(marker_dir_val)
+        except ValueError:
+            continue
+        if marker_dir_enum == Direction.NONE:
+            continue
+
+        if marker_id_val == src_id:
+            scan_dir = marker_dir_enum
+        else:
+            scan_dir = _OPPOSITE_DIR[marker_dir_enum]
+        dx, dy = DIR_TO_DELTA[scan_dir]
+
+        belt_x, belt_y = mx + dx, my + dy
+        if not (0 <= belt_x < W and 0 <= belt_y < H):
+            continue
+        if int(ent_ch[belt_x, belt_y]) != tb_id:
+            continue
+        if int(dir_ch[belt_x, belt_y]) != marker_dir_val:
+            # Belt isn't aligned with the marker's flow direction; the
+            # chain bends or breaks here, so don't extend it.
+            continue
+
+        K = 0
+        ex, ey = mx - dx, my - dy
+        while 0 <= ex < W and 0 <= ey < H:
+            if int(ent_ch[ex, ey]) != empty_id:
+                break
+            K += 1
+            ex -= dx
+            ey -= dy
+        if K == 0:
+            continue
+
+        J = random.randint(0, K)
+        if J == 0:
+            continue
+
+        marker_item = int(item_ch[mx, my])
+        new_mx = mx - dx * J
+        new_my = my - dy * J
+
+        ent_ch[mx, my] = empty_id
+        dir_ch[mx, my] = Direction.NONE.value
+        item_ch[mx, my] = 0
+
+        ent_ch[new_mx, new_my] = marker_id_val
+        dir_ch[new_mx, new_my] = marker_dir_val
+        item_ch[new_mx, new_my] = marker_item
+
+        # Fill the J vacated tiles between the new marker position and
+        # the (untouched) existing belt. Cells are
+        # (new_mx + j·dx, new_my + j·dy) for j = 1..J, with the j=J
+        # cell landing on the old marker tile.
+        for j in range(1, J + 1):
+            bx = new_mx + dx * j
+            by = new_my + dy * j
+            ent_ch[bx, by] = tb_id
+            dir_ch[bx, by] = marker_dir_val
+
+    return out
+
+
 def plot_flow_network(G):
     # Extract x, y coordinates from node names
     pos = {
@@ -2862,6 +2987,14 @@ def build_factory(
                 new_world(width=size, height=size)
             ).permute(2, 0, 1)
             world_CWH[:, ox:ox + w_bp, oy:oy + h_bp] = decoded
+
+            # Extend belt chains backward from each source/sink into
+            # any empties created by translation (or already present
+            # in the source blueprint), filling the gap with belts in
+            # the chain's flow direction. Done after translation so the
+            # empties available include the world's margins, not just
+            # gaps inside the blueprint's own footprint.
+            world_CWH = _extend_belt_chains(world_CWH)
 
             tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
             if tp <= 0:

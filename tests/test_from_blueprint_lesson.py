@@ -21,6 +21,7 @@ from factorion import (
     LessonKind,
     Misc,
     _count_removable_entity_units,
+    _extend_belt_chains,
     _flip_world,
     _is_gears_factory,
     _substitute_gears_recipe,
@@ -200,6 +201,221 @@ def test_count_treats_multitile_entity_as_one_unit():
         for dy in range(3):
             w[Channel.ENTITIES.value, 1 + dx, 1 + dy] = asm
     assert _count_removable_entity_units(w) == 1
+
+
+# --- _extend_belt_chains ---------------------------------------------------
+
+
+def _build_source_with_belt(W=8, H=5, sx=3, sy=2, direction=Direction.EAST):
+    """A 1×1 source + adjacent belt in the source's facing direction,
+    with empties stretching behind. Used as the canonical extension
+    fixture; the (W, H) and (sx, sy) parameters let tests place the
+    pattern anywhere in the world."""
+    w = torch.tensor(new_world(width=W, height=H)).permute(2, 0, 1)
+    dx, dy = {
+        Direction.NORTH: (0, -1),
+        Direction.EAST: (1, 0),
+        Direction.SOUTH: (0, 1),
+        Direction.WEST: (-1, 0),
+    }[direction]
+    w[Channel.ENTITIES.value, sx, sy] = str2ent("stack_inserter").value
+    w[Channel.DIRECTION.value, sx, sy] = direction.value
+    w[Channel.ITEMS.value, sx, sy] = str2item("iron_plate").value
+    w[Channel.ENTITIES.value, sx + dx, sy + dy] = str2ent("transport_belt").value
+    w[Channel.DIRECTION.value, sx + dx, sy + dy] = direction.value
+    return w
+
+
+@pytest.mark.parametrize(
+    "direction",
+    [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST],
+)
+def test_extend_belt_chains_source_in_all_four_rotations(direction):
+    """A source facing each cardinal direction should be extendable
+    backward by `J` empties, with the new belts laid in the source's
+    flow direction. Run with a fixed seed so the random `J` is
+    deterministic and we can pin down the exact resulting layout."""
+    # Place the source so there are empties behind it (regardless of
+    # rotation) and a belt in front.
+    sx, sy = 4, 4
+    w = _build_source_with_belt(
+        W=9, H=9, sx=sx, sy=sy, direction=direction,
+    )
+    # Snapshot the source position so we can assert the move.
+    random.seed(1)
+    out = _extend_belt_chains(w)
+
+    src_id = str2ent("stack_inserter").value
+    tb_id = str2ent("transport_belt").value
+    ent = out[Channel.ENTITIES.value]
+
+    src_positions = ent.eq(src_id).nonzero().tolist()
+    assert len(src_positions) == 1
+    nx, ny = src_positions[0]
+    # Source must move backward along -direction by some J ≥ 1 (we
+    # seeded the RNG so it isn't a no-op).
+    dx, dy = {
+        Direction.NORTH: (0, -1),
+        Direction.EAST: (1, 0),
+        Direction.SOUTH: (0, 1),
+        Direction.WEST: (-1, 0),
+    }[direction]
+    J = ((sx - nx) * dx) + ((sy - ny) * dy)  # signed projection onto -direction
+    assert J >= 1, f"expected source to move backward, got J={J}"
+
+    # Every cell strictly between the new source and the existing
+    # belt should be a transport-belt facing the source's direction.
+    for j in range(1, J + 1):
+        bx, by = nx + dx * j, ny + dy * j
+        assert int(ent[bx, by]) == tb_id, (
+            f"expected belt at ({bx},{by}), got entity "
+            f"{int(ent[bx, by])}"
+        )
+        assert int(out[Channel.DIRECTION.value, bx, by]) == direction.value
+
+
+def test_extend_belt_chains_sink_uses_opposite_scan_direction():
+    """For a sink, the feeder belt sits in the *opposite* direction of
+    `sink.direction` and the empties extend on the sink's output
+    side. Verify by setting up a sink and ensuring it moves toward
+    that output side."""
+    # Sink at (3, 2) facing EAST. Items flow east into the sink, so
+    # the feeder belt is at (2, 2) facing EAST. Empties stretch east
+    # of the sink at (4, 2), (5, 2), (6, 2).
+    w = torch.tensor(new_world(width=8, height=5)).permute(2, 0, 1)
+    sink = str2ent("bulk_inserter").value
+    tb = str2ent("transport_belt").value
+    w[Channel.ENTITIES.value, 3, 2] = sink
+    w[Channel.DIRECTION.value, 3, 2] = Direction.EAST.value
+    w[Channel.ITEMS.value, 3, 2] = str2item("iron_gear_wheel").value
+    w[Channel.ENTITIES.value, 2, 2] = tb
+    w[Channel.DIRECTION.value, 2, 2] = Direction.EAST.value
+
+    # seed=5 → J=4 (max), so the sink lands at the far edge and the
+    # whole row between the existing belt and the new sink is filled.
+    random.seed(5)
+    out = _extend_belt_chains(w)
+
+    sink_positions = out[Channel.ENTITIES.value].eq(sink).nonzero().tolist()
+    assert len(sink_positions) == 1
+    nx, ny = sink_positions[0]
+    # Sink should have moved east (i.e., nx > 3) — that's where the
+    # empties were.
+    assert nx > 3, f"sink did not move east; new position ({nx},{ny})"
+
+    # The cells between the original belt at (2, 2) and the new sink
+    # should all be east-facing belts.
+    for x in range(3, nx):
+        assert int(out[Channel.ENTITIES.value, x, 2]) == tb
+        assert int(out[Channel.DIRECTION.value, x, 2]) == Direction.EAST.value
+
+
+def test_extend_belt_chains_skips_when_belt_direction_mismatches_marker():
+    """A source facing east with an adjacent belt facing south (a turn
+    immediately after the source) should NOT be extended — the chain
+    isn't coherent, so extending it would just compound the
+    mis-alignment."""
+    w = torch.tensor(new_world(width=8, height=5)).permute(2, 0, 1)
+    src = str2ent("stack_inserter").value
+    tb = str2ent("transport_belt").value
+    w[Channel.ENTITIES.value, 3, 2] = src
+    w[Channel.DIRECTION.value, 3, 2] = Direction.EAST.value
+    w[Channel.ENTITIES.value, 4, 2] = tb
+    w[Channel.DIRECTION.value, 4, 2] = Direction.SOUTH.value  # mismatch
+
+    random.seed(3)
+    out = _extend_belt_chains(w)
+    # Source did not move.
+    assert int(out[Channel.ENTITIES.value, 3, 2]) == src
+    assert int(out[Channel.DIRECTION.value, 3, 2]) == Direction.EAST.value
+
+
+def test_extend_belt_chains_skips_when_no_empties_behind_marker():
+    """A source flush against the west wall has K=0 empties behind it
+    and should not be extended."""
+    w = torch.tensor(new_world(width=8, height=5)).permute(2, 0, 1)
+    src = str2ent("stack_inserter").value
+    tb = str2ent("transport_belt").value
+    w[Channel.ENTITIES.value, 0, 2] = src
+    w[Channel.DIRECTION.value, 0, 2] = Direction.EAST.value
+    w[Channel.ENTITIES.value, 1, 2] = tb
+    w[Channel.DIRECTION.value, 1, 2] = Direction.EAST.value
+
+    random.seed(4)
+    out = _extend_belt_chains(w)
+    assert int(out[Channel.ENTITIES.value, 0, 2]) == src
+
+
+def test_extend_belt_chains_skips_when_no_belt_adjacent():
+    """A source surrounded entirely by empties has no belt to extend
+    from and should be left alone."""
+    w = torch.tensor(new_world(width=8, height=5)).permute(2, 0, 1)
+    src = str2ent("stack_inserter").value
+    w[Channel.ENTITIES.value, 3, 2] = src
+    w[Channel.DIRECTION.value, 3, 2] = Direction.EAST.value
+
+    random.seed(5)
+    out = _extend_belt_chains(w)
+    assert int(out[Channel.ENTITIES.value, 3, 2]) == src
+
+
+def test_extend_belt_chains_processes_multiple_markers_independently():
+    """Two sources facing opposite ways in the same world should each
+    get their own extension decision."""
+    w = torch.tensor(new_world(width=15, height=5)).permute(2, 0, 1)
+    src = str2ent("stack_inserter").value
+    tb = str2ent("transport_belt").value
+    # Source A: at (4, 2), faces east, belt east, empties west.
+    w[Channel.ENTITIES.value, 4, 2] = src
+    w[Channel.DIRECTION.value, 4, 2] = Direction.EAST.value
+    w[Channel.ENTITIES.value, 5, 2] = tb
+    w[Channel.DIRECTION.value, 5, 2] = Direction.EAST.value
+    # Source B: at (10, 2), faces west, belt west, empties east.
+    w[Channel.ENTITIES.value, 10, 2] = src
+    w[Channel.DIRECTION.value, 10, 2] = Direction.WEST.value
+    w[Channel.ENTITIES.value, 9, 2] = tb
+    w[Channel.DIRECTION.value, 9, 2] = Direction.WEST.value
+
+    random.seed(6)
+    out = _extend_belt_chains(w)
+    src_positions = sorted(
+        out[Channel.ENTITIES.value].eq(src).nonzero().tolist()
+    )
+    assert len(src_positions) == 2
+    # A's new x should be ≤ 4 (moved west or stayed); B's should be
+    # ≥ 10 (moved east or stayed). They must remain distinct.
+    a_pos, b_pos = src_positions
+    assert a_pos[0] <= 4
+    assert b_pos[0] >= 10
+    assert a_pos != b_pos
+
+
+def test_extend_belt_chains_j_can_be_zero():
+    """With a seed that rolls `J=0` for the only candidate, the world
+    should come out unchanged. (Finding such a seed is brittle, but
+    the contract is that J=0 is a valid sample and should produce a
+    no-op.)"""
+    # K=1, so J ∈ {0, 1}. Try several seeds until one rolls 0.
+    found_noop = False
+    for seed in range(50):
+        w = _build_source_with_belt(W=4, H=3, sx=1, sy=1)
+        snapshot = w.clone()
+        random.seed(seed)
+        out = _extend_belt_chains(w)
+        if torch.equal(out, snapshot):
+            found_noop = True
+            break
+    assert found_noop, "no seed in [0, 50) produced J=0 — RNG path broken?"
+
+
+def test_extend_belt_chains_is_deterministic_given_rng_seed():
+    """Same input + same RNG state → same output."""
+    w = _build_source_with_belt(W=10, H=5, sx=5, sy=2)
+    random.seed(7)
+    out1 = _extend_belt_chains(w)
+    random.seed(7)
+    out2 = _extend_belt_chains(w)
+    assert torch.equal(out1, out2)
 
 
 # --- end-to-end FROM_BLUEPRINT lesson --------------------------------------
