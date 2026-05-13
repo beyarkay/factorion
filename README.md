@@ -138,8 +138,6 @@ then blank out N entities from them. The result is a stream of
 covers a different entity/layout pattern:
 
 - `MOVE_ONE_ITEM`, `ALL_BELTS_ALREADY_IN_PLACE` — belt routing
-- `INSERTER_TRANSFER` — inserter chains (inserter is the bottleneck at
-  0.86 i/s vs 15 i/s belts)
 - `SPLITTER_SPLIT`, `SPLITTER_MERGE` — flow splitting/merging via 2×1
   splitters
 - (planned) underground belts, crossings, assembling machines

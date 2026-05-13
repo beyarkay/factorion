@@ -16,7 +16,7 @@ Factorion trains agents to autonomously design and build factories inspired by F
 
 The training pipeline is moving toward an **LLM-style two-stage split**:
 
-1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `INSERTER_TRANSFER`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
+1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
 2. **SFT pretraining** — supervised training on those pairs (see `sft.py` when PR #47 lands) gives the policy a strong prior over entity placement.
 3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start_from` and skip easy curriculum levels via `--start_curriculum_level`.
 

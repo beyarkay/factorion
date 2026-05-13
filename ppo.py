@@ -522,9 +522,9 @@ class FactorioEnv(gym.Env):
 
         # Give some small reward for having the belt be the right direction.
         # Only meaningful when the layout has exactly one sink (the
-        # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT,
-        # INSERTER_TRANSFER) place multiple sinks or none, so this shaping
-        # term gets zeroed instead of asserting.
+        # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT)
+        # place multiple sinks or none, so this shaping term gets zeroed
+        # instead of asserting.
         sink_locs = torch.where(self._world_CWH[Channel.ENTITIES.value] == self._sink_id)
         C, W, H = self._world_CWH.shape
         if len(sink_locs[0]) == 1:

@@ -146,7 +146,6 @@ recipes = {
 
 class LessonKind(Enum):
     MOVE_ONE_ITEM = 0
-    INSERTER_TRANSFER = 2
     SPLITTER_SPLIT = 3
     SPLITTER_MERGE = 4
     ASSEMBLE_1IN_1OUT = 5
@@ -172,9 +171,8 @@ class Factory:
         protected_positions: tiles whose entity must never be blanked
             because it carries kind-specific structural information the
             agent cannot reconstruct (recipe channel on the assembler,
-            inserter direction in INSERTER_TRANSFER, splitter geometry).
-            Source/sink are protected unconditionally inside
-            :func:`_remove_entities` and need not appear here.
+            splitter geometry). Source/sink are protected unconditionally
+            inside :func:`_remove_entities` and need not appear here.
     """
 
     world_CWH: torch.Tensor
@@ -1254,11 +1252,10 @@ def _remove_entities(
     """Remove entities from a completed lesson, respecting multi-tile units.
 
     protected_positions: optional set of (x, y) the lesson considers
-    structurally required (e.g. the central inserter in INSERTER_TRANSFER).
-    Any entity-group containing one of these tiles is excluded from the
-    removable pool, so the agent always sees those entities in its
-    input. Source/sink are protected unconditionally via the entity-id
-    `skip` set below.
+    structurally required. Any entity-group containing one of these tiles
+    is excluded from the removable pool, so the agent always sees those
+    entities in its input. Source/sink are protected unconditionally via
+    the entity-id `skip` set below.
 
     FOOTPRINT is left as new_world() set it (all-AVAILABLE). A previous
     version marked every empty cell in the completed layout as
@@ -1460,105 +1457,6 @@ def build_factory(
             break
         if count == 0:
             return None
-    elif kind.value == LessonKind.INSERTER_TRANSFER.value:
-        # Source → belts → inserter → belts → sink
-        original_count = max(500, size * size * 8)
-        count = original_count
-
-        if random_item:
-            item_value = random.choice(
-                [v.value for k, v in items.items() if v.name != "empty"]
-            )
-        else:
-            item_value = str2item("electronic_circuit").value
-
-        while count > 0:
-            count -= 1
-            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
-            C, W, H = world_CWH.shape
-
-            # Pick 3 distinct random positions
-            positions = random.sample(range(W * H), 3)
-            source_pos = divmod(positions[0], W)
-            sink_pos = divmod(positions[1], W)
-            inserter_pos = divmod(positions[2], W)
-
-            dirs = [d for d in Direction if d != Direction.NONE]
-            source_dir = random.choice(dirs)
-            sink_dir = random.choice(dirs)
-            inserter_dir = random.choice(dirs)
-
-            # Compute connection cells
-            ds = DIR_TO_DELTA[source_dir]
-            dk = DIR_TO_DELTA[sink_dir]
-            di = DIR_TO_DELTA[inserter_dir]
-
-            source_output = (source_pos[0] + ds[0], source_pos[1] + ds[1])
-            sink_input = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
-            inserter_pickup = (inserter_pos[0] - di[0], inserter_pos[1] - di[1])
-            inserter_drop = (inserter_pos[0] + di[0], inserter_pos[1] + di[1])
-
-            # All key cells must be in bounds and distinct
-            key_cells = [source_pos, sink_pos, inserter_pos,
-                         source_output, sink_input, inserter_pickup, inserter_drop]
-            if any(not (0 <= r < W and 0 <= c < H) for r, c in key_cells):
-                continue
-            if len(set(key_cells)) != len(key_cells):
-                continue
-
-            # Fixed cells that belts cannot occupy
-            fixed = {source_pos, sink_pos, inserter_pos}
-
-            # Path 1: source output → inserter pickup cell
-            blocked1 = fixed | {inserter_drop, sink_input}
-            path1 = find_belt_path(W, H, source_output, inserter_pickup, inserter_dir, blocked1)
-            if path1 is None:
-                continue
-
-            # Path 2: inserter drop → sink input cell
-            path1_cells = {(x, y) for x, y, _ in path1}
-            blocked2 = fixed | {inserter_pickup} | path1_cells
-            path2 = find_belt_path(W, H, inserter_drop, sink_input, sink_dir, blocked2)
-            if path2 is None:
-                continue
-
-            # Enforce max_entities constraint
-            total_entities = len(path1) + len(path2) + 1  # +1 for the inserter
-            if total_entities > max_entities:
-                continue
-
-            # Place source and sink
-            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
-            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
-            world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
-
-            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
-            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
-            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
-
-            # Place inserter
-            world_CWH[Channel.ENTITIES.value, inserter_pos[0], inserter_pos[1]] = str2ent("inserter").value
-            world_CWH[Channel.DIRECTION.value, inserter_pos[0], inserter_pos[1]] = inserter_dir.value
-
-            # Place belt paths
-            for x, y, d in path1 + path2:
-                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
-                world_CWH[Channel.DIRECTION.value, x, y] = d.value
-
-            # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
-            if tp <= 0:
-                continue
-
-            # Inserter is structurally required for this lesson; without
-            # it the source/sink layout becomes ambiguous (could be
-            # solved by belts alone). Protect it from blanking.
-            protected_positions = frozenset({tuple(inserter_pos)})
-
-            break
-        if count == 0:
-            return None
-
     elif kind.value == LessonKind.SPLITTER_SPLIT.value:
         # 1 source → belts → splitter → 2x(belts → sink)
         original_count = max(500, size * size * 10)
@@ -2057,7 +1955,7 @@ def build_factory(
             all_fixed = reserved | {source_pos, sink_pos}
 
             # Path 1: source_output → in_pickup. Last belt orients toward
-            # the input inserter (matching INSERTER_TRANSFER convention).
+            # the input inserter.
             blocked1 = (
                 asm_tiles
                 | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
