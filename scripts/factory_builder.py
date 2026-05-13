@@ -111,7 +111,7 @@ class Args:
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
     the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = None
+    wandb_run: Optional[str] = "xlnqmtzt"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
     and loaded. Mutually exclusive with --checkpoint."""
@@ -611,9 +611,8 @@ def render_index(default_size: int) -> str:
         '<span class="swatch"></span>Model'
         '</h3>'
         '<div class="model-current help" id="model-current">checking…</div>'
-        '<details class="model-loader">'
-        '<summary>switch model</summary>'
-        '<label>path or wandb run id'
+        '<div class="model-loader">'
+        '<label>switch model'
         '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
         '</label>'
         '<div class="model-buttons">'
@@ -621,7 +620,7 @@ def render_index(default_size: int) -> str:
         'Load model</button>'
         '</div>'
         '<div id="model-load-status" class="help"></div>'
-        '</details>'
+        '</div>'
         '<h3 style="margin-top:0.8em;">Prediction</h3>'
         '<div id="model-info" class="help">(no prediction yet)</div>'
         '<pre id="model-action"></pre>'
@@ -764,7 +763,6 @@ def render_index(default_size: int) -> str:
     user-select: none; padding: 0.2em 0;
   }}
   details.edges-details {{ margin-top: 0.4em; }}
-  details.model-loader summary {{ margin: 0.3em 0; }}
 </style></head><body>
 
 <h1>Factory builder
@@ -1238,13 +1236,11 @@ async function refreshModelInfo() {{
         ' c3=' + data.chan3 + ' ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{
-        // Show the artifact name (the *meaningful* identifier the user
-        // sees in the W&B UI) plus a clickable link to the run, instead
-        // of the anonymous /tmp/factorion-checkpoints download path.
-        const linkText = src.run_name ? src.run_name : src.run_id;
-        cur.innerHTML = 'loaded: ' + escHtml(src.artifact) +
-          ' from <a href="' + escHtml(src.run_url) + '" target="_blank">' +
-          escHtml(linkText) + '</a>' +
+        // Show the run id directly — that's what the user types into
+        // the switch form, so keeping the displayed identifier the
+        // same as the input format avoids a translation step.
+        cur.innerHTML = 'loaded wandb <a href="' + escHtml(src.run_url) +
+          '" target="_blank">' + escHtml(src.run_id) + '</a>' +
           '  (' + escHtml(shape) + ')';
       }} else {{
         const path = (src && src.path) || data.path;
