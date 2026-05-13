@@ -269,35 +269,112 @@ local function build_footprint_mask(fp)
   return tiles
 end
 
+-- Map our arrow virtual signals to the Factorion Direction enum.
+local ARROW_TO_DIR = {
+  ["up-arrow"] = 1, ["right-arrow"] = 2,
+  ["down-arrow"] = 3, ["left-arrow"] = 4,
+}
+
+local function parse_combinator_marker(combi)
+  -- Inspect a constant-combinator's first section for our identifying
+  -- filters: signal-output / signal-input + arrow + item. Returns
+  --   { role="source"|"sink", item=<name>, direction=<1..4> }
+  -- or nil if this combinator isn't one of our markers.
+  local cb = combi.get_control_behavior()
+  if not cb or not cb.sections then return nil end
+  for _, section in pairs(cb.sections) do
+    local item_name, role, direction = nil, nil, nil
+    local n = section.filters_count or 0
+    for i = 1, n do
+      local f = section.get_slot(i)
+      if f and f.value and f.value.name then
+        local name = f.value.name
+        local typ = f.value.type
+        if name == "signal-output" then role = "source"
+        elseif name == "signal-input" then role = "sink"
+        elseif ARROW_TO_DIR[name] then direction = ARROW_TO_DIR[name]
+        elseif typ == nil or typ == "item" then item_name = name
+        end
+      end
+    end
+    if role then
+      return { role = role, item = item_name, direction = direction or 2 }
+    end
+  end
+  return nil
+end
+
+local function scan_footprint_for_markers(player, fp)
+  -- Returns (sources, sinks), each a list of {x_world, y_world, direction, item}.
+  -- Coordinates are world tiles (floor of the combinator's centre).
+  local sources, sinks = {}, {}
+  if not player or not player.surface then return sources, sinks end
+  local found = player.surface.find_entities_filtered{
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+    name = "constant-combinator",
+  }
+  for _, combi in pairs(found) do
+    local m = parse_combinator_marker(combi)
+    if m then
+      local entry = {
+        x = math.floor(combi.position.x),
+        y = math.floor(combi.position.y),
+        direction = m.direction,
+        item = m.item,
+      }
+      if m.role == "source" then
+        table.insert(sources, entry)
+      else
+        table.insert(sinks, entry)
+      end
+    end
+  end
+  return sources, sinks
+end
+
 local function gather_request(state, player_index)
   local fp = state.footprint
   local size = get_grid_size()
   local default_item = get_default_item()
+  local player = game.get_player(player_index)
+
+  -- Prefer in-world constant-combinators with our identifying filters.
+  -- Falls back to the click-tool state lists if no combinators are
+  -- found inside the footprint.
+  local from_world_src, from_world_snk = scan_footprint_for_markers(player, fp)
+  local raw_sources = (#from_world_src > 0) and from_world_src or state.sources
+  local raw_sinks = (#from_world_snk > 0) and from_world_snk or state.sinks
+  local source_provenance = (#from_world_src > 0) and "combinator" or "click-tool"
+  local sink_provenance = (#from_world_snk > 0) and "combinator" or "click-tool"
 
   local sources = {}
-  for _, s in ipairs(state.sources) do
+  for _, s in ipairs(raw_sources) do
     local rx, ry = world_to_rel(s, fp)
     if in_footprint(rx, ry, fp) then
       table.insert(sources, {
         x = rx, y = ry,
-        direction = dir_toward_center(rx, ry, size),
-        item = default_item,
+        direction = s.direction or dir_toward_center(rx, ry, size),
+        item = s.item or default_item,
       })
     end
   end
 
   local sinks = {}
-  for _, s in ipairs(state.sinks) do
+  for _, s in ipairs(raw_sinks) do
     local rx, ry = world_to_rel(s, fp)
     if in_footprint(rx, ry, fp) then
-      -- Sink "faces" the same way (into the footprint). The server
-      -- knows the difference because we put it in the sinks array.
       table.insert(sinks, {
         x = rx, y = ry,
-        direction = dir_toward_center(rx, ry, size),
-        item = default_item,
+        direction = s.direction or dir_toward_center(rx, ry, size),
+        item = s.item or default_item,
       })
     end
+  end
+
+  if player then
+    player.print(string.format(
+      "[Factorion] %d source(s) from %s, %d sink(s) from %s.",
+      #sources, source_provenance, #sinks, sink_provenance))
   end
 
   return {
@@ -330,12 +407,18 @@ script.on_event("factorion-execute", function(event)
     player.print("[Factorion] No footprint set.")
     return
   end
-  if #state.sources == 0 and #state.sinks == 0 then
-    player.print("[Factorion] No sources or sinks marked.")
+
+  -- gather_request prefers in-world constant-combinators inside the
+  -- footprint; if there are none AND no click-marked sources/sinks
+  -- exist either, the resulting request will be empty.
+  local request = gather_request(state, event.player_index)
+  if #request.sources == 0 and #request.sinks == 0 then
+    player.print(
+      "[Factorion] No sources or sinks found. Place a constant-combinator " ..
+      "inside the footprint with signal-output/signal-input + an arrow + " ..
+      "an item, or use the marker tool.")
     return
   end
-
-  local request = gather_request(state, event.player_index)
   local request_json = json_encode(request)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = event.player_index
