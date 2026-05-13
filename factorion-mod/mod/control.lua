@@ -47,6 +47,13 @@ local function ensure_pending_lookup()
   storage.outbox = storage.outbox or {}
 end
 
+-- Forward declarations: these are defined further down but referenced
+-- from event handlers (registered earlier in file order). Declaring them
+-- as locals here lets the handler closures capture the local slot, which
+-- the later assignments fill in.
+local try_request_prediction
+local json_encode
+
 -- ----------------------------------------------------------------------------
 -- player onboarding
 -- ----------------------------------------------------------------------------
@@ -118,10 +125,19 @@ script.on_event(defines.events.on_player_selected_area, function(event)
     state.sources = {}
     state.sinks = {}
     player.print(string.format(
-      "[Factorion] Footprint set: x=%d..%d (%d wide), y=%d..%d (%d tall). " ..
-      "Mark sources/sinks WITHIN these bounds.",
+      "[Factorion] Footprint set: x=%d..%d (%d wide), y=%d..%d (%d tall).",
       bbox.x, bbox.x + bbox.w - 1, bbox.w,
       bbox.y, bbox.y + bbox.h - 1, bbox.h))
+    -- Auto-trigger a prediction if sources/sinks (combinators or click-marks)
+    -- are already valid. If not, the message is informative — the player can
+    -- then drop combinators in and press CTRL+P manually.
+    local ok, msg = try_request_prediction(event.player_index)
+    if ok then
+      player.print("[Factorion] " .. msg)
+    else
+      player.print("[Factorion] " .. msg ..
+        " (After adding them, press CTRL+P to predict.)")
+    end
 
   elseif event.item == "factorion-marker-tool" then
     -- left-click = sources
@@ -371,13 +387,11 @@ local function gather_request(state, player_index)
     end
   end
 
-  if player then
-    player.print(string.format(
-      "[Factorion] %d source(s) from %s, %d sink(s) from %s.",
-      #sources, source_provenance, #sinks, sink_provenance))
-  end
+  local provenance = string.format(
+    "%d source(s) from %s, %d sink(s) from %s",
+    #sources, source_provenance, #sinks, sink_provenance)
 
-  return {
+  local request = {
     request_id    = new_request_id(),
     player_index  = player_index,
     grid_size     = size,
@@ -386,9 +400,37 @@ local function gather_request(state, player_index)
     sinks         = sinks,
     default_item  = default_item,
   }
+  return request, provenance
 end
 
-local function json_encode(t)
+-- Build a request from the player's current state (combinators preferred,
+-- click-marks as fallback) and enqueue it for the server. Returns
+-- (true, message) on success, (false, message) on a precheck failure.
+try_request_prediction = function(player_index)
+  local state = ensure_player_state(player_index)
+  ensure_pending_lookup()
+  if not state.footprint then
+    return false, "No footprint set."
+  end
+  local request, provenance = gather_request(state, player_index)
+  if #request.sources == 0 and #request.sinks == 0 then
+    return false,
+      "No sources or sinks. Place a constant-combinator inside the " ..
+      "footprint (with signal-output/signal-input + an arrow + an item) " ..
+      "or use the marker tool."
+  end
+  local request_json = json_encode(request)
+  table.insert(storage.outbox, request_json)
+  storage.pending_by_request[request.request_id] = player_index
+  state.pending = { request_id = request.request_id, tick = game.tick }
+  log("[Factorion] enqueued request " .. request.request_id ..
+      " (" .. provenance .. ") json=" .. request_json)
+  return true, string.format(
+    "Request %s queued (%s). Waiting for server…",
+    request.request_id, provenance)
+end
+
+json_encode = function(t)
   -- Factorio 2.0 exposes helpers.table_to_json; the older `game.table_to_json`
   -- is deprecated but kept for compat. Prefer helpers when present.
   if helpers and helpers.table_to_json then
@@ -400,43 +442,8 @@ end
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
-  local state = ensure_player_state(event.player_index)
-  ensure_pending_lookup()
-
-  if not state.footprint then
-    player.print("[Factorion] No footprint set.")
-    return
-  end
-
-  -- gather_request prefers in-world constant-combinators inside the
-  -- footprint; if there are none AND no click-marked sources/sinks
-  -- exist either, the resulting request will be empty.
-  local request = gather_request(state, event.player_index)
-  if #request.sources == 0 and #request.sinks == 0 then
-    player.print(
-      "[Factorion] No sources or sinks found. Place a constant-combinator " ..
-      "inside the footprint with signal-output/signal-input + an arrow + " ..
-      "an item, or use the marker tool.")
-    return
-  end
-  local request_json = json_encode(request)
-  table.insert(storage.outbox, request_json)
-  storage.pending_by_request[request.request_id] = event.player_index
-  state.pending = { request_id = request.request_id, tick = game.tick }
-
-  -- Log the full payload to factorio-current.log so we can inspect it
-  -- from outside the game when things look wrong.
-  log("[Factorion] enqueued request " .. request.request_id ..
-      " (footprint=" .. tostring(#request.footprint) ..
-      ", sources=" .. tostring(#request.sources) ..
-      ", sinks=" .. tostring(#request.sinks) ..
-      ") json=" .. request_json)
-
-  player.print(string.format(
-    "[Factorion] Request %s queued (footprint=%d sources=%d sinks=%d, " ..
-    "outbox depth %d). Waiting for server…",
-    request.request_id, #request.footprint,
-    #request.sources, #request.sinks, #storage.outbox))
+  local _, msg = try_request_prediction(event.player_index)
+  player.print("[Factorion] " .. msg)
 end)
 
 -- ----------------------------------------------------------------------------
