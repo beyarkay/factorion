@@ -282,11 +282,12 @@ def run_inference(
     fp_count = int(obs[Channel.FOOTPRINT.value].sum())
     log.info("  footprint tiles: %d", fp_count)
 
-    stats = {
+    stats: dict = {
         "steps_taken": 0,
         "stop_reason": "max_steps",
         "first_eot_prob": None,
         "final_eot_prob": None,
+        "placements": [],  # list of dicts, one per step
     }
 
     for step in range(max_steps):
@@ -307,6 +308,18 @@ def run_inference(
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
         item_name = entities[item_id].name if item_id in entities else "?"
+        stats["placements"].append({
+            "step": step,
+            "eot": eot_p,
+            "entity_id": ent_id,
+            "entity_name": ent_name,
+            "x": int(action["xy"][0]),
+            "y": int(action["xy"][1]),
+            "direction": int(action["direction"]),
+            "item_id": item_id,
+            "item_name": item_name,
+            "misc": int(action["misc"]),
+        })
         log.info(
             "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
             step, eot_p, ent_name, ent_id,
@@ -400,20 +413,54 @@ def handle_request(
     # the player's cursor / inventory — particularly useful for empty
     # results, where the player would otherwise see a blank blueprint with
     # no clue why.
-    placeable_count = sum(
-        1 for x in range(obs_CWH.shape[1]) for y in range(obs_CWH.shape[2])
-        if int(obs_CWH[Channel.ENTITIES.value, x, y]) not in (0, _source_id(), _sink_id())
-    )
-    label = f"Factorion: {placeable_count} entities"
-    description = (
-        f"request_id={req['request_id']}\n"
-        f"grid={req['grid_size']}x{req['grid_size']} "
-        f"sources={len(req.get('sources', []))} sinks={len(req.get('sinks', []))}\n"
-        f"steps_taken={stats['steps_taken']} stop_reason={stats['stop_reason']}\n"
-        f"eot_prob first={stats['first_eot_prob']:.3f} final={stats['final_eot_prob']:.3f}\n"
-        f"placeable_entities_in_blueprint={placeable_count}\n"
-        f"non_empty_tiles={stats['nonzero_entities_tiles']}"
-    )
+    src_id, snk_id = _source_id(), _sink_id()
+    placed_count = 0   # model-placed entities (belts, inserters, etc.)
+    marker_count = 0   # source/sink markers (rendered as chests)
+    for xx in range(obs_CWH.shape[1]):
+        for yy in range(obs_CWH.shape[2]):
+            eid = int(obs_CWH[Channel.ENTITIES.value, xx, yy])
+            if eid == 0:
+                continue
+            if eid in (src_id, snk_id):
+                marker_count += 1
+            else:
+                placed_count += 1
+    total_entities = placed_count + marker_count  # matches blueprint contents
+
+    # Direction enum (1=N, 2=E, 3=S, 4=W) → short label.
+    _DIR_LABEL = {0: "-", 1: "N", 2: "E", 3: "S", 4: "W"}
+    _MISC_LABEL = {0: "", 1: " UG_DOWN", 2: " UG_UP"}
+
+    def _fmt_step(p: dict) -> str:
+        # Factorio rich-text icon, then position + direction. No entity
+        # name (the icon shows it) and no eot prob per step (keeps the
+        # trace short — Factorio's blueprint description has a tight
+        # character limit, ~500 chars in 2.0).
+        ent_tag = "[item=" + p["entity_name"].replace("_", "-") + "]"
+        dir_label = _DIR_LABEL.get(p["direction"], str(p["direction"]))
+        item_tag = ""
+        if p["item_name"] not in ("empty", "?", ""):
+            item_tag = " [item=" + p["item_name"].replace("_", "-") + "]"
+        return (f"{p['step']}: {ent_tag} ({p['x']},{p['y']}) "
+                f"{dir_label}{_MISC_LABEL.get(p['misc'], '')}{item_tag}")
+
+    placements = stats.get("placements", [])
+    # Description char budget is ~500. Each line is ~25-35 chars; show
+    # the first 20 and tail-summary if there's more.
+    MAX_LINES = 20
+    trace_lines = [_fmt_step(p) for p in placements[:MAX_LINES]]
+    if len(placements) > MAX_LINES:
+        trace_lines.append(f"...{len(placements) - MAX_LINES} more")
+
+    label = (f"Factorion: {total_entities} entities "
+             f"({placed_count} placed + {marker_count} markers)")
+    description_parts = [
+        f"sources={len(req.get('sources', []))} "
+        f"sinks={len(req.get('sinks', []))} "
+        f"steps={stats['steps_taken']} stop={stats['stop_reason']}",
+        "",
+    ] + trace_lines
+    description = "\n".join(description_parts)
     bp_str = world_tensor_to_blueprint_string(
         obs_CWH, label=label, description=description,
     )

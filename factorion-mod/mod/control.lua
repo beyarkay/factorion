@@ -118,8 +118,10 @@ script.on_event(defines.events.on_player_selected_area, function(event)
     state.sources = {}
     state.sinks = {}
     player.print(string.format(
-      "[Factorion] Footprint set: (%d,%d) +%dx%d. Now mark sources/sinks.",
-      bbox.x, bbox.y, bbox.w, bbox.h))
+      "[Factorion] Footprint set: x=%d..%d (%d wide), y=%d..%d (%d tall). " ..
+      "Mark sources/sinks WITHIN these bounds.",
+      bbox.x, bbox.x + bbox.w - 1, bbox.w,
+      bbox.y, bbox.y + bbox.h - 1, bbox.h))
 
   elseif event.item == "factorion-marker-tool" then
     -- left-click = sources
@@ -127,14 +129,30 @@ script.on_event(defines.events.on_player_selected_area, function(event)
       player.print("[Factorion] Set a footprint first.")
       return
     end
-    local added_positions = {}
+    local added, skipped = {}, {}
+    local fp = state.footprint
     for _, tile in pairs(event.tiles or {}) do
-      table.insert(state.sources, { x = tile.position.x, y = tile.position.y })
-      table.insert(added_positions,
-        string.format("(%d,%d)", tile.position.x, tile.position.y))
+      local tx, ty = tile.position.x, tile.position.y
+      if tx >= fp.x and tx < fp.x + fp.w
+         and ty >= fp.y and ty < fp.y + fp.h then
+        table.insert(state.sources, { x = tx, y = ty })
+        table.insert(added, string.format("(%d,%d)", tx, ty))
+      else
+        table.insert(skipped, string.format("(%d,%d)", tx, ty))
+      end
     end
-    player.print(string.format("[Factorion] +%d source(s) at %s; total %d.",
-      #(event.tiles or {}), table.concat(added_positions, ","), #state.sources))
+    if #added > 0 then
+      player.print(string.format(
+        "[Factorion] +%d source(s) at %s; total %d.",
+        #added, table.concat(added, ","), #state.sources))
+    end
+    if #skipped > 0 then
+      player.print(string.format(
+        "[Factorion] Skipped %d source mark(s) outside footprint: %s. " ..
+        "Valid x=%d..%d y=%d..%d.",
+        #skipped, table.concat(skipped, ","),
+        fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
+    end
   end
 end)
 
@@ -159,16 +177,30 @@ local function handle_sink_select(event, mode_name)
       player.print("[Factorion] Set a footprint first.")
       return
     end
-    local added_positions = {}
+    local added, skipped = {}, {}
+    local fp = state.footprint
     for _, tile in pairs(event.tiles or {}) do
-      table.insert(state.sinks, { x = tile.position.x, y = tile.position.y })
-      table.insert(added_positions,
-        string.format("(%d,%d)", tile.position.x, tile.position.y))
+      local tx, ty = tile.position.x, tile.position.y
+      if tx >= fp.x and tx < fp.x + fp.w
+         and ty >= fp.y and ty < fp.y + fp.h then
+        table.insert(state.sinks, { x = tx, y = ty })
+        table.insert(added, string.format("(%d,%d)", tx, ty))
+      else
+        table.insert(skipped, string.format("(%d,%d)", tx, ty))
+      end
     end
-    player.print(string.format(
-      "[Factorion] +%d sink(s) at %s; total %d. (via %s)",
-      #(event.tiles or {}), table.concat(added_positions, ","),
-      #state.sinks, mode_name))
+    if #added > 0 then
+      player.print(string.format(
+        "[Factorion] +%d sink(s) at %s; total %d. (via %s)",
+        #added, table.concat(added, ","), #state.sinks, mode_name))
+    end
+    if #skipped > 0 then
+      player.print(string.format(
+        "[Factorion] Skipped %d sink mark(s) outside footprint: %s. " ..
+        "Valid x=%d..%d y=%d..%d.",
+        #skipped, table.concat(skipped, ","),
+        fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
+    end
   end
 end
 

@@ -23,9 +23,18 @@ from factorion import Channel, Misc, dict2b64, entities, items
 
 _DIR_MODEL_TO_BP = {0: None, 1: 0, 2: 4, 3: 8, 4: 12}
 
-# Source/sink are flagged is_placeable=True in the catalogue but they're
-# env-spawned, not blueprint-pasteable. Skip them by name when encoding.
-_SKIP_ENTITY_NAMES = {"stack_inserter", "bulk_inserter"}
+# The mod's source / sink markers live as stack_inserter / bulk_inserter in
+# the obs tensor (they're env-spawned, never placed by the model). For the
+# emitted blueprint, render them as actual placeable Factorio entities so
+# the pasted blueprint visibly shows the source/sink:
+#   - source → infinity-chest with an infinity_settings filter for the
+#     source item (it auto-spawns that item, infinite supply).
+#   - sink   → bottomless-chest (debug void entity that destroys whatever
+#     is inserted).
+_SOURCE_MARKER_NAME = "stack_inserter"
+_SINK_MARKER_NAME = "bulk_inserter"
+_SOURCE_REPLACEMENT = "infinity-chest"
+_SINK_REPLACEMENT = "bottomless-chest"
 
 
 def _hyphenate(name: str) -> str:
@@ -93,10 +102,6 @@ def world_tensor_to_blueprint_dict(
             ent_meta = entities.get(ent_id)
             if ent_meta is None or not ent_meta.is_placeable:
                 continue
-            if ent_meta.name in _SKIP_ENTITY_NAMES:
-                # Source/sink markers — pre-existing in the request, not
-                # part of the model's output, never belong in the blueprint.
-                continue
 
             dir_model = int(dir_ch[x, y])
             dir_bp = _DIR_MODEL_TO_BP.get(dir_model, None)
@@ -105,6 +110,39 @@ def world_tensor_to_blueprint_dict(
             # tile span. For 1×1 this is +0.5 on both axes.
             cx = x + ent_meta.width / 2.0
             cy = y + ent_meta.height / 2.0
+
+            # Source/sink markers from the request: re-render as visible
+            # chest entities so the player can see them in the blueprint.
+            if ent_meta.name == _SOURCE_MARKER_NAME:
+                item_id = int(item_ch[x, y])
+                item_meta = items.get(item_id)
+                inf_settings: dict | None = None
+                if item_meta is not None and item_meta.name != "empty":
+                    inf_settings = {
+                        "remove_unfiltered_items": False,
+                        "filters": [{
+                            "name": _hyphenate(item_meta.name),
+                            "count": 200,
+                            "mode": "at-least",
+                            "index": 1,
+                        }],
+                    }
+                src_entity: dict = {
+                    "name": _SOURCE_REPLACEMENT,
+                    "position": {"x": cx, "y": cy},
+                }
+                if inf_settings is not None:
+                    src_entity["infinity_settings"] = inf_settings
+                out_entities.append(src_entity)
+                seen[x, y] = True
+                continue
+            if ent_meta.name == _SINK_MARKER_NAME:
+                out_entities.append({
+                    "name": _SINK_REPLACEMENT,
+                    "position": {"x": cx, "y": cy},
+                })
+                seen[x, y] = True
+                continue
 
             name = _hyphenate(ent_meta.name)
             recipe: str | None = None
