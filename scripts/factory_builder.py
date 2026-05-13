@@ -815,7 +815,7 @@ const PALETTE_ICONS = {json.dumps(PALETTE_ICONS)};
 const ITEM_ICONS = {json.dumps(ITEM_ICONS)};
 const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
-const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '⭳', UNDERGROUND_UP: '⭱' }};
+const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
 // successful /load_model call. Prediction calls are gated on it so we
