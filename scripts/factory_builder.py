@@ -853,8 +853,11 @@ function renderGrid() {{
   const host = document.getElementById('grid-host');
   // Build (x,y) -> candidate map once per render so the per-cell
   // ghost lookup is O(1).
+  // When the model's EOT probability crosses 0.5 it's saying "I'm done
+  // placing things" — the candidate ghosts would just be misleading
+  // hallucinations of a forced placement, so suppress them.
   const candByXY = {{}};
-  if (prediction && prediction.candidates) {{
+  if (prediction && prediction.candidates && !(prediction.eot_prob > 0.5)) {{
     for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
   }}
   const tbl = document.createElement('table');
