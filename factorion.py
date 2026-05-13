@@ -151,6 +151,7 @@ class LessonKind(Enum):
     SPLITTER_MERGE = 4
     ASSEMBLE_1IN_1OUT = 5
     MOVE_VIA_UG_BELT = 6
+    ASSEMBLE_2IN_1OUT = 7
 
 
 @dataclass(frozen=True)
@@ -2390,6 +2391,273 @@ def build_factory(
                 world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
                     Footprint.UNAVAILABLE.value
                 )
+
+            break
+        if count == 0:
+            return None
+
+    elif kind.value == LessonKind.ASSEMBLE_2IN_1OUT.value:
+        # 2 sources → belts → 2 input inserters → 3×3 assembler (recipe)
+        #   → output inserter → belts → 1 sink. Recipe is randomly chosen
+        # from all 2-input 1-output recipes in the live recipe table
+        # (filtered dynamically — no hardcoded list, so new recipes added
+        # in factorion_rs are picked up automatically).
+        two_in_one_out = [
+            (name, r)
+            for name, r in recipes.items()
+            if len(r.consumes) == 2 and len(r.produces) == 1
+        ]
+        if not two_in_one_out:
+            raise Exception("No 2-input 1-output recipes available")
+
+        original_count = max(500, size * size * 16)
+        count = original_count
+        asm_ent = str2ent("assembling_machine_1")
+
+        # 12 non-corner perimeter slots — same set as the 1-in-1-out
+        # generator, but here we pick THREE distinct slots: two for
+        # input inserters (one per ingredient) and one for the output.
+        perim_slots = [
+            # North side (ddy = -1)
+            (0, -1, Direction.SOUTH, Direction.NORTH),
+            (1, -1, Direction.SOUTH, Direction.NORTH),
+            (2, -1, Direction.SOUTH, Direction.NORTH),
+            # South side (ddy = 3)
+            (0, 3, Direction.NORTH, Direction.SOUTH),
+            (1, 3, Direction.NORTH, Direction.SOUTH),
+            (2, 3, Direction.NORTH, Direction.SOUTH),
+            # West side (ddx = -1)
+            (-1, 0, Direction.EAST, Direction.WEST),
+            (-1, 1, Direction.EAST, Direction.WEST),
+            (-1, 2, Direction.EAST, Direction.WEST),
+            # East side (ddx = 3)
+            (3, 0, Direction.WEST, Direction.EAST),
+            (3, 1, Direction.WEST, Direction.EAST),
+            (3, 2, Direction.WEST, Direction.EAST),
+        ]
+
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
+            C, W, H = world_CWH.shape
+
+            if W < 3 or H < 3:
+                raise Exception(
+                    f"Grid {W}×{H} too small for ASSEMBLE_2IN_1OUT (need ≥ 3×3)"
+                )
+
+            # Pick recipe + items
+            recipe_name, recipe = random.choice(two_in_one_out)
+            input_items = list(recipe.consumes.keys())
+            # Randomize which ingredient is "A" vs "B" so the two
+            # sources appear in random order across seeds.
+            random.shuffle(input_items)
+            input_a_name, input_b_name = input_items
+            output_item_name = next(iter(recipe.produces.keys()))
+            recipe_item_value = str2item(recipe_name).value
+            input_a_value = str2item(input_a_name).value
+            input_b_value = str2item(input_b_name).value
+            output_item_value = str2item(output_item_name).value
+
+            # Pick assembler anchor
+            ax = random.randint(0, W - 3)
+            ay = random.randint(0, H - 3)
+            asm_tiles = {
+                (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
+            }
+
+            # Pick three distinct perimeter slots: 2 inputs + 1 output
+            in_a_slot, in_b_slot, out_slot = random.sample(perim_slots, 3)
+
+            in_a_pos = (ax + in_a_slot[0], ay + in_a_slot[1])
+            in_a_dir = in_a_slot[2]
+            in_b_pos = (ax + in_b_slot[0], ay + in_b_slot[1])
+            in_b_dir = in_b_slot[2]
+            out_pos = (ax + out_slot[0], ay + out_slot[1])
+            out_dir = out_slot[3]
+
+            in_a_dd = DIR_TO_DELTA[in_a_dir]
+            in_b_dd = DIR_TO_DELTA[in_b_dir]
+            out_dd = DIR_TO_DELTA[out_dir]
+
+            in_a_pickup = (in_a_pos[0] - in_a_dd[0], in_a_pos[1] - in_a_dd[1])
+            in_b_pickup = (in_b_pos[0] - in_b_dd[0], in_b_pos[1] - in_b_dd[1])
+            out_drop = (out_pos[0] + out_dd[0], out_pos[1] + out_dd[1])
+
+            key_cells = [
+                in_a_pos, in_b_pos, out_pos,
+                in_a_pickup, in_b_pickup, out_drop,
+            ]
+            if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
+                continue
+            if len(set(key_cells)) != len(key_cells):
+                continue
+            if any(c in asm_tiles for c in key_cells):
+                continue
+
+            # Exclude all 12 perimeter slots — a Source/Sink placed on
+            # one is treated as an inserter by AssemblingMachine::
+            # connections and would feed/drain the assembler at infinite
+            # rate, breaking the closed-form throughput.
+            all_perim = {
+                (ax + ddx, ay + ddy)
+                for ddx, ddy, _, _ in perim_slots
+                if 0 <= ax + ddx < W and 0 <= ay + ddy < H
+            }
+            reserved = asm_tiles | set(key_cells) | all_perim
+            available = [
+                (x, y)
+                for x in range(W)
+                for y in range(H)
+                if (x, y) not in reserved
+            ]
+            if len(available) < 3:
+                continue
+
+            src_a_pos, src_b_pos, sink_pos = random.sample(available, 3)
+            dirs = [d for d in Direction if d != Direction.NONE]
+            src_a_dir = random.choice(dirs)
+            src_b_dir = random.choice(dirs)
+            sink_dir = random.choice(dirs)
+
+            ds_a = DIR_TO_DELTA[src_a_dir]
+            ds_b = DIR_TO_DELTA[src_b_dir]
+            dk = DIR_TO_DELTA[sink_dir]
+            src_a_out = (src_a_pos[0] + ds_a[0], src_a_pos[1] + ds_a[1])
+            src_b_out = (src_b_pos[0] + ds_b[0], src_b_pos[1] + ds_b[1])
+            sink_in = (sink_pos[0] - dk[0], sink_pos[1] - dk[1])
+
+            conn = [src_a_out, src_b_out, sink_in]
+            if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in conn):
+                continue
+            if len(set(conn)) != len(conn):
+                continue
+            if any(c in reserved for c in conn):
+                continue
+            if any(c in {src_a_pos, src_b_pos, sink_pos} for c in conn):
+                continue
+
+            fixed_cells = (
+                asm_tiles
+                | {in_a_pos, in_b_pos, out_pos}
+                | {src_a_pos, src_b_pos, sink_pos}
+            )
+
+            # Path A: source A → input-A pickup
+            blocked_a = (
+                fixed_cells
+                | {in_b_pickup, out_drop, src_b_out, sink_in}
+            )
+            path_a = find_belt_path(
+                W, H, src_a_out, in_a_pickup, in_a_dir, blocked_a
+            )
+            if path_a is None:
+                continue
+            path_a_cells = {(x, y) for x, y, _ in path_a}
+
+            # Path B: source B → input-B pickup
+            blocked_b = (
+                fixed_cells
+                | {in_a_pickup, out_drop, src_a_out, sink_in}
+                | path_a_cells
+            )
+            path_b = find_belt_path(
+                W, H, src_b_out, in_b_pickup, in_b_dir, blocked_b
+            )
+            if path_b is None:
+                continue
+            path_b_cells = {(x, y) for x, y, _ in path_b}
+
+            # Path C: output drop → sink input
+            blocked_c = (
+                fixed_cells
+                | {in_a_pickup, in_b_pickup, src_a_out, src_b_out}
+                | path_a_cells
+                | path_b_cells
+            )
+            path_c = find_belt_path(
+                W, H, out_drop, sink_in, sink_dir, blocked_c
+            )
+            if path_c is None:
+                continue
+
+            # 1 assembler + 3 inserters + belts (assembler is 1 entity)
+            total_entities = len(path_a) + len(path_b) + len(path_c) + 4
+            if total_entities > max_entities:
+                continue
+
+            # Place sources
+            world_CWH[Channel.ENTITIES.value, src_a_pos[0], src_a_pos[1]] = (
+                str2ent("source").value
+            )
+            world_CWH[Channel.DIRECTION.value, src_a_pos[0], src_a_pos[1]] = (
+                src_a_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, src_a_pos[0], src_a_pos[1]] = (
+                input_a_value
+            )
+
+            world_CWH[Channel.ENTITIES.value, src_b_pos[0], src_b_pos[1]] = (
+                str2ent("source").value
+            )
+            world_CWH[Channel.DIRECTION.value, src_b_pos[0], src_b_pos[1]] = (
+                src_b_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, src_b_pos[0], src_b_pos[1]] = (
+                input_b_value
+            )
+
+            # Place sink
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
+                str2ent("sink").value
+            )
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                sink_dir.value
+            )
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
+                output_item_value
+            )
+
+            # Place assembler (3×3, all tiles tagged with the recipe item)
+            for tx, ty in asm_tiles:
+                world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
+                world_CWH[Channel.DIRECTION.value, tx, ty] = (
+                    Direction.NORTH.value
+                )
+                world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
+
+            # Place 2 input inserters + 1 output inserter
+            for ipos, idir in [
+                (in_a_pos, in_a_dir),
+                (in_b_pos, in_b_dir),
+                (out_pos, out_dir),
+            ]:
+                world_CWH[
+                    Channel.ENTITIES.value, ipos[0], ipos[1]
+                ] = str2ent("inserter").value
+                world_CWH[
+                    Channel.DIRECTION.value, ipos[0], ipos[1]
+                ] = idir.value
+
+            # Place belt paths
+            for x, y, d in path_a + path_b + path_c:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+            # Verify throughput > 0
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
+
+            # The assembler is a valid blanking target — same rationale
+            # as ASSEMBLE_1IN_1OUT: source/sink items are never blanked
+            # so the recipe is inferable, and forcing the model to
+            # place the assembler is the only way the item head learns
+            # to predict non-zero recipes.
 
             break
         if count == 0:
