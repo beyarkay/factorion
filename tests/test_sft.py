@@ -652,11 +652,14 @@ class TestArtifactNameHelpers:
         assert _humanize_lr(0) == "0"
 
     def test_artifact_name_default(self):
-        assert _artifact_name(SFTArgs()) == "sft-s8-n50k-e30-bs512-lr1e-3-c48"
+        # SFTArgs defaults track the sweep winner: size=11, n=300k, chan3=64,
+        # lr=2.542e-3, so the auto-name expands the channel suffix.
+        assert _artifact_name(SFTArgs()) == "sft-s11-n300k-e30-bs512-lr2.5e-3-c48-48-64"
 
     def test_artifact_name_larger_run(self):
         args = SFTArgs(
             size=16, num_samples=200_000, epochs=50, batch_size=1024, lr=3e-4,
+            chan1=48, chan2=48, chan3=48,
         )
         assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48"
 
@@ -665,7 +668,7 @@ class TestArtifactNameHelpers:
         to a single c{N} — so a c32-64-64 run can't accidentally be filed
         under the same artifact as a c48 run."""
         args = SFTArgs(chan1=32, chan2=64, chan3=64)
-        assert _artifact_name(args) == "sft-s8-n50k-e30-bs512-lr1e-3-c32-64-64"
+        assert _artifact_name(args) == "sft-s11-n300k-e30-bs512-lr2.5e-3-c32-64-64"
 
     def test_artifact_name_stable_across_runs(self):
         """Two SFTArgs with the same hyperparams must produce the same

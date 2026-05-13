@@ -151,11 +151,14 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 @dataclass
 class SFTArgs:
+    # Defaults below are the rank-1 result from the first SFT sweep
+    # (wandb sweep ncqdnvmt, PR #104) — val/acc=0.901 on size=11. Override
+    # any individual flag at the command line.
     seed: int = 1
     """random seed"""
-    size: int = 8
+    size: int = 11
     """grid size (width and height)"""
-    num_samples: int = 50000
+    num_samples: int = 300000
     """number of (state, action) pairs to generate"""
     max_level: int = 0
     """max curriculum level (0 = auto: 2*size)"""
@@ -163,27 +166,27 @@ class SFTArgs:
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 1e-3
+    lr: float = 2.542e-3
     """peak learning rate (after warmup, before cosine decay)"""
-    warmup_frac: float = 0.05
+    warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
-    min_lr_ratio: float = 0.01
+    min_lr_ratio: float = 0.02869
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
-    weight_decay: float = 0.0
+    weight_decay: float = 2.902e-4
     """AdamW weight decay"""
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
-    lw_tile: float = 1.0
+    lw_tile: float = 1.162
     """loss weight for the tile-selection (BCE) head"""
-    lw_ent: float = 1.0
+    lw_ent: float = 0.6673
     """loss weight for the entity (CE) head"""
-    lw_dir: float = 1.0
+    lw_dir: float = 0.948
     """loss weight for the direction (CE) head"""
-    lw_item: float = 1.0
+    lw_item: float = 0.6349
     """loss weight for the item / recipe (CE) head"""
-    lw_misc: float = 1.0
+    lw_misc: float = 0.6236
     """loss weight for the misc (CE) head"""
-    lw_eot: float = 1.0
+    lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
     val_frac: float = 0.1
     """fraction of data for validation"""
@@ -193,11 +196,11 @@ class SFTArgs:
     """CNN encoder channel 1"""
     chan2: int = 48
     """CNN encoder channel 2"""
-    chan3: int = 48
+    chan3: int = 64
     """CNN encoder channel 3"""
     flat_dim: int = 128
     """flat dim (unused, kept for compat with AgentCNN)"""
-    tile_head_std: float = 0.06503
+    tile_head_std: float = 0.02208
     """tile head init std"""
     track: bool = False
     """track with W&B"""
