@@ -1,11 +1,12 @@
 """Decoder tests for `factorion.blueprint2world`.
 
-Blueprint fixtures live as one-string-per-file under `tests/blueprints/`.
-Every `*.txt` in that directory is auto-discovered by
-`test_blueprint_fixture_decodes` and must decode without error into a
-non-empty world tensor. To add a new blueprint to the test suite,
-paste the b64 string into a new file under `tests/blueprints/`; pytest
-will pick it up on the next run.
+Blueprint fixtures live as one-string-per-file under `lesson_blueprints/`
+at the repo root. The same directory doubles as the seed corpus for
+the `FROM_BLUEPRINT` lesson kind. Every `*.txt` in that directory is
+auto-discovered by `test_blueprint_fixture_decodes` and must decode
+without error into a non-empty world tensor. To add a new blueprint,
+paste the b64 string into a new file there; pytest picks it up on the
+next run.
 
 Lines starting with `#` (after any leading whitespace) are treated as
 comments and stripped; blank lines are ignored. A blueprint may also
@@ -28,6 +29,7 @@ from factorion import (
     Channel,
     Direction,
     blueprint2world,
+    read_blueprint_file,
     str2ent,
     str2item,
 )
@@ -39,25 +41,12 @@ _SERVER_DIR = os.path.join(
 if _SERVER_DIR not in sys.path:
     sys.path.insert(0, _SERVER_DIR)
 
-_BP_DIR = Path(__file__).parent / "blueprints"
-
-
-def _read_bp(path: Path) -> str:
-    """Read a blueprint fixture, stripping full-line `#` comments and
-    blank lines. Non-comment lines are concatenated so a blueprint can
-    be hard-wrapped across multiple lines if needed."""
-    parts = []
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts.append(stripped)
-    return "".join(parts)
+_BP_DIR = Path(__file__).parent.parent / "lesson_blueprints"
 
 
 def _load_bp(name: str) -> str:
     """Read a blueprint fixture by stem (e.g. "gears_factory")."""
-    return _read_bp(_BP_DIR / f"{name}.txt")
+    return read_blueprint_file(_BP_DIR / f"{name}.txt")
 
 
 # --- Generic smoke check over every fixture --------------------------------
@@ -69,10 +58,10 @@ def _load_bp(name: str) -> str:
     ids=lambda p: p.stem,
 )
 def test_blueprint_fixture_decodes(bp_path):
-    """Every fixture in tests/blueprints/ must decode into a 5-channel,
+    """Every fixture in lesson_blueprints/ must decode into a 5-channel,
     non-empty world tensor. New blueprints get this check for free —
     add specific assertions in a named test below if you want more."""
-    bp = _read_bp(bp_path)
+    bp = read_blueprint_file(bp_path)
     w = blueprint2world(bp)
     assert w.ndim == 3 and w.shape[0] == 5, (
         f"unexpected tensor shape for {bp_path.name}: {w.shape}"

@@ -6,7 +6,9 @@ wrappers have been stripped and identifiers are exported directly.
 """
 
 import base64
+import glob
 import json
+import os
 import random
 import zlib
 from collections import defaultdict, deque
@@ -151,6 +153,7 @@ class LessonKind(Enum):
     ASSEMBLE_1IN_1OUT = 5
     MOVE_VIA_UG_BELT = 6
     ASSEMBLE_2IN_1OUT = 7
+    FROM_BLUEPRINT = 8
 
 
 @dataclass(frozen=True)
@@ -651,6 +654,148 @@ def blueprint2world(bp):
 
     # Return (C, W, H) to match the encoder's input shape.
     return np.transpose(world, (2, 0, 1))
+
+
+# Directory of curated blueprint strings the FROM_BLUEPRINT lesson
+# samples from. Both training (build_factory) and the blueprint-decode
+# tests read from here.
+LESSON_BLUEPRINT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "lesson_blueprints"
+)
+
+
+def read_blueprint_file(path):
+    """Read a blueprint fixture, stripping full-line ``#`` comments and
+    blank lines. Non-comment lines are concatenated so a long b64
+    string can be hard-wrapped across multiple lines if convenient."""
+    parts = []
+    with open(path) as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts.append(stripped)
+    return "".join(parts)
+
+
+# Horizontal flip swaps E↔W; vertical flip swaps N↔S. The full
+# Direction enum has NONE=0 plus NORTH=1, EAST=2, SOUTH=3, WEST=4 —
+# entries omitted from the maps stay put (NONE is unchanged by either
+# flip, N/S are unchanged by horizontal flip, E/W by vertical).
+_DIR_FLIP_H = {Direction.EAST.value: Direction.WEST.value,
+               Direction.WEST.value: Direction.EAST.value}
+_DIR_FLIP_V = {Direction.NORTH.value: Direction.SOUTH.value,
+               Direction.SOUTH.value: Direction.NORTH.value}
+
+
+def _flip_world(world_CWH, axis):
+    """Mirror a (C, W, H) world tensor along the W axis (axis=1) or H
+    axis (axis=2), remapping direction values so flow directions are
+    preserved. Works for any tensor with the canonical channel layout.
+    """
+    assert axis in (1, 2)
+    flipped = torch.flip(world_CWH, dims=[axis])
+    dir_ch = flipped[Channel.DIRECTION.value].clone()
+    remap = _DIR_FLIP_H if axis == 1 else _DIR_FLIP_V
+    for old, new in remap.items():
+        dir_ch[flipped[Channel.DIRECTION.value] == old] = new
+    flipped[Channel.DIRECTION.value] = dir_ch
+    return flipped
+
+
+def _is_gears_factory(world_CWH):
+    """True iff every source carries ``iron_plate``, every sink
+    carries ``iron_gear_wheel``, and every assembler tile carries
+    ``iron_gear_wheel`` in the ITEMS channel. Blueprints that match
+    this pattern are eligible for the 1-in-1-out recipe substitution
+    augmentation; everything else is left untouched."""
+    ent = world_CWH[Channel.ENTITIES.value]
+    itm = world_CWH[Channel.ITEMS.value]
+    src_id = str2ent("stack_inserter").value
+    snk_id = str2ent("bulk_inserter").value
+    asm_id = str2ent("assembling_machine_1").value
+    plate_id = str2item("iron_plate").value
+    gear_id = str2item("iron_gear_wheel").value
+
+    src_mask = ent == src_id
+    snk_mask = ent == snk_id
+    asm_mask = ent == asm_id
+
+    if not (src_mask.any() and snk_mask.any() and asm_mask.any()):
+        return False
+    return bool(
+        (itm[src_mask] == plate_id).all()
+        and (itm[snk_mask] == gear_id).all()
+        and (itm[asm_mask] == gear_id).all()
+    )
+
+
+def _substitute_gears_recipe(world_CWH):
+    """Replace the ``iron_plate → iron_gear_wheel`` ITEMS triple with
+    a randomly chosen 1-in-1-out recipe. Source markers get the new
+    input item; sinks and assembler tiles get the new produced item.
+    Caller must have already verified eligibility via
+    :func:`_is_gears_factory`."""
+    one_in_one_out = [
+        (name, r) for name, r in recipes.items()
+        if len(r.consumes) == 1 and len(r.produces) == 1
+    ]
+    if not one_in_one_out:
+        return world_CWH
+    _, recipe = random.choice(one_in_one_out)
+    new_input = next(iter(recipe.consumes.keys()))
+    new_output = next(iter(recipe.produces.keys()))
+    new_input_id = str2item(new_input).value
+    new_output_id = str2item(new_output).value
+
+    plate_id = str2item("iron_plate").value
+    gear_id = str2item("iron_gear_wheel").value
+
+    out = world_CWH.clone()
+    itm = out[Channel.ITEMS.value]
+    plate_mask = itm == plate_id
+    gear_mask = itm == gear_id
+    itm[plate_mask] = new_input_id
+    itm[gear_mask] = new_output_id
+    return out
+
+
+def _count_removable_entity_units(world_CWH):
+    """Count entity units that would be candidates for blanking by
+    :func:`_remove_entities` (sources/sinks/empty excluded; multi-tile
+    entities counted once at their anchor tile). The world is iterated
+    in (x outer, y inner) order, matching the convention that the
+    anchor tile is the first occupied tile encountered in that sweep.
+    """
+    skip = {
+        str2ent("source").value,
+        str2ent("sink").value,
+        str2ent("empty").value,
+    }
+    secondary = set()
+    count = 0
+    _, W, H = world_CWH.shape
+    ent_ch = world_CWH[Channel.ENTITIES.value]
+    dir_ch = world_CWH[Channel.DIRECTION.value]
+    for x in range(W):
+        for y in range(H):
+            if (x, y) in secondary:
+                continue
+            ev = int(ent_ch[x, y])
+            if ev in skip:
+                continue
+            ent = entities[ev]
+            count += 1
+            if ent.width > 1 or ent.height > 1:
+                d = int(dir_ch[x, y])
+                tiles_list = factorion_rs.py_entity_tiles(
+                    x, y, d, ent.width, ent.height
+                )
+                if tiles_list is not None:
+                    for tx, ty in tiles_list:
+                        if (tx, ty) != (x, y):
+                            secondary.add((tx, ty))
+    return count
 
 
 def plot_flow_network(G):
@@ -2656,6 +2801,82 @@ def build_factory(
             # place the assembler is the only way the item head learns
             # to predict non-zero recipes.
 
+            break
+        if count == 0:
+            return None
+
+    elif kind.value == LessonKind.FROM_BLUEPRINT.value:
+        # Sample a random hand-authored blueprint from
+        # `lesson_blueprints/`, decode it, then apply data
+        # augmentations:
+        #   - optional 1-in-1-out recipe substitution (only for gears
+        #     factories: iron-plate → iron-gear-wheel layouts),
+        #   - optional horizontal / vertical flip,
+        #   - random translation within the size×size grid (if the
+        #     decoded footprint is smaller than the world).
+        # Blueprints whose footprint exceeds `size` are skipped and a
+        # different one is tried. The throughput check rejects
+        # blueprints that don't actually produce flow (malformed or
+        # incompatible after augmentation).
+        bp_paths = sorted(glob.glob(os.path.join(
+            LESSON_BLUEPRINT_DIR, "*.txt"
+        )))
+        if not bp_paths:
+            raise Exception(
+                f"No blueprints in {LESSON_BLUEPRINT_DIR}; "
+                "FROM_BLUEPRINT needs at least one .txt seed."
+            )
+
+        original_count = max(500, size * size * 2)
+        count = original_count
+        while count > 0:
+            count -= 1
+            bp_path = random.choice(bp_paths)
+            try:
+                bp_text = read_blueprint_file(bp_path)
+                decoded_np = blueprint2world(bp_text)
+            except (ValueError, AssertionError, KeyError):
+                # Malformed blueprint — try a different sample.
+                continue
+            decoded = torch.tensor(decoded_np)
+            _, w_bp, h_bp = decoded.shape
+            if w_bp > size or h_bp > size:
+                continue
+
+            # Recipe substitution before flipping — order doesn't
+            # matter (the substitution only touches ITEMS values, not
+            # positions or directions), but doing it first keeps the
+            # mutations grouped by what they affect.
+            if _is_gears_factory(decoded):
+                decoded = _substitute_gears_recipe(decoded)
+
+            if random.random() < 0.5:
+                decoded = _flip_world(decoded, axis=1)  # horizontal
+            if random.random() < 0.5:
+                decoded = _flip_world(decoded, axis=2)  # vertical
+
+            ox = random.randint(0, size - w_bp)
+            oy = random.randint(0, size - h_bp)
+
+            world_CWH = torch.tensor(
+                new_world(width=size, height=size)
+            ).permute(2, 0, 1)
+            world_CWH[:, ox:ox + w_bp, oy:oy + h_bp] = decoded
+
+            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            if tp <= 0:
+                continue
+
+            total_entities = _count_removable_entity_units(world_CWH)
+            if total_entities == 0:
+                continue
+            if total_entities > max_entities:
+                continue
+
+            # Every non-source/sink entity is a valid blanking target.
+            # The recipe is still inferable from source/sink ITEM IDs
+            # (never blanked), so even the assembler can be removed.
+            protected_positions = frozenset()
             break
         if count == 0:
             return None
