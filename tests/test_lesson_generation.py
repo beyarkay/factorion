@@ -1310,18 +1310,40 @@ class TestAssemble1In1OutMissingEntities:
 
     @pytest.mark.parametrize("seed", range(10))
     @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
-    def test_assembler_always_present(self, seed, num_missing):
-        """The assembler is structurally required and must never be removed,
-        regardless of num_missing_entities."""
+    def test_assembler_kept_or_fully_removed(self, seed, num_missing):
+        """The 3×3 assembler is removed atomically by _remove_entities — either
+        all 9 tiles remain (recipe still set) or all 9 are blanked. A partial
+        removal would corrupt the lesson."""
         world, _ = generate_lesson(
             size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
             num_missing_entities=num_missing, seed=seed,
         )
         ent_layer = world[Channel.ENTITIES.value]
         asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
-        assert asm_count == 9, (
-            f"seed={seed}, num_missing={num_missing}: assembler removed "
-            f"({asm_count} tiles, expected 9)"
+        assert asm_count in (0, 9), (
+            f"seed={seed}, num_missing={num_missing}: assembler partially "
+            f"removed ({asm_count} tiles, expected 0 or 9)"
+        )
+
+    def test_assembler_can_be_removed(self):
+        """With a generous num_missing, the assembler must occasionally be
+        blanked — otherwise the item head never sees a non-zero recipe
+        target during SFT (see issue #107). `inf` short-circuits removal
+        in _remove_entities, so we use a large finite value matching the
+        SFT default (max_level = 2*size)."""
+        removed_count = 0
+        for seed in range(60):
+            world, _ = generate_lesson(
+                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                num_missing_entities=20, seed=seed,
+            )
+            ent_layer = world[Channel.ENTITIES.value]
+            asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+            if asm_count == 0:
+                removed_count += 1
+        assert removed_count >= 5, (
+            f"Assembler was blanked in only {removed_count}/60 lessons; "
+            f"the item head won't see enough recipe targets"
         )
 
     @pytest.mark.parametrize("seed", range(10))
