@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Local server state
+server/state/
+server/logs/
+*.log
+
+# Factorio mod build artefacts
+mod/*.zip
+mod/dist/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
