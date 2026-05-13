@@ -55,16 +55,21 @@ class TestFootprintChannel:
         assert world.shape[2] == 5
 
     def test_default_lesson_footprint_is_all_available(self, env):
-        """Default lessons must NOT touch FOOTPRINT — every cell stays
-        AVAILABLE. A prior version marked every empty cell in the
+        """MOVE_ONE_ITEM lessons must NOT touch FOOTPRINT — every cell
+        stays AVAILABLE. A prior version marked every empty cell in the
         completed layout as UNAVAILABLE, which gave the optimal
         placement set away to the agent (AVAILABLE cells were exactly
         the cells the agent needed to fill). Bounded build regions are
-        an opt-in per-lesson override, not a default."""
-        obs, _ = env.reset(options={"num_missing_entities": 1})
+        an opt-in per-lesson override; SPLITTER / ASSEMBLE kinds use
+        them legitimately so we pin MOVE_ONE_ITEM here."""
+        from helpers import LessonKind  # noqa: E402
+        obs, _ = env.reset(options={
+            "num_missing_entities": 1,
+            "kind": LessonKind.MOVE_ONE_ITEM,
+        })
         footprint = obs[Channel.FOOTPRINT.value]
         assert (footprint == 1).all(), (
-            "FOOTPRINT must be all-AVAILABLE for default lessons; "
+            "FOOTPRINT must be all-AVAILABLE for MOVE_ONE_ITEM lessons; "
             "leaking the placement set is the regression."
         )
 

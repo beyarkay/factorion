@@ -446,9 +446,12 @@ def run_rollout_eval(
         return 0.0, per_kind, per_kind_n
 
     # Cap K at the number of seeds — spinning up more envs than work
-    # items wastes memory.
+    # items wastes memory. All envs use idx=0 so the seed we pass to
+    # reset() is the seed generate_lesson sees: FactorioEnv.reset adds
+    # self.idx to the seed for env-diversity in PPO, but here we need
+    # exact seed pass-through to replay the held-out val factories.
     K = max(1, min(num_envs, len(seeds_sorted)))
-    envs = [FactorioEnv(size=args.size, idx=i) for i in range(K)]
+    envs = [FactorioEnv(size=args.size, idx=0) for _ in range(K)]
 
     # Pop seeds off the front; each slot harvests its result then pulls
     # the next one. `current` holds the (seed, kind, last_throughput)
