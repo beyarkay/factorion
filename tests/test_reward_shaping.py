@@ -14,7 +14,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import FactorioEnv, make_env  # noqa: E402
-from helpers import generate_lesson, LessonKind  # noqa: E402
+from helpers import blank_entities, build_factory, LessonKind  # noqa: E402
 
 
 ENV_ID = "factorion/FactorioEnv-v0-reward-shaping-test"
@@ -132,12 +132,12 @@ class TestSeedConsistency:
     @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
     def test_same_seed_same_layout(self, seed):
         """Two calls with same seed and num_missing_entities=0 produce identical worlds."""
-        world_a, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
-        )
-        world_b, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert factory is not None
+        world_a, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert factory is not None
+        world_b, _ = blank_entities(factory, num_missing_entities=0)
         assert torch.equal(world_a, world_b), (
             f"seed={seed}: two generate_lesson calls with same seed differ"
         )
@@ -146,12 +146,12 @@ class TestSeedConsistency:
     def test_solved_is_superset_of_incomplete(self, seed):
         """The solved factory (num_missing=0) should have entities everywhere
         the incomplete factory (num_missing=1) does, plus the removed ones."""
-        solved, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
-        )
-        incomplete, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=1, seed=seed,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert factory is not None
+        incomplete, _ = blank_entities(factory, num_missing_entities=1)
         from helpers import Channel, str2ent  # noqa: E402
 
         solved_ent = solved[Channel.ENTITIES.value]
@@ -171,15 +171,12 @@ class TestSeedConsistency:
     @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
     def test_different_seeds_different_layouts(self, seed):
         """Different seeds should (almost always) produce different layouts."""
-        world_a, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
-        )
-        world_b, _ = generate_lesson(
-            size=5,
-            kind=LessonKind.MOVE_ONE_ITEM,
-            num_missing_entities=0,
-            seed=seed + 1000,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert factory is not None
+        world_a, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed + 1000)
+        assert factory is not None
+        world_b, _ = blank_entities(factory, num_missing_entities=0)
         assert not torch.equal(world_a, world_b), (
             f"seeds {seed} and {seed + 1000} produced identical worlds"
         )

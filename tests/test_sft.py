@@ -14,7 +14,14 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from helpers import Channel, Direction, LessonKind, generate_lesson, str2ent
+from helpers import (
+    Channel,
+    Direction,
+    LessonKind,
+    blank_entities,
+    build_factory,
+    str2ent,
+)
 from sft import (
     SFTArgs,
     _artifact_name,
@@ -32,12 +39,12 @@ from ppo import FactorioEnv, AgentCNN, make_env
 class TestExtractExpertActions:
     def test_reconstructs_solved_world(self):
         """Replaying all extracted actions should reconstruct the solved world."""
-        solved, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=42,
-        )
-        task, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=3, seed=42,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
+        assert factory is not None
+        task, _ = blank_entities(factory, num_missing_entities=3)
         pairs = extract_expert_actions(solved, task)
         assert len(pairs) > 0, "Should have at least one action"
 
@@ -67,9 +74,9 @@ class TestExtractExpertActions:
 
     def test_no_actions_when_identical(self):
         """No actions needed when solved == task."""
-        solved, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=42,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=0)
         pairs = extract_expert_actions(solved, solved.clone())
         assert len(pairs) == 0
 
@@ -77,14 +84,14 @@ class TestExtractExpertActions:
         """Number of pairs should equal num_missing_entities placement
         actions + 1 terminal (eot=1) pair."""
         for seed in [1, 7, 42]:
-            solved, _ = generate_lesson(
-                size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=seed,
-            )
+            factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+            assert factory is not None
+            solved, _ = blank_entities(factory, num_missing_entities=0)
             # generate_lesson returns (world, actual_removed) where actual_removed
             # may be less than num_missing_entities if the factory has fewer entities
-            task, min_ent = generate_lesson(
-                size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=seed,
-            )
+            factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+            assert factory is not None
+            task, min_ent = blank_entities(factory, num_missing_entities=2)
             pairs = extract_expert_actions(solved, task)
             assert len(pairs) == min_ent + 1, (
                 f"seed={seed}: expected {min_ent} placement pairs + 1 "
@@ -97,12 +104,12 @@ class TestExtractExpertActions:
 
     def test_intermediate_states_are_sequential(self):
         """Each observation should reflect previously applied actions."""
-        solved, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=3, seed=99,
-        )
-        task, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=3, seed=99,
-        )
+        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=99)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=3)
+        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=99)
+        assert factory is not None
+        task, _ = blank_entities(factory, num_missing_entities=3)
         pairs = extract_expert_actions(solved, task)
 
         if len(pairs) < 2:
@@ -120,12 +127,12 @@ class TestExtractExpertActions:
         """All extracted placement entity IDs should be valid (non-empty)
         entity values. Terminal pairs (eot=1) carry sentinel zeros and are
         excluded from this check."""
-        solved, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
-        )
-        task, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=2, seed=42,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=2)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
+        assert factory is not None
+        task, _ = blank_entities(factory, num_missing_entities=2)
         pairs = extract_expert_actions(solved, task)
         for _, _, entity_id, direction_id, _, _, _, eot in pairs:
             if eot == 1:
@@ -143,14 +150,12 @@ class TestExtractExpertActions:
         found_down = found_up = False
         for seed in range(50):
             try:
-                solved, _ = generate_lesson(
-                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
-                    num_missing_entities=0, seed=seed,
-                )
-                task, _ = generate_lesson(
-                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
-                    num_missing_entities=2, seed=seed,
-                )
+                factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+                assert factory is not None
+                solved, _ = blank_entities(factory, num_missing_entities=0)
+                factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+                assert factory is not None
+                task, _ = blank_entities(factory, num_missing_entities=2)
             except Exception:
                 continue
             for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(solved, task):
@@ -178,10 +183,9 @@ class TestExtractExpertActions:
         for seed in [1, 7, 42, 99]:
             for level in [1, 4, 8, 16]:
                 try:
-                    task, _ = generate_lesson(
-                        size=8, kind=LessonKind.MOVE_ONE_ITEM,
-                        num_missing_entities=level, seed=seed,
-                    )
+                    factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                    assert factory is not None
+                    task, _ = blank_entities(factory, num_missing_entities=level)
                 except Exception:
                     continue
                 ent = task[Channel.ENTITIES.value]
@@ -248,8 +252,12 @@ class TestGenerateDataset:
         splitter, which would place two splitters at execution time."""
         kind = getattr(LessonKind, kind_name)
         try:
-            solved, _ = generate_lesson(size=8, kind=kind, num_missing_entities=0, seed=seed)
-            task, _ = generate_lesson(size=8, kind=kind, num_missing_entities=20, seed=seed)
+            factory = build_factory(size=8, kind=kind, seed=seed)
+            assert factory is not None
+            solved, _ = blank_entities(factory, num_missing_entities=0)
+            factory = build_factory(size=8, kind=kind, seed=seed)
+            assert factory is not None
+            task, _ = blank_entities(factory, num_missing_entities=20)
         except Exception:
             pytest.skip(f"{kind_name} seed {seed}: lesson generation failed")
 
@@ -278,17 +286,13 @@ class TestGenerateDataset:
         asm_id = str2ent("assembling_machine_1").value
         asm_pair_count = 0
         for seed in range(60):
-            try:
-                solved, _ = generate_lesson(
-                    size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                    num_missing_entities=0, seed=seed,
-                )
-                task, _ = generate_lesson(
-                    size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                    num_missing_entities=20, seed=seed,
-                )
-            except Exception:
+            factory = build_factory(
+                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed,
+            )
+            if factory is None:
                 continue
+            solved = factory.world_CWH
+            task, _ = blank_entities(factory, num_missing_entities=20)
             for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(solved, task):
                 if eot == 1:
                     continue
@@ -513,16 +517,12 @@ class TestRunRolloutEval:
         try/except-continue pattern that generate_dataset uses for malformed
         seeds, so this fixture doesn't get flaky when an enum value lands a
         bad seed."""
-        from factorion import generate_lesson  # noqa: E402
         kinds = list(LessonKind)
         out: dict[int, int] = {}
         seed = start_seed
-        max_level = 2 * size
         while len(out) < num_kinds and seed < start_seed + 1000:
             kind = kinds[len(out) % len(kinds)]
-            try:
-                generate_lesson(size=size, kind=kind, num_missing_entities=max_level, seed=seed)
-            except Exception:
+            if build_factory(size=size, kind=kind, seed=seed) is None:
                 seed += 1
                 continue
             out[seed] = kind.value
@@ -599,12 +599,12 @@ class TestEotHead:
         """A lesson with N missing entities emits N placement pairs
         (eot=0) followed by one terminal pair (eot=1) whose obs equals
         the fully-solved factory."""
-        solved, _ = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=0, seed=11,
-        )
-        task, min_ent = generate_lesson(
-            size=5, kind=LessonKind.MOVE_ONE_ITEM, num_missing_entities=3, seed=11,
-        )
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
+        assert factory is not None
+        solved, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
+        assert factory is not None
+        task, min_ent = blank_entities(factory, num_missing_entities=3)
         pairs = extract_expert_actions(solved, task)
         # eot flag is at index 7 in the tuple
         eots = [p[7] for p in pairs]
@@ -699,14 +699,12 @@ class TestEotHead:
         neg_logits = []
         with torch.no_grad():
             for seed in range(10_000, 10_040):
-                solved, _ = generate_lesson(
-                    size=5, kind=LessonKind.MOVE_ONE_ITEM,
-                    num_missing_entities=0, seed=seed,
-                )
-                task, _ = generate_lesson(
-                    size=5, kind=LessonKind.MOVE_ONE_ITEM,
-                    num_missing_entities=3, seed=seed,
-                )
+                factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                assert factory is not None
+                solved, _ = blank_entities(factory, num_missing_entities=0)
+                factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                assert factory is not None
+                task, _ = blank_entities(factory, num_missing_entities=3)
                 enc_pos = agent.encoder(solved.unsqueeze(0).float().to(device))
                 enc_neg = agent.encoder(task.unsqueeze(0).float().to(device))
                 pos_logits.append(agent.eot_head(enc_pos).item())

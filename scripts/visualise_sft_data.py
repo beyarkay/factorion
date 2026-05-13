@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from factorion import (  # noqa: E402
     Channel,
     LessonKind,
-    generate_lesson,
+    blank_entities,
+    build_factory,
     world2html,
 )
 from sft import extract_expert_actions  # noqa: E402
@@ -80,13 +81,13 @@ def main(args: VizArgs) -> None:
         seed += 1
 
         try:
-            solved, _ = generate_lesson(
-                size=args.size, kind=kind, num_missing_entities=0, seed=seed,
-            )
+            factory = build_factory(size=args.size, kind=kind, seed=seed)
+            assert factory is not None
+            solved, _ = blank_entities(factory, num_missing_entities=0)
             if not args.final_only:
-                task, _ = generate_lesson(
-                    size=args.size, kind=kind, num_missing_entities=level, seed=seed,
-                )
+                factory = build_factory(size=args.size, kind=kind, seed=seed)
+                assert factory is not None
+                task, _ = blank_entities(factory, num_missing_entities=level)
         except Exception:
             continue
 

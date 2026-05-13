@@ -2436,39 +2436,6 @@ def blank_entities(
     return partial, min_entities_required
 
 
-def generate_lesson(
-    size=5,
-    kind=LessonKind.MOVE_ONE_ITEM,
-    num_missing_entities=float("inf"),
-    seed=None,
-    random_item=True,
-    max_entities=float("inf"),
-):
-    """Compat wrapper for the historical lesson API.
-
-    New code should call :func:`build_factory` + :func:`blank_entities`
-    directly. This wrapper raises on retry-exhaustion to preserve the
-    original behaviour; the underlying ``build_factory`` returns
-    ``None`` in that case.
-    """
-    factory = build_factory(
-        size=size,
-        kind=kind,
-        seed=seed,
-        random_item=random_item,
-        max_entities=max_entities,
-    )
-    if factory is None:
-        raise Exception(
-            f"Failed to find valid {kind.name} lesson "
-            f"(rejection-sampling exhausted); advance the seed and retry"
-        )
-    partial, min_entities_required = blank_entities(
-        factory, num_missing_entities
-    )
-    return partial, min_entities_required
-
-
 def _bfs_shortest(grid_h, grid_w, start, end, blocked):
     """BFS from start to end, avoiding blocked cells.
 

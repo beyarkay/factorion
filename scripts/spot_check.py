@@ -26,7 +26,8 @@ os.environ["WANDB_DISABLED"] = "true"
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     LessonKind,
-    generate_lesson,
+    blank_entities,
+    build_factory,
     world2html,
 )
 
@@ -75,12 +76,9 @@ def run_scenario(kind: LessonKind, name: str, args: Args) -> dict:
     for i in range(args.count):
         seed = args.seed_start + i
         try:
-            world_cwh, min_ent = generate_lesson(
-                size=args.size,
-                kind=kind,
-                num_missing_entities=0,
-                seed=seed,
-            )
+            factory = build_factory(size=args.size, kind=kind, seed=seed)
+            assert factory is not None
+            world_cwh, min_ent = blank_entities(factory, num_missing_entities=0)
             world_whc = world_cwh.permute(1, 2, 0)
             tp, unreachable = factorion_rs.simulate_throughput(
                 world_whc.numpy().astype(np.int64)

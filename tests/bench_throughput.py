@@ -26,8 +26,9 @@ from helpers import (
     Direction,
     LessonKind,
     Misc,
+    blank_entities,
+    build_factory,
     entities,
-    generate_lesson,
     make_world,
     rs_throughput,
     set_assembler,
@@ -87,12 +88,9 @@ def random_belt_world(size, rng, density=0.4):
 
 def lesson_world(size, seed):
     """World from generate_lesson."""
-    result = generate_lesson(
-        size=size,
-        kind=LessonKind.MOVE_ONE_ITEM,
-        num_missing_entities=0,
-        seed=seed,
-    )
+    factory = build_factory(size=size, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+    assert factory is not None
+    result = blank_entities(factory, num_missing_entities=0)
     world_CWH = result[0]
     return world_CWH.permute(1, 2, 0).to(torch.int64)
 

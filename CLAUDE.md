@@ -16,7 +16,7 @@ Factorion trains agents to autonomously design and build factories inspired by F
 
 The training pipeline is moving toward an **LLM-style two-stage split**:
 
-1. **Data generation** — `generate_lesson()` in `factorion.py` produces *(partial-factory, correct-completion)* pairs by building a known-correct factory and blanking out N entities. Each lesson type (`MOVE_ONE_ITEM`, `INSERTER_TRANSFER`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
+1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `INSERTER_TRANSFER`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
 2. **SFT pretraining** — supervised training on those pairs (see `sft.py` when PR #47 lands) gives the policy a strong prior over entity placement.
 3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start_from` and skip easy curriculum levels via `--start_curriculum_level`.
 
@@ -36,7 +36,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 ## Project Structure
 
 - `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
-- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, throughput calculation. Import symbols directly (`from factorion import generate_lesson, Channel, ...`).
+- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, throughput calculation. Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
 - `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config.
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
 - `factorio-data/` — Git submodule with Factorio game data.

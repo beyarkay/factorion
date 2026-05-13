@@ -26,7 +26,6 @@ from factorion import (  # noqa: E402
     entities,
     find_belt_path,
     find_belt_paths_with_source_sink_orient,
-    generate_lesson,
     items,
     recipes,
     str2ent,
