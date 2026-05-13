@@ -12,9 +12,10 @@ from helpers import (
     Footprint,
     LessonKind,
     Misc,
+    blank_entities,
+    build_factory,
     compare_throughput,
     entities,
-    generate_lesson,
     items,
     recipes,
     rs_throughput,
@@ -33,27 +34,30 @@ class TestInserterTransferBasic:
 
     def test_generates_without_error(self):
         """Can generate at least one lesson without raising."""
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
     def test_returns_cwh_tensor(self):
         """Output tensor is CWH format with correct shape."""
         size = 8
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=size, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape[0] == len(Channel)
         assert world.shape[1] == size
         assert world.shape[2] == size
 
     def test_has_source_and_sink(self):
         """Generated world contains exactly one source and one sink."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         source_count = (ent_layer == str2ent("source").value).sum().item()
         sink_count = (ent_layer == str2ent("sink").value).sum().item()
@@ -62,35 +66,39 @@ class TestInserterTransferBasic:
 
     def test_has_inserter(self):
         """Generated world contains exactly one inserter."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
         assert inserter_count == 1, f"Expected 1 inserter, got {inserter_count}"
 
     def test_has_belts(self):
         """Generated world contains at least one transport belt."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
         assert belt_count >= 2, f"Expected at least 2 belts, got {belt_count}"
 
     def test_nonzero_throughput(self):
         """Complete factory has throughput > 0."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bottlenecked_by_inserter(self):
         """Throughput should be <= inserter flow rate (0.86)."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         inserter_flow = str2ent("inserter").flow
         assert tp <= inserter_flow + 1e-6, (
@@ -102,10 +110,9 @@ class TestInserterTransferBasic:
     def test_inserter_always_present_after_blanking(self, num_missing, seed):
         """The central inserter must never be blanked, even at maximum
         num_missing_entities — without it the lesson is ambiguous."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
         assert inserter_count == 1, (
@@ -120,9 +127,10 @@ class TestInserterTransferManySeeds:
     @pytest.mark.parametrize("seed", range(50))
     def test_size_8_seed(self, seed):
         """Size 8 grid, many seeds — all must produce valid factories."""
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
         assert tp <= str2ent("inserter").flow + 1e-6
@@ -130,27 +138,30 @@ class TestInserterTransferManySeeds:
     @pytest.mark.parametrize("seed", range(30))
     def test_size_6_seed(self, seed):
         """Size 6 grid — smaller grid, still must work."""
-        world, min_ent = generate_lesson(
-            size=6, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=6, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
     def test_size_10_seed(self, seed):
         """Size 10 grid — larger grid."""
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_15_seed(self, seed):
         """Size 15 grid — large grid."""
-        world, min_ent = generate_lesson(
-            size=15, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=15, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
@@ -160,9 +171,10 @@ class TestInserterTransferParity:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_parity_size_8(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         world_whc = world.permute(1, 2, 0)
         tp, ur = rs_throughput(world_whc)
         assert tp > 0, f"seed={seed}: throughput={tp}"
@@ -174,9 +186,10 @@ class TestInserterTransferGridSizes:
 
     @pytest.mark.parametrize("size", [5, 6, 7, 8, 9, 10, 12, 15])
     def test_valid_factory_per_size(self, size):
-        world, min_ent = generate_lesson(
-            size=size, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=7
+        factory = build_factory(size=size, kind=LessonKind.INSERTER_TRANSFER, seed=7
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
@@ -191,12 +204,14 @@ class TestInserterTransferMissingEntities:
     @pytest.mark.parametrize("num_missing", [1, 2, 3])
     def test_removes_correct_count(self, num_missing):
         """Removing N entities should leave the right number missing."""
-        world_full, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
-        world_partial, min_ent = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=num_missing, seed=42
+        assert factory is not None
+        world_full, _ = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world_partial, min_ent = blank_entities(factory, num_missing_entities=num_missing)
         assert min_ent == num_missing
 
         # Source and sink should still be present
@@ -207,9 +222,10 @@ class TestInserterTransferMissingEntities:
     @pytest.mark.parametrize("seed", range(20))
     def test_missing_1_preserves_source_sink(self, seed):
         """With 1 missing entity, source and sink remain."""
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=1, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=1)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
@@ -217,9 +233,10 @@ class TestInserterTransferMissingEntities:
 
     def test_missing_inf_returns_min_entities(self):
         """With inf missing, min_entities_required equals total placeable count."""
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=float("inf"), seed=42
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
@@ -232,9 +249,10 @@ class TestInserterTransferEntityDirections:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_all_entities_have_directions(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         dir_layer = world[Channel.DIRECTION.value]
 
@@ -255,9 +273,10 @@ class TestInserterTransferNoOverlaps:
     @pytest.mark.parametrize("seed", range(30))
     def test_unique_positions(self, seed):
         """Source, sink, inserter, and belts should all occupy unique cells."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
 
         occupied = []
@@ -278,9 +297,10 @@ class TestInserterTransferItems:
     @pytest.mark.parametrize("seed", range(20))
     def test_source_sink_have_matching_items(self, seed):
         """Source and sink should carry the same item."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
 
@@ -303,12 +323,14 @@ class TestInserterTransferDeterminism:
 
     @pytest.mark.parametrize("seed", [0, 1, 42, 99])
     def test_deterministic(self, seed):
-        world1, min1 = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
-        world2, min2 = generate_lesson(
-            size=8, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        assert factory is not None
+        world1, min1 = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=8, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world2, min2 = blank_entities(factory, num_missing_entities=0)
         assert torch.equal(world1, world2), f"seed={seed}: not deterministic"
         assert min1 == min2
 
@@ -320,13 +342,9 @@ class TestInserterTransferMaxEntities:
     def test_respects_max_entities(self, seed):
         """With a reasonable max_entities, total placeable entities should be bounded."""
         max_ent = 15
-        world, _ = generate_lesson(
-            size=10,
-            kind=LessonKind.INSERTER_TRANSFER,
-            num_missing_entities=0,
-            seed=seed,
-            max_entities=max_ent,
-        )
+        factory = build_factory(size=10, kind=LessonKind.INSERTER_TRANSFER, seed=seed, max_entities=max_ent)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         # Count non-source, non-sink, non-empty entities
         placeable = (
@@ -346,9 +364,10 @@ class TestInserterTransferThroughputRange:
     @pytest.mark.parametrize("seed", range(15))
     def test_throughput_in_range(self, size, seed):
         """Throughput should be > 0 and <= inserter rate (0.86)."""
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.INSERTER_TRANSFER, num_missing_entities=0, seed=seed
+        factory = build_factory(size=size, kind=LessonKind.INSERTER_TRANSFER, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         inserter_flow = str2ent("inserter").flow
         assert 0 < tp <= inserter_flow + 1e-6, (
@@ -363,58 +382,65 @@ class TestSplitterSplitBasic:
     """Basic sanity checks for SPLITTER_SPLIT lesson generation."""
 
     def test_generates_without_error(self):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
     def test_returns_cwh_tensor(self):
         size = 10
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape[0] == len(Channel)
         assert world.shape[1] == size
         assert world.shape[2] == size
 
     def test_has_one_source_two_sinks(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 2
 
     def test_has_splitter(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_count = (ent_layer == str2ent("splitter").value).sum().item()
         # Splitter occupies 2 tiles
         assert splitter_count == 2, f"Expected 2 splitter tiles, got {splitter_count}"
 
     def test_has_belts(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
         assert belt_count >= 3, f"Expected at least 3 belts, got {belt_count}"
 
     def test_nonzero_throughput(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bounded_by_splitter(self):
         """Total throughput should be <= 30.0 (splitter max flow)."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp <= 30.0 + 1e-6, f"Throughput {tp} exceeds splitter max flow"
 
@@ -424,33 +450,37 @@ class TestSplitterSplitManySeeds:
 
     @pytest.mark.parametrize("seed", range(50))
     def test_size_10_seed(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
     def test_size_8_seed(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_12_seed(self, seed):
-        world, _ = generate_lesson(
-            size=12, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=12, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_15_seed(self, seed):
-        world, _ = generate_lesson(
-            size=15, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=15, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
@@ -460,9 +490,10 @@ class TestSplitterSplitParity:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_parity_size_10(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         world_whc = world.permute(1, 2, 0)
         tp, ur = rs_throughput(world_whc)
         assert tp > 0, f"seed={seed}: throughput={tp}"
@@ -474,9 +505,10 @@ class TestSplitterSplitGridSizes:
 
     @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
     def test_valid_factory_per_size(self, size):
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=7
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_SPLIT, seed=7
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 2
@@ -490,9 +522,10 @@ class TestSplitterSplitEntityDirections:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_all_entities_have_directions(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         dir_layer = world[Channel.DIRECTION.value]
 
@@ -513,9 +546,10 @@ class TestSplitterSplitNoOverlaps:
     @pytest.mark.parametrize("seed", range(30))
     def test_no_double_placement(self, seed):
         """Each cell should have at most one entity."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         occupied = []
         for x in range(world.shape[1]):
@@ -532,9 +566,10 @@ class TestSplitterSplitItems:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_source_sinks_have_matching_items(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
 
@@ -556,9 +591,10 @@ class TestSplitterSplitMissingEntities:
 
     @pytest.mark.parametrize("num_missing", [1, 2, 3])
     def test_removes_correct_count(self, num_missing):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=num_missing, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=num_missing)
         assert min_ent == num_missing
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
@@ -566,9 +602,10 @@ class TestSplitterSplitMissingEntities:
 
     @pytest.mark.parametrize("seed", range(10))
     def test_missing_inf_returns_positive_count(self, seed):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=float("inf"), seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
     @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
@@ -577,10 +614,9 @@ class TestSplitterSplitMissingEntities:
         """The central splitter must never be blanked, even at maximum
         num_missing_entities — without it the lesson is ambiguous (could be
         solved by belts alone)."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
         assert splitter_tiles == 2, (
@@ -594,12 +630,14 @@ class TestSplitterSplitDeterminism:
 
     @pytest.mark.parametrize("seed", [0, 1, 42, 99])
     def test_deterministic(self, seed):
-        world1, min1 = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
-        world2, min2 = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        assert factory is not None
+        world1, min1 = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world2, min2 = blank_entities(factory, num_missing_entities=0)
         assert torch.equal(world1, world2), f"seed={seed}: not deterministic"
         assert min1 == min2
 
@@ -611,9 +649,10 @@ class TestSplitterSplitThroughputRange:
     @pytest.mark.parametrize("seed", range(15))
     def test_throughput_in_range(self, size, seed):
         """Throughput should be > 0 and <= 15.0 (single belt input)."""
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         # Splitter max flow is 30.0 (can sideload both inputs)
         assert 0 < tp <= 30.0 + 1e-6, (
@@ -628,57 +667,64 @@ class TestSplitterMergeBasic:
     """Basic sanity checks for SPLITTER_MERGE lesson generation."""
 
     def test_generates_without_error(self):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
     def test_returns_cwh_tensor(self):
         size = 10
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape[0] == len(Channel)
         assert world.shape[1] == size
         assert world.shape[2] == size
 
     def test_has_two_sources_one_sink(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 2
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
 
     def test_has_splitter(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_count = (ent_layer == str2ent("splitter").value).sum().item()
         assert splitter_count == 2, f"Expected 2 splitter tiles, got {splitter_count}"
 
     def test_has_belts(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
         assert belt_count >= 3, f"Expected at least 3 belts, got {belt_count}"
 
     def test_nonzero_throughput(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
     def test_throughput_bounded_by_splitter(self):
         """Total throughput should be <= 30.0 (splitter max flow)."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp <= 30.0 + 1e-6, f"Throughput {tp} exceeds splitter max flow"
 
@@ -688,33 +734,37 @@ class TestSplitterMergeManySeeds:
 
     @pytest.mark.parametrize("seed", range(50))
     def test_size_10_seed(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
     def test_size_8_seed(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_12_seed(self, seed):
-        world, _ = generate_lesson(
-            size=12, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=12, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_15_seed(self, seed):
-        world, _ = generate_lesson(
-            size=15, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=15, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
@@ -724,9 +774,10 @@ class TestSplitterMergeParity:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_parity_size_10(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         world_whc = world.permute(1, 2, 0)
         tp, ur = rs_throughput(world_whc)
         assert tp > 0, f"seed={seed}: throughput={tp}"
@@ -738,9 +789,10 @@ class TestSplitterMergeGridSizes:
 
     @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
     def test_valid_factory_per_size(self, size):
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=7
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=7
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 2
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
@@ -754,9 +806,10 @@ class TestSplitterMergeEntityDirections:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_all_entities_have_directions(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         dir_layer = world[Channel.DIRECTION.value]
 
@@ -776,9 +829,10 @@ class TestSplitterMergeNoOverlaps:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_no_double_placement(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         occupied = []
         for x in range(world.shape[1]):
@@ -795,9 +849,10 @@ class TestSplitterMergeItems:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_sources_sink_have_matching_items(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
 
@@ -819,9 +874,10 @@ class TestSplitterMergeMissingEntities:
 
     @pytest.mark.parametrize("num_missing", [1, 2, 3])
     def test_removes_correct_count(self, num_missing):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=num_missing, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=num_missing)
         assert min_ent == num_missing
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 2
@@ -829,9 +885,10 @@ class TestSplitterMergeMissingEntities:
 
     @pytest.mark.parametrize("seed", range(10))
     def test_missing_inf_returns_positive_count(self, seed):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=float("inf"), seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
     @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
@@ -840,10 +897,9 @@ class TestSplitterMergeMissingEntities:
         """The central splitter must never be blanked, even at maximum
         num_missing_entities — without it the lesson is ambiguous (could be
         solved by belts alone)."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
         assert splitter_tiles == 2, (
@@ -857,12 +913,14 @@ class TestSplitterMergeDeterminism:
 
     @pytest.mark.parametrize("seed", [0, 1, 42, 99])
     def test_deterministic(self, seed):
-        world1, min1 = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
-        world2, min2 = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        assert factory is not None
+        world1, min1 = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world2, min2 = blank_entities(factory, num_missing_entities=0)
         assert torch.equal(world1, world2), f"seed={seed}: not deterministic"
         assert min1 == min2
 
@@ -874,9 +932,10 @@ class TestSplitterMergeThroughputRange:
     @pytest.mark.parametrize("seed", range(15))
     def test_throughput_in_range(self, size, seed):
         """Throughput should be > 0 and <= 30.0 (splitter max)."""
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=0, seed=seed
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert 0 < tp <= 30.0 + 1e-6, (
             f"size={size}, seed={seed}: throughput {tp} not in (0, 30.0]"
@@ -893,9 +952,10 @@ class TestRemoveEntitiesSplitterIntegrity:
     def test_splitter_removal_clears_both_tiles(self, seed):
         """Generate a splitter lesson, remove 1 entity. If the splitter was
         removed, BOTH tiles must be empty — no orphaned single tile."""
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=1, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=1)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_val = str2ent("splitter").value
         splitter_tiles = (ent_layer == splitter_val).sum().item()
@@ -908,9 +968,10 @@ class TestRemoveEntitiesSplitterIntegrity:
     @pytest.mark.parametrize("seed", range(50))
     def test_splitter_merge_removal_clears_both_tiles(self, seed):
         """Same test for SPLITTER_MERGE lessons."""
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_MERGE, num_missing_entities=1, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=1)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_val = str2ent("splitter").value
         splitter_tiles = (ent_layer == splitter_val).sum().item()
@@ -923,9 +984,10 @@ class TestRemoveEntitiesSplitterIntegrity:
     @pytest.mark.parametrize("num_missing", [1, 2, 3, 4])
     def test_no_orphaned_splitter_tiles_any_removal_count(self, seed, num_missing):
         """With various removal counts, splitter tiles are always 0 or 2."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=num_missing, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         splitter_val = str2ent("splitter").value
         splitter_tiles = (ent_layer == splitter_val).sum().item()
@@ -937,9 +999,10 @@ class TestRemoveEntitiesSplitterIntegrity:
     def test_removed_entity_count_matches_min_entities(self, seed):
         """The number of entity *units* removed should equal min_entities_required."""
         # Generate a full factory first to count total entity units
-        world_full, _ = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world_full, _ = blank_entities(factory, num_missing_entities=0)
         ent_full = world_full[Channel.ENTITIES.value]
 
         # Count entity units (splitter = 1 unit despite 2 tiles)
@@ -948,9 +1011,10 @@ class TestRemoveEntitiesSplitterIntegrity:
         full_units = full_belts + (full_splitter_tiles // 2)
 
         # Remove 2 entities
-        world_partial, min_ent = generate_lesson(
-            size=10, kind=LessonKind.SPLITTER_SPLIT, num_missing_entities=2, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
+        assert factory is not None
+        world_partial, min_ent = blank_entities(factory, num_missing_entities=2)
         assert min_ent == 2
 
         ent_partial = world_partial[Channel.ENTITIES.value]
@@ -1052,58 +1116,65 @@ class TestAssemble1In1OutBasic:
     """Basic sanity checks for ASSEMBLE_1IN_1OUT lesson generation."""
 
     def test_generates_without_error(self):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
     def test_returns_cwh_tensor(self):
         size = 10
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape[0] == len(Channel)
         assert world.shape[1] == size
         assert world.shape[2] == size
 
     def test_has_one_source_one_sink(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
 
     def test_has_one_assembler(self):
         """The assembler is a 3×3 multi-tile entity, so 9 tiles."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
         assert asm_count == 9, f"Expected 9 assembler tiles, got {asm_count}"
 
     def test_has_two_inserters(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         inserter_count = (ent_layer == str2ent("inserter").value).sum().item()
         assert inserter_count == 2, f"Expected 2 inserters, got {inserter_count}"
 
     def test_has_belts(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
         assert belt_count >= 2, f"Expected at least 2 belts, got {belt_count}"
 
     def test_nonzero_throughput(self):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=42
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
@@ -1113,33 +1184,37 @@ class TestAssemble1In1OutManySeeds:
 
     @pytest.mark.parametrize("seed", range(50))
     def test_size_10_seed(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(30))
     def test_size_8_seed(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_12_seed(self, seed):
-        world, _ = generate_lesson(
-            size=12, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=12, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_15_seed(self, seed):
-        world, _ = generate_lesson(
-            size=15, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=15, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
@@ -1149,9 +1224,10 @@ class TestAssemble1In1OutParity:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_parity_size_10(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         world_whc = world.permute(1, 2, 0)
         tp, ur = rs_throughput(world_whc)
         assert tp > 0, f"seed={seed}: throughput={tp}"
@@ -1163,9 +1239,10 @@ class TestAssemble1In1OutGridSizes:
 
     @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
     def test_valid_factory_per_size(self, size):
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=7
+        factory = build_factory(size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=7
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         assert (ent_layer == str2ent("source").value).sum().item() == 1
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
@@ -1177,8 +1254,8 @@ class TestAssemble1In1OutGridSizes:
     def test_too_small_grid_raises(self):
         """A grid smaller than 3×3 cannot fit the assembler."""
         with pytest.raises(Exception):
-            generate_lesson(
-                size=2, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=0
+            build_factory(
+                size=2, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0
             )
 
 
@@ -1187,9 +1264,10 @@ class TestAssemble1In1OutEntityDirections:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_all_entities_have_directions(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         dir_layer = world[Channel.DIRECTION.value]
 
@@ -1209,9 +1287,10 @@ class TestAssemble1In1OutNoOverlaps:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_no_double_placement(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         occupied = []
         for x in range(world.shape[1]):
@@ -1228,9 +1307,10 @@ class TestAssemble1In1OutItems:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_source_sink_items_match_a_known_recipe(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
 
@@ -1265,9 +1345,10 @@ class TestAssemble1In1OutItems:
     def test_assembler_recipe_matches_output(self, seed):
         """The assembler's ITEMS channel value (recipe) should be the same
         item the sink consumes."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
         asm_positions = (ent_layer == str2ent("assembling_machine_1").value).nonzero(
@@ -1289,10 +1370,9 @@ class TestAssemble1In1OutMissingEntities:
 
     @pytest.mark.parametrize("num_missing", [1, 2, 3])
     def test_removes_correct_count(self, num_missing):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=num_missing,
-            seed=42,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=42)
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=num_missing)
         assert min_ent == num_missing
         ent_layer = world[Channel.ENTITIES.value]
         # Source, sink remain
@@ -1301,10 +1381,9 @@ class TestAssemble1In1OutMissingEntities:
 
     @pytest.mark.parametrize("seed", range(10))
     def test_missing_inf_returns_positive_count(self, seed):
-        world, min_ent = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=float("inf"), seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         assert world is not None
         assert min_ent is not None and min_ent > 0
 
@@ -1314,10 +1393,9 @@ class TestAssemble1In1OutMissingEntities:
         """The 3×3 assembler is removed atomically by _remove_entities — either
         all 9 tiles remain (recipe still set) or all 9 are blanked. A partial
         removal would corrupt the lesson."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
         assert asm_count in (0, 9), (
@@ -1333,10 +1411,11 @@ class TestAssemble1In1OutMissingEntities:
         SFT default (max_level = size*size)."""
         removed_count = 0
         for seed in range(60):
-            world, _ = generate_lesson(
-                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                num_missing_entities=20, seed=seed,
+            factory = build_factory(
+                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed,
             )
+            assert factory is not None
+            world, _ = blank_entities(factory, num_missing_entities=20)
             ent_layer = world[Channel.ENTITIES.value]
             asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
             if asm_count == 0:
@@ -1350,10 +1429,9 @@ class TestAssemble1In1OutMissingEntities:
     @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
     def test_assembler_recipe_preserved_after_removal(self, seed, num_missing):
         """The recipe channel on assembler tiles must survive blanking."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent_layer = world[Channel.ENTITIES.value]
         item_layer = world[Channel.ITEMS.value]
         asm_positions = (ent_layer == str2ent("assembling_machine_1").value).nonzero(
@@ -1372,12 +1450,14 @@ class TestAssemble1In1OutDeterminism:
 
     @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
     def test_same_seed_same_world(self, seed):
-        w1, m1 = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
-        w2, m2 = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        assert factory is not None
+        w1, m1 = blank_entities(factory, num_missing_entities=0)
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        w2, m2 = blank_entities(factory, num_missing_entities=0)
         assert torch.equal(w1, w2), f"seed={seed}: regenerated world differs"
         assert m1 == m2
 
@@ -1387,9 +1467,10 @@ class TestAssemble1In1OutThroughputRange:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_throughput_in_expected_range(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         # Lower bound: positive
         assert tp > 0, f"seed={seed}: tp={tp}"
@@ -1408,10 +1489,9 @@ class TestAssemble1In1OutRecipeSelection:
     def test_multiple_recipes_appear(self):
         seen_recipes = set()
         for seed in range(100):
-            world, _ = generate_lesson(
-                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                num_missing_entities=0, seed=seed,
-            )
+            factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+            assert factory is not None
+            world, _ = blank_entities(factory, num_missing_entities=0)
             ent_layer = world[Channel.ENTITIES.value]
             item_layer = world[Channel.ITEMS.value]
             sink_pos = (ent_layer == str2ent("sink").value).nonzero(as_tuple=False)[0]
@@ -1463,10 +1543,9 @@ class TestAssemble1In1OutInserterGeometry:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_exactly_one_input_one_output_inserter(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         asm = _asm_tiles(world)
         assert len(asm) == 9
 
@@ -1501,10 +1580,9 @@ class TestAssemble1In1OutInserterGeometry:
         """Inserters must be on the 12 non-corner perimeter slots — not on
         the 4 corner slots (which the engine ignores) and not anywhere else.
         """
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         asm = _asm_tiles(world)
         # Anchor = min x, min y of the assembler tiles
         ax = min(x for x, _ in asm)
@@ -1531,10 +1609,9 @@ class TestAssemble1In1OutConnectivity:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_source_reaches_sink_through_assembler(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         G = world2graph(world.permute(1, 2, 0))
 
         # Find source / sink / assembler nodes by name substring
@@ -1559,10 +1636,9 @@ class TestAssemble1In1OutConnectivity:
     def test_no_orphaned_belts(self, seed):
         """Every placed belt should be on the source → sink chain (or at
         least connected to either endpoint via the graph)."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         G = world2graph(world.permute(1, 2, 0))
         import networkx as nx
 
@@ -1599,10 +1675,9 @@ class TestAssemble1In1OutThroughputPerRecipe:
 
     @pytest.mark.parametrize("seed", range(40))
     def test_throughput_matches_recipe_closed_form(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         item = world[Channel.ITEMS.value]
         sink_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
@@ -1650,10 +1725,9 @@ class TestAssemble1In1OutSourceSinkOrientation:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_source_faces_belt(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         dirs = world[Channel.DIRECTION.value]
         src_pos = (ent == str2ent("source").value).nonzero(as_tuple=False)[0]
@@ -1671,10 +1745,9 @@ class TestAssemble1In1OutSourceSinkOrientation:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_sink_faces_belt(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         dirs = world[Channel.DIRECTION.value]
         snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
@@ -1698,10 +1771,9 @@ class TestAssemble1In1OutBeltItems:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_belt_items_channel_is_empty(self, seed):
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         item = world[Channel.ITEMS.value]
         belt_val = str2ent("transport_belt").value
@@ -1720,17 +1792,15 @@ class TestAssemble1In1OutEdgeCases:
     @pytest.mark.parametrize("size", [1, 2])
     def test_grid_too_small_raises(self, size):
         with pytest.raises(Exception):
-            generate_lesson(
-                size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                num_missing_entities=0, seed=0,
+            build_factory(
+                size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0,
             )
 
     @pytest.mark.parametrize("seed", range(5))
     def test_large_grid_works(self, seed):
-        world, _ = generate_lesson(
-            size=20, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=20, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
@@ -1744,19 +1814,17 @@ class TestAssemble1In1OutMaxEntities:
         # Generate without a cap to find the natural entity count, then
         # impose a cap of natural+5 and verify regeneration succeeds and
         # respects the limit.
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         belts = (ent == str2ent("transport_belt").value).sum().item()
         natural_total = belts + 3  # +1 assembler unit, +2 inserters
 
         # Generation under the natural cap should still succeed.
-        world2, _ = generate_lesson(
-            size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT,
-            num_missing_entities=0, seed=seed, max_entities=natural_total + 5,
-        )
+        factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed, max_entities=natural_total + 5)
+        assert factory is not None
+        world2, _ = blank_entities(factory, num_missing_entities=0)
         ent2 = world2[Channel.ENTITIES.value]
         belts2 = (ent2 == str2ent("transport_belt").value).sum().item()
         total2 = belts2 + 3
@@ -1818,32 +1886,36 @@ class TestMoveViaUgBeltBasic:
     """Basic sanity checks for MOVE_VIA_UG_BELT lesson generation."""
 
     def test_generates_without_error(self):
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=42
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
     def test_returns_cwh_tensor(self):
         size = 8
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        factory = build_factory(size=size, kind=LessonKind.MOVE_VIA_UG_BELT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape == (len(Channel), size, size)
 
     def test_has_source_and_sink(self):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("source").value).sum().item() == 1
         assert (ent == str2ent("sink").value).sum().item() == 1
 
     def test_has_one_ug_pair(self):
         """Solved layout has exactly one UG_DOWN and one UG_UP."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         misc = world[Channel.MISC.value]
         ug_mask = ent == str2ent("underground_belt").value
@@ -1853,18 +1925,20 @@ class TestMoveViaUgBeltBasic:
         assert down == 1 and up == 1, f"expected 1 DOWN + 1 UP, got {down} + {up}"
 
     def test_nonzero_throughput(self):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=42
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=42
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
     @pytest.mark.parametrize("seed", range(20))
     def test_throughput_parity(self, seed):
         """Python and Rust throughput agree on solved layouts."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         compare_throughput(world.permute(1, 2, 0))
 
 
@@ -1873,9 +1947,10 @@ class TestMoveViaUgBeltGeometry:
 
     @pytest.mark.parametrize("seed", range(40))
     def test_ug_pair_faces_flow_direction(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         direc = world[Channel.DIRECTION.value]
         info = _ug_layout_info(world)
         for pos in (info["ug_down_pos"], info["ug_up_pos"]):
@@ -1885,9 +1960,10 @@ class TestMoveViaUgBeltGeometry:
     def test_ug_pair_directly_opposite_across_wall(self, seed):
         """UG_UP shares UG_DOWN's perpendicular coord and is on the other
         side of the wall, with the wall flush between them."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
@@ -1910,9 +1986,10 @@ class TestMoveViaUgBeltGeometry:
     def test_wall_spans_full_perpendicular(self, seed):
         """The wall (UNAVAILABLE tiles) spans the entire perpendicular
         dimension of the grid."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
@@ -1937,9 +2014,10 @@ class TestMoveViaUgBeltGeometry:
     def test_only_wall_is_unavailable(self, seed):
         """No tile outside the wall is FOOTPRINT.UNAVAILABLE — open space
         on either side of the wall is freely buildable."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         fp = world[Channel.FOOTPRINT.value]
         info = _ug_layout_info(world)
         wall = info["wall_tiles"]
@@ -1955,9 +2033,10 @@ class TestMoveViaUgBeltGeometry:
     def test_source_and_sink_on_opposite_sides_of_wall(self, seed):
         """Source and sink lie on opposite sides of the wall along the
         flow axis."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
@@ -1977,9 +2056,10 @@ class TestMoveViaUgBeltGeometry:
 
     @pytest.mark.parametrize("seed", range(40))
     def test_ug_down_on_source_side_ug_up_on_sink_side(self, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         info = _ug_layout_info(world)
         flow = info["flow_dir"]
         is_h = flow in (Direction.EAST, Direction.WEST)
@@ -2002,9 +2082,10 @@ class TestMoveViaUgBeltGeometry:
 class TestMoveViaUgBeltManySeeds:
     @pytest.mark.parametrize("seed", range(50))
     def test_size_8_seed(self, seed):
-        world, min_ent = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT, num_missing_entities=0, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
         tp, _ = rs_throughput(world.permute(1, 2, 0))
@@ -2012,10 +2093,9 @@ class TestMoveViaUgBeltManySeeds:
 
     @pytest.mark.parametrize("size", [6, 8, 10, 12])
     def test_grid_sizes(self, size):
-        world, _ = generate_lesson(
-            size=size, kind=LessonKind.MOVE_VIA_UG_BELT,
-            num_missing_entities=0, seed=7,
-        )
+        factory = build_factory(size=size, kind=LessonKind.MOVE_VIA_UG_BELT, seed=7)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
         assert world.shape == (len(Channel), size, size)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
@@ -2027,10 +2107,9 @@ class TestMoveViaUgBeltDirections:
     def test_all_directions_appear(self):
         seen = set()
         for seed in range(200):
-            world, _ = generate_lesson(
-                size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
-                num_missing_entities=0, seed=seed,
-            )
+            factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+            assert factory is not None
+            world, _ = blank_entities(factory, num_missing_entities=0)
             seen.add(_ug_layout_info(world)["flow_dir"])
             if len(seen) == 4:
                 break
@@ -2045,10 +2124,9 @@ class TestMoveViaUgBeltMissingEntities:
     @pytest.mark.parametrize("num_missing", [1, 2, 5, float("inf")])
     @pytest.mark.parametrize("seed", range(10))
     def test_source_and_sink_always_present(self, num_missing, seed):
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
-            num_missing_entities=num_missing, seed=seed,
-        )
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("source").value).sum().item() == 1
         assert (ent == str2ent("sink").value).sum().item() == 1
@@ -2058,10 +2136,9 @@ class TestMoveViaUgBeltMissingEntities:
         """Even at maximum blanking, the wall is still the only UNAVAILABLE
         region (open tiles do not flip to UNAVAILABLE just because they
         were blanked)."""
-        world, _ = generate_lesson(
-            size=8, kind=LessonKind.MOVE_VIA_UG_BELT,
-            num_missing_entities=float("inf"), seed=seed,
-        )
+        factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=float("inf"))
         info = _ug_layout_info(world)
         # The wall spans full perpendicular; any non-wall tile must be
         # AVAILABLE (already covered by other tests for num_missing=0;
@@ -2077,10 +2154,9 @@ class TestMoveViaUgBeltMissingEntities:
     def test_independent_ug_removal_possible(self, seed):
         """With num_missing=1, we may end up removing only DOWN, only UP,
         or only a transport belt — they're independent removal units."""
-        world, _ = generate_lesson(
-            size=10, kind=LessonKind.MOVE_VIA_UG_BELT,
-            num_missing_entities=1, seed=seed,
-        )
+        factory = build_factory(size=10, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=1)
         ent = world[Channel.ENTITIES.value]
         misc = world[Channel.MISC.value]
         ug_mask = ent == str2ent("underground_belt").value

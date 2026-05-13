@@ -13,9 +13,10 @@ from helpers import (
     Direction,
     LessonKind,
     Misc,
+    blank_entities,
+    build_factory,
     compare_throughput,
     entities,
-    generate_lesson,
     make_world,
     rs_throughput,
     set_entity,
@@ -196,12 +197,9 @@ class TestGeneratedLessons:
     @pytest.mark.parametrize("seed", range(20))
     def test_lesson_seed(self, seed):
         try:
-            result = generate_lesson(
-                size=5,
-                kind=LessonKind.MOVE_ONE_ITEM,
-                num_missing_entities=0,
-                seed=seed,
-            )
+            factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+            assert factory is not None
+            result = blank_entities(factory, num_missing_entities=0)
             world_CWH = result[0]
             world_WHC = world_CWH.permute(1, 2, 0).to(torch.int64)
             compare_throughput(world_WHC, tolerance=0.1)
