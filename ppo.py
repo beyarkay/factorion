@@ -28,8 +28,9 @@ from factorion import (
     Footprint,
     LessonKind,
     Misc,
+    blank_entities,
+    build_factory,
     entities,
-    generate_lesson,
     items,
     str2ent,
     str2item,
@@ -338,24 +339,22 @@ class FactorioEnv(gym.Env):
         # all kinds. Pass a concrete LessonKind to pin one. The sampler
         # uses self.np_random which super().reset() seeded above, so the
         # choice is deterministic per episode seed.
+        #
+        # build_factory returns None when rejection sampling exhausts
+        # itself for a given (size, kind, seed); for the random-kind
+        # path we just sample a different kind, since they have very
+        # different rejection rates on small grids.
         kind_opt = self._reset_options.get('kind', None)
+        factory = None
         if kind_opt is None:
             kinds_list = list(LessonKind)
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
-                try:
-                    self._solved_world_CWH, _ = generate_lesson(
-                        size=self.size, kind=kind,
-                        num_missing_entities=0, seed=self._seed,
-                    )
-                    self._world_CWH, min_entities_required = generate_lesson(
-                        size=self.size, kind=kind,
-                        num_missing_entities=self._num_missing_entities,
-                        seed=self._seed,
-                    )
+                factory = build_factory(
+                    size=self.size, kind=kind, seed=self._seed,
+                )
+                if factory is not None:
                     break
-                except Exception:
-                    continue
             else:
                 raise RuntimeError(
                     f"Failed to sample a valid LessonKind for seed={self._seed} "
@@ -363,15 +362,17 @@ class FactorioEnv(gym.Env):
                 )
         else:
             kind = kind_opt
-            self._solved_world_CWH, _ = generate_lesson(
-                size=self.size, kind=kind,
-                num_missing_entities=0, seed=self._seed,
+            factory = build_factory(
+                size=self.size, kind=kind, seed=self._seed,
             )
-            self._world_CWH, min_entities_required = generate_lesson(
-                size=self.size, kind=kind,
-                num_missing_entities=self._num_missing_entities,
-                seed=self._seed,
-            )
+            if factory is None:
+                raise RuntimeError(
+                    f"build_factory returned None for kind={kind} "
+                    f"seed={self._seed}"
+                )
+        self._world_CWH, self._solved_world_CWH, min_entities_required = (
+            blank_entities(factory, num_missing_entities=self._num_missing_entities)
+        )
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)

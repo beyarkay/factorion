@@ -31,8 +31,9 @@ import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     Channel,
     LessonKind,
+    blank_entities,
+    build_factory,
     entities,
-    generate_lesson,
 )
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
@@ -309,21 +310,10 @@ def generate_dataset(args: SFTArgs):
         level = max_level
         seed += 1
 
-        try:
-            solved, _ = generate_lesson(
-                size=args.size,
-                kind=kind,
-                num_missing_entities=0,
-                seed=seed,
-            )
-            task, _ = generate_lesson(
-                size=args.size,
-                kind=kind,
-                num_missing_entities=level,
-                seed=seed,
-            )
-        except Exception:
+        factory = build_factory(size=args.size, kind=kind, seed=seed)
+        if factory is None:
             continue
+        task, solved, _ = blank_entities(factory, num_missing_entities=level)
 
         kind_lessons[kind.name] += 1
         pairs = extract_expert_actions(solved, task)
