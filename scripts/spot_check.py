@@ -34,7 +34,6 @@ from factorion import (  # noqa: E402
 
 class Scenario(Enum):
     belt = "belt"
-    inserter = "inserter"
     splitter_split = "splitter_split"
     splitter_merge = "splitter_merge"
     all = "all"
@@ -42,7 +41,6 @@ class Scenario(Enum):
 
 SCENARIO_TO_KIND = {
     Scenario.belt: LessonKind.MOVE_ONE_ITEM,
-    Scenario.inserter: LessonKind.INSERTER_TRANSFER,
     Scenario.splitter_split: LessonKind.SPLITTER_SPLIT,
     Scenario.splitter_merge: LessonKind.SPLITTER_MERGE,
 }
@@ -158,7 +156,6 @@ def main():
     if args.scenario == Scenario.all:
         scenarios = [
             (Scenario.belt, "belt"),
-            (Scenario.inserter, "inserter"),
             (Scenario.splitter_split, "splitter_split"),
             (Scenario.splitter_merge, "splitter_merge"),
         ]
