@@ -265,15 +265,26 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
     return True
 
 
-def run_inference(agent: AgentCNN, req: dict, max_steps: int, device) -> np.ndarray:
+def run_inference(
+    agent: AgentCNN, req: dict, max_steps: int, device, eot_threshold: float = 0.5,
+) -> np.ndarray:
+    """Iteratively place entities until eot_head signals "done", the model
+    emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
     for step in range(max_steps):
+        # Ask the model first: do you think we're done?
+        with torch.no_grad():
+            x = torch.from_numpy(obs).unsqueeze(0).to(device)
+            stop = bool(agent.eot_should_stop(x, threshold=eot_threshold).item())
+        if stop:
+            log.info("Stopped after %d placements (eot_head fired).", step)
+            break
         action = _argmax_action(agent, obs, device)
         if not _apply_placement(obs, action):
             log.info("Stopped after %d placements (model emitted empty).", step)
             break
     else:
-        log.info("Reached max_steps=%d without an empty action.", max_steps)
+        log.info("Reached max_steps=%d without eot/empty.", max_steps)
     return obs
 
 
