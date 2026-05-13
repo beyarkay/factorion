@@ -445,12 +445,25 @@ def handle_request(
                 f"{dir_label}{_MISC_LABEL.get(p['misc'], '')}{item_tag}")
 
     placements = stats.get("placements", [])
-    # Description char budget is ~500. Each line is ~25-35 chars; show
-    # the first 20 and tail-summary if there's more.
-    MAX_LINES = 20
-    trace_lines = [_fmt_step(p) for p in placements[:MAX_LINES]]
-    if len(placements) > MAX_LINES:
-        trace_lines.append(f"...{len(placements) - MAX_LINES} more")
+    # Description has a hard ~500 char limit in Factorio 2.0; truncation
+    # leaves a half-written rich-text tag at the end. Budget conservatively
+    # and stop as soon as we'd exceed it.
+    MAX_DESCRIPTION_CHARS = 480
+    header_lines = [
+        f"sources={len(req.get('sources', []))} "
+        f"sinks={len(req.get('sinks', []))} "
+        f"steps={stats['steps_taken']} stop={stats['stop_reason']}",
+        "",
+    ]
+    used = sum(len(s) + 1 for s in header_lines)  # +1 for the newline
+    trace_lines = []
+    for p in placements:
+        line = _fmt_step(p)
+        if used + len(line) + 1 + len("...N more") > MAX_DESCRIPTION_CHARS:
+            trace_lines.append(f"...{len(placements) - len(trace_lines)} more")
+            break
+        trace_lines.append(line)
+        used += len(line) + 1
 
     label = (f"Factorion: {total_entities} entities "
              f"({placed_count} placed + {marker_count} markers)")

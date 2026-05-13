@@ -25,16 +25,75 @@ _DIR_MODEL_TO_BP = {0: None, 1: 0, 2: 4, 3: 8, 4: 12}
 
 # The mod's source / sink markers live as stack_inserter / bulk_inserter in
 # the obs tensor (they're env-spawned, never placed by the model). For the
-# emitted blueprint, render them as actual placeable Factorio entities so
-# the pasted blueprint visibly shows the source/sink:
-#   - source → infinity-chest with an infinity_settings filter for the
-#     source item (it auto-spawns that item, infinite supply).
-#   - sink   → bottomless-chest (debug void entity that destroys whatever
-#     is inserted).
+# emitted blueprint, render them as `constant-combinator` entities carrying
+# two filter signals in their first section:
+#   - the item that flows (e.g. "electronic-circuit"), as an item filter
+#   - the virtual signal `signal-output` (for source) or `signal-input`
+#     (for sink), which round-trip-identifies the marker on re-import.
+# This gives a single, paste-able blueprint that visibly distinguishes
+# source from sink and tells the player what item the marker is for.
 _SOURCE_MARKER_NAME = "stack_inserter"
 _SINK_MARKER_NAME = "bulk_inserter"
-_SOURCE_REPLACEMENT = "infinity-chest"
-_SINK_REPLACEMENT = "bottomless-chest"
+_COMBINATOR_NAME = "constant-combinator"
+_SIGNAL_SOURCE = "signal-output"   # virtual signal name for sources
+_SIGNAL_SINK = "signal-input"      # virtual signal name for sinks
+
+# Model Direction enum (1=N, 2=E, 3=S, 4=W) → arrow virtual signal.
+# Note these are NOT prefixed with "signal-" despite the related
+# signal-input / signal-output / signal-anything prototypes that ARE
+# prefixed. The four arrow signals just live as bare "up-arrow", etc.
+_DIR_SIGNAL = {
+    1: "up-arrow",
+    2: "right-arrow",
+    3: "down-arrow",
+    4: "left-arrow",
+}
+
+
+def _combinator_marker(cx: float, cy: float, item_name: str | None,
+                       signal_name: str, direction_model: int) -> dict:
+    """Build a constant-combinator dict carrying three filters in its
+    first section: the flowing item, a source/sink virtual signal, and
+    an arrow virtual signal for the marker's direction."""
+    filters = []
+    if item_name and item_name != "empty":
+        filters.append({
+            "index": 2,
+            "name": _hyphenate(item_name),
+            "quality": "normal",
+            "comparator": "=",
+            "count": 1,
+        })
+    filters.append({
+        "index": 3,
+        "type": "virtual",
+        "name": signal_name,
+        "quality": "normal",
+        "comparator": "=",
+        "count": 1,
+    })
+    arrow = _DIR_SIGNAL.get(direction_model)
+    if arrow is not None:
+        filters.append({
+            "index": 4,
+            "type": "virtual",
+            "name": arrow,
+            "quality": "normal",
+            "comparator": "=",
+            "count": 1,
+        })
+    return {
+        "name": _COMBINATOR_NAME,
+        "position": {"x": cx, "y": cy},
+        "direction": 4,  # face East — combinators don't direct flow visually
+        "control_behavior": {
+            "sections": {
+                "sections": [
+                    {"index": 1, "filters": filters},
+                ],
+            },
+        },
+    }
 
 
 def _hyphenate(name: str) -> str:
@@ -111,36 +170,19 @@ def world_tensor_to_blueprint_dict(
             cx = x + ent_meta.width / 2.0
             cy = y + ent_meta.height / 2.0
 
-            # Source/sink markers from the request: re-render as visible
-            # chest entities so the player can see them in the blueprint.
-            if ent_meta.name == _SOURCE_MARKER_NAME:
+            # Source/sink markers from the request: re-render as
+            # constant-combinators carrying virtual-signal labels so the
+            # blueprint visibly shows source vs sink and which item.
+            if ent_meta.name in (_SOURCE_MARKER_NAME, _SINK_MARKER_NAME):
                 item_id = int(item_ch[x, y])
                 item_meta = items.get(item_id)
-                inf_settings: dict | None = None
-                if item_meta is not None and item_meta.name != "empty":
-                    inf_settings = {
-                        "remove_unfiltered_items": False,
-                        "filters": [{
-                            "name": _hyphenate(item_meta.name),
-                            "count": 200,
-                            "mode": "at-least",
-                            "index": 1,
-                        }],
-                    }
-                src_entity: dict = {
-                    "name": _SOURCE_REPLACEMENT,
-                    "position": {"x": cx, "y": cy},
-                }
-                if inf_settings is not None:
-                    src_entity["infinity_settings"] = inf_settings
-                out_entities.append(src_entity)
-                seen[x, y] = True
-                continue
-            if ent_meta.name == _SINK_MARKER_NAME:
-                out_entities.append({
-                    "name": _SINK_REPLACEMENT,
-                    "position": {"x": cx, "y": cy},
-                })
+                item_name = item_meta.name if item_meta is not None else None
+                signal = (_SIGNAL_SOURCE
+                          if ent_meta.name == _SOURCE_MARKER_NAME
+                          else _SIGNAL_SINK)
+                out_entities.append(_combinator_marker(
+                    cx, cy, item_name, signal, dir_model,
+                ))
                 seen[x, y] = True
                 continue
 
@@ -184,7 +226,10 @@ def world_tensor_to_blueprint_dict(
     bp: dict = {
         "entities": out_entities,
         "item": "blueprint",
-        "version": 281479275675648,  # Factorio 2.0 version stamp
+        # Factorio 2.0.x version stamp. The wrong one (1.x: 281479275675648)
+        # makes Factorio silently strip 2.0-only entities like
+        # constant-combinators with the new sections-of-sections schema.
+        "version": 562949958402048,
     }
     if label is not None:
         bp["label"] = label
