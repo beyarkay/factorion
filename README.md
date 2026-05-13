@@ -20,6 +20,53 @@ output items.
 Weights & Biases report (a few months out of date, 2025-04-29, current work has
 progressed significantly): https://api.wandb.ai/links/beyarkay/wmccb7fq
 
+## Recent additions
+
+What's landed on `main` in the last week, newest first.
+
+**2026-05-13**
+
+- Made the "build one assembler" training task actually hide the assembler so the model has to learn to place it ([#108](https://github.com/beyarkay/factorion/pull/108))
+- Added an evaluation step during supervised pre-training that rolls out the model's greedy predictions and measures the resulting factory's throughput ([#109](https://github.com/beyarkay/factorion/pull/109))
+- Tuned the supervised pre-training sweep with cosine LR schedule, AdamW, gradient clipping, and per-output-head loss weights ([#104](https://github.com/beyarkay/factorion/pull/104))
+
+**2026-05-12**
+
+- Added a binary "I'm done placing entities" output head so the agent can decide when to stop ([#103](https://github.com/beyarkay/factorion/pull/103))
+- Scaled the supervised pre-training smoke test up to 300k samples on an 11×11 grid ([#102](https://github.com/beyarkay/factorion/pull/102))
+- Built an interactive page for inspecting the model's predictions, and added W&B checkpoint uploads ([#100](https://github.com/beyarkay/factorion/pull/100))
+- Replaced the Python throughput solver with a Rust implementation for a big speedup ([#99](https://github.com/beyarkay/factorion/pull/99))
+- Dropped the marimo notebook wrapper so `factorion.py` is a plain importable module ([#98](https://github.com/beyarkay/factorion/pull/98))
+- Made the agent predict all four channels of an entity placement (tile, entity type, item/recipe, orientation) ([#96](https://github.com/beyarkay/factorion/pull/96))
+- Logged per-task validation metrics and a per-head loss breakdown during pre-training ([#97](https://github.com/beyarkay/factorion/pull/97))
+- Added a new training task: routing belts under obstacles using underground belts ([#82](https://github.com/beyarkay/factorion/pull/82))
+- Set up the Claude Code GitHub Actions workflow ([#94](https://github.com/beyarkay/factorion/pull/94))
+- Added a `crafting_time` field to the recipe data model ([#92](https://github.com/beyarkay/factorion/pull/92))
+
+**2026-05-11**
+
+- Added a hotbar, keyboard shortcuts, and auto-recompute to the factory-builder web UI ([#86](https://github.com/beyarkay/factorion/pull/86))
+
+**2026-05-10**
+
+- Shipped an interactive drag-and-drop factory builder for designing and inspecting layouts in the browser ([#85](https://github.com/beyarkay/factorion/pull/85))
+- Expanded the item catalogue with 55 new items and 43 new recipes from the wiki ([#80](https://github.com/beyarkay/factorion/pull/80))
+
+**2026-05-08**
+
+- Added 50 wiki-sourced icons for entities, items, and modules ([#79](https://github.com/beyarkay/factorion/pull/79))
+- Fixed a data leak where one of the input channels was telling the model where the answer was supposed to go ([#81](https://github.com/beyarkay/factorion/pull/81))
+- Ran a supervised pre-training smoke test on then-current main as a baseline ([#77](https://github.com/beyarkay/factorion/pull/77))
+- Added a training task for assemblers with one input and one output, and unified recipes/items behind a single Rust source of truth ([#78](https://github.com/beyarkay/factorion/pull/78))
+- Fixed how belt corners are drawn, and added filter flags to the data-visualisation script ([#76](https://github.com/beyarkay/factorion/pull/76))
+- Landed the initial supervised pre-training pipeline and deduplicated the RunPod CI setup ([#47](https://github.com/beyarkay/factorion/pull/47))
+- Made consecutive belts render as a single visual chain in the HTML factory view ([#73](https://github.com/beyarkay/factorion/pull/73))
+- Fixed the env step so multi-tile entities fill their full footprint on the grid ([#72](https://github.com/beyarkay/factorion/pull/72))
+- Added an optional `highlights` argument to the HTML factory renderer ([#71](https://github.com/beyarkay/factorion/pull/71))
+- Added a script for visualising samples of the supervised-training dataset ([#70](https://github.com/beyarkay/factorion/pull/70))
+- Made ffmpeg video capture opt-in via `--capture-video` ([#69](https://github.com/beyarkay/factorion/pull/69))
+- Documented Factorio's two-lane belt mechanics in the wiki reference ([#64](https://github.com/beyarkay/factorion/pull/64))
+
 ## What is Factorio?
 
 Factorio is a popular 2D tile-based top-down PC game centred on automation and
