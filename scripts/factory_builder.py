@@ -899,7 +899,13 @@ function renderGrid() {{
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
-      if (prediction && prediction.x === x && prediction.y === y) td.classList.add('predicted');
+      // The blue argmax border tracks the same suppression rule as the
+      // ghost overlays: if the model says it's done (eot > 0.5), don't
+      // visually nominate a "next placement" tile.
+      if (
+        prediction && prediction.x === x && prediction.y === y
+        && !(prediction.eot_prob > 0.5)
+      ) td.classList.add('predicted');
 
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
