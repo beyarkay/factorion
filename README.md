@@ -1,4 +1,4 @@
-# Factorion: An RL Agent for Building Factories
+# Factorion: An RL Agent for Building Factories 
 
 This project is an experiment in using Reinforcement Learning (RL) to train an
 agent that can build high-throughput factories in an environment inspired by
