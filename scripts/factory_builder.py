@@ -106,7 +106,7 @@ MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 class Args:
     port: int = 8765
     """port for the local HTTP server"""
-    size: int = 8
+    size: int = 11
     """default grid size"""
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
@@ -627,7 +627,7 @@ def render_index(default_size: int) -> str:
         '<pre id="model-action"></pre>'
         '<div class="model-buttons">'
         '<button id="model-apply" title="Apply the predicted placement at the highlighted tile">'
-        'Apply prediction</button>'
+        'Apply prediction <span class="kbd">a</span></button>'
         '</div>'
         '</div>'
     )
@@ -788,9 +788,6 @@ Apply prediction: a">[?]</span>
       <label>seed <input id="lesson-seed" type="number" value="0" step="1"></label>
       <button id="lesson-generate" title="Build a fully-formed factory of the chosen lesson kind at the given seed, then bump the seed for the next click">
         Generate lesson <span class="kbd">g</span>
-      </button>
-      <button id="grid-apply" title="Apply the model's predicted placement at the highlighted tile">
-        Apply prediction <span class="kbd">a</span>
       </button>
       <span id="lesson-status" class="help"></span>
     </div>
@@ -1302,7 +1299,6 @@ async function generateLesson() {{
   }}
 }}
 document.getElementById('lesson-generate').addEventListener('click', generateLesson);
-document.getElementById('grid-apply').addEventListener('click', applyPrediction);
 
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
