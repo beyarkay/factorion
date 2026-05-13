@@ -325,24 +325,25 @@ def _model_info() -> dict:
     }
 
 
-def _swap_model(kind: str, value: str, project: str, entity: Optional[str]) -> dict:
-    """Resolve `value` to a local .pt path based on `kind`, load it,
-    and return the new model info. Called by the /load_model POST
-    endpoint so the user can switch models without restarting the
-    server."""
+def _swap_model(value: str, project: str, entity: Optional[str]) -> dict:
+    """Resolve `value` to a local .pt path, load it, return new model
+    info. Called by the /load_model POST endpoint so the user can
+    switch models without restarting the server.
+
+    Auto-detects local-vs-wandb: an existing path on disk is loaded as
+    local; otherwise the value is treated as a wandb run id. If both
+    fail the error from the wandb resolver bubbles up (wandb's error
+    is usually the more informative one — "no such file" tells the
+    user nothing they don't already know)."""
     global _CHECKPOINT_SOURCE
     value = (value or "").strip()
     if not value:
         raise ValueError("value cannot be empty")
-    if kind == "local":
-        if not Path(value).exists():
-            raise FileNotFoundError(f"checkpoint not found: {value}")
+    if Path(value).exists():
         path = value
         source = {"kind": "local", "path": value}
-    elif kind == "wandb":
-        path, source = _resolve_wandb_checkpoint(value, project, entity)
     else:
-        raise ValueError(f"unknown kind: {kind!r} (expected 'local' or 'wandb')")
+        path, source = _resolve_wandb_checkpoint(value, project, entity)
     _load_checkpoint(path)
     _CHECKPOINT_SOURCE = source
     return _model_info()
@@ -612,17 +613,12 @@ def render_index(default_size: int) -> str:
         '<div class="model-current help" id="model-current">checking…</div>'
         '<details class="model-loader">'
         '<summary>switch model</summary>'
-        '<label>source'
-        '  <select id="model-kind">'
-        '    <option value="local">local path</option>'
-        '    <option value="wandb">wandb run id</option>'
-        '  </select>'
-        '</label>'
-        '<label>value'
+        '<label>path or wandb run id'
         '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
         '</label>'
         '<div class="model-buttons">'
-        '<button id="model-load">Load model</button>'
+        '<button id="model-load" title="Local path if the file exists, else wandb run id">'
+        'Load model</button>'
         '</div>'
         '<div id="model-load-status" class="help"></div>'
         '</details>'
@@ -1243,7 +1239,6 @@ async function refreshModelInfo() {{
 }}
 
 async function loadModel() {{
-  const kind = document.getElementById('model-kind').value;
   const value = document.getElementById('model-value').value;
   const status = document.getElementById('model-load-status');
   const btn = document.getElementById('model-load');
@@ -1255,7 +1250,7 @@ async function loadModel() {{
     const resp = await fetch('/load_model', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ kind, value }}),
+      body: JSON.stringify({{ value }}),
     }});
     const data = await resp.json();
     if (data.error) {{
@@ -1407,7 +1402,6 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 result = _swap_model(
-                    kind=payload.get("kind", ""),
                     value=payload.get("value", ""),
                     project=self.server.wandb_project,
                     entity=self.server.wandb_entity,
