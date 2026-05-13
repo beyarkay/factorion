@@ -206,7 +206,7 @@ class TestSwapModel:
         ckpt_b = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(ckpt_a))
-            info = fb._swap_model("local", str(ckpt_b), project="x", entity=None)
+            info = fb._swap_model(str(ckpt_b), project="x", entity=None)
             assert info["loaded"] is True
             assert info["path"] == str(ckpt_b)
             assert fb._CHECKPOINT_PATH == str(ckpt_b)
@@ -214,19 +214,23 @@ class TestSwapModel:
             ckpt_a.unlink(missing_ok=True)
             ckpt_b.unlink(missing_ok=True)
 
-    def test_swap_local_missing_file(self):
-        with pytest.raises(FileNotFoundError):
-            fb._swap_model(
-                "local", "/tmp/does-not-exist.pt", project="x", entity=None,
-            )
+    def test_swap_falls_through_to_wandb_when_no_local_file(self, monkeypatch):
+        """A value that isn't an existing path is treated as a wandb run id."""
+        called_with: dict = {}
 
-    def test_swap_bad_kind(self):
-        with pytest.raises(ValueError, match="unknown kind"):
-            fb._swap_model("magic", "value", project="x", entity=None)
+        def fake_resolve(run_spec, project, entity):
+            called_with["run_spec"] = run_spec
+            called_with["project"] = project
+            raise RuntimeError("wandb resolver was called as expected")
+
+        monkeypatch.setattr(fb, "_resolve_wandb_checkpoint", fake_resolve)
+        with pytest.raises(RuntimeError, match="wandb resolver"):
+            fb._swap_model("not-a-path", project="x", entity=None)
+        assert called_with == {"run_spec": "not-a-path", "project": "x"}
 
     def test_swap_empty_value(self):
         with pytest.raises(ValueError, match="empty"):
-            fb._swap_model("local", "", project="x", entity=None)
+            fb._swap_model("", project="x", entity=None)
 
 
 # ── End-to-end /predict schema ──────────────────────────────────────────────
