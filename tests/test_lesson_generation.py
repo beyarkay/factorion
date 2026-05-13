@@ -1330,7 +1330,7 @@ class TestAssemble1In1OutMissingEntities:
         blanked — otherwise the item head never sees a non-zero recipe
         target during SFT (see issue #107). `inf` short-circuits removal
         in _remove_entities, so we use a large finite value matching the
-        SFT default (max_level = 2*size)."""
+        SFT default (max_level = size*size)."""
         removed_count = 0
         for seed in range(60):
             world, _ = generate_lesson(

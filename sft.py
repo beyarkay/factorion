@@ -161,7 +161,7 @@ class SFTArgs:
     num_samples: int = 300000
     """number of (state, action) pairs to generate"""
     max_level: int = 0
-    """max curriculum level (0 = auto: 2*size)"""
+    """max curriculum level (0 = auto: size*size)"""
     epochs: int = 30
     """number of training epochs"""
     batch_size: int = 512
@@ -274,7 +274,7 @@ def generate_dataset(args: SFTArgs):
     ~L pairs that all share its seed; splitting at the pair level leaks
     factories across the split).
     """
-    max_level = args.max_level if args.max_level > 0 else 2 * args.size
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
     kinds = list(LessonKind)
 
     all_obs = []
