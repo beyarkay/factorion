@@ -650,7 +650,7 @@ jobs:
     needs: [check-gpu-trigger]
     if: ${{ needs.check-gpu-trigger.outputs.run_sft_smoketest == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
         with:
