@@ -331,24 +331,47 @@ class FactorioEnv(gym.Env):
         self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
 
         self.actions = []
-        # Lesson kind is settable per-reset so SFT rollout eval can sweep
-        # every LessonKind on the same env. PPO callers don't pass it and
-        # get the historical MOVE_ONE_ITEM default.
-        kind = self._reset_options.get('kind', LessonKind.MOVE_ONE_ITEM)
-        # Generate the solved factory first (same seed → same layout),
-        # then re-generate with missing entities for the actual episode.
-        self._solved_world_CWH, _ = generate_lesson(
-            size=self.size,
-            kind=kind,
-            num_missing_entities=0,
-            seed=self._seed,
-        )
-        self._world_CWH, min_entities_required = generate_lesson(
-            size=self.size,
-            kind=kind,
-            num_missing_entities=self._num_missing_entities,
-            seed=self._seed,
-        )
+        # Lesson kind is settable per-reset. Default (omitted or None) is
+        # uniform random sampling across LessonKind on every reset —
+        # matches the project direction where lessons are data generators
+        # rather than a fixed curriculum, so a single env naturally sees
+        # all kinds. Pass a concrete LessonKind to pin one. The sampler
+        # uses self.np_random which super().reset() seeded above, so the
+        # choice is deterministic per episode seed.
+        kind_opt = self._reset_options.get('kind', None)
+        if kind_opt is None:
+            kinds_list = list(LessonKind)
+            for _ in range(16):
+                kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
+                try:
+                    self._solved_world_CWH, _ = generate_lesson(
+                        size=self.size, kind=kind,
+                        num_missing_entities=0, seed=self._seed,
+                    )
+                    self._world_CWH, min_entities_required = generate_lesson(
+                        size=self.size, kind=kind,
+                        num_missing_entities=self._num_missing_entities,
+                        seed=self._seed,
+                    )
+                    break
+                except Exception:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"Failed to sample a valid LessonKind for seed={self._seed} "
+                    f"after 16 attempts"
+                )
+        else:
+            kind = kind_opt
+            self._solved_world_CWH, _ = generate_lesson(
+                size=self.size, kind=kind,
+                num_missing_entities=0, seed=self._seed,
+            )
+            self._world_CWH, min_entities_required = generate_lesson(
+                size=self.size, kind=kind,
+                num_missing_entities=self._num_missing_entities,
+                seed=self._seed,
+            )
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
