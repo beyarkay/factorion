@@ -153,6 +153,34 @@ class LessonKind(Enum):
     MOVE_VIA_UG_BELT = 6
 
 
+@dataclass(frozen=True)
+class Factory:
+    """A complete, valid factory ready to be turned into a training lesson.
+
+    Build one via :func:`build_factory`, then pass it to
+    :func:`blank_entities` to produce a (partial, solved, min_required)
+    lesson pair. The same ``Factory`` can be blanked many times to
+    produce multiple lessons at different difficulties without
+    re-running the (expensive) layout search.
+
+    Attributes:
+        world_CWH: the complete factory layout, a (C, W, H) tensor.
+        total_entities: number of removable entity *units* in the
+            factory (multi-tile entities like splitters count as one
+            unit). Used as the upper bound for blanking.
+        protected_positions: tiles whose entity must never be blanked
+            because it carries kind-specific structural information the
+            agent cannot reconstruct (recipe channel on the assembler,
+            inserter direction in INSERTER_TRANSFER, splitter geometry).
+            Source/sink are protected unconditionally inside
+            :func:`_remove_entities` and need not appear here.
+    """
+
+    world_CWH: torch.Tensor
+    total_entities: int
+    protected_positions: frozenset = frozenset()
+
+
 # Map Enum <--> grid deltas
 DIR_TO_DELTA = {
     Direction.NORTH: (0, -1),
@@ -1307,19 +1335,45 @@ def _remove_entities(
     return num_samples
 
 
-def generate_lesson(
-    size=5,
-    kind=LessonKind.MOVE_ONE_ITEM,
-    num_missing_entities=float("inf"),
-    seed=None,
-    random_item=True,
-    max_entities=float("inf"),
-):
+def build_factory(
+    size: int = 5,
+    kind: LessonKind = LessonKind.MOVE_ONE_ITEM,
+    *,
+    seed: Optional[int] = None,
+    random_item: bool = True,
+    max_entities: float = float("inf"),
+) -> Optional[Factory]:
+    """Construct a single complete, valid factory of the given lesson kind.
+
+    Layout search is randomized rejection-sampling; for tight grids or
+    complex kinds (e.g. ``SPLITTER_SPLIT`` on ``size=5``) the random
+    placements may never satisfy the constraints. In that case this
+    function returns ``None`` rather than raising. **Bad inputs**
+    (unknown ``kind``, grid too small to physically fit the lesson's
+    fixed entities, missing recipe data) still raise — those are
+    misconfiguration, not bad luck.
+
+    The recommended retry idiom is to advance the seed and try again::
+
+        factory = None
+        attempt_seed = seed
+        while factory is None:
+            attempt_seed += 1
+            factory = build_factory(size, kind, seed=attempt_seed)
+
+    Determinism: same ``(size, kind, seed)`` → same ``Factory``. The
+    function seeds the global ``random`` / ``numpy`` / ``torch`` RNGs
+    when ``seed`` is provided, and leaves RNG state advanced past the
+    layout search on return (so a subsequent :func:`blank_entities`
+    call without a ``seed`` continues from the same stream and is
+    likewise deterministic).
+    """
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-    min_entities_required = None
+    total_entities: int = 0
+    protected_positions: frozenset = frozenset()
     world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
         2, 0, 1
     )
@@ -1394,25 +1448,17 @@ def generate_lesson(
                 continue
             else:
                 # Choose a valid path at random and add it to the map
-                if num_missing_entities != float("inf"):
-                    chosen_path = random.choice(paths)
-                    min_entities_required = len(chosen_path)
-                    for x, y, d in chosen_path:
-                        world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
-                            "transport_belt"
-                        ).value
-                        world_CWH[Channel.DIRECTION.value, x, y] = d.value
-                else:
-                    min_entities_required = min([len(p) for p in paths])
+                chosen_path = random.choice(paths)
+                total_entities = len(chosen_path)
+                for x, y, d in chosen_path:
+                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                        "transport_belt"
+                    ).value
+                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, min_entities_required
-            )
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid lesson after {original_count} attempts"
-            )
+            return None
     elif kind.value == LessonKind.INSERTER_TRANSFER.value:
         # Source → belts → inserter → belts → sink
         original_count = max(500, size * size * 8)
@@ -1506,16 +1552,11 @@ def generate_lesson(
             # Inserter is structurally required for this lesson; without
             # it the source/sink layout becomes ambiguous (could be
             # solved by belts alone). Protect it from blanking.
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, total_entities,
-                protected_positions={tuple(inserter_pos)},
-            )
+            protected_positions = frozenset({tuple(inserter_pos)})
 
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid INSERTER_TRANSFER lesson after {original_count} attempts"
-            )
+            return None
 
     elif kind.value == LessonKind.SPLITTER_SPLIT.value:
         # 1 source → belts → splitter → 2x(belts → sink)
@@ -1698,16 +1739,11 @@ def generate_lesson(
             # Splitter is structurally required for the lesson; without
             # it the source(s)/sink(s) layout becomes ambiguous (could
             # be solved by belts alone). Protect it from blanking.
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, total_entities,
-                protected_positions={tuple(t) for t in tiles},
-            )
+            protected_positions = frozenset(tuple(t) for t in tiles)
 
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid SPLITTER_SPLIT lesson after {original_count} attempts"
-            )
+            return None
 
     elif kind.value == LessonKind.SPLITTER_MERGE.value:
         # 2x(source → belts) → splitter → belts → 1 sink
@@ -1867,16 +1903,11 @@ def generate_lesson(
             # Splitter is structurally required for the lesson; without
             # it the source(s)/sink(s) layout becomes ambiguous (could
             # be solved by belts alone). Protect it from blanking.
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, total_entities,
-                protected_positions={tuple(t) for t in tiles},
-            )
+            protected_positions = frozenset(tuple(t) for t in tiles)
 
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid SPLITTER_MERGE lesson after {original_count} attempts"
-            )
+            return None
 
     elif kind.value == LessonKind.ASSEMBLE_1IN_1OUT.value:
         # source → belt → input inserter → 3x3 assembler (with recipe) →
@@ -2108,15 +2139,10 @@ def generate_lesson(
             # head learns to predict non-zero recipes — otherwise every
             # expert action is on a belt/inserter/splitter, all of which
             # have empty ITEMS channels.
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, total_entities,
-            )
 
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid ASSEMBLE_1IN_1OUT lesson after {original_count} attempts"
-            )
+            return None
 
     elif kind.value == LessonKind.MOVE_VIA_UG_BELT.value:
         # A 1..4-tile-thick wall spans the grid perpendicular to a chosen
@@ -2344,12 +2370,8 @@ def generate_lesson(
             if total_entities > max_entities:
                 continue
 
-            min_entities_required = _remove_entities(
-                world_CWH, num_missing_entities, total_entities,
-            )
-            # _remove_entities paints all empty tiles UNAVAILABLE; we
-            # override that here so only the wall is UNAVAILABLE and the
-            # agent can route belts freely on either side.
+            # Mark only the wall as UNAVAILABLE; every other tile is
+            # freely buildable on either side of the wall.
             world_CWH[Channel.FOOTPRINT.value, :, :] = Footprint.AVAILABLE.value
             for wx, wy in wall_tiles:
                 world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
@@ -2358,15 +2380,91 @@ def generate_lesson(
 
             break
         if count == 0:
-            raise Exception(
-                f"Failed to find valid MOVE_VIA_UG_BELT lesson after {original_count} attempts"
-            )
+            return None
 
     else:
-        raise Exception(f"Can't handle {kind}")
-    # print(f"Required {original_count-count} (of {original_count}) attempts to generate world ({100- count/original_count*100:.2f}%)")
+        raise ValueError(f"Can't handle {kind}")
 
-    return world_CWH, min_entities_required
+    return Factory(
+        world_CWH=world_CWH,
+        total_entities=total_entities,
+        protected_positions=protected_positions,
+    )
+
+
+def blank_entities(
+    factory: Factory,
+    num_missing_entities: float = float("inf"),
+    *,
+    seed: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    """Blank up to ``num_missing_entities`` entity units from a factory.
+
+    Returns ``(partial_world_CWH, solved_world_CWH, min_entities_required)``:
+
+    - ``partial_world_CWH``: clone of the factory with some entities removed,
+      ready to be fed to the agent as the lesson input.
+    - ``solved_world_CWH``: the factory's complete layout (shares storage with
+      ``factory.world_CWH`` — do not mutate; clone first if you need to).
+    - ``min_entities_required``: actual number of entity units removed
+      (may be less than ``num_missing_entities`` if the factory has fewer
+      removable units, e.g. when many entities are protected).
+
+    Blanking respects multi-tile entities (splitters, assemblers) as
+    single removable units, and never removes ``factory.protected_positions``,
+    sources, or sinks.
+
+    If ``seed`` is provided, the global RNG is reseeded before blanking
+    so the (partial, min_required) pair is deterministic in
+    ``(factory, num_missing_entities, seed)``. If ``seed`` is ``None``,
+    blanking consumes from the current RNG stream — handy when chained
+    directly after a :func:`build_factory` call that already seeded.
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+    partial = factory.world_CWH.clone()
+    min_entities_required = _remove_entities(
+        partial,
+        num_missing_entities,
+        factory.total_entities,
+        protected_positions=set(factory.protected_positions),
+    )
+    return partial, factory.world_CWH, min_entities_required
+
+
+def generate_lesson(
+    size=5,
+    kind=LessonKind.MOVE_ONE_ITEM,
+    num_missing_entities=float("inf"),
+    seed=None,
+    random_item=True,
+    max_entities=float("inf"),
+):
+    """Compat wrapper for the historical lesson API.
+
+    New code should call :func:`build_factory` + :func:`blank_entities`
+    directly. This wrapper raises on retry-exhaustion to preserve the
+    original behaviour; the underlying ``build_factory`` returns
+    ``None`` in that case.
+    """
+    factory = build_factory(
+        size=size,
+        kind=kind,
+        seed=seed,
+        random_item=random_item,
+        max_entities=max_entities,
+    )
+    if factory is None:
+        raise Exception(
+            f"Failed to find valid {kind.name} lesson "
+            f"(rejection-sampling exhausted); advance the seed and retry"
+        )
+    partial, _, min_entities_required = blank_entities(
+        factory, num_missing_entities
+    )
+    return partial, min_entities_required
 
 
 def _bfs_shortest(grid_h, grid_w, start, end, blocked):
