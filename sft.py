@@ -1032,6 +1032,7 @@ def train_sft(args: SFTArgs):
             and (epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs)
         )
         if do_rollout and len(val_seeds_to_kind) > 0:
+            t_rollout = time.time()
             overall_thp, per_kind_thp, per_kind_thp_n = run_rollout_eval(
                 agent,
                 args,
@@ -1040,12 +1041,15 @@ def train_sft(args: SFTArgs):
                 max_seeds=args.eval_rollouts_max_seeds,
                 num_envs=args.eval_rollouts_num_envs,
             )
+            rollout_seconds = time.time() - t_rollout
             per_kind_metrics["val/throughput"] = overall_thp
+            per_kind_metrics["val/rollout_seconds"] = rollout_seconds
             for kn, thp in per_kind_thp.items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/throughput"] = thp
         else:
             overall_thp = None
+            rollout_seconds = None
             per_kind_thp_n = {}
 
         print(
@@ -1056,7 +1060,10 @@ def train_sft(args: SFTArgs):
             f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f} "
             f"item={val_item_acc:.3f} misc={val_misc_acc:.3f} "
             f"eot={val_eot_acc:.3f} eot+={val_eot_pos_recall:.3f})"
-            + (f"  val_thp={overall_thp:.3f}" if overall_thp is not None else "")
+            + (
+                f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
+                if overall_thp is not None else ""
+            )
         )
         if per_kind_metrics:
             kind_summary = "  ".join(
