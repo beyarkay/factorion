@@ -153,11 +153,13 @@ def extract_expert_actions(solved_CWH, task_CWH):
 @dataclass
 class SFTArgs:
     # Defaults below are the rank-1 result from the first SFT sweep
-    # (wandb sweep ncqdnvmt, PR #104) — val/acc=0.901 on size=11. Override
-    # any individual flag at the command line.
+    # (wandb sweep ncqdnvmt, PR #104) — val/acc=0.901 on size=11. The
+    # `size` default is set to 12 to match the project-wide default;
+    # all other hyperparameters are from the sweep. Override any
+    # individual flag at the command line.
     seed: int = 1
     """random seed"""
-    size: int = 11
+    size: int = 12
     """grid size (width and height)"""
     num_samples: int = 300000
     """number of (state, action) pairs to generate"""
