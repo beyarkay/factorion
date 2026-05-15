@@ -11,8 +11,9 @@
 #   WANDB_PROJECT       - W&B project name (e.g. factorion)
 #
 # Optional env vars:
-#   NUM_SAMPLES         - Number of SFT samples (default: 5000)
-#   EPOCHS              - Number of training epochs (default: 10)
+#   NUM_SAMPLES         - Number of SFT samples (default: 300000)
+#   EPOCHS              - Number of training epochs (default: 30)
+#   WATCHDOG_SECONDS    - Self-terminate watchdog timeout (default: 14400 = 4h)
 #   PR_NUMBER           - PR number for tagging
 #   COMMIT_SHA          - Git commit SHA for tagging
 #   RUNPOD_POD_ID       - RunPod pod ID (for self-terminate watchdog)
@@ -22,6 +23,7 @@ set -euo pipefail
 
 NUM_SAMPLES="${NUM_SAMPLES:-300000}"
 EPOCHS="${EPOCHS:-30}"
+WATCHDOG_SECONDS="${WATCHDOG_SECONDS:-14400}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
 COMMIT_SHA="${COMMIT_SHA:-unknown}"
@@ -33,16 +35,17 @@ echo "  GPU:             $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/
 echo "  CUDA:            $(nvcc --version 2>/dev/null | tail -1 || echo 'unknown')"
 echo "  Samples:         ${NUM_SAMPLES}"
 echo "  Epochs:          ${EPOCHS}"
+echo "  Watchdog:        ${WATCHDOG_SECONDS}s"
 echo "  W&B project:     ${WANDB_PROJECT}"
 echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
-# ── Safety net: self-terminate after 4 hours if cleanup fails ─────
+# ── Safety net: self-terminate after WATCHDOG_SECONDS if cleanup fails ─
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
-    echo ">>> Starting self-terminate watchdog (4h timeout)..."
+    echo ">>> Starting self-terminate watchdog (${WATCHDOG_SECONDS}s timeout)..."
     nohup bash -c "
-      sleep 14400
+      sleep ${WATCHDOG_SECONDS}
       curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
         -H 'Content-Type: application/json' \
         -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
