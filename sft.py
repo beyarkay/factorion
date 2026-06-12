@@ -172,13 +172,21 @@ def extract_expert_actions(solved_CWH, task_CWH):
     state = task_CWH.clone()
     pairs = []
 
-    # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
-    remaining_locs = [tuple(loc) for loc in diff_locs]
-
     for step, (x, y) in enumerate(diff_locs):
+        # Tile target = the flow FRONTIER (the single next tile in source->sink
+        # order), not every remaining tile. Because diff_locs is now flow-
+        # ordered, (x, y) is exactly the cell that extends the already-placed
+        # prefix. Single-hot supervision teaches the tile head to commit to
+        # building in order, so the greedy rollout lays a connected chain
+        # instead of wandering to a mid-path tile the direction head never
+        # trained on (the multi-label "all remaining" mask was a workaround for
+        # the old random order, which no longer applies).
+        #
+        # NB: correct for single-chain lessons (MOVE_ONE_ITEM). A branchy lesson
+        # (e.g. SPLITTER_*) has several valid frontier cells at once and would
+        # need a frontier *set* here to avoid re-introducing order noise.
         valid_mask = torch.zeros(W * H)
-        for rx, ry in remaining_locs[step:]:
-            valid_mask[rx * H + ry] = 1.0
+        valid_mask[x * H + y] = 1.0
 
         obs = state.clone()
         tile_idx = x * H + y
@@ -788,7 +796,6 @@ def train_sft(args: SFTArgs):
     # off on terminal (eot=1) samples and (b) aggregate per-LessonKind in
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
-    bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
     # pos_weight balances the eot head against the placement-step
     # imbalance. Each lesson emits ~max_level placement pairs (eot=0) and
     # exactly 1 terminal pair (eot=1); without pos_weight the head
@@ -918,11 +925,13 @@ def train_sft(args: SFTArgs):
             eot_logits = agent.eot_head(encoded).squeeze(-1)
             loss_eot = bce_eot(eot_logits, batch_eot)
 
-            # Tile logits — use BCE with multi-label mask so ALL valid
-            # tiles are rewarded, not just the randomly-chosen one. Reduce
-            # to per-sample, mask off terminal samples, then average.
+            # Tile head — softmax CE over all cells toward the single flow
+            # FRONTIER tile. (Was multi-label BCE over every remaining tile,
+            # which suited the old random order; under canonical flow order the
+            # next tile is unique, and single-positive BCE over W*H cells is
+            # ~(W*H-1):1 imbalanced and collapses the head — so use CE instead.)
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile_per = bce_loss_none(tile_logits, batch_mask).mean(dim=1)
+            loss_tile_per = ce_loss_none(tile_logits, batch_tile)
             loss_tile = (loss_tile_per * placement_mask).sum() / n_place
 
             # Extract features at target tile for entity/direction/item/misc heads
@@ -1078,14 +1087,10 @@ def train_sft(args: SFTArgs):
                 loss_eot_per = bce_eot_none(eot_logits, batch_eot)
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-                # Per-sample losses: needed so we can sum them within each
-                # LessonKind and so terminal samples can be masked out of
-                # placement losses. mean over the tile axis matches the
-                # scale of bce_loss(reduction="mean"), keeping
-                # val/loss_tile comparable to train/loss_tile.
-                loss_tile_per = (
-                    bce_loss_none(tile_logits, batch_mask).mean(dim=1) * placement_mask
-                )
+                # Softmax CE toward the single flow frontier tile (see the
+                # train loop). Per-sample so terminal samples can be masked out
+                # of the placement loss and summed within each LessonKind.
+                loss_tile_per = ce_loss_none(tile_logits, batch_tile) * placement_mask
 
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height
