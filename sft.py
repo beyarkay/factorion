@@ -72,7 +72,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
     task_ent = task_CWH[Channel.ENTITIES.value]
 
     # Find tiles that differ: solved has entity, task has empty
-    diff_mask = (solved_ent != task_ent)
+    diff_mask = solved_ent != task_ent
     diff_locs = diff_mask.nonzero(as_tuple=False).tolist()
 
     if len(diff_locs) == 0:
@@ -123,7 +123,9 @@ def extract_expert_actions(solved_CWH, task_CWH):
         item_id = int(solved_CWH[Channel.ITEMS.value, x, y])
         misc_id = int(solved_CWH[Channel.MISC.value, x, y])
 
-        pairs.append((obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, 0))
+        pairs.append(
+            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, 0)
+        )
 
         # Apply action: copy the entity's full footprint from solved, not
         # just the anchor cell, so the observation reflects what placing
@@ -132,8 +134,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
         if proto.width == 1 and proto.height == 1:
             tiles_to_apply = [(x, y)]
         else:
-            tile_list = factorion_rs.py_entity_tiles(x, y, direction_id, proto.width, proto.height)
-            tiles_to_apply = [tuple(t) for t in tile_list] if tile_list is not None else [(x, y)]
+            tile_list = factorion_rs.py_entity_tiles(
+                x, y, direction_id, proto.width, proto.height
+            )
+            tiles_to_apply = (
+                [tuple(t) for t in tile_list] if tile_list is not None else [(x, y)]
+            )
         for tx, ty in tiles_to_apply:
             for ch in range(C):
                 state[ch, tx, ty] = solved_CWH[ch, tx, ty]
@@ -245,7 +251,7 @@ def _humanize_lr(lr: float) -> str:
     if lr == 0:
         return "0"
     exp = int(np.floor(np.log10(lr)))
-    mantissa = lr / (10 ** exp)
+    mantissa = lr / (10**exp)
     if abs(mantissa - round(mantissa)) < 1e-6:
         return f"{int(round(mantissa))}e{exp}"
     return f"{mantissa:.2g}e{exp}"
@@ -260,7 +266,11 @@ def _artifact_name(args: "SFTArgs") -> str:
     instead, since baking a varying number into the name would defeat
     versioning."""
     chans = (args.chan1, args.chan2, args.chan3)
-    chan_str = f"c{args.chan1}" if len(set(chans)) == 1 else f"c{args.chan1}-{args.chan2}-{args.chan3}"
+    chan_str = (
+        f"c{args.chan1}"
+        if len(set(chans)) == 1
+        else f"c{args.chan1}-{args.chan2}-{args.chan3}"
+    )
     return (
         f"sft-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
@@ -320,7 +330,16 @@ def generate_dataset(args: SFTArgs):
 
         kind_lessons[kind.name] += 1
         pairs = extract_expert_actions(solved, task)
-        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, eot in pairs:
+        for (
+            obs,
+            tile_idx,
+            entity_id,
+            direction_id,
+            item_id,
+            misc_id,
+            valid_mask,
+            eot,
+        ) in pairs:
             all_obs.append(obs)
             all_tile_idx.append(tile_idx)
             all_entity.append(entity_id)
@@ -339,7 +358,9 @@ def generate_dataset(args: SFTArgs):
     print("Per-kind breakdown:")
     name_w = max(len(k) for k in kind_samples)
     for name in sorted(kind_samples):
-        print(f"  {name:<{name_w}}  samples={kind_samples[name]:>6}  lessons={kind_lessons[name]:>6}")
+        print(
+            f"  {name:<{name_w}}  samples={kind_samples[name]:>6}  lessons={kind_lessons[name]:>6}"
+        )
 
     obs_tensor = torch.stack(all_obs)
     tile_tensor = torch.tensor(all_tile_idx, dtype=torch.long)
@@ -353,9 +374,16 @@ def generate_dataset(args: SFTArgs):
     kind_tensor = torch.tensor(all_lesson_kinds, dtype=torch.long)
 
     return (
-        obs_tensor, tile_tensor, ent_tensor, dir_tensor,
-        item_tensor, misc_tensor, mask_tensor, eot_tensor,
-        seed_tensor, kind_tensor,
+        obs_tensor,
+        tile_tensor,
+        ent_tensor,
+        dir_tensor,
+        item_tensor,
+        misc_tensor,
+        mask_tensor,
+        eot_tensor,
+        seed_tensor,
+        kind_tensor,
     )
 
 
@@ -367,20 +395,29 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
     `lr * min_lr_ratio` over the rest. `warmup_frac=0` skips warmup.
     """
     warmup_steps = (
-        max(1, int(round(total_steps * args.warmup_frac))) if args.warmup_frac > 0 else 0
+        max(1, int(round(total_steps * args.warmup_frac)))
+        if args.warmup_frac > 0
+        else 0
     )
     cosine_steps = max(1, total_steps - warmup_steps)
     eta_min = args.lr * args.min_lr_ratio
     cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cosine_steps, eta_min=eta_min,
+        optimizer,
+        T_max=cosine_steps,
+        eta_min=eta_min,
     )
     if warmup_steps <= 0:
         return cosine
     warmup = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_steps,
+        optimizer,
+        start_factor=1e-3,
+        end_factor=1.0,
+        total_iters=warmup_steps,
     )
     return torch.optim.lr_scheduler.SequentialLR(
-        optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps],
+        optimizer,
+        schedulers=[warmup, cosine],
+        milestones=[warmup_steps],
     )
 
 
@@ -452,16 +489,22 @@ def run_rollout_eval(
     # work and should be skipped.
     queue = list(seeds_sorted)
     active = [True] * K
-    current: list[tuple[int, LessonKind, float]] = [(0, LessonKind.MOVE_ONE_ITEM, 0.0)] * K
+    current: list[tuple[int, LessonKind, float]] = [
+        (0, LessonKind.MOVE_ONE_ITEM, 0.0)
+    ] * K
     obs_stack = []
 
     for i in range(K):
         s = queue.pop(0)
         k = LessonKind(val_seeds_to_kind[s])
-        obs, info = envs[i].reset(seed=s, options={
-            'num_missing_entities': max_level, 'kind': k,
-        })
-        current[i] = (s, k, float(info.get('throughput', 0.0)))
+        obs, info = envs[i].reset(
+            seed=s,
+            options={
+                "num_missing_entities": max_level,
+                "kind": k,
+            },
+        )
+        current[i] = (s, k, float(info.get("throughput", 0.0)))
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -494,19 +537,21 @@ def run_rollout_eval(
                 finished_via_eot = float(eot_probs[i]) > eot_threshold
                 if not finished_via_eot:
                     action = {
-                        'xy': np.array([int(x_K[i]), int(y_K[i])], dtype=int),
-                        'entity': int(ent_K[i]),
-                        'direction': int(dir_K[i]),
-                        'item': int(item_K[i]),
-                        'misc': int(misc_K[i]),
+                        "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                        "entity": int(ent_K[i]),
+                        "direction": int(dir_K[i]),
+                        "item": int(item_K[i]),
+                        "misc": int(misc_K[i]),
                     }
                     next_obs, _r, terminated, truncated, info = envs[i].step(action)
                     s, k, _last = current[i]
-                    current[i] = (s, k, float(info.get('throughput', 0.0)))
+                    current[i] = (s, k, float(info.get("throughput", 0.0)))
                     finished_via_env = bool(terminated or truncated)
                     if not finished_via_env:
                         obs_batch[i] = torch.as_tensor(
-                            next_obs, dtype=torch.float32, device=device,
+                            next_obs,
+                            dtype=torch.float32,
+                            device=device,
                         )
                         continue
 
@@ -518,12 +563,18 @@ def run_rollout_eval(
                 if queue:
                     s = queue.pop(0)
                     k = LessonKind(val_seeds_to_kind[s])
-                    obs, info = envs[i].reset(seed=s, options={
-                        'num_missing_entities': max_level, 'kind': k,
-                    })
-                    current[i] = (s, k, float(info.get('throughput', 0.0)))
+                    obs, info = envs[i].reset(
+                        seed=s,
+                        options={
+                            "num_missing_entities": max_level,
+                            "kind": k,
+                        },
+                    )
+                    current[i] = (s, k, float(info.get("throughput", 0.0)))
                     obs_batch[i] = torch.as_tensor(
-                        obs, dtype=torch.float32, device=device,
+                        obs,
+                        dtype=torch.float32,
+                        device=device,
                     )
                 else:
                     active[i] = False
@@ -549,8 +600,16 @@ def train_sft(args: SFTArgs):
     print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
     (
-        obs, tiles, ents, dirs, items_t, miscs_t,
-        valid_masks, eot_labels, lesson_seeds, lesson_kinds,
+        obs,
+        tiles,
+        ents,
+        dirs,
+        items_t,
+        miscs_t,
+        valid_masks,
+        eot_labels,
+        lesson_seeds,
+        lesson_kinds,
     ) = generate_dataset(args)
     print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
 
@@ -588,14 +647,26 @@ def train_sft(args: SFTArgs):
             val_seeds_to_kind[s] = k
 
     train_ds = TensorDataset(
-        obs[train_idx], tiles[train_idx], ents[train_idx], dirs[train_idx],
-        items_t[train_idx], miscs_t[train_idx], valid_masks[train_idx],
-        eot_labels[train_idx], lesson_kinds[train_idx],
+        obs[train_idx],
+        tiles[train_idx],
+        ents[train_idx],
+        dirs[train_idx],
+        items_t[train_idx],
+        miscs_t[train_idx],
+        valid_masks[train_idx],
+        eot_labels[train_idx],
+        lesson_kinds[train_idx],
     )
     val_ds = TensorDataset(
-        obs[val_idx], tiles[val_idx], ents[val_idx], dirs[val_idx],
-        items_t[val_idx], miscs_t[val_idx], valid_masks[val_idx],
-        eot_labels[val_idx], lesson_kinds[val_idx],
+        obs[val_idx],
+        tiles[val_idx],
+        ents[val_idx],
+        dirs[val_idx],
+        items_t[val_idx],
+        miscs_t[val_idx],
+        valid_masks[val_idx],
+        eot_labels[val_idx],
+        lesson_kinds[val_idx],
     )
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
@@ -617,13 +688,17 @@ def train_sft(args: SFTArgs):
     envs.close()
 
     device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available()
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
         else "cpu"
     )
     agent.to(device)
 
-    optimizer = optim.AdamW(agent.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.AdamW(
+        agent.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
 
     # Scheduler spans every optimizer step (not every epoch) so warmup_frac
     # is a fraction of the *whole* run regardless of dataset size.
@@ -645,8 +720,12 @@ def train_sft(args: SFTArgs):
     n_neg = float(len(train_eot) - n_pos)
     pos_weight = torch.tensor([n_neg / max(1.0, n_pos)])
     bce_eot = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
-    bce_eot_none = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device), reduction="none")
-    print(f"EOT head pos_weight={pos_weight.item():.2f} (n_pos={int(n_pos)}, n_neg={int(n_neg)})")
+    bce_eot_none = nn.BCEWithLogitsLoss(
+        pos_weight=pos_weight.to(device), reduction="none"
+    )
+    print(
+        f"EOT head pos_weight={pos_weight.item():.2f} (n_pos={int(n_pos)}, n_neg={int(n_neg)})"
+    )
 
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
@@ -655,6 +734,7 @@ def train_sft(args: SFTArgs):
     run = None
     if args.track:
         import wandb
+
         sft_tags = ["sft"] + (args.tags or [])
         run = wandb.init(
             project=args.wandb_project_name,
@@ -668,13 +748,30 @@ def train_sft(args: SFTArgs):
         # to summary (which keeps the value visible in the run sidebar)
         # rather than wandb.log (which would create a flat plottable line).
         from collections import Counter, defaultdict
+
         samples_by_kind = Counter(kind_names[k] for k in lesson_kinds.tolist())
         seeds_by_kind: dict[str, set] = defaultdict(set)
         for s, k in zip(lesson_seeds.tolist(), lesson_kinds.tolist()):
             seeds_by_kind[kind_names[k]].add(s)
         for k in LessonKind:
             run.summary[f"dataset/samples/{k.name}"] = samples_by_kind.get(k.name, 0)
-            run.summary[f"dataset/lessons/{k.name}"] = len(seeds_by_kind.get(k.name, set()))
+            run.summary[f"dataset/lessons/{k.name}"] = len(
+                seeds_by_kind.get(k.name, set())
+            )
+
+        # Default the x-axis to "optimisation pressure applied" rather than
+        # epoch index. Logging once per epoch makes wandb's implicit _step
+        # epoch-aligned, so two runs with the same epoch count but different
+        # num_samples look identical on the x-axis despite one applying far
+        # more gradient updates. samples_seen (cumulative training pairs the
+        # model was updated on) scales with both epochs AND num_samples — and,
+        # unlike global_step, stays comparable across batch_size changes — so
+        # we make it the default x-axis for every metric. global_step (raw
+        # optimiser updates) and epoch are still logged for anyone who wants
+        # to switch the panel x-axis in the UI.
+        wandb.define_metric("train/samples_seen")
+        wandb.define_metric("train/global_step")
+        wandb.define_metric("*", step_metric="train/samples_seen")
 
     best_val_acc = 0.0
     val_loss = 0.0
@@ -685,6 +782,11 @@ def train_sft(args: SFTArgs):
     val_misc_acc = 0.0
     val_eot_acc = 0.0
     val_eot_pos_recall = 0.0
+    # Cumulative optimisation pressure, used as the wandb x-axis (see the
+    # define_metric calls above). global_step counts optimiser updates;
+    # samples_seen counts training pairs the model has been updated on.
+    global_step = 0
+    samples_seen = 0
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
@@ -706,8 +808,15 @@ def train_sft(args: SFTArgs):
         # per-kind metrics; we ignore it in the train pass.
         for batch in train_loader:
             (
-                batch_obs, batch_tile, batch_ent, batch_dir,
-                batch_item, batch_misc, batch_mask, batch_eot, _batch_kind,
+                batch_obs,
+                batch_tile,
+                batch_ent,
+                batch_dir,
+                batch_item,
+                batch_misc,
+                batch_mask,
+                batch_eot,
+                _batch_kind,
             ) = batch
             batch_obs = batch_obs.float().to(device)
             batch_tile = batch_tile.to(device)
@@ -769,11 +878,15 @@ def train_sft(args: SFTArgs):
             optimizer.zero_grad()
             loss.backward()
             if args.max_grad_norm > 0:
-                grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(
+                    agent.parameters(), args.max_grad_norm
+                )
                 grad_norm_sum += float(grad_norm)
                 grad_norm_count += 1
             optimizer.step()
             scheduler.step()
+            global_step += 1
+            samples_seen += B
 
             train_loss += loss.item() * B
             train_loss_tile += loss_tile.item() * B
@@ -802,8 +915,8 @@ def train_sft(args: SFTArgs):
                 & (pred_misc == batch_misc)
             )
             is_place = placement_mask.bool()
-            eot_pred_bool = (eot_logits > 0)
-            eot_correct_t = (eot_pred_bool == (batch_eot > 0.5))
+            eot_pred_bool = eot_logits > 0
+            eot_correct_t = eot_pred_bool == (batch_eot > 0.5)
             correct = torch.where(
                 is_place,
                 place_heads_correct & eot_correct_t,
@@ -858,8 +971,15 @@ def train_sft(args: SFTArgs):
         with torch.no_grad():
             for batch in val_loader:
                 (
-                    batch_obs, batch_tile, batch_ent, batch_dir,
-                    batch_item, batch_misc, batch_mask, batch_eot, batch_kind,
+                    batch_obs,
+                    batch_tile,
+                    batch_ent,
+                    batch_dir,
+                    batch_item,
+                    batch_misc,
+                    batch_mask,
+                    batch_eot,
+                    batch_kind,
                 ) = batch
                 batch_obs = batch_obs.float().to(device)
                 batch_tile = batch_tile.to(device)
@@ -885,7 +1005,9 @@ def train_sft(args: SFTArgs):
                 # placement losses. mean over the tile axis matches the
                 # scale of bce_loss(reduction="mean"), keeping
                 # val/loss_tile comparable to train/loss_tile.
-                loss_tile_per = bce_loss_none(tile_logits, batch_mask).mean(dim=1) * placement_mask
+                loss_tile_per = (
+                    bce_loss_none(tile_logits, batch_mask).mean(dim=1) * placement_mask
+                )
 
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height
@@ -923,24 +1045,27 @@ def train_sft(args: SFTArgs):
                 pred_dir = dir_logits.argmax(dim=1)
                 pred_item = item_logits.argmax(dim=1)
                 pred_misc = misc_logits.argmax(dim=1)
-                ent_correct_per = (pred_ent == batch_ent)
-                dir_correct_per = (pred_dir == batch_dir)
-                item_correct_per = (pred_item == batch_item)
-                misc_correct_per = (pred_misc == batch_misc)
+                ent_correct_per = pred_ent == batch_ent
+                dir_correct_per = pred_dir == batch_dir
+                item_correct_per = pred_item == batch_item
+                misc_correct_per = pred_misc == batch_misc
                 # EOT-head accuracy + recall on positives separately.
                 # Recall on positives matters because the positives are
                 # rare; "always predict 0" would give high accuracy but
                 # never trigger episode termination.
-                eot_pred_bool = (eot_logits > 0)
-                eot_correct_per = (eot_pred_bool == (batch_eot > 0.5))
+                eot_pred_bool = eot_logits > 0
+                eot_correct_per = eot_pred_bool == (batch_eot > 0.5)
 
                 # Whole-sample accuracy. Placement sample (eot=0): all 5
                 # placement heads correct AND EOT predicted "not done".
                 # Terminal sample (eot=1): EOT predicted "done"; placement
                 # targets are sentinels so they don't enter the check.
                 place_heads_correct = (
-                    tile_hit & ent_correct_per & dir_correct_per
-                    & item_correct_per & misc_correct_per
+                    tile_hit
+                    & ent_correct_per
+                    & dir_correct_per
+                    & item_correct_per
+                    & misc_correct_per
                 )
                 correct_per = torch.where(
                     is_place,
@@ -973,10 +1098,18 @@ def train_sft(args: SFTArgs):
                     per_kind_n[k_name] += int(mask_k.sum().item())
                     per_kind_correct[k_name] += int(correct_per[mask_k].sum().item())
                     per_kind_tile_correct[k_name] += int(tile_hit[mask_k].sum().item())
-                    per_kind_ent_correct[k_name] += int(ent_correct_per[mask_k].sum().item())
-                    per_kind_dir_correct[k_name] += int(dir_correct_per[mask_k].sum().item())
-                    per_kind_item_correct[k_name] += int(item_correct_per[mask_k].sum().item())
-                    per_kind_misc_correct[k_name] += int(misc_correct_per[mask_k].sum().item())
+                    per_kind_ent_correct[k_name] += int(
+                        ent_correct_per[mask_k].sum().item()
+                    )
+                    per_kind_dir_correct[k_name] += int(
+                        dir_correct_per[mask_k].sum().item()
+                    )
+                    per_kind_item_correct[k_name] += int(
+                        item_correct_per[mask_k].sum().item()
+                    )
+                    per_kind_misc_correct[k_name] += int(
+                        misc_correct_per[mask_k].sum().item()
+                    )
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
 
         # Placement losses were already masked off on terminal samples (their
@@ -999,8 +1132,7 @@ def train_sft(args: SFTArgs):
         val_misc_acc = val_misc_correct / place_norm
         val_eot_acc = val_eot_correct / val_total
         val_eot_pos_recall = (
-            val_eot_pos_correct / val_eot_pos_total
-            if val_eot_pos_total > 0 else 0.0
+            val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
         )
 
         # Build per-kind metric dict for both stdout and wandb. Skip kinds
@@ -1014,18 +1146,23 @@ def train_sft(args: SFTArgs):
             per_kind_metrics[f"val/{k.name}/n"] = n
             per_kind_metrics[f"val/{k.name}/loss"] = per_kind_loss_sum[k.name] / n
             per_kind_metrics[f"val/{k.name}/acc"] = per_kind_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/tile_acc"] = per_kind_tile_correct[k.name] / n
+            per_kind_metrics[f"val/{k.name}/tile_acc"] = (
+                per_kind_tile_correct[k.name] / n
+            )
             per_kind_metrics[f"val/{k.name}/ent_acc"] = per_kind_ent_correct[k.name] / n
             per_kind_metrics[f"val/{k.name}/dir_acc"] = per_kind_dir_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/item_acc"] = per_kind_item_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/misc_acc"] = per_kind_misc_correct[k.name] / n
+            per_kind_metrics[f"val/{k.name}/item_acc"] = (
+                per_kind_item_correct[k.name] / n
+            )
+            per_kind_metrics[f"val/{k.name}/misc_acc"] = (
+                per_kind_misc_correct[k.name] / n
+            )
 
         # Rollout eval: every N epochs greedy-play the held-out factories
         # and record final throughput. Same lessons as val accuracy, so
         # val/throughput is directly comparable to val/acc curves.
-        do_rollout = (
-            args.eval_rollouts_every_n_epochs > 0
-            and (epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs)
+        do_rollout = args.eval_rollouts_every_n_epochs > 0 and (
+            epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs
         )
         if do_rollout and len(val_seeds_to_kind) > 0:
             t_rollout = time.time()
@@ -1058,7 +1195,8 @@ def train_sft(args: SFTArgs):
             f"eot={val_eot_acc:.3f} eot+={val_eot_pos_recall:.3f})"
             + (
                 f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
-                if overall_thp is not None else ""
+                if overall_thp is not None
+                else ""
             )
         )
         if per_kind_metrics:
@@ -1070,36 +1208,42 @@ def train_sft(args: SFTArgs):
             print(f"  per-kind val_acc: {kind_summary}")
 
         if args.track and run is not None:
-            run.log({
-                "train/loss": train_loss,
-                "train/loss_tile": train_loss_tile,
-                "train/loss_ent": train_loss_ent,
-                "train/loss_dir": train_loss_dir,
-                "train/loss_item": train_loss_item,
-                "train/loss_misc": train_loss_misc,
-                "train/loss_eot": train_loss_eot,
-                "train/acc": train_acc,
-                "train/eot_acc": train_eot_acc,
-                "val/loss": val_loss,
-                "val/loss_tile": val_loss_tile,
-                "val/loss_ent": val_loss_ent,
-                "val/loss_dir": val_loss_dir,
-                "val/loss_item": val_loss_item,
-                "val/loss_misc": val_loss_misc,
-                "val/loss_eot": val_loss_eot,
-                "val/acc": val_acc,
-                "val/tile_acc": val_tile_acc,
-                "val/ent_acc": val_ent_acc,
-                "val/dir_acc": val_dir_acc,
-                "val/item_acc": val_item_acc,
-                "val/misc_acc": val_misc_acc,
-                "val/eot_acc": val_eot_acc,
-                "val/eot_pos_recall": val_eot_pos_recall,
-                "train/epoch": epoch,
-                "train/lr": optimizer.param_groups[0]["lr"],
-                "train/grad_norm": (grad_norm_sum / grad_norm_count) if grad_norm_count > 0 else float("nan"),
-                **per_kind_metrics,
-            })
+            run.log(
+                {
+                    "train/loss": train_loss,
+                    "train/loss_tile": train_loss_tile,
+                    "train/loss_ent": train_loss_ent,
+                    "train/loss_dir": train_loss_dir,
+                    "train/loss_item": train_loss_item,
+                    "train/loss_misc": train_loss_misc,
+                    "train/loss_eot": train_loss_eot,
+                    "train/acc": train_acc,
+                    "train/eot_acc": train_eot_acc,
+                    "val/loss": val_loss,
+                    "val/loss_tile": val_loss_tile,
+                    "val/loss_ent": val_loss_ent,
+                    "val/loss_dir": val_loss_dir,
+                    "val/loss_item": val_loss_item,
+                    "val/loss_misc": val_loss_misc,
+                    "val/loss_eot": val_loss_eot,
+                    "val/acc": val_acc,
+                    "val/tile_acc": val_tile_acc,
+                    "val/ent_acc": val_ent_acc,
+                    "val/dir_acc": val_dir_acc,
+                    "val/item_acc": val_item_acc,
+                    "val/misc_acc": val_misc_acc,
+                    "val/eot_acc": val_eot_acc,
+                    "val/eot_pos_recall": val_eot_pos_recall,
+                    "train/epoch": epoch,
+                    "train/samples_seen": samples_seen,
+                    "train/global_step": global_step,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "train/grad_norm": (grad_norm_sum / grad_norm_count)
+                    if grad_norm_count > 0
+                    else float("nan"),
+                    **per_kind_metrics,
+                }
+            )
 
         if val_acc >= best_val_acc:
             best_val_acc = val_acc
@@ -1123,6 +1267,11 @@ def train_sft(args: SFTArgs):
         "val_loss": round(val_loss, 4),
         "num_samples": args.num_samples,
         "epochs": args.epochs,
+        # Total optimisation pressure applied — the magnitudes the wandb
+        # x-axis ends at. Records how much training actually happened
+        # independent of the epoch count.
+        "samples_seen": samples_seen,
+        "optimizer_steps": global_step,
         "size": args.size,
         "lr": args.lr,
         "batch_size": args.batch_size,
