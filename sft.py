@@ -109,17 +109,24 @@ def extract_expert_actions(solved_CWH, task_CWH):
     without misc=DOWN/UP, or an assembling_machine_1 without an item
     (= recipe).
 
-    The valid_tile_mask is a flat binary tensor marking ALL tiles that still
-    need entities at this step — not just the one chosen. This allows
-    multi-label tile loss to avoid penalizing the model for predicting a
-    valid-but-different tile.
+    The valid_tile_mask is single-hot on the FRONTIER tile — the single next
+    cell in canonical source->sink flow order. The tile head is trained with
+    softmax cross-entropy toward that cell so the policy learns to build the
+    chain start-to-finish. (Historically this mask marked ALL remaining tiles
+    and the tile loss was multi-label BCE — a workaround for the old *random*
+    placement order, where the demo's "next" tile was an arbitrary pick and
+    penalizing the model for choosing a valid-but-different one was unfair.
+    Canonical order makes the next tile unique, so that workaround is no longer
+    needed. NB: branchy lessons, e.g. SPLITTER_*, have several valid frontier
+    cells at once and would need a frontier *set* here before being re-enabled.)
 
     Multi-tile entities (e.g. splitters) emit a single pair at the anchor
     tile, not one per occupied cell — placing the anchor fills the whole
     footprint at execution time.
 
-    Actions are applied sequentially in random order, so intermediate states
-    reflect realistic observations the agent would see.
+    Actions are applied sequentially in canonical source->sink flow order
+    (see _flow_order), so each intermediate state is a clean prefix of the
+    completed path — exactly what the policy will see when it builds in order.
 
     `eot` (end-of-turn) is 0 for every placement step (the factory still
     has entities to place) and 1 for a single terminal pair appended at
