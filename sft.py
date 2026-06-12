@@ -29,14 +29,74 @@ from torch.utils.data import DataLoader, TensorDataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
+    DIR_TO_DELTA,
     Channel,
+    Direction,
     LessonKind,
     blank_entities,
     build_factory,
     entities,
+    str2ent,
 )
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+
+
+def _flow_order(solved_CWH, anchor_locs):
+    """Order anchor tiles in canonical source->sink flow order.
+
+    Each placeable tile's DIRECTION channel points downstream (to the cell
+    items flow into). Starting from the cell(s) each source points into, we
+    BFS along these successor links and record a flow depth; anchors are then
+    returned sorted by ``(reached, depth, raster)`` so the expert demo places
+    tiles start-to-finish along the belt instead of in a random order.
+
+    Why: a random placement order makes the *same* partial state map to
+    *different* next-targets across samples — irreducible label noise that
+    caps per-head accuracy (esp. direction) below 1.0. A canonical flow order
+    makes the next placement a deterministic function of the current state,
+    which the model can fit, and which the literature (Vinyals "Order
+    Matters"; GraphRNN's BFS ordering; PolyGen) shows is far more learnable
+    than an arbitrary linearization.
+
+    Anchors not reachable from a source (e.g. malformed factories, or
+    non-belt lessons whose anchor cell isn't the flow-entry tile) are appended
+    afterwards in raster order, so no placement is ever dropped.
+    """
+    from collections import deque
+
+    ent = solved_CWH[Channel.ENTITIES.value]
+    dch = solved_CWH[Channel.DIRECTION.value]
+    anchor_set = {tuple(loc) for loc in anchor_locs}
+    src_val = str2ent("source").value
+    none_val = Direction.NONE.value
+
+    def successor(x, y):
+        d = int(dch[x, y])
+        if d == none_val:
+            return None
+        dx, dy = DIR_TO_DELTA[Direction(d)]
+        return (x + dx, y + dy)
+
+    depth: dict[tuple[int, int], int] = {}
+    q: deque[tuple[int, int]] = deque()
+    for sx, sy in (ent == src_val).nonzero(as_tuple=False).tolist():
+        nxt = successor(sx, sy)
+        if nxt in anchor_set and nxt not in depth:
+            depth[nxt] = 0
+            q.append(nxt)
+    while q:
+        cur = q.popleft()
+        nxt = successor(*cur)
+        if nxt in anchor_set and nxt not in depth:
+            depth[nxt] = depth[cur] + 1
+            q.append(nxt)
+
+    def sort_key(loc):
+        t = tuple(loc)
+        return (0 if t in depth else 1, depth.get(t, 0), t)
+
+    return sorted(anchor_locs, key=sort_key)
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -102,8 +162,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
     diff_locs = [loc for loc in diff_locs if tuple(loc) not in secondary_tiles]
 
-    # Shuffle for diversity
-    random.shuffle(diff_locs)
+    # Place tiles in canonical source->sink flow order rather than a random
+    # shuffle. Random order injects label noise (same partial state -> many
+    # possible "next" targets), capping per-head accuracy below 1.0; flow
+    # order makes the next placement a deterministic function of the state.
+    # See _flow_order for the full rationale + citations.
+    diff_locs = _flow_order(solved_CWH, diff_locs)
 
     state = task_CWH.clone()
     pairs = []
