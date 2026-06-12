@@ -284,8 +284,9 @@ def _artifact_name(args: "SFTArgs") -> str:
 def generate_dataset(args: SFTArgs):
     """Generate SFT dataset from expert demonstrations.
 
-    Samples uniformly across every value of `LessonKind` (auto-discovered),
-    so adding a new lesson kind to the enum is automatically picked up.
+    Samples across the lesson kinds listed in `kinds` below. NOTE: for the
+    current overfit experiment this is pinned to MOVE_ONE_ITEM only; restore
+    `kinds = list(LessonKind)` for full-mix training.
     Per-kind sample/lesson counts are printed to stdout for visibility.
 
     Also returns a per-pair lesson_seed tensor so callers can split
@@ -294,7 +295,20 @@ def generate_dataset(args: SFTArgs):
     factories across the split).
     """
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
-    kinds = list(LessonKind)
+    # OVERFIT EXPERIMENT: focus exclusively on MOVE_ONE_ITEM (the simplest
+    # lesson) to verify the SFT pipeline can actually drive
+    # val/MOVE_ONE_ITEM/throughput up given enough compute. The other lessons
+    # are deliberately commented out — re-enable them (or restore
+    # `kinds = list(LessonKind)`) to go back to full-mix training.
+    kinds = [
+        LessonKind.MOVE_ONE_ITEM,
+        # LessonKind.SPLITTER_SPLIT,
+        # LessonKind.SPLITTER_MERGE,
+        # LessonKind.ASSEMBLE_1IN_1OUT,
+        # LessonKind.MOVE_VIA_UG_BELT,
+        # LessonKind.ASSEMBLE_2IN_1OUT,
+        # LessonKind.FROM_BLUEPRINT,
+    ]
 
     all_obs = []
     all_tile_idx = []
