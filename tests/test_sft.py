@@ -15,6 +15,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import (
+    DIR_TO_DELTA,
     Channel,
     Direction,
     LessonKind,
@@ -25,6 +26,7 @@ from helpers import (
 from sft import (
     SFTArgs,
     _artifact_name,
+    _flow_order,
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
@@ -34,6 +36,58 @@ from sft import (
     train_sft,
 )
 from ppo import FactorioEnv, AgentCNN, make_env
+
+
+class TestFlowOrder:
+    def _down(self):
+        """The Direction whose delta is (+1, 0) — increasing row = top-down."""
+        return next(
+            d for d in Direction if d != Direction.NONE and DIR_TO_DELTA[d] == (1, 0)
+        )
+
+    def test_single_chain_is_source_to_sink(self):
+        """A MOVE_ONE_ITEM demo places belts as one connected source->sink
+        chain: the first tile extends the source, each next tile extends the
+        previous one."""
+        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=7)
+        assert factory is not None
+        solved = factory.world_CWH
+        task, _ = blank_entities(factory, num_missing_entities=64)
+        pairs = extract_expert_actions(solved, task)
+        H = solved.shape[2]
+        order = [(p[1] // H, p[1] % H) for p in pairs if p[7] == 0]
+        ent = solved[Channel.ENTITIES.value]
+        dch = solved[Channel.DIRECTION.value]
+        sx, sy = (ent == str2ent("source").value).nonzero()[0].tolist()
+        dx, dy = DIR_TO_DELTA[Direction(int(dch[sx, sy]))]
+        assert order[0] == (sx + dx, sy + dy), "first tile must extend the source"
+        for (x, y), nxt in zip(order, order[1:]):
+            ddx, ddy = DIR_TO_DELTA[Direction(int(dch[x, y]))]
+            assert (x + ddx, y + ddy) == nxt, "each tile must extend the previous"
+
+    def test_branch_breaks_ties_top_down_left_right(self):
+        """When several tiles are simultaneously placeable, _flow_order takes
+        the top-most then left-most one (raster order)."""
+        nchan = max(c.value for c in Channel) + 1
+        H = W = 4
+        world = torch.zeros((nchan, W, H))
+        down = self._down().value
+        src = str2ent("source").value
+        belt = str2ent("transport_belt").value
+        e, dr = Channel.ENTITIES.value, Channel.DIRECTION.value
+        # two parallel downward chains rooted at sources in cols 0 and 2
+        for col in (0, 2):
+            world[e, 0, col] = src
+            world[dr, 0, col] = down
+            for row in (1, 2):
+                world[e, row, col] = belt
+                world[dr, row, col] = down
+        anchors = [[2, 2], [1, 2], [2, 0], [1, 0]]  # scrambled input order
+        order = [tuple(o) for o in _flow_order(world, anchors)]
+        # frontier at each step, top-down then left-right:
+        #   {(1,0),(1,2)} -> (1,0); {(1,2),(2,0)} -> (1,2);
+        #   {(2,0),(2,2)} -> (2,0); {(2,2)} -> (2,2)
+        assert order == [(1, 0), (1, 2), (2, 0), (2, 2)]
 
 
 class TestExtractExpertActions:

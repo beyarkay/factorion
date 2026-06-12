@@ -43,27 +43,35 @@ from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
 def _flow_order(solved_CWH, anchor_locs):
-    """Order anchor tiles in canonical source->sink flow order.
+    """Order anchor tiles by walking the flow graph, tie-broken top-down then
+    left-right.
 
     Each placeable tile's DIRECTION channel points downstream (to the cell
-    items flow into). Starting from the cell(s) each source points into, we
-    BFS along these successor links and record a flow depth; anchors are then
-    returned sorted by ``(reached, depth, raster)`` so the expert demo places
-    tiles start-to-finish along the belt instead of in a random order.
+    items flow into), so the layout is a graph rooted at the source(s). A tile
+    becomes *placeable* once the tile feeding into it (its flow predecessor) is
+    already placed; among all currently-placeable tiles we always take the one
+    that is top-most then left-most (raster ``(row, col)`` order). Every
+    intermediate state is therefore a connected prefix of the finished layout —
+    exactly what the policy sees when it builds in order — and the next
+    placement is a deterministic function of the state.
 
     Why: a random placement order makes the *same* partial state map to
     *different* next-targets across samples — irreducible label noise that
-    caps per-head accuracy (esp. direction) below 1.0. A canonical flow order
-    makes the next placement a deterministic function of the current state,
-    which the model can fit, and which the literature (Vinyals "Order
-    Matters"; GraphRNN's BFS ordering; PolyGen) shows is far more learnable
-    than an arbitrary linearization.
+    caps per-head accuracy (esp. direction) below 1.0. This canonical order
+    removes that noise, and the literature (Vinyals "Order Matters"; GraphRNN's
+    BFS ordering; PolyGen) shows a fixed structure-respecting order is far more
+    learnable than an arbitrary linearization.
 
-    Anchors not reachable from a source (e.g. malformed factories, or
-    non-belt lessons whose anchor cell isn't the flow-entry tile) are appended
-    afterwards in raster order, so no placement is ever dropped.
+    For a single belt chain (MOVE_ONE_ITEM) the frontier is always one tile, so
+    this is just source->sink order; the raster tiebreak only bites when
+    several tiles are placeable at once (multiple sources, disconnected
+    components, or a branch). Anchors never reached from a source (malformed
+    layouts, or multi-output entities like splitters whose extra outputs the
+    single DIRECTION pointer doesn't follow) are appended afterwards in raster
+    order so nothing is dropped — those multi-output lessons still need richer
+    handling here before being re-enabled.
     """
-    from collections import deque
+    import heapq
 
     ent = solved_CWH[Channel.ENTITIES.value]
     dch = solved_CWH[Channel.DIRECTION.value]
@@ -78,25 +86,41 @@ def _flow_order(solved_CWH, anchor_locs):
         dx, dy = DIR_TO_DELTA[Direction(d)]
         return (x + dx, y + dy)
 
-    depth: dict[tuple[int, int], int] = {}
-    q: deque[tuple[int, int]] = deque()
-    for sx, sy in (ent == src_val).nonzero(as_tuple=False).tolist():
-        nxt = successor(sx, sy)
-        if nxt in anchor_set and nxt not in depth:
-            depth[nxt] = 0
-            q.append(nxt)
-    while q:
-        cur = q.popleft()
-        nxt = successor(*cur)
-        if nxt in anchor_set and nxt not in depth:
-            depth[nxt] = depth[cur] + 1
-            q.append(nxt)
+    # Flow predecessor of each anchor = the source/anchor cell pointing into it,
+    # found by inverting `successor` over the sources and anchors.
+    pred: dict[tuple[int, int], tuple[int, int]] = {}
+    sources = [tuple(s) for s in (ent == src_val).nonzero(as_tuple=False).tolist()]
+    for cx, cy in sources + list(anchor_set):
+        nxt = successor(cx, cy)
+        if nxt in anchor_set:
+            pred[nxt] = (cx, cy)
 
-    def sort_key(loc):
-        t = tuple(loc)
-        return (0 if t in depth else 1, depth.get(t, 0), t)
+    # Frontier = anchors whose predecessor is already placed. Seed it with the
+    # anchors fed directly by a source (predecessor isn't itself a blanked
+    # anchor). The min-heap pops in (row, col) order = top-down then left-right.
+    placed: set[tuple[int, int]] = set()
+    frontier: list[tuple[int, int]] = []
+    for a in anchor_set:
+        p = pred.get(a)
+        if p is None or p not in anchor_set:
+            heapq.heappush(frontier, a)
 
-    return sorted(anchor_locs, key=sort_key)
+    order: list[list[int]] = []
+    while frontier:
+        a = heapq.heappop(frontier)
+        if a in placed:
+            continue
+        placed.add(a)
+        order.append(list(a))
+        nxt = successor(*a)
+        if nxt in anchor_set and nxt not in placed and pred.get(nxt) == a:
+            heapq.heappush(frontier, nxt)
+
+    # Anything unreachable from a source -> raster order, so nothing is dropped.
+    for a in sorted(anchor_set):
+        if a not in placed:
+            order.append(list(a))
+    return order
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
