@@ -80,7 +80,7 @@ echo ">>> Starting SFT smoke test (${NUM_SAMPLES} samples, ${EPOCHS} epochs)..."
 
 python sft.py \
     --seed 1 \
-    --size 17 \
+    --size 11 \
     --num-samples "$NUM_SAMPLES" \
     --epochs "$EPOCHS" \
     --track \
