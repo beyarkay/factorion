@@ -193,9 +193,7 @@ DIR_TO_DELTA = {
 
 
 def b64_to_dict(blueprint_string):
-    decoded = base64.b64decode(
-        blueprint_string.strip()[1:]
-    )  # Skip the version byte
+    decoded = base64.b64decode(blueprint_string.strip()[1:])  # Skip the version byte
     json_data = zlib.decompress(decoded).decode("utf-8")
     return json.loads(json_data)
 
@@ -209,9 +207,7 @@ def dict2b64(dictionary):
 
 def str2item(s):
     assert s is not None, "input cannot be None"
-    return next(
-        (v for k, v in items.items() if v.name == s.replace("-", "_")), None
-    )
+    return next((v for k, v in items.items() if v.name == s.replace("-", "_")), None)
 
 
 def str2ent(s):
@@ -302,9 +298,7 @@ def world2html(world_WHC, highlights=None):
     (overrides the default unavailable-footprint shading). Useful for
     visualising diffs, model predictions, etc.
     """
-    assert len(world_WHC.shape) == 3, (
-        f"Expected 3 dimensions got {world_WHC.shape}"
-    )
+    assert len(world_WHC.shape) == 3, f"Expected 3 dimensions got {world_WHC.shape}"
     assert world_WHC.shape[0] == world_WHC.shape[1], (
         f"Expected square got {world_WHC.shape}"
     )
@@ -334,7 +328,9 @@ def world2html(world_WHC, highlights=None):
             if proto.width == 1 and proto.height == 1:
                 continue
             d_val = world_WHC[x, y, Channel.DIRECTION.value]
-            tile_list = factorion_rs.py_entity_tiles(x, y, int(d_val), proto.width, proto.height)
+            tile_list = factorion_rs.py_entity_tiles(
+                x, y, int(d_val), proto.width, proto.height
+            )
             if tile_list is None:
                 continue
             anchor = tuple(tile_list[0])
@@ -406,8 +402,7 @@ def world2html(world_WHC, highlights=None):
 
             #             print(direction_arrow, direction)
             available = (
-                world_WHC[x, y, Channel.FOOTPRINT.value]
-                == Footprint.AVAILABLE.value
+                world_WHC[x, y, Channel.FOOTPRINT.value] == Footprint.AVAILABLE.value
             )
             if highlights and (x, y) in highlights:
                 bg_style = f"background: {highlights[(x, y)]};"
@@ -453,8 +448,14 @@ def world2html(world_WHC, highlights=None):
             def _border_css(prefix, color):
                 return "; ".join(
                     f"border-{side}: 1px solid {'transparent' if hide else color}"
-                    for side, hide in (("top", hide_n), ("right", hide_e), ("bottom", hide_s), ("left", hide_w))
+                    for side, hide in (
+                        ("top", hide_n),
+                        ("right", hide_e),
+                        ("bottom", hide_s),
+                        ("left", hide_w),
+                    )
                 )
+
             td_border_css = _border_css("td", "black")
             div_border_css = _border_css("div", "grey")
 
@@ -469,9 +470,7 @@ def world2html(world_WHC, highlights=None):
     <div style=' position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);  font-size: 20px; font-weight: bold; color: white; '>{underground_symbol}</div>
 </div>
             """
-            html.append(
-                f"<td style='{td_border_css}; padding: 0;'>{cell_content}</td>"
-            )
+            html.append(f"<td style='{td_border_css}; padding: 0;'>{cell_content}</td>")
         html.append("</tr>")
     html.append("</table>")
     return Html("".join(html))
@@ -508,9 +507,7 @@ def _parse_combinator_marker(e):
     arrow virtual signal (`up/right/down/left-arrow` → direction).
     Returns (role, item_name, direction) or None if the combinator
     isn't a recognized marker."""
-    sections = (
-        e.get("control_behavior", {}).get("sections", {}).get("sections", [])
-    )
+    sections = e.get("control_behavior", {}).get("sections", {}).get("sections", [])
     if not sections:
         return None
     filters = sections[0].get("filters", [])
@@ -566,10 +563,7 @@ def blueprint2world(bp):
         if name == "constant-combinator":
             parsed = _parse_combinator_marker(e)
             if parsed is None:
-                print(
-                    f"WARN: skipping unrecognized constant-combinator at "
-                    f"({cx},{cy})"
-                )
+                print(f"WARN: skipping unrecognized constant-combinator at ({cx},{cy})")
                 continue
             role, item_name, model_dir = parsed
             ent_name = "stack_inserter" if role == "source" else "bulk_inserter"
@@ -623,9 +617,7 @@ def blueprint2world(bp):
         elif e.get("type") == "output":
             misc = Misc.UNDERGROUND_UP
 
-        placements.append(
-            (proto.name, tlx, tly, w, h, model_dir, item_val, misc)
-        )
+        placements.append((proto.name, tlx, tly, w, h, model_dir, item_val, misc))
 
     if not placements:
         raise ValueError("blueprint contains no recognized entities")
@@ -682,10 +674,14 @@ def read_blueprint_file(path):
 # Direction enum has NONE=0 plus NORTH=1, EAST=2, SOUTH=3, WEST=4 —
 # entries omitted from the maps stay put (NONE is unchanged by either
 # flip, N/S are unchanged by horizontal flip, E/W by vertical).
-_DIR_FLIP_H = {Direction.EAST.value: Direction.WEST.value,
-               Direction.WEST.value: Direction.EAST.value}
-_DIR_FLIP_V = {Direction.NORTH.value: Direction.SOUTH.value,
-               Direction.SOUTH.value: Direction.NORTH.value}
+_DIR_FLIP_H = {
+    Direction.EAST.value: Direction.WEST.value,
+    Direction.WEST.value: Direction.EAST.value,
+}
+_DIR_FLIP_V = {
+    Direction.NORTH.value: Direction.SOUTH.value,
+    Direction.SOUTH.value: Direction.NORTH.value,
+}
 
 
 def _flip_world(world_CWH, axis):
@@ -737,7 +733,8 @@ def _substitute_gears_recipe(world_CWH):
     Caller must have already verified eligibility via
     :func:`_is_gears_factory`."""
     one_in_one_out = [
-        (name, r) for name, r in recipes.items()
+        (name, r)
+        for name, r in recipes.items()
         if len(r.consumes) == 1 and len(r.produces) == 1
     ]
     if not one_in_one_out:
@@ -847,10 +844,7 @@ def _extend_belt_chains(world_CWH):
     item_ch = out[Channel.ITEMS.value]
 
     markers = [
-        (x, y)
-        for x in range(W)
-        for y in range(H)
-        if int(ent_ch[x, y]) in marker_ids
+        (x, y) for x in range(W) for y in range(H) if int(ent_ch[x, y]) in marker_ids
     ]
     random.shuffle(markers)
 
@@ -961,9 +955,7 @@ def plot_loss_history(loss_history):
     for k in loss_history[-1].keys():
         fig.add_trace(
             go.Scatter(
-                x=list(
-                    range(len(loss_history))
-                ),  # X-axis: range of iterations
+                x=list(range(len(loss_history))),  # X-axis: range of iterations
                 y=[
                     float(v[k]) if k in v else np.nan for v in loss_history
                 ],  # Y-axis: values for the current key
@@ -985,12 +977,8 @@ def plot_loss_history(loss_history):
 
 
 def normalise_world(world_T, og_world):
-    assert torch.is_tensor(world_T), (
-        f"world_T is {type(world_T)}, not a tensor"
-    )
-    assert torch.is_tensor(og_world), (
-        f"og_world is {type(og_world)}, not a tensor"
-    )
+    assert torch.is_tensor(world_T), f"world_T is {type(world_T)}, not a tensor"
+    assert torch.is_tensor(og_world), f"og_world is {type(og_world)}, not a tensor"
     assert len(world_T.shape) == 3, (
         f"Expected world_T to have 3 dimensions, but is of shape {world_T.shape}"
     )
@@ -1009,32 +997,21 @@ def normalise_world(world_T, og_world):
     bulk_inserter_mask = (
         world_T[:, :, Channel.ENTITIES.value] == str2ent("bulk_inserter").value
     )
-    world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = (
-        empty_entity_value
-    )
+    world_T[:, :, Channel.ENTITIES.value][bulk_inserter_mask] = empty_entity_value
 
     stack_inserter_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("stack_inserter").value
+        world_T[:, :, Channel.ENTITIES.value] == str2ent("stack_inserter").value
     )
-    world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = (
-        empty_entity_value
-    )
+    world_T[:, :, Channel.ENTITIES.value][stack_inserter_mask] = empty_entity_value
 
     green_circ_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("electronic_circuit").value
+        world_T[:, :, Channel.ENTITIES.value] == str2ent("electronic_circuit").value
     )
     world_T[:, :, Channel.ENTITIES.value][green_circ_mask] = empty_entity_value
 
     # Remove all transport belts without direction
-    belt_mask = (
-        world_T[:, :, Channel.ENTITIES.value]
-        == str2ent("transport_belt").value
-    )
-    no_direction_mask = (
-        world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
-    )
+    belt_mask = world_T[:, :, Channel.ENTITIES.value] == str2ent("transport_belt").value
+    no_direction_mask = world_T[:, :, Channel.DIRECTION.value] == Direction.NONE.value
     world_T[:, :, Channel.ENTITIES.value][belt_mask & no_direction_mask] = (
         empty_entity_value
     )
@@ -1052,9 +1029,7 @@ def normalise_world(world_T, og_world):
     # Ensure the model can't just overwrite existing factories with a simpler thing.
     tworld = og_world.clone().detach().to(torch.int64)
     # tworld = torch.tensor(og_world, dtype=torch.int64)
-    original_had_something = (
-        tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
-    )
+    original_had_something = tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
     for ch in list(Channel):
         replacements = tworld[:, :, ch.value][original_had_something]
         world_T[:, :, ch.value][original_had_something] = replacements
@@ -1062,24 +1037,18 @@ def normalise_world(world_T, og_world):
 
 
 def get_min_belts(world_CWH):
-    assert world_CWH.shape[1] == world_CWH.shape[2], (
-        "Wrong shape: {world_CWH.shape}"
-    )
+    assert world_CWH.shape[1] == world_CWH.shape[2], "Wrong shape: {world_CWH.shape}"
     C, W, H = world_CWH.shape
 
     stack_inserter_id = str2ent("stack_inserter").value
     bulk_inserter_id = str2ent("bulk_inserter").value
-    coords1 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == bulk_inserter_id
-    )
+    coords1 = torch.where(world_CWH[Channel.ENTITIES.value] == bulk_inserter_id)
     assert len(coords1[0]) == len(coords1[1]) == 1, (
         f"Expected 1 bulk inserter, found {coords1} in world {world_CWH}"
     )
     w1, h1 = coords1[0][0], coords1[1][0]
 
-    coords2 = torch.where(
-        world_CWH[Channel.ENTITIES.value] == stack_inserter_id
-    )
+    coords2 = torch.where(world_CWH[Channel.ENTITIES.value] == stack_inserter_id)
     assert len(coords2[0]) == len(coords2[1]) == 1, (
         f"Expected 1 stack inserter, found {coords2} in world {world_CWH}"
     )
@@ -1192,9 +1161,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
     for seed in iterator:
         original_world = get_new_world(seed, n=4)
         probabilities = actor(original_world)
-        normalised_world = normalise_world(
-            sample_world(probabilities), original_world
-        )
+        normalised_world = normalise_world(sample_world(probabilities), original_world)
         # value = critic(normalised_world)
         value = critic(normalised_world.to(torch.float))
         # Maybe having throughput being calculated as a black box is the problem?
@@ -1203,8 +1170,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
             dtype=value.dtype,
         )
         num_entities = (
-            normalised_world[:, :, Channel.ENTITIES.value]
-            != str2ent("empty").value
+            normalised_world[:, :, Channel.ENTITIES.value] != str2ent("empty").value
         ).sum()
         evals.append(
             {
@@ -1217,9 +1183,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         )
 
     avg_throughput = sum([eval["throughput"] for eval in evals]) / len(evals)
-    avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(
-        evals
-    )
+    avg_num_entities = sum([eval["num_entities"] for eval in evals]) / len(evals)
 
     return evals, avg_throughput, float(avg_num_entities)
 
@@ -1233,9 +1197,7 @@ def funge_throughput(world, debug=False):
 
 
 def world2graph(world_WHC, debug=False):
-    assert torch.is_tensor(world_WHC), (
-        f"world is {type(world_WHC)}, not a tensor"
-    )
+    assert torch.is_tensor(world_WHC), f"world is {type(world_WHC)}, not a tensor"
     assert len(world_WHC.shape) == 3, (
         f"Expected world to have 3 dimensions, but is of shape {world_WHC.shape}"
     )
@@ -1339,13 +1301,13 @@ def world2graph(world_WHC, debug=False):
                     )
                     src_not_empty = src_entity.name != "empty"
                     if src_not_empty:
-                        pending_edges.append((
-                            f"{src_entity.name}\n@{src[0]},{src[1]}",
-                            f"{e.name}\n@{x},{y}",
-                        ))
-                        dbg(
-                            f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
+                        pending_edges.append(
+                            (
+                                f"{src_entity.name}\n@{src[0]},{src[1]}",
+                                f"{e.name}\n@{x},{y}",
+                            )
                         )
+                        dbg(f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}")
                 if x_dst_valid and y_dst_valid:
                     dst_entity = entities[
                         world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
@@ -1358,13 +1320,13 @@ def world2graph(world_WHC, debug=False):
                         or "assembling_machine" in dst_entity.name
                     )
                     if dst_is_insertable:
-                        pending_edges.append((
-                            f"{e.name}\n@{x},{y}",
-                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                        ))
-                        dbg(
-                            f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}"
+                        pending_edges.append(
+                            (
+                                f"{e.name}\n@{x},{y}",
+                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                            )
                         )
+                        dbg(f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}")
 
             elif "transport_belt" in e.name:
                 if x_src_valid and y_src_valid:
@@ -1374,9 +1336,7 @@ def world2graph(world_WHC, debug=False):
                     src_direction = Direction(
                         world_WHC[src[0], src[1], Channel.DIRECTION.value]
                     )
-                    src_misc = Misc(
-                        world_WHC[src[0], src[1], Channel.MISC.value]
-                    )
+                    src_misc = Misc(world_WHC[src[0], src[1], Channel.MISC.value])
                     src_is_beltish = (
                         "belt" in src_entity.name
                         # Check the other belt is directly behind me and
@@ -1389,10 +1349,12 @@ def world2graph(world_WHC, debug=False):
                         )
                     )
                     if src_is_beltish:
-                        pending_edges.append((
-                            f"{src_entity.name}\n@{src[0]},{src[1]}",
-                            f"{e.name}\n@{x},{y}",
-                        ))
+                        pending_edges.append(
+                            (
+                                f"{src_entity.name}\n@{src[0]},{src[1]}",
+                                f"{e.name}\n@{x},{y}",
+                            )
+                        )
                         dbg(
                             f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}",
                         )
@@ -1404,15 +1366,12 @@ def world2graph(world_WHC, debug=False):
                     dst_direction = Direction(
                         world_WHC[dst[0], dst[1], Channel.DIRECTION.value]
                     )
-                    dst_misc = Misc(
-                        world_WHC[dst[0], dst[1], Channel.MISC.value]
-                    )
+                    dst_misc = Misc(world_WHC[dst[0], dst[1], Channel.MISC.value])
                     dst_not_empty = dst_entity.name != "empty"
                     dst_is_belt = "belt" in dst_entity.name
                     opposite = Direction.SOUTH.value - Direction.NORTH.value
                     dst_opposing_belt = (
-                        dst_is_belt
-                        and abs(dst_direction.value - d.value) == opposite
+                        dst_is_belt and abs(dst_direction.value - d.value) == opposite
                     )
                     # various underground belt checks
                     # TODO figure out these checks
@@ -1423,15 +1382,13 @@ def world2graph(world_WHC, debug=False):
                         #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
                         # )
                     )
-                    if (
-                        dst_is_belt
-                        and not dst_opposing_belt
-                        and dest_underground_ok
-                    ):
-                        pending_edges.append((
-                            f"{e.name}\n@{x},{y}",
-                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                        ))
+                    if dst_is_belt and not dst_opposing_belt and dest_underground_ok:
+                        pending_edges.append(
+                            (
+                                f"{e.name}\n@{x},{y}",
+                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                            )
+                        )
                         dbg(
                             f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}",
                         )
@@ -1533,10 +1490,12 @@ def world2graph(world_WHC, debug=False):
                             and m == Misc.UNDERGROUND_UP
                         )
                         if going_underground or cxn_to_belt:
-                            pending_edges.append((
-                                f"{e.name}\n@{x},{y}",
-                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            ))
+                            pending_edges.append(
+                                (
+                                    f"{e.name}\n@{x},{y}",
+                                    f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
+                                )
+                            )
             elif "splitter" in e.name:
                 tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
                 if tiles is None:
@@ -1567,14 +1526,17 @@ def world2graph(world_WHC, debug=False):
                         # Only accept belt-like entities or sources/sinks
                         # pointing in the same direction as the splitter
                         in_is_belt = "belt" in in_ent.name and in_dir == d
-                        in_is_source_sink = in_ent.name in (
-                            "stack_inserter", "bulk_inserter"
-                        ) and in_dir == d
+                        in_is_source_sink = (
+                            in_ent.name in ("stack_inserter", "bulk_inserter")
+                            and in_dir == d
+                        )
                         if in_is_belt or in_is_source_sink:
-                            pending_edges.append((
-                                f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
-                                self_name,
-                            ))
+                            pending_edges.append(
+                                (
+                                    f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
+                                    self_name,
+                                )
+                            )
 
                     # Output: cell ahead of this tile
                     out_cell = (tx + dx, ty + dy)
@@ -1584,26 +1546,25 @@ def world2graph(world_WHC, debug=False):
                         and out_cell not in tiles
                     ):
                         out_ent = entities[
-                            world_WHC[
-                                out_cell[0], out_cell[1], Channel.ENTITIES.value
-                            ]
+                            world_WHC[out_cell[0], out_cell[1], Channel.ENTITIES.value]
                         ]
                         out_dir = Direction(
-                            world_WHC[
-                                out_cell[0], out_cell[1], Channel.DIRECTION.value
-                            ]
+                            world_WHC[out_cell[0], out_cell[1], Channel.DIRECTION.value]
                         )
                         # Only connect to belt-like entities or sinks,
                         # not facing the opposite direction
                         out_is_belt = "belt" in out_ent.name
                         out_is_sink = out_ent.name in (
-                            "stack_inserter", "bulk_inserter"
+                            "stack_inserter",
+                            "bulk_inserter",
                         )
                         if (out_is_belt or out_is_sink) and out_dir != opposite_dir:
-                            pending_edges.append((
-                                self_name,
-                                f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
-                            ))
+                            pending_edges.append(
+                                (
+                                    self_name,
+                                    f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
+                                )
+                            )
 
             else:
                 assert False, f"Don't know how to handle {e.name} at {x} {y}"
@@ -1661,7 +1622,9 @@ def _remove_entities(
             if ent.width == 1 and ent.height == 1:
                 continue
             d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
-            tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
+            tiles_list = factorion_rs.py_entity_tiles(
+                x, y, d_val, ent.width, ent.height
+            )
             if tiles_list is not None:
                 for tx, ty in tiles_list:
                     if (tx, ty) != (x, y):
@@ -1681,8 +1644,12 @@ def _remove_entities(
                 group = {(x, y)}
             else:
                 d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
-                tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
-                group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
+                tiles_list = factorion_rs.py_entity_tiles(
+                    x, y, d_val, ent.width, ent.height
+                )
+                group = (
+                    set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
+                )
             if group & protected_positions:
                 continue
             entity_groups.append(group)
@@ -1700,6 +1667,29 @@ def _remove_entities(
             world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
 
     return num_samples
+
+
+# Move-direction priority for the canonical MOVE_ONE_ITEM path (derisk
+# experiment to remove multiple-shortest-path ambiguity): North > East > South
+# > West. Keyed by (drow, dcol) so it is independent of the Direction enum's
+# names; row 0 is the top, so North == row-decreasing == (-1, 0).
+_MOVE_PRIORITY = {(-1, 0): 0, (0, 1): 1, (1, 0): 2, (0, -1): 3}
+
+
+def _canonical_path_key(path):
+    """Sort key selecting the single canonical belt path.
+
+    ``path`` is a list of ``(row, col, Direction)`` belt placements. The key is
+    the sequence of move-direction priorities (North>East>South>West) between
+    consecutive cells, so ``min(paths, key=_canonical_path_key)`` over the
+    equal-length shortest paths returns the lexicographically-smallest one — go
+    as far North as needed, then East, then South, then West, never
+    backtracking.
+    """
+    return [
+        _MOVE_PRIORITY[(x2 - x1, y2 - y1)]
+        for (x1, y1, _), (x2, y2, _) in zip(path, path[1:])
+    ]
 
 
 def build_factory(
@@ -1741,9 +1731,7 @@ def build_factory(
         torch.manual_seed(seed)
     total_entities: int = 0
     protected_positions: frozenset = frozenset()
-    world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
-        2, 0, 1
-    )
+    world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
     C, W, H = world_CWH.shape
     # No idea why, but there doing kind == LessonKind.MOVE_ONE_ITEM doesn't evaluate to true...
     if kind.value == LessonKind.MOVE_ONE_ITEM.value:
@@ -1762,12 +1750,8 @@ def build_factory(
 
             source_WH = divmod(pos1.item(), W)
             sink_WH = divmod(pos2.item(), W)
-            source_dir = random.choice(
-                [d for d in Direction if d != Direction.NONE]
-            )
-            sink_dir = random.choice(
-                [d for d in Direction if d != Direction.NONE]
-            )
+            source_dir = random.choice([d for d in Direction if d != Direction.NONE])
+            sink_dir = random.choice([d for d in Direction if d != Direction.NONE])
 
             if random_item:
                 item_value = random.choice(
@@ -1776,24 +1760,20 @@ def build_factory(
             else:
                 item_value = str2item("electronic_circuit").value
 
-            world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
-                str2ent("source").value
-            )
-            world_CWH[Channel.ENTITIES.value, sink_WH[0], sink_WH[1]] = (
-                str2ent("sink").value
-            )
+            world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = str2ent(
+                "source"
+            ).value
+            world_CWH[Channel.ENTITIES.value, sink_WH[0], sink_WH[1]] = str2ent(
+                "sink"
+            ).value
 
-            world_CWH[Channel.ITEMS.value, source_WH[0], source_WH[1]] = (
-                item_value
-            )
+            world_CWH[Channel.ITEMS.value, source_WH[0], source_WH[1]] = item_value
             world_CWH[Channel.ITEMS.value, sink_WH[0], sink_WH[1]] = item_value
 
             world_CWH[Channel.DIRECTION.value, source_WH[0], source_WH[1]] = (
                 source_dir.value
             )
-            world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
-                sink_dir.value
-            )
+            world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = sink_dir.value
             # print(world_CWH)
             # print(f"world so far: ")
             # print(world_CWH[0])
@@ -1808,14 +1788,22 @@ def build_factory(
             # print('filtered paths', len(paths))
 
             if len(paths) == 0:
-                world_CWH = torch.tensor(
-                    new_world(width=size, height=size)
-                ).permute(2, 0, 1)
+                world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                    2, 0, 1
+                )
                 # Restart the loop until we get a source+sink that can be connected
                 continue
             else:
-                # Choose a valid path at random and add it to the map
-                chosen_path = random.choice(paths)
+                # DERISK EXPERIMENT: pick the single canonical path instead of a
+                # random one, so each (source, sink) has exactly ONE valid
+                # MOVE_ONE_ITEM completion and the direction target is
+                # unambiguous. Canonical = exhaust North, then East, then South,
+                # then West, never backtracking (see _canonical_path_key). If
+                # this makes loss_dir plummet, multiple-shortest-path ambiguity
+                # was the dir_acc ceiling. To restore path diversity later,
+                # revert to random.choice(paths) or move to a multi-target
+                # direction loss that rewards any valid path.
+                chosen_path = min(paths, key=_canonical_path_key)
                 total_entities = len(chosen_path)
                 for x, y, d in chosen_path:
                     world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
@@ -1842,7 +1830,9 @@ def build_factory(
 
         while count > 0:
             count -= 1
-            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
             C, W, H = world_CWH.shape
 
             dirs = [d for d in Direction if d != Direction.NONE]
@@ -1853,8 +1843,12 @@ def build_factory(
             for _ in range(20):
                 sx = random.randint(0, W - 1)
                 sy = random.randint(0, H - 1)
-                tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
-                if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
+                tiles = factorion_rs.py_entity_tiles(
+                    sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height
+                )
+                if tiles is not None and all(
+                    0 <= tx < W and 0 <= ty < H for tx, ty in tiles
+                ):
                     break
                 tiles = None
             if tiles is None:
@@ -1881,7 +1875,9 @@ def build_factory(
 
             # Pick 1 source and 2 sinks at random positions (avoiding splitter tiles and I/O cells)
             reserved = tile_set | set(all_io)
-            available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
+            available = [
+                (x, y) for x in range(W) for y in range(H) if (x, y) not in reserved
+            ]
             if len(available) < 3:
                 continue
 
@@ -1921,14 +1917,32 @@ def build_factory(
             # Also block the unused input cell AND the cell behind it to
             # prevent sideloading into the splitter's unused input.
             blocked_base = all_fixed
-            unused_input_buffer_0 = (input_cells[0][0] - d_delta[0], input_cells[0][1] - d_delta[1])
-            unused_input_buffer_1 = (input_cells[1][0] - d_delta[0], input_cells[1][1] - d_delta[1])
+            unused_input_buffer_0 = (
+                input_cells[0][0] - d_delta[0],
+                input_cells[0][1] - d_delta[1],
+            )
+            unused_input_buffer_1 = (
+                input_cells[1][0] - d_delta[0],
+                input_cells[1][1] - d_delta[1],
+            )
 
-            blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
-            path1 = find_belt_path(W, H, source_output, input_cells[0], splitter_dir, blocked1)
+            blocked1 = (
+                blocked_base
+                | set(output_cells)
+                | {sink1_input, sink2_input, input_cells[1], unused_input_buffer_1}
+            )
+            path1 = find_belt_path(
+                W, H, source_output, input_cells[0], splitter_dir, blocked1
+            )
             if path1 is None:
-                blocked1 = blocked_base | set(output_cells) | {sink1_input, sink2_input, input_cells[0], unused_input_buffer_0}
-                path1 = find_belt_path(W, H, source_output, input_cells[1], splitter_dir, blocked1)
+                blocked1 = (
+                    blocked_base
+                    | set(output_cells)
+                    | {sink1_input, sink2_input, input_cells[0], unused_input_buffer_0}
+                )
+                path1 = find_belt_path(
+                    W, H, source_output, input_cells[1], splitter_dir, blocked1
+                )
                 if path1 is None:
                     continue
 
@@ -1956,15 +1970,44 @@ def build_factory(
             path2 = None
             path3 = None
             for out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir in [
-                (output_cells[0], output_cells[1], sink1_input, sink1_dir, sink2_input, sink2_dir),
-                (output_cells[0], output_cells[1], sink2_input, sink2_dir, sink1_input, sink1_dir),
+                (
+                    output_cells[0],
+                    output_cells[1],
+                    sink1_input,
+                    sink1_dir,
+                    sink2_input,
+                    sink2_dir,
+                ),
+                (
+                    output_cells[0],
+                    output_cells[1],
+                    sink2_input,
+                    sink2_dir,
+                    sink1_input,
+                    sink1_dir,
+                ),
             ]:
-                blocked2 = blocked_base | path1_cells | {sk_b, out_b} | set(input_cells) | unused_block | sink_buffers
+                blocked2 = (
+                    blocked_base
+                    | path1_cells
+                    | {sk_b, out_b}
+                    | set(input_cells)
+                    | unused_block
+                    | sink_buffers
+                )
                 p2 = find_belt_path(W, H, out_a, sk_a, sk_a_dir, blocked2)
                 if p2 is None:
                     continue
                 p2_cells = {(x, y) for x, y, _ in p2}
-                blocked3 = blocked_base | path1_cells | p2_cells | {out_a} | set(input_cells) | unused_block | sink_buffers
+                blocked3 = (
+                    blocked_base
+                    | path1_cells
+                    | p2_cells
+                    | {out_a}
+                    | set(input_cells)
+                    | unused_block
+                    | sink_buffers
+                )
                 p3 = find_belt_path(W, H, out_b, sk_b, sk_b_dir, blocked3)
                 if p3 is not None:
                     path2, path3 = p2, p3
@@ -1975,18 +2018,28 @@ def build_factory(
             path2_cells = {(x, y) for x, y, _ in path2}
 
             # Enforce max_entities
-            total_entities = len(path1) + len(path2) + len(path3) + 1  # +1 for splitter (2 tiles but 1 entity)
+            total_entities = (
+                len(path1) + len(path2) + len(path3) + 1
+            )  # +1 for splitter (2 tiles but 1 entity)
             if total_entities > max_entities:
                 continue
 
             # Place source and sinks
-            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent("source").value
-            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = source_dir.value
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent(
+                "source"
+            ).value
+            world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
+                source_dir.value
+            )
             world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
 
             for sink_pos, sink_dir in [(sink1_pos, sink1_dir), (sink2_pos, sink2_dir)]:
-                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
-                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
+                world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent(
+                    "sink"
+                ).value
+                world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                    sink_dir.value
+                )
                 world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
             # Place splitter (all tiles)
@@ -1996,7 +2049,9 @@ def build_factory(
 
             # Place belt paths
             for x, y, d in path1 + path2 + path3:
-                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
@@ -2039,7 +2094,9 @@ def build_factory(
 
         while count > 0:
             count -= 1
-            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(2, 0, 1)
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
             C, W, H = world_CWH.shape
 
             dirs = [d for d in Direction if d != Direction.NONE]
@@ -2050,8 +2107,12 @@ def build_factory(
             for _ in range(20):
                 sx = random.randint(0, W - 1)
                 sy = random.randint(0, H - 1)
-                tiles = factorion_rs.py_entity_tiles(sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height)
-                if tiles is not None and all(0 <= tx < W and 0 <= ty < H for tx, ty in tiles):
+                tiles = factorion_rs.py_entity_tiles(
+                    sx, sy, splitter_dir.value, splitter_ent.width, splitter_ent.height
+                )
+                if tiles is not None and all(
+                    0 <= tx < W and 0 <= ty < H for tx, ty in tiles
+                ):
                     break
                 tiles = None
             if tiles is None:
@@ -2071,7 +2132,9 @@ def build_factory(
 
             # Pick 2 sources and 1 sink
             reserved = tile_set | set(all_io)
-            available = [(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]
+            available = [
+                (x, y) for x in range(W) for y in range(H) if (x, y) not in reserved
+            ]
             if len(available) < 3:
                 continue
 
@@ -2105,21 +2168,37 @@ def build_factory(
 
             # Path 1: source1 output → splitter input 0
             blocked_base = all_fixed
-            blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[1]}
-            path1 = find_belt_path(W, H, source1_output, input_cells[0], splitter_dir, blocked1)
+            blocked1 = (
+                blocked_base
+                | set(output_cells)
+                | {source2_output, sink_input, input_cells[1]}
+            )
+            path1 = find_belt_path(
+                W, H, source1_output, input_cells[0], splitter_dir, blocked1
+            )
             if path1 is None:
-                blocked1 = blocked_base | set(output_cells) | {source2_output, sink_input, input_cells[0]}
-                path1 = find_belt_path(W, H, source1_output, input_cells[1], splitter_dir, blocked1)
+                blocked1 = (
+                    blocked_base
+                    | set(output_cells)
+                    | {source2_output, sink_input, input_cells[0]}
+                )
+                path1 = find_belt_path(
+                    W, H, source1_output, input_cells[1], splitter_dir, blocked1
+                )
                 if path1 is None:
                     continue
 
             path1_cells = {(x, y) for x, y, _ in path1}
             path1_end = path1[-1][:2]
-            remaining_input = input_cells[1] if path1_end == input_cells[0] else input_cells[0]
+            remaining_input = (
+                input_cells[1] if path1_end == input_cells[0] else input_cells[0]
+            )
 
             # Path 2: source2 output → remaining splitter input
             blocked2 = blocked_base | set(output_cells) | path1_cells | {sink_input}
-            path2 = find_belt_path(W, H, source2_output, remaining_input, splitter_dir, blocked2)
+            path2 = find_belt_path(
+                W, H, source2_output, remaining_input, splitter_dir, blocked2
+            )
             if path2 is None:
                 continue
 
@@ -2128,14 +2207,36 @@ def build_factory(
             # Path 3: splitter output → sink input (try both output cells).
             # Block the unused output cell AND the cell ahead of it to
             # prevent sideloading from the output path into the unused output.
-            unused_output_buffer_0 = (output_cells[0][0] + d_delta[0], output_cells[0][1] + d_delta[1])
-            unused_output_buffer_1 = (output_cells[1][0] + d_delta[0], output_cells[1][1] + d_delta[1])
+            unused_output_buffer_0 = (
+                output_cells[0][0] + d_delta[0],
+                output_cells[0][1] + d_delta[1],
+            )
+            unused_output_buffer_1 = (
+                output_cells[1][0] + d_delta[0],
+                output_cells[1][1] + d_delta[1],
+            )
 
-            blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[1], unused_output_buffer_1}
-            path3 = find_belt_path(W, H, output_cells[0], sink_input, sink_dir, blocked3)
+            blocked3 = (
+                blocked_base
+                | path1_cells
+                | path2_cells
+                | set(input_cells)
+                | {output_cells[1], unused_output_buffer_1}
+            )
+            path3 = find_belt_path(
+                W, H, output_cells[0], sink_input, sink_dir, blocked3
+            )
             if path3 is None:
-                blocked3 = blocked_base | path1_cells | path2_cells | set(input_cells) | {output_cells[0], unused_output_buffer_0}
-                path3 = find_belt_path(W, H, output_cells[1], sink_input, sink_dir, blocked3)
+                blocked3 = (
+                    blocked_base
+                    | path1_cells
+                    | path2_cells
+                    | set(input_cells)
+                    | {output_cells[0], unused_output_buffer_0}
+                )
+                path3 = find_belt_path(
+                    W, H, output_cells[1], sink_input, sink_dir, blocked3
+                )
                 if path3 is None:
                     continue
 
@@ -2144,13 +2245,24 @@ def build_factory(
                 continue
 
             # Place sources and sink
-            for src_pos, src_dir in [(source1_pos, source1_dir), (source2_pos, source2_dir)]:
-                world_CWH[Channel.ENTITIES.value, src_pos[0], src_pos[1]] = str2ent("source").value
-                world_CWH[Channel.DIRECTION.value, src_pos[0], src_pos[1]] = src_dir.value
+            for src_pos, src_dir in [
+                (source1_pos, source1_dir),
+                (source2_pos, source2_dir),
+            ]:
+                world_CWH[Channel.ENTITIES.value, src_pos[0], src_pos[1]] = str2ent(
+                    "source"
+                ).value
+                world_CWH[Channel.DIRECTION.value, src_pos[0], src_pos[1]] = (
+                    src_dir.value
+                )
                 world_CWH[Channel.ITEMS.value, src_pos[0], src_pos[1]] = item_value
 
-            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent("sink").value
-            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = sink_dir.value
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent(
+                "sink"
+            ).value
+            world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
+                sink_dir.value
+            )
             world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
             # Place splitter
@@ -2160,7 +2272,9 @@ def build_factory(
 
             # Place belt paths
             for x, y, d in path1 + path2 + path3:
-                world_CWH[Channel.ENTITIES.value, x, y] = str2ent("transport_belt").value
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
@@ -2241,9 +2355,7 @@ def build_factory(
             # Pick assembler anchor
             ax = random.randint(0, W - 3)
             ay = random.randint(0, H - 3)
-            asm_tiles = {
-                (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
-            }
+            asm_tiles = {(ax + dx, ay + dy) for dx in range(3) for dy in range(3)}
 
             # Pick distinct input + output perimeter slots
             in_slot, out_slot = random.sample(perim_slots, 2)
@@ -2293,10 +2405,7 @@ def build_factory(
             # Pick source + sink positions outside everything reserved
             reserved = asm_tiles | set(key_cells) | all_perim
             available = [
-                (x, y)
-                for x in range(W)
-                for y in range(H)
-                if (x, y) not in reserved
+                (x, y) for x in range(W) for y in range(H) if (x, y) not in reserved
             ]
             if len(available) < 2:
                 continue
@@ -2325,11 +2434,14 @@ def build_factory(
 
             # Path 1: source_output → in_pickup. Last belt orients toward
             # the input inserter.
-            blocked1 = (
-                asm_tiles
-                | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
-                   sink_input, out_drop}
-            )
+            blocked1 = asm_tiles | {
+                in_inserter_pos,
+                out_inserter_pos,
+                source_pos,
+                sink_pos,
+                sink_input,
+                out_drop,
+            }
             path1 = find_belt_path(
                 W, H, source_output, in_pickup, in_inserter_dir, blocked1
             )
@@ -2340,13 +2452,17 @@ def build_factory(
             # Path 2: out_drop → sink_input. Last belt orients toward sink.
             blocked2 = (
                 asm_tiles
-                | {in_inserter_pos, out_inserter_pos, source_pos, sink_pos,
-                   in_pickup, source_output}
+                | {
+                    in_inserter_pos,
+                    out_inserter_pos,
+                    source_pos,
+                    sink_pos,
+                    in_pickup,
+                    source_output,
+                }
                 | path1_cells
             )
-            path2 = find_belt_path(
-                W, H, out_drop, sink_input, sink_dir, blocked2
-            )
+            path2 = find_belt_path(W, H, out_drop, sink_input, sink_dir, blocked2)
             if path2 is None:
                 continue
 
@@ -2357,9 +2473,9 @@ def build_factory(
                 continue
 
             # Place source
-            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
-                str2ent("source").value
-            )
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent(
+                "source"
+            ).value
             world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
                 source_dir.value
             )
@@ -2368,22 +2484,18 @@ def build_factory(
             )
 
             # Place sink
-            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
-                str2ent("sink").value
-            )
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent(
+                "sink"
+            ).value
             world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
                 sink_dir.value
             )
-            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
-                output_item_value
-            )
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = output_item_value
 
             # Place assembler (3×3, all tiles tagged with the recipe item)
             for tx, ty in asm_tiles:
                 world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
-                world_CWH[Channel.DIRECTION.value, tx, ty] = (
-                    Direction.NORTH.value
-                )
+                world_CWH[Channel.DIRECTION.value, tx, ty] = Direction.NORTH.value
                 world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
 
             # Place input + output inserters
@@ -2450,9 +2562,7 @@ def build_factory(
             )
             C, W, H = world_CWH.shape
 
-            flow_dir = random.choice(
-                [d for d in Direction if d != Direction.NONE]
-            )
+            flow_dir = random.choice([d for d in Direction if d != Direction.NONE])
             is_horizontal = flow_dir in (Direction.EAST, Direction.WEST)
             flow_span = W if is_horizontal else H
             perp_span = H if is_horizontal else W
@@ -2530,9 +2640,7 @@ def build_factory(
             if source_drop in (ug_up_pos, sink_pos):
                 continue
             sd_flow = source_drop[0] if is_horizontal else source_drop[1]
-            if not (
-                src_lo <= sd_flow <= src_hi or source_drop == ug_down_pos
-            ):
+            if not (src_lo <= sd_flow <= src_hi or source_drop == ug_down_pos):
                 continue
 
             # sink_input must be on sink side or land directly on UG_UP
@@ -2541,9 +2649,7 @@ def build_factory(
             if sink_input in (ug_down_pos, source_pos):
                 continue
             si_flow = sink_input[0] if is_horizontal else sink_input[1]
-            if not (
-                snk_lo <= si_flow <= snk_hi or sink_input == ug_up_pos
-            ):
+            if not (snk_lo <= si_flow <= snk_hi or sink_input == ug_up_pos):
                 continue
 
             flow_delta = DIR_TO_DELTA[flow_dir]
@@ -2557,7 +2663,11 @@ def build_factory(
                     ug_down_pos[1] - flow_delta[1],
                 )
                 blocked1 = wall_tiles | {
-                    source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input,
+                    source_pos,
+                    sink_pos,
+                    ug_down_pos,
+                    ug_up_pos,
+                    sink_input,
                 }
                 # Restrict path1 to source side: block all sink-side cells.
                 for fc in range(snk_lo, snk_hi + 1):
@@ -2591,33 +2701,31 @@ def build_factory(
                         blocked2.add(fp_to_xy(fc, pc))
                 if ug_up_drop in blocked2 or sink_input in blocked2:
                     continue
-                path2 = find_belt_path(
-                    W, H, ug_up_drop, sink_input, sink_dir, blocked2
-                )
+                path2 = find_belt_path(W, H, ug_up_drop, sink_input, sink_dir, blocked2)
                 if path2 is None:
                     continue
 
             # Place source/sink
-            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = (
-                str2ent("source").value
-            )
+            world_CWH[Channel.ENTITIES.value, source_pos[0], source_pos[1]] = str2ent(
+                "source"
+            ).value
             world_CWH[Channel.DIRECTION.value, source_pos[0], source_pos[1]] = (
                 source_dir.value
             )
             world_CWH[Channel.ITEMS.value, source_pos[0], source_pos[1]] = item_value
 
-            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
-                str2ent("sink").value
-            )
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent(
+                "sink"
+            ).value
             world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
                 sink_dir.value
             )
             world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = item_value
 
             # Place UG pair (always facing flow_dir)
-            world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = (
-                str2ent("underground_belt").value
-            )
+            world_CWH[Channel.ENTITIES.value, ug_down_pos[0], ug_down_pos[1]] = str2ent(
+                "underground_belt"
+            ).value
             world_CWH[Channel.DIRECTION.value, ug_down_pos[0], ug_down_pos[1]] = (
                 flow_dir.value
             )
@@ -2625,9 +2733,9 @@ def build_factory(
                 Misc.UNDERGROUND_DOWN.value
             )
 
-            world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = (
-                str2ent("underground_belt").value
-            )
+            world_CWH[Channel.ENTITIES.value, ug_up_pos[0], ug_up_pos[1]] = str2ent(
+                "underground_belt"
+            ).value
             world_CWH[Channel.DIRECTION.value, ug_up_pos[0], ug_up_pos[1]] = (
                 flow_dir.value
             )
@@ -2655,9 +2763,7 @@ def build_factory(
             # freely buildable on either side of the wall.
             world_CWH[Channel.FOOTPRINT.value, :, :] = Footprint.AVAILABLE.value
             for wx, wy in wall_tiles:
-                world_CWH[Channel.FOOTPRINT.value, wx, wy] = (
-                    Footprint.UNAVAILABLE.value
-                )
+                world_CWH[Channel.FOOTPRINT.value, wx, wy] = Footprint.UNAVAILABLE.value
 
             break
         if count == 0:
@@ -2731,9 +2837,7 @@ def build_factory(
             # Pick assembler anchor
             ax = random.randint(0, W - 3)
             ay = random.randint(0, H - 3)
-            asm_tiles = {
-                (ax + dx, ay + dy) for dx in range(3) for dy in range(3)
-            }
+            asm_tiles = {(ax + dx, ay + dy) for dx in range(3) for dy in range(3)}
 
             # Pick three distinct perimeter slots: 2 inputs + 1 output
             in_a_slot, in_b_slot, out_slot = random.sample(perim_slots, 3)
@@ -2754,8 +2858,12 @@ def build_factory(
             out_drop = (out_pos[0] + out_dd[0], out_pos[1] + out_dd[1])
 
             key_cells = [
-                in_a_pos, in_b_pos, out_pos,
-                in_a_pickup, in_b_pickup, out_drop,
+                in_a_pos,
+                in_b_pos,
+                out_pos,
+                in_a_pickup,
+                in_b_pickup,
+                out_drop,
             ]
             if any(not (0 <= c[0] < W and 0 <= c[1] < H) for c in key_cells):
                 continue
@@ -2775,10 +2883,7 @@ def build_factory(
             }
             reserved = asm_tiles | set(key_cells) | all_perim
             available = [
-                (x, y)
-                for x in range(W)
-                for y in range(H)
-                if (x, y) not in reserved
+                (x, y) for x in range(W) for y in range(H) if (x, y) not in reserved
             ]
             if len(available) < 3:
                 continue
@@ -2813,26 +2918,17 @@ def build_factory(
             )
 
             # Path A: source A → input-A pickup
-            blocked_a = (
-                fixed_cells
-                | {in_b_pickup, out_drop, src_b_out, sink_in}
-            )
-            path_a = find_belt_path(
-                W, H, src_a_out, in_a_pickup, in_a_dir, blocked_a
-            )
+            blocked_a = fixed_cells | {in_b_pickup, out_drop, src_b_out, sink_in}
+            path_a = find_belt_path(W, H, src_a_out, in_a_pickup, in_a_dir, blocked_a)
             if path_a is None:
                 continue
             path_a_cells = {(x, y) for x, y, _ in path_a}
 
             # Path B: source B → input-B pickup
             blocked_b = (
-                fixed_cells
-                | {in_a_pickup, out_drop, src_a_out, sink_in}
-                | path_a_cells
+                fixed_cells | {in_a_pickup, out_drop, src_a_out, sink_in} | path_a_cells
             )
-            path_b = find_belt_path(
-                W, H, src_b_out, in_b_pickup, in_b_dir, blocked_b
-            )
+            path_b = find_belt_path(W, H, src_b_out, in_b_pickup, in_b_dir, blocked_b)
             if path_b is None:
                 continue
             path_b_cells = {(x, y) for x, y, _ in path_b}
@@ -2844,9 +2940,7 @@ def build_factory(
                 | path_a_cells
                 | path_b_cells
             )
-            path_c = find_belt_path(
-                W, H, out_drop, sink_in, sink_dir, blocked_c
-            )
+            path_c = find_belt_path(W, H, out_drop, sink_in, sink_dir, blocked_c)
             if path_c is None:
                 continue
 
@@ -2856,43 +2950,35 @@ def build_factory(
                 continue
 
             # Place sources
-            world_CWH[Channel.ENTITIES.value, src_a_pos[0], src_a_pos[1]] = (
-                str2ent("source").value
-            )
+            world_CWH[Channel.ENTITIES.value, src_a_pos[0], src_a_pos[1]] = str2ent(
+                "source"
+            ).value
             world_CWH[Channel.DIRECTION.value, src_a_pos[0], src_a_pos[1]] = (
                 src_a_dir.value
             )
-            world_CWH[Channel.ITEMS.value, src_a_pos[0], src_a_pos[1]] = (
-                input_a_value
-            )
+            world_CWH[Channel.ITEMS.value, src_a_pos[0], src_a_pos[1]] = input_a_value
 
-            world_CWH[Channel.ENTITIES.value, src_b_pos[0], src_b_pos[1]] = (
-                str2ent("source").value
-            )
+            world_CWH[Channel.ENTITIES.value, src_b_pos[0], src_b_pos[1]] = str2ent(
+                "source"
+            ).value
             world_CWH[Channel.DIRECTION.value, src_b_pos[0], src_b_pos[1]] = (
                 src_b_dir.value
             )
-            world_CWH[Channel.ITEMS.value, src_b_pos[0], src_b_pos[1]] = (
-                input_b_value
-            )
+            world_CWH[Channel.ITEMS.value, src_b_pos[0], src_b_pos[1]] = input_b_value
 
             # Place sink
-            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = (
-                str2ent("sink").value
-            )
+            world_CWH[Channel.ENTITIES.value, sink_pos[0], sink_pos[1]] = str2ent(
+                "sink"
+            ).value
             world_CWH[Channel.DIRECTION.value, sink_pos[0], sink_pos[1]] = (
                 sink_dir.value
             )
-            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = (
-                output_item_value
-            )
+            world_CWH[Channel.ITEMS.value, sink_pos[0], sink_pos[1]] = output_item_value
 
             # Place assembler (3×3, all tiles tagged with the recipe item)
             for tx, ty in asm_tiles:
                 world_CWH[Channel.ENTITIES.value, tx, ty] = asm_ent.value
-                world_CWH[Channel.DIRECTION.value, tx, ty] = (
-                    Direction.NORTH.value
-                )
+                world_CWH[Channel.DIRECTION.value, tx, ty] = Direction.NORTH.value
                 world_CWH[Channel.ITEMS.value, tx, ty] = recipe_item_value
 
             # Place 2 input inserters + 1 output inserter
@@ -2901,12 +2987,10 @@ def build_factory(
                 (in_b_pos, in_b_dir),
                 (out_pos, out_dir),
             ]:
-                world_CWH[
-                    Channel.ENTITIES.value, ipos[0], ipos[1]
-                ] = str2ent("inserter").value
-                world_CWH[
-                    Channel.DIRECTION.value, ipos[0], ipos[1]
-                ] = idir.value
+                world_CWH[Channel.ENTITIES.value, ipos[0], ipos[1]] = str2ent(
+                    "inserter"
+                ).value
+                world_CWH[Channel.DIRECTION.value, ipos[0], ipos[1]] = idir.value
 
             # Place belt paths
             for x, y, d in path_a + path_b + path_c:
@@ -2943,9 +3027,7 @@ def build_factory(
         # different one is tried. The throughput check rejects
         # blueprints that don't actually produce flow (malformed or
         # incompatible after augmentation).
-        bp_paths = sorted(glob.glob(os.path.join(
-            LESSON_BLUEPRINT_DIR, "*.txt"
-        )))
+        bp_paths = sorted(glob.glob(os.path.join(LESSON_BLUEPRINT_DIR, "*.txt")))
         if not bp_paths:
             raise Exception(
                 f"No blueprints in {LESSON_BLUEPRINT_DIR}; "
@@ -2983,10 +3065,10 @@ def build_factory(
             ox = random.randint(0, size - w_bp)
             oy = random.randint(0, size - h_bp)
 
-            world_CWH = torch.tensor(
-                new_world(width=size, height=size)
-            ).permute(2, 0, 1)
-            world_CWH[:, ox:ox + w_bp, oy:oy + h_bp] = decoded
+            world_CWH = torch.tensor(new_world(width=size, height=size)).permute(
+                2, 0, 1
+            )
+            world_CWH[:, ox : ox + w_bp, oy : oy + h_bp] = decoded
 
             # Extend belt chains backward from each source/sink into
             # any empties created by translation (or already present
@@ -3075,6 +3157,7 @@ def _bfs_shortest(grid_h, grid_w, start, end, blocked):
     equal-length parents for enumerating all shortest paths.
     Returns (None, None) if no path exists.
     """
+
     def in_bounds(cell):
         r, c = cell
         return 0 <= r < grid_h and 0 <= c < grid_w
@@ -3110,6 +3193,7 @@ def _bfs_shortest(grid_h, grid_w, start, end, blocked):
         return None, None
     return dist, parents
 
+
 def _path_to_belts(path, end_dir):
     """Convert a list of (x, y) cells into belt placements with directions."""
     belts: List[Tuple[int, int, Direction]] = []
@@ -3121,6 +3205,7 @@ def _path_to_belts(path, end_dir):
                 break
     belts.append((path[-1][0], path[-1][1], end_dir))
     return belts
+
 
 def find_belt_path(
     grid_h: int,
@@ -3150,6 +3235,7 @@ def find_belt_path(
 
     return _path_to_belts(path, end_dir)
 
+
 def find_belt_paths_with_source_sink_orient(
     entities: torch.Tensor,
     directions: torch.Tensor,
@@ -3161,14 +3247,8 @@ def find_belt_paths_with_source_sink_orient(
     Returns a list of paths, each being a list of (row, col, Direction)
     tuples. If no valid path exists, returns [].
     """
-    if (
-        entities.ndim != 2
-        or directions.ndim != 2
-        or entities.shape != directions.shape
-    ):
-        raise ValueError(
-            "entities and directions must be 2D tensors of the same shape"
-        )
+    if entities.ndim != 2 or directions.ndim != 2 or entities.shape != directions.shape:
+        raise ValueError("entities and directions must be 2D tensors of the same shape")
     H, W = entities.shape
 
     src_pos = (entities == source_value).nonzero(as_tuple=False)
@@ -3209,4 +3289,3 @@ def find_belt_paths_with_source_sink_orient(
 
     backtrack(end, [])
     return all_paths
-
