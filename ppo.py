@@ -161,6 +161,10 @@ class Args:
     """Tags to apply to the wandb run."""
     start_curriculum_level: int = 1
     """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
+    curriculum_advance_threshold: float = 0.95
+    """Advance the curriculum (num_missing_entities += 1) once the throughput moving
+    average exceeds this. Set >1.0 to pin the level so the agent perfects it to 1.0
+    instead of advancing at 0.95."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -1700,7 +1704,7 @@ if __name__ == "__main__":
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
                 if (
-                    final_thputs_100ma > 0.95
+                    final_thputs_100ma > args.curriculum_advance_threshold
                     and iteration - iteration_of_last_increase > 10
                 ):
                     iteration_of_last_increase = iteration
