@@ -1669,29 +1669,6 @@ def _remove_entities(
     return num_samples
 
 
-# Move-direction priority for the canonical MOVE_ONE_ITEM path (derisk
-# experiment to remove multiple-shortest-path ambiguity): North > East > South
-# > West. Keyed by (drow, dcol) so it is independent of the Direction enum's
-# names; row 0 is the top, so North == row-decreasing == (-1, 0).
-_MOVE_PRIORITY = {(-1, 0): 0, (0, 1): 1, (1, 0): 2, (0, -1): 3}
-
-
-def _canonical_path_key(path):
-    """Sort key selecting the single canonical belt path.
-
-    ``path`` is a list of ``(row, col, Direction)`` belt placements. The key is
-    the sequence of move-direction priorities (North>East>South>West) between
-    consecutive cells, so ``min(paths, key=_canonical_path_key)`` over the
-    equal-length shortest paths returns the lexicographically-smallest one — go
-    as far North as needed, then East, then South, then West, never
-    backtracking.
-    """
-    return [
-        _MOVE_PRIORITY[(x2 - x1, y2 - y1)]
-        for (x1, y1, _), (x2, y2, _) in zip(path, path[1:])
-    ]
-
-
 def build_factory(
     size: int = 12,
     kind: LessonKind = LessonKind.MOVE_ONE_ITEM,
@@ -1794,16 +1771,8 @@ def build_factory(
                 # Restart the loop until we get a source+sink that can be connected
                 continue
             else:
-                # DERISK EXPERIMENT: pick the single canonical path instead of a
-                # random one, so each (source, sink) has exactly ONE valid
-                # MOVE_ONE_ITEM completion and the direction target is
-                # unambiguous. Canonical = exhaust North, then East, then South,
-                # then West, never backtracking (see _canonical_path_key). If
-                # this makes loss_dir plummet, multiple-shortest-path ambiguity
-                # was the dir_acc ceiling. To restore path diversity later,
-                # revert to random.choice(paths) or move to a multi-target
-                # direction loss that rewards any valid path.
-                chosen_path = min(paths, key=_canonical_path_key)
+                # Choose a valid path at random and add it to the map
+                chosen_path = random.choice(paths)
                 total_entities = len(chosen_path)
                 for x, y, d in chosen_path:
                     world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
