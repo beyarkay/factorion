@@ -1,0 +1,173 @@
+name: PPO Train (manual)
+
+# Kick off a real PPO (RL) training run from any branch (no PR required),
+# continuing from an SFT checkpoint, using the ppo_train.sh in-pod pipeline.
+# The pod-side watchdog and the GH Actions job timeout are both derived from
+# total_timesteps so longer runs get more headroom automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_from:
+        description: "SFT checkpoint to continue from: a W&B run id OR a local .pt path"
+        required: true
+        type: string
+      total_timesteps:
+        description: "PPO total timesteps"
+        required: true
+        default: "500000"
+        type: string
+      size:
+        description: "Grid size (must match the SFT checkpoint)"
+        required: false
+        default: "11"
+        type: string
+      critic_warmup:
+        description: "Critic-only warm-up iterations before joint PPO"
+        required: false
+        default: "10"
+        type: string
+      start_curriculum_level:
+        description: "num_missing_entities cap (~2*size blanks the whole factory)"
+        required: false
+        default: "22"
+        type: string
+      ent_coef:
+        description: "Entropy bonus (constant; sets both start & end). 0 = no entropy bonus, right for finetuning an SFT policy"
+        required: false
+        default: "0"
+        type: string
+      learning_rate:
+        description: "Peak LR. Small (e.g. 5e-5) for stable SFT finetuning"
+        required: false
+        default: "5e-5"
+        type: string
+      target_kl:
+        description: "KL early-stop threshold per rollout (trust region). e.g. 0.02"
+        required: false
+        default: "0.02"
+        type: string
+      seed:
+        description: "Random seed"
+        required: false
+        default: "1"
+        type: string
+      ref:
+        description: "Git ref to run (branch / SHA / tag)"
+        required: false
+        default: "main"
+        type: string
+      gpu_type:
+        description: "RunPod GPU type"
+        required: false
+        default: "NVIDIA A100 80GB PCIe"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  WANDB_CI_PROJECT: factorion
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Job 0: Compute time budget from total_timesteps
+  # ──────────────────────────────────────────────
+  calc-budget:
+    runs-on: ubuntu-latest
+    outputs:
+      job_timeout: ${{ steps.calc.outputs.job_timeout }}
+      watchdog_seconds: ${{ steps.calc.outputs.watchdog_seconds }}
+    steps:
+      - name: Compute budget
+        id: calc
+        env:
+          TOTAL_TIMESTEPS: ${{ inputs.total_timesteps }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          t = int(os.environ["TOTAL_TIMESTEPS"])
+          # Conservative A100 PPO rate (~200 env-steps/sec incl. the Rust
+          # throughput sim + curriculum eval), with a 2x safety margin so the
+          # watchdog never kills a legitimate run early. Calibratable.
+          base_seconds = t / 200
+          watchdog = int(base_seconds * 2 + 900)
+          watchdog = max(watchdog, 1800)          # floor: 30 min
+          job_minutes = int(watchdog / 60) + 30   # + pod create/teardown
+          job_minutes = min(job_minutes, 360)     # hosted-runner 6h cap
+          print(f"watchdog_seconds={watchdog}")
+          print(f"job_timeout={job_minutes}")
+          PY
+          echo "Budget:"
+          cat "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────
+  # Job 1: PPO training on RunPod GPU
+  # ──────────────────────────────────────────────
+  ppo-train:
+    needs: [calc-budget]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.calc-budget.outputs.job_timeout) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          ref: ${{ inputs.ref }}
+
+      - name: Setup RunPod
+        id: runpod
+        uses: ./.github/actions/runpod-setup
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
+          gpu_type: ${{ inputs.gpu_type }}
+          name_prefix: ci-ppo-train
+
+      - name: Run PPO training on GPU
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          SSH_HOST="${{ steps.runpod.outputs.ssh_host }}"
+          SSH_PORT="${{ steps.runpod.outputs.ssh_port }}"
+          POD_ID="${{ steps.runpod.outputs.pod_id }}"
+          REF="${{ inputs.ref }}"
+          WATCHDOG_SECONDS="${{ needs.calc-budget.outputs.watchdog_seconds }}"
+
+          scp -i ~/.ssh/runpod_ci -P "$SSH_PORT" \
+            scripts/ci/ppo_train.sh \
+            root@"$SSH_HOST":/workspace/ppo_train.sh
+
+          ssh -i ~/.ssh/runpod_ci -p "$SSH_PORT" root@"$SSH_HOST" \
+            WANDB_API_KEY="$WANDB_API_KEY" \
+            WANDB_PROJECT="${{ env.WANDB_CI_PROJECT }}" \
+            START_FROM="${{ inputs.start_from }}" \
+            TOTAL_TIMESTEPS="${{ inputs.total_timesteps }}" \
+            SIZE="${{ inputs.size }}" \
+            CRITIC_WARMUP="${{ inputs.critic_warmup }}" \
+            START_CURRICULUM_LEVEL="${{ inputs.start_curriculum_level }}" \
+            ENT_COEF="${{ inputs.ent_coef }}" \
+            LEARNING_RATE="${{ inputs.learning_rate }}" \
+            TARGET_KL="${{ inputs.target_kl }}" \
+            SEED="${{ inputs.seed }}" \
+            WATCHDOG_SECONDS="$WATCHDOG_SECONDS" \
+            PR_NUMBER="manual-${REF}" \
+            COMMIT_SHA="$GITHUB_SHA" \
+            RUNPOD_API_KEY="$RUNPOD_API_KEY" \
+            RUNPOD_POD_ID="$POD_ID" \
+            bash /workspace/ppo_train.sh
+
+      - name: Teardown RunPod
+        if: always()
+        uses: ./.github/actions/runpod-teardown
+        with:
+          runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
+          summary_file: /tmp/ppo_summary.md
+
+      - name: Publish summary to job
+        if: always()
+        run: |
+          if [ -f /tmp/ppo_summary.md ]; then
+            cat /tmp/ppo_summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
