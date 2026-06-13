@@ -158,6 +158,59 @@ class Args:
     """the number of iterations (total_timesteps // batch_size)"""
 
 
+def _resolve_start_from(start_from, project, entity):
+    """Resolve --start_from to a local checkpoint path.
+
+    SFT and PPO may run on different machines, so the PPO box often won't have
+    the SFT box's local .pt. Resolution order (per spec):
+      1. existing local file -> use it directly;
+      2. else treat the string as a W&B run id -> download that run's newest
+         type="model" artifact and use its .pt;
+      3. else abort.
+    File-existence (not a try/except on torch.load) disambiguates path vs run id,
+    so a present-but-corrupt file raises a real error instead of being misread as
+    a run id.
+    """
+    if os.path.exists(start_from):
+        return start_from
+    # Not a local file -> try as a W&B run id. Clear disabled/offline flags so
+    # the API can fetch (restored in finally).
+    prev_mode = os.environ.pop("WANDB_MODE", None)
+    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
+    try:
+        import wandb
+
+        api = wandb.Api()
+        if start_from.count("/") == 2:
+            run = api.run(start_from)
+        else:
+            run = api.run(f"{entity or api.default_entity}/{project}/{start_from}")
+        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        if not model_arts:
+            raise RuntimeError(f"W&B run {start_from} has no type=model artifact")
+        art = max(model_arts, key=lambda a: a.created_at)
+        local_dir = art.download(
+            root=str(
+                Path("/tmp/factorion-checkpoints") / run.id / art.name.replace(":", "_")
+            )
+        )
+        pts = sorted(Path(local_dir).glob("*.pt"))
+        if not pts:
+            raise RuntimeError(f"W&B artifact {art.name} contains no .pt file")
+        print(f"Resolved --start_from {start_from} -> {art.name} -> {pts[0]}")
+        return str(pts[0])
+    except Exception as e:
+        raise SystemExit(
+            f"--start_from '{start_from}' is neither a readable file nor a "
+            f"resolvable W&B run: {e}"
+        )
+    finally:
+        if prev_mode is not None:
+            os.environ["WANDB_MODE"] = prev_mode
+        if prev_disabled is not None:
+            os.environ["WANDB_DISABLED"] = prev_disabled
+
+
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
@@ -1221,10 +1274,13 @@ if __name__ == "__main__":
     )
 
     if args.start_from is not None:
+        resolved = _resolve_start_from(
+            args.start_from, args.wandb_project_name, args.wandb_entity
+        )
         if args.track:
             run.tags = run.tags + (f"start_from:{args.start_from}",)
-        print(f"Loading model weights from {args.start_from}")
-        agent.load_state_dict(torch.load(args.start_from))
+        print(f"Loading model weights from {resolved}")
+        agent.load_state_dict(torch.load(resolved, map_location="cpu"))
 
     agent.to(device)
 
