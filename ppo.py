@@ -224,10 +224,12 @@ def _resolve_start_from(start_from, project, entity):
             os.environ["WANDB_DISABLED"] = prev_disabled
 
 
-def make_env(env_id, idx, capture_video, size, run_name):
+def make_env(env_id, idx, capture_video, size, run_name, reward_coeffs=None):
     def thunk():
         kwargs = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({"size": size, "max_steps": 2 * size, "idx": idx})
+        if reward_coeffs is not None:
+            kwargs["reward_coeffs"] = reward_coeffs
         # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
@@ -311,8 +313,13 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
+        reward_coeffs: Optional[dict] = None,
     ):
         super().__init__()
+        # Runtime reward coefficients (from Args); fall back to Args class
+        # defaults per-key. Fixes the old `'args' not in locals()` hack that
+        # always used the class defaults and ignored --coeff-* flags (issue #135).
+        self._reward_coeffs = reward_coeffs or {}
         # Setup the renderer if requested
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
@@ -698,15 +705,13 @@ class FactorioEnv(gym.Env):
         # ── Normalized weighted reward (throughput + validity only) ──
         reward_components = {
             "throughput": {
-                "coeff": Args.coeff_throughput
-                if "args" not in locals()
-                else args.coeff_throughput,
+                "coeff": self._reward_coeffs.get(
+                    "coeff_throughput", Args.coeff_throughput
+                ),
                 "value": throughput,
             },
             "validity": {
-                "coeff": Args.coeff_validity
-                if "args" not in locals()
-                else args.coeff_validity,
+                "coeff": self._reward_coeffs.get("coeff_validity", Args.coeff_validity),
                 "value": 0 if action_is_invalid else 1,
             },
         }
@@ -726,20 +731,14 @@ class FactorioEnv(gym.Env):
         dir_delta = curr_match[2] - self._prev_match[2]
         self._prev_match = curr_match
 
-        coeff_loc = (
-            Args.coeff_shaping_location
-            if "args" not in locals()
-            else args.coeff_shaping_location
+        coeff_loc = self._reward_coeffs.get(
+            "coeff_shaping_location", Args.coeff_shaping_location
         )
-        coeff_ent = (
-            Args.coeff_shaping_entity
-            if "args" not in locals()
-            else args.coeff_shaping_entity
+        coeff_ent = self._reward_coeffs.get(
+            "coeff_shaping_entity", Args.coeff_shaping_entity
         )
-        coeff_dir = (
-            Args.coeff_shaping_direction
-            if "args" not in locals()
-            else args.coeff_shaping_direction
+        coeff_dir = self._reward_coeffs.get(
+            "coeff_shaping_direction", Args.coeff_shaping_direction
         )
 
         pre_reward += coeff_loc * loc_delta
@@ -1267,9 +1266,18 @@ if __name__ == "__main__":
 
     print(f"Setting up envs with {args}")
     # env setup
+    reward_coeffs = {
+        "coeff_throughput": args.coeff_throughput,
+        "coeff_validity": args.coeff_validity,
+        "coeff_shaping_location": args.coeff_shaping_location,
+        "coeff_shaping_entity": args.coeff_shaping_entity,
+        "coeff_shaping_direction": args.coeff_shaping_direction,
+    }
     envs = gym.vector.SyncVectorEnv(
         [
-            make_env(args.env_id, i, args.capture_video, args.size, run_name)
+            make_env(
+                args.env_id, i, args.capture_video, args.size, run_name, reward_coeffs
+            )
             for i in range(args.num_envs)
         ],
     )
@@ -1720,7 +1728,7 @@ if __name__ == "__main__":
             num_render_envs = 5
             render_envs = gym.vector.SyncVectorEnv(
                 [
-                    make_env(args.env_id, i, False, args.size, run_name)
+                    make_env(args.env_id, i, False, args.size, run_name, reward_coeffs)
                     for i in range(num_render_envs)
                 ]
             )
