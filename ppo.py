@@ -1651,6 +1651,10 @@ if __name__ == "__main__":
         # ── Per-iteration logging ──────────────────────────────────────
         iter_metrics = {
             "global_step": global_step,
+            # 1 = critic-only warm-up (actor + encoder frozen); 0 = joint PPO
+            # (actor and critic training together). Lets you see on the W&B
+            # charts exactly when the actor unfreezes.
+            "charts/actor_frozen": int(warming_up),
             "losses/policy": pg_loss.item(),
             "losses/value": v_loss.item(),
             "losses/entropy": entropy_loss.item(),
