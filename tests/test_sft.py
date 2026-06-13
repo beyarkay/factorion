@@ -15,6 +15,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import (
+    DIR_TO_DELTA,
     Channel,
     Direction,
     LessonKind,
@@ -25,6 +26,7 @@ from helpers import (
 from sft import (
     SFTArgs,
     _artifact_name,
+    _flow_order,
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
@@ -34,6 +36,58 @@ from sft import (
     train_sft,
 )
 from ppo import FactorioEnv, AgentCNN, make_env
+
+
+class TestFlowOrder:
+    def _down(self):
+        """The Direction whose delta is (+1, 0) — increasing row = top-down."""
+        return next(
+            d for d in Direction if d != Direction.NONE and DIR_TO_DELTA[d] == (1, 0)
+        )
+
+    def test_single_chain_is_source_to_sink(self):
+        """A MOVE_ONE_ITEM demo places belts as one connected source->sink
+        chain: the first tile extends the source, each next tile extends the
+        previous one."""
+        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=7)
+        assert factory is not None
+        solved = factory.world_CWH
+        task, _ = blank_entities(factory, num_missing_entities=64)
+        pairs = extract_expert_actions(solved, task)
+        H = solved.shape[2]
+        order = [(p[1] // H, p[1] % H) for p in pairs if p[7] == 0]
+        ent = solved[Channel.ENTITIES.value]
+        dch = solved[Channel.DIRECTION.value]
+        sx, sy = (ent == str2ent("source").value).nonzero()[0].tolist()
+        dx, dy = DIR_TO_DELTA[Direction(int(dch[sx, sy]))]
+        assert order[0] == (sx + dx, sy + dy), "first tile must extend the source"
+        for (x, y), nxt in zip(order, order[1:]):
+            ddx, ddy = DIR_TO_DELTA[Direction(int(dch[x, y]))]
+            assert (x + ddx, y + ddy) == nxt, "each tile must extend the previous"
+
+    def test_branch_breaks_ties_top_down_left_right(self):
+        """When several tiles are simultaneously placeable, _flow_order takes
+        the top-most then left-most one (raster order)."""
+        nchan = max(c.value for c in Channel) + 1
+        H = W = 4
+        world = torch.zeros((nchan, W, H))
+        down = self._down().value
+        src = str2ent("source").value
+        belt = str2ent("transport_belt").value
+        e, dr = Channel.ENTITIES.value, Channel.DIRECTION.value
+        # two parallel downward chains rooted at sources in cols 0 and 2
+        for col in (0, 2):
+            world[e, 0, col] = src
+            world[dr, 0, col] = down
+            for row in (1, 2):
+                world[e, row, col] = belt
+                world[dr, row, col] = down
+        anchors = [[2, 2], [1, 2], [2, 0], [1, 0]]  # scrambled input order
+        order = [tuple(o) for o in _flow_order(world, anchors)]
+        # frontier at each step, top-down then left-right:
+        #   {(1,0),(1,2)} -> (1,0); {(1,2),(2,0)} -> (1,2);
+        #   {(2,0),(2,2)} -> (2,0); {(2,2)} -> (2,2)
+        assert order == [(1, 0), (1, 2), (2, 0), (2, 2)]
 
 
 class TestExtractExpertActions:
@@ -53,7 +107,16 @@ class TestExtractExpertActions:
         # agent is responsible for each. Skip terminal pairs (eot=1) which
         # carry sentinel placement targets, not real placements.
         state = task.clone()
-        for obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, eot in pairs:
+        for (
+            obs,
+            tile_idx,
+            entity_id,
+            direction_id,
+            item_id,
+            misc_id,
+            valid_mask,
+            eot,
+        ) in pairs:
             if eot == 1:
                 continue
             H = state.shape[2]
@@ -137,8 +200,12 @@ class TestExtractExpertActions:
         for _, _, entity_id, direction_id, _, _, _, eot in pairs:
             if eot == 1:
                 continue
-            assert entity_id != str2ent("empty").value, "Expert actions shouldn't place empty"
-            assert direction_id != Direction.NONE.value, "Expert belt actions need a direction"
+            assert entity_id != str2ent("empty").value, (
+                "Expert actions shouldn't place empty"
+            )
+            assert direction_id != Direction.NONE.value, (
+                "Expert belt actions need a direction"
+            )
 
     def test_ug_belt_action_carries_misc(self):
         """A MOVE_VIA_UG_BELT lesson with the UG pair blanked must produce
@@ -146,19 +213,26 @@ class TestExtractExpertActions:
         not NONE. Without this the env rejects every UG placement at step
         time (ug_belt_wo_up_or_down)."""
         from helpers import Misc
+
         ug_id = str2ent("underground_belt").value
         found_down = found_up = False
         for seed in range(50):
             try:
-                factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+                factory = build_factory(
+                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
+                )
                 assert factory is not None
                 solved, _ = blank_entities(factory, num_missing_entities=0)
-                factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
+                factory = build_factory(
+                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
+                )
                 assert factory is not None
                 task, _ = blank_entities(factory, num_missing_entities=2)
             except Exception:
                 continue
-            for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(solved, task):
+            for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(
+                solved, task
+            ):
                 if eot == 1:
                     continue
                 if ent_id == ug_id:
@@ -183,7 +257,9 @@ class TestExtractExpertActions:
         for seed in [1, 7, 42, 99]:
             for level in [1, 4, 8, 16]:
                 try:
-                    factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                    factory = build_factory(
+                        size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
+                    )
                     assert factory is not None
                     task, _ = blank_entities(factory, num_missing_entities=level)
                 except Exception:
@@ -201,7 +277,9 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = (
+            generate_dataset(args)
+        )
         assert len(obs) == 100
         assert len(tiles) == 100
         assert len(ents) == 100
@@ -238,6 +316,7 @@ class TestGenerateDataset:
         assert len(set(seeds.tolist())) >= 2
         # And at least one seed appears more than once (level=2 → ~2 pairs).
         from collections import Counter
+
         counts = Counter(seeds.tolist())
         assert any(c > 1 for c in counts.values()), (
             "expected at least one lesson to produce >1 pair sharing a seed"
@@ -287,13 +366,17 @@ class TestGenerateDataset:
         asm_pair_count = 0
         for seed in range(60):
             factory = build_factory(
-                size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed,
+                size=10,
+                kind=LessonKind.ASSEMBLE_1IN_1OUT,
+                seed=seed,
             )
             if factory is None:
                 continue
             solved = factory.world_CWH
             task, _ = blank_entities(factory, num_missing_entities=20)
-            for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(solved, task):
+            for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(
+                solved, task
+            ):
                 if eot == 1:
                     continue
                 if ent_id == asm_id:
@@ -324,6 +407,11 @@ class TestGenerateDataset:
             f"Expected >=2 distinct non-empty item types, got {sorted(unique_items)}"
         )
 
+    @pytest.mark.skip(
+        reason="MOVE_ONE_ITEM-only overfit experiment: generate_dataset is "
+        "pinned to a single kind, so multi-kind assertions don't hold. "
+        "Revert when `kinds = list(LessonKind)` is restored in sft.py."
+    )
     def test_kinds_returned_per_pair(self):
         """generate_dataset must return a per-pair kind tensor with the
         same length as the rest. Values must be valid LessonKind enum
@@ -341,6 +429,11 @@ class TestGenerateDataset:
             f"expected >=2 distinct kinds, got {sorted(set(kinds.tolist()))}"
         )
 
+    @pytest.mark.skip(
+        reason="MOVE_ONE_ITEM-only overfit experiment: generate_dataset is "
+        "pinned to a single kind, so the dataset no longer spans multiple "
+        "kinds. Revert when `kinds = list(LessonKind)` is restored in sft.py."
+    )
     def test_samples_span_multiple_kinds(self, capsys):
         """Dataset should draw from more than one LessonKind.
 
@@ -354,8 +447,11 @@ class TestGenerateDataset:
         generate_dataset(args)
         out = capsys.readouterr().out
         productive = [
-            line for line in out.splitlines()
-            if "samples=" in line and "samples=     0" not in line and "samples=    0" not in line
+            line
+            for line in out.splitlines()
+            if "samples=" in line
+            and "samples=     0" not in line
+            and "samples=    0" not in line
         ]
         assert len(productive) >= 2, (
             f"Expected >=2 productive kinds in breakdown, got:\n{out}"
@@ -430,7 +526,9 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = generate_dataset(args)
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = generate_dataset(
+            args
+        )
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
@@ -501,6 +599,7 @@ class TestTrainSFTEndToEnd:
         assert os.path.exists(summary), "Summary JSON should be saved"
 
         import json
+
         with open(summary) as f:
             s = json.load(f)
         assert "best_val_acc" in s
@@ -538,13 +637,24 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
         envs.close()
 
-        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
-                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        args = SFTArgs(
+            seed=1,
+            size=size,
+            num_samples=50,
+            max_level=2 * size,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+        )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1, "Sanity: at least one valid lesson"
 
         overall, per_kind, per_kind_n = run_rollout_eval(
-            agent, args, val_seeds_to_kind, device=torch.device("cpu"),
+            agent,
+            args,
+            val_seeds_to_kind,
+            device=torch.device("cpu"),
             max_seeds=len(val_seeds_to_kind),
         )
 
@@ -564,13 +674,24 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
         envs.close()
 
-        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
-                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        args = SFTArgs(
+            seed=1,
+            size=size,
+            num_samples=50,
+            max_level=2 * size,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+        )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=6)
         assert len(val_seeds_to_kind) >= 3
 
         _overall, _per_kind, per_kind_n = run_rollout_eval(
-            agent, args, val_seeds_to_kind, device=torch.device("cpu"),
+            agent,
+            args,
+            val_seeds_to_kind,
+            device=torch.device("cpu"),
             max_seeds=2,
         )
         assert sum(per_kind_n.values()) == 2
@@ -583,10 +704,21 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
         envs.close()
 
-        args = SFTArgs(seed=1, size=size, num_samples=50, max_level=2 * size,
-                       chan1=16, chan2=16, chan3=16, flat_dim=64)
+        args = SFTArgs(
+            seed=1,
+            size=size,
+            num_samples=50,
+            max_level=2 * size,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+        )
         overall, per_kind, per_kind_n = run_rollout_eval(
-            agent, args, {}, device=torch.device("cpu"),
+            agent,
+            args,
+            {},
+            device=torch.device("cpu"),
         )
         assert overall == 0.0
         assert sum(per_kind_n.values()) == 0
@@ -641,7 +773,9 @@ class TestEotHead:
         x = torch.zeros((B, C, W, H), dtype=torch.float32)
         enc = agent.encoder(x)
         logits = agent.eot_head(enc).squeeze(-1)
-        assert logits.shape == (B,), f"eot_head output should be (B,), got {logits.shape}"
+        assert logits.shape == (B,), (
+            f"eot_head output should be (B,), got {logits.shape}"
+        )
 
     def test_eot_prob_and_should_stop_shapes(self, registered_env):
         """`eot_prob` returns a [0,1] tensor of shape (B,); `eot_should_stop`
@@ -652,7 +786,9 @@ class TestEotHead:
         envs.close()
 
         B = 3
-        x = torch.zeros((B, agent.channels, agent.width, agent.height), dtype=torch.float32)
+        x = torch.zeros(
+            (B, agent.channels, agent.width, agent.height), dtype=torch.float32
+        )
         probs = agent.eot_prob(x)
         assert probs.shape == (B,)
         assert (probs >= 0).all() and (probs <= 1).all()
@@ -699,10 +835,14 @@ class TestEotHead:
         neg_logits = []
         with torch.no_grad():
             for seed in range(10_000, 10_040):
-                factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                factory = build_factory(
+                    size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
+                )
                 assert factory is not None
                 solved, _ = blank_entities(factory, num_missing_entities=0)
-                factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+                factory = build_factory(
+                    size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
+                )
                 assert factory is not None
                 task, _ = blank_entities(factory, num_missing_entities=3)
                 enc_pos = agent.encoder(solved.unsqueeze(0).float().to(device))
@@ -751,23 +891,29 @@ class TestArtifactNameHelpers:
     format so accidentally renaming a hyperparam doesn't silently
     fragment the artifact namespace."""
 
-    @pytest.mark.parametrize("n,expected", [
-        (500, "500"),
-        (1_000, "1k"),
-        (50_000, "50k"),
-        (200_000, "200k"),
-        (1_000_000, "1m"),
-        (2_500_000, "2.5m"),
-    ])
+    @pytest.mark.parametrize(
+        "n,expected",
+        [
+            (500, "500"),
+            (1_000, "1k"),
+            (50_000, "50k"),
+            (200_000, "200k"),
+            (1_000_000, "1m"),
+            (2_500_000, "2.5m"),
+        ],
+    )
     def test_humanize_count(self, n, expected):
         assert _humanize_count(n) == expected
 
-    @pytest.mark.parametrize("lr,expected", [
-        (1e-3, "1e-3"),
-        (3e-4, "3e-4"),
-        (1e-4, "1e-4"),
-        (5e-4, "5e-4"),
-    ])
+    @pytest.mark.parametrize(
+        "lr,expected",
+        [
+            (1e-3, "1e-3"),
+            (3e-4, "3e-4"),
+            (1e-4, "1e-4"),
+            (5e-4, "5e-4"),
+        ],
+    )
     def test_humanize_lr_round(self, lr, expected):
         """Mantissas that are clean integers don't get a decimal point."""
         assert _humanize_lr(lr) == expected
@@ -783,8 +929,14 @@ class TestArtifactNameHelpers:
 
     def test_artifact_name_larger_run(self):
         args = SFTArgs(
-            size=16, num_samples=200_000, epochs=50, batch_size=1024, lr=3e-4,
-            chan1=48, chan2=48, chan3=48,
+            size=16,
+            num_samples=200_000,
+            epochs=50,
+            batch_size=1024,
+            lr=3e-4,
+            chan1=48,
+            chan2=48,
+            chan3=48,
         )
         assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48"
 

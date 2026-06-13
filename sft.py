@@ -29,14 +29,98 @@ from torch.utils.data import DataLoader, TensorDataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
+    DIR_TO_DELTA,
     Channel,
+    Direction,
     LessonKind,
     blank_entities,
     build_factory,
     entities,
+    str2ent,
 )
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+
+
+def _flow_order(solved_CWH, anchor_locs):
+    """Order anchor tiles by walking the flow graph, tie-broken top-down then
+    left-right.
+
+    Each placeable tile's DIRECTION channel points downstream (to the cell
+    items flow into), so the layout is a graph rooted at the source(s). A tile
+    becomes *placeable* once the tile feeding into it (its flow predecessor) is
+    already placed; among all currently-placeable tiles we always take the one
+    that is top-most then left-most (raster ``(row, col)`` order). Every
+    intermediate state is therefore a connected prefix of the finished layout —
+    exactly what the policy sees when it builds in order — and the next
+    placement is a deterministic function of the state.
+
+    Why: a random placement order makes the *same* partial state map to
+    *different* next-targets across samples — irreducible label noise that
+    caps per-head accuracy (esp. direction) below 1.0. This canonical order
+    removes that noise, and the literature (Vinyals "Order Matters"; GraphRNN's
+    BFS ordering; PolyGen) shows a fixed structure-respecting order is far more
+    learnable than an arbitrary linearization.
+
+    For a single belt chain (MOVE_ONE_ITEM) the frontier is always one tile, so
+    this is just source->sink order; the raster tiebreak only bites when
+    several tiles are placeable at once (multiple sources, disconnected
+    components, or a branch). Anchors never reached from a source (malformed
+    layouts, or multi-output entities like splitters whose extra outputs the
+    single DIRECTION pointer doesn't follow) are appended afterwards in raster
+    order so nothing is dropped — those multi-output lessons still need richer
+    handling here before being re-enabled.
+    """
+    import heapq
+
+    ent = solved_CWH[Channel.ENTITIES.value]
+    dch = solved_CWH[Channel.DIRECTION.value]
+    anchor_set = {tuple(loc) for loc in anchor_locs}
+    src_val = str2ent("source").value
+    none_val = Direction.NONE.value
+
+    def successor(x, y):
+        d = int(dch[x, y])
+        if d == none_val:
+            return None
+        dx, dy = DIR_TO_DELTA[Direction(d)]
+        return (x + dx, y + dy)
+
+    # Flow predecessor of each anchor = the source/anchor cell pointing into it,
+    # found by inverting `successor` over the sources and anchors.
+    pred: dict[tuple[int, int], tuple[int, int]] = {}
+    sources = [tuple(s) for s in (ent == src_val).nonzero(as_tuple=False).tolist()]
+    for cx, cy in sources + list(anchor_set):
+        nxt = successor(cx, cy)
+        if nxt in anchor_set:
+            pred[nxt] = (cx, cy)
+
+    # Frontier = anchors whose predecessor is already placed. Seed it with the
+    # anchors fed directly by a source (predecessor isn't itself a blanked
+    # anchor). The min-heap pops in (row, col) order = top-down then left-right.
+    placed: set[tuple[int, int]] = set()
+    frontier: list[tuple[int, int]] = []
+    for a in anchor_set:
+        p = pred.get(a)
+        if p is None or p not in anchor_set:
+            heapq.heappush(frontier, a)
+
+    order: list[list[int]] = []
+    while frontier:
+        a = heapq.heappop(frontier)
+        if a in placed:
+            continue
+        placed.add(a)
+        order.append(list(a))
+        nxt = successor(*a)
+        if nxt in anchor_set and nxt not in placed and pred.get(nxt) == a:
+            heapq.heappush(frontier, nxt)
+
+    # Anything unreachable from a source -> raster order, so nothing is dropped.
+    for a in sorted(anchor_set):
+        if a not in placed:
+            order.append(list(a))
+    return order
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -49,17 +133,24 @@ def extract_expert_actions(solved_CWH, task_CWH):
     without misc=DOWN/UP, or an assembling_machine_1 without an item
     (= recipe).
 
-    The valid_tile_mask is a flat binary tensor marking ALL tiles that still
-    need entities at this step — not just the one chosen. This allows
-    multi-label tile loss to avoid penalizing the model for predicting a
-    valid-but-different tile.
+    The valid_tile_mask is single-hot on the FRONTIER tile — the single next
+    cell in canonical source->sink flow order. The tile head is trained with
+    softmax cross-entropy toward that cell so the policy learns to build the
+    chain start-to-finish. (Historically this mask marked ALL remaining tiles
+    and the tile loss was multi-label BCE — a workaround for the old *random*
+    placement order, where the demo's "next" tile was an arbitrary pick and
+    penalizing the model for choosing a valid-but-different one was unfair.
+    Canonical order makes the next tile unique, so that workaround is no longer
+    needed. NB: branchy lessons, e.g. SPLITTER_*, have several valid frontier
+    cells at once and would need a frontier *set* here before being re-enabled.)
 
     Multi-tile entities (e.g. splitters) emit a single pair at the anchor
     tile, not one per occupied cell — placing the anchor fills the whole
     footprint at execution time.
 
-    Actions are applied sequentially in random order, so intermediate states
-    reflect realistic observations the agent would see.
+    Actions are applied sequentially in canonical source->sink flow order
+    (see _flow_order), so each intermediate state is a clean prefix of the
+    completed path — exactly what the policy will see when it builds in order.
 
     `eot` (end-of-turn) is 0 for every placement step (the factory still
     has entities to place) and 1 for a single terminal pair appended at
@@ -102,19 +193,31 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
     diff_locs = [loc for loc in diff_locs if tuple(loc) not in secondary_tiles]
 
-    # Shuffle for diversity
-    random.shuffle(diff_locs)
+    # Place tiles in canonical source->sink flow order rather than a random
+    # shuffle. Random order injects label noise (same partial state -> many
+    # possible "next" targets), capping per-head accuracy below 1.0; flow
+    # order makes the next placement a deterministic function of the state.
+    # See _flow_order for the full rationale + citations.
+    diff_locs = _flow_order(solved_CWH, diff_locs)
 
     state = task_CWH.clone()
     pairs = []
 
-    # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
-    remaining_locs = [tuple(loc) for loc in diff_locs]
-
     for step, (x, y) in enumerate(diff_locs):
+        # Tile target = the flow FRONTIER (the single next tile in source->sink
+        # order), not every remaining tile. Because diff_locs is now flow-
+        # ordered, (x, y) is exactly the cell that extends the already-placed
+        # prefix. Single-hot supervision teaches the tile head to commit to
+        # building in order, so the greedy rollout lays a connected chain
+        # instead of wandering to a mid-path tile the direction head never
+        # trained on (the multi-label "all remaining" mask was a workaround for
+        # the old random order, which no longer applies).
+        #
+        # NB: correct for single-chain lessons (MOVE_ONE_ITEM). A branchy lesson
+        # (e.g. SPLITTER_*) has several valid frontier cells at once and would
+        # need a frontier *set* here to avoid re-introducing order noise.
         valid_mask = torch.zeros(W * H)
-        for rx, ry in remaining_locs[step:]:
-            valid_mask[rx * H + ry] = 1.0
+        valid_mask[x * H + y] = 1.0
 
         obs = state.clone()
         tile_idx = x * H + y
@@ -284,8 +387,9 @@ def _artifact_name(args: "SFTArgs") -> str:
 def generate_dataset(args: SFTArgs):
     """Generate SFT dataset from expert demonstrations.
 
-    Samples uniformly across every value of `LessonKind` (auto-discovered),
-    so adding a new lesson kind to the enum is automatically picked up.
+    Samples across the lesson kinds listed in `kinds` below. NOTE: for the
+    current overfit experiment this is pinned to MOVE_ONE_ITEM only; restore
+    `kinds = list(LessonKind)` for full-mix training.
     Per-kind sample/lesson counts are printed to stdout for visibility.
 
     Also returns a per-pair lesson_seed tensor so callers can split
@@ -294,7 +398,20 @@ def generate_dataset(args: SFTArgs):
     factories across the split).
     """
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
-    kinds = list(LessonKind)
+    # OVERFIT EXPERIMENT: focus exclusively on MOVE_ONE_ITEM (the simplest
+    # lesson) to verify the SFT pipeline can actually drive
+    # val/MOVE_ONE_ITEM/throughput up given enough compute. The other lessons
+    # are deliberately commented out — re-enable them (or restore
+    # `kinds = list(LessonKind)`) to go back to full-mix training.
+    kinds = [
+        LessonKind.MOVE_ONE_ITEM,
+        # LessonKind.SPLITTER_SPLIT,
+        # LessonKind.SPLITTER_MERGE,
+        # LessonKind.ASSEMBLE_1IN_1OUT,
+        # LessonKind.MOVE_VIA_UG_BELT,
+        # LessonKind.ASSEMBLE_2IN_1OUT,
+        # LessonKind.FROM_BLUEPRINT,
+    ]
 
     all_obs = []
     all_tile_idx = []
@@ -710,7 +827,6 @@ def train_sft(args: SFTArgs):
     # off on terminal (eot=1) samples and (b) aggregate per-LessonKind in
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
-    bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
     # pos_weight balances the eot head against the placement-step
     # imbalance. Each lesson emits ~max_level placement pairs (eot=0) and
     # exactly 1 terminal pair (eot=1); without pos_weight the head
@@ -840,11 +956,13 @@ def train_sft(args: SFTArgs):
             eot_logits = agent.eot_head(encoded).squeeze(-1)
             loss_eot = bce_eot(eot_logits, batch_eot)
 
-            # Tile logits — use BCE with multi-label mask so ALL valid
-            # tiles are rewarded, not just the randomly-chosen one. Reduce
-            # to per-sample, mask off terminal samples, then average.
+            # Tile head — softmax CE over all cells toward the single flow
+            # FRONTIER tile. (Was multi-label BCE over every remaining tile,
+            # which suited the old random order; under canonical flow order the
+            # next tile is unique, and single-positive BCE over W*H cells is
+            # ~(W*H-1):1 imbalanced and collapses the head — so use CE instead.)
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile_per = bce_loss_none(tile_logits, batch_mask).mean(dim=1)
+            loss_tile_per = ce_loss_none(tile_logits, batch_tile)
             loss_tile = (loss_tile_per * placement_mask).sum() / n_place
 
             # Extract features at target tile for entity/direction/item/misc heads
@@ -1000,14 +1118,10 @@ def train_sft(args: SFTArgs):
                 loss_eot_per = bce_eot_none(eot_logits, batch_eot)
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-                # Per-sample losses: needed so we can sum them within each
-                # LessonKind and so terminal samples can be masked out of
-                # placement losses. mean over the tile axis matches the
-                # scale of bce_loss(reduction="mean"), keeping
-                # val/loss_tile comparable to train/loss_tile.
-                loss_tile_per = (
-                    bce_loss_none(tile_logits, batch_mask).mean(dim=1) * placement_mask
-                )
+                # Softmax CE toward the single flow frontier tile (see the
+                # train loop). Per-sample so terminal samples can be masked out
+                # of the placement loss and summed within each LessonKind.
+                loss_tile_per = ce_loss_none(tile_logits, batch_tile) * placement_mask
 
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height

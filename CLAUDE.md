@@ -54,6 +54,27 @@ uv pip install -r requirements.txt
 uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
 ```
 
+### Fresh worktree / venv setup
+
+Each `.claude/worktrees/<name>/` is a brand-new checkout with an **empty
+`.venv`**. The `pre-push` git hook runs the full pre-completion checklist
+(`cargo fmt/clippy/test`, `maturin`, `ruff`, `pytest`) and will fail with
+`command not found` until the venv is populated.
+
+**Do not use `requirements.txt` in a worktree** — it does not resolve cleanly
+under `uv` (fastapi/runpod/starlette pin conflicts). Instead mirror CI's
+per-package install list (kept in sync with `.github/workflows/ci.yml`):
+
+```bash
+uv pip install ruff==0.11.8 pytest pytest-timeout
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+uv pip install numpy gymnasium networkx tyro pydantic marimo maturin tqdm matplotlib pandas plotly wandb tensorboard runpod
+uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
+```
+
+`runpod` is required at pytest **collection** time (`tests/test_runpod_cost.py`
+imports `scripts/ci/runpod_destroy.py`), so don't omit it.
+
 ## Running
 
 ```bash
@@ -70,6 +91,35 @@ Run a W&B sweep:
 ```bash
 bash run_sweep.sh
 ```
+
+## CI & RunPod GPU jobs
+
+CI lives in `.github/workflows/ci.yml`. The cheap jobs (`lint`, `python-tests`,
+`rust-tests`) run on every PR. The **GPU jobs run on RunPod and are
+label-gated** — they do **not** fire on a plain PR open. The `check-gpu-trigger`
+job decides what runs based on PR **labels** or a manual `workflow_dispatch`.
+Because `labeled` is in the trigger list, **adding a label to an existing PR
+kicks the job off** (no new push needed).
+
+Existing labels → what they run:
+
+| Label | Job / script | What it does |
+|-------|--------------|--------------|
+| `gpu-test` | `gpu-smoke-test` → `scripts/ci/gpu_smoke_test.sh` | Quick PPO/env GPU smoke |
+| `gpu-benchmark` | `gpu-benchmark` | Multi-seed PPO throughput comparison vs baseline |
+| `sweep` | `sweep-setup` → `gpu-sweep` → `sweep-report` | PPO W&B Bayesian sweep (`sweep.yaml`) |
+| `sft-smoketest` | `sft-smoke-test` → `scripts/ci/sft_smoke_test.sh` | **One** tracked run: `sft.py --size 11 --num-samples 300000 --epochs 30 --track`. Despite the name it's a full run (4h watchdog). |
+| `sft-sweep` | `sft-sweep-setup` → `sft-sweep` → `sft-sweep-report` | SFT W&B Bayesian sweep (`sft_sweep.yaml`): every run pinned to size=11 / 300k samples / 30 epochs, searches LR schedule, regularisation, per-head loss weights, encoder channels. `run_cap: 60`, ~20 runs / 5 agents by default. Optimises `val/acc`. |
+
+**Gotcha:** the trigger logic also checks for an `sft-benchmark` label
+(`scripts/ci/sft_benchmark.sh`, a multi-seed SFT comparison), **but no such
+GitHub label exists** in the repo — so the benchmark can only be launched via
+`workflow_dispatch`, or by creating the label first.
+
+RunPod pods self-terminate via a watchdog (4h smoketest / 2h benchmark) plus a
+teardown action; result summaries (and sweep URLs) are posted back as PR
+comments. All SFT runs log to the `factorion` W&B project; the north-star
+metric for the current MOVE_ONE_ITEM overfit work is `val/MOVE_ONE_ITEM/throughput`.
 
 ## Linting
 
