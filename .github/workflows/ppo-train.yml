@@ -32,6 +32,21 @@ on:
         required: false
         default: "22"
         type: string
+      ent_coef:
+        description: "Entropy bonus (constant; sets both start & end). 0 = no entropy bonus, right for finetuning an SFT policy"
+        required: false
+        default: "0"
+        type: string
+      learning_rate:
+        description: "Peak LR. Small (e.g. 5e-5) for stable SFT finetuning"
+        required: false
+        default: "5e-5"
+        type: string
+      target_kl:
+        description: "KL early-stop threshold per rollout (trust region). e.g. 0.02"
+        required: false
+        default: "0.02"
+        type: string
       seed:
         description: "Random seed"
         required: false
@@ -132,6 +147,9 @@ jobs:
             SIZE="${{ inputs.size }}" \
             CRITIC_WARMUP="${{ inputs.critic_warmup }}" \
             START_CURRICULUM_LEVEL="${{ inputs.start_curriculum_level }}" \
+            ENT_COEF="${{ inputs.ent_coef }}" \
+            LEARNING_RATE="${{ inputs.learning_rate }}" \
+            TARGET_KL="${{ inputs.target_kl }}" \
             SEED="${{ inputs.seed }}" \
             WATCHDOG_SECONDS="$WATCHDOG_SECONDS" \
             PR_NUMBER="manual-${REF}" \

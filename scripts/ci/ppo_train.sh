@@ -29,6 +29,9 @@ TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-500000}"
 SIZE="${SIZE:-11}"
 CRITIC_WARMUP="${CRITIC_WARMUP:-10}"
 START_CURRICULUM_LEVEL="${START_CURRICULUM_LEVEL:-22}"
+ENT_COEF="${ENT_COEF:-0}"
+LEARNING_RATE="${LEARNING_RATE:-5e-5}"
+TARGET_KL="${TARGET_KL:-0.02}"
 SEED="${SEED:-1}"
 WATCHDOG_SECONDS="${WATCHDOG_SECONDS:-7200}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
@@ -45,6 +48,9 @@ echo "  total_timesteps:     ${TOTAL_TIMESTEPS}"
 echo "  size:                ${SIZE}"
 echo "  critic_warmup:       ${CRITIC_WARMUP}"
 echo "  start_curric_level:  ${START_CURRICULUM_LEVEL}"
+echo "  ent_coef:            ${ENT_COEF}"
+echo "  learning_rate:       ${LEARNING_RATE}"
+echo "  target_kl:           ${TARGET_KL}"
 echo "  seed:                ${SEED}"
 echo "  watchdog:            ${WATCHDOG_SECONDS}s"
 echo "  W&B project:         ${WANDB_PROJECT}"
@@ -96,6 +102,10 @@ python ppo.py \
     --start-from "$START_FROM" \
     --critic-warmup "$CRITIC_WARMUP" \
     --start-curriculum-level "$START_CURRICULUM_LEVEL" \
+    --ent-coef-start "$ENT_COEF" \
+    --ent-coef-end "$ENT_COEF" \
+    --learning-rate "$LEARNING_RATE" \
+    --target-kl "$TARGET_KL" \
     --total-timesteps "$TOTAL_TIMESTEPS" \
     --track \
     --wandb-project-name "$WANDB_PROJECT" \
