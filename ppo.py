@@ -66,9 +66,14 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     start_from: Optional[str] = None
-    """Path of a model from which to start the training (instead of from scratch)"""
+    """Local path OR W&B run id of a checkpoint to start from (e.g. an SFT actor)."""
     start_from_wandb: Optional[str] = None
     """wandb run id to continue from"""
+    critic_warmup: int = 0
+    """Number of initial PPO iterations to train ONLY the critic head (encoder +
+    actor heads frozen, value-loss only) before unfreezing for joint PPO. Lets a
+    random-init critic catch up to an SFT-pretrained actor without its gradients
+    corrupting the shared encoder. 0 = no warm-up."""
 
     # Algorithm specific arguments
     env_id: str = "factorion/FactorioEnv-v0"
@@ -1362,6 +1367,12 @@ if __name__ == "__main__":
     _next_eval_log_step = 256
     print(f"Starting {args.num_iterations} iterations")
     iteration_of_last_increase = 0
+    # Critic warm-up: params to FREEZE during the warm-up (everything except the
+    # critic head — i.e. the shared encoder + all actor heads). Toggled per
+    # iteration below.
+    actor_trunk_params = [
+        p for n, p in agent.named_parameters() if "critic_head" not in n
+    ]
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
@@ -1376,6 +1387,14 @@ if __name__ == "__main__":
         ent_coef = args.ent_coef_end + ent_frac * (
             args.ent_coef_start - args.ent_coef_end
         )
+
+        # Critic warm-up: freeze the encoder + actor heads while the critic
+        # catches up, then unfreeze for joint PPO. requires_grad_ is a no-op when
+        # already set, so this only flips (and triggers one recompile) at the
+        # warm-up -> joint transition.
+        warming_up = iteration <= args.critic_warmup
+        for p in actor_trunk_params:
+            p.requires_grad_(not warming_up)
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -1605,7 +1624,13 @@ if __name__ == "__main__":
                 entropy_loss = entropy_B.mean()
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
-                loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
+                if warming_up:
+                    # Critic-only warm-up: train the value head on the rollout
+                    # returns; actor + encoder are frozen so pg/entropy are
+                    # excluded (still computed above for logging).
+                    loss = v_loss * args.vf_coef
+                else:
+                    loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
