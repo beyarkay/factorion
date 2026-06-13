@@ -88,6 +88,14 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
+    lr_anneal_timesteps: int = 0
+    """If >0, anneal LR from learning_rate down to min_lr linearly over the first
+    this-many env steps, then HOLD at min_lr. Decouples the LR schedule from
+    total_timesteps so a long run uses the same early decay as a short one (fast
+    climb) and then keeps training at a small floor instead of freezing at 0.
+    0 = legacy behaviour (anneal to 0 over the whole run)."""
+    min_lr: float = 0.0
+    """LR floor held after lr_anneal_timesteps (only used when lr_anneal_timesteps > 0)."""
     gamma: float = 0.9857
     """the discount factor gamma"""
     gae_lambda: float = 0.8014
@@ -1378,8 +1386,17 @@ if __name__ == "__main__":
         # print(f"{iteration=}")
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.learning_rate
+            if args.lr_anneal_timesteps > 0:
+                # Fixed-horizon anneal: learning_rate -> min_lr over the first
+                # lr_anneal_timesteps env steps, then hold at min_lr. Decoupled
+                # from total_timesteps so the early decay (and climb) matches a
+                # short run and the long run keeps training at a small floor.
+                # global_step here is the count BEFORE this iteration's rollout.
+                frac = min(1.0, global_step / args.lr_anneal_timesteps)
+                lrnow = args.learning_rate + frac * (args.min_lr - args.learning_rate)
+            else:
+                frac = 1.0 - (iteration - 1.0) / args.num_iterations
+                lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end

@@ -32,6 +32,8 @@ START_CURRICULUM_LEVEL="${START_CURRICULUM_LEVEL:-22}"
 ENT_COEF="${ENT_COEF:-0}"
 LEARNING_RATE="${LEARNING_RATE:-5e-5}"
 TARGET_KL="${TARGET_KL:-0.02}"
+LR_ANNEAL_TIMESTEPS="${LR_ANNEAL_TIMESTEPS:-500000}"
+MIN_LR="${MIN_LR:-1e-5}"
 SEED="${SEED:-1}"
 WATCHDOG_SECONDS="${WATCHDOG_SECONDS:-7200}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
@@ -51,6 +53,8 @@ echo "  start_curric_level:  ${START_CURRICULUM_LEVEL}"
 echo "  ent_coef:            ${ENT_COEF}"
 echo "  learning_rate:       ${LEARNING_RATE}"
 echo "  target_kl:           ${TARGET_KL}"
+echo "  lr_anneal_timesteps: ${LR_ANNEAL_TIMESTEPS}"
+echo "  min_lr:              ${MIN_LR}"
 echo "  seed:                ${SEED}"
 echo "  watchdog:            ${WATCHDOG_SECONDS}s"
 echo "  W&B project:         ${WANDB_PROJECT}"
@@ -106,6 +110,8 @@ python ppo.py \
     --ent-coef-end "$ENT_COEF" \
     --learning-rate "$LEARNING_RATE" \
     --target-kl "$TARGET_KL" \
+    --lr-anneal-timesteps "$LR_ANNEAL_TIMESTEPS" \
+    --min-lr "$MIN_LR" \
     --total-timesteps "$TOTAL_TIMESTEPS" \
     --track \
     --wandb-project-name "$WANDB_PROJECT" \

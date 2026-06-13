@@ -47,6 +47,16 @@ on:
         required: false
         default: "0.02"
         type: string
+      lr_anneal_timesteps:
+        description: "Anneal LR -> min_lr over the first N env steps, then hold (decoupled from total_timesteps). 0 = legacy anneal-to-0 over the whole run"
+        required: false
+        default: "500000"
+        type: string
+      min_lr:
+        description: "LR floor held after lr_anneal_timesteps (keeps a long run improving instead of freezing at 0)"
+        required: false
+        default: "1e-5"
+        type: string
       seed:
         description: "Random seed"
         required: false
@@ -150,6 +160,8 @@ jobs:
             ENT_COEF="${{ inputs.ent_coef }}" \
             LEARNING_RATE="${{ inputs.learning_rate }}" \
             TARGET_KL="${{ inputs.target_kl }}" \
+            LR_ANNEAL_TIMESTEPS="${{ inputs.lr_anneal_timesteps }}" \
+            MIN_LR="${{ inputs.min_lr }}" \
             SEED="${{ inputs.seed }}" \
             WATCHDOG_SECONDS="$WATCHDOG_SECONDS" \
             PR_NUMBER="manual-${REF}" \
