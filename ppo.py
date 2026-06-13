@@ -137,7 +137,7 @@ class Args:
     """Number of channels in the first layer of the CNN encoder"""
     chan2: int = 48
     """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 48
+    chan3: int = 64
     """Number of channels in the third layer of the CNN encoder"""
     flat_dim: int = 128
     """Output size of the fully connected layer after the encoder"""
