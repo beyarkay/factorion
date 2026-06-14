@@ -137,6 +137,13 @@ class Args:
     """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
+    kl_anchor_coef: float = 0.0
+    """RLHF-style anchor: penalise KL(current policy || frozen SFT reference) in
+    the actor loss (Schulman k3 estimator over rollout actions). >0 keeps the
+    finetuned policy near the SFT init so PPO can't drift it off the good basin
+    (the demonstrated SFT->PPO degradation: full-build 0.67 -> ~0.2 as the policy
+    over-places and stops completing). Requires --start_from. 0 = disabled (no
+    reference net built, zero overhead)."""
     target_kl: Optional[float] = None
     """the target KL divergence threshold"""
     adam_epsilon: float = 6.866e-06
@@ -165,6 +172,31 @@ class Args:
     """Advance the curriculum (num_missing_entities += 1) once the throughput moving
     average exceeds this. Set >1.0 to pin the level so the agent perfects it to 1.0
     instead of advancing at 0.95."""
+    checkpoint_every: int = 0
+    """If >0, save the agent state_dict to artifacts/<run>-iterNNNN.pt every N
+    iterations (in addition to the end-of-run save). Lets you greedy-eval a run's
+    real progress mid-flight and kill plateaued/degrading runs without losing the
+    weights. 0 = only the end-of-run save."""
+    greedy_eval_seeds: int = 20
+    """Number of fresh empty-factory seeds averaged for the greedy eval metric
+    (eval/greedy_empty_throughput). Each seed: start from a completely empty
+    factory, place entities GREEDILY (argmax) until throughput == 1.0 or
+    max_steps, then read the built factory's throughput. This is the honest,
+    deployable metric — the deterministic policy on fresh factories — unlike the
+    sampled episode/throughput, which is inflated by sampling luck and trivial
+    no-op episodes. (EOT is not used as a stop yet; see issue #137.)"""
+    greedy_eval_every: int = 1
+    """Run the greedy empty-factory eval every N iterations (1 = every iter).
+    Logged as eval/greedy_empty_throughput."""
+    min_curriculum_level: int = 0
+    """Lower bound on num_missing_entities per episode. Each reset draws
+    num_missing ~ randint(min_curriculum_level, max_missing_entities + 1). The
+    default 0 includes already-complete (no-op) factories. Set equal to
+    start_curriculum_level to train a FIXED difficulty — e.g.
+    --min-curriculum-level 22 --start-curriculum-level 22 trains full-blank only,
+    which is ON-distribution for an SFT flow-order policy (it builds from the
+    source outward) and avoids the OOD partial-fill valley + the no-op episodes
+    that flood the metric and pull the policy off the SFT basin."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -1231,6 +1263,9 @@ if __name__ == "__main__":
         wandb.define_metric("curriculum/score", summary="max")
         wandb.define_metric("curriculum/level", summary="max")
         wandb.define_metric("curriculum/throughput_avg", summary="last")
+        wandb.define_metric("eval/greedy_empty_throughput", summary="max")
+        wandb.define_metric("eval/stop_frac_completed", summary="max")
+        wandb.define_metric("eval/mean_stop_step", summary="last")
         for m in [
             "policy",
             "value",
@@ -1309,8 +1344,99 @@ if __name__ == "__main__":
 
     agent.to(device)
 
+    # ── Frozen SFT reference for the KL anchor (RLHF-style anti-drift) ──
+    # Built from the SAME weights the actor starts at; never updated. Used only
+    # to penalise KL(current || reference) so PPO can't drift the policy off the
+    # SFT basin. Gated on kl_anchor_coef so there's zero overhead when disabled.
+    ref_agent = None
+    if args.kl_anchor_coef > 0.0:
+        if args.start_from is None:
+            raise ValueError("--kl-anchor-coef > 0 requires --start_from (a reference)")
+        ref_agent = AgentCNN(
+            envs,
+            chan1=args.chan1,
+            chan2=args.chan2,
+            chan3=args.chan3,
+            flat_dim=args.flat_dim,
+            tile_head_std=args.tile_head_std,
+        )
+        ref_agent.load_state_dict(torch.load(resolved, map_location="cpu"))
+        ref_agent.to(device)
+        ref_agent.eval()
+        for p in ref_agent.parameters():
+            p.requires_grad_(False)
+        print(f"KL anchor enabled (coef={args.kl_anchor_coef}) against frozen SFT ref")
+
     print("Compiling agent with torch.compile()")
     agent = torch.compile(agent)
+
+    # ── Greedy empty-factory eval ────────────────────────────────────
+    # A dedicated single env (kept separate from the training vec-env so eval
+    # never disturbs rollout/curriculum state). Each call: start from a fully
+    # empty factory and place entities GREEDILY (argmax of every head) until the
+    # factory works (throughput == 1.0 → env terminates) OR we run out of steps
+    # (max_steps), then read the built factory's throughput; average over
+    # greedy_eval_seeds fresh seeds. This is the deployable metric — the
+    # deterministic policy on fresh factories.
+    #
+    # NB: EOT is deliberately NOT used as a stop here yet — the EOT head is
+    # trained in SFT but frozen+unused in PPO, so gating on it would just measure
+    # stale SFT calibration. Wiring EOT into PPO (train it + use it to stop) is
+    # tracked in issue #137; once that lands this eval should stop on EOT.
+    eval_env = make_env(
+        args.env_id, 10_000, False, args.size, run_name, reward_coeffs
+    )()
+    eval_full_blank = args.size * 2
+
+    @torch.no_grad()
+    def eval_greedy_empty(n_seeds: int) -> dict:
+        """Greedy empty-factory rollout: sample argmax until throughput==1.0 or
+        max_steps. Returns mean throughput, the fraction of seeds that fully
+        built (stop_frac_completed), and the mean number of placements before
+        stopping (mean_stop_step)."""
+        m = getattr(agent, "_orig_mod", agent)  # uncompiled module (shared weights)
+        was_training = m.training
+        m.eval()
+        thputs, stop_steps, completed = [], [], 0
+        cap = eval_env.unwrapped.max_steps + 1
+        for s in range(n_seeds):
+            obs, _ = eval_env.reset(
+                seed=1_000_000 + s,
+                options={"num_missing_entities": eval_full_blank},
+            )
+            last_thput = 0.0  # empty factory has zero throughput
+            placed, did_complete = 0, False
+            for _ in range(cap):
+                x = torch.as_tensor(np.array([obs]), dtype=torch.float32, device=device)
+                enc = m.encoder(x)
+                tile_idx = int(m.tile_logits(enc).reshape(1, -1).argmax(1)[0])
+                xi, yi = tile_idx // m.height, tile_idx % m.height
+                feat = enc[:, :, xi, yi]
+                action = {
+                    "xy": np.array([xi, yi]),
+                    "entity": int(m.ent_head(feat).argmax(1)[0]),
+                    "direction": int(m.dir_head(feat).argmax(1)[0]),
+                    "item": int(m.item_head(feat).argmax(1)[0]),
+                    "misc": int(m.misc_head(feat).argmax(1)[0]),
+                }
+                obs, _r, term, trunc, info = eval_env.step(action)
+                placed += 1
+                last_thput = float(info.get("throughput", last_thput))
+                if term:  # throughput reached 1.0
+                    did_complete = True
+                    break
+                if trunc:  # ran out of steps
+                    break
+            thputs.append(last_thput)
+            stop_steps.append(placed)
+            completed += int(did_complete)
+        if was_training:
+            m.train()
+        return {
+            "eval/greedy_empty_throughput": float(np.mean(thputs)),
+            "eval/stop_frac_completed": completed / float(n_seeds),
+            "eval/mean_stop_step": float(np.mean(stop_steps)),
+        }
 
     optimizer = optim.Adam(
         agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon
@@ -1330,6 +1456,10 @@ if __name__ == "__main__":
     logprobs_SE = torch.zeros(
         (args.num_steps, args.num_envs), dtype=torch.float32, device=device
     )
+    # Reference (frozen SFT) log-prob of each rollout action, for the KL anchor.
+    ref_logprobs_SE = torch.zeros(
+        (args.num_steps, args.num_envs), dtype=torch.float32, device=device
+    )
     rewards_SE = torch.zeros(
         (args.num_steps, args.num_envs), dtype=torch.float32, device=device
     )
@@ -1347,7 +1477,11 @@ if __name__ == "__main__":
         seed=args.seed,
         options={
             "num_missing_entities": int(
-                torch.randint(0, max_missing_entities + 1, (1,))[0]
+                torch.randint(
+                    min(args.min_curriculum_level, max_missing_entities),
+                    max_missing_entities + 1,
+                    (1,),
+                )[0]
             ),
         },
     )
@@ -1366,6 +1500,8 @@ if __name__ == "__main__":
                 "curriculum/level": max_missing_entities,
                 "curriculum/score": (max_missing_entities - 1) + final_thputs_100ma,
                 "curriculum/throughput_avg": final_thputs_100ma,
+                # Greedy empty-factory eval of the (SFT) init, before any RL.
+                **eval_greedy_empty(args.greedy_eval_seeds),
             },
             step=0,
         )
@@ -1459,6 +1595,14 @@ if __name__ == "__main__":
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
+            # KL anchor: log-prob of this same action under the frozen SFT ref.
+            if ref_agent is not None:
+                with torch.no_grad():
+                    _, ref_logprobs_E, _, _ = ref_agent.get_action_and_value(
+                        next_obs_ECWH, action_EA
+                    )
+                ref_logprobs_SE[step] = ref_logprobs_E
+
             action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(
@@ -1476,7 +1620,11 @@ if __name__ == "__main__":
                     seed=args.seed + idx,
                     options={
                         "num_missing_entities": int(
-                            torch.randint(0, max_missing_entities + 1, (1,))[0]
+                            torch.randint(
+                                min(args.min_curriculum_level, max_missing_entities),
+                                max_missing_entities + 1,
+                                (1,),
+                            )[0]
                         )
                     },
                 )
@@ -1584,6 +1732,7 @@ if __name__ == "__main__":
         # flatten the batch
         obs_B = obs_SECWH.reshape((-1,) + envs.single_observation_space.shape)
         logprobs_B = logprobs_SE.reshape(-1)
+        ref_logprobs_B = ref_logprobs_SE.reshape(-1)
         # NOTE: maybe have to convert back to tuple of batches
         actions_B = actions_SEA.reshape((-1,) + ACTION_SPACE_SHAPE)
         advantages_B = advantages_SE.reshape(-1)
@@ -1651,6 +1800,16 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - returns_B[idxs]) ** 2).mean()
 
                 entropy_loss = entropy_B.mean()
+
+                # KL anchor to the frozen SFT reference (Schulman k3 estimator,
+                # always >= 0). logr = ref - current over the rollout actions;
+                # k3 = exp(logr) - 1 - logr estimates KL(current || ref). Adding
+                # it to the actor loss pulls the policy back toward SFT.
+                kl_anchor = torch.zeros((), device=device)
+                if ref_agent is not None:
+                    logr_ref = ref_logprobs_B[idxs].reshape(-1) - newlogprobs_B
+                    kl_anchor = (logr_ref.exp() - 1 - logr_ref).mean()
+
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
                 if warming_up:
@@ -1659,7 +1818,12 @@ if __name__ == "__main__":
                     # excluded (still computed above for logging).
                     loss = v_loss * args.vf_coef
                 else:
-                    loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
+                    loss = (
+                        pg_loss
+                        - ent_coef * entropy_loss
+                        + v_loss * args.vf_coef
+                        + args.kl_anchor_coef * kl_anchor
+                    )
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
@@ -1688,6 +1852,7 @@ if __name__ == "__main__":
             "losses/value": v_loss.item(),
             "losses/entropy": entropy_loss.item(),
             "losses/approx_kl": approx_kl.item(),
+            "losses/kl_anchor": float(kl_anchor.detach()),
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_var": explained_var,
             "optim/lr": optimizer.param_groups[0]["lr"],
@@ -1698,6 +1863,11 @@ if __name__ == "__main__":
 
         # Flush episode means (empty dict if no episodes ended this iteration)
         iter_metrics.update(_flush_episode_means())
+
+        # Greedy empty-factory eval — the honest, deployable metric + stop-reason
+        # breakdown (eot / completed / cap) so you can watch EOT calibration.
+        if args.greedy_eval_every > 0 and iteration % args.greedy_eval_every == 0:
+            iter_metrics.update(eval_greedy_empty(args.greedy_eval_seeds))
 
         # Curriculum metrics — moving averages preserved exactly as before
         if len(end_of_episode_thputs) > 0:
@@ -1724,6 +1894,16 @@ if __name__ == "__main__":
         # Single wandb.log() call per iteration
         if args.track:
             wandb.log(iter_metrics, step=global_step)
+
+        # Periodic checkpoint so progress can be greedy-evaluated mid-run.
+        if args.checkpoint_every > 0 and iteration % args.checkpoint_every == 0:
+            os.makedirs("artifacts", exist_ok=True)
+            run_name_dir_safe = (
+                run_name.replace("/", "-").replace(":", "-").replace(" ", "_")
+            )
+            ckpt_path = f"artifacts/{run_name_dir_safe}-iter{iteration:04d}.pt"
+            torch.save(agent.state_dict(), ckpt_path)
+            print(f"[checkpoint] saved {ckpt_path}")
 
         if args.capture_video and (
             (iteration - 1) % 50 == 0 or iteration + 1 == args.num_iterations
