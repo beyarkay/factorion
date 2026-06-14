@@ -1813,16 +1813,43 @@ def build_factory(
                 ).permute(2, 0, 1)
                 # Restart the loop until we get a source+sink that can be connected
                 continue
-            else:
-                # Choose a valid path at random and add it to the map
-                chosen_path = random.choice(paths)
-                total_entities = len(chosen_path)
-                for x, y, d in chosen_path:
-                    world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+
+            # Choose a valid path that ACTUALLY carries throughput.
+            # find_belt_paths_with_source_sink_orient can return paths that are
+            # geometrically connected but functionally broken (carry zero items)
+            # when the random source/sink placement is degenerate — too close,
+            # adjacent, or oriented so the belt can't deliver. Laying one of those
+            # blindly produced ~5-13% zero-throughput MOVE_ONE_ITEM factories
+            # (size-dependent) — broken training targets no policy can complete.
+            # So try paths in random order and keep the first that simulates to
+            # positive throughput; if none do, the source/sink is degenerate —
+            # resample it.
+            random.shuffle(paths)
+            chosen_path = None
+            for candidate in paths:
+                trial = world_CWH.clone()
+                for x, y, d in candidate:
+                    trial[Channel.ENTITIES.value, x, y] = str2ent(
                         "transport_belt"
                     ).value
-                    world_CWH[Channel.DIRECTION.value, x, y] = d.value
+                    trial[Channel.DIRECTION.value, x, y] = d.value
+                tp, _ = factorion_rs.simulate_throughput(
+                    trial.permute(1, 2, 0).to(torch.int64).numpy()
+                )
+                if tp > 0:
+                    chosen_path = candidate
+                    world_CWH = trial
+                    break
 
+            if chosen_path is None:
+                # Every candidate path is functionally broken → degenerate
+                # source/sink. Reject this factory and resample.
+                world_CWH = torch.tensor(
+                    new_world(width=size, height=size)
+                ).permute(2, 0, 1)
+                continue
+
+            total_entities = len(chosen_path)
             break
         if count == 0:
             return None
