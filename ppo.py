@@ -158,6 +158,13 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    deep_encoder: bool = False
+    """Use the 6-conv-layer encoder (receptive field 13x13 >= the grid) instead
+    of the shallow 3-layer one (RF 7x7). The shallow encoder can't see both
+    source and sink from a far tile, so the belt-direction head plateaus (~0.92
+    held-out) and greedy full-build caps ~0.64; the deep encoder + canonical
+    routing lifts greedy build to ~0.90. Must match the --start_from checkpoint's
+    architecture."""
     size: int = 12
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -1018,7 +1025,14 @@ class FactorioEnv(gym.Env):
 
 class AgentCNN(nn.Module):
     def __init__(
-        self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01
+        self,
+        envs,
+        chan1=32,
+        chan2=64,
+        chan3=64,
+        flat_dim=256,
+        tile_head_std=0.01,
+        deep_encoder=False,
     ):
         super().__init__()
         base_env = envs.envs[0].unwrapped
@@ -1035,14 +1049,35 @@ class AgentCNN(nn.Module):
         self.num_misc = len(Misc)
         self.chan3 = chan3
 
-        self.encoder = nn.Sequential(
-            layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(chan1, chan2, kernel_size=3, padding=1)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
-            nn.ReLU(),
-        )
+        if deep_encoder:
+            # 6 conv layers (3x3) -> receptive field 13x13 >= the 11x11 grid, so
+            # EVERY tile can see both source and sink. The shallow 3-layer encoder
+            # only reaches 7x7, which is why the belt-DIRECTION head plateaued at
+            # ~0.92 on held-out (a turn far from the sink can't see which way to
+            # route) and capped greedy full-build at ~0.64. Full RF + canonical
+            # routing lifts greedy build to ~0.90.
+            hidden = [64, 96, 96, 96, 96]
+            layers, c_in = [], self.channels
+            for c_out in hidden:
+                layers += [
+                    layer_init(nn.Conv2d(c_in, c_out, kernel_size=3, padding=1)),
+                    nn.ReLU(),
+                ]
+                c_in = c_out
+            layers += [
+                layer_init(nn.Conv2d(c_in, chan3, kernel_size=3, padding=1)),
+                nn.ReLU(),
+            ]
+            self.encoder = nn.Sequential(*layers)
+        else:
+            self.encoder = nn.Sequential(
+                layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(chan1, chan2, kernel_size=3, padding=1)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
+                nn.ReLU(),
+            )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(f"Encoder has {num_params_encoder} params")
 
@@ -1331,6 +1366,7 @@ if __name__ == "__main__":
         chan3=args.chan3,
         flat_dim=args.flat_dim,
         tile_head_std=args.tile_head_std,
+        deep_encoder=args.deep_encoder,
     )
 
     if args.start_from is not None:
@@ -1359,6 +1395,7 @@ if __name__ == "__main__":
             chan3=args.chan3,
             flat_dim=args.flat_dim,
             tile_head_std=args.tile_head_std,
+            deep_encoder=args.deep_encoder,
         )
         ref_agent.load_state_dict(torch.load(resolved, map_location="cpu"))
         ref_agent.to(device)
