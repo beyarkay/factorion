@@ -184,11 +184,13 @@ class Args:
     iterations (in addition to the end-of-run save). Lets you greedy-eval a run's
     real progress mid-flight and kill plateaued/degrading runs without losing the
     weights. 0 = only the end-of-run save."""
-    greedy_eval_seeds: int = 20
+    greedy_eval_seeds: int = 128
     """Number of fresh empty-factory seeds averaged for the greedy eval metric
-    (eval/greedy_empty_throughput). Each seed: start from a completely empty
-    factory, place entities GREEDILY (argmax) until throughput == 1.0 or
-    max_steps, then read the built factory's throughput. This is the honest,
+    (eval/greedy_empty_throughput). 128 keeps the per-iteration eval under ~2s on
+    CPU (20 was too noisy — flipped ~0.1 between iters; 600 would cost ~10-16s/iter).
+    Each seed: start from a completely empty factory, place entities GREEDILY
+    (argmax) until throughput == 1.0 or max_steps, then read the built factory's
+    throughput. This is the honest,
     deployable metric — the deterministic policy on fresh factories — unlike the
     sampled episode/throughput, which is inflated by sampling luck and trivial
     no-op episodes. (EOT is not used as a stop yet; see issue #137.)"""
