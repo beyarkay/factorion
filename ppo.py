@@ -161,10 +161,11 @@ class Args:
     deep_encoder: bool = False
     """Use the 6-conv-layer encoder (receptive field 13x13 >= the grid) instead
     of the shallow 3-layer one (RF 7x7). The shallow encoder can't see both
-    source and sink from a far tile, so the belt-direction head plateaus (~0.92
-    held-out) and greedy full-build caps ~0.64; the deep encoder + canonical
-    routing lifts greedy build to ~0.90. Must match the --start_from checkpoint's
-    architecture."""
+    source and sink from a far tile, so the belt-direction head plateaus and
+    greedy full-build caps ~0.64; the deep encoder lifts held-out greedy build to
+    ~0.85-0.90 (ablation: the deep RECEPTIVE FIELD is the driver — training on
+    diverse random routes works as well as / better than a canonical route).
+    Must match the --start_from checkpoint's architecture."""
     size: int = 12
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -1054,10 +1055,11 @@ class AgentCNN(nn.Module):
         if deep_encoder:
             # 6 conv layers (3x3) -> receptive field 13x13 >= the 11x11 grid, so
             # EVERY tile can see both source and sink. The shallow 3-layer encoder
-            # only reaches 7x7, which is why the belt-DIRECTION head plateaued at
-            # ~0.92 on held-out (a turn far from the sink can't see which way to
-            # route) and capped greedy full-build at ~0.64. Full RF + canonical
-            # routing lifts greedy build to ~0.90.
+            # only reaches 7x7, which is why the belt-DIRECTION head plateaued on
+            # held-out (a turn far from the sink can't see which way to route) and
+            # capped greedy full-build at ~0.64. The full receptive field lifts
+            # held-out greedy build to ~0.85-0.90 (ablation: the RF is the driver,
+            # not the route choice).
             hidden = [64, 96, 96, 96, 96]
             layers, c_in = [], self.channels
             for c_out in hidden:
