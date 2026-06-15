@@ -1,8 +1,15 @@
 # sft_sweep.yaml — SFT CNN-architecture sweep
 #
 # Searches the encoder architecture (depth + per-layer width + receptive
-# field) against the greedy-build metric `val/throughput` — the honest
-# "can it actually build the factory" number, not the per-head accuracy.
+# field) against the greedy-build metric — the honest "can it actually
+# build the factory" number, not the per-head accuracy.
+#
+# Target is `best_val_throughput`: the run.summary scalar sft.py sets to
+# the MAX greedy throughput over training (the same number that selects
+# the checkpoint). Optimising the per-epoch `val/throughput` history key
+# would instead chase the LAST epoch's value — sft.py defines no
+# summary="max" for it — so it would reward late-epoch noise, not the
+# best achievable architecture.
 #
 # Compute-budget knobs (size, num_samples, epochs) are PINNED to the C7
 # high-throughput regime (held-out greedy 0.947: size 11, ~300k expert
@@ -20,7 +27,7 @@
 method: bayes
 run_cap: 60
 metric:
-  name: "val/throughput"
+  name: "best_val_throughput"
   goal: maximize
 
 parameters:
@@ -35,14 +42,19 @@ parameters:
     value: 0  # auto = 2*size entities blanked (full-chain build)
 
   # ── Encoder architecture (the search) ────────────────────────────
-  # Each layer{1..8} is that conv layer's channel width; the encoder uses
-  # every slot with width > 0, in order, so driving a slot to 0 drops a
-  # layer — Bayes tunes depth AND width as independent ordinal dimensions
-  # (int_uniform, not a categorical "64,64,64" string it can't reason
-  # about). layer1..3 stay positive to keep a sane minimum depth of 3;
-  # layer4..8 may reach 0. RF = 1 + n_layers * (kernel_size - 1): the C7
-  # winner was 6 layers @ kernel 3 (RF 13 >= the grid). kernel_size 5
+  # Each layer{1..8} is a conv layer's channel width; the encoder uses every
+  # slot with width > 0, in order, so a slot of 0 drops that layer. Width
+  # and depth are thus tuned together. RF = 1 + n_layers * (kernel_size - 1):
+  # the C7 winner was 6 layers @ kernel 3 (RF 13 >= the grid); kernel_size 5
   # reaches the same RF in fewer, wider layers.
+  #
+  # layer1..3 are always-present ordinal widths (int_uniform), giving a
+  # minimum depth of 3. layer4..8 are a small ORDERED set INCLUDING 0, so
+  # "drop this layer" has real probability (~1/5 each) and depth genuinely
+  # varies across 3..8 — int_uniform almost never samples exactly 0, which
+  # would pin depth at 8 and leave the layer-count knob dead. This is the
+  # one place we accept a per-slot categorical: depth needs a discrete
+  # on/off, and the set stays small + ordered so Bayes still searches it.
   layer1:
     distribution: int_uniform
     min: 32
@@ -56,25 +68,15 @@ parameters:
     min: 32
     max: 96
   layer4:
-    distribution: int_uniform
-    min: 0
-    max: 96
+    values: [0, 32, 48, 64, 96]
   layer5:
-    distribution: int_uniform
-    min: 0
-    max: 96
+    values: [0, 32, 48, 64, 96]
   layer6:
-    distribution: int_uniform
-    min: 0
-    max: 96
+    values: [0, 32, 48, 64, 96]
   layer7:
-    distribution: int_uniform
-    min: 0
-    max: 96
+    values: [0, 32, 48, 64, 96]
   layer8:
-    distribution: int_uniform
-    min: 0
-    max: 96
+    values: [0, 32, 48, 64, 96]
   kernel_size:
     values: [3, 5]
 
@@ -83,8 +85,8 @@ parameters:
   # suit; letting it adapt keeps the architecture comparison honest.
   lr:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 3e-3
+    min: 1.0e-4
+    max: 3.0e-3
 
 program: sft.py
 
