@@ -759,20 +759,6 @@ def train_sft(args: SFTArgs):
                 seeds_by_kind.get(k.name, set())
             )
 
-        # Default the x-axis to "optimisation pressure applied" rather than
-        # epoch index. Logging once per epoch makes wandb's implicit _step
-        # epoch-aligned, so two runs with the same epoch count but different
-        # num_samples look identical on the x-axis despite one applying far
-        # more gradient updates. samples_seen (cumulative training pairs the
-        # model was updated on) scales with both epochs AND num_samples — and,
-        # unlike global_step, stays comparable across batch_size changes — so
-        # we make it the default x-axis for every metric. global_step (raw
-        # optimiser updates) and epoch are still logged for anyone who wants
-        # to switch the panel x-axis in the UI.
-        wandb.define_metric("train/samples_seen")
-        wandb.define_metric("train/global_step")
-        wandb.define_metric("*", step_metric="train/samples_seen")
-
     best_val_acc = 0.0
     val_loss = 0.0
     val_tile_acc = 0.0
@@ -1208,6 +1194,20 @@ def train_sft(args: SFTArgs):
             print(f"  per-kind val_acc: {kind_summary}")
 
         if args.track and run is not None:
+            # Drive wandb's underlying _step with samples_seen (cumulative
+            # training pairs the model has been updated on) instead of
+            # letting it auto-increment once per epoch. This is what makes
+            # the x-axis measure "optimisation pressure applied": two runs
+            # with the same epoch count but different num_samples now spread
+            # across proportionally different x-ranges. Crucially, _step is
+            # the axis EVERY default panel plots against — including ones
+            # already pinned to "Step" in an existing workspace — so this
+            # fixes panels (e.g. val/<kind>/throughput) that define_metric's
+            # step_metric alone could not retarget. samples_seen rather than
+            # global_step because it stays comparable across batch_size
+            # changes; both are still logged as metrics so either can be
+            # picked as a custom x-axis in the UI. (_step must increase
+            # monotonically — samples_seen does, by construction.)
             run.log(
                 {
                     "train/loss": train_loss,
@@ -1242,7 +1242,8 @@ def train_sft(args: SFTArgs):
                     if grad_norm_count > 0
                     else float("nan"),
                     **per_kind_metrics,
-                }
+                },
+                step=samples_seen,
             )
 
         if val_acc >= best_val_acc:
