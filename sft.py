@@ -796,6 +796,13 @@ def train_sft(args: SFTArgs):
             group=args.wandb_group,
             tags=sft_tags,
         )
+        # Summarise the greedy-build metrics as their MAX over training rather
+        # than the default last-epoch value: that max is the checkpoint-
+        # selection number and the right sweep objective, while the metric
+        # still streams to history every epoch (so a sweep sees incremental
+        # progress and can rank / early-stop on it). See sft_sweep.yaml.
+        run.define_metric("val/throughput", summary="max")
+        run.define_metric("val/throughput_eot", summary="max")
         # Dataset composition is a one-shot constant for the run — write it
         # to summary (which keeps the value visible in the run sidebar)
         # rather than wandb.log (which would create a flat plottable line).
