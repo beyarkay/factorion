@@ -474,7 +474,14 @@ def run_rollout_eval(
     was_training = agent.training
     agent.eval()
 
-    max_level = args.max_level if args.max_level > 0 else 2 * args.size
+    # Greedy build metric = build from a COMPLETELY EMPTY grid. Blank the
+    # whole factory: size*size >= any factory's entity count, so
+    # blank_entities removes every placeable entity (it caps at
+    # total_entities). The old 2*size left 6/7 lesson kinds partly built
+    # (e.g. ASSEMBLE_2IN_1OUT has up to 66 entities >> 2*size=22), which
+    # measured "finish a half-built factory", not true build skill. Mirrors
+    # the training-side full blank (max_level == size*size when unset).
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
 
     # Deterministic, run-stable subsample of val seeds. Sorting first
     # makes the selection independent of dict iteration order, then we
