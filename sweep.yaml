@@ -42,14 +42,45 @@ parameters:
     min: 5e-5
     max: 1e-3
 
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
+  # CNN encoder architecture: each layer{1..8} is a conv layer's channel
+  # width; width 0 drops the layer (slots compacted in order), so Bayes tunes
+  # depth and width as independent ordinal dims. layer1..3 stay positive (min
+  # depth 3); layer4..8 may reach 0. kernel_size sets the receptive field
+  # (RF = 1 + n_layers * (kernel_size - 1)).
+  layer1:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer2:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer3:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer4:
+    distribution: int_uniform
+    min: 0
+    max: 64
+  layer5:
+    distribution: int_uniform
+    min: 0
+    max: 64
+  layer6:
+    distribution: int_uniform
+    min: 0
+    max: 64
+  layer7:
+    distribution: int_uniform
+    min: 0
+    max: 64
+  layer8:
+    distribution: int_uniform
+    min: 0
+    max: 64
+  kernel_size:
+    values: [3, 5]
 
   clip_coef:
     distribution: uniform

@@ -29,9 +29,15 @@ from wandb_metric import read_metric
 # Only these will be updated; other sweep config keys are ignored.
 TUNABLE_PARAMS = {
     "adam_epsilon": "float",
-    "chan1": "int",
-    "chan2": "int",
-    "chan3": "int",
+    "layer1": "int",
+    "layer2": "int",
+    "layer3": "int",
+    "layer4": "int",
+    "layer5": "int",
+    "layer6": "int",
+    "layer7": "int",
+    "layer8": "int",
+    "kernel_size": "int",
     "clip_coef": "float",
     "coeff_throughput": "float",
     "coeff_shaping_direction": "float",
@@ -39,7 +45,6 @@ TUNABLE_PARAMS = {
     "coeff_shaping_location": "float",
     "ent_coef_start": "float",
     "ent_coef_end": "float",
-    "flat_dim": "int",
     "gae_lambda": "float",
     "gamma": "float",
     "learning_rate": "float",
@@ -118,12 +123,8 @@ def main():
         required=True,
         help="Full sweep path (entity/project/sweep_id)",
     )
-    parser.add_argument(
-        "--ppo-file", default="ppo.py", help="Path to ppo.py"
-    )
-    parser.add_argument(
-        "--base-branch", default="main", help="Base branch for the PR"
-    )
+    parser.add_argument("--ppo-file", default="ppo.py", help="Path to ppo.py")
+    parser.add_argument("--base-branch", default="main", help="Base branch for the PR")
     parser.add_argument(
         "--pr-number",
         default=None,
@@ -248,11 +249,17 @@ def main():
 
     result = run(
         [
-            "gh", "pr", "create",
-            "--title", pr_title,
-            "--body", pr_body,
-            "--base", args.base_branch,
-            "--head", branch_name,
+            "gh",
+            "pr",
+            "create",
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
+            "--base",
+            args.base_branch,
+            "--head",
+            branch_name,
         ],
         check=False,
     )
