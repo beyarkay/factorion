@@ -11,12 +11,13 @@
 # progress incrementally (rankable / early-stoppable mid-run) rather than
 # waiting for an end-of-run-only scalar.
 #
-# Compute-budget knobs (size, num_samples) are PINNED to the C7
-# high-throughput regime (held-out greedy 0.947: size 11, ~300k expert
-# pairs, deep encoder with RF >= grid) so every run is comparable and Bayes
-# spends its budget on architecture. epochs is cut to 15 (vs C7's 50) so all
-# configs finish inside the pod budget — enough to rank architectures;
-# verify the winner at the full 50 epochs afterwards.
+# Compute-budget knobs (size, num_samples) are PINNED so every run is
+# comparable and Bayes spends its budget on architecture. They're cut below
+# the C7 regime (size 11, 300k pairs, 50 epochs) so all 20 configs finish on
+# one pod inside the 4h watchdog even with 5 agents sharing the GPU — enough
+# to RANK architectures; verify the winner at full C7 scale afterwards:
+#   num_samples 300k -> 100k, epochs 50 -> 15, and the per-epoch greedy eval
+#   (the costly, CPU-bound part) is thinned to every 3rd epoch on 50 seeds.
 #
 # Per-head loss weights (lw_*), the LR-schedule shape (warmup/min_lr),
 # regularisation and tile_head_std are deliberately NOT swept here: their
@@ -36,11 +37,19 @@ parameters:
   size:
     value: 11
   num_samples:
-    value: 300000
+    value: 100000
   epochs:
     value: 15
   max_level:
-    value: 0 # auto = 2*size entities blanked (full-chain build)
+    value: 0 # auto = size*size: training blanks the full factory
+  # Thin the per-epoch greedy eval — its rollouts hammer the Rust throughput
+  # sim every step (CPU-bound) and dominate wall-time under 5-way pod
+  # contention. Every 3rd epoch on 50 seeds keeps ~5 eval points across the
+  # 15 epochs (enough for the summary=max objective) at a fraction of the cost.
+  eval_rollouts_every_n_epochs:
+    value: 3
+  eval_rollouts_max_seeds:
+    value: 50
 
   # ── Encoder architecture (the search) ────────────────────────────
   # Each layer{1..8} is a conv layer's channel width; the encoder uses every
