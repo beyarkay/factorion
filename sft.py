@@ -199,12 +199,14 @@ class SFTArgs:
     """loss weight for the EOT (end-of-trajectory) BCE head"""
     val_frac: float = 0.1
     """fraction of data for validation"""
-    eval_rollouts_every_n_epochs: int = 5
-    """run greedy rollout eval (log final throughput on val factories) every N epochs (0 disables)"""
+    eval_rollouts_every_n_epochs: int = 1
+    """run greedy rollout eval (the default checkpoint-selection metric) every N epochs (0 disables)"""
     eval_rollouts_max_seeds: int = 100
     """cap on number of val seeds per rollout eval — bounds eval cost"""
     eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
+    rollout_eot_threshold: float = 0.5
+    """EOT-head prob above which we mark the model "would stop" (for val/throughput_eot)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     chan1: int = 48
@@ -429,7 +431,7 @@ def run_rollout_eval(
     max_seeds: int = 100,
     eot_threshold: float = 0.5,
     num_envs: int = 8,
-) -> tuple[float, dict[str, float], dict[str, int]]:
+) -> dict[str, object]:
     """Greedy rollout eval on the held-out val factories.
 
     Runs K=num_envs FactorioEnvs in parallel and batches the CNN forward
@@ -438,19 +440,28 @@ def run_rollout_eval(
     Envs are refilled from the seed queue as they finish, so all K slots
     stay busy until the queue drains.
 
-    For each held-out (seed, kind) we greedy-argmax every head and let
-    the EOT head decide when to stop. Final throughput is the last
-    `info['throughput']` the env reported — the env already calls the
-    Rust solver every step, so we don't re-run it. An env that EOTs
-    before stepping inherits the reset-time throughput of 0.
+    For each held-out (seed, kind) we greedy-argmax every head and step
+    until the env finishes (throughput==1.0 or max_steps) — we do NOT
+    let the EOT head stop us. Throughput is the last `info['throughput']`
+    the env reported (the env already calls the Rust solver every step,
+    so we don't re-run it). This `overall` number is the model's true
+    build skill independent of its stop head.
+
+    In the same single rollout we also track the throughput the model
+    *would* have produced if it trusted its EOT head: the first time the
+    EOT prob crosses `eot_threshold` for a slot we snapshot that slot's
+    current throughput. If the EOT head never fires, the model would have
+    built all the way to env-done, so its EOT-respecting value equals the
+    final throughput. The mean of those snapshots is `overall_eot`.
 
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
     in `val/throughput` over training is directly comparable to the
     existing per-kind val accuracy curves.
 
-    Returns:
-        overall_throughput, per_kind_throughput (keyed by LessonKind.name),
-        per_kind_n (sample count per kind in the eval).
+    Returns a dict with:
+        overall, overall_eot — mean throughput ignoring / respecting EOT;
+        per_kind, per_kind_eot — same, keyed by LessonKind.name;
+        per_kind_n — sample count per kind in the eval.
     """
     was_training = agent.training
     agent.eval()
@@ -466,14 +477,22 @@ def run_rollout_eval(
     seeds_sorted = seeds_sorted[:max_seeds]
 
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
+    per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
+    all_eot_throughputs: list[float] = []
 
     if not seeds_sorted:
         if was_training:
             agent.train()
-        per_kind = {kn: 0.0 for kn in per_kind_throughputs}
+        zero = {kn: 0.0 for kn in per_kind_throughputs}
         per_kind_n = {kn: 0 for kn in per_kind_throughputs}
-        return 0.0, per_kind, per_kind_n
+        return {
+            "overall": 0.0,
+            "overall_eot": 0.0,
+            "per_kind": zero,
+            "per_kind_eot": dict(zero),
+            "per_kind_n": per_kind_n,
+        }
 
     # Cap K at the number of seeds — spinning up more envs than work
     # items wastes memory. All envs use idx=0 so the seed we pass to
@@ -489,6 +508,10 @@ def run_rollout_eval(
     # work and should be skipped.
     queue = list(seeds_sorted)
     active = [True] * K
+    # Per-slot EOT bookkeeping: whether the EOT head has fired yet for the
+    # seed this slot is replaying, and the throughput snapshotted when it did.
+    eot_fired = [False] * K
+    eot_thp = [0.0] * K
     current: list[tuple[int, LessonKind, float]] = [
         (0, LessonKind.MOVE_ONE_ITEM, 0.0)
     ] * K
@@ -534,31 +557,41 @@ def run_rollout_eval(
                 if not active[i]:
                     continue
 
-                finished_via_eot = float(eot_probs[i]) > eot_threshold
-                if not finished_via_eot:
-                    action = {
-                        "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
-                        "entity": int(ent_K[i]),
-                        "direction": int(dir_K[i]),
-                        "item": int(item_K[i]),
-                        "misc": int(misc_K[i]),
-                    }
-                    next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                    s, k, _last = current[i]
-                    current[i] = (s, k, float(info.get("throughput", 0.0)))
-                    finished_via_env = bool(terminated or truncated)
-                    if not finished_via_env:
-                        obs_batch[i] = torch.as_tensor(
-                            next_obs,
-                            dtype=torch.float32,
-                            device=device,
-                        )
-                        continue
+                s, k, cur_thp = current[i]
 
-                # Slot is finished — harvest and refill (or deactivate).
+                # Snapshot the EOT-respecting throughput the first time the
+                # head crosses threshold — but keep stepping regardless, so
+                # `overall` reflects true build skill (EOT ignored).
+                if not eot_fired[i] and float(eot_probs[i]) > eot_threshold:
+                    eot_fired[i] = True
+                    eot_thp[i] = cur_thp
+
+                action = {
+                    "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                    "entity": int(ent_K[i]),
+                    "direction": int(dir_K[i]),
+                    "item": int(item_K[i]),
+                    "misc": int(misc_K[i]),
+                }
+                next_obs, _r, terminated, truncated, info = envs[i].step(action)
+                current[i] = (s, k, float(info.get("throughput", 0.0)))
+                if not (terminated or truncated):
+                    obs_batch[i] = torch.as_tensor(
+                        next_obs,
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    continue
+
+                # Slot is finished — harvest both metrics, refill or deactivate.
                 s, k, last_thp = current[i]
-                per_kind_throughputs[k.name].append(last_thp)
                 all_throughputs.append(last_thp)
+                per_kind_throughputs[k.name].append(last_thp)
+                # EOT never fired → model would have built to env-done, so its
+                # EOT-respecting value is the same final throughput.
+                eot_value = eot_thp[i] if eot_fired[i] else last_thp
+                all_eot_throughputs.append(eot_value)
+                per_kind_eot_throughputs[k.name].append(eot_value)
 
                 if queue:
                     s = queue.pop(0)
@@ -571,6 +604,8 @@ def run_rollout_eval(
                         },
                     )
                     current[i] = (s, k, float(info.get("throughput", 0.0)))
+                    eot_fired[i] = False
+                    eot_thp[i] = 0.0
                     obs_batch[i] = torch.as_tensor(
                         obs,
                         dtype=torch.float32,
@@ -580,15 +615,26 @@ def run_rollout_eval(
                     active[i] = False
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
+    overall_eot = float(np.mean(all_eot_throughputs)) if all_eot_throughputs else 0.0
     per_kind = {
         kn: (float(np.mean(ts)) if ts else 0.0)
         for kn, ts in per_kind_throughputs.items()
+    }
+    per_kind_eot = {
+        kn: (float(np.mean(ts)) if ts else 0.0)
+        for kn, ts in per_kind_eot_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
 
     if was_training:
         agent.train()
-    return overall, per_kind, per_kind_n
+    return {
+        "overall": overall,
+        "overall_eot": overall_eot,
+        "per_kind": per_kind,
+        "per_kind_eot": per_kind_eot,
+        "per_kind_n": per_kind_n,
+    }
 
 
 def train_sft(args: SFTArgs):
@@ -760,6 +806,8 @@ def train_sft(args: SFTArgs):
             )
 
     best_val_acc = 0.0
+    best_val_throughput = 0.0
+    ever_saved = False
     val_loss = 0.0
     val_tile_acc = 0.0
     val_ent_acc = 0.0
@@ -1152,20 +1200,30 @@ def train_sft(args: SFTArgs):
         )
         if do_rollout and len(val_seeds_to_kind) > 0:
             t_rollout = time.time()
-            overall_thp, per_kind_thp, per_kind_thp_n = run_rollout_eval(
+            roll = run_rollout_eval(
                 agent,
                 args,
                 val_seeds_to_kind,
                 device,
                 max_seeds=args.eval_rollouts_max_seeds,
+                eot_threshold=args.rollout_eot_threshold,
                 num_envs=args.eval_rollouts_num_envs,
             )
             rollout_seconds = time.time() - t_rollout
+            overall_thp = roll["overall"]
+            per_kind_thp_n = roll["per_kind_n"]
+            # val/throughput ignores the EOT head (true build skill, and the
+            # default checkpoint-selection metric); val/throughput_eot stops
+            # at the first EOT fire (what the model's own stop head produces).
             per_kind_metrics["val/throughput"] = overall_thp
+            per_kind_metrics["val/throughput_eot"] = roll["overall_eot"]
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
-            for kn, thp in per_kind_thp.items():
+            for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/throughput"] = thp
+            for kn, thp in roll["per_kind_eot"].items():
+                if per_kind_thp_n[kn] > 0:
+                    per_kind_metrics[f"val/{kn}/throughput_eot"] = thp
         else:
             overall_thp = None
             rollout_seconds = None
@@ -1246,17 +1304,31 @@ def train_sft(args: SFTArgs):
                 step=samples_seen,
             )
 
-        if val_acc >= best_val_acc:
+        # Track best val accuracy for the summary, but DON'T select on it.
+        if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(agent.state_dict(), args.checkpoint_path)
-            print(f"  -> Saved best checkpoint ({val_acc:.3f})")
 
+        # Default checkpoint-selection metric: greedy throughput (EOT ignored).
+        # overall_thp is None on epochs where no rollout ran.
+        if overall_thp is not None and overall_thp >= best_val_throughput:
+            best_val_throughput = overall_thp
+            torch.save(agent.state_dict(), args.checkpoint_path)
+            ever_saved = True
+            print(f"  -> Saved best checkpoint (val/throughput {overall_thp:.3f})")
+
+    if not ever_saved:
+        # Rollouts disabled or no val factories — fall back to the final model
+        # so a checkpoint always exists.
+        torch.save(agent.state_dict(), args.checkpoint_path)
     total_time = time.time() - t0
-    print(f"\nBest validation accuracy: {best_val_acc:.3f}")
+    print(
+        f"\nBest val/throughput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
+    )
     print(f"Checkpoint saved to: {args.checkpoint_path}")
 
     # Write summary JSON (total_time includes dataset generation + training)
     summary = {
+        "best_val_throughput": round(best_val_throughput, 4),
         "best_val_acc": round(best_val_acc, 4),
         "val_tile_acc": round(val_tile_acc, 4),
         "val_ent_acc": round(val_ent_acc, 4),
@@ -1287,6 +1359,11 @@ def train_sft(args: SFTArgs):
     print(f"Summary written to {summary_path}")
 
     if args.track and run is not None:
+        # Headline metric in the W&B run table: greedy throughput (EOT
+        # ignored), the same number that selected the checkpoint.
+        run.summary["best_val_throughput"] = best_val_throughput
+        run.summary["best_val_acc"] = best_val_acc
+
         # Upload the best checkpoint + summary so a Mac can grab the trained
         # model with `wandb artifact get` without rummaging through the pod.
         #
@@ -1299,6 +1376,7 @@ def train_sft(args: SFTArgs):
             name=_artifact_name(args),
             type="model",
             metadata={
+                "best_val_throughput": best_val_throughput,
                 "best_val_acc": best_val_acc,
                 "size": args.size,
                 "chan1": args.chan1,
@@ -1315,7 +1393,11 @@ def train_sft(args: SFTArgs):
         artifact.add_file(summary_path)
         run.log_artifact(
             artifact,
-            aliases=["latest", f"val{best_val_acc:.3f}"],
+            aliases=[
+                "latest",
+                f"thp{best_val_throughput:.3f}",
+                f"val{best_val_acc:.3f}",
+            ],
         )
         print(f"Logged W&B artifact: {artifact.name}")
         run.finish()
