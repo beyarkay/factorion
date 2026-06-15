@@ -38,7 +38,7 @@ def envs(registered_env):
 @pytest.fixture()
 def agent(envs):
     """Create an AgentCNN with default params."""
-    return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
+    return AgentCNN(envs, layers=(32, 64, 64))
 
 
 class TestForwardPass:
@@ -106,14 +106,10 @@ class TestLogProbConsistency:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
-        action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1
-        )
+        action_tensor = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
 
         # Replay: pass the same obs and action tensor
-        _, logp_replay, _, _ = agent.get_action_and_value(
-            obs, action_tensor.long()
-        )
+        _, logp_replay, _, _ = agent.get_action_and_value(obs, action_tensor.long())
         torch.testing.assert_close(logp_B, logp_replay)
 
     def test_log_prob_is_negative(self, agent):
@@ -168,7 +164,8 @@ class TestGradientFlow:
         item_B = action_out["item"]
         misc_B = action_out["misc"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1,
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B],
+            dim=1,
         )
 
         _, logp_B, entropy_B, value_B = agent.get_action_and_value(
@@ -177,7 +174,13 @@ class TestGradientFlow:
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
-        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
+        for head_name in (
+            "tile_logits",
+            "ent_head",
+            "dir_head",
+            "item_head",
+            "misc_head",
+        ):
             head = getattr(agent, head_name)
             assert head.weight.grad is not None, f"No grad for {head_name}"
 
@@ -203,8 +206,8 @@ class TestBatchConsistency:
 
         # One at a time
         for i in range(3):
-            _, logp_single, entropy_single, value_single = (
-                agent.get_action_and_value(obs[i : i + 1], action_tensor[i : i + 1])
+            _, logp_single, entropy_single, value_single = agent.get_action_and_value(
+                obs[i : i + 1], action_tensor[i : i + 1]
             )
             torch.testing.assert_close(logp_batch[i : i + 1], logp_single)
             torch.testing.assert_close(entropy_batch[i : i + 1], entropy_single)
@@ -237,7 +240,7 @@ class TestRegularisation:
     def test_dropout_active_varies_in_train(self, envs):
         """p>0 in train() mode resamples the mask each pass, so the only
         source of variation — dropout — makes two encodes differ."""
-        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.train()
         obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         assert not torch.allclose(agent.encoder(obs), agent.encoder(obs))
@@ -245,7 +248,7 @@ class TestRegularisation:
     def test_dropout_inert_in_eval(self, envs):
         """Dropout is disabled in eval() regardless of p, so inference is
         deterministic even with a high drop probability."""
-        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.eval()
         obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))

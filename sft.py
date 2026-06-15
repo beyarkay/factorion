@@ -36,7 +36,7 @@ from factorion import (  # noqa: E402
     entities,
 )
 
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, FactorioEnv, make_env, layers_from_args  # noqa: E402
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -209,14 +209,21 @@ class SFTArgs:
     """EOT-head prob above which we mark the model "would stop" (for val/throughput_eot)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
-    chan1: int = 48
-    """CNN encoder channel 1"""
-    chan2: int = 48
-    """CNN encoder channel 2"""
-    chan3: int = 64
-    """CNN encoder channel 3"""
-    flat_dim: int = 128
-    """flat dim (unused, kept for compat with AgentCNN)"""
+    # CNN encoder width per layer slot. The encoder uses every slot with
+    # positive width, in order; a slot of 0 drops that layer. Independent
+    # numeric slots (vs one categorical "64,64,64" string) let a W&B Bayesian
+    # sweep optimise depth + per-layer width ordinally.
+    # RF = 1 + n_layers * (kernel_size - 1).
+    layer1: int = 48
+    layer2: int = 48
+    layer3: int = 64
+    layer4: int = 0
+    layer5: int = 0
+    layer6: int = 0
+    layer7: int = 0
+    layer8: int = 0
+    kernel_size: int = 3
+    """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     tile_head_std: float = 0.02208
     """tile head init std"""
     track: bool = False
@@ -267,12 +274,13 @@ def _artifact_name(args: "SFTArgs") -> str:
     get their own artifact. `best_val_acc` deliberately goes to the alias
     instead, since baking a varying number into the name would defeat
     versioning."""
-    chans = (args.chan1, args.chan2, args.chan3)
-    chan_str = (
-        f"c{args.chan1}"
-        if len(set(chans)) == 1
-        else f"c{args.chan1}-{args.chan2}-{args.chan3}"
-    )
+    # Encode the full layer list (one token per conv layer) so runs that
+    # differ in depth *or* width get distinct artifacts; append the kernel
+    # size only when it's non-default so existing names stay stable.
+    layers = layers_from_args(args)
+    chan_str = "c" + "-".join(str(c) for c in layers)
+    if args.kernel_size != 3:
+        chan_str += f"-k{args.kernel_size}"
     return (
         f"sft-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
@@ -725,10 +733,8 @@ def train_sft(args: SFTArgs):
 
     agent = AgentCNN(
         envs,
-        chan1=args.chan1,
-        chan2=args.chan2,
-        chan3=args.chan3,
-        flat_dim=args.flat_dim,
+        layers=layers_from_args(args),
+        kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
     )
     envs.close()
@@ -1379,9 +1385,8 @@ def train_sft(args: SFTArgs):
                 "best_val_throughput": best_val_throughput,
                 "best_val_acc": best_val_acc,
                 "size": args.size,
-                "chan1": args.chan1,
-                "chan2": args.chan2,
-                "chan3": args.chan3,
+                "layers": "-".join(map(str, layers_from_args(args))),
+                "kernel_size": args.kernel_size,
                 "num_samples": args.num_samples,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,

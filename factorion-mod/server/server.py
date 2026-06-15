@@ -44,6 +44,7 @@ log = logging.getLogger("factorion-server")
 # RCON client (inlined; no extra deps).
 # --------------------------------------------------------------------------- #
 
+
 class RconError(RuntimeError):
     pass
 
@@ -56,7 +57,12 @@ class RconClient:
     RESP = 0
 
     def __init__(self, host: str, port: int, password: str, timeout: float = 5.0):
-        self.host, self.port, self.password, self.timeout = host, port, password, timeout
+        self.host, self.port, self.password, self.timeout = (
+            host,
+            port,
+            password,
+            timeout,
+        )
         self._sock: Optional[socket.socket] = None
         self._counter = 1
 
@@ -126,6 +132,7 @@ class RconClient:
 # Model loading & inference.
 # --------------------------------------------------------------------------- #
 
+
 def _duck_envs(size: int):
     """AgentCNN reads grid size off `envs.envs[0].unwrapped.size`."""
     return SimpleNamespace(envs=[SimpleNamespace(unwrapped=SimpleNamespace(size=size))])
@@ -148,10 +155,17 @@ class Hyperparams:
 
 
 def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentCNN:
-    log.info("Loading checkpoint %s (grid=%d, chans=%d/%d/%d)",
-             ckpt_path, hp.grid_size, hp.chan1, hp.chan2, hp.chan3)
-    agent = AgentCNN(_duck_envs(hp.grid_size),
-                     chan1=hp.chan1, chan2=hp.chan2, chan3=hp.chan3).to(device)
+    log.info(
+        "Loading checkpoint %s (grid=%d, chans=%d/%d/%d)",
+        ckpt_path,
+        hp.grid_size,
+        hp.chan1,
+        hp.chan2,
+        hp.chan3,
+    )
+    agent = AgentCNN(
+        _duck_envs(hp.grid_size), layers=(hp.chan1, hp.chan2, hp.chan3)
+    ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
     agent.load_state_dict(state)
     agent.eval()
@@ -161,6 +175,7 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
 # --------------------------------------------------------------------------- #
 # Request → obs tensor.
 # --------------------------------------------------------------------------- #
+
 
 def _source_id() -> int:
     e = str2ent("source")
@@ -208,6 +223,7 @@ def request_to_obs(req: dict) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Iterative inference: place one entity at a time, greedy (argmax).
 # --------------------------------------------------------------------------- #
+
 
 def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
@@ -266,17 +282,25 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
 
 
 def run_inference(
-    agent: AgentCNN, req: dict, max_steps: int, device, eot_threshold: float = 0.5,
+    agent: AgentCNN,
+    req: dict,
+    max_steps: int,
+    device,
+    eot_threshold: float = 0.5,
 ) -> tuple[np.ndarray, dict]:
     """Iteratively place entities until eot_head signals "done", the model
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
 
     # Dump the initial obs summary so we can see what the model is starting from
-    src_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
-               for s in req.get("sources", [])]
-    snk_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
-               for s in req.get("sinks", [])]
+    src_ids = [
+        (int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
+        for s in req.get("sources", [])
+    ]
+    snk_ids = [
+        (int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
+        for s in req.get("sinks", [])
+    ]
     log.info("  initial sources (x,y,dir,item): %s", src_ids)
     log.info("  initial sinks   (x,y,dir,item): %s", snk_ids)
     fp_count = int(obs[Channel.FOOTPRINT.value].sum())
@@ -299,7 +323,9 @@ def run_inference(
             stats["first_eot_prob"] = eot_p
         stats["final_eot_prob"] = eot_p
         if eot_p > eot_threshold:
-            log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
+            log.info(
+                "  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold
+            )
             stats["stop_reason"] = "eot"
             stats["steps_taken"] = step
             break
@@ -308,23 +334,32 @@ def run_inference(
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
         item_name = entities[item_id].name if item_id in entities else "?"
-        stats["placements"].append({
-            "step": step,
-            "eot": eot_p,
-            "entity_id": ent_id,
-            "entity_name": ent_name,
-            "x": int(action["xy"][0]),
-            "y": int(action["xy"][1]),
-            "direction": int(action["direction"]),
-            "item_id": item_id,
-            "item_name": item_name,
-            "misc": int(action["misc"]),
-        })
+        stats["placements"].append(
+            {
+                "step": step,
+                "eot": eot_p,
+                "entity_id": ent_id,
+                "entity_name": ent_name,
+                "x": int(action["xy"][0]),
+                "y": int(action["xy"][1]),
+                "direction": int(action["direction"]),
+                "item_id": item_id,
+                "item_name": item_name,
+                "misc": int(action["misc"]),
+            }
+        )
         log.info(
             "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
-            step, eot_p, ent_name, ent_id,
-            action["xy"][0], action["xy"][1],
-            action["direction"], item_name, item_id, action["misc"],
+            step,
+            eot_p,
+            ent_name,
+            ent_id,
+            action["xy"][0],
+            action["xy"][1],
+            action["direction"],
+            item_name,
+            item_id,
+            action["misc"],
         )
         if not _apply_placement(obs, action):
             log.info("  → empty/no-op placement, stopping")
@@ -402,9 +437,14 @@ def poll_loop(
 def handle_request(
     req: dict, agent: AgentCNN, rcon: RconClient, *, max_steps: int, device
 ):
-    log.info("Request %s: grid=%dx%d, %d sources, %d sinks",
-             req["request_id"], req["grid_size"], req["grid_size"],
-             len(req.get("sources", [])), len(req.get("sinks", [])))
+    log.info(
+        "Request %s: grid=%dx%d, %d sources, %d sinks",
+        req["request_id"],
+        req["grid_size"],
+        req["grid_size"],
+        len(req.get("sources", [])),
+        len(req.get("sinks", [])),
+    )
 
     t0 = time.time()
     obs_CWH, stats = run_inference(agent, req, max_steps=max_steps, device=device)
@@ -414,8 +454,8 @@ def handle_request(
     # results, where the player would otherwise see a blank blueprint with
     # no clue why.
     src_id, snk_id = _source_id(), _sink_id()
-    placed_count = 0   # model-placed entities (belts, inserters, etc.)
-    marker_count = 0   # source/sink markers (rendered as chests)
+    placed_count = 0  # model-placed entities (belts, inserters, etc.)
+    marker_count = 0  # source/sink markers (rendered as chests)
     for xx in range(obs_CWH.shape[1]):
         for yy in range(obs_CWH.shape[2]):
             eid = int(obs_CWH[Channel.ENTITIES.value, xx, yy])
@@ -441,8 +481,10 @@ def handle_request(
         item_tag = ""
         if p["item_name"] not in ("empty", "?", ""):
             item_tag = " [item=" + p["item_name"].replace("_", "-") + "]"
-        return (f"{p['step']}: {ent_tag} ({p['x']},{p['y']}) "
-                f"{dir_label}{_MISC_LABEL.get(p['misc'], '')}{item_tag}")
+        return (
+            f"{p['step']}: {ent_tag} ({p['x']},{p['y']}) "
+            f"{dir_label}{_MISC_LABEL.get(p['misc'], '')}{item_tag}"
+        )
 
     placements = stats.get("placements", [])
     # Description has a hard ~500 char limit in Factorio 2.0; truncation
@@ -465,8 +507,10 @@ def handle_request(
         trace_lines.append(line)
         used += len(line) + 1
 
-    label = (f"Factorion: {total_entities} entities "
-             f"({placed_count} placed + {marker_count} markers)")
+    label = (
+        f"Factorion: {total_entities} entities "
+        f"({placed_count} placed + {marker_count} markers)"
+    )
     description_parts = [
         f"sources={len(req.get('sources', []))} "
         f"sinks={len(req.get('sinks', []))} "
@@ -475,24 +519,35 @@ def handle_request(
     ] + trace_lines
     description = "\n".join(description_parts)
     bp_str = world_tensor_to_blueprint_string(
-        obs_CWH, label=label, description=description,
+        obs_CWH,
+        label=label,
+        description=description,
     )
-    log.info("Inference %.2fs; blueprint %d chars  label=%r",
-             time.time() - t0, len(bp_str), label)
+    log.info(
+        "Inference %.2fs; blueprint %d chars  label=%r",
+        time.time() - t0,
+        len(bp_str),
+        label,
+    )
 
     # Decode the blueprint so we can log what's actually inside (entity
     # counts, names, positions) — easier than eyeballing the b64.
     try:
         from factorion import b64_to_dict
+
         decoded = b64_to_dict(bp_str)
         entities_list = decoded.get("blueprint", {}).get("entities", [])
         log.info("  blueprint contains %d entities:", len(entities_list))
         for e in entities_list[:40]:  # cap to 40 to avoid log spam
-            log.info("    %s @ (%s,%s) dir=%s%s%s",
-                     e.get("name"), e["position"]["x"], e["position"]["y"],
-                     e.get("direction", "-"),
-                     " recipe=" + e["recipe"] if "recipe" in e else "",
-                     " type=" + e["type"] if "type" in e else "")
+            log.info(
+                "    %s @ (%s,%s) dir=%s%s%s",
+                e.get("name"),
+                e["position"]["x"],
+                e["position"]["y"],
+                e.get("direction", "-"),
+                " recipe=" + e["recipe"] if "recipe" in e else "",
+                " type=" + e["type"] if "type" in e else "",
+            )
         if len(entities_list) > 40:
             log.info("    ... and %d more", len(entities_list) - 40)
         log.info("  blueprint string: %s", bp_str)
@@ -501,8 +556,10 @@ def handle_request(
 
     # Single-quoted Lua string: blueprint b64 alphabet [A-Za-z0-9+/=] plus
     # our "0" version prefix contains no single quotes, so this is safe.
-    cmd = "/silent-command remote.call('factorion','deliver_blueprint','{}','{}')".format(
-        req["request_id"], bp_str
+    cmd = (
+        "/silent-command remote.call('factorion','deliver_blueprint','{}','{}')".format(
+            req["request_id"], bp_str
+        )
     )
     resp = rcon.exec(cmd)
     if resp:
@@ -515,10 +572,15 @@ def handle_request(
 # CLI.
 # --------------------------------------------------------------------------- #
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True, type=Path,
-                    help="Path to a torch.save'd AgentCNN state_dict.")
+    ap.add_argument(
+        "--checkpoint",
+        required=True,
+        type=Path,
+        help="Path to a torch.save'd AgentCNN state_dict.",
+    )
     ap.add_argument("--rcon-host", default="127.0.0.1")
     ap.add_argument("--rcon-port", type=int, default=27015)
     ap.add_argument("--rcon-password", default="factorion")
@@ -526,8 +588,12 @@ def main():
     ap.add_argument("--chan1", type=int, default=32)
     ap.add_argument("--chan2", type=int, default=64)
     ap.add_argument("--chan3", type=int, default=64)
-    ap.add_argument("--max-steps", type=int, default=64,
-                    help="Iterative inference budget per request.")
+    ap.add_argument(
+        "--max-steps",
+        type=int,
+        default=64,
+        help="Iterative inference budget per request.",
+    )
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -543,7 +609,9 @@ def main():
     sidecar = Hyperparams.from_json_sibling(args.checkpoint)
     defaults = Hyperparams()
     hp = Hyperparams(
-        grid_size=args.grid_size if args.grid_size != defaults.grid_size else sidecar.grid_size,
+        grid_size=args.grid_size
+        if args.grid_size != defaults.grid_size
+        else sidecar.grid_size,
         chan1=args.chan1 if args.chan1 != defaults.chan1 else sidecar.chan1,
         chan2=args.chan2 if args.chan2 != defaults.chan2 else sidecar.chan2,
         chan3=args.chan3 if args.chan3 != defaults.chan3 else sidecar.chan3,
@@ -558,13 +626,21 @@ def main():
         # game yet" rather than a fatal error.
         try:
             r = rcon.exec("/silent-command rcon.print(remote.call('factorion','ping'))")
-            log.info("Mod ping: %s", (r or "(no response — load a save with factorion enabled)").strip())
+            log.info(
+                "Mod ping: %s",
+                (r or "(no response — load a save with factorion enabled)").strip(),
+            )
         except Exception:
-            log.warning("Could not ping factorion mod — is the save loaded with the mod enabled?")
+            log.warning(
+                "Could not ping factorion mod — is the save loaded with the mod enabled?"
+            )
 
         poll_loop(
-            agent, rcon,
-            poll_interval=0.25, max_steps=args.max_steps, device=device,
+            agent,
+            rcon,
+            poll_interval=0.25,
+            max_steps=args.max_steps,
+            device=device,
         )
 
 

@@ -167,13 +167,15 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
             item_v = int(world_CWH[Channel.ITEMS.value, x, y].item())
             misc_v = int(world_CWH[Channel.MISC.value, x, y].item())
             foot_v = int(world_CWH[Channel.FOOTPRINT.value, x, y].item())
-            row.append({
-                "entity": name_for_value.get(ent_v, "empty"),
-                "direction": dir_for_value.get(dir_v, "NONE"),
-                "item": name_for_value.get(item_v, "empty"),
-                "misc": misc_for_value.get(misc_v, "NONE"),
-                "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
-            })
+            row.append(
+                {
+                    "entity": name_for_value.get(ent_v, "empty"),
+                    "direction": dir_for_value.get(dir_v, "NONE"),
+                    "item": name_for_value.get(item_v, "empty"),
+                    "misc": misc_for_value.get(misc_v, "NONE"),
+                    "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
+                }
+            )
         rows.append(row)
     return rows
 
@@ -229,8 +231,9 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
             "edges": [],
         }
 
-    fig = plt.figure(figsize=(max(6, len(G.nodes) ** 0.5 * 3),
-                              max(4, len(G.nodes) ** 0.5 * 3)))
+    fig = plt.figure(
+        figsize=(max(6, len(G.nodes) ** 0.5 * 3), max(4, len(G.nodes) ** 0.5 * 3))
+    )
     try:
         plot_flow_network(G)
         # plot_flow_network calls plt.show() which is a no-op under Agg;
@@ -266,8 +269,10 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
 # action heads for inference.
 
 _AGENT_DEVICE = torch.device(
-    "cuda" if torch.cuda.is_available()
-    else "mps" if torch.backends.mps.is_available()
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps"
+    if torch.backends.mps.is_available()
     else "cpu"
 )
 _AGENT_CACHE: dict[int, AgentCNN] = {}
@@ -288,12 +293,16 @@ _DIR_NAMES = {d.value: d.name for d in Direction}
 _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
-def _encoder_channels(state) -> tuple[int, int, int]:
-    """Infer (chan1, chan2, chan3) from a checkpoint's encoder conv
-    weights. Filters by 4-D weight shape and sorts by layer index rather
-    than hardcoding `encoder.0/2/4`, so inserting non-conv layers (e.g.
-    Dropout2d) into the encoder Sequential doesn't shift the conv indices
-    out from under us."""
+def _encoder_arch(state: dict) -> tuple[list[int], int]:
+    """Infer the encoder architecture (per-layer channel widths, kernel size)
+    from a saved AgentCNN state_dict. Conv weights are the 4-D tensors under
+    `encoder.*`, with shape (out_channels, in_channels, k, k); we filter by
+    shape and sort by layer index rather than hardcoding `encoder.0/2/4`, so
+    non-conv modules interleaved into the encoder Sequential (e.g. the
+    Dropout2d trailing each ReLU) don't shift the conv indices out from under
+    us. Reading the conv shapes back lets the server reconstruct an
+    arbitrary-depth/kernel encoder — no sidecar, no assumption of exactly
+    three layers."""
     conv_keys = sorted(
         (
             k
@@ -302,8 +311,9 @@ def _encoder_channels(state) -> tuple[int, int, int]:
         ),
         key=lambda k: int(k.split(".")[1]),
     )
-    chan1, chan2, chan3 = (state[k].shape[0] for k in conv_keys)
-    return chan1, chan2, chan3
+    layers = [int(state[k].shape[0]) for k in conv_keys]
+    kernel_size = int(state[conv_keys[0]].shape[-1])
+    return layers, kernel_size
 
 
 def _load_checkpoint(path: str) -> None:
@@ -316,10 +326,10 @@ def _load_checkpoint(path: str) -> None:
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
     _AGENT_CACHE.clear()
-    chan1, chan2, chan3 = _encoder_channels(state)
+    layers, kernel_size = _encoder_arch(state)
     print(
         f"Loaded checkpoint {path} "
-        f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
+        f"(layers={layers}, kernel_size={kernel_size}, device={_AGENT_DEVICE})"
     )
 
 
@@ -330,14 +340,13 @@ def _model_info() -> dict:
     if _CHECKPOINT_STATE is None:
         return {"loaded": False}
     s = _CHECKPOINT_STATE
-    chan1, chan2, chan3 = _encoder_channels(s)
+    layers, kernel_size = _encoder_arch(s)
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
         "source": _CHECKPOINT_SOURCE,
-        "chan1": chan1,
-        "chan2": chan2,
-        "chan3": chan3,
+        "layers": layers,
+        "kernel_size": kernel_size,
         "device": str(_AGENT_DEVICE),
     }
 
@@ -372,18 +381,18 @@ def _get_agent(size: int) -> AgentCNN:
     if size in _AGENT_CACHE:
         return _AGENT_CACHE[size]
 
-    chan1, chan2, chan3 = _encoder_channels(_CHECKPOINT_STATE)
+    layers, kernel_size = _encoder_arch(_CHECKPOINT_STATE)
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
         gym.register(id=env_id, entry_point=FactorioEnv)
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
     try:
-        agent = AgentCNN(envs, chan1=chan1, chan2=chan2, chan3=chan3)
+        agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
     finally:
         envs.close()
     # critic_head and eot_head are both Linear(flat_dim, 1) where
-    # flat_dim = chan3 * W * H, so their saved weights are the wrong
+    # flat_dim = layers[-1] * W * H, so their saved weights are the wrong
     # shape whenever the UI grid size != the training size. strict=False
     # would *not* save us here — it ignores missing/unexpected keys but
     # still raises on shape mismatches, so we filter explicitly.
@@ -396,20 +405,21 @@ def _get_agent(size: int) -> AgentCNN:
     # UI's eot panel shows the real trained prediction. Pre-#103
     # checkpoints have no eot_head keys at all → load_state_dict
     # (strict=False) leaves the freshly-initialised head in place.
-    expected_flat = chan3 * size * size
+    expected_flat = layers[-1] * size * size
     saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
     keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
     drop_prefixes: tuple[str, ...] = ("critic_head.",)
     if not keep_eot:
         drop_prefixes = drop_prefixes + ("eot_head.",)
     filtered = {
-        k: v for k, v in _CHECKPOINT_STATE.items()
-        if not k.startswith(drop_prefixes)
+        k: v for k, v in _CHECKPOINT_STATE.items() if not k.startswith(drop_prefixes)
     }
     missing, unexpected = agent.load_state_dict(filtered, strict=False)
     ignorable = {
-        "critic_head.1.weight", "critic_head.1.bias",
-        "eot_head.1.weight", "eot_head.1.bias",
+        "critic_head.1.weight",
+        "critic_head.1.bias",
+        "eot_head.1.weight",
+        "eot_head.1.bias",
     }
     real_missing = [k for k in missing if k not in ignorable]
     real_unexpected = [k for k in unexpected if k not in ignorable]
@@ -423,7 +433,9 @@ def _get_agent(size: int) -> AgentCNN:
     return agent
 
 
-def _top_p_named(probs: torch.Tensor, names: dict, top_p: float = 0.95) -> tuple[list[dict], float]:
+def _top_p_named(
+    probs: torch.Tensor, names: dict, top_p: float = 0.95
+) -> tuple[list[dict], float]:
     """Sort `probs` (1-D) by descending probability, take entries until
     cumulative mass >= top_p, return them as [{name, p}, ...] plus the
     remaining "rest" mass. Useful for showing the model's distribution
@@ -440,7 +452,9 @@ def _top_p_named(probs: torch.Tensor, names: dict, top_p: float = 0.95) -> tuple
     return top, max(0.0, 1.0 - cum)
 
 
-def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[dict], float]:
+def _tile_top_p(
+    probs: torch.Tensor, H: int, top_p: float = 0.95
+) -> tuple[list[dict], float]:
     """Same as _top_p_named but emits (x, y, p) entries for the tile
     head, since each entry is a 2-D coordinate rather than a named
     category."""
@@ -499,13 +513,21 @@ def _predict(grid: list[list[dict]]) -> dict:
         x, y = tile_idx // H, tile_idx % H
 
         feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
-        ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
-        dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
-        item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
-        misc_top, misc_rest = _top_p_named(F.softmax(agent.misc_head(feats), dim=-1)[0], _MISC_NAMES)
+        ent_top, ent_rest = _top_p_named(
+            F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES
+        )
+        dir_top, dir_rest = _top_p_named(
+            F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES
+        )
+        item_top, item_rest = _top_p_named(
+            F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES
+        )
+        misc_top, misc_rest = _top_p_named(
+            F.softmax(agent.misc_head(feats), dim=-1)[0], _MISC_NAMES
+        )
 
         # Per-tile argmax for ent/dir/item/misc — one matmul per head
-        # against the whole spatial map, reshaped to (W*H, chan3).
+        # against the whole spatial map, reshaped to (W*H, C).
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
@@ -513,17 +535,32 @@ def _predict(grid: list[list[dict]]) -> dict:
         misc_pick = agent.misc_head(feats_all).argmax(dim=-1)
 
         candidates: list[dict] = []
-        mask = (tile_probs > CANDIDATE_TILE_THRESHOLD).nonzero(as_tuple=False).squeeze(-1).tolist()
+        mask = (
+            (tile_probs > CANDIDATE_TILE_THRESHOLD)
+            .nonzero(as_tuple=False)
+            .squeeze(-1)
+            .tolist()
+        )
         for t in mask:
-            candidates.append({
-                "x": t // H,
-                "y": t % H,
-                "p_tile": float(tile_probs[t].item()),
-                "entity": _ENT_NAMES.get(int(ent_pick[t].item()), str(int(ent_pick[t].item()))),
-                "direction": _DIR_NAMES.get(int(dir_pick[t].item()), str(int(dir_pick[t].item()))),
-                "item": _ITEM_NAMES.get(int(item_pick[t].item()), str(int(item_pick[t].item()))),
-                "misc": _MISC_NAMES.get(int(misc_pick[t].item()), str(int(misc_pick[t].item()))),
-            })
+            candidates.append(
+                {
+                    "x": t // H,
+                    "y": t % H,
+                    "p_tile": float(tile_probs[t].item()),
+                    "entity": _ENT_NAMES.get(
+                        int(ent_pick[t].item()), str(int(ent_pick[t].item()))
+                    ),
+                    "direction": _DIR_NAMES.get(
+                        int(dir_pick[t].item()), str(int(dir_pick[t].item()))
+                    ),
+                    "item": _ITEM_NAMES.get(
+                        int(item_pick[t].item()), str(int(item_pick[t].item()))
+                    ),
+                    "misc": _MISC_NAMES.get(
+                        int(misc_pick[t].item()), str(int(misc_pick[t].item()))
+                    ),
+                }
+            )
 
     return {
         "x": x,
@@ -600,19 +637,12 @@ def render_index(default_size: int) -> str:
     # The recipe/filter dropdown can hold any item, not just the curated
     # palette set — generated lessons routinely set obscure recipes
     # (e.g. burner_mining_drill) and we want them visible + editable.
-    all_item_names = sorted(
-        {it.name for it in items.values() if it.name != "empty"}
-    )
+    all_item_names = sorted({it.name for it in items.values() if it.name != "empty"})
     all_item_options = "".join(
-        f'<option value="{n}">{n}</option>'
-        for n in (["empty"] + all_item_names)
+        f'<option value="{n}">{n}</option>' for n in (["empty"] + all_item_names)
     )
-    direction_options = "".join(
-        f'<option value="{d}">{d}</option>' for d in DIRECTIONS
-    )
-    misc_options = "".join(
-        f'<option value="{m}">{m}</option>' for m in MISC_VALUES
-    )
+    direction_options = "".join(f'<option value="{d}">{d}</option>' for d in DIRECTIONS)
+    misc_options = "".join(f'<option value="{m}">{m}</option>' for m in MISC_VALUES)
     lesson_options = "".join(
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
@@ -624,26 +654,26 @@ def render_index(default_size: int) -> str:
         '<div class="model-panel">'
         '<h3 style="margin-top:0.8em;">'
         '<span class="swatch"></span>Model'
-        '</h3>'
+        "</h3>"
         '<div class="model-current help" id="model-current">checking…</div>'
         '<div class="model-loader">'
-        '<label>switch model'
+        "<label>switch model"
         '  <input id="model-value" type="text" placeholder="sft_local.pt or run_id">'
-        '</label>'
+        "</label>"
         '<div class="model-buttons">'
         '<button id="model-load" title="Local path if the file exists, else wandb run id">'
-        'Load model</button>'
-        '</div>'
+        "Load model</button>"
+        "</div>"
         '<div id="model-load-status" class="help"></div>'
-        '</div>'
+        "</div>"
         '<h3 style="margin-top:0.8em;">Prediction</h3>'
         '<div id="model-info" class="help">(no prediction yet)</div>'
         '<pre id="model-action"></pre>'
         '<div class="model-buttons">'
         '<button id="model-apply" title="Apply the predicted placement at the highlighted tile">'
         'Apply prediction <span class="kbd">a</span></button>'
-        '</div>'
-        '</div>'
+        "</div>"
+        "</div>"
     )
 
     return f"""<!doctype html>
@@ -1279,8 +1309,8 @@ async function refreshModelInfo() {{
     const data = await resp.json();
     if (data.loaded) {{
       modelLoaded = true;
-      const shape = 'c1=' + data.chan1 + ' c2=' + data.chan2 +
-        ' c3=' + data.chan3 + ' ' + data.device;
+      const shape = 'layers=' + (data.layers || []).join('-') +
+        ' k=' + data.kernel_size + ' ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{
         // Show the run id directly — that's what the user types into
@@ -1543,7 +1573,9 @@ def main(args: Args) -> None:
         raise SystemExit("pass either --checkpoint or --wandb-run, not both")
     if args.wandb_run:
         ckpt_path, source = _resolve_wandb_checkpoint(
-            args.wandb_run, args.wandb_project, args.wandb_entity,
+            args.wandb_run,
+            args.wandb_project,
+            args.wandb_entity,
         )
         _load_checkpoint(ckpt_path)
         _CHECKPOINT_SOURCE = source
