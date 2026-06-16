@@ -714,8 +714,17 @@ def train_sft(args: SFTArgs):
         eot_labels[val_idx],
         lesson_kinds[val_idx],
     )
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
+    # `pin` gates BOTH pin_memory and the non_blocking transfers below: an
+    # async (non_blocking) host->device copy is only safe from PINNED memory.
+    # With an unpinned source (CPU/MPS, where pin is False) a non_blocking copy
+    # races — it may not finish before the tensor is read, yielding garbage
+    # (e.g. a wild tile index -> out-of-bounds gather). So pinning + async
+    # transfers are enabled only on CUDA, where the loader pins each batch.
+    pin = torch.cuda.is_available()
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True, pin_memory=pin
+    )
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, pin_memory=pin)
 
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
@@ -776,6 +785,9 @@ def train_sft(args: SFTArgs):
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
     kind_names = {k.value: k.name for k in LessonKind}
+    # LessonKind values are sparse (0, 3..8), so per-kind accumulators are
+    # sized to the max value + 1 and indexed by kind value; unused slots stay 0.
+    n_kind_slots = max(k.value for k in LessonKind) + 1
 
     run = None
     if args.track:
@@ -821,21 +833,32 @@ def train_sft(args: SFTArgs):
     # samples_seen counts training pairs the model has been updated on.
     global_step = 0
     samples_seen = 0
+    # Aggregate per-phase wall time across epochs, for a speedup-tracking
+    # summary at the end (each epoch also prints its own train/val/roll split).
+    total_train_s = 0.0
+    total_val_s = 0.0
+    total_roll_s = 0.0
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
+        t_train = time.time()
         agent.train()
-        train_loss = 0.0
-        train_loss_tile = 0.0
-        train_loss_ent = 0.0
-        train_loss_dir = 0.0
-        train_loss_item = 0.0
-        train_loss_misc = 0.0
-        train_loss_eot = 0.0
-        train_correct = 0
+        # Accumulate epoch sums on-device and sync ONCE after the loop, instead
+        # of calling .item() every batch. Each .item()/float() is a GPU->CPU
+        # sync that stalls the pipeline; for a tiny net those per-batch syncs
+        # dominated the epoch. Rebuilt into the python scalars below (same
+        # values) before any downstream use, so logging/printing is unchanged.
+        train_loss_t = torch.zeros((), device=device)
+        train_loss_tile_t = torch.zeros((), device=device)
+        train_loss_ent_t = torch.zeros((), device=device)
+        train_loss_dir_t = torch.zeros((), device=device)
+        train_loss_item_t = torch.zeros((), device=device)
+        train_loss_misc_t = torch.zeros((), device=device)
+        train_loss_eot_t = torch.zeros((), device=device)
+        train_correct_t = torch.zeros((), device=device)
+        train_eot_correct_t = torch.zeros((), device=device)
+        grad_norm_sum_t = torch.zeros((), device=device)
         train_total = 0
-        train_eot_correct = 0
-        grad_norm_sum = 0.0
         grad_norm_count = 0
 
         # batch_kind is carried through the loader so val can aggregate
@@ -852,14 +875,14 @@ def train_sft(args: SFTArgs):
                 batch_eot,
                 _batch_kind,
             ) = batch
-            batch_obs = batch_obs.float().to(device)
-            batch_tile = batch_tile.to(device)
-            batch_ent = batch_ent.to(device)
-            batch_dir = batch_dir.to(device)
-            batch_item = batch_item.to(device)
-            batch_misc = batch_misc.to(device)
-            batch_mask = batch_mask.to(device)
-            batch_eot = batch_eot.to(device)
+            batch_obs = batch_obs.to(device, non_blocking=pin).float()
+            batch_tile = batch_tile.to(device, non_blocking=pin)
+            batch_ent = batch_ent.to(device, non_blocking=pin)
+            batch_dir = batch_dir.to(device, non_blocking=pin)
+            batch_item = batch_item.to(device, non_blocking=pin)
+            batch_misc = batch_misc.to(device, non_blocking=pin)
+            batch_mask = batch_mask.to(device, non_blocking=pin)
+            batch_eot = batch_eot.to(device, non_blocking=pin)
 
             encoded = agent.encoder(batch_obs)
             B = encoded.shape[0]
@@ -915,20 +938,20 @@ def train_sft(args: SFTArgs):
                 grad_norm = nn.utils.clip_grad_norm_(
                     agent.parameters(), args.max_grad_norm
                 )
-                grad_norm_sum += float(grad_norm)
+                grad_norm_sum_t += grad_norm.detach()
                 grad_norm_count += 1
             optimizer.step()
             scheduler.step()
             global_step += 1
             samples_seen += B
 
-            train_loss += loss.item() * B
-            train_loss_tile += loss_tile.item() * B
-            train_loss_ent += loss_ent.item() * B
-            train_loss_dir += loss_dir.item() * B
-            train_loss_item += loss_item.item() * B
-            train_loss_misc += loss_misc.item() * B
-            train_loss_eot += loss_eot.item() * B
+            train_loss_t += loss.detach() * B
+            train_loss_tile_t += loss_tile.detach() * B
+            train_loss_ent_t += loss_ent.detach() * B
+            train_loss_dir_t += loss_dir.detach() * B
+            train_loss_item_t += loss_item.detach() * B
+            train_loss_misc_t += loss_misc.detach() * B
+            train_loss_eot_t += loss_eot.detach() * B
             # Whole-action accuracy: the model agrees with the demo on
             # every output for this sample. For placement samples (eot=0)
             # that means all 5 placement heads correct AND EOT predicted
@@ -956,51 +979,59 @@ def train_sft(args: SFTArgs):
                 place_heads_correct & eot_correct_t,
                 eot_correct_t,
             )
-            train_correct += int(correct.sum().item())
+            train_correct_t += correct.sum()
             train_total += B
-            train_eot_correct += int(eot_correct_t.sum().item())
+            train_eot_correct_t += eot_correct_t.sum()
 
-        train_loss /= train_total
-        train_loss_tile /= train_total
-        train_loss_ent /= train_total
-        train_loss_dir /= train_total
-        train_loss_item /= train_total
-        train_loss_misc /= train_total
-        train_loss_eot /= train_total
-        train_acc = train_correct / train_total
-        train_eot_acc = train_eot_correct / train_total
+        # Single sync point for the whole train epoch.
+        train_loss = train_loss_t.item() / train_total
+        train_loss_tile = train_loss_tile_t.item() / train_total
+        train_loss_ent = train_loss_ent_t.item() / train_total
+        train_loss_dir = train_loss_dir_t.item() / train_total
+        train_loss_item = train_loss_item_t.item() / train_total
+        train_loss_misc = train_loss_misc_t.item() / train_total
+        train_loss_eot = train_loss_eot_t.item() / train_total
+        train_acc = train_correct_t.item() / train_total
+        train_eot_acc = train_eot_correct_t.item() / train_total
+        grad_norm_sum = grad_norm_sum_t.item()
+        train_seconds = time.time() - t_train
 
         # Validation
+        t_val = time.time()
         agent.eval()
-        val_loss = 0.0
-        val_loss_tile = 0.0
-        val_loss_ent = 0.0
-        val_loss_dir = 0.0
-        val_loss_item = 0.0
-        val_loss_misc = 0.0
-        val_loss_eot = 0.0
-        val_correct = 0
-        val_tile_correct = 0
-        val_ent_correct = 0
-        val_dir_correct = 0
-        val_item_correct = 0
-        val_misc_correct = 0
-        val_eot_correct = 0
-        val_eot_pos_correct = 0
-        val_eot_pos_total = 0
+        # Same on-device accumulation as the train loop: defer every per-batch
+        # .item()/.tolist() sync to a single sync after the loop.
+        val_loss_t = torch.zeros((), device=device)
+        val_loss_tile_t = torch.zeros((), device=device)
+        val_loss_ent_t = torch.zeros((), device=device)
+        val_loss_dir_t = torch.zeros((), device=device)
+        val_loss_item_t = torch.zeros((), device=device)
+        val_loss_misc_t = torch.zeros((), device=device)
+        val_loss_eot_t = torch.zeros((), device=device)
+        val_correct_t = torch.zeros((), device=device)
+        val_tile_correct_t = torch.zeros((), device=device)
+        val_ent_correct_t = torch.zeros((), device=device)
+        val_dir_correct_t = torch.zeros((), device=device)
+        val_item_correct_t = torch.zeros((), device=device)
+        val_misc_correct_t = torch.zeros((), device=device)
+        val_eot_correct_t = torch.zeros((), device=device)
+        val_eot_pos_correct_t = torch.zeros((), device=device)
+        val_eot_pos_total_t = torch.zeros((), device=device)
+        val_place_total_t = torch.zeros((), device=device)
         val_total = 0
-        val_place_total = 0
 
-        # Per-LessonKind accumulators. Indexed by kind name to make wandb
-        # panel keys read as "val/MOVE_ONE_ITEM/acc" rather than enum ints.
-        per_kind_n = {k.name: 0 for k in LessonKind}
-        per_kind_correct = {k.name: 0 for k in LessonKind}
-        per_kind_tile_correct = {k.name: 0 for k in LessonKind}
-        per_kind_ent_correct = {k.name: 0 for k in LessonKind}
-        per_kind_dir_correct = {k.name: 0 for k in LessonKind}
-        per_kind_item_correct = {k.name: 0 for k in LessonKind}
-        per_kind_misc_correct = {k.name: 0 for k in LessonKind}
-        per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
+        # Per-LessonKind accumulators, vectorised: one device tensor per metric
+        # indexed by kind value, filled with index_add_ instead of a per-batch
+        # python loop over kinds (which did a .tolist() + many .item()s per
+        # batch). Synced and bucketed back to per-kind-name dicts after the loop.
+        pk_n_t = torch.zeros(n_kind_slots, device=device)
+        pk_correct_t = torch.zeros(n_kind_slots, device=device)
+        pk_tile_t = torch.zeros(n_kind_slots, device=device)
+        pk_ent_t = torch.zeros(n_kind_slots, device=device)
+        pk_dir_t = torch.zeros(n_kind_slots, device=device)
+        pk_item_t = torch.zeros(n_kind_slots, device=device)
+        pk_misc_t = torch.zeros(n_kind_slots, device=device)
+        pk_loss_t = torch.zeros(n_kind_slots, device=device)
 
         with torch.no_grad():
             for batch in val_loader:
@@ -1015,15 +1046,15 @@ def train_sft(args: SFTArgs):
                     batch_eot,
                     batch_kind,
                 ) = batch
-                batch_obs = batch_obs.float().to(device)
-                batch_tile = batch_tile.to(device)
-                batch_ent = batch_ent.to(device)
-                batch_dir = batch_dir.to(device)
-                batch_item = batch_item.to(device)
-                batch_misc = batch_misc.to(device)
-                batch_mask = batch_mask.to(device)
-                batch_eot = batch_eot.to(device)
-                batch_kind = batch_kind.to(device)
+                batch_obs = batch_obs.to(device, non_blocking=pin).float()
+                batch_tile = batch_tile.to(device, non_blocking=pin)
+                batch_ent = batch_ent.to(device, non_blocking=pin)
+                batch_dir = batch_dir.to(device, non_blocking=pin)
+                batch_item = batch_item.to(device, non_blocking=pin)
+                batch_misc = batch_misc.to(device, non_blocking=pin)
+                batch_mask = batch_mask.to(device, non_blocking=pin)
+                batch_eot = batch_eot.to(device, non_blocking=pin)
+                batch_kind = batch_kind.to(device, non_blocking=pin)
 
                 encoded = agent.encoder(batch_obs)
                 B = encoded.shape[0]
@@ -1065,13 +1096,13 @@ def train_sft(args: SFTArgs):
                     + args.lw_misc * loss_misc_per
                     + args.lw_eot * loss_eot_per
                 )
-                val_loss += loss_per_sample.sum().item()
-                val_loss_tile += loss_tile_per.sum().item()
-                val_loss_ent += loss_ent_per.sum().item()
-                val_loss_dir += loss_dir_per.sum().item()
-                val_loss_item += loss_item_per.sum().item()
-                val_loss_misc += loss_misc_per.sum().item()
-                val_loss_eot += loss_eot_per.sum().item()
+                val_loss_t += loss_per_sample.sum()
+                val_loss_tile_t += loss_tile_per.sum()
+                val_loss_ent_t += loss_ent_per.sum()
+                val_loss_dir_t += loss_dir_per.sum()
+                val_loss_item_t += loss_item_per.sum()
+                val_loss_misc_t += loss_misc_per.sum()
+                val_loss_eot_t += loss_eot_per.sum()
 
                 pred_tile = tile_logits.argmax(dim=1)
                 tile_hit = batch_mask[batch_idx, pred_tile] > 0
@@ -1106,68 +1137,86 @@ def train_sft(args: SFTArgs):
                     place_heads_correct & eot_correct_per,
                     eot_correct_per,
                 )
-                val_correct += int(correct_per.sum().item())
-                val_tile_correct += tile_hit[is_place].sum().item()
-                val_ent_correct += ent_correct_per[is_place].sum().item()
-                val_dir_correct += dir_correct_per[is_place].sum().item()
-                val_item_correct += item_correct_per[is_place].sum().item()
-                val_misc_correct += misc_correct_per[is_place].sum().item()
+                tile_hit_place = tile_hit[is_place]
+                val_correct_t += correct_per.sum()
+                val_tile_correct_t += tile_hit_place.sum()
+                val_ent_correct_t += ent_correct_per[is_place].sum()
+                val_dir_correct_t += dir_correct_per[is_place].sum()
+                val_item_correct_t += item_correct_per[is_place].sum()
+                val_misc_correct_t += misc_correct_per[is_place].sum()
                 val_total += B
-                val_place_total += int(is_place.sum().item())
+                val_place_total_t += is_place.sum()
 
-                val_eot_correct += int(eot_correct_per.sum().item())
+                val_eot_correct_t += eot_correct_per.sum()
                 is_pos = batch_eot > 0.5
-                val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
-                val_eot_pos_total += int(is_pos.sum().item())
+                val_eot_pos_correct_t += eot_correct_per[is_pos].sum()
+                val_eot_pos_total_t += is_pos.sum()
 
-                # Per-kind aggregation: bucket placement metrics by kind on
-                # placement samples only (terminal samples carry no kind-
-                # specific placement signal; their eot loss is folded in
-                # via loss_per_sample). unique() keeps this
-                # O(num_kinds_in_batch) so adding new LessonKind enum
-                # values has no cost here.
-                for k_val in batch_kind.unique().tolist():
-                    k_name = kind_names[k_val]
-                    mask_k = (batch_kind == k_val) & is_place
-                    per_kind_n[k_name] += int(mask_k.sum().item())
-                    per_kind_correct[k_name] += int(correct_per[mask_k].sum().item())
-                    per_kind_tile_correct[k_name] += int(tile_hit[mask_k].sum().item())
-                    per_kind_ent_correct[k_name] += int(
-                        ent_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_dir_correct[k_name] += int(
-                        dir_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_item_correct[k_name] += int(
-                        item_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_misc_correct[k_name] += int(
-                        misc_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
+                # Per-kind aggregation over placement samples only (terminal
+                # samples carry no kind-specific placement signal; their eot
+                # loss is already folded into val_loss). Vectorised with
+                # index_add_ keyed by kind value — replaces the per-batch python
+                # loop over kinds and its .tolist()/.item() syncs. Numerically
+                # identical: the same per-sample values, summed within each kind.
+                place_kind = batch_kind[is_place].long()
+                pk_loss_dtype = pk_n_t.dtype
+                pk_n_t.index_add_(
+                    0, place_kind, torch.ones_like(place_kind, dtype=pk_loss_dtype)
+                )
+                pk_correct_t.index_add_(0, place_kind, correct_per[is_place].to(pk_loss_dtype))
+                pk_tile_t.index_add_(0, place_kind, tile_hit_place.to(pk_loss_dtype))
+                pk_ent_t.index_add_(0, place_kind, ent_correct_per[is_place].to(pk_loss_dtype))
+                pk_dir_t.index_add_(0, place_kind, dir_correct_per[is_place].to(pk_loss_dtype))
+                pk_item_t.index_add_(0, place_kind, item_correct_per[is_place].to(pk_loss_dtype))
+                pk_misc_t.index_add_(0, place_kind, misc_correct_per[is_place].to(pk_loss_dtype))
+                pk_loss_t.index_add_(0, place_kind, loss_per_sample[is_place].to(pk_loss_dtype))
 
-        # Placement losses were already masked off on terminal samples (their
-        # per-sample contribution is zero), so dividing by val_place_total
-        # gives the average over the placement subset. The eot loss spans
-        # every sample, so it's divided by val_total.
+        # Single sync point for the whole val epoch. Placement losses were
+        # already masked off on terminal samples (their per-sample contribution
+        # is zero), so dividing by val_place_total gives the average over the
+        # placement subset. The eot loss spans every sample, so it's divided by
+        # val_total.
+        val_place_total = int(val_place_total_t.item())
         place_norm = max(1, val_place_total)
-        val_loss /= val_total
-        val_loss_tile /= place_norm
-        val_loss_ent /= place_norm
-        val_loss_dir /= place_norm
-        val_loss_item /= place_norm
-        val_loss_misc /= place_norm
-        val_loss_eot /= val_total
-        val_acc = val_correct / val_total
-        val_tile_acc = val_tile_correct / place_norm
-        val_ent_acc = val_ent_correct / place_norm
-        val_dir_acc = val_dir_correct / place_norm
-        val_item_acc = val_item_correct / place_norm
-        val_misc_acc = val_misc_correct / place_norm
-        val_eot_acc = val_eot_correct / val_total
+        val_loss = val_loss_t.item() / val_total
+        val_loss_tile = val_loss_tile_t.item() / place_norm
+        val_loss_ent = val_loss_ent_t.item() / place_norm
+        val_loss_dir = val_loss_dir_t.item() / place_norm
+        val_loss_item = val_loss_item_t.item() / place_norm
+        val_loss_misc = val_loss_misc_t.item() / place_norm
+        val_loss_eot = val_loss_eot_t.item() / val_total
+        val_acc = val_correct_t.item() / val_total
+        val_tile_acc = val_tile_correct_t.item() / place_norm
+        val_ent_acc = val_ent_correct_t.item() / place_norm
+        val_dir_acc = val_dir_correct_t.item() / place_norm
+        val_item_acc = val_item_correct_t.item() / place_norm
+        val_misc_acc = val_misc_correct_t.item() / place_norm
+        val_eot_acc = val_eot_correct_t.item() / val_total
+        val_eot_pos_total = int(val_eot_pos_total_t.item())
+        val_eot_pos_correct = val_eot_pos_correct_t.item()
         val_eot_pos_recall = (
             val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
         )
+
+        # Bucket the vectorised per-kind accumulators back to the name-keyed
+        # dicts the metric build + stdout below already consume (unchanged).
+        pk_n = pk_n_t.tolist()
+        pk_correct = pk_correct_t.tolist()
+        pk_tile = pk_tile_t.tolist()
+        pk_ent = pk_ent_t.tolist()
+        pk_dir = pk_dir_t.tolist()
+        pk_item = pk_item_t.tolist()
+        pk_misc = pk_misc_t.tolist()
+        pk_loss = pk_loss_t.tolist()
+        per_kind_n = {k.name: int(round(pk_n[k.value])) for k in LessonKind}
+        per_kind_correct = {k.name: pk_correct[k.value] for k in LessonKind}
+        per_kind_tile_correct = {k.name: pk_tile[k.value] for k in LessonKind}
+        per_kind_ent_correct = {k.name: pk_ent[k.value] for k in LessonKind}
+        per_kind_dir_correct = {k.name: pk_dir[k.value] for k in LessonKind}
+        per_kind_item_correct = {k.name: pk_item[k.value] for k in LessonKind}
+        per_kind_misc_correct = {k.name: pk_misc[k.value] for k in LessonKind}
+        per_kind_loss_sum = {k.name: pk_loss[k.value] for k in LessonKind}
+        val_seconds = time.time() - t_val
 
         # Build per-kind metric dict for both stdout and wandb. Skip kinds
         # absent from the val split (e.g. small datasets where some kinds
@@ -1242,6 +1291,8 @@ def train_sft(args: SFTArgs):
                 if overall_thp is not None
                 else ""
             )
+            + f" | t: train={train_seconds:.1f}s val={val_seconds:.1f}s"
+            + (f" roll={rollout_seconds:.1f}s" if rollout_seconds is not None else "")
         )
         if per_kind_metrics:
             kind_summary = "  ".join(
@@ -1250,6 +1301,11 @@ def train_sft(args: SFTArgs):
                 if per_kind_n[k.name] > 0
             )
             print(f"  per-kind val_acc: {kind_summary}")
+
+        total_train_s += train_seconds
+        total_val_s += val_seconds
+        if rollout_seconds is not None:
+            total_roll_s += rollout_seconds
 
         if args.track and run is not None:
             # Drive wandb's underlying _step with samples_seen (cumulative
@@ -1299,6 +1355,8 @@ def train_sft(args: SFTArgs):
                     "train/grad_norm": (grad_norm_sum / grad_norm_count)
                     if grad_norm_count > 0
                     else float("nan"),
+                    "perf/train_seconds": train_seconds,
+                    "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
                 },
                 step=samples_seen,
@@ -1321,6 +1379,16 @@ def train_sft(args: SFTArgs):
         # so a checkpoint always exists.
         torch.save(agent.state_dict(), args.checkpoint_path)
     total_time = time.time() - t0
+    # Speedup-tracking summary: where the wall time went and the headline
+    # train throughput (samples/sec over the train passes only — the figure to
+    # compare across runs when judging loop-level optimisations).
+    train_sps = samples_seen / total_train_s if total_train_s > 0 else 0.0
+    print(
+        f"\nTiming: total={total_time:.1f}s | train={total_train_s:.1f}s "
+        f"val={total_val_s:.1f}s rollout={total_roll_s:.1f}s "
+        f"| train throughput={train_sps:,.0f} samples/s "
+        f"({samples_seen:,} samples over {args.epochs} epochs)"
+    )
     print(
         f"\nBest val/throughput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
     )
@@ -1350,6 +1418,10 @@ def train_sft(args: SFTArgs):
         "batch_size": args.batch_size,
         "seed": args.seed,
         "runtime_seconds": round(total_time, 1),
+        "train_seconds": round(total_train_s, 1),
+        "val_seconds": round(total_val_s, 1),
+        "rollout_seconds": round(total_roll_s, 1),
+        "train_samples_per_sec": round(train_sps, 1),
         "checkpoint_path": args.checkpoint_path,
         "wandb_url": run.url if run is not None else None,
     }
