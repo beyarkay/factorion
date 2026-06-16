@@ -157,6 +157,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 
 @dataclass
+# Best SFT hyperparameters from W&B sweep: https://wandb.ai/beyarkay/factorion/sweeps/ui3v0gn8
 class SFTArgs:
     # Defaults below are the rank-1 result from the first SFT sweep
     # (wandb sweep ncqdnvmt, PR #104) — val/acc=0.901 on size=11. The
@@ -167,15 +168,15 @@ class SFTArgs:
     """random seed"""
     size: int = 12
     """grid size (width and height)"""
-    num_samples: int = 300000
+    num_samples: int = 200000
     """number of (state, action) pairs to generate"""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
-    epochs: int = 30
+    epochs: int = 10
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 2.542e-3
+    lr: float = 0.00324176
     """peak learning rate (after warmup, before cosine decay)"""
     warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
@@ -216,9 +217,9 @@ class SFTArgs:
     # numeric slots (vs one categorical "64,64,64" string) let a W&B Bayesian
     # sweep optimise depth + per-layer width ordinally.
     # RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 48
-    layer2: int = 48
-    layer3: int = 64
+    layer1: int = 93
+    layer2: int = 69
+    layer3: int = 96
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0
