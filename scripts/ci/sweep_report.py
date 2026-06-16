@@ -20,6 +20,8 @@ import sys
 
 import wandb
 
+from wandb_metric import read_metric
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -79,11 +81,10 @@ def main():
         return
 
     # Sort runs by the sweep metric
+    missing = float("-inf") if reverse else float("inf")
+
     def get_metric(run):
-        val = run.summary.get(metric_name)
-        if val is None:
-            return float("-inf") if reverse else float("inf")
-        return val
+        return read_metric(run.summary, metric_name, missing)
 
     runs.sort(key=get_metric, reverse=reverse)
 
