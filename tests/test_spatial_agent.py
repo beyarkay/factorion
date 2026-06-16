@@ -12,7 +12,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, Args, FactorioEnv, make_env  # noqa: E402
 from helpers import Channel  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -209,3 +209,53 @@ class TestBatchConsistency:
             torch.testing.assert_close(logp_batch[i : i + 1], logp_single)
             torch.testing.assert_close(entropy_batch[i : i + 1], entropy_single)
             torch.testing.assert_close(value_batch[i : i + 1], value_single)
+
+
+class TestRegularisation:
+    """Dropout + weight-decay knobs. Both CLI args default to a no-op so
+    existing runs are unchanged; these tests pin that contract and verify
+    a non-zero dropout actually regularises."""
+
+    def test_arg_defaults_are_noop(self):
+        """The CLI defaults must leave training behaviour unchanged."""
+        assert Args().dropout == 0.0
+        assert Args().weight_decay == 0.0
+
+    def test_default_agent_carries_inert_dropout(self, agent):
+        """Default AgentCNN has Dropout2d layers (so the knob exists) but
+        at p=0 they are the identity."""
+        drops = [m for m in agent.encoder if isinstance(m, torch.nn.Dropout2d)]
+        assert len(drops) == 3
+        assert all(d.p == 0.0 for d in drops)
+
+    def test_dropout_zero_is_deterministic_in_train(self, agent):
+        """p=0 in train() mode is a true no-op: repeated encodes match."""
+        agent.train()
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))
+
+    def test_dropout_active_varies_in_train(self, envs):
+        """p>0 in train() mode resamples the mask each pass, so the only
+        source of variation — dropout — makes two encodes differ."""
+        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent.train()
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        assert not torch.allclose(agent.encoder(obs), agent.encoder(obs))
+
+    def test_dropout_inert_in_eval(self, envs):
+        """Dropout is disabled in eval() regardless of p, so inference is
+        deterministic even with a high drop probability."""
+        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent.eval()
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))
+
+    def test_weight_decay_default_adds_no_penalty(self, agent):
+        """Mirror ppo.py's optimiser wiring: the default weight_decay puts
+        no L2 penalty in the Adam param group."""
+        import torch.optim as optim
+
+        opt = optim.Adam(agent.parameters(), weight_decay=Args().weight_decay)
+        assert opt.param_groups[0]["weight_decay"] == 0.0
+        tuned = optim.Adam(agent.parameters(), weight_decay=0.01)
+        assert tuned.param_groups[0]["weight_decay"] == 0.01

@@ -288,6 +288,24 @@ _DIR_NAMES = {d.value: d.name for d in Direction}
 _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
+def _encoder_channels(state) -> tuple[int, int, int]:
+    """Infer (chan1, chan2, chan3) from a checkpoint's encoder conv
+    weights. Filters by 4-D weight shape and sorts by layer index rather
+    than hardcoding `encoder.0/2/4`, so inserting non-conv layers (e.g.
+    Dropout2d) into the encoder Sequential doesn't shift the conv indices
+    out from under us."""
+    conv_keys = sorted(
+        (
+            k
+            for k, v in state.items()
+            if k.startswith("encoder.") and k.endswith(".weight") and v.dim() == 4
+        ),
+        key=lambda k: int(k.split(".")[1]),
+    )
+    chan1, chan2, chan3 = (state[k].shape[0] for k in conv_keys)
+    return chan1, chan2, chan3
+
+
 def _load_checkpoint(path: str) -> None:
     """Load the checkpoint .pt and stash it. Clears the per-size agent
     cache so subsequent /predict calls rebuild against the new
@@ -298,9 +316,7 @@ def _load_checkpoint(path: str) -> None:
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
     _AGENT_CACHE.clear()
-    chan1 = state["encoder.0.weight"].shape[0]
-    chan2 = state["encoder.2.weight"].shape[0]
-    chan3 = state["encoder.4.weight"].shape[0]
+    chan1, chan2, chan3 = _encoder_channels(state)
     print(
         f"Loaded checkpoint {path} "
         f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
@@ -314,13 +330,14 @@ def _model_info() -> dict:
     if _CHECKPOINT_STATE is None:
         return {"loaded": False}
     s = _CHECKPOINT_STATE
+    chan1, chan2, chan3 = _encoder_channels(s)
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
         "source": _CHECKPOINT_SOURCE,
-        "chan1": s["encoder.0.weight"].shape[0],
-        "chan2": s["encoder.2.weight"].shape[0],
-        "chan3": s["encoder.4.weight"].shape[0],
+        "chan1": chan1,
+        "chan2": chan2,
+        "chan3": chan3,
         "device": str(_AGENT_DEVICE),
     }
 
@@ -355,9 +372,7 @@ def _get_agent(size: int) -> AgentCNN:
     if size in _AGENT_CACHE:
         return _AGENT_CACHE[size]
 
-    chan1 = _CHECKPOINT_STATE["encoder.0.weight"].shape[0]
-    chan2 = _CHECKPOINT_STATE["encoder.2.weight"].shape[0]
-    chan3 = _CHECKPOINT_STATE["encoder.4.weight"].shape[0]
+    chan1, chan2, chan3 = _encoder_channels(_CHECKPOINT_STATE)
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
