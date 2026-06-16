@@ -22,6 +22,8 @@ import sys
 
 import wandb
 
+from wandb_metric import read_metric
+
 # Hyperparameters in SFTArgs that sweeps can tune.
 # Maps sweep param name -> python type formatter.
 TUNABLE_PARAMS = {
@@ -142,11 +144,10 @@ def main():
         print("No finished runs in sweep. Skipping.")
         sys.exit(0)
 
+    missing = float("-inf") if reverse else float("inf")
+
     def get_metric(run):
-        val = run.summary.get(metric_name)
-        if val is None:
-            return float("-inf") if reverse else float("inf")
-        return val
+        return read_metric(run.summary, metric_name, missing)
 
     runs.sort(key=get_metric, reverse=reverse)
     best_run = runs[0]
