@@ -39,32 +39,31 @@ parameters:
   num_samples:
     value: 100000
   epochs:
-    value: 15
+    value: 23
   max_level:
     value: 0 # auto = size*size: training blanks the full factory
   # Thin the per-epoch greedy eval — its rollouts hammer the Rust throughput
   # sim every step (CPU-bound) and dominate wall-time under 5-way pod
-  # contention. Every 3rd epoch on 50 seeds keeps ~5 eval points across the
-  # 15 epochs (enough for the summary=max objective) at a fraction of the cost.
+  # contention. Every 3rd epoch on 50 seeds (~8 eval points over 23 epochs)
+  # feeds the summary=max objective at a fraction of the cost. Dropping the
+  # slow k=7 nets (see below) buys back the wall-time for the extra epochs.
   eval_rollouts_every_n_epochs:
     value: 3
   eval_rollouts_max_seeds:
     value: 50
 
-  # ── Encoder architecture (the search) ────────────────────────────
-  # Each layer{1..8} is a conv layer's channel width; the encoder uses every
-  # slot with width > 0, in order, so a slot of 0 drops that layer. Width
-  # and depth are thus tuned together. RF = 1 + n_layers * (kernel_size - 1):
-  # the C7 winner was 6 layers @ kernel 3 (RF 13 >= the grid); kernel_size 5
-  # reaches the same RF in fewer, wider layers.
-  #
-  # layer1..3 are always-present ordinal widths (int_uniform), giving a
-  # minimum depth of 3. layer4..8 are a small ORDERED set INCLUDING 0, so
-  # "drop this layer" has real probability (~1/5 each) and depth genuinely
-  # varies across 3..8 — int_uniform almost never samples exactly 0, which
-  # would pin depth at 8 and leave the layer-count knob dead. This is the
-  # one place we accept a per-slot categorical: depth needs a discrete
-  # on/off, and the set stays small + ordered so Bayes still searches it.
+  # ── Encoder architecture (the REFINED search) ─────────────────────
+  # Refinement of the first 20-run sweep (k13mwoj8), which gave a sharp
+  # verdict: of 3 runs that built anything, ALL were kernel_size=3 (3/4 k=3
+  # runs built; 0/16 k=5/k=7 runs did), 4-6 layers, lr ~0.0017-0.0026. k=7
+  # never trained past val/acc 0.16 in-budget. So:
+  #   - kernel_size in {3,5} (drop the dead k=7; k=5 kept — its 3 prior
+  #     failures all had low lr, so it was never fairly tested).
+  #   - depth capped at 6: layer7/layer8 pinned to 0 (every builder was <=6).
+  # Each layer{1..6} is a conv layer's channel width; a slot of 0 drops that
+  # layer. layer1..3 are always-present ordinal widths (int_uniform, min
+  # depth 3); layer4..6 are a small ORDERED set INCLUDING 0 so depth varies
+  # 3..6. RF = 1 + n_layers * (kernel_size - 1).
   layer1:
     distribution: int_uniform
     min: 32
@@ -84,21 +83,20 @@ parameters:
   layer6:
     values: [0, 0, 0, 0, 32, 48, 64, 96]
   layer7:
-    values: [0, 0, 0, 0, 32, 48, 64, 96]
+    value: 0
   layer8:
-    values: [0, 0, 0, 0, 32, 48, 64, 96]
+    value: 0
   kernel_size:
-    values: [3, 5, 7]
+    values: [3, 5]
 
   # ── LR (co-varies with depth, so swept alongside architecture) ────
-  # A fixed LR would unfairly favour whatever depth that LR happens to suit;
-  # letting it adapt keeps the architecture comparison honest. Floor raised
-  # to 3e-4: at 15 epochs an lr of 1e-4 barely converges (the first sweep's
-  # 1e-4 runs sat near 0 even at epoch 20), so it just wastes runs.
+  # Narrowed to [1e-3, 3e-3] around the first sweep's productive band: the 3
+  # runs that built had lr 0.0017 / 0.0025 / 0.0026, while the lone k=3 run
+  # that failed had lr 0.0004 (val/acc only 0.33). So drop the dead-low end.
   lr:
     distribution: log_uniform_values
-    min: 3.0e-4
-    max: 5.0e-3
+    min: 1.0e-3
+    max: 3.0e-3
 
 program: sft.py
 
