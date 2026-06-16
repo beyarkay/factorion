@@ -183,6 +183,8 @@ class SFTArgs:
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
     weight_decay: float = 2.902e-4
     """AdamW weight decay"""
+    dropout: float = 0.0
+    """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
     max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
     lw_tile: float = 1.162
@@ -743,6 +745,7 @@ def train_sft(args: SFTArgs):
         layers=layers_from_args(args),
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        dropout=args.dropout,
     )
     envs.close()
 
@@ -844,6 +847,7 @@ def train_sft(args: SFTArgs):
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
+        t_train = time.time()
         agent.train()
         train_loss = 0.0
         train_loss_tile = 0.0
@@ -857,10 +861,26 @@ def train_sft(args: SFTArgs):
         train_eot_correct = 0
         grad_norm_sum = 0.0
         grad_norm_count = 0
+        # Wall-clock attribution for the train pass, with NO added syncs. The
+        # loop already calls .item() every batch (loss/accuracy accumulation),
+        # which makes the GPU finish that batch before we read it — so each
+        # batch's wall time genuinely splits into "waiting for the DataLoader to
+        # hand us the batch" vs "computing it". That tells us whether we're
+        # data-loading-bound or compute-bound. (A finer forward/backward/optim
+        # split is NOT measurable this way: isolating them needs syncs between
+        # each, which serialise a normally-overlapped pipeline and measure a
+        # number a real run never produces.)
+        train_data_s = 0.0
+        train_compute_s = 0.0
+        num_batches = 0
 
         # batch_kind is carried through the loader so val can aggregate
         # per-kind metrics; we ignore it in the train pass.
+        t_batch = time.time()
         for batch in train_loader:
+            t_ready = time.time()
+            train_data_s += t_ready - t_batch
+            num_batches += 1
             (
                 batch_obs,
                 batch_tile,
@@ -928,7 +948,6 @@ def train_sft(args: SFTArgs):
                 + args.lw_misc * loss_misc
                 + args.lw_eot * loss_eot
             )
-
             optimizer.zero_grad()
             loss.backward()
             if args.max_grad_norm > 0:
@@ -979,6 +998,10 @@ def train_sft(args: SFTArgs):
             train_correct += int(correct.sum().item())
             train_total += B
             train_eot_correct += int(eot_correct_t.sum().item())
+            # The .item() reads above synced this batch's GPU work, so now is
+            # the real "batch finished" moment.
+            t_batch = time.time()
+            train_compute_s += t_batch - t_ready
 
         train_loss /= train_total
         train_loss_tile /= train_total
@@ -989,8 +1012,10 @@ def train_sft(args: SFTArgs):
         train_loss_eot /= train_total
         train_acc = train_correct / train_total
         train_eot_acc = train_eot_correct / train_total
+        train_seconds = time.time() - t_train
 
         # Validation
+        t_val = time.time()
         agent.eval()
         val_loss = 0.0
         val_loss_tile = 0.0
@@ -1212,6 +1237,8 @@ def train_sft(args: SFTArgs):
                 per_kind_misc_correct[k.name] / n
             )
 
+        val_seconds = time.time() - t_val
+
         # Rollout eval: every N epochs greedy-play the held-out factories
         # and record final throughput. Same lessons as val accuracy, so
         # val/throughput is directly comparable to val/acc curves.
@@ -1261,6 +1288,11 @@ def train_sft(args: SFTArgs):
                 f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
                 if overall_thp is not None
                 else ""
+            )
+            + (
+                f" | t: train={train_seconds:.1f}s "
+                f"(data={train_data_s:.1f}s compute={train_compute_s:.1f}s) "
+                f"val={val_seconds:.1f}s"
             )
         )
         if per_kind_metrics:
@@ -1319,6 +1351,12 @@ def train_sft(args: SFTArgs):
                     "train/grad_norm": (grad_norm_sum / grad_norm_count)
                     if grad_norm_count > 0
                     else float("nan"),
+                    # Real wall-clock (no added syncs); train splits into
+                    # DataLoader wait vs compute to expose data-vs-compute bound.
+                    "perf/train_seconds": train_seconds,
+                    "perf/train_data_seconds": train_data_s,
+                    "perf/train_compute_seconds": train_compute_s,
+                    "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
                 },
                 step=samples_seen,
