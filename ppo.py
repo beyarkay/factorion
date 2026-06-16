@@ -127,6 +127,8 @@ class Args:
     """the target KL divergence threshold"""
     adam_epsilon: float = 6.866e-06
     """The epsilon parameter for Adam"""
+    weight_decay: float = 0.0
+    """L2 weight decay for the Adam optimiser. Default 0 = no regularisation; tune upward later."""
     chan1: int = 48
     """Number of channels in the first layer of the CNN encoder"""
     chan2: int = 48
@@ -137,6 +139,8 @@ class Args:
     """Output size of the fully connected layer after the encoder"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    dropout: float = 0.0
+    """Dropout probability in the CNN encoder. Default 0 = no-op; tune upward later."""
     size: int = 12
     """The width and height of the factory"""
     summary_path: Optional[str] = None
@@ -799,7 +803,7 @@ class FactorioEnv(gym.Env):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01):
+    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01, dropout=0.0):
         super().__init__()
         base_env = envs.envs[0].unwrapped
         self.width = base_env.size
@@ -818,10 +822,13 @@ class AgentCNN(nn.Module):
         self.encoder = nn.Sequential(
             layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
             nn.ReLU(),
+            nn.Dropout2d(dropout),
             layer_init(nn.Conv2d(chan1, chan2, kernel_size=3, padding=1)),
             nn.ReLU(),
+            nn.Dropout2d(dropout),
             layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
             nn.ReLU(),
+            nn.Dropout2d(dropout),
         )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(f"Encoder has {num_params_encoder} params")
@@ -1055,7 +1062,7 @@ if __name__ == "__main__":
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
     )
 
-    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=} ")
+    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=}, {args.dropout=} ")
     agent = AgentCNN(
         envs,
         chan1=args.chan1,
@@ -1063,6 +1070,7 @@ if __name__ == "__main__":
         chan3=args.chan3,
         flat_dim=args.flat_dim,
         tile_head_std=args.tile_head_std,
+        dropout=args.dropout,
     )
 
     if args.start_from is not None:
@@ -1076,7 +1084,7 @@ if __name__ == "__main__":
     print("Compiling agent with torch.compile()")
     agent = torch.compile(agent)
 
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon)
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, weight_decay=args.weight_decay)
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
