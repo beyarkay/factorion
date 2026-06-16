@@ -36,7 +36,7 @@ from factorion import (  # noqa: E402
     entities,
 )
 
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, FactorioEnv, make_env, layers_from_args  # noqa: E402
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -183,6 +183,8 @@ class SFTArgs:
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
     weight_decay: float = 2.902e-4
     """AdamW weight decay"""
+    dropout: float = 0.0
+    """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
     max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
     lw_tile: float = 1.162
@@ -209,14 +211,21 @@ class SFTArgs:
     """EOT-head prob above which we mark the model "would stop" (for val/throughput_eot)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
-    chan1: int = 48
-    """CNN encoder channel 1"""
-    chan2: int = 48
-    """CNN encoder channel 2"""
-    chan3: int = 64
-    """CNN encoder channel 3"""
-    flat_dim: int = 128
-    """flat dim (unused, kept for compat with AgentCNN)"""
+    # CNN encoder width per layer slot. The encoder uses every slot with
+    # positive width, in order; a slot of 0 drops that layer. Independent
+    # numeric slots (vs one categorical "64,64,64" string) let a W&B Bayesian
+    # sweep optimise depth + per-layer width ordinally.
+    # RF = 1 + n_layers * (kernel_size - 1).
+    layer1: int = 48
+    layer2: int = 48
+    layer3: int = 64
+    layer4: int = 0
+    layer5: int = 0
+    layer6: int = 0
+    layer7: int = 0
+    layer8: int = 0
+    kernel_size: int = 3
+    """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     tile_head_std: float = 0.02208
     """tile head init std"""
     track: bool = False
@@ -267,12 +276,13 @@ def _artifact_name(args: "SFTArgs") -> str:
     get their own artifact. `best_val_acc` deliberately goes to the alias
     instead, since baking a varying number into the name would defeat
     versioning."""
-    chans = (args.chan1, args.chan2, args.chan3)
-    chan_str = (
-        f"c{args.chan1}"
-        if len(set(chans)) == 1
-        else f"c{args.chan1}-{args.chan2}-{args.chan3}"
-    )
+    # Encode the full layer list (one token per conv layer) so runs that
+    # differ in depth *or* width get distinct artifacts; append the kernel
+    # size only when it's non-default so existing names stay stable.
+    layers = layers_from_args(args)
+    chan_str = "c" + "-".join(str(c) for c in layers)
+    if args.kernel_size != 3:
+        chan_str += f"-k{args.kernel_size}"
     return (
         f"sft-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
@@ -466,7 +476,14 @@ def run_rollout_eval(
     was_training = agent.training
     agent.eval()
 
-    max_level = args.max_level if args.max_level > 0 else 2 * args.size
+    # Greedy build metric = build from a COMPLETELY EMPTY grid. Blank the
+    # whole factory: size*size >= any factory's entity count, so
+    # blank_entities removes every placeable entity (it caps at
+    # total_entities). The old 2*size left 6/7 lesson kinds partly built
+    # (e.g. ASSEMBLE_2IN_1OUT has up to 66 entities >> 2*size=22), which
+    # measured "finish a half-built factory", not true build skill. Mirrors
+    # the training-side full blank (max_level == size*size when unset).
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
 
     # Deterministic, run-stable subsample of val seeds. Sorting first
     # makes the selection independent of dict iteration order, then we
@@ -725,11 +742,10 @@ def train_sft(args: SFTArgs):
 
     agent = AgentCNN(
         envs,
-        chan1=args.chan1,
-        chan2=args.chan2,
-        chan3=args.chan3,
-        flat_dim=args.flat_dim,
+        layers=layers_from_args(args),
+        kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        dropout=args.dropout,
     )
     envs.close()
 
@@ -790,6 +806,13 @@ def train_sft(args: SFTArgs):
             group=args.wandb_group,
             tags=sft_tags,
         )
+        # Summarise the greedy-build metrics as their MAX over training rather
+        # than the default last-epoch value: that max is the checkpoint-
+        # selection number and the right sweep objective, while the metric
+        # still streams to history every epoch (so a sweep sees incremental
+        # progress and can rank / early-stop on it). See sft_sweep.yaml.
+        run.define_metric("val/throughput", summary="max")
+        run.define_metric("val/throughput_eot", summary="max")
         # Dataset composition is a one-shot constant for the run — write it
         # to summary (which keeps the value visible in the run sidebar)
         # rather than wandb.log (which would create a flat plottable line).
@@ -824,6 +847,7 @@ def train_sft(args: SFTArgs):
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
+        t_train = time.time()
         agent.train()
         train_loss = 0.0
         train_loss_tile = 0.0
@@ -837,10 +861,26 @@ def train_sft(args: SFTArgs):
         train_eot_correct = 0
         grad_norm_sum = 0.0
         grad_norm_count = 0
+        # Wall-clock attribution for the train pass, with NO added syncs. The
+        # loop already calls .item() every batch (loss/accuracy accumulation),
+        # which makes the GPU finish that batch before we read it — so each
+        # batch's wall time genuinely splits into "waiting for the DataLoader to
+        # hand us the batch" vs "computing it". That tells us whether we're
+        # data-loading-bound or compute-bound. (A finer forward/backward/optim
+        # split is NOT measurable this way: isolating them needs syncs between
+        # each, which serialise a normally-overlapped pipeline and measure a
+        # number a real run never produces.)
+        train_data_s = 0.0
+        train_compute_s = 0.0
+        num_batches = 0
 
         # batch_kind is carried through the loader so val can aggregate
         # per-kind metrics; we ignore it in the train pass.
+        t_batch = time.time()
         for batch in train_loader:
+            t_ready = time.time()
+            train_data_s += t_ready - t_batch
+            num_batches += 1
             (
                 batch_obs,
                 batch_tile,
@@ -908,7 +948,6 @@ def train_sft(args: SFTArgs):
                 + args.lw_misc * loss_misc
                 + args.lw_eot * loss_eot
             )
-
             optimizer.zero_grad()
             loss.backward()
             if args.max_grad_norm > 0:
@@ -959,6 +998,10 @@ def train_sft(args: SFTArgs):
             train_correct += int(correct.sum().item())
             train_total += B
             train_eot_correct += int(eot_correct_t.sum().item())
+            # The .item() reads above synced this batch's GPU work, so now is
+            # the real "batch finished" moment.
+            t_batch = time.time()
+            train_compute_s += t_batch - t_ready
 
         train_loss /= train_total
         train_loss_tile /= train_total
@@ -969,8 +1012,10 @@ def train_sft(args: SFTArgs):
         train_loss_eot /= train_total
         train_acc = train_correct / train_total
         train_eot_acc = train_eot_correct / train_total
+        train_seconds = time.time() - t_train
 
         # Validation
+        t_val = time.time()
         agent.eval()
         val_loss = 0.0
         val_loss_tile = 0.0
@@ -1192,6 +1237,8 @@ def train_sft(args: SFTArgs):
                 per_kind_misc_correct[k.name] / n
             )
 
+        val_seconds = time.time() - t_val
+
         # Rollout eval: every N epochs greedy-play the held-out factories
         # and record final throughput. Same lessons as val accuracy, so
         # val/throughput is directly comparable to val/acc curves.
@@ -1241,6 +1288,11 @@ def train_sft(args: SFTArgs):
                 f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
                 if overall_thp is not None
                 else ""
+            )
+            + (
+                f" | t: train={train_seconds:.1f}s "
+                f"(data={train_data_s:.1f}s compute={train_compute_s:.1f}s) "
+                f"val={val_seconds:.1f}s"
             )
         )
         if per_kind_metrics:
@@ -1299,6 +1351,12 @@ def train_sft(args: SFTArgs):
                     "train/grad_norm": (grad_norm_sum / grad_norm_count)
                     if grad_norm_count > 0
                     else float("nan"),
+                    # Real wall-clock (no added syncs); train splits into
+                    # DataLoader wait vs compute to expose data-vs-compute bound.
+                    "perf/train_seconds": train_seconds,
+                    "perf/train_data_seconds": train_data_s,
+                    "perf/train_compute_seconds": train_compute_s,
+                    "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
                 },
                 step=samples_seen,
@@ -1379,9 +1437,8 @@ def train_sft(args: SFTArgs):
                 "best_val_throughput": best_val_throughput,
                 "best_val_acc": best_val_acc,
                 "size": args.size,
-                "chan1": args.chan1,
-                "chan2": args.chan2,
-                "chan3": args.chan3,
+                "layers": "-".join(map(str, layers_from_args(args))),
+                "kernel_size": args.kernel_size,
                 "num_samples": args.num_samples,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,

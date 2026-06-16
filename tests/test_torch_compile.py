@@ -41,7 +41,7 @@ def n_channels(envs):
 @pytest.fixture()
 def agent(envs):
     """Create an uncompiled AgentCNN."""
-    return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
+    return AgentCNN(envs, layers=(32, 64, 64))
 
 
 @pytest.fixture()
@@ -54,7 +54,9 @@ class TestCompiledForwardPass:
     def test_output_shapes(self, compiled_agent, n_channels):
         """Verify compiled agent produces correct output shapes."""
         obs = torch.randn(2, n_channels, 5, 5)
-        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
+        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(
+            obs
+        )
 
         assert action_out["xy"].shape == (2, 2)
         assert action_out["entity"].shape == (2,)
@@ -94,9 +96,7 @@ class TestCompiledLogProbConsistency:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
-        action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1
-        )
+        action_tensor = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
 
         _, logp_replay, _, _ = compiled_agent.get_action_and_value(
             obs, action_tensor.long()
@@ -108,13 +108,25 @@ class TestCompiledGradientFlow:
     def test_gradients_flow_through_compiled_model(self, compiled_agent, n_channels):
         """Verify gradients propagate through the compiled agent."""
         obs = torch.randn(4, n_channels, 5, 5)
-        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
+        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(
+            obs
+        )
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
         # Access underlying module's parameters through the compiled wrapper
-        underlying = compiled_agent._orig_mod if hasattr(compiled_agent, "_orig_mod") else compiled_agent
-        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
+        underlying = (
+            compiled_agent._orig_mod
+            if hasattr(compiled_agent, "_orig_mod")
+            else compiled_agent
+        )
+        for head_name in (
+            "tile_logits",
+            "ent_head",
+            "dir_head",
+            "item_head",
+            "misc_head",
+        ):
             head = getattr(underlying, head_name)
             assert head.weight.grad is not None, f"No grad for {head_name}"
 
@@ -146,8 +158,8 @@ class TestCompiledParity:
         # Compile the same agent (same weights)
         compiled = torch.compile(agent)
         with torch.no_grad():
-            _, logp_compiled, entropy_compiled, value_compiled = compiled.get_action_and_value(
-                obs, action_tensor
+            _, logp_compiled, entropy_compiled, value_compiled = (
+                compiled.get_action_and_value(obs, action_tensor)
             )
 
         torch.testing.assert_close(logp_orig, logp_compiled)
@@ -174,13 +186,17 @@ class TestCompileOptimizer:
         optimizer = torch.optim.Adam(compiled_agent.parameters(), lr=1e-3)
 
         obs = torch.randn(4, n_channels, 5, 5)
-        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(obs)
+        action_out, logp_B, entropy_B, value_B = compiled_agent.get_action_and_value(
+            obs
+        )
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
         # Second forward pass should still work after optimizer step
-        action_out2, logp_B2, entropy_B2, value_B2 = compiled_agent.get_action_and_value(obs)
+        action_out2, logp_B2, entropy_B2, value_B2 = (
+            compiled_agent.get_action_and_value(obs)
+        )
         assert logp_B2.shape == (4,)
         assert value_B2.shape == (4,)

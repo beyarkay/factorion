@@ -33,7 +33,7 @@ from sft import (
     run_rollout_eval,
     train_sft,
 )
-from ppo import FactorioEnv, AgentCNN, make_env
+from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args
 
 
 class TestExtractExpertActions:
@@ -409,14 +409,14 @@ class TestSFTCheckpointLoading:
     def test_checkpoint_roundtrip(self, registered_env, tmp_path):
         """SFT checkpoint should load into AgentCNN and produce valid outputs."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
 
         # Save checkpoint
         ckpt_path = str(tmp_path / "test_sft.pt")
         torch.save(agent.state_dict(), ckpt_path)
 
         # Load into fresh agent
-        agent2 = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent2 = AgentCNN(envs, layers=(16, 16, 16))
         agent2.load_state_dict(torch.load(ckpt_path))
 
         # Verify identical outputs
@@ -435,13 +435,13 @@ class TestSFTCheckpointLoading:
     def test_sft_to_ppo_start_from(self, registered_env, tmp_path):
         """SFT checkpoint loaded via --start_from should not crash during RL."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
 
         ckpt_path = str(tmp_path / "test_sft.pt")
         torch.save(agent.state_dict(), ckpt_path)
 
         # Simulate what ppo.py does with --start_from
-        agent2 = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent2 = AgentCNN(envs, layers=(16, 16, 16))
         agent2.load_state_dict(torch.load(ckpt_path))
 
         # Run a forward pass (simulating RL step)
@@ -467,7 +467,7 @@ class TestSFTLossConvergence:
         )
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
@@ -523,10 +523,9 @@ class TestTrainSFTEndToEnd:
             max_level=2,
             epochs=2,
             batch_size=32,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
             checkpoint_path=ckpt,
             summary_path=summary,
         )
@@ -570,7 +569,7 @@ class TestRunRolloutEval:
         was eval'd."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         args = SFTArgs(
@@ -578,10 +577,9 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1, "Sanity: at least one valid lesson"
@@ -620,7 +618,7 @@ class TestRunRolloutEval:
         is larger."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         args = SFTArgs(
@@ -628,10 +626,9 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=6)
         assert len(val_seeds_to_kind) >= 3
@@ -650,7 +647,7 @@ class TestRunRolloutEval:
         crashing (defensive — the caller already guards on len(...)>0)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         args = SFTArgs(
@@ -658,10 +655,9 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
         )
         roll = run_rollout_eval(
             agent,
@@ -681,7 +677,7 @@ class TestRunRolloutEval:
         step, snapshotting the reset throughput (0) for every seed."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         args = SFTArgs(
@@ -689,10 +685,9 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
 
@@ -765,7 +760,7 @@ class TestEotHead:
         """AgentCNN must expose an eot_head producing a single logit per
         observation."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         assert hasattr(agent, "eot_head"), "AgentCNN must have an eot_head"
@@ -783,7 +778,7 @@ class TestEotHead:
         returns a bool tensor of the same shape. These are the methods
         inference rollouts call to decide 'I'm done here'."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         B = 3
@@ -817,10 +812,9 @@ class TestEotHead:
             epochs=20,
             batch_size=64,
             lr=3e-3,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
             checkpoint_path=ckpt,
             summary_path=summary,
         )
@@ -923,9 +917,8 @@ class TestArtifactNameHelpers:
         assert _humanize_lr(0) == "0"
 
     def test_artifact_name_default(self):
-        # SFTArgs defaults track the sweep winner (n=300k, chan3=64,
-        # lr=2.542e-3) with size bumped to the project default of 12.
-        # The auto-name expands the channel suffix.
+        # SFTArgs defaults (layers 48,48,64) expand into a per-layer channel
+        # suffix; size is the project default of 12.
         assert _artifact_name(SFTArgs()) == "sft-s12-n300k-e30-bs512-lr2.5e-3-c48-48-64"
 
     def test_artifact_name_larger_run(self):
@@ -935,18 +928,36 @@ class TestArtifactNameHelpers:
             epochs=50,
             batch_size=1024,
             lr=3e-4,
-            chan1=48,
-            chan2=48,
-            chan3=48,
+            layer1=48,
+            layer2=48,
+            layer3=48,
         )
-        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48"
+        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48"
+
+    def test_artifact_name_encodes_depth(self):
+        """Depth is part of the suffix: a 4-layer encoder of the same width
+        must not collide with a 3-layer one (else the deeper run would file
+        under the shallower run's artifact)."""
+        three = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=0)
+        four = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=48)
+        assert _artifact_name(three).endswith("-c48-48-48")
+        assert _artifact_name(four).endswith("-c48-48-48-48")
+        assert _artifact_name(three) != _artifact_name(four)
 
     def test_artifact_name_asymmetric_channels(self):
-        """When chan1/2/3 differ, the suffix expands rather than collapsing
-        to a single c{N} — so a c32-64-64 run can't accidentally be filed
-        under the same artifact as a c48 run."""
-        args = SFTArgs(chan1=32, chan2=64, chan3=64)
+        """Differing per-layer widths expand into the full list, so a
+        c32-64-64 run can't accidentally file under a c48-48-48 run."""
+        args = SFTArgs(layer1=32, layer2=64, layer3=64)
         assert _artifact_name(args) == "sft-s12-n300k-e30-bs512-lr2.5e-3-c32-64-64"
+
+    def test_artifact_name_kernel_size_suffix(self):
+        """A non-default kernel size appends -k{N} so two runs differing only
+        in receptive field get distinct artifacts; the default k=3 adds no
+        token (keeps existing names stable)."""
+        assert _artifact_name(SFTArgs()).endswith("-c48-48-64")
+        assert _artifact_name(SFTArgs(kernel_size=5)) == (
+            "sft-s12-n300k-e30-bs512-lr2.5e-3-c48-48-64-k5"
+        )
 
     def test_artifact_name_stable_across_runs(self):
         """Two SFTArgs with the same hyperparams must produce the same

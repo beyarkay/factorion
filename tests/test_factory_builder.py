@@ -32,6 +32,7 @@ from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
+
 def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
     """Build a small AgentCNN at the given size + channel width, save
     its state_dict to a temp .pt, and return the path. The model isn't
@@ -42,7 +43,7 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
         gym.register(id=env_id, entry_point=FactorioEnv)
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
     try:
-        agent = AgentCNN(envs, chan1=chan, chan2=chan, chan3=chan)
+        agent = AgentCNN(envs, layers=(chan, chan, chan))
     finally:
         envs.close()
     fd, path = tempfile.mkstemp(suffix=".pt")
@@ -67,13 +68,22 @@ def _reset_fb_state():
 
 def _empty_grid(size: int) -> list[list[dict]]:
     return [
-        [{"entity": "empty", "direction": "NONE", "item": "empty",
-          "misc": "NONE", "footprint": "AVAILABLE"} for _ in range(size)]
+        [
+            {
+                "entity": "empty",
+                "direction": "NONE",
+                "item": "empty",
+                "misc": "NONE",
+                "footprint": "AVAILABLE",
+            }
+            for _ in range(size)
+        ]
         for _ in range(size)
     ]
 
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
+
 
 class TestTopP:
     def test_top_p_named_includes_until_mass_reached(self):
@@ -118,22 +128,46 @@ class TestBuildWorld:
         direction values into the right channels."""
         size = 3
         grid = _empty_grid(size)
-        grid[1][2] = {"entity": "transport_belt", "direction": "EAST",
-                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+        grid[1][2] = {
+            "entity": "transport_belt",
+            "direction": "EAST",
+            "item": "empty",
+            "misc": "NONE",
+            "footprint": "AVAILABLE",
+        }
         world = fb.build_world(grid)
         # fb.items is keyed by Item.value, not by name, so look up via
         # the same name->value map build_world itself constructs.
         name_to_value = {it.name: it.value for it in fb.items.values()}
         # build_world returns WHC; entity channel at (x=2, y=1).
-        assert int(world[2, 1, fb.Channel.ENTITIES.value]) == name_to_value["transport_belt"]
+        assert (
+            int(world[2, 1, fb.Channel.ENTITIES.value])
+            == name_to_value["transport_belt"]
+        )
         assert int(world[2, 1, fb.Channel.DIRECTION.value]) == fb.Direction.EAST.value
 
     def test_non_square_raises(self):
         grid = [
-            [{"entity": "empty", "direction": "NONE", "item": "empty",
-              "misc": "NONE", "footprint": "AVAILABLE"}] * 4,
-            [{"entity": "empty", "direction": "NONE", "item": "empty",
-              "misc": "NONE", "footprint": "AVAILABLE"}] * 3,
+            [
+                {
+                    "entity": "empty",
+                    "direction": "NONE",
+                    "item": "empty",
+                    "misc": "NONE",
+                    "footprint": "AVAILABLE",
+                }
+            ]
+            * 4,
+            [
+                {
+                    "entity": "empty",
+                    "direction": "NONE",
+                    "item": "empty",
+                    "misc": "NONE",
+                    "footprint": "AVAILABLE",
+                }
+            ]
+            * 3,
         ]
         with pytest.raises(ValueError, match="square"):
             fb.build_world(grid)
@@ -143,11 +177,14 @@ class TestBuildWorld:
         grid = _empty_grid(size)
         grid[0][0]["footprint"] = "UNAVAILABLE"
         world = fb.build_world(grid)
-        assert int(world[0, 0, fb.Channel.FOOTPRINT.value]) == \
-            fb.Footprint.UNAVAILABLE.value
+        assert (
+            int(world[0, 0, fb.Channel.FOOTPRINT.value])
+            == fb.Footprint.UNAVAILABLE.value
+        )
 
 
 # ── Model loading + cache ───────────────────────────────────────────────────
+
 
 class TestCheckpointLoading:
     def test_load_checkpoint_populates_state(self):
@@ -234,6 +271,7 @@ class TestSwapModel:
 
 
 # ── End-to-end /predict schema ──────────────────────────────────────────────
+
 
 class TestPredictSchema:
     def test_predict_returns_full_schema(self):
@@ -329,6 +367,6 @@ class TestModelInfo:
             info = fb._model_info()
             assert info["loaded"] is True
             assert info["path"] == str(path)
-            assert info["chan1"] == info["chan2"] == info["chan3"] == 8
+            assert info["layers"] == [8, 8, 8]
         finally:
             path.unlink(missing_ok=True)

@@ -1,106 +1,104 @@
-# sft_sweep.yaml — SFT pre-training hyperparameter sweep
+# sft_sweep.yaml — SFT CNN-architecture sweep
 #
-# Compute-budget knobs that are monotonic-ish in val/acc (num_samples,
-# epochs, chan{1,2,3}) are pinned to the smoketest production config so
-# Bayes can't trivially saturate them and every run is directly
-# comparable to the prod checkpoint. The sweep instead optimises knobs
-# with a genuine interior optimum:
-#   - cosine LR schedule (issue #101): lr, warmup_frac, min_lr_ratio
-#   - regularisation: weight_decay, max_grad_norm
-#   - per-head loss weights (5 placement heads + EOT): lw_*
-#   - data-shape tradeoffs: batch_size, max_level, tile_head_std
+# Searches the encoder architecture (depth + per-layer width + receptive
+# field) against the greedy-build metric — the honest "can it actually
+# build the factory" number, not the per-head accuracy.
+#
+# Target is `val/throughput` (greedy build rate): sft.py logs it to history
+# every epoch AND — via define_metric(summary="max") — summarises it as the
+# MAX over training, the same number that selects the checkpoint. So Bayes
+# optimises the best achievable architecture while still seeing each run's
+# progress incrementally (rankable / early-stoppable mid-run) rather than
+# waiting for an end-of-run-only scalar.
+#
+# Compute-budget knobs (size, num_samples) are PINNED so every run is
+# comparable and Bayes spends its budget on architecture. They're cut below
+# the C7 regime (size 11, 300k pairs, 50 epochs) so all 20 configs finish on
+# one pod inside the 4h watchdog even with 5 agents sharing the GPU — enough
+# to RANK architectures; verify the winner at full C7 scale afterwards:
+#   num_samples 300k -> 100k, epochs 50 -> 15, and the per-epoch greedy eval
+#   (the costly, CPU-bound part) is thinned to every 3rd epoch on 50 seeds.
+#
+# Per-head loss weights (lw_*), the LR-schedule shape (warmup/min_lr) and
+# tile_head_std are deliberately NOT swept here: their SFTArgs defaults are the
+# previous (val/acc) sweep's winner, and adding them would blow the search
+# dimensionality past what run_cap=60 can resolve. Regularisation (dropout +
+# weight_decay) IS swept this round — #2 overfit, so finding the right
+# regularisation strength is part of the point (see the section below).
 
 method: bayes
 run_cap: 60
 metric:
-  name: "val/acc"
+  name: "val/throughput"
   goal: maximize
 
 parameters:
-  # Pinned because val/acc is monotonic in these: more data, more epochs,
-  # and a lower max_level all make the val task trivially easier and
-  # Bayes would just saturate them. Channels are NOT pinned — bigger
-  # encoders can overfit a fixed dataset (no dropout in AgentCNN), so
-  # there's a real interior optimum.
+  # ── Pinned compute budget (C7 regime) ────────────────────────────
   size:
     value: 11
   num_samples:
-    value: 300000
+    value: 200000
   epochs:
-    value: 30
+    value: 10 # 200k x 10 => each sample seen 10x (vs #2's 23x): curbs overfit
   max_level:
-    value: 0  # auto = 2*size = 22 entities blanked
+    value: 0 # auto = size*size: training blanks the full factory
+  eval_rollouts_every_n_epochs:
+    value: 2
+  eval_rollouts_max_seeds:
+    value: 100
 
-  # ── LR schedule (issue #101) ─────────────────────────────────────
+  # ── Encoder architecture (k=3 pinned; depth + width still searched) ──
+  # Sweep #2 (yxvpjz1f, 20 runs) settled the KERNEL: kernel_size=3 dominates
+  # (top-6 by greedy throughput all k=3, best 0.14 [52,59,58,96]; best k=5 only
+  # 0.06), so it's pinned to 3. Depth/width stay OPEN: #2's winners were 4-5
+  # layers, but on a handful of runs under heavier (23-epoch) overfit, and this
+  # round changes the regime (more data, fewer epochs) — so a shallower net
+  # that overfit before may do fine now. layer1..2 always-on (int_uniform);
+  # layer3..5 each may drop to 0 (depth 2-5); layer6/7/8 = 0. Each layer{1..5}
+  # is a conv width; a 0 drops the slot and layers_from_args() compacts the
+  # rest. Widths 32..96 (winners spanned the range). RF = 1 + n_layers*(k-1).
+  layer1:
+    distribution: int_uniform
+    min: 32
+    max: 96
+  layer2:
+    distribution: int_uniform
+    min: 32
+    max: 96
+  layer3: { values: [0, 0, 32, 48, 64, 96] }
+  layer4: { values: [0, 0, 32, 48, 64, 96] }
+  layer5: { values: [0, 0, 32, 48, 64, 96] }
+  layer6: { value: 0 }
+  layer7: { value: 0 }
+  layer8: { value: 0 }
+  kernel_size:
+    value: 3
+
+  # ── LR (co-varies with depth, so swept alongside architecture) ────
+  # Narrowed to [1.5e-3, 3.5e-3]. Both sweeps put every productive run in
+  # ~0.0017-0.0028 (best 0.14 @ 0.0027; #1's builders 0.0017 / 0.0025 / 0.0026)
+  # and BOTH peaked at ~0.0026-0.0027 — independent evidence the optimum sits
+  # there, not higher. So drop the dead-low end (lr <=0.0014 underperformed)
+  # and keep only modest headroom above the known-best.
   lr:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 3e-3
-  warmup_frac:
-    values: [0.0, 0.02, 0.05, 0.1]
-  min_lr_ratio:
-    distribution: log_uniform_values
-    min: 1e-3
-    max: 1e-1
+    min: 1.5e-3
+    max: 3.5e-3
 
-  # ── Regularisation ────────────────────────────────────────────────
+  # ── Regularisation (the anti-overfit dials, swept this round) ─────
+  # #2 overfit hard at 23 epochs. Alongside the samples-up / epochs-down change
+  # above, search both regularisers: dropout (spatial Dropout2d after each
+  # encoder conv) and AdamW weight_decay. The low ends (dropout 0, wd ~1e-5)
+  # are effectively "off", so the sweep can still land on "no extra
+  # regularisation" if the data/epoch change alone already fixes the overfit.
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
   weight_decay:
     distribution: log_uniform_values
-    min: 1e-6
-    max: 1e-2
-  max_grad_norm:
-    distribution: uniform
-    min: 0.5
-    max: 3.0
-
-  # ── Data-shape tradeoffs ──────────────────────────────────────────
-  batch_size:
-    values: [256, 512, 1024]
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  # ── Encoder capacity ──────────────────────────────────────────────
-  # AgentCNN has no dropout, so bigger encoders can overfit the (fixed)
-  # 300k-sample SFT dataset. Genuine interior optimum.
-  chan1:
-    values: [32, 48, 64]
-  chan2:
-    values: [48, 64]
-  chan3:
-    values: [48, 64]
-
-  # ── Per-head loss weights ─────────────────────────────────────────
-  # With 6 losses summed, equal weighting (= 1.0 each) implicitly
-  # assumes each head's gradient signal is equally informative — almost
-  # certainly wrong now that recipe/item and EOT heads exist alongside
-  # entity/direction. Log-uniform around 1.0 lets Bayes search find a
-  # useful re-balancing without blowing up scale.
-  lw_tile:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_ent:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_dir:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_item:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_misc:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_eot:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
+    min: 1.0e-5
+    max: 1.0e-2
 
 program: sft.py
 

@@ -42,14 +42,37 @@ parameters:
     min: 5e-5
     max: 1e-3
 
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
+  # CNN encoder architecture: each layer{1..8} is a conv layer's channel
+  # width; a slot of 0 drops that layer (slots compacted in order), so depth
+  # and width are tuned together. kernel_size sets the receptive field
+  # (RF = 1 + n_layers * (kernel_size - 1)). layer1..3 are always-present
+  # ordinal widths (min depth 3); layer4..8 are a small ordered set INCLUDING
+  # 0 so depth genuinely varies (int_uniform almost never samples exactly 0,
+  # which would pin depth at 8).
+  layer1:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer2:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer3:
+    distribution: int_uniform
+    min: 32
+    max: 64
+  layer4:
+    values: [0, 32, 48, 64]
+  layer5:
+    values: [0, 32, 48, 64]
+  layer6:
+    values: [0, 32, 48, 64]
+  layer7:
+    values: [0, 32, 48, 64]
+  layer8:
+    values: [0, 32, 48, 64]
+  kernel_size:
+    values: [3, 5]
 
   clip_coef:
     distribution: uniform
