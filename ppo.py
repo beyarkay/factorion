@@ -128,7 +128,7 @@ class Args:
     adam_epsilon: float = 6.866e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
-    """L2 weight decay for the Adam optimiser. Default 0 = no regularisation; tune upward later."""
+    """L2 weight decay for the Adam optimiser."""
     chan1: int = 48
     """Number of channels in the first layer of the CNN encoder"""
     chan2: int = 48
@@ -140,7 +140,7 @@ class Args:
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     dropout: float = 0.0
-    """Dropout probability in the CNN encoder. Default 0 = no-op; tune upward later."""
+    """Dropout probability in the CNN encoder."""
     size: int = 12
     """The width and height of the factory"""
     summary_path: Optional[str] = None
