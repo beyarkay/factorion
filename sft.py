@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     Channel,
+    Direction,
     LessonKind,
     blank_entities,
     build_factory,
@@ -650,6 +651,64 @@ def run_rollout_eval(
     }
 
 
+# Direction classes for the val confusion matrix, ordered by enum value
+# (NONE=0, NORTH=1, EAST=2, SOUTH=3, WEST=4).
+_DIRECTION_NAMES = [d.name for d in sorted(Direction, key=lambda d: d.value)]
+
+
+def _direction_diagnostics(true_dirs, pred_dirs):
+    """W&B log payload: the direction confusion matrix rendered as a PNG image.
+
+    We log a matplotlib heatmap as wandb.Image (not wandb.plot.confusion_matrix)
+    on purpose: logging an Image every epoch produces a media panel with a step
+    slider you can scrub across training, whereas wandb.plot.confusion_matrix
+    logs a one-off Table that can't be scrubbed and whose auto-panel renders as
+    a bar. Row-normalised so each row is P(pred | target) (the diagonal is
+    per-direction recall), which stays comparable across epochs regardless of
+    val size. Returns {} when there are no placement samples."""
+    import numpy as np
+    import wandb
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if not true_dirs:
+        return {}
+    n = len(_DIRECTION_NAMES)
+    counts = np.zeros((n, n), dtype=float)
+    np.add.at(counts, (np.asarray(true_dirs), np.asarray(pred_dirs)), 1.0)
+    row_total = counts.sum(axis=1, keepdims=True)
+    norm = np.divide(counts, row_total, out=np.zeros_like(counts), where=row_total > 0)
+
+    fig = Figure(figsize=(5.0, 4.5), dpi=110)
+    ax = fig.subplots()
+    im = ax.imshow(norm, cmap="turbo", vmin=0.0, vmax=1.0)
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(_DIRECTION_NAMES, rotation=45, ha="right")
+    ax.set_yticklabels(_DIRECTION_NAMES)
+    ax.set_xlabel("predicted")
+    ax.set_ylabel("target (demo)")
+    ax.set_title("Direction confusion (row-normalised: P(pred | target))")
+    for i in range(n):
+        if row_total[i, 0] == 0:
+            continue
+        for j in range(n):
+            ax.text(
+                j,
+                i,
+                f"{norm[i, j]:.2f}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="white" if norm[i, j] < 0.6 else "black",
+            )
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    return {"val/dir_confusion": wandb.Image(np.asarray(canvas.buffer_rgba()))}
+
+
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
     random.seed(args.seed)
@@ -1017,6 +1076,10 @@ def train_sft(args: SFTArgs):
         val_eot_pos_total = 0
         val_total = 0
         val_place_total = 0
+        # Direction (target, pred) over placement samples, for the confusion
+        # matrix + flip-rate diagnostics logged below.
+        dir_true_eval: list[int] = []
+        dir_pred_eval: list[int] = []
 
         # Per-LessonKind accumulators. Indexed by kind name to make wandb
         # panel keys read as "val/MOVE_ONE_ITEM/acc" rather than enum ints.
@@ -1110,6 +1173,10 @@ def train_sft(args: SFTArgs):
                 dir_correct_per = pred_dir == batch_dir
                 item_correct_per = pred_item == batch_item
                 misc_correct_per = pred_misc == batch_misc
+                # Collect placement-sample directions for the confusion matrix
+                # (terminal samples carry sentinel dir=0, so exclude them).
+                dir_true_eval.extend(batch_dir[is_place].tolist())
+                dir_pred_eval.extend(pred_dir[is_place].tolist())
                 # EOT-head accuracy + recall on positives separately.
                 # Recall on positives matters because the positives are
                 # rare; "always predict 0" would give high accuracy but
@@ -1339,6 +1406,7 @@ def train_sft(args: SFTArgs):
                     "perf/train_compute_seconds": train_compute_s,
                     "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
+                    **_direction_diagnostics(dir_true_eval, dir_pred_eval),
                 },
                 step=samples_seen,
             )
