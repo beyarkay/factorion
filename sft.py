@@ -160,32 +160,36 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 @dataclass
 class SFTArgs:
-    # Defaults below are the rank-1 result from the first SFT sweep
-    # (wandb sweep ncqdnvmt, PR #104) — val/acc=0.901 on size=11. The
-    # `size` default is set to 12 to match the project-wide default;
-    # all other hyperparameters are from the sweep. Override any
-    # individual flag at the command line.
+    # Defaults reproduce run kkcv6xe3 (wandb "sft-11x11"), the canonical SFT
+    # config + checkpoint going forward: the sweep #3 architecture (ui3v0gn8 —
+    # layers 93-69-96, lr 3.242e-3, dropout 0.1827, weight_decay 1.661e-3)
+    # trained at scale (size 11, 1M samples, 45 epochs; best_val_throughput
+    # 0.335, val_acc 0.838). size is 11 (not the old 12) so the default config
+    # matches that checkpoint. Running sft.py with no flags reproduces the run.
+    # NB: greedy throughput plateaued early (~epoch 3) in kkcv6xe3 — the long
+    # 1M x 45 schedule mainly drives per-step loss/acc, not throughput, so the
+    # epoch/sample counts are generous. Override any flag at the command line.
     seed: int = 1
     """random seed"""
-    size: int = 12
+    size: int = 11
     """grid size (width and height)"""
-    num_samples: int = 300000
+    num_samples: int = 1000000
     """number of (state, action) pairs to generate"""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
-    epochs: int = 30
+    epochs: int = 45
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 2.542e-3
+    lr: float = 3.242e-3
     """peak learning rate (after warmup, before cosine decay)"""
     warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
     min_lr_ratio: float = 0.02869
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
-    weight_decay: float = 2.902e-4
+    weight_decay: float = 1.661e-3
     """AdamW weight decay"""
-    dropout: float = 0.0
+    dropout: float = 0.1827
     """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
     max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
@@ -216,9 +220,9 @@ class SFTArgs:
     # CNN encoder width per layer slot (see ppo.layers_from_args). A slot of 0
     # drops that layer; layer1..3 default to a 3-conv encoder.
     # RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 48
-    layer2: int = 48
-    layer3: int = 64
+    layer1: int = 93
+    layer2: int = 69
+    layer3: int = 96
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0
