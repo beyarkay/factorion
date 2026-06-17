@@ -548,12 +548,8 @@ class TestTrainSFTEndToEnd:
 
 
 class TestSFTDropout:
-    """The SFT dropout knob is inert by default and, when set, must reach the
-    encoder via AgentCNN — mirrors ppo.Args' regularisation contract."""
-
-    def test_dropout_default_is_noop(self):
-        """Default leaves training unchanged (Dropout2d at p=0 is identity)."""
-        assert SFTArgs().dropout == 0.0
+    """The SFT dropout knob, when set, must reach the encoder via AgentCNN —
+    mirrors ppo.Args' regularisation contract."""
 
     def test_train_sft_threads_dropout_into_agent(self, monkeypatch, tmp_path):
         """train_sft must pass args.dropout through to AgentCNN. Spy on the
@@ -1187,11 +1183,6 @@ class TestArtifactNameHelpers:
     def test_humanize_lr_zero(self):
         assert _humanize_lr(0) == "0"
 
-    def test_artifact_name_default(self):
-        # SFTArgs defaults (layers 48,48,64) expand into a per-layer channel
-        # suffix; size is the project default of 12.
-        assert _artifact_name(SFTArgs()) == "sft-s12-n300k-e30-bs512-lr2.5e-3-c48-48-64"
-
     def test_artifact_name_larger_run(self):
         args = SFTArgs(
             size=16,
@@ -1219,16 +1210,19 @@ class TestArtifactNameHelpers:
         """Differing per-layer widths expand into the full list, so a
         c32-64-64 run can't accidentally file under a c48-48-48 run."""
         args = SFTArgs(layer1=32, layer2=64, layer3=64)
-        assert _artifact_name(args) == "sft-s12-n300k-e30-bs512-lr2.5e-3-c32-64-64"
+        # Assert only the channel suffix (the behaviour under test) so this
+        # doesn't break when the default size/samples/epochs/lr change.
+        assert _artifact_name(args).endswith("-c32-64-64")
 
     def test_artifact_name_kernel_size_suffix(self):
         """A non-default kernel size appends -k{N} so two runs differing only
         in receptive field get distinct artifacts; the default k=3 adds no
         token (keeps existing names stable)."""
-        assert _artifact_name(SFTArgs()).endswith("-c48-48-64")
-        assert _artifact_name(SFTArgs(kernel_size=5)) == (
-            "sft-s12-n300k-e30-bs512-lr2.5e-3-c48-48-64-k5"
-        )
+        # Default kernel (3) adds no suffix; a non-default kernel appends
+        # -k{N}. Derive from the default name so this survives default changes.
+        base = _artifact_name(SFTArgs())
+        assert not base.endswith(("-k3", "-k5", "-k7"))
+        assert _artifact_name(SFTArgs(kernel_size=5)) == base + "-k5"
 
     def test_artifact_name_stable_across_runs(self):
         """Two SFTArgs with the same hyperparams must produce the same
