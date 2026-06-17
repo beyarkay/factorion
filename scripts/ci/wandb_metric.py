@@ -1,17 +1,29 @@
 """Read a sweep metric out of a W&B run summary as a sortable scalar.
 
-W&B stores slash-namespaced metrics (e.g. ``curriculum/throughput_avg``)
-as *nested* dicts in a run's summary. A plain ``summary.get("a/b")`` can
-therefore return a nested ``SummarySubDict`` node — either because the
-full slash key misses (the value lives at ``summary["a"]["b"]``) or
-because the metric name points at a namespace rather than a leaf. Those
-nodes are unorderable, so feeding them to ``sorted()``/``list.sort()``
-raises ``TypeError: '<' not supported between instances of
-'SummarySubDict'``.
+Two W&B summary representations defeat a naive ``float(summary.get("a/b"))``:
 
-``read_metric`` resolves the slash path and only ever returns a float (or
-the caller's ``missing`` sentinel), so runs can be sorted safely.
+1. **Slash-namespaced metrics** (e.g. ``curriculum/throughput_avg``) can be
+   stored as *nested* dicts, so the full ``"a/b"`` key misses and the value
+   lives at ``summary["a"]["b"]``. A metric name pointing at a namespace
+   rather than a leaf yields a nested ``SummarySubDict`` node.
+
+2. **``define_metric(summary="max"|"min"|...)`` metrics** are stored as a
+   single-stat dict — ``val/throughput`` becomes ``{"max": 0.04}`` rather
+   than a bare ``0.04``. ``define_metric`` is exactly how the SFT greedy
+   throughput sweep records its objective, so this is the common case, not
+   an edge one.
+
+Both yield a non-scalar (a dict / ``SummarySubDict``) where the caller wants
+a number; ``float(dict)`` raises ``TypeError`` and unorderable nodes break
+``sorted()``/``list.sort()``. ``read_metric`` resolves the slash path,
+unwraps a summary-stat dict, and only ever returns a float (or the caller's
+``missing`` sentinel), so runs can be sorted safely.
 """
+
+# define_metric(summary=...) stores the chosen statistic under one of these
+# keys. Ordered by preference so a maximize objective unwraps to its "max"
+# and a minimize objective (no "max" present) falls through to "min".
+_SUMMARY_STAT_KEYS = ("max", "min", "last", "mean", "value")
 
 
 def read_metric(summary, metric_name, missing):
@@ -38,6 +50,19 @@ def read_metric(summary, metric_name, missing):
             if node is None:
                 break
         val = node
+    # A define_metric(summary="max"|...) value is a single-stat mapping
+    # ({"max": 0.04}); unwrap it to the underlying scalar. W&B's SummarySubDict
+    # is dict-LIKE but does NOT subclass dict, so duck-type on `.keys()` rather
+    # than isinstance(dict) (which silently misses the real object). A namespace
+    # mapping with no stat keys (e.g. {"greedy": .., "random": ..}) is left
+    # alone and falls through to `missing` below — we can't pick one for the
+    # caller.
+    if val is not None and hasattr(val, "keys"):
+        keys = set(val.keys())
+        for stat in _SUMMARY_STAT_KEYS:
+            if stat in keys:
+                val = val[stat]
+                break
     try:
         return float(val)
     except (TypeError, ValueError):
