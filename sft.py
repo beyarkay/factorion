@@ -976,7 +976,7 @@ def train_sft(args: SFTArgs):
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             config=vars(args),
-            name=f"sft-{args.size}x{args.size}",
+            name=_artifact_name(args),
             group=args.wandb_group,
             tags=sft_tags,
         )

@@ -628,6 +628,43 @@ class TestTrackedArtifact:
         assert meta["kernel_size"] == 3
         assert "chan1" not in meta
 
+    def test_run_named_by_artifact_name(self, monkeypatch, tmp_path):
+        """The W&B run name is the full hyperparameter signature (== the model
+        artifact name) so runs are distinguishable in the table — not all
+        "sft-{size}x{size}"."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        captured = {}
+
+        def fake_init(*a, **k):
+            captured["name"] = k.get("name")
+            run = MagicMock()
+            run.url = "http://test/run"
+            run.summary = {}
+            return run
+
+        monkeypatch.setattr(wandb, "init", fake_init)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=200,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts_every_n_epochs=0,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+        assert captured["name"] == _artifact_name(args)
+
 
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
