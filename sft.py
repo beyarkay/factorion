@@ -824,6 +824,7 @@ def train_sft(args: SFTArgs):
     print(f"Training for {args.epochs} epochs on {device}...")
 
     for epoch in range(1, args.epochs + 1):
+        t_train = time.time()
         agent.train()
         train_loss = 0.0
         train_loss_tile = 0.0
@@ -837,10 +838,19 @@ def train_sft(args: SFTArgs):
         train_eot_correct = 0
         grad_norm_sum = 0.0
         grad_norm_count = 0
+        # Wall-clock attribution for the train pass, with NO added syncs: the
+        # loop already .item()s every batch, so each batch's wall time splits
+        # into "waiting for the DataLoader" vs "computing it" — exposing whether
+        # the loop is data-loading-bound or compute-bound.
+        train_data_s = 0.0
+        train_compute_s = 0.0
 
         # batch_kind is carried through the loader so val can aggregate
         # per-kind metrics; we ignore it in the train pass.
+        t_batch = time.time()
         for batch in train_loader:
+            t_ready = time.time()
+            train_data_s += t_ready - t_batch
             (
                 batch_obs,
                 batch_tile,
@@ -959,6 +969,9 @@ def train_sft(args: SFTArgs):
             train_correct += int(correct.sum().item())
             train_total += B
             train_eot_correct += int(eot_correct_t.sum().item())
+            # .item() reads above synced this batch's GPU work; real "done".
+            t_batch = time.time()
+            train_compute_s += t_batch - t_ready
 
         train_loss /= train_total
         train_loss_tile /= train_total
@@ -969,8 +982,10 @@ def train_sft(args: SFTArgs):
         train_loss_eot /= train_total
         train_acc = train_correct / train_total
         train_eot_acc = train_eot_correct / train_total
+        train_seconds = time.time() - t_train
 
         # Validation
+        t_val = time.time()
         agent.eval()
         val_loss = 0.0
         val_loss_tile = 0.0
@@ -1192,6 +1207,8 @@ def train_sft(args: SFTArgs):
                 per_kind_misc_correct[k.name] / n
             )
 
+        val_seconds = time.time() - t_val
+
         # Rollout eval: every N epochs greedy-play the held-out factories
         # and record final throughput. Same lessons as val accuracy, so
         # val/throughput is directly comparable to val/acc curves.
@@ -1241,6 +1258,11 @@ def train_sft(args: SFTArgs):
                 f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
                 if overall_thp is not None
                 else ""
+            )
+            + (
+                f" | t: train={train_seconds:.1f}s "
+                f"(data={train_data_s:.1f}s compute={train_compute_s:.1f}s) "
+                f"val={val_seconds:.1f}s"
             )
         )
         if per_kind_metrics:
@@ -1299,6 +1321,12 @@ def train_sft(args: SFTArgs):
                     "train/grad_norm": (grad_norm_sum / grad_norm_count)
                     if grad_norm_count > 0
                     else float("nan"),
+                    # Real wall-clock (no added syncs); train splits into
+                    # DataLoader wait vs compute to expose data-vs-compute bound.
+                    "perf/train_seconds": train_seconds,
+                    "perf/train_data_seconds": train_data_s,
+                    "perf/train_compute_seconds": train_compute_s,
+                    "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
                 },
                 step=samples_seen,
