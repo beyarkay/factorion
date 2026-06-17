@@ -151,7 +151,7 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
     log.info("Loading checkpoint %s (grid=%d, chans=%d/%d/%d)",
              ckpt_path, hp.grid_size, hp.chan1, hp.chan2, hp.chan3)
     agent = AgentCNN(_duck_envs(hp.grid_size),
-                     chan1=hp.chan1, chan2=hp.chan2, chan3=hp.chan3).to(device)
+                     layers=(hp.chan1, hp.chan2, hp.chan3)).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
     agent.load_state_dict(state)
     agent.eval()
