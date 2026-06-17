@@ -25,6 +25,7 @@ from helpers import (
 from sft import (
     SFTArgs,
     _artifact_name,
+    _direction_diagnostics,
     _humanize_count,
     _humanize_lr,
     build_lr_schedule,
@@ -999,6 +1000,20 @@ class TestTrainValSeedSplit:
         )
         assert len(val_seeds) >= 1
         assert len(train_seeds) >= 1
+
+
+class TestDirectionConfusion:
+    """Direction confusion matrix diagnostic. Direction values:
+    NONE=0, NORTH=1, EAST=2, SOUTH=3, WEST=4."""
+
+    def test_diagnostics_payload(self):
+        N, S = 1, 3
+        payload = _direction_diagnostics([N, N, S], [N, S, S])
+        # The confusion-matrix chart object must be present for wandb to plot.
+        assert payload["val/dir_confusion"] is not None
+
+    def test_diagnostics_empty_is_noop(self):
+        assert _direction_diagnostics([], []) == {}
 
 
 class TestArtifactNameHelpers:
