@@ -15,14 +15,33 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "ci"
 from wandb_metric import read_metric  # noqa: E402
 
 
-class SummarySubDict(dict):
+class SummarySubDict:
     """Stand-in for W&B's nested summary node.
 
-    Like the real thing, it is dict-like (supports ``.get``) and instances
-    are unorderable, so feeding one to ``sorted``/``list.sort`` raises.
-    ``.get`` does not traverse slash-separated keys — nested metrics live
-    under nested ``SummarySubDict`` values, exactly like W&B.
+    Mirrors the real ``wandb.apis.public.summary.SummarySubDict``: dict-LIKE
+    (``get``/``keys``/``[]``/``in``) but deliberately **not** a ``dict``
+    subclass — the real class isn't either, so ``isinstance(node, dict)`` is
+    ``False`` for it. That is the exact footgun ``read_metric`` must survive;
+    subclassing ``dict`` here would hide it. Instances are unorderable, so
+    feeding one to ``sorted``/``list.sort`` raises. ``.get`` does not traverse
+    slash-separated keys — nested metrics live under nested ``SummarySubDict``
+    values, exactly like W&B.
     """
+
+    def __init__(self, data):
+        self._d = dict(data)
+
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+
+    def keys(self):
+        return self._d.keys()
+
+    def __getitem__(self, key):
+        return self._d[key]
+
+    def __contains__(self, key):
+        return key in self._d
 
 
 class TestReadMetric:
@@ -73,6 +92,35 @@ class TestReadMetric:
         # Should not raise, and missing values sort consistently.
         runs.sort(key=lambda s: read_metric(s, "throughput", missing), reverse=True)
         assert all(read_metric(s, "throughput", missing) == missing for s in runs)
+
+    def test_define_metric_max_dict_unwrapped(self):
+        # define_metric(summary="max") stores {"max": value}, not a bare
+        # scalar — the SFT throughput sweep's objective. Must unwrap to 0.04.
+        summary = SummarySubDict({"val/throughput": SummarySubDict({"max": 0.04})})
+        assert read_metric(summary, "val/throughput", float("-inf")) == 0.04
+
+    def test_define_metric_min_dict_unwrapped(self):
+        # A minimize objective records {"min": value}; with no "max" present
+        # the unwrap falls through to "min".
+        summary = SummarySubDict({"val/loss": SummarySubDict({"min": 1.2})})
+        assert read_metric(summary, "val/loss", float("inf")) == 1.2
+
+    def test_nested_slash_key_with_summary_stat_dict(self):
+        # Slash key misses AND the leaf is a define_metric dict: resolve the
+        # nested path, then unwrap the stat.
+        summary = SummarySubDict(
+            {"a": SummarySubDict({"b": SummarySubDict({"max": 0.5})})}
+        )
+        assert read_metric(summary, "a/b", float("-inf")) == 0.5
+
+    def test_multikey_namespace_without_stats_still_missing(self):
+        # A namespace dict whose keys are NOT summary stats must stay missing
+        # (we can't choose a metric for the caller) — guards the unwrap from
+        # over-firing.
+        summary = SummarySubDict(
+            {"val/throughput": SummarySubDict({"greedy": 0.5, "random": 0.1})}
+        )
+        assert read_metric(summary, "val/throughput", float("-inf")) == float("-inf")
 
     def test_mixed_present_and_missing_sort_order(self):
         runs = [
