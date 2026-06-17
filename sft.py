@@ -183,6 +183,8 @@ class SFTArgs:
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
     weight_decay: float = 2.902e-4
     """AdamW weight decay"""
+    dropout: float = 0.0
+    """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
     max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
     lw_tile: float = 1.162
@@ -734,6 +736,7 @@ def train_sft(args: SFTArgs):
         layers=layers_from_args(args),
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        dropout=args.dropout,
     )
     envs.close()
 

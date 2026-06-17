@@ -542,6 +542,47 @@ class TestTrainSFTEndToEnd:
         assert s["epochs"] == 2
 
 
+class TestSFTDropout:
+    """The SFT dropout knob is inert by default and, when set, must reach the
+    encoder via AgentCNN — mirrors ppo.Args' regularisation contract."""
+
+    def test_dropout_default_is_noop(self):
+        """Default leaves training unchanged (Dropout2d at p=0 is identity)."""
+        assert SFTArgs().dropout == 0.0
+
+    def test_train_sft_threads_dropout_into_agent(self, monkeypatch, tmp_path):
+        """train_sft must pass args.dropout through to AgentCNN. Spy on the
+        constructor — checkpoints don't persist Dropout2d's p, so the call is
+        the only observable point — and assert a non-zero value lands."""
+        import sft as sft_mod
+
+        captured = {}
+        real_agent_cls = sft_mod.AgentCNN
+
+        def spy(*a, **kw):
+            captured.update(kw)
+            return real_agent_cls(*a, **kw)
+
+        monkeypatch.setattr(sft_mod, "AgentCNN", spy)
+
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=100,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            dropout=0.5,
+            checkpoint_path=str(tmp_path / "drop.pt"),
+            summary_path=str(tmp_path / "drop.json"),
+        )
+        train_sft(args)
+        assert captured.get("dropout") == 0.5
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
