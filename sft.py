@@ -466,7 +466,12 @@ def run_rollout_eval(
     was_training = agent.training
     agent.eval()
 
-    max_level = args.max_level if args.max_level > 0 else 2 * args.size
+    # Blank the WHOLE factory (size*size) so the greedy eval builds from an
+    # empty grid — the honest "can it build from scratch" test, not a partial
+    # 2*size blank that leaves most of the factory pre-placed. Matches the
+    # data-generation path (which already auto-blanks size*size) and the
+    # max_level docstring.
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
 
     # Deterministic, run-stable subsample of val seeds. Sorting first
     # makes the selection independent of dict iteration order, then we
