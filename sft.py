@@ -972,7 +972,10 @@ def train_sft(args: SFTArgs):
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             config=vars(args),
-            name=f"sft-{args.size}x{args.size}",
+            # Name the run by its full hyperparameter signature (the same
+            # string used for the model artifact) so runs are distinguishable
+            # in the W&B table — previously every run was "sft-{size}x{size}".
+            name=_artifact_name(args),
             group=args.wandb_group,
             tags=sft_tags,
         )
