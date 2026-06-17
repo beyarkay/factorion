@@ -1204,7 +1204,6 @@ def train_sft(args: SFTArgs):
             n = per_kind_n[k.name]
             if n == 0:
                 continue
-            per_kind_metrics[f"val/{k.name}/n"] = n
             per_kind_metrics[f"val/{k.name}/loss"] = per_kind_loss_sum[k.name] / n
             per_kind_metrics[f"val/{k.name}/acc"] = per_kind_correct[k.name] / n
             per_kind_metrics[f"val/{k.name}/tile_acc"] = (
