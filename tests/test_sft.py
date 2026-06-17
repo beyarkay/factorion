@@ -979,6 +979,71 @@ class TestEotHead:
         )
 
 
+class TestPerKindEotMetrics:
+    """val/<LESSON>/eot_acc and /eot_pos_recall — the per-LessonKind breakdown
+    of the global EOT stop-signal metrics."""
+
+    def test_per_kind_eot_metrics_logged(self, monkeypatch, tmp_path):
+        """train_sft must log val/<LESSON>/eot_acc and /eot_pos_recall for
+        every LessonKind present in the val split, each in [0, 1] and paired
+        1:1 with the existing per-kind placement /acc. The per-kind metrics go
+        only to wandb (not summary.json), so capture the logged dict via a
+        mock run."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: dict = {}
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=400,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts_every_n_epochs=0,  # skip the slow greedy rollout
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+
+        acc_keys = [
+            k
+            for k in logged
+            if k.startswith("val/") and k.endswith("/eot_acc") and k != "val/eot_acc"
+        ]
+        rec_keys = [
+            k
+            for k in logged
+            if k.startswith("val/")
+            and k.endswith("/eot_pos_recall")
+            and k != "val/eot_pos_recall"
+        ]
+        assert acc_keys, "expected per-kind val/<LESSON>/eot_acc to be logged"
+        assert rec_keys, "expected per-kind val/<LESSON>/eot_pos_recall to be logged"
+        for k in acc_keys + rec_keys:
+            assert 0.0 <= logged[k] <= 1.0, f"{k}={logged[k]} out of [0, 1]"
+
+        # The per-kind eot keys must cover exactly the kinds that already get a
+        # placement /acc — same val split, same buckets, emitted together.
+        place_kinds = {
+            k.split("/")[1]
+            for k in logged
+            if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
+        }
+        assert {k.split("/")[1] for k in acc_keys} == place_kinds
+
+
 class TestTrainValSeedSplit:
     def test_no_lesson_overlap_between_train_and_val(self, capsys):
         """Train and val sets must not share any lesson seed. A pair-level
