@@ -1028,6 +1028,14 @@ def train_sft(args: SFTArgs):
         per_kind_item_correct = {k.name: 0 for k in LessonKind}
         per_kind_misc_correct = {k.name: 0 for k in LessonKind}
         per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
+        # EOT is scored over EVERY sample of a kind (the placement eot=0 steps
+        # plus the one terminal eot=1), so it needs full-sample counts, not the
+        # placement-only per_kind_n. The pos_* counters track recall on the rare
+        # terminal (eot=1) samples — the ones that actually trigger "stop".
+        per_kind_eot_correct = {k.name: 0 for k in LessonKind}
+        per_kind_eot_total = {k.name: 0 for k in LessonKind}
+        per_kind_eot_pos_correct = {k.name: 0 for k in LessonKind}
+        per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
 
         with torch.no_grad():
             for batch in val_loader:
@@ -1172,6 +1180,18 @@ def train_sft(args: SFTArgs):
                         misc_correct_per[mask_k].sum().item()
                     )
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
+                    # EOT spans the whole kind (placement + terminal), so use
+                    # the full kind mask here, not the placement-only mask_k.
+                    kind_k = batch_kind == k_val
+                    kind_k_pos = kind_k & is_pos
+                    per_kind_eot_correct[k_name] += int(
+                        eot_correct_per[kind_k].sum().item()
+                    )
+                    per_kind_eot_total[k_name] += int(kind_k.sum().item())
+                    per_kind_eot_pos_correct[k_name] += int(
+                        eot_correct_per[kind_k_pos].sum().item()
+                    )
+                    per_kind_eot_pos_total[k_name] += int(kind_k_pos.sum().item())
 
         # Placement losses were already masked off on terminal samples (their
         # per-sample contribution is zero), so dividing by val_place_total
@@ -1216,6 +1236,18 @@ def train_sft(args: SFTArgs):
             )
             per_kind_metrics[f"val/{k.name}/misc_acc"] = (
                 per_kind_misc_correct[k.name] / n
+            )
+            # EOT acc/recall use full-sample / positive-only denominators (NOT
+            # n, which counts placement samples only). Mirrors the global
+            # val/eot_acc + val/eot_pos_recall, but per LessonKind so we can see
+            # which lessons the stop-signal misfires on.
+            eot_n = per_kind_eot_total[k.name]
+            per_kind_metrics[f"val/{k.name}/eot_acc"] = (
+                per_kind_eot_correct[k.name] / eot_n if eot_n > 0 else 0.0
+            )
+            eot_pos_n = per_kind_eot_pos_total[k.name]
+            per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
+                per_kind_eot_pos_correct[k.name] / eot_pos_n if eot_pos_n > 0 else 0.0
             )
 
         val_seconds = time.time() - t_val
