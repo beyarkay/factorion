@@ -75,6 +75,14 @@ def _empty_grid(size: int) -> list[list[dict]]:
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
 
+class TestDefaultCheckpoint:
+    def test_default_wandb_run_is_canonical_kkcv6xe3(self):
+        """The UI auto-loads the canonical SFT checkpoint (run kkcv6xe3) when
+        launched with no --checkpoint/--wandb-run. Pins that default so it
+        isn't silently changed."""
+        assert fb.Args().wandb_run == "kkcv6xe3"
+
+
 class TestTopP:
     def test_top_p_named_includes_until_mass_reached(self):
         # 50/30/15/5 split — top-p=0.95 should include 50+30+15=95, then
