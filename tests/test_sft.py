@@ -654,6 +654,42 @@ class TestRunRolloutEval:
         for kn, thp in per_kind.items():
             assert 0.0 <= thp <= 1.5, f"{kn}: throughput out of range: {thp}"
 
+    def test_default_max_level_evals_from_empty(self, registered_env):
+        """With the default max_level (0), the rollout eval auto-resolves to
+        size*size — blanking the WHOLE factory so the agent builds from an
+        empty grid. The from-empty path must run end-to-end on every seed and
+        return well-formed throughput (this is the only rollout test that
+        exercises the default; the others pass max_level explicitly)."""
+        size = 5
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        envs.close()
+
+        # max_level left at its 0 default -> size*size (25) >> 2*size (10),
+        # so the whole 5x5 factory is blanked.
+        args = SFTArgs(
+            seed=1,
+            size=size,
+            num_samples=50,
+            chan1=16,
+            chan2=16,
+            chan3=16,
+            flat_dim=64,
+        )
+        assert args.max_level == 0, "default must be the auto sentinel"
+        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
+        assert len(val_seeds_to_kind) >= 1
+
+        roll = run_rollout_eval(
+            agent,
+            args,
+            val_seeds_to_kind,
+            device=torch.device("cpu"),
+            max_seeds=len(val_seeds_to_kind),
+        )
+        assert 0.0 <= roll["overall"] <= 1.5
+        assert sum(roll["per_kind_n"].values()) == len(val_seeds_to_kind)
+
     def test_max_seeds_caps_eval(self, registered_env):
         """max_seeds should bound the rollout count even when the val set
         is larger."""
