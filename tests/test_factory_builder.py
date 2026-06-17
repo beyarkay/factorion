@@ -42,7 +42,7 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
         gym.register(id=env_id, entry_point=FactorioEnv)
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
     try:
-        agent = AgentCNN(envs, chan1=chan, chan2=chan, chan3=chan)
+        agent = AgentCNN(envs, layers=(chan, chan, chan))
     finally:
         envs.close()
     fd, path = tempfile.mkstemp(suffix=".pt")
@@ -329,6 +329,6 @@ class TestModelInfo:
             info = fb._model_info()
             assert info["loaded"] is True
             assert info["path"] == str(path)
-            assert info["chan1"] == info["chan2"] == info["chan3"] == 8
+            assert info["layers"] == [8, 8, 8]
         finally:
             path.unlink(missing_ok=True)

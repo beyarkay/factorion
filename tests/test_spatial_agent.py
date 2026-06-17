@@ -38,7 +38,7 @@ def envs(registered_env):
 @pytest.fixture()
 def agent(envs):
     """Create an AgentCNN with default params."""
-    return AgentCNN(envs, chan1=32, chan2=64, chan3=64)
+    return AgentCNN(envs, layers=(32, 64, 64))
 
 
 class TestForwardPass:
@@ -237,7 +237,7 @@ class TestRegularisation:
     def test_dropout_active_varies_in_train(self, envs):
         """p>0 in train() mode resamples the mask each pass, so the only
         source of variation — dropout — makes two encodes differ."""
-        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.train()
         obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         assert not torch.allclose(agent.encoder(obs), agent.encoder(obs))
@@ -245,7 +245,7 @@ class TestRegularisation:
     def test_dropout_inert_in_eval(self, envs):
         """Dropout is disabled in eval() regardless of p, so inference is
         deterministic even with a high drop probability."""
-        agent = AgentCNN(envs, chan1=32, chan2=64, chan3=64, dropout=0.5)
+        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.eval()
         obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))

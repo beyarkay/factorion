@@ -129,14 +129,21 @@ class Args:
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
     """L2 weight decay for the Adam optimiser."""
-    chan1: int = 48
-    """Number of channels in the first layer of the CNN encoder"""
-    chan2: int = 48
-    """Number of channels in the second layer of the CNN encoder"""
-    chan3: int = 48
-    """Number of channels in the third layer of the CNN encoder"""
-    flat_dim: int = 128
-    """Output size of the fully connected layer after the encoder"""
+    # CNN encoder width per layer slot. The encoder uses every slot with
+    # positive width, in order; a slot of 0 drops that layer. Exposing depth +
+    # per-layer width as independent numeric slots (rather than one categorical
+    # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
+    # ordinally. RF = 1 + n_layers * (kernel_size - 1).
+    layer1: int = 48
+    layer2: int = 48
+    layer3: int = 48
+    layer4: int = 0
+    layer5: int = 0
+    layer6: int = 0
+    layer7: int = 0
+    layer8: int = 0
+    kernel_size: int = 3
+    """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     tile_head_std: float = 0.06503
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     dropout: float = 0.0
@@ -802,8 +809,25 @@ class FactorioEnv(gym.Env):
         return np.asarray(canvas, dtype=np.uint8)
 
 
+NUM_LAYER_SLOTS = 8
+
+
+def layers_from_args(args) -> list[int]:
+    """Compact the ``layer1..layer{NUM_LAYER_SLOTS}`` width slots on an
+    ``Args``/``SFTArgs`` into the CNN encoder's channel list: every slot with
+    positive width becomes one conv layer, in slot order; a zero-width slot is
+    dropped. This lets a W&B Bayesian sweep tune the encoder's depth *and*
+    per-layer width as independent numeric dimensions (drive a slot toward 0 to
+    remove a layer) instead of an opaque categorical "64,64,64" string."""
+    slots = [getattr(args, f"layer{i}") for i in range(1, NUM_LAYER_SLOTS + 1)]
+    layers = [c for c in slots if c > 0]
+    if not layers:
+        raise ValueError("at least one of layer1..layer8 must have positive width")
+    return layers
+
+
 class AgentCNN(nn.Module):
-    def __init__(self, envs, chan1=32, chan2=64, chan3=64, flat_dim=256, tile_head_std=0.01, dropout=0.0):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0):
         super().__init__()
         base_env = envs.envs[0].unwrapped
         self.width = base_env.size
@@ -817,23 +841,44 @@ class AgentCNN(nn.Module):
         self.num_directions = len(Direction)
         self.num_items = len(items)
         self.num_misc = len(Misc)
-        self.chan3 = chan3
-
-        self.encoder = nn.Sequential(
-            layer_init(nn.Conv2d(self.channels, chan1, kernel_size=3, padding=1)),
-            nn.ReLU(),
-            nn.Dropout2d(dropout),
-            layer_init(nn.Conv2d(chan1, chan2, kernel_size=3, padding=1)),
-            nn.ReLU(),
-            nn.Dropout2d(dropout),
-            layer_init(nn.Conv2d(chan2, chan3, kernel_size=3, padding=1)),
-            nn.ReLU(),
-            nn.Dropout2d(dropout),
-        )
+        # Variable-depth conv encoder: one conv layer per entry in `layers`,
+        # that entry giving the layer's channel width. `kernel_size` sets each
+        # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
+        # padding is pinned to kernel_size // 2 so every conv preserves the
+        # W x H spatial dims ("same" convolution). That invariant is
+        # load-bearing: the tile head emits one logit per grid cell and the
+        # per-tile heads index encoded[:, :, x, y], both of which require the
+        # feature map to stay exactly grid-sized.
+        #
+        # nn.Dropout2d(dropout) (spatial dropout) trails each ReLU; p=0.0 is a
+        # no-op and dropout is inert in eval(). Because it inserts a non-conv
+        # module between convs, conv weights no longer sit at encoder.0/2/4 —
+        # anything reading them back from a checkpoint must locate by shape.
+        if kernel_size % 2 == 0:
+            raise ValueError(f"kernel_size must be odd, got {kernel_size}")
+        if len(layers) == 0:
+            raise ValueError("layers must contain at least one conv layer")
+        padding = kernel_size // 2
+        conv_stack = []
+        in_ch = self.channels
+        for ch in layers:
+            conv_stack.append(
+                layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=padding))
+            )
+            conv_stack.append(nn.ReLU())
+            conv_stack.append(nn.Dropout2d(dropout))
+            in_ch = ch
+        self.encoder = nn.Sequential(*conv_stack)
+        self.layers = tuple(layers)
+        self.kernel_size = kernel_size
+        last_chan = layers[-1]  # encoder output channels — feeds every head
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
-        print(f"Encoder has {num_params_encoder} params")
+        print(
+            f"Encoder has {num_params_encoder} params "
+            f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
+        )
 
-        flat_dim = chan3 * self.width * self.height
+        flat_dim = last_chan * self.width * self.height
 
         # Project encoded state to value
         self.critic_head = nn.Sequential(
@@ -856,17 +901,17 @@ class AgentCNN(nn.Module):
         )
 
         # Tile selection: 1x1 conv producing one logit per spatial position
-        self.tile_logits = layer_init(nn.Conv2d(chan3, 1, kernel_size=1), std=tile_head_std)
+        self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
 
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
         # consistently — e.g. an underground_belt placement must carry
         # misc=UNDERGROUND_DOWN/UP, and an assembling_machine_1 placement
         # must carry a recipe in `item`.
-        self.ent_head = layer_init(nn.Linear(chan3, self.num_entities))
-        self.dir_head = layer_init(nn.Linear(chan3, self.num_directions))
-        self.item_head = layer_init(nn.Linear(chan3, self.num_items))
-        self.misc_head = layer_init(nn.Linear(chan3, self.num_misc))
+        self.ent_head = layer_init(nn.Linear(last_chan, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(last_chan, self.num_directions))
+        self.item_head = layer_init(nn.Linear(last_chan, self.num_items))
+        self.misc_head = layer_init(nn.Linear(last_chan, self.num_misc))
         self.time_for_get_value = None
         self.time_for_get_action_and_value = None
 
@@ -1013,10 +1058,8 @@ if __name__ == "__main__":
             f"seed:{args.seed}",
             f"size:{args.size}",
             f"timesteps:{args.total_timesteps//1000}K",
-            f"chan1:{args.chan1}",
-            f"chan2:{args.chan2}",
-            f"chan3:{args.chan3}",
-            f"flat_dim:{args.flat_dim}",
+            f"layers:{'-'.join(map(str, layers_from_args(args)))}",
+            f"k:{args.kernel_size}",
         )
 
         # Define metric axes and summary aggregation
@@ -1062,13 +1105,12 @@ if __name__ == "__main__":
         [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
     )
 
-    print(f"Creating agent with {args.chan1=}, {args.chan2=}, {args.chan3=}, {args.flat_dim=}, {args.tile_head_std=}, {args.dropout=} ")
+    encoder_layers = layers_from_args(args)
+    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")
     agent = AgentCNN(
         envs,
-        chan1=args.chan1,
-        chan2=args.chan2,
-        chan3=args.chan3,
-        flat_dim=args.flat_dim,
+        layers=encoder_layers,
+        kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
         dropout=args.dropout,
     )

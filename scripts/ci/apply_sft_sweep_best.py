@@ -32,9 +32,15 @@ TUNABLE_PARAMS = {
     "num_samples": "int",
     "epochs": "int",
     "max_level": "int",
-    "chan1": "int",
-    "chan2": "int",
-    "chan3": "int",
+    "layer1": "int",
+    "layer2": "int",
+    "layer3": "int",
+    "layer4": "int",
+    "layer5": "int",
+    "layer6": "int",
+    "layer7": "int",
+    "layer8": "int",
+    "kernel_size": "int",
     "tile_head_std": "float",
 }
 
@@ -135,7 +141,7 @@ def main():
         sys.exit(1)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "val/acc")
+    metric_name = metric_cfg.get("name", "val/throughput")
     metric_goal = metric_cfg.get("goal", "maximize")
     reverse = metric_goal == "maximize"
 

@@ -288,12 +288,12 @@ _DIR_NAMES = {d.value: d.name for d in Direction}
 _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
-def _encoder_channels(state) -> tuple[int, int, int]:
-    """Infer (chan1, chan2, chan3) from a checkpoint's encoder conv
-    weights. Filters by 4-D weight shape and sorts by layer index rather
-    than hardcoding `encoder.0/2/4`, so inserting non-conv layers (e.g.
-    Dropout2d) into the encoder Sequential doesn't shift the conv indices
-    out from under us."""
+def _encoder_arch(state) -> tuple[list[int], int]:
+    """Infer the encoder architecture (per-layer channel widths, kernel size)
+    from a checkpoint's conv weights. Filters by 4-D weight shape and sorts by
+    layer index rather than hardcoding `encoder.0/2/4`, so any depth/kernel and
+    interleaved non-conv layers (e.g. Dropout2d) reconstruct correctly — no
+    sidecar, no assumption of exactly three layers."""
     conv_keys = sorted(
         (
             k
@@ -302,8 +302,9 @@ def _encoder_channels(state) -> tuple[int, int, int]:
         ),
         key=lambda k: int(k.split(".")[1]),
     )
-    chan1, chan2, chan3 = (state[k].shape[0] for k in conv_keys)
-    return chan1, chan2, chan3
+    layers = [int(state[k].shape[0]) for k in conv_keys]
+    kernel_size = int(state[conv_keys[0]].shape[-1])
+    return layers, kernel_size
 
 
 def _load_checkpoint(path: str) -> None:
@@ -316,10 +317,10 @@ def _load_checkpoint(path: str) -> None:
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
     _AGENT_CACHE.clear()
-    chan1, chan2, chan3 = _encoder_channels(state)
+    layers, kernel_size = _encoder_arch(state)
     print(
         f"Loaded checkpoint {path} "
-        f"(chan1={chan1}, chan2={chan2}, chan3={chan3}, device={_AGENT_DEVICE})"
+        f"(layers={layers}, kernel_size={kernel_size}, device={_AGENT_DEVICE})"
     )
 
 
@@ -330,14 +331,13 @@ def _model_info() -> dict:
     if _CHECKPOINT_STATE is None:
         return {"loaded": False}
     s = _CHECKPOINT_STATE
-    chan1, chan2, chan3 = _encoder_channels(s)
+    layers, kernel_size = _encoder_arch(s)
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
         "source": _CHECKPOINT_SOURCE,
-        "chan1": chan1,
-        "chan2": chan2,
-        "chan3": chan3,
+        "layers": layers,
+        "kernel_size": kernel_size,
         "device": str(_AGENT_DEVICE),
     }
 
@@ -372,18 +372,18 @@ def _get_agent(size: int) -> AgentCNN:
     if size in _AGENT_CACHE:
         return _AGENT_CACHE[size]
 
-    chan1, chan2, chan3 = _encoder_channels(_CHECKPOINT_STATE)
+    layers, kernel_size = _encoder_arch(_CHECKPOINT_STATE)
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
         gym.register(id=env_id, entry_point=FactorioEnv)
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
     try:
-        agent = AgentCNN(envs, chan1=chan1, chan2=chan2, chan3=chan3)
+        agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
     finally:
         envs.close()
     # critic_head and eot_head are both Linear(flat_dim, 1) where
-    # flat_dim = chan3 * W * H, so their saved weights are the wrong
+    # flat_dim = layers[-1] * W * H, so their saved weights are the wrong
     # shape whenever the UI grid size != the training size. strict=False
     # would *not* save us here — it ignores missing/unexpected keys but
     # still raises on shape mismatches, so we filter explicitly.
@@ -396,7 +396,7 @@ def _get_agent(size: int) -> AgentCNN:
     # UI's eot panel shows the real trained prediction. Pre-#103
     # checkpoints have no eot_head keys at all → load_state_dict
     # (strict=False) leaves the freshly-initialised head in place.
-    expected_flat = chan3 * size * size
+    expected_flat = layers[-1] * size * size
     saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
     keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
     drop_prefixes: tuple[str, ...] = ("critic_head.",)
@@ -1279,8 +1279,8 @@ async function refreshModelInfo() {{
     const data = await resp.json();
     if (data.loaded) {{
       modelLoaded = true;
-      const shape = 'c1=' + data.chan1 + ' c2=' + data.chan2 +
-        ' c3=' + data.chan3 + ' ' + data.device;
+      const shape = 'layers=' + (data.layers || []).join('-') +
+        ' k=' + data.kernel_size + ' ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{
         // Show the run id directly — that's what the user types into
