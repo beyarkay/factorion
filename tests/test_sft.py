@@ -583,6 +583,51 @@ class TestSFTDropout:
         assert captured.get("dropout") == 0.5
 
 
+class TestTrackedArtifact:
+    """The track=True checkpoint-upload path. No test exercised it, so #146's
+    chan1/2/3 -> layers rename left a stale args.chan1 in the artifact metadata
+    that crashed every tracked run with AttributeError *after* training — only
+    at upload. This pins the path end-to-end."""
+
+    def test_tracked_run_finishes_with_layer_metadata(self, monkeypatch, tmp_path):
+        import wandb
+        from unittest.mock import MagicMock
+
+        captured = {}
+
+        def fake_artifact(*a, **k):
+            captured["metadata"] = k.get("metadata", {})
+            return MagicMock()
+
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", fake_artifact)
+
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=200,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts_every_n_epochs=0,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)  # must not raise at the artifact step
+
+        meta = captured["metadata"]
+        assert meta["layers"] == [16, 16, 16]
+        assert meta["kernel_size"] == 3
+        assert "chan1" not in meta
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
