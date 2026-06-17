@@ -35,6 +35,7 @@ from factorion import (  # noqa: E402
     blank_entities,
     build_factory,
     entities,
+    str2ent,
 )
 
 from ppo import AgentCNN, FactorioEnv, make_env, layers_from_args  # noqa: E402
@@ -709,6 +710,120 @@ def _direction_diagnostics(true_dirs, pred_dirs):
     return {"val/dir_confusion": wandb.Image(np.asarray(canvas.buffer_rgba()))}
 
 
+# Source/sink are never blanked (protected in _remove_entities), so every
+# observation carries them in the ENTITIES channel — we can read the
+# source<->sink separation straight off the obs without plumbing it through
+# the dataset.
+_SOURCE_ENTITY_ID = str2ent("source").value
+_SINK_ENTITY_ID = str2ent("sink").value
+
+
+def _source_sink_distance(obs_BCWH):
+    """Manhattan distance between the source centroid and the sink centroid,
+    per sample, read from the ENTITIES channel. Exact for single-source /
+    single-sink lessons (MOVE_*); a routing-span proxy for multi-endpoint
+    lessons (splitters/assemblers). Returns a [B] float tensor; samples with
+    no source or no sink get -1 (caller drops them)."""
+    ent = obs_BCWH[:, Channel.ENTITIES.value, :, :]  # [B, W, H]
+    W, H = ent.shape[1], ent.shape[2]
+    xs = torch.arange(W, device=ent.device).view(1, W, 1).float()
+    ys = torch.arange(H, device=ent.device).view(1, 1, H).float()
+    src = (ent == _SOURCE_ENTITY_ID).float()
+    snk = (ent == _SINK_ENTITY_ID).float()
+    src_n = src.sum((1, 2))
+    snk_n = snk.sum((1, 2))
+    src_x = (src * xs).sum((1, 2)) / src_n.clamp(min=1)
+    src_y = (src * ys).sum((1, 2)) / src_n.clamp(min=1)
+    snk_x = (snk * xs).sum((1, 2)) / snk_n.clamp(min=1)
+    snk_y = (snk * ys).sum((1, 2)) / snk_n.clamp(min=1)
+    dist = (src_x - snk_x).abs() + (src_y - snk_y).abs()
+    dist[(src_n == 0) | (snk_n == 0)] = -1.0
+    return dist
+
+
+def _dir_mismatch_by_distance(distances, mismatches):
+    """Bucket per-sample direction mismatches by (rounded) source<->sink
+    distance. A "mismatch" is argmax(dir) != the demo's target direction —
+    NOT necessarily a true error, since under multi-path ambiguity a different
+    direction can be an equally valid routing. Returns (sorted_distances,
+    mismatch_rates, counts) — the correlation curve."""
+    from collections import defaultdict
+
+    total = defaultdict(int)
+    wrong = defaultdict(int)
+    for d, m in zip(distances, mismatches):
+        total[int(round(d))] += 1
+        wrong[int(round(d))] += int(m)
+    xs = sorted(total)
+    return xs, [wrong[d] / total[d] for d in xs], [total[d] for d in xs]
+
+
+def _point_biserial(distances, mismatches):
+    """Pearson r between source<->sink distance and per-sample dir mismatch
+    (0/1). Positive => the model diverges from the demo more as the endpoints
+    get farther apart (the receptive-field hypothesis). 0.0 if either side has
+    no variance."""
+    n = len(distances)
+    if n == 0:
+        return 0.0
+    md = sum(distances) / n
+    mm = sum(mismatches) / n
+    cov = sum((d - md) * (m - mm) for d, m in zip(distances, mismatches))
+    var_d = sum((d - md) ** 2 for d in distances)
+    var_m = sum((m - mm) ** 2 for m in mismatches)
+    denom = (var_d * var_m) ** 0.5
+    return cov / denom if denom > 0 else 0.0
+
+
+def _dir_distance_diagnostics(distances, mismatches):
+    """W&B payload: the dir-mismatch-vs-distance curve (as a PNG) + a single
+    correlation scalar. "Mismatch" = argmax(dir) disagrees with the demo's
+    direction (a valid alternative routing also counts as a mismatch).
+
+    The curve is rendered with matplotlib and logged as wandb.Image (not
+    wandb.plot.line) so the media panel has a step slider you can scrub across
+    training; wandb.plot.line logs a one-off Table that can't be scrubbed. The
+    correlation is a plain scalar, so it already trends over time. {} when
+    there are no placement samples with a resolvable distance."""
+    import numpy as np
+    import wandb
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if not distances:
+        return {}
+    xs, rates, counts = _dir_mismatch_by_distance(distances, mismatches)
+    corr = _point_biserial(distances, mismatches)
+
+    fig = Figure(figsize=(6.0, 4.0), dpi=110)
+    ax = fig.subplots()
+    ax.plot(xs, rates, marker="o", color="#d62728")
+    ax.set_xlabel("source<->sink Manhattan distance")
+    ax.set_ylabel("dir mismatch rate (pred != demo)")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title(f"Dir mismatch vs source-sink distance  (r={corr:+.2f})")
+    ax.grid(True, alpha=0.3)
+    # annotate each point with its sample count, so sparse (noisy) far-distance
+    # buckets are obvious at a glance.
+    for x, y, n in zip(xs, rates, counts):
+        ax.annotate(
+            str(n),
+            (x, y),
+            textcoords="offset points",
+            xytext=(0, 5),
+            ha="center",
+            fontsize=7,
+            color="gray",
+        )
+    fig.tight_layout()
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    return {
+        "val/dir/mismatch_distance_corr": corr,
+        "val/dir_mismatch_vs_distance": wandb.Image(np.asarray(canvas.buffer_rgba())),
+    }
+
+
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
     random.seed(args.seed)
@@ -1077,9 +1192,13 @@ def train_sft(args: SFTArgs):
         val_total = 0
         val_place_total = 0
         # Direction (target, pred) over placement samples, for the confusion
-        # matrix + flip-rate diagnostics logged below.
+        # matrix logged below.
         dir_true_eval: list[int] = []
         dir_pred_eval: list[int] = []
+        # source<->sink distance + dir mismatch per placement sample, for the
+        # dir-mismatch-vs-distance correlation diagnostic.
+        dist_eval: list[float] = []
+        dir_mismatch_eval: list[int] = []
 
         # Per-LessonKind accumulators. Indexed by kind name to make wandb
         # panel keys read as "val/MOVE_ONE_ITEM/acc" rather than enum ints.
@@ -1177,6 +1296,12 @@ def train_sft(args: SFTArgs):
                 # (terminal samples carry sentinel dir=0, so exclude them).
                 dir_true_eval.extend(batch_dir[is_place].tolist())
                 dir_pred_eval.extend(pred_dir[is_place].tolist())
+                # source<->sink distance vs dir mismatch, placement samples with
+                # a resolvable distance (both endpoints present in the obs).
+                sample_dist = _source_sink_distance(batch_obs)
+                place_valid = is_place & (sample_dist >= 0)
+                dist_eval.extend(sample_dist[place_valid].tolist())
+                dir_mismatch_eval.extend((~dir_correct_per[place_valid]).int().tolist())
                 # EOT-head accuracy + recall on positives separately.
                 # Recall on positives matters because the positives are
                 # rare; "always predict 0" would give high accuracy but
@@ -1407,6 +1532,7 @@ def train_sft(args: SFTArgs):
                     "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
                     **_direction_diagnostics(dir_true_eval, dir_pred_eval),
+                    **_dir_distance_diagnostics(dist_eval, dir_mismatch_eval),
                 },
                 step=samples_seen,
             )
