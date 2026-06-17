@@ -662,7 +662,7 @@ class TestRunRolloutEval:
         exercises the default; the others pass max_level explicitly)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, chan1=16, chan2=16, chan3=16, flat_dim=64)
+        agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
         # max_level left at its 0 default -> size*size (25) >> 2*size (10),
@@ -671,10 +671,9 @@ class TestRunRolloutEval:
             seed=1,
             size=size,
             num_samples=50,
-            chan1=16,
-            chan2=16,
-            chan3=16,
-            flat_dim=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
         )
         assert args.max_level == 0, "default must be the auto sentinel"
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
