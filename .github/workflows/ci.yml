@@ -821,7 +821,7 @@ jobs:
           SWEEP_URL="${{ steps.create.outputs.sweep_url }}"
           SWEEP_PODS="${{ inputs.sweep_agents || '1' }}"
           AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
-          SWEEP_COUNT="${{ inputs.sweep_count || '20' }}"
+          SWEEP_COUNT="${{ inputs.sweep_count || '30' }}"
           TOTAL_AGENTS=$(( SWEEP_PODS * AGENTS_PER_POD ))
           gh pr comment "${{ github.event.pull_request.number }}" --body "$(cat <<EOF
           **SFT W&B Sweep started** — ${SWEEP_COUNT} iterations across ${SWEEP_PODS} pod(s) x ${AGENTS_PER_POD} agents/pod (${TOTAL_AGENTS} total agents)
@@ -835,7 +835,7 @@ jobs:
         run: |
           NUM_PODS="${{ inputs.sweep_agents || '1' }}"
           AGENTS_PER_POD="${{ inputs.sweep_agents_per_pod || '5' }}"
-          TOTAL_COUNT="${{ inputs.sweep_count || '20' }}"
+          TOTAL_COUNT="${{ inputs.sweep_count || '30' }}"
           TOTAL_AGENTS=$(( NUM_PODS * AGENTS_PER_POD ))
           COUNT_PER=$(( TOTAL_COUNT / TOTAL_AGENTS ))
 
