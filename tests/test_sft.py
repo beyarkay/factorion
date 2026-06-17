@@ -3,6 +3,7 @@
 import os
 import random
 import sys
+import types
 
 import pytest
 import torch
@@ -1041,6 +1042,110 @@ class TestArtifactNameHelpers:
         a = SFTArgs(seed=1)
         b = SFTArgs(seed=999)  # seed isn't part of the artifact name
         assert _artifact_name(a) == _artifact_name(b)
+
+
+class TestTrainSFTTrackingArtifact:
+    """The W&B tracking path (`if args.track and run is not None:`) is never
+    exercised by the default-config E2E tests, which all run with the
+    track=False default. That blind spot let #146's rename of the encoder
+    hyperparams (chan1/2/3 -> layer1..8) silently break the artifact-metadata
+    dict: it still reads `args.chan1`, which no longer exists. The failure only
+    surfaces on a real tracked run, AFTER a full training + checkpointing
+    finishes — `AttributeError: 'SFTArgs' object has no attribute 'chan1'`.
+
+    This drives train_sft(track=True) against a fake `wandb` (no network, no
+    creds — runs identically on CI) so the entire branch executes: init,
+    per-epoch log, summary writes, the artifact metadata construction that
+    throws today, the two add_file uploads, log_artifact, and finish."""
+
+    def test_tracking_branch_runs_end_to_end(self, monkeypatch, tmp_path):
+        import sft as sft_mod
+
+        logged: dict = {}
+
+        class _FakeArtifact:
+            def __init__(self, name, type, metadata):
+                self.name = name
+                self.type = type
+                self.metadata = metadata
+                self.files: list[str] = []
+
+            def add_file(self, path):
+                self.files.append(path)
+
+        class _FakeRun:
+            def __init__(self):
+                self.summary: dict = {}
+                self.url = "https://wandb.test/run/fake"
+
+            def define_metric(self, *a, **k):
+                pass
+
+            def log(self, *a, **k):
+                pass
+
+            def log_artifact(self, artifact, aliases=None):
+                logged["artifact"] = artifact
+                logged["aliases"] = aliases
+
+            def finish(self):
+                logged["finished"] = True
+
+        fake_wandb = types.SimpleNamespace(
+            init=lambda **k: _FakeRun(),
+            Artifact=lambda name, type, metadata: _FakeArtifact(name, type, metadata),
+        )
+        # `import wandb` inside train_sft resolves from sys.modules first, so
+        # this fake stands in for the real package without it being installed.
+        monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+        ckpt = str(tmp_path / "track.pt")
+        summary = str(tmp_path / "track.json")
+        args = SFTArgs(
+            seed=1,
+            size=5,
+            num_samples=100,
+            max_level=2,
+            epochs=2,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            checkpoint_path=ckpt,
+            summary_path=summary,
+        )
+
+        # Today this raises AttributeError on args.chan1 while building the
+        # artifact metadata, so it never returns.
+        agent = train_sft(args)
+
+        # Reaching here means the metadata dict built without crashing. Confirm
+        # the rest of the branch ran: artifact logged + run finished.
+        assert agent is not None, "train_sft returned before the tracking branch"
+        assert "artifact" in logged, "log_artifact was never called"
+        assert logged.get("finished") is True, "run.finish() was never called"
+
+        art = logged["artifact"]
+        # Both the checkpoint and the summary get uploaded onto the artifact.
+        assert ckpt in art.files, "checkpoint not added to artifact"
+        assert summary in art.files, "summary not added to artifact"
+        # The metadata dict was built from real args (proves we didn't just
+        # skip the block): args.size is recorded under "size".
+        assert art.metadata.get("size") == args.size
+        # The encoder layer widths must survive into the metadata (this is what
+        # the removed chan1/2/3 keys recorded). Accept either a per-layer
+        # encoding or a single list, so the test doesn't prescribe the fix.
+        meta_ints = set()
+        for v in art.metadata.values():
+            if isinstance(v, int):
+                meta_ints.add(v)
+            elif isinstance(v, (list, tuple)):
+                meta_ints.update(x for x in v if isinstance(x, int))
+        for width in layers_from_args(args):
+            assert width in meta_ints, (
+                f"encoder width {width} missing from artifact metadata {art.metadata}"
+            )
 
 
 class TestLRSchedule:
