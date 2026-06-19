@@ -2,6 +2,48 @@
 name = "factorion"
 version = "0.1.0"
 requires-python = ">=3.11"
+# Direct runtime imports across ppo.py / sft.py / factorion.py / scripts / the
+# mod server. The compiled `factorion_rs` extension is built separately with
+# `maturin develop` (see `factorion_rs/`), not resolved from PyPI.
+dependencies = [
+    "torch",
+    "numpy",
+    "gymnasium",
+    "networkx",
+    "tyro",
+    "tqdm",
+    "matplotlib",
+    "pandas",
+    "plotly",
+    "wandb",
+    "tensorboard",
+    "runpod",
+    "pyyaml",
+    "pillow",
+]
+
+# Tooling for the pre-commit/pre-push checklist (`uv sync` installs these too).
+[dependency-groups]
+dev = [
+    "ruff==0.11.8",
+    "pytest",
+    "pytest-timeout",
+    "maturin",
+]
+
+[tool.uv]
+# This repo is a collection of scripts, not an installable package, so don't
+# try to build/install the project itself — just manage its dependencies.
+# torch resolves from PyPI: CPU-only on macOS, CUDA-capable on Linux (so GPU
+# boxes work). CI installs CPU-only torch separately for its smoke tests.
+package = false
+
+[tool.ty.environment]
+# First-party modules imported flat by their siblings (tests do `import helpers`,
+# scripts/ci modules import each other, the mod server imports `blueprint`).
+# These dirs are on sys.path at runtime (pytest rootdir insertion / cwd), so
+# mirror them here for ty's module resolution.
+extra-paths = ["tests", "scripts", "scripts/ci", "factorion-mod/server"]
 
 [tool.ruff]
 # Existing code has many pre-existing violations in the training script.

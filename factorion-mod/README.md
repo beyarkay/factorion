@@ -89,8 +89,7 @@ factorion-mod/
    the repo root):
 
    ```bash
-   uv venv --python 3.11
-   uv pip install -r requirements.txt
+   uv sync
    uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
    ```
 
