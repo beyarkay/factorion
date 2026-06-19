@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
+from torch.distributions.bernoulli import Bernoulli
 import factorion_rs
 from factorion import (
     Channel,
@@ -158,6 +159,8 @@ class Args:
     """Tags to apply to the wandb run."""
     start_curriculum_level: int = 1
     """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
+    critic_warmup_iters: int = 0
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -1030,16 +1033,26 @@ class AgentCNN(nn.Module):
         dist_i = Categorical(logits=logits_i_BI)
         dist_m = Categorical(logits=logits_m_BM)
 
+        # End-of-turn as a Bernoulli *action*: the policy decides each step
+        # whether to declare the factory finished. Making it part of the
+        # action distribution (logp + entropy below) is what lets PPO train
+        # the eot_head — the SFT-pretrained head is otherwise inert in RL.
+        # The rollout loop ends the episode when eot fires.
+        eot_logit_B = self.eot_head(encoded_BCWH).squeeze(-1)
+        dist_eot = Bernoulli(logits=eot_logit_B)
+
         if action is None:
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
             item_B = dist_i.sample()
             misc_B = dist_m.sample()
+            eot_B = dist_eot.sample()
         else:
             ent_B = action[:, 2]
             dir_B = action[:, 3]
             item_B = action[:, 4]
             misc_B = action[:, 5]
+            eot_B = action[:, 6].float()
 
         # --- Log probs and entropy ---
         logp_B = (
@@ -1047,14 +1060,16 @@ class AgentCNN(nn.Module):
             dist_e.log_prob(ent_B) +
             dist_d.log_prob(dir_B) +
             dist_i.log_prob(item_B) +
-            dist_m.log_prob(misc_B)
+            dist_m.log_prob(misc_B) +
+            dist_eot.log_prob(eot_B)
         )
         entropy_B = (
             dist_tile.entropy() +
             dist_e.entropy() +
             dist_d.entropy() +
             dist_i.entropy() +
-            dist_m.entropy()
+            dist_m.entropy() +
+            dist_eot.entropy()
         )
 
         action_out = {
@@ -1063,6 +1078,7 @@ class AgentCNN(nn.Module):
             "entity": ent_B,
             "item": item_B,
             "misc": misc_B,
+            "eot": eot_B,
         }
         self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
@@ -1174,19 +1190,54 @@ if __name__ == "__main__":
 
     agent.to(device)
 
+    # Split params into critic (the value head) vs actor (encoder + every
+    # policy/eot head). Captured BEFORE torch.compile so the names are clean
+    # (compile prepends "_orig_mod."); the param tensors themselves are the
+    # same objects the optimiser and compiled module share, so freezing one
+    # list freezes the live params. The critic head is the only part SFT
+    # never trained, so the warm-up trains it in isolation against the
+    # frozen SFT features before letting gradients touch the actor.
+    critic_params = list(agent.critic_head.parameters())
+    critic_param_ids = {id(p) for p in critic_params}
+    actor_params = [p for p in agent.parameters() if id(p) not in critic_param_ids]
+
     print("Compiling agent with torch.compile()")
     # torch.compile returns an OptimizedModule that proxies attribute access to
     # the wrapped AgentCNN; cast back so the policy's methods stay typed.
     agent = cast(AgentCNN, torch.compile(agent))
 
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, weight_decay=args.weight_decay)
+    # Two param groups so the critic warm-up + LR annealing can address actor
+    # and critic LRs independently; group[0]=actor keeps the existing
+    # logging/annealing callsites (which read param_groups[0]) correct.
+    optimizer = optim.Adam(
+        [
+            {"params": actor_params, "lr": args.learning_rate},
+            {"params": critic_params, "lr": args.learning_rate},
+        ],
+        lr=args.learning_rate,
+        eps=args.adam_epsilon,
+        weight_decay=args.weight_decay,
+    )
+
+    # Freeze the actor for the warm-up window. Freezing the encoder too (not
+    # just the policy heads) is deliberate: the encoder feeds the value head,
+    # so leaving it trainable would let the value loss reshape the features
+    # the policy reads — i.e. the actor would not actually be frozen. With it
+    # frozen, the critic learns a value readout of the fixed SFT features.
+    def set_actor_requires_grad(flag: bool) -> None:
+        for p in actor_params:
+            p.requires_grad_(flag)
+
+    if args.critic_warmup_iters > 0:
+        set_actor_requires_grad(False)
+        print(f"Critic warm-up: actor frozen for the first {args.critic_warmup_iters} iterations")
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
     obs_shape = envs.single_observation_space.shape
     assert obs_shape is not None, "vector env must expose a concrete observation shape"
     obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + obs_shape, dtype=torch.float32, device=device)
-    ACTION_SPACE_SHAPE = (6,)
+    ACTION_SPACE_SHAPE = (7,)  # xy(2), entity, direction, item, misc, eot
     actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=torch.int64, device=device)
     logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
@@ -1235,14 +1286,29 @@ if __name__ == "__main__":
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
+        # Critic warm-up: the actor stays frozen for the first
+        # critic_warmup_iters iterations (only the value head trains), then we
+        # unfreeze once and run normal PPO from there.
+        in_warmup = iteration <= args.critic_warmup_iters
+        if args.critic_warmup_iters > 0 and iteration == args.critic_warmup_iters + 1:
+            set_actor_requires_grad(True)
+            print(f"\nCritic warm-up complete; unfreezing actor at iteration {iteration}")
+
+        # Annealing schedules run over the post-warm-up window, so the actor
+        # gets its full LR/entropy schedule starting from the unfreeze point
+        # rather than burning it while frozen. During warm-up the critic
+        # trains at the un-annealed peak LR.
+        anneal_total = max(1, args.num_iterations - args.critic_warmup_iters)
+        anneal_iter = max(0, iteration - args.critic_warmup_iters)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
+            frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"] = lrnow
+            for group in optimizer.param_groups:
+                group["lr"] = lrnow
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
-        ent_frac = 1.0 - (iteration - 1.0) / args.num_iterations
+        ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
         ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
         for step in range(0, args.num_steps):
@@ -1267,18 +1333,25 @@ if __name__ == "__main__":
                 dir_B = action_ED["direction"]
                 item_B = action_ED["item"]
                 misc_B = action_ED["misc"]
+                eot_B = action_ED["eot"].long()  # Bernoulli 0/1, stored as int
 
                 # Combine the actions together such that the environments are
                 # grouped first and then each component of the action
-                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
+                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1)
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
-            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
+            # eot is a PPO-side "declare done" signal, not an env action — the
+            # env only consumes the 5 placement keys. Strip it before stepping.
+            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items() if k != "eot"}
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
-            next_done = np.logical_or(terminations, truncations)
+            # End the episode when the policy declares the factory finished.
+            # Treated as a terminal (OR'd into next_done) so GAE doesn't
+            # bootstrap past it.
+            eot_stop = action_ED["eot"].cpu().numpy().astype(bool)
+            next_done = np.logical_or(np.logical_or(terminations, truncations), eot_stop)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
             # Reset done envs back to a fully-blank (build-from-empty) factory.
@@ -1427,7 +1500,13 @@ if __name__ == "__main__":
                 entropy_loss = entropy_B.mean()
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
-                loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
+                if in_warmup:
+                    # Actor frozen: train the value head only. The policy- and
+                    # entropy-gradient paths run through frozen params anyway,
+                    # but dropping them keeps the warm-up's objective explicit.
+                    loss = v_loss * args.vf_coef
+                else:
+                    loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
@@ -1453,8 +1532,10 @@ if __name__ == "__main__":
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_var": explained_var,
             "optim/lr": optimizer.param_groups[0]["lr"],
+            "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
             "optim/grad_norm": float(unclipped_grad_norm),
+            "optim/critic_warmup": 1.0 if in_warmup else 0.0,
             "perf/sps": int(global_step / (time.time() - start_time)),
         }
 
@@ -1497,7 +1578,7 @@ if __name__ == "__main__":
                 for i in range(1, 10):
                     with torch.no_grad():
                         action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
-                        action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
+                        action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items() if k != "eot"}
                         next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
 
                     for env_idx, img in enumerate(render_envs.render() or []):
