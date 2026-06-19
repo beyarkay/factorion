@@ -47,16 +47,6 @@ def agent(envs):
     return AgentCNN(envs, layers=(16, 16, 16))
 
 
-class TestThroughputDominantReward:
-    def test_shaping_coeffs_default_zero(self):
-        """Solution-matching PBRS shaping is off by default so RL optimises
-        raw throughput and can exceed the SFT imitation prior."""
-        a = Args()
-        assert a.coeff_shaping_location == 0.0
-        assert a.coeff_shaping_entity == 0.0
-        assert a.coeff_shaping_direction == 0.0
-
-
 class TestFullBlankDefault:
     def test_reset_without_option_fully_blanks(self, registered_env):
         """Omitting num_missing_entities blanks the whole factory (inf),

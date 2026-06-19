@@ -104,31 +104,10 @@ class Args:
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.7426
     """coefficient of the value function"""
-    coeff_throughput: float = 0.8785
-    """coefficient of the throughput when calculating reward"""
-    coeff_frac_reachable: float = 0.01
-    """coefficient of the fraction of unreachable nodes when calculating reward"""
-    coeff_frac_hallucin: float = 0.00
-    """coefficient of the fraction of tiles that had to be changed after normalisation"""
-    coeff_final_dir_reward: float = 0.01
-    """coefficient of reward given to the final belt being correctly oriented"""
-    coeff_material_cost: float = 0.01
-    """coefficient of reward given to the cost of materials used to solve the problem"""
-    coeff_validity: float = 0.01
-    """coefficient of reward given to the action being valid"""
-    coeff_shaping_location: float = 0.0
-    """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only). Default 0: RL optimises raw throughput, not match-to-SFT-solution, so it can exceed the imitation prior."""
-    coeff_shaping_entity: float = 0.0
-    """delta reward shaping: reward for correct entity types (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
-    coeff_shaping_direction: float = 0.0
-    """delta reward shaping: reward for correct directions (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
-    # ── Active reward (the coeff_* above are legacy diagnostics, unused) ──
-    # Episode return = throughput_reward_scale * final_throughput
-    #                  - step_penalty * num_steps.
     throughput_reward_scale: float = 1.0
-    """alpha: scales the terminal throughput reward (paid once when the episode ends, on eot / full-throughput solve / max_steps). throughput is in [0, 1], so this sets the max terminal reward."""
+    """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
     step_penalty: float = 0.01
-    """beta: penalty subtracted every step, so dragging the build out costs reward. Encourages the eot head to actually fire once the factory can't improve. Small relative to throughput_reward_scale."""
+    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
@@ -254,7 +233,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 12,
+        size: int = 11,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
@@ -263,12 +242,8 @@ class FactorioEnv(gym.Env):
         step_penalty: float = 0.01,
     ):
         super().__init__()
-        # Reward hparams: return = throughput_reward_scale * final_throughput
-        # - step_penalty * num_steps. Defaults mirror Args; ppo.py threads the
-        # CLI values through make_env.
         self.throughput_reward_scale = throughput_reward_scale
         self.step_penalty = step_penalty
-        # Setup the renderer if requested
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -304,9 +279,6 @@ class FactorioEnv(gym.Env):
             "direction": gym.spaces.Discrete(len(Direction)),
             "item": gym.spaces.Discrete(len(items)),
             "misc": gym.spaces.Discrete(len(Misc)),
-            # End-of-turn: 1 = the agent declares the factory finished and the
-            # episode terminates. Optional for direct callers (step reads it
-            # with .get default 0); ppo.py samples it from the policy's eot head.
             "eot": gym.spaces.Discrete(2),
         })
         # Cache source/sink IDs (non-placeable prototypes)
@@ -374,9 +346,6 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        # Default to fully blanking the factory (build-from-empty), so RL
-        # trains/measures the same task as the SFT greedy rollout eval.
-        # blank_entities clamps inf down to the removable-unit count.
         self._num_missing_entities = self._reset_options.get('num_missing_entities', float('inf'))
 
         self.actions = []
@@ -638,19 +607,6 @@ class FactorioEnv(gym.Env):
         dir_delta = curr_match[2] - self._prev_match[2]
         self._prev_match = curr_match
 
-        # ── Reward: terminal throughput minus a per-step penalty ──
-        # Episode return = throughput_reward_scale * final_throughput
-        #                  - step_penalty * num_steps,
-        # realised as -step_penalty on every step plus scale*throughput once
-        # when the episode ends. The agent ends its own episode via the eot
-        # action (action["eot"]); firing it stops the per-step bleed and banks
-        # the throughput reward, so PPO learns to stop once the factory can no
-        # longer improve. There is deliberately NO auto-terminate on a
-        # full-throughput solve: if the env ended solved episodes for free, the
-        # eot head would never get a gradient to fire on a finished factory and
-        # would never learn to stop. max_steps is the only other terminal; both
-        # terminals pay the terminal throughput reward.
-        # throughput here is thput_normed (raw / per-factory max, in [0, 1]).
         eot_declared = int(action.get("eot", 0)) == 1
         terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
@@ -931,14 +887,7 @@ class AgentCNN(nn.Module):
             layer_init(nn.Linear(flat_dim, 1), std=1.0)
         )
 
-        # Binary end-of-turn head. Predicts whether the factory is complete
-        # (1) or still has placements left (0). At rollout time the caller
-        # samples this and stops the episode when it crosses a threshold —
-        # gives the policy an explicit way to say "I'm done" without
-        # overloading the placement action. Named `eot_head` (not
-        # `done_head`) to avoid colliding with PPO's existing `done` /
-        # `dones_SE` / `next_done` episode-termination flags below. Bias
-        # init at -2 so an untrained model defaults to "not finished"
+        # Bias init at -2 so an untrained model defaults to "not finished"
         # (sigmoid(-2) ≈ 0.12).
         self.eot_head = nn.Sequential(
             nn.Flatten(),
@@ -1029,11 +978,6 @@ class AgentCNN(nn.Module):
         dist_i = Categorical(logits=logits_i_BI)
         dist_m = Categorical(logits=logits_m_BM)
 
-        # End-of-turn as a Bernoulli *action*: the policy decides each step
-        # whether to declare the factory finished. Making it part of the
-        # action distribution (logp + entropy below) is what lets PPO train
-        # the eot_head — the SFT-pretrained head is otherwise inert in RL.
-        # The rollout loop ends the episode when eot fires.
         eot_logit_B = self.eot_head(encoded_BCWH).squeeze(-1)
         dist_eot = Bernoulli(logits=eot_logit_B)
 
