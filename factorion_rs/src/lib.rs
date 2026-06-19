@@ -6,6 +6,15 @@
 // Forbid unwrap/expect in non-test code (tests use #[allow] where needed)
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
+// Without the `pyo3-bindings` feature this crate has no non-test entry points:
+// every root (`simulate_throughput`, `build_graph`, `entity_tiles`, the `py_*`
+// functions, …) is gated behind that feature, so a non-test `--no-default-features`
+// build leaves dead-code analysis with nothing to anchor on and flags the entire
+// throughput engine. That configuration is only used to run `cargo test
+// --no-default-features` (the default extension-module build can't link libpython
+// under `cargo test`), so suppress dead-code there. The shipping default build
+// still gets full dead-code checks.
+#![cfg_attr(not(feature = "pyo3-bindings"), allow(dead_code))]
 
 // `nonempty::nonempty![...]` expands to a path through `::alloc::vec`, which
 // requires `alloc` to be visible at the crate root.
