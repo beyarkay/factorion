@@ -16,7 +16,7 @@ import time
 import typing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 import gymnasium as gym
 import numpy as np
@@ -437,6 +437,16 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
     )
 
 
+class RolloutEval(TypedDict):
+    """Return shape of :func:`run_rollout_eval`."""
+
+    overall: float  # mean throughput ignoring the EOT head
+    overall_eot: float  # mean throughput respecting the EOT head
+    per_kind: dict[str, float]  # overall, keyed by LessonKind.name
+    per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
+    per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+
+
 def run_rollout_eval(
     agent,
     args: SFTArgs,
@@ -445,7 +455,7 @@ def run_rollout_eval(
     max_seeds: int = 100,
     eot_threshold: float = 0.5,
     num_envs: int = 8,
-) -> dict[str, object]:
+) -> RolloutEval:
     """Greedy rollout eval on the held-out val factories.
 
     Runs K=num_envs FactorioEnvs in parallel and batches the CNN forward
@@ -911,7 +921,7 @@ def train_sft(args: SFTArgs):
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
     if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point=FactorioEnv)
+        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, args.size, "sft")])
 
     agent = AgentCNN(

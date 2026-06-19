@@ -63,6 +63,8 @@ def read_metric(summary, metric_name, missing):
             if stat in keys:
                 val = val[stat]
                 break
+    if val is None:
+        return missing
     try:
         return float(val)
     except (TypeError, ValueError):

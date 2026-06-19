@@ -2,6 +2,7 @@
 
 import os
 import sys
+from typing import cast
 
 import pytest
 import torch
@@ -21,7 +22,7 @@ ENV_ID = "factorion/FactorioEnv-v0-mask-test"
 
 @pytest.fixture(scope="module")
 def registered_env():
-    gym.register(id=ENV_ID, entry_point=FactorioEnv)
+    gym.register(id=ENV_ID, entry_point="ppo:FactorioEnv")
 
 
 @pytest.fixture()
@@ -279,7 +280,7 @@ class TestMultiTilePlacement:
     @pytest.fixture()
     def big_env(self, registered_env):
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 8, "test")])
-        env = envs.envs[0].unwrapped
+        env = cast(FactorioEnv, envs.envs[0].unwrapped)
         env.reset(options={"num_missing_entities": 0})
         # Manually configure the world: keep just one source and one sink
         # (the env's reward calc asserts on that), clear everything else,
@@ -370,6 +371,7 @@ class TestMultiTilePlacement:
         env = big_env
         ax, ay = 3, 3
         tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
+        assert tiles is not None
         secondary = next((t for t in tiles if t != (ax, ay)), None)
         assert secondary is not None
         sx, sy = secondary
@@ -401,6 +403,7 @@ class TestMultiTilePlacement:
         env = big_env
         ax, ay = 3, 3
         tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
+        assert tiles is not None
         secondary = next(t for t in tiles if t != (ax, ay))
         env._world_CWH[Channel.FOOTPRINT.value, secondary[0], secondary[1]] = 0
 

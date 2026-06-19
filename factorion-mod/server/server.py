@@ -95,6 +95,7 @@ class RconClient:
         return body
 
     def _send(self, ptype: int, body: str) -> int:
+        assert self._sock is not None
         rid = self._counter
         self._counter += 1
         payload = body.encode("utf-8")
@@ -113,6 +114,7 @@ class RconClient:
         return rid, ptype, body
 
     def _read_exact(self, n: int) -> bytes:
+        assert self._sock is not None
         buf = b""
         while len(buf) < n:
             chunk = self._sock.recv(n - len(buf))
@@ -252,6 +254,8 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
     try:
         tiles = factorion_rs.py_entity_tiles(x, y, direction, width, height)
     except Exception:
+        tiles = None
+    if tiles is None:
         # Fall back to the anchor tile; better to under-mark than crash.
         tiles = [(x, y)]
 

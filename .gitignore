@@ -9,8 +9,6 @@ videos/
 *.png
 factorion_rs/target/
 factorion_rs/dist/
-uv.lock
-factorion_rs/uv.lock
 __pycache__/
 .venv/
 plan.md

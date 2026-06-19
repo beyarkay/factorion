@@ -49,10 +49,15 @@ Use `uv run` to run all Python commands. The `.venv` is managed by `uv` and is *
 ## Setup
 
 ```bash
-uv venv --python 3.11
-uv pip install -r requirements.txt
+# Create .venv and install all deps (runtime + dev tooling) from pyproject.toml + uv.lock
+uv sync
+# Build the Rust extension into the venv
 uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
 ```
+
+Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`. There is
+no `requirements.txt` — `uv sync` (driven by `uv.lock`) is the only supported
+way to set up the environment.
 
 ## Running
 
@@ -106,10 +111,11 @@ Before claiming work is done, run all of the following:
 3. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
 5. **Python linter**: `uv run ruff check .`
-6. **PPO smoke test**: `WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
-7. **SFT smoke test**: `WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
+6. **Type checker**: `uv run ty check .` (also enforced by the pre-push hook)
+7. **PPO smoke test**: `WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+8. **SFT smoke test**: `WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
 
-All seven must pass before the work is considered complete.
+All eight must pass before the work is considered complete.
 
 ## Code Conventions
 
@@ -117,7 +123,7 @@ All seven must pass before the work is considered complete.
 - The RL environment follows the Gymnasium API (`reset`, `step`, `render`).
 - Factory state is represented as 3D tensors with semantic channels.
 - Experiment runs are tracked with Weights & Biases.
-- The project uses pinned dependencies in `requirements.txt`.
+- Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`; set up the env with `uv sync`.
 
 ## Rust Type System
 

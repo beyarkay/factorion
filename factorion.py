@@ -231,6 +231,7 @@ def str2ent(s):
         return Entity(
             name="electronic_circuit",
             value=len(entities),
+            is_placeable=False,
             width=1,
             height=1,
             flow=0.0,

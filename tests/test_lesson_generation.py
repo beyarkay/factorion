@@ -724,6 +724,7 @@ class TestWorld2HtmlMultiTile:
         import factorion_rs
         anchor = (3, 3)
         tiles = factorion_rs.py_entity_tiles(anchor[0], anchor[1], direction.value, 2, 1)
+        assert tiles is not None
         for tx, ty in tiles:
             world[tx, ty, Channel.ENTITIES.value] = str2ent("splitter").value
             world[tx, ty, Channel.DIRECTION.value] = direction.value

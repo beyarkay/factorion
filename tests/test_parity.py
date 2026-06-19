@@ -625,6 +625,7 @@ class TestSplitterEdgeCases:
         }[d]
 
         tiles = factorion_rs.py_entity_tiles(ax, ay, d.value, 2, 1)
+        assert tiles is not None
         # Place underground belt (up) behind the first input cell
         in_x, in_y = tiles[0][0] - dx, tiles[0][1] - dy
         ub_x, ub_y = in_x - dx, in_y - dy

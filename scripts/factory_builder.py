@@ -377,7 +377,7 @@ def _get_agent(size: int) -> AgentCNN:
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point=FactorioEnv)
+        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
     try:
         agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
@@ -1421,7 +1421,16 @@ refreshModelInfo();
 </body></html>"""
 
 
+class _BuilderServer(HTTPServer):
+    """HTTPServer that carries the builder's CLI defaults for the handler."""
+
+    default_size: int
+    wandb_project: str
+    wandb_entity: str | None
+
+
 class Handler(BaseHTTPRequestHandler):
+    server: _BuilderServer  # _BuilderServer stashes the CLI defaults on itself
     server_version = "FactoryBuilder/0.1"
 
     def log_message(self, format, *args):  # noqa: A002
@@ -1554,7 +1563,7 @@ def main(args: Args) -> None:
     else:
         print("(no checkpoint — model prediction panel disabled)")
 
-    httpd = HTTPServer(("127.0.0.1", args.port), Handler)
+    httpd = _BuilderServer(("127.0.0.1", args.port), Handler)
     httpd.default_size = args.size
     # Stashed on the server so the /load_model endpoint can use the same
     # defaults as the CLI when resolving wandb run ids.

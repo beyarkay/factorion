@@ -229,9 +229,8 @@ graph for the green-circuits factory is given below:
 ## Running the Code
 
 ```bash
-source .venv/bin/activate
-uv pip install -r requirements.txt
-python ppo.py \
+uv sync
+uv run python ppo.py \
     --seed 1 \
     --env-id factorion/FactorioEnv-v0 \
     --track \

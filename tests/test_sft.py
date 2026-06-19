@@ -407,7 +407,7 @@ ENV_ID = "factorion/FactorioEnv-v0-sft-test"
 
 @pytest.fixture(scope="module")
 def registered_env():
-    gym.register(id=ENV_ID, entry_point=FactorioEnv)
+    gym.register(id=ENV_ID, entry_point="ppo:FactorioEnv")
 
 
 class TestSFTCheckpointLoading:
