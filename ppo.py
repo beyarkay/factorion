@@ -122,6 +122,13 @@ class Args:
     """delta reward shaping: reward for correct entity types (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
     coeff_shaping_direction: float = 0.0
     """delta reward shaping: reward for correct directions (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
+    # ── Active reward (the coeff_* above are legacy diagnostics, unused) ──
+    # Episode return = throughput_reward_scale * final_throughput
+    #                  - step_penalty * num_steps.
+    throughput_reward_scale: float = 1.0
+    """alpha: scales the terminal throughput reward (paid once when the episode ends, on eot / full-throughput solve / max_steps). throughput is in [0, 1], so this sets the max terminal reward."""
+    step_penalty: float = 0.01
+    """beta: penalty subtracted every step, so dragging the build out costs reward. Encourages the eot head to actually fire once the factory can't improve. Small relative to throughput_reward_scale."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
@@ -177,10 +184,12 @@ def _append_run_tags(run, *tags: str) -> None:
         run.tags = (run.tags or ()) + tags
 
 
-def make_env(env_id, idx, capture_video, size, run_name):
+def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=1.0, step_penalty=0.01):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx})
+        kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
+                       'throughput_reward_scale': throughput_reward_scale,
+                       'step_penalty': step_penalty})
         # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
@@ -250,8 +259,15 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
+        throughput_reward_scale: float = 1.0,
+        step_penalty: float = 0.01,
     ):
         super().__init__()
+        # Reward hparams: return = throughput_reward_scale * final_throughput
+        # - step_penalty * num_steps. Defaults mirror Args; ppo.py threads the
+        # CLI values through make_env.
+        self.throughput_reward_scale = throughput_reward_scale
+        self.step_penalty = step_penalty
         # Setup the renderer if requested
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
@@ -287,7 +303,11 @@ class FactorioEnv(gym.Env):
             "entity": gym.spaces.Discrete(len(entities)),
             "direction": gym.spaces.Discrete(len(Direction)),
             "item": gym.spaces.Discrete(len(items)),
-            "misc": gym.spaces.Discrete(len(Misc))
+            "misc": gym.spaces.Discrete(len(Misc)),
+            # End-of-turn: 1 = the agent declares the factory finished and the
+            # episode terminates. Optional for direct callers (step reads it
+            # with .get default 0); ppo.py samples it from the policy's eot head.
+            "eot": gym.spaces.Discrete(2),
         })
         # Cache source/sink IDs (non-placeable prototypes)
         self._source_id = str2ent('stack_inserter').value
@@ -610,58 +630,32 @@ class FactorioEnv(gym.Env):
         tile_match_entity = (curr_ent == orig_ent).float().mean().item()
         tile_match_direction = (curr_dir == orig_dir).float().mean().item()
 
-        # ── Normalized weighted reward (throughput + validity only) ──
-        reward_components = {
-            'throughput': {
-                'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
-                # thput_normed is in [0, 1] (raw / per-factory max), the direct
-                # analog of the old raw/15 value — so coeff_throughput keeps its
-                # tuned meaning. The RL reward redesign (raw items/s, terminal
-                # throughput − step penalty) lives on the rl-from-chkpt branch.
-                'value': thput_normed,
-            },
-            'validity': {
-                'coeff': Args.coeff_validity if 'args' not in locals() else args.coeff_validity,
-                'value': 0 if action_is_invalid else 1,
-            },
-        }
-        pre_reward = 0.0
-        normalisation = 0.0
-        for name, item in reward_components.items():
-            pre_reward += item['coeff'] * item['value']
-            normalisation += item['coeff']
-
-        pre_reward /= normalisation
-
-        # ── Delta-based reward shaping (PBRS, additive) ──
-        # Computed over solution-nonempty tiles only for ~10x stronger signal.
+        # ── Delta-based shaping diagnostics (logged in info, NOT in reward) ──
+        # Computed over solution-nonempty tiles only.
         curr_match = self._compute_solution_match()
         loc_delta = curr_match[0] - self._prev_match[0]
         ent_delta = curr_match[1] - self._prev_match[1]
         dir_delta = curr_match[2] - self._prev_match[2]
         self._prev_match = curr_match
 
-        coeff_loc = Args.coeff_shaping_location if 'args' not in locals() else args.coeff_shaping_location
-        coeff_ent = Args.coeff_shaping_entity if 'args' not in locals() else args.coeff_shaping_entity
-        coeff_dir = Args.coeff_shaping_direction if 'args' not in locals() else args.coeff_shaping_direction
-
-        pre_reward += coeff_loc * loc_delta
-        pre_reward += coeff_ent * ent_delta
-        pre_reward += coeff_dir * dir_delta
-
-        # Terminate early when the agent reaches the reference factory's max
-        # throughput (thput_normed == 1.0). This is the existing throughput
-        # auto-terminal, carried over unchanged via the normalized value; the
-        # EOT-driven termination redesign lives on the rl-from-chkpt branch.
-        terminated = thput_normed >= 1.0
-        # Halt the run if the agent runs out of steps (only if not already solved)
+        # ── Reward: terminal throughput minus a per-step penalty ──
+        # Episode return = throughput_reward_scale * final_throughput
+        #                  - step_penalty * num_steps,
+        # realised as -step_penalty on every step plus scale*throughput once
+        # when the episode ends. The agent ends its own episode via the eot
+        # action (action["eot"]); firing it stops the per-step bleed and banks
+        # the throughput reward, so PPO learns to stop once the factory can no
+        # longer improve. A full-throughput solve and max_steps are the other
+        # two terminals; all three pay the terminal throughput reward.
+        # throughput here is thput_normed (raw / per-factory max, in [0, 1]).
+        eot_declared = int(action.get("eot", 0)) == 1
+        solved = thput_normed >= 1.0
+        terminated = solved or eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 
-        if terminated:
-            # If the agent solved before the end, give extra reward
-            reward = pre_reward + (self.max_steps - self.steps)
-        else:
-            reward = pre_reward
+        reward = -self.step_penalty
+        if terminated or truncated:
+            reward += self.throughput_reward_scale * thput_normed
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1169,7 +1163,7 @@ if __name__ == "__main__":
     print(f"Setting up envs with {args}")
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)],
     )
 
     encoder_layers = layers_from_args(args)
@@ -1342,16 +1336,13 @@ if __name__ == "__main__":
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
-            # eot is a PPO-side "declare done" signal, not an env action — the
-            # env only consumes the 5 placement keys. Strip it before stepping.
-            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items() if k != "eot"}
+            # eot ("declare done") is part of the env action now: the env
+            # terminates on it, so RecordEpisodeStatistics counts eot-ended
+            # episodes and next_done picks them up via `terminations`.
+            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
-            # End the episode when the policy declares the factory finished.
-            # Treated as a terminal (OR'd into next_done) so GAE doesn't
-            # bootstrap past it.
-            eot_stop = action_ED["eot"].cpu().numpy().astype(bool)
-            next_done = np.logical_or(np.logical_or(terminations, truncations), eot_stop)
+            next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
             # Reset done envs back to a fully-blank (build-from-empty) factory.
@@ -1560,7 +1551,7 @@ if __name__ == "__main__":
         if args.capture_video and ((iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations):
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
-            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name) for i in range(num_render_envs)])
+            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(num_render_envs)])
             next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': float('inf')})
 
             temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]
@@ -1578,7 +1569,7 @@ if __name__ == "__main__":
                 for i in range(1, 10):
                     with torch.no_grad():
                         action_ED_render, _logprobs_E, _entropy_E, _value_E = agent.get_action_and_value(torch.Tensor(next_obs_ECWH_render).to(device))
-                        action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items() if k != "eot"}
+                        action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
                         next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
 
                     for env_idx, img in enumerate(render_envs.render() or []):

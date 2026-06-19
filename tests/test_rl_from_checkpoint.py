@@ -12,6 +12,7 @@ sensible RL fine-tuning run rather than RL-from-scratch:
 import os
 import sys
 
+import numpy as np
 import pytest
 import torch
 import gymnasium as gym
@@ -118,6 +119,39 @@ class TestEotAction:
         assert action_BA.shape == (3, 7)
         _, logp_recomputed, _, _ = agent.get_action_and_value(obs, action_BA)
         torch.testing.assert_close(logp, logp_recomputed)
+
+
+class TestEotTerminationAndMetrics:
+    def _action(self, eot):
+        return {
+            "xy": np.array([0, 0]),
+            "entity": 0, "direction": 0, "item": 0, "misc": 0,
+            "eot": int(eot),
+        }
+
+    def test_eot_terminates_and_records_episode(self, registered_env):
+        """eot=1 must terminate via the env so the RecordEpisodeStatistics
+        wrapper (added by make_env) emits "episode" — i.e. eot-ended episodes
+        are NOT missing from the metric averages."""
+        env = make_env(ENV_ID, 0, False, 5, "t")()
+        env.reset(seed=1, options={"num_missing_entities": 99})
+        _, _, terminated, truncated, info = env.step(self._action(eot=1))
+        assert terminated and not truncated
+        assert "episode" in info, "eot-terminated episode must emit RecordEpisodeStatistics info"
+
+    def test_no_eot_keeps_running(self, registered_env):
+        """Without eot (and far from solved), the episode keeps going — no
+        spurious termination, no episode stats yet."""
+        env = make_env(ENV_ID, 0, False, 5, "t")()
+        env.reset(seed=1, options={"num_missing_entities": 99})
+        _, _, terminated, truncated, info = env.step(self._action(eot=0))
+        assert not terminated and not truncated
+        assert "episode" not in info
+
+    def test_reward_hparams_default(self):
+        a = Args()
+        assert a.throughput_reward_scale == 1.0
+        assert a.step_penalty == 0.01
 
 
 class TestCriticWarmupParamSplit:
