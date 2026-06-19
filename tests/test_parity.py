@@ -409,14 +409,15 @@ class TestSplitterExhaustive:
             assert tp == 0.0, f"No path expected, got tp={tp}"
         else:
             # Each input belt contributes 15 i/s. Splitter capacity = 30 i/s
-            # (2 lanes). Split evenly among outputs, each capped at 15 by
-            # the output belt.
+            # (2 lanes). Split evenly among outputs, each capped at 15 by the
+            # output belt. The factory score is the power mean over the output
+            # sinks; for equal per-sink deliveries that is the per-sink value,
+            # not the sum across sinks.
             splitter_out = min(n_in * 15.0, 30.0) / n_out
             expected_per_output = min(splitter_out, 15.0)
-            expected_total = expected_per_output * n_out
-            assert abs(tp - expected_total) < 1e-6, (
+            assert abs(tp - expected_per_output) < 1e-6, (
                 f"dir={d.name} in={inputs} out={outputs}: "
-                f"expected {expected_total}, got {tp}"
+                f"expected {expected_per_output}, got {tp}"
             )
 
 
@@ -438,8 +439,9 @@ class TestSplitterChaining:
 
         tp, unreachable = compare_throughput(world)
         # First splitter: 1 input, 1 output (passthrough) = 15.0
-        # Second splitter: 1 input, 2 outputs = 7.5 each = 15.0 total
-        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
+        # Second splitter: 1 input, 2 outputs = 7.5 each. Two equal sinks →
+        # power-mean score is the per-sink 7.5 (not the 15.0 sum).
+        assert abs(tp - 7.5) < 1e-6, f"Expected 7.5, got {tp}"
 
     def test_split_then_merge(self):
         """Source → Splitter → 2x Belt → Splitter → Belt → Sink."""
@@ -494,9 +496,9 @@ class TestSplitterChaining:
 
         tp, _ = compare_throughput(world)
         # 2 inputs (30 total) → splitter1 (30 cap, 2 outputs = 15 each)
-        # Each downstream splitter: 15 in, 1 output = 15 each
-        # Total at sinks = 30
-        assert abs(tp - 30.0) < 1e-6, f"Expected 30.0, got {tp}"
+        # Each downstream splitter: 15 in, 1 output = 15 each. Two equal sinks
+        # at 15 → power-mean score is the per-sink 15.0 (not the 30.0 sum).
+        assert abs(tp - 15.0) < 1e-6, f"Expected 15.0, got {tp}"
 
     def test_splitter_fan_in(self):
         """4 sources → 2 splitters → 1 splitter → sink.

@@ -152,7 +152,9 @@ class TestBeltMerging:
         set_entity(world, 1, 2, "transport_belt", Direction.EAST)
         set_entity(world, 2, 2, "bulk_inserter", Direction.EAST, "iron_plate")
         t, u = compare_throughput(world)
-        assert t == pytest.approx(30.0, abs=1e-6)
+        # Two fully-fed sinks at 15 each → power-mean score is the per-sink
+        # 15.0 (equally-served sinks), not the 30.0 sum.
+        assert t == pytest.approx(15.0, abs=1e-6)
 
 
 # ── Inserter patterns ────────────────────────────────────────────────────────
@@ -914,7 +916,8 @@ class TestMultiSourceSink:
             set_entity(world, 3, row, "transport_belt", Direction.EAST)
             set_entity(world, 4, row, "bulk_inserter", Direction.EAST, "iron_plate")
         t, u = compare_throughput(world)
-        assert t == pytest.approx(45.0, abs=1e-6)
+        # Three fully-fed sinks at 15 each → power-mean score is 15.0, not 45.
+        assert t == pytest.approx(15.0, abs=1e-6)
 
 
 # ── Mixed entity combinations ───────────────────────────────────────────────
@@ -1081,7 +1084,8 @@ class TestLargeWorlds:
                 world, 5, row, "bulk_inserter", Direction.EAST, "copper_plate"
             )
         t, u = compare_throughput(world)
-        assert t == pytest.approx(75.0, abs=1e-6)
+        # Five fully-fed sinks at 15 each → power-mean score is 15.0, not 75.
+        assert t == pytest.approx(15.0, abs=1e-6)
 
 
 # ── Belt direction edge cases ────────────────────────────────────────────────

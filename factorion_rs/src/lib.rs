@@ -38,42 +38,28 @@ use entities::entity_tiles;
 #[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
-use throughput::calc_throughput;
+use throughput::{calc_throughput, factory_score};
 #[cfg(feature = "pyo3-bindings")]
 use types::{all_items, all_recipes, Direction};
 #[cfg(feature = "pyo3-bindings")]
 use world::World;
 
-/// Calculate the throughput of a factory represented as a 3D tensor.
+/// Calculate the throughput score of a factory represented as a 3D tensor.
 ///
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
 ///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
 ///
-/// Returns: (throughput, num_unreachable) matching funge_throughput's signature.
+/// Returns: (score, num_unreachable) matching funge_throughput's signature.
+/// The score is the power mean (see [`factory_score`]) of each sink's
+/// achieved throughput of its configured item, so unused / under-served
+/// sinks drag it down rather than being hidden by a fully-fed sink.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     let world = World::from_numpy(&world);
     let graph = build_graph(&world);
-    let (throughput_map, num_unreachable) = calc_throughput(&graph);
-
-    if throughput_map.is_empty() {
-        return Ok((0.0, num_unreachable));
-    }
-
-    // Return the maximum item throughput for deterministic results regardless of
-    // HashMap iteration order. Python returns an arbitrary single item's throughput
-    // via list(values())[0]; using max is deterministic and equivalent for the
-    // typical single-item case.
-    let throughput: f64 = throughput_map
-        .values()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    if throughput.is_infinite() {
-        return Ok((0.0, num_unreachable));
-    }
-
-    Ok((throughput, num_unreachable))
+    let (deliveries, num_unreachable) = calc_throughput(&graph);
+    Ok((factory_score(&deliveries), num_unreachable))
 }
 
 /// Compute all tiles occupied by a multi-tile entity.
