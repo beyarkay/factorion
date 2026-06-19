@@ -84,7 +84,10 @@ def test_solved_sub15_factory_scores_one_not_a_fraction():
     mx = _solved_max(SUB15_SIZE, SUB15_KIND, SUB15_SEED)
 
     assert info["thput_normed"] == pytest.approx(1.0)
-    assert terminated is True
+    # Reaching the per-factory max scores 1.0, but on this branch a solve does
+    # NOT auto-terminate — the agent ends the episode via the eot action, so a
+    # no-op step on a solved factory keeps running.
+    assert terminated is False
     assert truncated is False
     # The old scheme would have produced this fraction instead of 1.0.
     assert mx / 15.0 < 0.1

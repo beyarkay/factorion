@@ -4,6 +4,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 # Disable wandb before importing ppo
 os.environ["WANDB_MODE"] = "disabled"
@@ -31,23 +32,25 @@ def _noop_action():
 
 
 class TestEarlyTermination:
-    """Test that episodes terminate early when throughput >= 1.0."""
+    """Episodes terminate only when the agent declares eot, and truncate at
+    max_steps. A full-throughput solve does NOT auto-terminate — otherwise the
+    eot head would never learn to fire on a finished factory."""
 
-    def test_termination_on_full_throughput(self):
-        """With num_missing_entities=0 the factory is already solved.
-
-        The first step should produce throughput >= 1.0 and terminated=True.
+    def test_solve_does_not_auto_terminate(self):
+        """With num_missing_entities=0 the factory is already solved, but
+        without an eot the episode keeps running — the agent must declare done.
         """
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
         _, _, terminated, truncated, info = env.step(_noop_action())
 
-        assert terminated is True, f"Expected terminated=True, got {terminated}"
-        assert truncated is False, f"Expected truncated=False, got {truncated}"
         # A fully-solved factory reaches its per-factory max → normed == 1.0
-        # (regardless of the factory's absolute belt speed).
+        # (regardless of absolute belt speed), but with no eot declared the
+        # episode must NOT auto-terminate.
         assert info["thput_normed"] >= 1.0
+        assert terminated is False, "a solve must NOT auto-terminate"
+        assert truncated is False
 
     def test_truncation_without_solving(self):
         """With many missing entities the factory can't be solved by no-ops.
@@ -74,10 +77,12 @@ class TestEarlyTermination:
         """terminated and truncated should never both be True."""
         env = _make_env(size=5, max_steps=10)
 
-        # Case 1: solved factory (terminated=True)
+        # Case 1: agent declares eot (terminated=True)
         env.reset(seed=42, options={"num_missing_entities": 0})
-        _, _, terminated, truncated, _ = env.step(_noop_action())
-        assert not (terminated and truncated), "terminated and truncated are both True"
+        action = _noop_action()
+        action["eot"] = 1
+        _, _, terminated, truncated, _ = env.step(action)
+        assert terminated and not truncated
 
         # Case 2: unsolved factory (truncated=True)
         env.reset(seed=42, options={"num_missing_entities": 99})
@@ -88,31 +93,42 @@ class TestEarlyTermination:
                 break
 
 
-class TestCompletionBonus:
-    """Test that the completion bonus is proportional to remaining steps."""
+class TestReward:
+    """Reward = throughput_reward_scale * throughput - step_penalty * num_steps:
+    a per-step penalty plus the terminal throughput reward when the episode
+    ends (solve / eot / max_steps)."""
 
-    def test_bonus_on_immediate_solve(self):
-        """Solving on step 0 gives the maximum completion bonus."""
-        max_steps = 10
-        env = _make_env(size=5, max_steps=max_steps)
+    def test_solved_factory_with_eot_pays_full_reward(self):
+        """Declaring eot on a solved factory pays the full terminal throughput
+        reward (throughput >= 1.0) minus one step's penalty."""
+        env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        _, reward, terminated, _, info = env.step(_noop_action())
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
 
         assert terminated is True
-        # Reward should be pre_reward + (max_steps - steps)
-        # At step 0: bonus = max_steps - 0 = 10
-        # pre_reward is in [0, 1] (normalized weighted average), so reward > max_steps - 1
-        assert reward > max_steps - 1, f"Expected reward > {max_steps - 1}, got {reward}"
-        assert info["completion_bonus"] == max_steps  # max_steps - 0
+        assert info["thput_normed"] >= 1.0
+        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        assert reward == pytest.approx(expected)
 
-    def test_no_bonus_on_truncation(self):
-        """Truncating gives no completion bonus in the reward."""
+    def test_step_penalty_only_mid_episode(self):
+        """A non-terminal step pays just -step_penalty (no throughput reward)."""
+        env = _make_env(size=5, max_steps=20)
+        env.reset(seed=42, options={"num_missing_entities": 99})
+
+        _, reward, terminated, truncated, _ = env.step(_noop_action())
+
+        assert not terminated and not truncated
+        assert reward == pytest.approx(-env.step_penalty)
+
+    def test_terminal_throughput_reward_on_truncation(self):
+        """At max_steps the episode still banks the terminal throughput reward."""
         max_steps = 5
         env = _make_env(size=5, max_steps=max_steps)
         env.reset(seed=42, options={"num_missing_entities": 99})
 
-        # Step until truncation
         for _ in range(max_steps + 2):
             _, reward, terminated, truncated, info = env.step(_noop_action())
             if truncated:
@@ -120,20 +136,37 @@ class TestCompletionBonus:
 
         assert truncated is True
         assert terminated is False
-        # On truncation, reward is just pre_reward (no bonus added)
-        # pre_reward is a normalized value in [0, 1]
-        assert reward <= 1.0, f"Expected reward <= 1.0 (no bonus), got {reward}"
+        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        assert reward == pytest.approx(expected)
+
+    def test_eot_action_terminates_episode(self):
+        """A non-solved factory ends immediately when the agent declares eot=1,
+        and pays the terminal throughput reward."""
+        env = _make_env(size=5, max_steps=50)
+        env.reset(seed=42, options={"num_missing_entities": 99})
+
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, truncated, info = env.step(action)
+
+        assert terminated is True, "eot=1 should terminate the episode"
+        assert truncated is False
+        assert info["thput_normed"] < 1.0  # ended early, not a full solve
+        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        assert reward == pytest.approx(expected)
 
 
 class TestStepsTaken:
     """Test that steps_taken is correct in the info dict."""
 
     def test_steps_taken_on_termination(self):
-        """steps_taken should be 0 when solved on the first step."""
+        """steps_taken should be 0 when the agent declares eot on the first step."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        _, _, terminated, _, info = env.step(_noop_action())
+        action = _noop_action()
+        action["eot"] = 1
+        _, _, terminated, _, info = env.step(action)
 
         assert terminated is True
         assert "steps_taken" in info, "steps_taken missing from info on termination"

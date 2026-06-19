@@ -106,8 +106,9 @@ class TestLogProbConsistency:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
+        eot_B = action_out["eot"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1
         )
 
         # Replay: pass the same obs and action tensor
@@ -167,8 +168,9 @@ class TestGradientFlow:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
+        eot_B = action_out["eot"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1,
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1,
         )
 
         _, logp_B, entropy_B, value_B = agent.get_action_and_value(
@@ -177,9 +179,12 @@ class TestGradientFlow:
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
-        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
+        # eot_head is part of the joint action distribution, so its grad must
+        # flow too (this is what lets PPO train the stop decision).
+        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head", "eot_head"):
             head = getattr(agent, head_name)
-            assert head.weight.grad is not None, f"No grad for {head_name}"
+            weight = head.weight if hasattr(head, "weight") else head[-1].weight
+            assert weight.grad is not None, f"No grad for {head_name}"
 
 
 class TestBatchConsistency:
@@ -187,11 +192,12 @@ class TestBatchConsistency:
         """Processing items one-at-a-time gives same results as batched."""
         obs = torch.randn(3, NUM_CHANNELS, 5, 5)
         # Create a fixed action to replay (within bounds for 5x5 grid)
+        # 7 columns: xy(2), entity, direction, item, misc, eot
         action_tensor = torch.tensor(
             [
-                [2, 3, 1, 2, 0, 0],
-                [0, 0, 0, 0, 0, 0],
-                [4, 4, 1, 4, 0, 0],
+                [2, 3, 1, 2, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 1],
+                [4, 4, 1, 4, 0, 0, 0],
             ],
             dtype=torch.long,
         )

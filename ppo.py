@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
+from torch.distributions.bernoulli import Bernoulli
 import factorion_rs
 from factorion import (
     Channel,
@@ -103,24 +104,10 @@ class Args:
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.7426
     """coefficient of the value function"""
-    coeff_throughput: float = 0.8785
-    """coefficient of the throughput when calculating reward"""
-    coeff_frac_reachable: float = 0.01
-    """coefficient of the fraction of unreachable nodes when calculating reward"""
-    coeff_frac_hallucin: float = 0.00
-    """coefficient of the fraction of tiles that had to be changed after normalisation"""
-    coeff_final_dir_reward: float = 0.01
-    """coefficient of reward given to the final belt being correctly oriented"""
-    coeff_material_cost: float = 0.01
-    """coefficient of reward given to the cost of materials used to solve the problem"""
-    coeff_validity: float = 0.01
-    """coefficient of reward given to the action being valid"""
-    coeff_shaping_location: float = 1.0
-    """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only)"""
-    coeff_shaping_entity: float = 1.0
-    """delta reward shaping: reward for correct entity types (solution-nonempty tiles only)"""
-    coeff_shaping_direction: float = 1.0
-    """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
+    throughput_reward_scale: float = 1.0
+    """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
+    step_penalty: float = 0.01
+    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
@@ -134,9 +121,9 @@ class Args:
     # per-layer width as independent numeric slots (rather than one categorical
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 48
-    layer2: int = 48
-    layer3: int = 48
+    layer1: int = 93
+    layer2: int = 69
+    layer3: int = 96
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0
@@ -148,7 +135,7 @@ class Args:
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     dropout: float = 0.0
     """Dropout probability in the CNN encoder."""
-    size: int = 12
+    size: int = 11
     """The width and height of the factory"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
@@ -158,6 +145,8 @@ class Args:
     """Tags to apply to the wandb run."""
     start_curriculum_level: int = 1
     """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
+    critic_warmup: int = 0
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -174,10 +163,12 @@ def _append_run_tags(run, *tags: str) -> None:
         run.tags = (run.tags or ()) + tags
 
 
-def make_env(env_id, idx, capture_video, size, run_name):
+def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=1.0, step_penalty=0.01):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
+        kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
+                       'throughput_reward_scale': throughput_reward_scale,
+                       'step_penalty': step_penalty})
         # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
@@ -242,14 +233,17 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 12,
+        size: int = 11,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
+        throughput_reward_scale: float = 1.0,
+        step_penalty: float = 0.01,
     ):
         super().__init__()
-        # Setup the renderer if requested
+        self.throughput_reward_scale = throughput_reward_scale
+        self.step_penalty = step_penalty
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -284,7 +278,8 @@ class FactorioEnv(gym.Env):
             "entity": gym.spaces.Discrete(len(entities)),
             "direction": gym.spaces.Discrete(len(Direction)),
             "item": gym.spaces.Discrete(len(items)),
-            "misc": gym.spaces.Discrete(len(Misc))
+            "misc": gym.spaces.Discrete(len(Misc)),
+            "eot": gym.spaces.Discrete(2),
         })
         # Cache source/sink IDs (non-placeable prototypes)
         self._source_id = str2ent('stack_inserter').value
@@ -351,7 +346,7 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
+        self._num_missing_entities = self._reset_options.get('num_missing_entities', float('inf'))
 
         self.actions = []
         # Lesson kind is settable per-reset. Default (omitted or None) is
@@ -604,58 +599,21 @@ class FactorioEnv(gym.Env):
         tile_match_entity = (curr_ent == orig_ent).float().mean().item()
         tile_match_direction = (curr_dir == orig_dir).float().mean().item()
 
-        # ── Normalized weighted reward (throughput + validity only) ──
-        reward_components = {
-            'throughput': {
-                'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
-                # thput_normed is in [0, 1] (raw / per-factory max), the direct
-                # analog of the old raw/15 value — so coeff_throughput keeps its
-                # tuned meaning. The RL reward redesign (raw items/s, terminal
-                # throughput − step penalty) lives on the rl-from-chkpt branch.
-                'value': thput_normed,
-            },
-            'validity': {
-                'coeff': Args.coeff_validity if 'args' not in locals() else args.coeff_validity,
-                'value': 0 if action_is_invalid else 1,
-            },
-        }
-        pre_reward = 0.0
-        normalisation = 0.0
-        for name, item in reward_components.items():
-            pre_reward += item['coeff'] * item['value']
-            normalisation += item['coeff']
-
-        pre_reward /= normalisation
-
-        # ── Delta-based reward shaping (PBRS, additive) ──
-        # Computed over solution-nonempty tiles only for ~10x stronger signal.
+        # ── Delta-based shaping diagnostics (logged in info, NOT in reward) ──
+        # Computed over solution-nonempty tiles only.
         curr_match = self._compute_solution_match()
         loc_delta = curr_match[0] - self._prev_match[0]
         ent_delta = curr_match[1] - self._prev_match[1]
         dir_delta = curr_match[2] - self._prev_match[2]
         self._prev_match = curr_match
 
-        coeff_loc = Args.coeff_shaping_location if 'args' not in locals() else args.coeff_shaping_location
-        coeff_ent = Args.coeff_shaping_entity if 'args' not in locals() else args.coeff_shaping_entity
-        coeff_dir = Args.coeff_shaping_direction if 'args' not in locals() else args.coeff_shaping_direction
-
-        pre_reward += coeff_loc * loc_delta
-        pre_reward += coeff_ent * ent_delta
-        pre_reward += coeff_dir * dir_delta
-
-        # Terminate early when the agent reaches the reference factory's max
-        # throughput (thput_normed == 1.0). This is the existing throughput
-        # auto-terminal, carried over unchanged via the normalized value; the
-        # EOT-driven termination redesign lives on the rl-from-chkpt branch.
-        terminated = thput_normed >= 1.0
-        # Halt the run if the agent runs out of steps (only if not already solved)
+        eot_declared = int(action.get("eot", 0)) == 1
+        terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 
-        if terminated:
-            # If the agent solved before the end, give extra reward
-            reward = pre_reward + (self.max_steps - self.steps)
-        else:
-            reward = pre_reward
+        reward = -self.step_penalty
+        if terminated or truncated:
+            reward += self.throughput_reward_scale * thput_normed
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -929,14 +887,7 @@ class AgentCNN(nn.Module):
             layer_init(nn.Linear(flat_dim, 1), std=1.0)
         )
 
-        # Binary end-of-turn head. Predicts whether the factory is complete
-        # (1) or still has placements left (0). At rollout time the caller
-        # samples this and stops the episode when it crosses a threshold —
-        # gives the policy an explicit way to say "I'm done" without
-        # overloading the placement action. Named `eot_head` (not
-        # `done_head`) to avoid colliding with PPO's existing `done` /
-        # `dones_SE` / `next_done` episode-termination flags below. Bias
-        # init at -2 so an untrained model defaults to "not finished"
+        # Bias init at -2 so an untrained model defaults to "not finished"
         # (sigmoid(-2) ≈ 0.12).
         self.eot_head = nn.Sequential(
             nn.Flatten(),
@@ -1027,16 +978,21 @@ class AgentCNN(nn.Module):
         dist_i = Categorical(logits=logits_i_BI)
         dist_m = Categorical(logits=logits_m_BM)
 
+        eot_logit_B = self.eot_head(encoded_BCWH).squeeze(-1)
+        dist_eot = Bernoulli(logits=eot_logit_B)
+
         if action is None:
             ent_B = dist_e.sample()
             dir_B = dist_d.sample()
             item_B = dist_i.sample()
             misc_B = dist_m.sample()
+            eot_B = dist_eot.sample()
         else:
             ent_B = action[:, 2]
             dir_B = action[:, 3]
             item_B = action[:, 4]
             misc_B = action[:, 5]
+            eot_B = action[:, 6].float()
 
         # --- Log probs and entropy ---
         logp_B = (
@@ -1044,14 +1000,16 @@ class AgentCNN(nn.Module):
             dist_e.log_prob(ent_B) +
             dist_d.log_prob(dir_B) +
             dist_i.log_prob(item_B) +
-            dist_m.log_prob(misc_B)
+            dist_m.log_prob(misc_B) +
+            dist_eot.log_prob(eot_B)
         )
         entropy_B = (
             dist_tile.entropy() +
             dist_e.entropy() +
             dist_d.entropy() +
             dist_i.entropy() +
-            dist_m.entropy()
+            dist_m.entropy() +
+            dist_eot.entropy()
         )
 
         action_out = {
@@ -1060,6 +1018,7 @@ class AgentCNN(nn.Module):
             "entity": ent_B,
             "item": item_B,
             "misc": misc_B,
+            "eot": eot_B,
         }
         self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
@@ -1150,7 +1109,7 @@ if __name__ == "__main__":
     print(f"Setting up envs with {args}")
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, args.size, run_name) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)],
     )
 
     encoder_layers = layers_from_args(args)
@@ -1171,19 +1130,54 @@ if __name__ == "__main__":
 
     agent.to(device)
 
+    # Split params into critic (the value head) vs actor (encoder + every
+    # policy/eot head). Captured BEFORE torch.compile so the names are clean
+    # (compile prepends "_orig_mod."); the param tensors themselves are the
+    # same objects the optimiser and compiled module share, so freezing one
+    # list freezes the live params. The critic head is the only part SFT
+    # never trained, so the warm-up trains it in isolation against the
+    # frozen SFT features before letting gradients touch the actor.
+    critic_params = list(agent.critic_head.parameters())
+    critic_param_ids = {id(p) for p in critic_params}
+    actor_params = [p for p in agent.parameters() if id(p) not in critic_param_ids]
+
     print("Compiling agent with torch.compile()")
     # torch.compile returns an OptimizedModule that proxies attribute access to
     # the wrapped AgentCNN; cast back so the policy's methods stay typed.
     agent = cast(AgentCNN, torch.compile(agent))
 
-    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=args.adam_epsilon, weight_decay=args.weight_decay)
+    # Two param groups so the critic warm-up + LR annealing can address actor
+    # and critic LRs independently; group[0]=actor keeps the existing
+    # logging/annealing callsites (which read param_groups[0]) correct.
+    optimizer = optim.Adam(
+        [
+            {"params": actor_params, "lr": args.learning_rate},
+            {"params": critic_params, "lr": args.learning_rate},
+        ],
+        lr=args.learning_rate,
+        eps=args.adam_epsilon,
+        weight_decay=args.weight_decay,
+    )
+
+    # Freeze the actor for the warm-up window. Freezing the encoder too (not
+    # just the policy heads) is deliberate: the encoder feeds the value head,
+    # so leaving it trainable would let the value loss reshape the features
+    # the policy reads — i.e. the actor would not actually be frozen. With it
+    # frozen, the critic learns a value readout of the fixed SFT features.
+    def set_actor_requires_grad(flag: bool) -> None:
+        for p in actor_params:
+            p.requires_grad_(flag)
+
+    if args.critic_warmup > 0:
+        set_actor_requires_grad(False)
+        print(f"Critic warm-up: actor frozen for the first {args.critic_warmup} iterations")
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
     obs_shape = envs.single_observation_space.shape
     assert obs_shape is not None, "vector env must expose a concrete observation shape"
     obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + obs_shape, dtype=torch.float32, device=device)
-    ACTION_SPACE_SHAPE = (6,)
+    ACTION_SPACE_SHAPE = (7,)  # xy(2), entity, direction, item, misc, eot
     actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=torch.int64, device=device)
     logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
@@ -1196,7 +1190,7 @@ if __name__ == "__main__":
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
-            'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
+            'num_missing_entities': float('inf'),
         }
     )
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
@@ -1229,18 +1223,32 @@ if __name__ == "__main__":
 
     _next_eval_log_step = 256
     print(f"Starting {args.num_iterations} iterations")
-    iteration_of_last_increase = 0
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
+        # Critic warm-up: the actor stays frozen for the first
+        # critic_warmup iterations (only the value head trains), then we
+        # unfreeze once and run normal PPO from there.
+        in_warmup = iteration <= args.critic_warmup
+        if args.critic_warmup > 0 and iteration == args.critic_warmup + 1:
+            set_actor_requires_grad(True)
+            print(f"\nCritic warm-up complete; unfreezing actor at iteration {iteration}")
+
+        # Annealing schedules run over the post-warm-up window, so the actor
+        # gets its full LR/entropy schedule starting from the unfreeze point
+        # rather than burning it while frozen. During warm-up the critic
+        # trains at the un-annealed peak LR.
+        anneal_total = max(1, args.num_iterations - args.critic_warmup)
+        anneal_iter = max(0, iteration - args.critic_warmup)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
+            frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
             lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"] = lrnow
+            for group in optimizer.param_groups:
+                group["lr"] = lrnow
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
-        ent_frac = 1.0 - (iteration - 1.0) / args.num_iterations
+        ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
         ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
         for step in range(0, args.num_steps):
@@ -1265,25 +1273,29 @@ if __name__ == "__main__":
                 dir_B = action_ED["direction"]
                 item_B = action_ED["item"]
                 misc_B = action_ED["misc"]
+                eot_B = action_ED["eot"].long()  # Bernoulli 0/1, stored as int
 
                 # Combine the actions together such that the environments are
                 # grouped first and then each component of the action
-                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
+                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1)
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
+            # eot ("declare done") is part of the env action now: the env
+            # terminates on it, so RecordEpisodeStatistics counts eot-ended
+            # episodes and next_done picks them up via `terminations`.
             action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
-            # Reset only the done environments with updated num_missing_entities
+            # Reset done envs back to a fully-blank (build-from-empty) factory.
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                    'num_missing_entities': float('inf'),
                 })
                 next_obs_ECWH[idx] = obs
 
@@ -1425,7 +1437,13 @@ if __name__ == "__main__":
                 entropy_loss = entropy_B.mean()
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
-                loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
+                if in_warmup:
+                    # Actor frozen: train the value head only. The policy- and
+                    # entropy-gradient paths run through frozen params anyway,
+                    # but dropping them keeps the warm-up's objective explicit.
+                    loss = v_loss * args.vf_coef
+                else:
+                    loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
@@ -1451,26 +1469,22 @@ if __name__ == "__main__":
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_var": explained_var,
             "optim/lr": optimizer.param_groups[0]["lr"],
+            "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
             "optim/grad_norm": float(unclipped_grad_norm),
+            "optim/critic_warmup": 1.0 if in_warmup else 0.0,
             "perf/sps": int(global_step / (time.time() - start_time)),
         }
 
         # Flush episode means (empty dict if no episodes ended this iteration)
         iter_metrics.update(_flush_episode_means())
 
-        # Curriculum metrics — moving averages preserved exactly as before
+        # Throughput metrics. The task is now fixed full-blank
+        # (build-from-empty), so there's no curriculum to climb: the score is
+        # just the moving-average throughput. The curriculum/* keys are kept
+        # (level pinned to start_curriculum_level) so existing dashboards and
+        # the CI summary parser keep working.
         if len(end_of_episode_thputs) > 0:
-            final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
-                if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
-                    iteration_of_last_increase = iteration
-                    end_of_episode_thputs.clear()
-                    for _ in range(moving_average_length):
-                        end_of_episode_thputs.append(0)
-                    max_missing_entities = min(max_missing_entities + 1, args.size*2)
-                    print(f"\nNow working with {max_missing_entities=}")
-            # Recompute after potential level-up so we use the reset buffer
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             iter_metrics["curriculum/level"] = max_missing_entities
             iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
@@ -1483,8 +1497,8 @@ if __name__ == "__main__":
         if args.capture_video and ((iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations):
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
-            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name) for i in range(num_render_envs)])
-            next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': max_missing_entities})
+            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(num_render_envs)])
+            next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': float('inf')})
 
             temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]
             frame_counts = [0] * num_render_envs
