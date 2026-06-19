@@ -626,7 +626,7 @@ class TestSplitterEdgeCases:
 
         tiles = factorion_rs.py_entity_tiles(ax, ay, d.value, 2, 1)
         # Place underground belt (up) behind the first input cell
-        in_x, in_y = tiles[0][0] - dx, tiles[0][1] - dy
+        in_x, in_y = tiles[0][0] - dx, tiles[0][1] - dy  # ty: ignore[not-subscriptable]
         ub_x, ub_y = in_x - dx, in_y - dy
         # Source → underground_down → ... → underground_up → splitter → belt → sink
         src_x, src_y = ub_x - dx, ub_y - dy
@@ -638,7 +638,7 @@ class TestSplitterEdgeCases:
         set_entity(world, in_x, in_y, "underground_belt", d, misc=2)  # up
         set_splitter(world, ax, ay, d)
         # Output: belt → sink
-        out_x, out_y = tiles[0][0] + dx, tiles[0][1] + dy
+        out_x, out_y = tiles[0][0] + dx, tiles[0][1] + dy  # ty: ignore[not-subscriptable]
         sink_x, sink_y = out_x + dx, out_y + dy
         if not all(0 <= c < 10 for c in [out_x, out_y, sink_x, sink_y]):
             pytest.skip("Not enough room for output in this direction")

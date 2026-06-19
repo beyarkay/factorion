@@ -64,6 +64,6 @@ def read_metric(summary, metric_name, missing):
                 val = val[stat]
                 break
     try:
-        return float(val)
+        return float(val)  # ty: ignore[invalid-argument-type]
     except (TypeError, ValueError):
         return missing

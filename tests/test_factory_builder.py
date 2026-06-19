@@ -39,7 +39,7 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
     pipeline, not accuracy."""
     env_id = "factorion/FactorioEnv-v0-fbtest"
     if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point=FactorioEnv)
+        gym.register(id=env_id, entry_point=FactorioEnv)  # ty: ignore[invalid-argument-type]
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
     try:
         agent = AgentCNN(envs, layers=(chan, chan, chan))
@@ -286,13 +286,13 @@ class TestPredictSchema:
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
-            saved_w = fb._CHECKPOINT_STATE["eot_head.1.weight"]
+            saved_w = fb._CHECKPOINT_STATE["eot_head.1.weight"]  # ty: ignore[not-subscriptable]
 
             # Size match → eot_head should match the checkpoint exactly.
             # _get_agent moves the model to _AGENT_DEVICE (mps/cuda on
             # local, cpu on CI); pull weights back to cpu for comparison.
             agent4 = fb._get_agent(4)
-            assert torch.equal(agent4.eot_head[1].weight.cpu(), saved_w.cpu()), (
+            assert torch.equal(agent4.eot_head[1].weight.cpu(), saved_w.cpu()), (  # ty: ignore[invalid-argument-type]
                 "eot_head must load when UI size == checkpoint size; "
                 "otherwise the UI shows a random-init eot prediction"
             )

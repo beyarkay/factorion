@@ -457,7 +457,7 @@ def test_from_blueprint_different_seeds_can_produce_different_factories():
     assert all(f is not None for f in factories)
     # At least two factories differ — be lenient about which.
     distinct = any(
-        not torch.equal(factories[i].world_CWH, factories[j].world_CWH)
+        not torch.equal(factories[i].world_CWH, factories[j].world_CWH)  # ty: ignore[unresolved-attribute]
         for i in range(len(factories))
         for j in range(i + 1, len(factories))
     )

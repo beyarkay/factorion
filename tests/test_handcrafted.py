@@ -204,10 +204,10 @@ class TestInserterPatterns:
             (Direction.NORTH, (2, 4), (2, 3), (2, 2), (2, 1)),
         ]:
             world = make_world(5)
-            set_entity(world, *src_pos, "stack_inserter", direction, "iron_plate")
-            set_entity(world, *ins_pos, "inserter", direction)
-            set_entity(world, *belt_pos, "transport_belt", direction)
-            set_entity(world, *sink_pos, "bulk_inserter", direction, "iron_plate")
+            set_entity(world, *src_pos, "stack_inserter", direction, "iron_plate")  # ty: ignore[too-many-positional-arguments]
+            set_entity(world, *ins_pos, "inserter", direction)  # ty: ignore[too-many-positional-arguments]
+            set_entity(world, *belt_pos, "transport_belt", direction)  # ty: ignore[too-many-positional-arguments]
+            set_entity(world, *sink_pos, "bulk_inserter", direction, "iron_plate")  # ty: ignore[too-many-positional-arguments]
             t, u = compare_throughput(world)
             assert t == pytest.approx(0.86, abs=1e-6), (
                 f"Failed for direction {direction}"

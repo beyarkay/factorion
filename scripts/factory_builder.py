@@ -377,7 +377,7 @@ def _get_agent(size: int) -> AgentCNN:
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point=FactorioEnv)
+        gym.register(id=env_id, entry_point=FactorioEnv)  # ty: ignore[invalid-argument-type]
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
     try:
         agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
@@ -1437,7 +1437,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path.startswith("/?"):
-            body = render_index(self.server.default_size).encode()
+            body = render_index(self.server.default_size).encode()  # ty: ignore[unresolved-attribute]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1470,8 +1470,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 result = _swap_model(
                     value=payload.get("value", ""),
-                    project=self.server.wandb_project,
-                    entity=self.server.wandb_entity,
+                    project=self.server.wandb_project,  # ty: ignore[unresolved-attribute]
+                    entity=self.server.wandb_entity,  # ty: ignore[unresolved-attribute]
                 )
         except Exception as e:
             traceback.print_exc()
@@ -1555,11 +1555,11 @@ def main(args: Args) -> None:
         print("(no checkpoint — model prediction panel disabled)")
 
     httpd = HTTPServer(("127.0.0.1", args.port), Handler)
-    httpd.default_size = args.size
+    httpd.default_size = args.size  # ty: ignore[unresolved-attribute]
     # Stashed on the server so the /load_model endpoint can use the same
     # defaults as the CLI when resolving wandb run ids.
-    httpd.wandb_project = args.wandb_project
-    httpd.wandb_entity = args.wandb_entity
+    httpd.wandb_project = args.wandb_project  # ty: ignore[unresolved-attribute]
+    httpd.wandb_entity = args.wandb_entity  # ty: ignore[unresolved-attribute]
     print(f"Serving factory builder on http://127.0.0.1:{args.port}")
     print("Press Ctrl-C to stop.")
     try:

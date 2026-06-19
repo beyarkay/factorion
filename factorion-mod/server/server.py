@@ -100,7 +100,7 @@ class RconClient:
         payload = body.encode("utf-8")
         # length = id(4) + type(4) + body(N) + 2 null bytes
         packet = struct.pack("<ii", rid, ptype) + payload + b"\x00\x00"
-        self._sock.sendall(struct.pack("<i", len(packet)) + packet)
+        self._sock.sendall(struct.pack("<i", len(packet)) + packet)  # ty: ignore[unresolved-attribute]
         return rid
 
     def _recv(self):
@@ -115,7 +115,7 @@ class RconClient:
     def _read_exact(self, n: int) -> bytes:
         buf = b""
         while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
+            chunk = self._sock.recv(n - len(buf))  # ty: ignore[unresolved-attribute]
             if not chunk:
                 raise RconError("RCON socket closed")
             buf += chunk
@@ -256,7 +256,7 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
         tiles = [(x, y)]
 
     _, W, H = obs_CWH.shape
-    for tx, ty in tiles:
+    for tx, ty in tiles:  # ty: ignore[not-iterable]
         if 0 <= tx < W and 0 <= ty < H:
             obs_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
             obs_CWH[Channel.DIRECTION.value, tx, ty] = direction
