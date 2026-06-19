@@ -299,7 +299,11 @@ class FactorioEnv(gym.Env):
     def _get_info(self):
         return {
             # 'num_missing_entities': self.num_missing_entities,
-            'throughput': self._throughput,
+            # thput_raw: raw items/second (reference-free). thput_normed:
+            # raw / per-factory max, clamped to [0, 1] (1.0 == reproduced the
+            # reference factory's throughput). See FIXME(#161) in step().
+            'thput_raw': self._thput_raw,
+            'thput_normed': self._thput_normed,
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
@@ -337,7 +341,8 @@ class FactorioEnv(gym.Env):
         self._cum_reward = 0
 
         self.invalid_actions = 0
-        self._throughput = 0
+        self._thput_raw = 0.0
+        self._thput_normed = 0.0
         self._frac_reachable = 0
         self._frac_hallucin = 0
         self._final_dir_reward = 0
@@ -388,6 +393,18 @@ class FactorioEnv(gym.Env):
                     f"seed={self._seed}"
                 )
         self._solved_world_CWH = factory.world_CWH
+        # Per-factory maximum throughput: the raw items/second the complete,
+        # correct factory carries. We normalize the agent's raw throughput by
+        # this so a perfectly-rebuilt factory scores 1.0 regardless of its
+        # absolute speed (different lessons/layouts have very different maxima;
+        # the old fixed /15.0 mislabeled any factory whose max was < 15).
+        # FIXME(#161): this depends on having the full scripted solution to
+        # compute the max. Fine while every episode is a scripted lesson, but
+        # arbitrary RL rollouts won't have a reference factory — see GH #161.
+        max_tp, _ = factorion_rs.simulate_throughput(
+            self._solved_world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+        )
+        self._max_throughput = float(max_tp)
         self._world_CWH, min_entities_required = blank_entities(
             factory, num_missing_entities=self._num_missing_entities
         )
@@ -524,9 +541,20 @@ class FactorioEnv(gym.Env):
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        throughput, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
-        # TODO don't always divide by 15
-        throughput /= 15.0
+        thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+        # thput_raw is items/second — the reference-free signal arbitrary RL
+        # should ultimately optimize. thput_normed in [0, 1] is raw / per-factory
+        # max, so a perfectly-rebuilt factory scores 1.0 no matter its absolute
+        # speed (the old fixed /15.0 scored a perfect sub-15 factory as e.g. 0.33).
+        # FIXME(#161): thput_normed, the termination check, and the reward below
+        # all depend on self._max_throughput, which we only know because the
+        # lesson is scripted and we have the full solution. Arbitrary RL rollouts
+        # won't have that reference; this must move to a reference-free signal.
+        thput_normed = (
+            min(1.0, thput_raw / self._max_throughput)
+            if self._max_throughput > 0
+            else 0.0
+        )
 
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
@@ -580,7 +608,11 @@ class FactorioEnv(gym.Env):
         reward_components = {
             'throughput': {
                 'coeff': Args.coeff_throughput if 'args' not in locals() else args.coeff_throughput,
-                'value': throughput,
+                # thput_normed is in [0, 1] (raw / per-factory max), the direct
+                # analog of the old raw/15 value — so coeff_throughput keeps its
+                # tuned meaning. The RL reward redesign (raw items/s, terminal
+                # throughput − step penalty) lives on the rl-from-chkpt branch.
+                'value': thput_normed,
             },
             'validity': {
                 'coeff': Args.coeff_validity if 'args' not in locals() else args.coeff_validity,
@@ -611,9 +643,11 @@ class FactorioEnv(gym.Env):
         pre_reward += coeff_ent * ent_delta
         pre_reward += coeff_dir * dir_delta
 
-        # Terminate early when the agent connects source to sink
-        # Terminate early when the agent connects source to sink
-        terminated = throughput >= 1.0
+        # Terminate early when the agent reaches the reference factory's max
+        # throughput (thput_normed == 1.0). This is the existing throughput
+        # auto-terminal, carried over unchanged via the normalized value; the
+        # EOT-driven termination redesign lives on the rl-from-chkpt branch.
+        terminated = thput_normed >= 1.0
         # Halt the run if the agent runs out of steps (only if not already solved)
         truncated = (not terminated) and (self.steps > self.max_steps)
 
@@ -623,7 +657,8 @@ class FactorioEnv(gym.Env):
         else:
             reward = pre_reward
 
-        self._throughput = throughput
+        self._thput_raw = thput_raw
+        self._thput_normed = thput_normed
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
@@ -640,7 +675,8 @@ class FactorioEnv(gym.Env):
         num_placed_entities = len([a for a in self.actions if a is not None and a['entity'] != 'empty'])
 
         info.update({
-            'throughput': throughput,
+            'thput_raw': thput_raw,
+            'thput_normed': thput_normed,
             'frac_reachable': frac_reachable,
             'frac_hallucin': frac_hallucin,
             'final_dir_reward': final_dir_reward,
@@ -786,13 +822,14 @@ class FactorioEnv(gym.Env):
         info = self._get_info() or {}
         unreach = info.get("frac_reachable", "?")
         cum_reward = info.get("cum_reward", 0)
-        throughput = info.get("throughput", "?")
+        thput_raw = info.get("thput_raw", "?")
+        thput_normed = info.get("thput_normed", "?")
         reward = info.get("reward", "?")
 
         lines = [
             f"Step {self.steps}/{self.max_steps}",
             f"SumReward: {cum_reward:.3f}  |  Reward: {reward:.3f}",
-            f"thrput: {throughput}  |  Unreachable: {unreach:.3f}",
+            f"thrput: {thput_normed} ({thput_raw}/s)  |  Unreachable: {unreach:.3f}",
         ]
         if self.actions and self.actions[-1] is not None:
             lines.append(f"Placing {self.actions[-1]['entity']}")
@@ -1071,7 +1108,7 @@ if __name__ == "__main__":
 
         # Define metric axes and summary aggregation
         wandb.define_metric("*", step_metric="global_step")
-        for m in ["throughput", "reward", "length", "invalid_frac",
+        for m in ["throughput", "thput_raw", "reward", "length", "invalid_frac",
                    "num_entities", "entity_efficiency", "frac_reachable"]:
             wandb.define_metric(f"episode/{m}", summary="last")
         for m in ["tile_location", "tile_entity", "tile_direction",
@@ -1265,7 +1302,11 @@ if __name__ == "__main__":
                     # This environment finished, extract its stats
                     episode_return = infos["episode"]["r"][i]
                     episode_len = infos["episode"]["l"][i]
-                    end_of_episode_thput = infos["throughput"][i]
+                    # Curriculum score relies on throughput ∈ [0, 1] (level
+                    # advance must dominate within-level gain), so track the
+                    # normalized value; also log raw items/sec for visibility.
+                    end_of_episode_thput = infos["thput_normed"][i]
+                    end_of_episode_thput_raw = infos["thput_raw"][i]
                     final_frac_reachable = infos["frac_reachable"][i]
                     # final_frac_hallucin = infos["frac_hallucin"][i]
 
@@ -1277,6 +1318,7 @@ if __name__ == "__main__":
 
                     _record_episode({
                         "episode/throughput": float(end_of_episode_thput),
+                        "episode/thput_raw": float(end_of_episode_thput_raw),
                         "episode/reward": float(episode_return),
                         "episode/length": float(episode_len),
                         "episode/invalid_frac": float(infos['frac_invalid_actions'][i]),
