@@ -130,11 +130,21 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         }
     }
 
-    // 3. Collect output at sinks
+    // 3. Collect output at sinks. A sink only scores the item it is
+    //    configured to receive — its tile's ITEMS channel, surfaced as
+    //    `node.item`. Without this filter the engine counts *any* item that
+    //    reaches a sink, which lets a policy reward-hack assemble lessons:
+    //    route the raw input item straight to the sink at belt speed and
+    //    never build the assembler. The raw input is not the crafted output
+    //    the sink expects, so a bypass now scores 0 and only a genuine craft
+    //    delivers the recipe rate.
     let mut total_output: HashMap<Item, f64> = HashMap::new();
     for &sink_idx in &sinks {
+        let expected = graph.nodes[sink_idx].item;
         for (&item, &rate) in &node_outputs[sink_idx] {
-            *total_output.entry(item).or_insert(0.0) += rate;
+            if Some(item) == expected {
+                *total_output.entry(item).or_insert(0.0) += rate;
+            }
         }
     }
 
@@ -463,5 +473,85 @@ mod tests {
         let g = build_graph(&w);
         let (output, _) = calc_throughput(&g);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_assemble_bypass_scores_zero() {
+        // Reward-hack regression: a sink only counts the item it is
+        // configured to receive. Here the sink expects CopperCable (the
+        // crafted output), but the policy "cheats" by laying a straight
+        // belt that runs the raw CopperPlate input from source to sink at
+        // belt speed, never building the assembler. The raw input is not
+        // the expected output, so this must score 0 — not 15.
+        let mut w = World::empty(4, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+
+        // The raw passthrough item must NOT be counted toward throughput,
+        // and the expected crafted output never arrives → zero throughput.
+        assert!(
+            !output.contains_key(&Item::CopperPlate),
+            "Raw input leaked into throughput: {:?}",
+            output
+        );
+        assert_eq!(
+            output.get(&Item::CopperCable).copied().unwrap_or(0.0),
+            0.0,
+            "Bypass should yield 0 CopperCable, got {:?}",
+            output
+        );
+        assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_assemble_genuine_craft_scores_recipe_rate() {
+        // The complement to the bypass test: a real craft scores. The
+        // assembler (recipe CopperPlate → 2× CopperCable) is fed raw
+        // CopperPlate via an inserter and hands CopperCable to the sink via
+        // an output inserter + belt. The sink expects CopperCable, so the
+        // crafted output is counted. Throughput is inserter-limited (0.86).
+        //
+        //   Source(CopperPlate) → Inserter → Assembler(→CopperCable)
+        //                                  → Inserter → Belt → Sink(CopperCable)
+        let mut w = World::empty(9, 5);
+        w.place(0, 2, Item::Source, Direction::East, Some(Item::CopperPlate));
+        w.place(1, 2, Item::Inserter, Direction::East, None);
+        // 3x3 assembler, anchor (2,1), recipe keyed by its output item.
+        w.place_multi_tile(
+            2,
+            1,
+            Item::AssemblingMachine1,
+            Direction::East,
+            Some(Item::CopperCable),
+            3,
+            3,
+        );
+        w.place(5, 2, Item::Inserter, Direction::East, None);
+        w.place(6, 2, Item::TransportBelt, Direction::East, None);
+        w.place(7, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+
+        // Only the crafted CopperCable is counted (inserter-limited to 0.86),
+        // and no raw CopperPlate leaks through.
+        assert!(
+            !output.contains_key(&Item::CopperPlate),
+            "Raw input leaked into throughput: {:?}",
+            output
+        );
+        let throughput = output.get(&Item::CopperCable).copied().unwrap_or(0.0);
+        assert!(
+            (throughput - 0.86).abs() < 1e-9,
+            "Expected inserter-limited 0.86 CopperCable, got {} ({:?})",
+            throughput,
+            output
+        );
+        assert_eq!(unreachable, 0);
     }
 }
