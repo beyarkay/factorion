@@ -134,9 +134,9 @@ class Args:
     # per-layer width as independent numeric slots (rather than one categorical
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 48
-    layer2: int = 48
-    layer3: int = 48
+    layer1: int = 93
+    layer2: int = 69
+    layer3: int = 96
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0
@@ -148,7 +148,7 @@ class Args:
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     dropout: float = 0.0
     """Dropout probability in the CNN encoder."""
-    size: int = 12
+    size: int = 11
     """The width and height of the factory"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""

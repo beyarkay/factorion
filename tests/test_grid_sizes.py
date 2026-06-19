@@ -69,8 +69,9 @@ class TestGridSizes:
                 obs, info = env.reset()
         env.close()
 
-    def test_default_size_is_12(self):
-        """Verify the default size in Args is 12."""
+    def test_default_size_is_11(self):
+        """Default Args.size is 11, matching the canonical SFT checkpoint
+        (kkcv6xe3) so `ppo.py --start_from <ckpt>` loads without arch flags."""
         from ppo import Args
         args = Args()
-        assert args.size == 12
+        assert args.size == 11
