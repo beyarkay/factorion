@@ -32,23 +32,25 @@ def _noop_action():
 
 
 class TestEarlyTermination:
-    """Test that episodes terminate early when throughput >= 1.0."""
+    """Episodes terminate only when the agent declares eot, and truncate at
+    max_steps. A full-throughput solve does NOT auto-terminate — otherwise the
+    eot head would never learn to fire on a finished factory."""
 
-    def test_termination_on_full_throughput(self):
-        """With num_missing_entities=0 the factory is already solved.
-
-        The first step should produce throughput >= 1.0 and terminated=True.
+    def test_solve_does_not_auto_terminate(self):
+        """With num_missing_entities=0 the factory is already solved, but
+        without an eot the episode keeps running — the agent must declare done.
         """
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
         _, _, terminated, truncated, info = env.step(_noop_action())
 
-        assert terminated is True, f"Expected terminated=True, got {terminated}"
-        assert truncated is False, f"Expected truncated=False, got {truncated}"
         # A fully-solved factory reaches its per-factory max → normed == 1.0
-        # (regardless of the factory's absolute belt speed).
+        # (regardless of absolute belt speed), but with no eot declared the
+        # episode must NOT auto-terminate.
         assert info["thput_normed"] >= 1.0
+        assert terminated is False, "a solve must NOT auto-terminate"
+        assert truncated is False
 
     def test_truncation_without_solving(self):
         """With many missing entities the factory can't be solved by no-ops.
@@ -75,10 +77,12 @@ class TestEarlyTermination:
         """terminated and truncated should never both be True."""
         env = _make_env(size=5, max_steps=10)
 
-        # Case 1: solved factory (terminated=True)
+        # Case 1: agent declares eot (terminated=True)
         env.reset(seed=42, options={"num_missing_entities": 0})
-        _, _, terminated, truncated, _ = env.step(_noop_action())
-        assert not (terminated and truncated), "terminated and truncated are both True"
+        action = _noop_action()
+        action["eot"] = 1
+        _, _, terminated, truncated, _ = env.step(action)
+        assert terminated and not truncated
 
         # Case 2: unsolved factory (truncated=True)
         env.reset(seed=42, options={"num_missing_entities": 99})
@@ -94,14 +98,18 @@ class TestReward:
     a per-step penalty plus the terminal throughput reward when the episode
     ends (solve / eot / max_steps)."""
 
-    def test_terminal_throughput_reward_on_solve(self):
-        """Solving pays the terminal throughput reward minus one step's penalty."""
+    def test_solved_factory_with_eot_pays_full_reward(self):
+        """Declaring eot on a solved factory pays the full terminal throughput
+        reward (throughput >= 1.0) minus one step's penalty."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        _, reward, terminated, _, info = env.step(_noop_action())
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
 
         assert terminated is True
+        assert info["thput_normed"] >= 1.0
         expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
         assert reward == pytest.approx(expected)
 
@@ -152,11 +160,13 @@ class TestStepsTaken:
     """Test that steps_taken is correct in the info dict."""
 
     def test_steps_taken_on_termination(self):
-        """steps_taken should be 0 when solved on the first step."""
+        """steps_taken should be 0 when the agent declares eot on the first step."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        _, _, terminated, _, info = env.step(_noop_action())
+        action = _noop_action()
+        action["eot"] = 1
+        _, _, terminated, _, info = env.step(action)
 
         assert terminated is True
         assert "steps_taken" in info, "steps_taken missing from info on termination"

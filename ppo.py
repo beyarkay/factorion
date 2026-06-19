@@ -645,12 +645,14 @@ class FactorioEnv(gym.Env):
         # when the episode ends. The agent ends its own episode via the eot
         # action (action["eot"]); firing it stops the per-step bleed and banks
         # the throughput reward, so PPO learns to stop once the factory can no
-        # longer improve. A full-throughput solve and max_steps are the other
-        # two terminals; all three pay the terminal throughput reward.
+        # longer improve. There is deliberately NO auto-terminate on a
+        # full-throughput solve: if the env ended solved episodes for free, the
+        # eot head would never get a gradient to fire on a finished factory and
+        # would never learn to stop. max_steps is the only other terminal; both
+        # terminals pay the terminal throughput reward.
         # throughput here is thput_normed (raw / per-factory max, in [0, 1]).
         eot_declared = int(action.get("eot", 0)) == 1
-        solved = thput_normed >= 1.0
-        terminated = solved or eot_declared
+        terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 
         reward = -self.step_penalty
