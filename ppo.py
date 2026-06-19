@@ -177,7 +177,7 @@ def _append_run_tags(run, *tags: str) -> None:
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
-        kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
+        kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx})
         # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
@@ -351,7 +351,10 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options['num_missing_entities'] # TODO also change max_steps in tandem
+        # Default to fully blanking the factory (build-from-empty), so RL
+        # trains/measures the same task as the SFT greedy rollout eval.
+        # blank_entities clamps inf down to the removable-unit count.
+        self._num_missing_entities = self._reset_options.get('num_missing_entities', float('inf'))
 
         self.actions = []
         # Lesson kind is settable per-reset. Default (omitted or None) is
@@ -1196,7 +1199,7 @@ if __name__ == "__main__":
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
-            'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0]),
+            'num_missing_entities': float('inf'),
         }
     )
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
@@ -1229,7 +1232,6 @@ if __name__ == "__main__":
 
     _next_eval_log_step = 256
     print(f"Starting {args.num_iterations} iterations")
-    iteration_of_last_increase = 0
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
         # print(f"{iteration=}")
@@ -1279,11 +1281,11 @@ if __name__ == "__main__":
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
-            # Reset only the done environments with updated num_missing_entities
+            # Reset done envs back to a fully-blank (build-from-empty) factory.
             done_indices = np.where(next_done)[0]
             for idx in done_indices:
                 obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': int(torch.randint(0, max_missing_entities+1, (1,))[0])
+                    'num_missing_entities': float('inf'),
                 })
                 next_obs_ECWH[idx] = obs
 
@@ -1459,18 +1461,12 @@ if __name__ == "__main__":
         # Flush episode means (empty dict if no episodes ended this iteration)
         iter_metrics.update(_flush_episode_means())
 
-        # Curriculum metrics — moving averages preserved exactly as before
+        # Throughput metrics. The task is now fixed full-blank
+        # (build-from-empty), so there's no curriculum to climb: the score is
+        # just the moving-average throughput. The curriculum/* keys are kept
+        # (level pinned to start_curriculum_level) so existing dashboards and
+        # the CI summary parser keep working.
         if len(end_of_episode_thputs) > 0:
-            final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            if len(end_of_episode_thputs) > int(moving_average_length * 0.9):
-                if final_thputs_100ma > 0.95 and iteration - iteration_of_last_increase > 10:
-                    iteration_of_last_increase = iteration
-                    end_of_episode_thputs.clear()
-                    for _ in range(moving_average_length):
-                        end_of_episode_thputs.append(0)
-                    max_missing_entities = min(max_missing_entities + 1, args.size*2)
-                    print(f"\nNow working with {max_missing_entities=}")
-            # Recompute after potential level-up so we use the reset buffer
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
             iter_metrics["curriculum/level"] = max_missing_entities
             iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
@@ -1484,7 +1480,7 @@ if __name__ == "__main__":
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
             render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name) for i in range(num_render_envs)])
-            next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': max_missing_entities})
+            next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': float('inf')})
 
             temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]
             frame_counts = [0] * num_render_envs
