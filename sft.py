@@ -466,8 +466,10 @@ def run_rollout_eval(
 
     For each held-out (seed, kind) we greedy-argmax every head and step
     until the env finishes (throughput==1.0 or max_steps) — we do NOT
-    let the EOT head stop us. Throughput is the last `info['throughput']`
-    the env reported (the env already calls the Rust solver every step,
+    let the EOT head stop us. Throughput is the last `info['thput_normed']`
+    the env reported: raw items/sec divided by the per-factory max, in
+    [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of its
+    absolute belt speed (the env already calls the Rust solver every step,
     so we don't re-run it). This `overall` number is the model's true
     build skill independent of its stop head.
 
@@ -556,7 +558,7 @@ def run_rollout_eval(
                 "kind": k,
             },
         )
-        current[i] = (s, k, float(info.get("throughput", 0.0)))
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -603,7 +605,7 @@ def run_rollout_eval(
                     "misc": int(misc_K[i]),
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("throughput", 0.0)))
+                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
                 if not (terminated or truncated):
                     obs_batch[i] = torch.as_tensor(
                         next_obs,
@@ -632,7 +634,7 @@ def run_rollout_eval(
                             "kind": k,
                         },
                     )
-                    current[i] = (s, k, float(info.get("throughput", 0.0)))
+                    current[i] = (s, k, float(info.get("thput_normed", 0.0)))
                     eot_fired[i] = False
                     eot_thp[i] = 0.0
                     obs_batch[i] = torch.as_tensor(

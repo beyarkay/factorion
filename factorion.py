@@ -1199,6 +1199,10 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         # value = critic(normalised_world)
         value = critic(normalised_world.to(torch.float))
         # Maybe having throughput being calculated as a black box is the problem?
+        # FIXME(#161): still the old fixed /15.0 normalization. This is the
+        # legacy RL-from-scratch eval (no current callers) and its random
+        # get_new_world() inputs have no reference factory to normalize by, so
+        # there's no per-factory max to use here — left as-is intentionally.
         throughput = torch.tensor(
             funge_throughput(normalised_world)[0] / 15.0,
             dtype=value.dtype,
