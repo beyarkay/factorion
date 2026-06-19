@@ -166,7 +166,7 @@ class Args:
     """Tags to apply to the wandb run."""
     start_curriculum_level: int = 1
     """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
-    critic_warmup_iters: int = 0
+    critic_warmup: int = 0
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
 
     # to be filled in runtime
@@ -1224,9 +1224,9 @@ if __name__ == "__main__":
         for p in actor_params:
             p.requires_grad_(flag)
 
-    if args.critic_warmup_iters > 0:
+    if args.critic_warmup > 0:
         set_actor_requires_grad(False)
-        print(f"Critic warm-up: actor frozen for the first {args.critic_warmup_iters} iterations")
+        print(f"Critic warm-up: actor frozen for the first {args.critic_warmup} iterations")
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
@@ -1283,10 +1283,10 @@ if __name__ == "__main__":
     for iteration in pbar:
         # print(f"{iteration=}")
         # Critic warm-up: the actor stays frozen for the first
-        # critic_warmup_iters iterations (only the value head trains), then we
+        # critic_warmup iterations (only the value head trains), then we
         # unfreeze once and run normal PPO from there.
-        in_warmup = iteration <= args.critic_warmup_iters
-        if args.critic_warmup_iters > 0 and iteration == args.critic_warmup_iters + 1:
+        in_warmup = iteration <= args.critic_warmup
+        if args.critic_warmup > 0 and iteration == args.critic_warmup + 1:
             set_actor_requires_grad(True)
             print(f"\nCritic warm-up complete; unfreezing actor at iteration {iteration}")
 
@@ -1294,8 +1294,8 @@ if __name__ == "__main__":
         # gets its full LR/entropy schedule starting from the unfreeze point
         # rather than burning it while frozen. During warm-up the critic
         # trains at the un-annealed peak LR.
-        anneal_total = max(1, args.num_iterations - args.critic_warmup_iters)
-        anneal_iter = max(0, iteration - args.critic_warmup_iters)
+        anneal_total = max(1, args.num_iterations - args.critic_warmup)
+        anneal_iter = max(0, iteration - args.critic_warmup)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
