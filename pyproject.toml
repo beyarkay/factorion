@@ -29,6 +29,7 @@ dev = [
     "pytest",
     "pytest-timeout",
     "maturin",
+    "ty==0.0.19",  # pre-1.0: pin exactly so a ty release can't surprise the pre-push gate
 ]
 
 [tool.uv]

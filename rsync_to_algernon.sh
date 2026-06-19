@@ -11,11 +11,13 @@ rsync -avz \
     "factorion.py" \
     "run_sweep.sh" \
     "sweep.yaml" \
-    "requirements.txt" \
+    "pyproject.toml" \
+    "uv.lock" \
     "brk@${REMOTE_HOST}:${REMOTE_DIR}"
 
-# SSH command to run remotely after sync
+# SSH command to run remotely after sync. `uv run` syncs deps from the lockfile
+# (preserving the maturin-built factorion_rs) and runs inside the project venv.
 echo "Running remote command: '$1'"
-ssh "brk@${REMOTE_HOST}" "cd ${REMOTE_DIR} && source .venv/bin/activate && nohup $1 > $(date +'logs/factorion.%Y-%m-%dT%H%M%S.log') 2>&1 &"
+ssh "brk@${REMOTE_HOST}" "cd ${REMOTE_DIR} && nohup uv run $1 > $(date +'logs/factorion.%Y-%m-%dT%H%M%S.log') 2>&1 &"
 
 
