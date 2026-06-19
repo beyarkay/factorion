@@ -45,7 +45,9 @@ class TestEarlyTermination:
 
         assert terminated is True, f"Expected terminated=True, got {terminated}"
         assert truncated is False, f"Expected truncated=False, got {truncated}"
-        assert info["throughput"] >= 1.0
+        # A fully-solved factory reaches its per-factory max → normed == 1.0
+        # (regardless of the factory's absolute belt speed).
+        assert info["thput_normed"] >= 1.0
 
     def test_truncation_without_solving(self):
         """With many missing entities the factory can't be solved by no-ops.
@@ -66,7 +68,7 @@ class TestEarlyTermination:
 
         assert truncated is True, f"Expected truncated=True, got {truncated}"
         assert terminated is False, f"Expected terminated=False, got {terminated}"
-        assert info["throughput"] < 1.0
+        assert info["thput_normed"] < 1.0
 
     def test_terminated_and_truncated_are_mutually_exclusive(self):
         """terminated and truncated should never both be True."""
