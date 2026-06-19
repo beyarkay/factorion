@@ -4,24 +4,78 @@ use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
 use crate::types::Item;
 
-/// Calculate the throughput of a factory graph.
+/// Exponent for the factory score's power mean over per-sink deliveries.
 ///
-/// Returns (output_per_item, num_unreachable) matching the Python `calc_throughput`.
+/// `score = ((1/N) · Σ achievedᵢ^p)^(1/p)` with `p = FACTORY_SCORE_P`. At
+/// `p = 0.5` the mean is concave, so it rewards spreading flow across all
+/// sinks (for `p < 1`, the power mean is maximised — for a fixed total — by
+/// an even split) and drags the score down for every under-served sink,
+/// *without* zeroing it on partial coverage the way the geometric mean
+/// (`p → 0`) would. An unused sink contributes `0` to the sum: a real but
+/// recoverable penalty, not a hand-tuned constant. The mean is homogeneous
+/// of degree one, so the score keeps items/s units and lives in `[0, ∞)`.
+pub const FACTORY_SCORE_P: f64 = 0.5;
+
+/// What a single sink received: the item it was configured to accept and
+/// the achieved throughput (items/s) of that item arriving at it. One
+/// `SinkDelivery` per (sink, expected-item) demand — today one per sink,
+/// since a sink carries a single item, but the score generalises to
+/// multi-item sinks by emitting one delivery per accepted item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SinkDelivery {
+    pub item: Option<Item>,
+    pub achieved: f64,
+}
+
+/// Generalised (power / Hölder) mean of non-negative `values` with exponent
+/// `p`: `((1/N) · Σ vᵢ^p)^(1/p)`. `p = 1` is the arithmetic mean, `p → 0`
+/// the geometric mean, `p = 0.5` our soft unused-sink penalty. Empty input
+/// → `0.0`. `p` must be non-zero (the `p → 0` limit is the geometric mean,
+/// not computed here).
+pub fn power_mean(values: &[f64], p: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let sum_of_powers: f64 = values.iter().map(|&v| v.powf(p)).sum();
+    (sum_of_powers / values.len() as f64).powf(1.0 / p)
+}
+
+/// Aggregate per-sink deliveries into a single factory throughput score: the
+/// power mean (exponent [`FACTORY_SCORE_P`]) of the achieved throughputs.
+/// This penalises unused sinks — wiring one source straight to one of two
+/// sinks scores below feeding both — without a per-sink penalty constant. A
+/// non-finite result (e.g. an unbounded source-adjacent-to-sink layout)
+/// collapses to `0.0`, matching the engine's other degenerate cases.
+pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
+    let achieved: Vec<f64> = deliveries.iter().map(|d| d.achieved).collect();
+    let score = power_mean(&achieved, FACTORY_SCORE_P);
+    if score.is_finite() {
+        score
+    } else {
+        0.0
+    }
+}
+
+/// Calculate the per-sink deliveries of a factory graph.
+///
+/// Returns `(deliveries, num_unreachable)`, one [`SinkDelivery`] per sink:
+/// the item it was configured to accept and how much of that item reached
+/// it. Collapse to a scalar score with [`factory_score`].
 ///
 /// Algorithm:
-/// 1. Detect cycles → return 0 if any exist
+/// 1. Detect cycles → return no deliveries if any exist
 /// 2. BFS from sources (stack_inserters), propagating flow rates
 /// 3. At each node, compute output from input using entity trait
-/// 4. Collect output at sinks (bulk_inserters)
+/// 4. Collect each sink's delivery of its configured item
 /// 5. Count unreachable nodes
-pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
+pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     if graph.node_count() == 0 {
-        return (HashMap::new(), 0);
+        return (Vec::new(), 0);
     }
 
-    // 1. Cycle detection — return empty map (downstream treats as 0 throughput).
+    // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
     if has_cycle(graph) {
-        return (HashMap::new(), 0);
+        return (Vec::new(), 0);
     }
 
     // Identify sources and sinks
@@ -34,7 +88,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
 
     if sources.is_empty() || sinks.is_empty() {
         // No sources or no sinks → no throughput, but all nodes are unreachable
-        return (HashMap::new(), graph.node_count());
+        return (Vec::new(), graph.node_count());
     }
 
     // Find nodes reachable from sources (for determining processing order)
@@ -130,22 +184,26 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
         }
     }
 
-    // 3. Collect output at sinks. A sink only scores the item it is
+    // 3. Collect each sink's delivery. A sink only scores the item it is
     //    configured to receive — its tile's ITEMS channel, surfaced as
-    //    `node.item`. Without this filter the engine counts *any* item that
-    //    reaches a sink, which lets a policy reward-hack assemble lessons:
-    //    route the raw input item straight to the sink at belt speed and
-    //    never build the assembler. The raw input is not the crafted output
-    //    the sink expects, so a bypass now scores 0 and only a genuine craft
-    //    delivers the recipe rate.
-    let mut total_output: HashMap<Item, f64> = HashMap::new();
+    //    `node.item`. Counting *any* item that reaches a sink would let a
+    //    policy reward-hack assemble lessons (route raw input straight to
+    //    the sink, never build the assembler) and split lessons (wire one
+    //    source to one of two sinks, ignore the rest). We record the
+    //    achieved rate of the expected item per sink and let `factory_score`
+    //    penalise the under-served ones — summing across sinks here would
+    //    hide an unused sink behind a fully-fed one.
+    let mut deliveries: Vec<SinkDelivery> = Vec::with_capacity(sinks.len());
     for &sink_idx in &sinks {
         let expected = graph.nodes[sink_idx].item;
-        for (&item, &rate) in &node_outputs[sink_idx] {
-            if Some(item) == expected {
-                *total_output.entry(item).or_insert(0.0) += rate;
-            }
-        }
+        let achieved = match expected {
+            Some(item) => node_outputs[sink_idx].get(&item).copied().unwrap_or(0.0),
+            None => 0.0,
+        };
+        deliveries.push(SinkDelivery {
+            item: expected,
+            achieved,
+        });
     }
 
     // 4. Count unreachable nodes
@@ -163,7 +221,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (HashMap<Item, f64>, usize) {
     let all_nodes: HashSet<usize> = (0..graph.node_count()).collect();
     let unreachable = all_nodes.difference(&on_path).count();
 
-    (total_output, unreachable)
+    (deliveries, unreachable)
 }
 
 /// Check if the graph has any cycles using DFS.
@@ -254,18 +312,15 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
 
-        // Belt limits throughput to 15.0
+        // Single sink, belt-limited to 15.0.
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].item, Some(Item::CopperCable));
         assert!(
-            output.contains_key(&Item::CopperCable),
-            "Expected CopperCable in output, got {:?}",
-            output
-        );
-        let throughput = output[&Item::CopperCable];
-        assert!(
-            (throughput - 15.0).abs() < 1e-9,
+            (output[0].achieved - 15.0).abs() < 1e-9,
             "Expected 15.0, got {}",
-            throughput
+            output[0].achieved
         );
+        assert!((factory_score(&output) - 15.0).abs() < 1e-9);
         assert_eq!(unreachable, 0);
     }
 
@@ -283,16 +338,13 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
 
+        // Single sink, inserter-limited to 0.86.
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].item, Some(Item::CopperCable));
         assert!(
-            output.contains_key(&Item::CopperCable),
-            "Expected CopperCable in output, got {:?}",
-            output
-        );
-        let throughput = output[&Item::CopperCable];
-        assert!(
-            (throughput - 0.86).abs() < 1e-9,
+            (output[0].achieved - 0.86).abs() < 1e-9,
             "Expected 0.86, got {}",
-            throughput
+            output[0].achieved
         );
         assert_eq!(unreachable, 0);
     }
@@ -309,18 +361,10 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
 
-        // No path from source to sink → empty output (no sources/sinks connected)
-        // With our early return for no-path case, all 3 entities are unreachable
-        assert!(output.is_empty() || output.values().all(|&v| v == 0.0));
-        // Source, sink, and belt are all disconnected → no node is on a source→sink path
-        // Python confirms: calc_throughput returns ({}, 2) for this case (but the
-        // source→sink intersection is empty since there's no path, so all nodes are
-        // unreachable except... wait, intersection is empty so unreachable = 3? No:
-        // The Python returns 2. Let me think... The Python uses reachable_from
-        // which includes start nodes. reachable_from_source = {source}.
-        // can_reach_sink = {sink}. Intersection = empty. unreachable = 3 - 0 = 3.
-        // But Python actually returns 2! That's because... hmm, let me just check
-        // the actual value matches Python.
+        // No path from source to sink → the sink's delivery is 0, so the
+        // factory scores 0. All 3 entities are off any source→sink path.
+        assert!(output.iter().all(|d| d.achieved == 0.0), "{:?}", output);
+        assert_eq!(factory_score(&output), 0.0);
         assert_eq!(unreachable, 3); // all 3 entities are disconnected
     }
 
@@ -376,11 +420,11 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-        let throughput = output[&Item::CopperCable];
+        let score = factory_score(&output);
         assert!(
-            (throughput - 15.0).abs() < 1e-9,
+            (score - 15.0).abs() < 1e-9,
             "Passthrough splitter should give 15.0, got {}",
-            throughput
+            score
         );
         assert_eq!(unreachable, 0);
     }
@@ -403,13 +447,15 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-        let throughput = output[&Item::CopperCable];
-        // Total throughput at sinks: 7.5 + 7.5 = 15.0
+        // Two sinks, evenly split at 7.5 each. The power-mean score of two
+        // equal deliveries is that per-sink value (7.5), not the 15.0 sum.
+        assert_eq!(output.len(), 2);
         assert!(
-            (throughput - 15.0).abs() < 1e-9,
-            "Split should give 15.0 total, got {}",
-            throughput
+            output.iter().all(|d| (d.achieved - 7.5).abs() < 1e-9),
+            "each sink should get 7.5, got {:?}",
+            output
         );
+        assert!((factory_score(&output) - 7.5).abs() < 1e-9);
         assert_eq!(unreachable, 0);
     }
 
@@ -429,12 +475,13 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-        let throughput = output[&Item::CopperCable];
-        // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15
+        // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15.
+        // Single sink → score is just its delivery (15.0).
+        let score = factory_score(&output);
         assert!(
-            (throughput - 15.0).abs() < 1e-9,
+            (score - 15.0).abs() < 1e-9,
             "Merge should give 15.0, got {}",
-            throughput
+            score
         );
         assert_eq!(unreachable, 0);
     }
@@ -455,13 +502,15 @@ mod tests {
 
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
-        let throughput = output[&Item::CopperCable];
-        // 30 in, splitter passes 30, each output gets 15, total = 30
+        // 30 in, splitter passes 30, each of two output sinks gets 15. The
+        // power-mean score of two full sinks is 15.0 (per-sink), not 30.0.
+        assert_eq!(output.len(), 2);
         assert!(
-            (throughput - 30.0).abs() < 1e-9,
-            "Full splitter should give 30.0, got {}",
-            throughput
+            output.iter().all(|d| (d.achieved - 15.0).abs() < 1e-9),
+            "each sink should get 15.0, got {:?}",
+            output
         );
+        assert!((factory_score(&output) - 15.0).abs() < 1e-9);
         assert_eq!(unreachable, 0);
     }
 
@@ -492,19 +541,16 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
 
-        // The raw passthrough item must NOT be counted toward throughput,
-        // and the expected crafted output never arrives → zero throughput.
-        assert!(
-            !output.contains_key(&Item::CopperPlate),
-            "Raw input leaked into throughput: {:?}",
-            output
-        );
+        // The sink expects CopperCable; only raw CopperPlate is routed to it,
+        // which is not its configured item, so it delivers 0 → factory scores 0.
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].item, Some(Item::CopperCable));
         assert_eq!(
-            output.get(&Item::CopperCable).copied().unwrap_or(0.0),
-            0.0,
+            output[0].achieved, 0.0,
             "Bypass should yield 0 CopperCable, got {:?}",
             output
         );
+        assert_eq!(factory_score(&output), 0.0);
         assert_eq!(unreachable, 0);
     }
 
@@ -538,20 +584,97 @@ mod tests {
         let g = build_graph(&w);
         let (output, unreachable) = calc_throughput(&g);
 
-        // Only the crafted CopperCable is counted (inserter-limited to 0.86),
-        // and no raw CopperPlate leaks through.
+        // Only the crafted CopperCable is delivered, inserter-limited to 0.86.
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].item, Some(Item::CopperCable));
         assert!(
-            !output.contains_key(&Item::CopperPlate),
-            "Raw input leaked into throughput: {:?}",
-            output
-        );
-        let throughput = output.get(&Item::CopperCable).copied().unwrap_or(0.0);
-        assert!(
-            (throughput - 0.86).abs() < 1e-9,
-            "Expected inserter-limited 0.86 CopperCable, got {} ({:?})",
-            throughput,
+            (output[0].achieved - 0.86).abs() < 1e-9,
+            "Expected inserter-limited 0.86 CopperCable, got {:?}",
             output
         );
         assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_power_mean_basic() {
+        // Empty → 0; a single value and a set of equal values → that value.
+        assert_eq!(power_mean(&[], 0.5), 0.0);
+        assert!((power_mean(&[7.5], 0.5) - 7.5).abs() < 1e-9);
+        assert!((power_mean(&[7.5, 7.5], 0.5) - 7.5).abs() < 1e-9);
+        assert!((power_mean(&[15.0, 15.0], 0.5) - 15.0).abs() < 1e-9);
+        // p=0.5: (15, 0) → ((√15 + 0)/2)² = 3.75 (penalised, not zero).
+        assert!((power_mean(&[15.0, 0.0], 0.5) - 3.75).abs() < 1e-9);
+        // p=1 is the plain arithmetic mean — no imbalance penalty.
+        assert!((power_mean(&[15.0, 0.0], 1.0) - 7.5).abs() < 1e-9);
+        // Homogeneous of degree one: scaling all inputs scales the mean.
+        assert!((power_mean(&[30.0, 0.0], 0.5) - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_unused_sink_penalised() {
+        // Bypass and balanced deliver the SAME raw total (15), but the power
+        // mean rewards the even split (7.5) over dumping it all in one sink
+        // (3.75), and feeding both sinks fully (15) beats both.
+        let bypass = [
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 15.0,
+            },
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 0.0,
+            },
+        ];
+        let balanced = [
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 7.5,
+            },
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 7.5,
+            },
+        ];
+        let full = [
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 15.0,
+            },
+            SinkDelivery {
+                item: Some(Item::CopperCable),
+                achieved: 15.0,
+            },
+        ];
+        assert!((factory_score(&bypass) - 3.75).abs() < 1e-9);
+        assert!((factory_score(&balanced) - 7.5).abs() < 1e-9);
+        assert!((factory_score(&full) - 15.0).abs() < 1e-9);
+        assert!(factory_score(&bypass) < factory_score(&balanced));
+        assert!(factory_score(&balanced) < factory_score(&full));
+    }
+
+    #[test]
+    fn test_split_one_of_two_sinks_penalised() {
+        // Two sinks both want CopperCable, but the source is wired straight to
+        // one of them (ignoring the other). End-to-end, the engine reports the
+        // unfed sink's 0 delivery, so the power-mean score is the penalised
+        // 3.75 — where summing across sinks would have hidden it as a full 15.
+        let mut w = World::empty(5, 2);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        // Second sink, never fed.
+        w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert_eq!(output.len(), 2);
+        assert!(output.iter().any(|d| (d.achieved - 15.0).abs() < 1e-9));
+        assert!(output.iter().any(|d| d.achieved == 0.0));
+        let score = factory_score(&output);
+        assert!(
+            (score - 3.75).abs() < 1e-9,
+            "one-of-two-sinks bypass should score 3.75, got {}",
+            score
+        );
     }
 }
