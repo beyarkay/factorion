@@ -197,17 +197,20 @@ class TestInserterPatterns:
 
     def test_inserter_all_directions(self):
         """Inserters in all four cardinal directions."""
-        for direction, src_pos, ins_pos, belt_pos, sink_pos in [
+        cases: list[
+            tuple[Direction, tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]
+        ] = [
             (Direction.EAST, (0, 2), (1, 2), (2, 2), (3, 2)),
             (Direction.WEST, (4, 2), (3, 2), (2, 2), (1, 2)),
             (Direction.SOUTH, (2, 0), (2, 1), (2, 2), (2, 3)),
             (Direction.NORTH, (2, 4), (2, 3), (2, 2), (2, 1)),
-        ]:
+        ]
+        for direction, src_pos, ins_pos, belt_pos, sink_pos in cases:
             world = make_world(5)
-            set_entity(world, *src_pos, "stack_inserter", direction, "iron_plate")  # ty: ignore[too-many-positional-arguments]
-            set_entity(world, *ins_pos, "inserter", direction)  # ty: ignore[too-many-positional-arguments]
-            set_entity(world, *belt_pos, "transport_belt", direction)  # ty: ignore[too-many-positional-arguments]
-            set_entity(world, *sink_pos, "bulk_inserter", direction, "iron_plate")  # ty: ignore[too-many-positional-arguments]
+            set_entity(world, *src_pos, "stack_inserter", direction, "iron_plate")
+            set_entity(world, *ins_pos, "inserter", direction)
+            set_entity(world, *belt_pos, "transport_belt", direction)
+            set_entity(world, *sink_pos, "bulk_inserter", direction, "iron_plate")
             t, u = compare_throughput(world)
             assert t == pytest.approx(0.86, abs=1e-6), (
                 f"Failed for direction {direction}"

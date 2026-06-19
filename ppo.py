@@ -4,7 +4,7 @@ import typing
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -168,12 +168,18 @@ class Args:
     """the number of iterations (total_timesteps // batch_size)"""
 
 
+def _append_run_tags(run, *tags: str) -> None:
+    """Append tags to a (possibly None / disabled) W&B run."""
+    if run is not None:
+        run.tags = (run.tags or ()) + tags
+
+
 def make_env(env_id, idx, capture_video, size, run_name):
     def thunk():
-        kwargs = {"render_mode": "rgb_array"} if capture_video else {}
+        kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': 2*size, 'idx': idx})
         # kwargs.update({'size': size, 'max_steps': 6})
-        env = gym.make(env_id, **kwargs)  # ty: ignore[invalid-argument-type]
+        env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
             # env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
@@ -269,12 +275,12 @@ class FactorioEnv(gym.Env):
             low=0,
             high=self.max_id_in_tensor,
             shape=(len(Channel), self.size, self.size),
-            dtype=int,  # ty: ignore[invalid-argument-type]
+            dtype=np.int64,
         )
 
 
         self.action_space = gym.spaces.Dict({
-            "xy": gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=int),  # ty: ignore[invalid-argument-type]
+            "xy": gym.spaces.Box(low=0, high=self.size, shape=(2,), dtype=np.int64),
             "entity": gym.spaces.Discrete(len(entities)),
             "direction": gym.spaces.Discrete(len(Direction)),
             "item": gym.spaces.Discrete(len(items)),
@@ -720,7 +726,7 @@ class FactorioEnv(gym.Env):
             self._render_cache["arrow"][Direction.WEST.value]  = base.rotate(90,  expand=True)
 
             # default font for fallback label
-            self._render_cache["font"] = ImageFont.load_default()
+            self._font = ImageFont.load_default()
 
         cache = self._render_cache
         ENT, DIR, ITEM = Channel.ENTITIES.value, Channel.DIRECTION.value, Channel.ITEMS.value
@@ -748,22 +754,22 @@ class FactorioEnv(gym.Env):
                 else:
                     # fallback: draw first letter
                     letter = entities[ent_id].name[0].upper()
-                    font   = cache["font"]
-                    canvas_w, canvas_h   = font.getbbox(letter)[2:]  # ty: ignore[unresolved-attribute]
+                    font   = self._font
+                    canvas_w, canvas_h   = font.getbbox(letter)[2:]
                     draw.text(
                         (x0 + (CELL_PX - canvas_w) // 2, y0 + (CELL_PX - canvas_h) // 2),
                         letter,
                         fill=(0, 0, 0),
-                        font=font,  # ty: ignore[invalid-argument-type]
+                        font=font,
                     )
                 # Draw the xy-coords onto the cell
                 text = f"{gx},{gy}"
-                font   = cache["font"]
+                font   = self._font
                 draw.text(
                     (x0 + (CELL_PX // 10) * 8, y0 + CELL_PX // 10),
                     text,
                     fill=(0, 0, 0),
-                    font=font,  # ty: ignore[invalid-argument-type]
+                    font=font,
                 )
 
                 itm_id = int(item_layer[gx, gy])
@@ -793,8 +799,8 @@ class FactorioEnv(gym.Env):
             lines.append(f"    at {self.actions[-1]['xy']}")
             lines.append(f"    facing {self.actions[-1]['direction']}")
 
-        font = cache["font"]
-        bbox = font.getbbox(lines[0])  # ty: ignore[unresolved-attribute]
+        font = self._font
+        bbox = font.getbbox(lines[0])
         txt_h = bbox[3] - bbox[1]
 
         draw.rectangle([(0, canvas_h), (canvas_w, canvas_h + HUD_PX)], fill=(230, 230, 230))
@@ -803,7 +809,7 @@ class FactorioEnv(gym.Env):
                 (4, 4 + canvas_h + i * txt_h * 1.25),
                 line,
                 fill=(0, 0, 0),
-                font=font,  # ty: ignore[invalid-argument-type]
+                font=font,
             )
 
         return np.asarray(canvas, dtype=np.uint8)
@@ -1051,7 +1057,8 @@ if __name__ == "__main__":
             id=args.start_from_wandb,
             resume="must" if args.start_from_wandb is not None else None,
         )
-        run.tags = run.tags + (  # ty: ignore[unsupported-operator]
+        _append_run_tags(
+            run,
             f"batch_size:{args.batch_size}",
             f"minibatch_size:{args.minibatch_size}",
             f"num_iterations:{args.num_iterations}",
@@ -1079,7 +1086,11 @@ if __name__ == "__main__":
             wandb.define_metric(f"optim/{m}", summary="last")
         wandb.define_metric("perf/sps", summary="last")
     print("Registering factorio Gym env")
-    # Register the factorio env
+    # Register the factorio env. This runs only under __main__, so pass the
+    # class directly rather than "ppo:FactorioEnv" — a string entry_point would
+    # make gym re-import ppo as a second module (this one is __main__).
+    # gymnasium accepts a class entry_point; its EnvCreator stub is just too
+    # strict (wants **kwargs), hence the ignore.
     gym.register(
         id="factorion/FactorioEnv-v0",
         entry_point=FactorioEnv,  # ty: ignore[invalid-argument-type]
@@ -1117,7 +1128,7 @@ if __name__ == "__main__":
 
     if args.start_from is not None:
         if args.track:
-            run.tags = run.tags + (f"start_from:{args.start_from}",)  # ty: ignore[invalid-assignment, unresolved-attribute, unsupported-operator]
+            _append_run_tags(run, f"start_from:{args.start_from}")
         print(f"Loading model weights from {args.start_from}")
         agent.load_state_dict(torch.load(args.start_from))
 
@@ -1132,9 +1143,11 @@ if __name__ == "__main__":
 
     print("Allocating storage space")
     # ALGO Logic: Storage setup
-    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape, dtype=torch.float32, device=device)  # ty: ignore[unsupported-operator]
+    obs_shape = envs.single_observation_space.shape
+    assert obs_shape is not None, "vector env must expose a concrete observation shape"
+    obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + obs_shape, dtype=torch.float32, device=device)
     ACTION_SPACE_SHAPE = (6,)
-    actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=int, device=device)  # ty: ignore[no-matching-overload]
+    actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=torch.int64, device=device)
     logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     dones_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
@@ -1308,7 +1321,7 @@ if __name__ == "__main__":
             returns_SE = advantages_SE + values_SE
 
         # flatten the batch
-        obs_B = obs_SECWH.reshape((-1,) + envs.single_observation_space.shape)  # ty: ignore[unsupported-operator]
+        obs_B = obs_SECWH.reshape((-1,) + obs_shape)
         logprobs_B = logprobs_SE.reshape(-1)
         # NOTE: maybe have to convert back to tuple of batches
         actions_B = actions_SEA.reshape((-1,) + ACTION_SPACE_SHAPE)
@@ -1392,7 +1405,7 @@ if __name__ == "__main__":
             "losses/policy": pg_loss.item(),
             "losses/value": v_loss.item(),
             "losses/entropy": entropy_loss.item(),
-            "losses/approx_kl": approx_kl.item(),  # ty: ignore[unresolved-attribute]
+            "losses/approx_kl": float(approx_kl),
             "losses/clipfrac": np.mean(clipfracs),
             "losses/explained_var": explained_var,
             "optim/lr": optimizer.param_groups[0]["lr"],
@@ -1436,7 +1449,7 @@ if __name__ == "__main__":
 
             try:
                 # Save initial frames
-                for env_idx, img in enumerate(render_envs.render()):  # ty: ignore[invalid-argument-type]
+                for env_idx, img in enumerate(render_envs.render() or []):
                     image = Image.fromarray(img, mode="RGB")
                     frame_path = os.path.join(temp_dirs[env_idx], f'frame_{frame_counts[env_idx]:06d}.png')
                     image.save(frame_path, format="png", optimize=True)
@@ -1449,7 +1462,7 @@ if __name__ == "__main__":
                         action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED_render.items()}
                         next_obs_ECWH_render, _reward, terminations_render, truncations_render, _infos = render_envs.step(action_ED_numpy)
 
-                    for env_idx, img in enumerate(render_envs.render()):  # ty: ignore[invalid-argument-type]
+                    for env_idx, img in enumerate(render_envs.render() or []):
                         image = Image.fromarray(img, mode="RGB")
                         frame_path = os.path.join(temp_dirs[env_idx], f'frame_{frame_counts[env_idx]:06d}.png')
                         image.save(frame_path, format="png", optimize=True)
@@ -1496,7 +1509,7 @@ if __name__ == "__main__":
         return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
     runtime = time.time() - start_time
     if args.track:
-        run.tags = run.tags + (f"score:{curriculum_score:.2f}", f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")  # ty: ignore[invalid-assignment, unresolved-attribute, unsupported-operator]
+        _append_run_tags(run, f"score:{curriculum_score:.2f}", f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     if runtime > 60 * 5: # 5 minutes
         # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))

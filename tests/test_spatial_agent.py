@@ -24,7 +24,7 @@ ENV_ID = "factorion/FactorioEnv-v0-spatial-test"
 @pytest.fixture(scope="module")
 def registered_env():
     """Register the env once for all tests in this module."""
-    gym.register(id=ENV_ID, entry_point=FactorioEnv)  # ty: ignore[invalid-argument-type]
+    gym.register(id=ENV_ID, entry_point="ppo:FactorioEnv")
 
 
 @pytest.fixture()

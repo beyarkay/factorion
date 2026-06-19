@@ -22,7 +22,7 @@ ENV_ID = "factorion/FactorioEnv-v0-mask-test"
 
 @pytest.fixture(scope="module")
 def registered_env():
-    gym.register(id=ENV_ID, entry_point=FactorioEnv)  # ty: ignore[invalid-argument-type]
+    gym.register(id=ENV_ID, entry_point="ppo:FactorioEnv")
 
 
 @pytest.fixture()
@@ -371,7 +371,8 @@ class TestMultiTilePlacement:
         env = big_env
         ax, ay = 3, 3
         tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
-        secondary = next((t for t in tiles if t != (ax, ay)), None)  # ty: ignore[not-iterable]
+        assert tiles is not None
+        secondary = next((t for t in tiles if t != (ax, ay)), None)
         assert secondary is not None
         sx, sy = secondary
         env._world_CWH[Channel.ENTITIES.value, sx, sy] = str2ent("source").value
@@ -402,7 +403,8 @@ class TestMultiTilePlacement:
         env = big_env
         ax, ay = 3, 3
         tiles = factorion_rs.py_entity_tiles(ax, ay, direction.value, 2, 1)
-        secondary = next(t for t in tiles if t != (ax, ay))  # ty: ignore[not-iterable]
+        assert tiles is not None
+        secondary = next(t for t in tiles if t != (ax, ay))
         env._world_CWH[Channel.FOOTPRINT.value, secondary[0], secondary[1]] = 0
 
         invalid_before = env.invalid_actions

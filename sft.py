@@ -921,7 +921,7 @@ def train_sft(args: SFTArgs):
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
     if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point=FactorioEnv)  # ty: ignore[invalid-argument-type]
+        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, args.size, "sft")])
 
     agent = AgentCNN(

@@ -95,12 +95,13 @@ class RconClient:
         return body
 
     def _send(self, ptype: int, body: str) -> int:
+        assert self._sock is not None
         rid = self._counter
         self._counter += 1
         payload = body.encode("utf-8")
         # length = id(4) + type(4) + body(N) + 2 null bytes
         packet = struct.pack("<ii", rid, ptype) + payload + b"\x00\x00"
-        self._sock.sendall(struct.pack("<i", len(packet)) + packet)  # ty: ignore[unresolved-attribute]
+        self._sock.sendall(struct.pack("<i", len(packet)) + packet)
         return rid
 
     def _recv(self):
@@ -113,9 +114,10 @@ class RconClient:
         return rid, ptype, body
 
     def _read_exact(self, n: int) -> bytes:
+        assert self._sock is not None
         buf = b""
         while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))  # ty: ignore[unresolved-attribute]
+            chunk = self._sock.recv(n - len(buf))
             if not chunk:
                 raise RconError("RCON socket closed")
             buf += chunk
@@ -252,11 +254,13 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
     try:
         tiles = factorion_rs.py_entity_tiles(x, y, direction, width, height)
     except Exception:
+        tiles = None
+    if tiles is None:
         # Fall back to the anchor tile; better to under-mark than crash.
         tiles = [(x, y)]
 
     _, W, H = obs_CWH.shape
-    for tx, ty in tiles:  # ty: ignore[not-iterable]
+    for tx, ty in tiles:
         if 0 <= tx < W and 0 <= ty < H:
             obs_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
             obs_CWH[Channel.DIRECTION.value, tx, ty] = direction
