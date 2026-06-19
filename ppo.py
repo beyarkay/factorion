@@ -115,12 +115,12 @@ class Args:
     """coefficient of reward given to the cost of materials used to solve the problem"""
     coeff_validity: float = 0.01
     """coefficient of reward given to the action being valid"""
-    coeff_shaping_location: float = 1.0
-    """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only)"""
-    coeff_shaping_entity: float = 1.0
-    """delta reward shaping: reward for correct entity types (solution-nonempty tiles only)"""
-    coeff_shaping_direction: float = 1.0
-    """delta reward shaping: reward for correct directions (solution-nonempty tiles only)"""
+    coeff_shaping_location: float = 0.0
+    """delta reward shaping: reward for placing entities at correct positions (solution-nonempty tiles only). Default 0: RL optimises raw throughput, not match-to-SFT-solution, so it can exceed the imitation prior."""
+    coeff_shaping_entity: float = 0.0
+    """delta reward shaping: reward for correct entity types (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
+    coeff_shaping_direction: float = 0.0
+    """delta reward shaping: reward for correct directions (solution-nonempty tiles only). Default 0 — see coeff_shaping_location."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = None
