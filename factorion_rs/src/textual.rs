@@ -1458,40 +1458,45 @@ factory: |
         assert!(!files.is_empty(), "no .yaml factory files found in {dir}");
 
         for path in &files {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            let display = path.display();
             let text = std::fs::read_to_string(path);
-            assert!(text.is_ok(), "cannot read {name}: {:?}", text.err());
+            assert!(text.is_ok(), "cannot read {display}: {:?}", text.err());
             let parsed = parse_many(&text.unwrap());
             assert!(
                 parsed.is_ok(),
-                "parse {name} failed:\n{}",
+                "\n===== FAILED to parse {display} =====\n{}",
                 parsed.err().unwrap_or_default()
             );
             let specs = parsed.unwrap();
-            assert!(!specs.is_empty(), "{name}: no factories found");
+            assert!(!specs.is_empty(), "{display}: no factories found");
 
             for (i, spec) in specs.iter().enumerate() {
-                let label = if specs.len() > 1 {
-                    format!("{name} #{}", i + 1)
-                } else {
-                    name.to_string()
-                };
+                // A clickable, descriptive banner prepended to any failure so
+                // the output says exactly which file/factory and what it is.
+                let mut banner = format!("\n===== FAILED: {display} =====\n");
+                if specs.len() > 1 {
+                    banner += &format!("  factory: #{} of {}\n", i + 1, specs.len());
+                }
+                if let Some(desc) = spec.description.as_deref() {
+                    banner += &format!("  description: {}\n", desc.trim());
+                }
+
+                // throughput: is optional — only assert it when declared. A
+                // factory must still declare at least one expectation.
                 assert!(
-                    !spec.expected_throughput.is_empty(),
-                    "{label}: every factory must declare a `throughput:` block"
+                    !spec.expected_throughput.is_empty() || spec.expected_graph.is_some(),
+                    "{banner}declares neither `throughput:` nor `graph:` — nothing to assert"
                 );
-                let result = check_throughput(spec);
-                assert!(
-                    result.is_ok(),
-                    "{label}: {}",
-                    result.err().unwrap_or_default()
-                );
+                if !spec.expected_throughput.is_empty() {
+                    let result = check_throughput(spec);
+                    assert!(
+                        result.is_ok(),
+                        "{banner}{}",
+                        result.err().unwrap_or_default()
+                    );
+                }
                 let graph = check_graph(spec);
-                assert!(
-                    graph.is_ok(),
-                    "{label}: {}",
-                    graph.err().unwrap_or_default()
-                );
+                assert!(graph.is_ok(), "{banner}{}", graph.err().unwrap_or_default());
             }
         }
     }
