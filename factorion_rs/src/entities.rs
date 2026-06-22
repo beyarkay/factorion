@@ -114,65 +114,7 @@ impl FactoryEntity for TransportBelt {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
-        let mut edges = Vec::new();
-        let (x, y) = pos;
-        let (dx, dy) = dir.delta();
-        let self_id = NodeId::new(Item::TransportBelt, x, y);
-
-        // Source: the cell behind this belt (opposite of facing direction)
-        let src_x = x as i64 - dx;
-        let src_y = y as i64 - dy;
-        if world.in_bounds(src_x, src_y) {
-            let sx = src_x as usize;
-            let sy = src_y as usize;
-            if let Some(src_entity) = world.entity_at(sx, sy) {
-                let src_dir = world.direction_at(sx, sy);
-                let src_misc = world.misc_at(sx, sy);
-
-                let src_is_beltish = matches!(
-                    src_entity,
-                    Item::TransportBelt | Item::UndergroundBelt
-                ) && src_dir == dir
-                    // Don't connect from a downwards underground belt
-                    && !(src_entity == Item::UndergroundBelt
-                        && src_misc == Misc::UndergroundDown);
-
-                if src_is_beltish {
-                    edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
-                }
-            }
-        }
-
-        // Destination: the cell ahead of this belt
-        let dst_x = x as i64 + dx;
-        let dst_y = y as i64 + dy;
-        if world.in_bounds(dst_x, dst_y) {
-            let dx_u = dst_x as usize;
-            let dy_u = dst_y as usize;
-            if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
-                let dst_dir = world.direction_at(dx_u, dy_u);
-                let dst_misc = world.misc_at(dx_u, dy_u);
-
-                // A belt hands off to another belt or into an underground
-                // *entrance*, but never *inline into* an exit (items only come
-                // out of an exit). Skip a target facing the opposite direction.
-                let dst_is_droppable = matches!(dst_entity, Item::TransportBelt)
-                    || (dst_entity == Item::UndergroundBelt && dst_misc == Misc::UndergroundDown);
-                let dst_opposing = dst_is_droppable && dst_dir == dir.opposite();
-                // A *perpendicular* exit can still be side-loaded onto (not the
-                // inline same/opposite directions, which are the tunnel mouth).
-                let dst_exit_sideload = dst_entity == Item::UndergroundBelt
-                    && dst_misc == Misc::UndergroundUp
-                    && dst_dir != dir
-                    && dst_dir != dir.opposite();
-
-                if (dst_is_droppable && !dst_opposing) || dst_exit_sideload {
-                    edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
-                }
-            }
-        }
-
-        edges
+        belt_connections(Item::TransportBelt, pos, dir, world)
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
@@ -338,9 +280,10 @@ impl FactoryEntity for UndergroundBelt {
                 if world.in_bounds(ax, ay) {
                     let (au, av) = (ax as usize, ay as usize);
                     if let Some(dst) = world.entity_at(au, av) {
-                        let droppable = matches!(dst, Item::TransportBelt)
-                            || (dst == Item::UndergroundBelt
-                                && world.misc_at(au, av) == Misc::UndergroundDown);
+                        let droppable =
+                            matches!(dst, Item::TransportBelt | Item::Source | Item::Sink)
+                                || (dst == Item::UndergroundBelt
+                                    && world.misc_at(au, av) == Misc::UndergroundDown);
                         if droppable && world.direction_at(au, av) != dir.opposite() {
                             edges.push((self_id, NodeId::new(dst, au, av)));
                         }
@@ -400,8 +343,8 @@ impl FactoryEntity for Source {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
-        // Same connection logic as inserter
-        inserter_connections(Item::Source, pos, dir, world)
+        // A source connects exactly like a belt (never to another source/sink).
+        belt_connections(Item::Source, pos, dir, world)
     }
 
     fn transform_flow(&self, _input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
@@ -428,7 +371,8 @@ impl FactoryEntity for Sink {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
-        inserter_connections(Item::Sink, pos, dir, world)
+        // A sink connects exactly like a belt (never to another source/sink).
+        belt_connections(Item::Sink, pos, dir, world)
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
@@ -437,10 +381,71 @@ impl FactoryEntity for Sink {
     }
 }
 
-/// Shared inserter-style connection logic used by Inserter, Source, and Sink.
+/// Belt-style connections, shared by transport belts and the source/sink
+/// markers — a source/sink connects exactly like a belt, except it never links
+/// to another source/sink.
 ///
-/// Picks up from the entity behind (any non-empty entity), drops onto the
-/// entity ahead (only belts or assembling machines).
+/// Pulls from a same-direction belt-like (belt/source/sink) or underground exit
+/// behind; drops onto a belt-like or underground *entrance* ahead (and
+/// side-loads onto a perpendicular exit). Nothing flows inline into an exit.
+fn belt_connections(
+    self_kind: Item,
+    pos: (usize, usize),
+    dir: Direction,
+    world: &World,
+) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let (x, y) = pos;
+    let (dx, dy) = dir.delta();
+    let self_id = NodeId::new(self_kind, x, y);
+    let self_is_ss = matches!(self_kind, Item::Source | Item::Sink);
+    let belt_like = |it: Item| matches!(it, Item::TransportBelt | Item::Source | Item::Sink);
+
+    // Pull from the cell behind if it's a same-direction belt-like or
+    // underground exit (an entrance sends its items underground instead).
+    let (bx, by) = (x as i64 - dx, y as i64 - dy);
+    if world.in_bounds(bx, by) {
+        let (bx, by) = (bx as usize, by as usize);
+        if let Some(src) = world.entity_at(bx, by) {
+            let beltish = (belt_like(src)
+                || (src == Item::UndergroundBelt
+                    && world.misc_at(bx, by) != Misc::UndergroundDown))
+                && world.direction_at(bx, by) == dir;
+            let blocked = self_is_ss && matches!(src, Item::Source | Item::Sink);
+            if beltish && !blocked {
+                edges.push((NodeId::new(src, bx, by), self_id.clone()));
+            }
+        }
+    }
+
+    // Drop onto the cell ahead: a belt-like or an underground entrance (never
+    // inline into an exit, though a perpendicular exit can be side-loaded).
+    let (fx, fy) = (x as i64 + dx, y as i64 + dy);
+    if world.in_bounds(fx, fy) {
+        let (fx, fy) = (fx as usize, fy as usize);
+        if let Some(dst) = world.entity_at(fx, fy) {
+            let dst_dir = world.direction_at(fx, fy);
+            let dst_misc = world.misc_at(fx, fy);
+            let droppable = belt_like(dst)
+                || (dst == Item::UndergroundBelt && dst_misc == Misc::UndergroundDown);
+            let opposing = droppable && dst_dir == dir.opposite();
+            let exit_sideload = dst == Item::UndergroundBelt
+                && dst_misc == Misc::UndergroundUp
+                && dst_dir != dir
+                && dst_dir != dir.opposite();
+            let blocked = self_is_ss && matches!(dst, Item::Source | Item::Sink);
+            if ((droppable && !opposing) || exit_sideload) && !blocked {
+                edges.push((self_id, NodeId::new(dst, fx, fy)));
+            }
+        }
+    }
+
+    edges
+}
+
+/// Inserter connection logic: pick up from the belt-like / underground /
+/// assembler behind, and drop onto the belt-like / underground / assembler
+/// ahead. Source/sink count as belt-like entities here (they connect like belts).
 fn inserter_connections(
     self_kind: Item,
     pos: (usize, usize),
@@ -469,17 +474,14 @@ fn inserter_connections(
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            let src_is_pickable = if self_kind == Item::Inserter {
-                matches!(
-                    src_entity,
-                    Item::Source
-                        | Item::TransportBelt
-                        | Item::UndergroundBelt
-                        | Item::AssemblingMachine1
-                )
-            } else {
-                true
-            };
+            let src_is_pickable = matches!(
+                src_entity,
+                Item::Source
+                    | Item::Sink
+                    | Item::TransportBelt
+                    | Item::UndergroundBelt
+                    | Item::AssemblingMachine1
+            );
             if src_is_pickable {
                 edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
             }
@@ -496,7 +498,11 @@ fn inserter_connections(
             // Can only insert into belts or assembling machines
             let dst_is_insertable = matches!(
                 dst_entity,
-                Item::TransportBelt | Item::UndergroundBelt | Item::AssemblingMachine1
+                Item::TransportBelt
+                    | Item::UndergroundBelt
+                    | Item::AssemblingMachine1
+                    | Item::Source
+                    | Item::Sink
             );
             if dst_is_insertable {
                 edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
@@ -739,30 +745,40 @@ mod tests {
     fn test_transport_belt_connections_chain() {
         let w = make_belt_chain_world();
 
-        // Belt at (1,0) should connect from source behind and to belt ahead
+        // Belt at (1,0): pulls from the source behind (a belt-like now) and
+        // feeds the belt ahead.
         let belt = TransportBelt;
         let edges = belt.connections((1, 0), Direction::East, &w);
 
-        // Source is behind but it's not a belt, so belt doesn't create that edge
-        // Belt at (2,0) is ahead and is a belt with same direction → edge created
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::TransportBelt, 2, 0));
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&(
+            NodeId::new(Item::Source, 0, 0),
+            NodeId::new(Item::TransportBelt, 1, 0),
+        )));
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 1, 0),
+            NodeId::new(Item::TransportBelt, 2, 0),
+        )));
     }
 
     #[test]
     fn test_transport_belt_chain_second_belt() {
         let w = make_belt_chain_world();
 
-        // Belt at (2,0) should connect from belt behind
+        // Belt at (2,0): pulls from the belt behind and feeds the sink ahead
+        // (a sink is a belt-like now).
         let belt = TransportBelt;
         let edges = belt.connections((2, 0), Direction::East, &w);
 
-        // Belt at (1,0) behind → edge from (1,0) to (2,0)
-        // Sink at (3,0) ahead is not a belt → no forward edge
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::TransportBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::TransportBelt, 2, 0));
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 1, 0),
+            NodeId::new(Item::TransportBelt, 2, 0),
+        )));
+        assert!(edges.contains(&(
+            NodeId::new(Item::TransportBelt, 2, 0),
+            NodeId::new(Item::Sink, 3, 0),
+        )));
     }
 
     #[test]
