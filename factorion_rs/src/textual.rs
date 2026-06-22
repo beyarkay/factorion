@@ -1,18 +1,24 @@
 //! Textual factory format for unit tests.
 //!
-//! A factory is described as a YAML header, a `---` separator, and an ASCII
-//! grid. The header carries the per-entity item bindings and the expected
-//! throughput; the grid carries the geometry. Example:
+//! A factory is a single YAML document. The ASCII grid lives under `factory:`
+//! as a block scalar; sibling keys carry the per-entity item bindings, the
+//! expected throughput, and an optional free-text `description`. Example:
 //!
 //! ```text
+//! description: |
+//!   A source feeds two belts into a sink.
 //! items:
 //! - { x: 0, y: 0, item: copper_plate }   # what the source emits
 //! - { x: 3, y: 0, item: copper_plate }   # what the sink counts
 //! throughput:
 //! - { item: copper_plate, per_second: 15 }
-//! ---
-//! S> b> b> K> ..
+//! factory: |
+//!   S> b> b> K> ..
 //! ```
+//!
+//! Several factories can share one file as a YAML stream — separate the
+//! documents with `---` (YAML's native document separator) and parse with
+//! [`parse_many`].
 //!
 //! ## Grid encoding
 //!
@@ -175,15 +181,16 @@ fn classify(c0: char, c1: char) -> Result<Cell, String> {
 
 /// Tokenize the grid body into a rectangular `[y][x]` matrix of [`Cell`]s.
 ///
-/// Blank lines are ignored (so triple-quoted literals can breathe). Leading and
-/// trailing whitespace on a line is stripped — the leftmost tile is never a
-/// blank interior (those are always enclosed by body characters), so indenting
-/// a grid for readability is safe. Short rows are right-padded with empty tiles.
+/// Blank lines and full-line `#` comments are ignored (so triple-quoted
+/// literals can breathe and grids can be annotated). Leading and trailing
+/// whitespace on a line is stripped — the leftmost tile is never a blank
+/// interior (those are always enclosed by body characters), so indenting a grid
+/// for readability is safe. Short rows are right-padded with empty tiles.
 fn tokenize(body: &str) -> Result<Vec<Vec<Cell>>, String> {
     let lines: Vec<&str> = body
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
     if lines.is_empty() {
         return Err("grid is empty".to_string());
@@ -355,13 +362,20 @@ fn parse_grid(body: &str) -> Result<ParsedGrid, String> {
     Ok(ParsedGrid { world, placements })
 }
 
-// ── YAML header ──────────────────────────────────────────────────────────────
+// ── YAML document ─────────────────────────────────────────────────────────────
 
-/// The YAML front-matter. All fields optional; unknown keys are rejected so a
-/// typo'd key is an error rather than a silent no-op.
-#[derive(Debug, Default, Deserialize)]
+/// One parsed factory document. The whole fixture is YAML; the grid lives under
+/// `factory:` as a block scalar. Unknown keys are rejected so a typo'd key is an
+/// error rather than a silent no-op.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
+    /// The ASCII grid (typically a `factory: |` block scalar). Required.
+    factory: String,
+    /// Free-text description of the factory. Surfaced in failure messages, so
+    /// it documents intent as real content rather than a throwaway comment.
+    #[serde(default)]
+    description: Option<String>,
     /// Per-coordinate item bindings. For a source this is what it emits, for a
     /// sink what it counts, for an assembler the recipe (product). The `(x, y)`
     /// may be any tile of a multi-tile entity — it resolves to the whole
@@ -396,6 +410,8 @@ struct ThroughputEntry {
 pub(crate) struct FactorySpec {
     pub world: World,
     pub expected_throughput: Vec<DeliverySpec>,
+    /// Free-text description from the header, if any.
+    pub description: Option<String>,
     /// Raw `graph:` block from the header, if any. Reserved for a future
     /// edge-set assertion; not interpreted yet.
     pub expected_graph: Option<String>,
@@ -406,19 +422,6 @@ pub(crate) struct FactorySpec {
 pub(crate) struct DeliverySpec {
     pub item: Option<Item>,
     pub per_second: f64,
-}
-
-/// Split the document into (header YAML, grid body) on the first line that is
-/// exactly `---`. With no separator, the whole input is the grid.
-fn split_envelope(text: &str) -> (&str, &str) {
-    let mut offset = 0;
-    for line in text.split_inclusive('\n') {
-        if line.trim_end_matches('\n').trim() == "---" {
-            return (&text[..offset], &text[offset + line.len()..]);
-        }
-        offset += line.len();
-    }
-    ("", text)
 }
 
 /// Route header item bindings to the world. Each binding lands on every tile of
@@ -441,17 +444,9 @@ fn apply_items(parsed: &mut ParsedGrid, bindings: &[ItemBinding]) -> Result<(), 
     Ok(())
 }
 
-/// Parse a full textual factory (YAML header + `---` + grid) into a
-/// [`FactorySpec`].
-pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
-    let (header_src, body) = split_envelope(text);
-    let header: Header = if header_src.trim().is_empty() {
-        Header::default()
-    } else {
-        serde_yaml::from_str(header_src).map_err(|e| format!("header YAML: {e}"))?
-    };
-
-    let mut parsed = parse_grid(body)?;
+/// Turn one deserialized [`Header`] into a [`FactorySpec`].
+fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
+    let mut parsed = parse_grid(&header.factory)?;
     apply_items(&mut parsed, &header.items)?;
 
     let expected_throughput = header
@@ -470,16 +465,43 @@ pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
     Ok(FactorySpec {
         world: parsed.world,
         expected_throughput,
+        description: header.description,
         expected_graph: header.graph,
     })
 }
 
+/// Parse a single-document YAML factory into a [`FactorySpec`].
+pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
+    let header: Header = serde_yaml::from_str(text).map_err(|e| format!("YAML: {e}"))?;
+    header_to_spec(header)
+}
+
+/// Parse a YAML stream of one or more factories into [`FactorySpec`]s, using
+/// YAML's native `---` document separator. Empty documents (e.g. a trailing
+/// `---`) are skipped.
+pub(crate) fn parse_many(text: &str) -> Result<Vec<FactorySpec>, String> {
+    let mut specs = Vec::new();
+    for doc in serde_yaml::Deserializer::from_str(text) {
+        let value = serde_yaml::Value::deserialize(doc)
+            .map_err(|e| format!("factory #{}: YAML: {e}", specs.len() + 1))?;
+        if value.is_null() {
+            continue;
+        }
+        let header: Header = serde_yaml::from_value(value)
+            .map_err(|e| format!("factory #{}: YAML: {e}", specs.len() + 1))?;
+        let spec =
+            header_to_spec(header).map_err(|e| format!("factory #{}: {e}", specs.len() + 1))?;
+        specs.push(spec);
+    }
+    Ok(specs)
+}
+
 // ── Assertions & rendering ─────────────────────────────────────────────────
 
-/// Build the graph, compute throughput, and assert the per-sink deliveries
-/// match the header's `throughput:` as multisets (order-independent, within a
-/// float tolerance). Panics with the rendered factory on mismatch.
-pub(crate) fn assert_throughput(spec: &FactorySpec) {
+/// Build the graph, compute throughput, and check the per-sink deliveries
+/// against the header's `throughput:` as multisets (order-independent, within a
+/// float tolerance). Returns `Err` with the rendered factory on mismatch.
+pub(crate) fn check_throughput(spec: &FactorySpec) -> Result<(), String> {
     let graph = build_graph(&spec.world);
     let (deliveries, _unreachable) = calc_throughput(&graph);
     let got: Vec<(Option<Item>, f64)> = deliveries.iter().map(|d| (d.item, d.achieved)).collect();
@@ -503,13 +525,28 @@ pub(crate) fn assert_throughput(spec: &FactorySpec) {
         }
     }
 
-    assert!(
-        unmatched_want.is_empty() && remaining.is_empty(),
-        "throughput mismatch\n  expected: {want:?}\n  got:      {got:?}\n  \
-         unmatched expected: {unmatched_want:?}\n  unmatched got: {remaining:?}\n\
-         factory:\n{}",
-        render(&spec.world)
-    );
+    if unmatched_want.is_empty() && remaining.is_empty() {
+        Ok(())
+    } else {
+        let desc = spec
+            .description
+            .as_deref()
+            .map(|d| format!("{}\n", d.trim_end()))
+            .unwrap_or_default();
+        Err(format!(
+            "{desc}throughput mismatch\n  expected: {want:?}\n  got:      {got:?}\n  \
+             unmatched expected: {unmatched_want:?}\n  unmatched got: {remaining:?}\n\
+             factory:\n{}",
+            render(&spec.world)
+        ))
+    }
+}
+
+/// Like [`check_throughput`] but panics on mismatch — the ergonomic form for a
+/// single in-line test assertion.
+pub(crate) fn assert_throughput(spec: &FactorySpec) {
+    let outcome = check_throughput(spec);
+    assert!(outcome.is_ok(), "{}", outcome.err().unwrap_or_default());
 }
 
 /// Render a [`World`] back into the grid format (geometry only — item bindings
@@ -826,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_envelope_belt_chain() {
+    fn test_full_factory_belt_chain() {
         let spec = parse(
             "
 items:
@@ -834,8 +871,8 @@ items:
 - { x: 3, y: 0, item: copper_plate }
 throughput:
 - { item: copper_plate, per_second: 15 }
----
-S> b> b> K> ..
+factory: |
+  S> b> b> K> ..
 ",
         )
         .unwrap();
@@ -863,12 +900,12 @@ S> b> b> K> ..
             "
 items:
 - { x: 2, y: 2, item: iron_gear_wheel }
----
-.. .. .. .. ..
-.. aaaaaaaa ..
-.. aa    aa ..
-.. aaaaaaaa ..
-.. .. .. .. ..
+factory: |
+  .. .. .. .. ..
+  .. aaaaaaaa ..
+  .. aa    aa ..
+  .. aaaaaaaa ..
+  .. .. .. .. ..
 ",
         )
         .unwrap();
@@ -884,11 +921,12 @@ items:
     }
 
     #[test]
-    fn test_envelope_without_header() {
-        // No `---` → whole input is the grid, header empty.
-        let spec = parse("S> b> K>").unwrap();
+    fn test_minimal_factory_only() {
+        // Just a `factory:` key — no items/throughput/description.
+        let spec = parse("factory: |\n  S> b> K>").unwrap();
         assert_eq!(spec.world.width(), 3);
         assert!(spec.expected_throughput.is_empty());
+        assert!(spec.description.is_none());
         assert!(spec.expected_graph.is_none());
     }
 
@@ -898,8 +936,8 @@ items:
             "
 graph: |
   S@0,0 -> b@1,0
----
-S> b> K>
+factory: |
+  S> b> K>
 ",
         )
         .unwrap();
@@ -907,13 +945,41 @@ S> b> K>
     }
 
     #[test]
+    fn test_description_captured() {
+        let spec = parse(
+            "
+description: |
+  Belt chain carrying copper cable end to end.
+throughput:
+- { item: copper_cable, per_second: 15 }
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+factory: |
+  S> b> b> K> ..
+",
+        )
+        .unwrap();
+        assert_eq!(
+            spec.description.as_deref(),
+            Some("Belt chain carrying copper cable end to end.\n")
+        );
+        // Header order is irrelevant and the factory still checks out.
+        assert_throughput(&spec);
+    }
+
+    #[test]
     fn test_header_errors() {
         // Unknown item name.
-        assert!(parse("items:\n- { x: 0, y: 0, item: nope }\n---\nS>").is_err());
+        assert!(parse("items:\n- { x: 0, y: 0, item: nope }\nfactory: |\n  S>").is_err());
         // Item binding on an empty tile.
-        assert!(parse("items:\n- { x: 1, y: 0, item: copper_plate }\n---\nS> ..").is_err());
+        assert!(
+            parse("items:\n- { x: 1, y: 0, item: copper_plate }\nfactory: |\n  S> ..").is_err()
+        );
         // Unknown header key (deny_unknown_fields).
-        assert!(parse("bogus: 1\n---\nS>").is_err());
+        assert!(parse("bogus: 1\nfactory: |\n  S>").is_err());
+        // Missing the required factory key.
+        assert!(parse("throughput: []").is_err());
     }
 
     #[test]
@@ -962,8 +1028,8 @@ items:
 - { x: 3, y: 0, item: copper_cable }
 throughput:
 - { item: copper_cable, per_second: 15 }
----
-S> b> b> K> ..
+factory: |
+  S> b> b> K> ..
 ",
         )
         .unwrap();
@@ -980,8 +1046,8 @@ items:
 - { x: 3, y: 0, item: copper_cable }
 throughput:
 - { item: copper_cable, per_second: 999 }
----
-S> b> b> K> ..
+factory: |
+  S> b> b> K> ..
 ",
         )
         .unwrap();
@@ -1001,8 +1067,8 @@ items:
 - { x: 3, y: 0, item: copper_cable }
 throughput:
 - { item: copper_cable, per_second: 0.86 }
----
-S> i> b> K>
+factory: |
+  S> i> b> K>
 ",
         )
         .unwrap();
@@ -1022,9 +1088,9 @@ items:
 throughput:
 - { item: copper_cable, per_second: 7.5 }
 - { item: copper_cable, per_second: 7.5 }
----
-S> b> Y> b> K> ..
-.. .. Y> b> K> ..
+factory: |
+  S> b> Y> b> K> ..
+  .. .. Y> b> K> ..
 ",
         )
         .unwrap();
@@ -1042,15 +1108,221 @@ items:
 - { x: 4, y: 4, item: copper_cable }
 throughput:
 - { item: copper_cable, per_second: 0 }
----
-S> .. .. .. ..
-.. .. .. .. ..
-.. .. b> .. ..
-.. .. .. .. ..
-.. .. .. .. K>
+factory: |
+  S> .. .. .. ..
+  .. .. .. .. ..
+  .. .. b> .. ..
+  .. .. .. .. ..
+  .. .. .. .. K>
 ",
         )
         .unwrap();
         assert_throughput(&spec);
+    }
+
+    // ── Focused parser-fidelity tests ────────────────────────────────────────
+
+    #[test]
+    fn test_parses_exact_positions() {
+        // A mixed grid: every tile is checked for entity, direction, and misc.
+        let w = grid(
+            "
+            S> i^ bv ..
+            d< .. u> K<
+            ",
+        );
+        assert_eq!(w.width(), 4);
+        assert_eq!(w.height(), 2);
+
+        let cases = [
+            (0, 0, Some(Item::Source), Direction::East, Misc::None),
+            (1, 0, Some(Item::Inserter), Direction::North, Misc::None),
+            (
+                2,
+                0,
+                Some(Item::TransportBelt),
+                Direction::South,
+                Misc::None,
+            ),
+            (3, 0, None, Direction::None, Misc::None),
+            (
+                0,
+                1,
+                Some(Item::UndergroundBelt),
+                Direction::West,
+                Misc::UndergroundDown,
+            ),
+            (1, 1, None, Direction::None, Misc::None),
+            (
+                2,
+                1,
+                Some(Item::UndergroundBelt),
+                Direction::East,
+                Misc::UndergroundUp,
+            ),
+            (3, 1, Some(Item::Sink), Direction::West, Misc::None),
+        ];
+        for (x, y, ent, dir, misc) in cases {
+            assert_eq!(w.entity_at(x, y), ent, "entity ({x},{y})");
+            assert_eq!(w.direction_at(x, y), dir, "dir ({x},{y})");
+            assert_eq!(w.misc_at(x, y), misc, "misc ({x},{y})");
+        }
+    }
+
+    #[test]
+    fn test_splitter_anchor_and_tiles_per_direction() {
+        // East/West span two rows (anchor on top); North/South span two columns
+        // (anchor on the left). Anchor must be the first tile in reading order.
+        let east = parse_grid("Y>\nY>").unwrap();
+        assert_eq!(east.placements, vec![vec![(0, 0), (0, 1)]]);
+
+        let south = parse_grid("YvvvY").unwrap();
+        assert_eq!(south.placements, vec![vec![(0, 0), (1, 0)]]);
+    }
+
+    #[test]
+    fn test_comments_and_blank_lines_skipped() {
+        let w = grid(
+            "
+            # a leading comment
+            S> b> K>
+            # an interior comment between rows is fine
+
+            b> b> b>
+            ",
+        );
+        assert_eq!(w.height(), 2);
+        assert_eq!(w.entity_at(0, 0), Some(Item::Source));
+        assert_eq!(w.entity_at(0, 1), Some(Item::TransportBelt));
+    }
+
+    #[test]
+    fn test_item_bindings_on_each_kind() {
+        // Source emit, sink count, and assembler recipe all flow through items:.
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 1, item: iron_plate }
+- { x: 2, y: 0, item: iron_gear_wheel }
+- { x: 6, y: 1, item: iron_gear_wheel }
+factory: |
+  .. .. aaaaaaaa .. ..
+  S> i> aa    aa i> K>
+  .. .. aaaaaaaa .. ..
+",
+        )
+        .unwrap();
+        assert_eq!(spec.world.item_at(0, 1), Some(Item::IronPlate)); // source
+        assert_eq!(spec.world.item_at(6, 1), Some(Item::IronGearWheel)); // sink
+                                                                         // Assembler recipe reaches the anchor (2,0).
+        assert_eq!(spec.world.item_at(2, 0), Some(Item::IronGearWheel));
+    }
+
+    #[test]
+    fn test_render_exact_shapes() {
+        // Pin the rendered output so the format itself can't silently drift.
+        let belt = grid("S> b> K>");
+        assert_eq!(render(&belt), "S> b> K>");
+
+        let splitter_south = grid("YvvvY");
+        assert_eq!(render(&splitter_south), "YvvvY");
+
+        let splitter_east = grid("Y>\nY>");
+        assert_eq!(render(&splitter_east), "Y>\nY>");
+
+        let assembler = grid(
+            "
+            aaaaaaaa
+            aa    aa
+            aaaaaaaa
+            ",
+        );
+        assert_eq!(render(&assembler), "aaaaaaaa\naa    aa\naaaaaaaa");
+    }
+
+    // ── Directory sweep ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_factory_files_sweep() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/factories");
+        let read = std::fs::read_dir(dir);
+        assert!(
+            read.is_ok(),
+            "cannot read factories dir {dir}: {:?}",
+            read.err()
+        );
+        let mut files: Vec<std::path::PathBuf> = read
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no .txt factory files found in {dir}");
+
+        for path in &files {
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            let text = std::fs::read_to_string(path);
+            assert!(text.is_ok(), "cannot read {name}: {:?}", text.err());
+            let parsed = parse_many(&text.unwrap());
+            assert!(
+                parsed.is_ok(),
+                "parse {name} failed:\n{}",
+                parsed.err().unwrap_or_default()
+            );
+            let specs = parsed.unwrap();
+            assert!(!specs.is_empty(), "{name}: no factories found");
+
+            for (i, spec) in specs.iter().enumerate() {
+                let label = if specs.len() > 1 {
+                    format!("{name} #{}", i + 1)
+                } else {
+                    name.to_string()
+                };
+                assert!(
+                    !spec.expected_throughput.is_empty(),
+                    "{label}: every factory must declare a `throughput:` block"
+                );
+                let result = check_throughput(spec);
+                assert!(
+                    result.is_ok(),
+                    "{label}: {}",
+                    result.err().unwrap_or_default()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_many_multiple_documents() {
+        // Two factories in one YAML stream, separated by `---`.
+        let specs = parse_many(
+            "
+description: |
+  Belt-limited: 15 i/s.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 15 }
+factory: |
+  S> b> b> K> ..
+---
+description: |
+  Inserter-limited: 0.86 i/s.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+factory: |
+  S> i> b> K>
+",
+        )
+        .unwrap();
+        assert_eq!(specs.len(), 2);
+        for spec in &specs {
+            assert_throughput(spec);
+        }
     }
 }
