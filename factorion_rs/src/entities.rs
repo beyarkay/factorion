@@ -426,14 +426,37 @@ fn inserter_connections(
     let (dx, dy) = dir.delta();
     let self_id = NodeId::new(self_kind, x, y);
 
-    // Pick up from behind (opposite of facing direction)
+    // Pick up from behind (opposite of facing direction). A real inserter can
+    // only pick up from an entity that carries or produces items: a source,
+    // belt, underground belt, or assembler. Notably NOT another inserter (see
+    // #122) or a sink. (Splitters are excluded too, mirroring the drop side —
+    // not quite true to Factorio, may revisit.)
+    //
+    // The source/sink markers share this function but keep the permissive
+    // pickup: a sink legitimately receives from the inserter/belt/assembler
+    // behind it — an inserter can't *drop* onto a sink (see the drop filter
+    // below), so delivery is modelled as the sink pulling — and a source's
+    // input is ignored anyway (its output is infinite).
     let src_x = x as i64 - dx;
     let src_y = y as i64 - dy;
     if world.in_bounds(src_x, src_y) {
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
+            let src_is_pickable = if self_kind == Item::Inserter {
+                matches!(
+                    src_entity,
+                    Item::Source
+                        | Item::TransportBelt
+                        | Item::UndergroundBelt
+                        | Item::AssemblingMachine1
+                )
+            } else {
+                true
+            };
+            if src_is_pickable {
+                edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
+            }
         }
     }
 
@@ -765,6 +788,36 @@ mod tests {
 
         // Only source→inserter, no inserter→empty
         assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn test_inserter_wont_pick_up_from_inserter() {
+        // Regression for #122. The pickup side accepted *any* non-empty
+        // entity behind the inserter, so an inserter facing North at (6,3)
+        // picked up from the inserter directly behind it at (6,4) — an
+        // inserter→inserter edge that can't exist physically. An inserter may
+        // only pick up from a belt, underground belt, assembler, or source.
+        //
+        // North = (0,-1): the pickup cell (behind) is (6, 3-(-1)) = (6,4);
+        // the drop cell (ahead) is (6, 3+(-1)) = (6,2), which is empty.
+        let mut w = World::empty(8, 8);
+        w.place(6, 3, Item::Inserter, Direction::North, None);
+        w.place(6, 4, Item::Inserter, Direction::West, None);
+
+        let inserter = Inserter;
+        let edges = inserter.connections((6, 3), Direction::North, &w);
+
+        let bad = (
+            NodeId::new(Item::Inserter, 6, 4),
+            NodeId::new(Item::Inserter, 6, 3),
+        );
+        assert!(
+            !edges.contains(&bad),
+            "inserter (6,3) must not pick up from the inserter behind it at \
+             (6,4); got edges: {edges:?}"
+        );
+        // Nothing insertable ahead either, so there should be no edges at all.
+        assert!(edges.is_empty(), "expected no edges, got: {edges:?}");
     }
 
     #[test]
