@@ -17,4 +17,8 @@ default = ["pyo3-bindings"]
 pyo3-bindings = ["pyo3/extension-module", "dep:pyo3", "dep:numpy"]
 
 [dev-dependencies]
-# dev deps for tests only
+# dev deps for tests only — the textual factory format (src/textual.rs) is
+# #[cfg(test)] and never compiled into the shipped cdylib, so these add no
+# weight to the wheel.
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"

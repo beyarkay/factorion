@@ -1,0 +1,14 @@
+description: |
+  A source feeds two belts into a sink. A transport belt tops out at
+  15 items/s, so the infinite source is throttled to 15 at the sink.
+items:
+- { x: 0, y: 0, item: copper_cable }   # what the source emits
+- { x: 3, y: 0, item: copper_cable }   # what the sink counts
+throughput:
+- { item: copper_cable, per_second: 15 }
+graph: |
+  S@0,0 -> b@1,0
+  b@1,0 -> b@2,0
+  b@2,0 -> K@3,0
+factory: |
+  S> b> b> K> ..

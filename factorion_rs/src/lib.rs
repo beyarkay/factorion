@@ -22,6 +22,8 @@ extern crate alloc;
 
 mod entities;
 mod graph;
+#[cfg(test)]
+mod textual;
 mod throughput;
 mod types;
 mod world;
