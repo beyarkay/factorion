@@ -1,0 +1,18 @@
+description: |
+  A 3x3 assembler crafting iron_gear_wheel from iron_plate, fed and
+  drained by inserters:
+
+      source -> inserter -> assembler -> inserter -> sink
+
+  An inserter caps the input at 0.86 i/s, and the recipe needs 2 plates
+  per gear, so the assembler emits 0.86 / 2 = 0.43 gears/s.
+items:
+- { x: 0, y: 1, item: iron_plate }        # source emits iron_plate
+- { x: 2, y: 0, item: iron_gear_wheel }   # assembler recipe (anchor = top-left)
+- { x: 6, y: 1, item: iron_gear_wheel }   # sink counts gears
+throughput:
+- { item: iron_gear_wheel, per_second: 0.43 }
+factory: |
+  .. .. aaaaaaaa .. ..
+  S> i> aa    aa i> K>
+  .. .. aaaaaaaa .. ..

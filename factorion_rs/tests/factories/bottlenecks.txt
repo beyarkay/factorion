@@ -1,0 +1,21 @@
+# Two similar factories sharing one file, separated by YAML's `---` document
+# separator. Same source-to-sink line, different bottleneck.
+description: |
+  Belt-limited line: the belt caps throughput at 15 i/s.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 15 }
+factory: |
+  S> b> b> K> ..
+---
+description: |
+  Same line, but an inserter in the middle caps it at 0.86 i/s.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+factory: |
+  S> i> b> K>

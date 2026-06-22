@@ -1,0 +1,14 @@
+description: |
+  One input belt fans out through a splitter to two sinks. 15 i/s in,
+  split evenly, so each sink receives 7.5 i/s. The splitter (2x1) spans
+  two rows here because it faces east.
+items:
+- { x: 0, y: 0, item: copper_cable }   # source
+- { x: 4, y: 0, item: copper_cable }   # top sink
+- { x: 4, y: 1, item: copper_cable }   # bottom sink
+throughput:
+- { item: copper_cable, per_second: 7.5 }
+- { item: copper_cable, per_second: 7.5 }
+factory: |
+  S> b> Y> b> K> ..
+  .. .. Y> b> K> ..
