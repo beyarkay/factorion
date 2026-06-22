@@ -1,10 +1,131 @@
 # A long long list of ~every 2-entity connection
-description: |
-  A
-items:
-  - { x: 0, y: 1, item: iron_plate }
-  - { x: 2, y: 0, item: iron_gear_wheel }
+graph: |
+  b@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. b> b> ..
+  .. .. .. ..
+---
+graph: |
+  b@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. b> b^ ..
+  .. .. .. ..
+---
+graph: |
+  b@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. b> bv ..
+  .. .. .. ..
+---
+graph: ""
+factory: |
+  .. .. .. ..
+  .. b> b< ..
+  .. .. .. ..
+---
+description: sink pulls from the belt behind it
+graph: |
+  b@1,1 -> K@2,1
+factory: |
+  .. .. .. ..
+  .. b> K> ..
+  .. .. .. ..
+---
+description: belt feeds an underground entrance
+graph: |
+  b@1,1 -> d@2,1
+factory: |
+  .. .. .. ..
+  .. b> d> ..
+  .. .. .. ..
+---
+description: underground exit feeds the belt ahead
+graph: |
+  u@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. u> b> ..
+  .. .. .. ..
+---
+description: underground entrance tunnels to its paired exit
+graph: |
+  d@1,1 -> u@3,1
+factory: |
+  .. .. .. .. ..
+  .. d> .. u> ..
+  .. .. .. .. ..
+---
+description: belt feeds an inserter
+graph: |
+  b@1,1 -> i@2,1
+factory: |
+  .. .. .. ..
+  .. b> i> ..
+  .. .. .. ..
+---
+description: inserter drops onto the belt ahead
+graph: |
+  i@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. i> b> ..
+  .. .. .. ..
+---
+description: source drops onto a belt
+graph: |
+  S@1,1 -> b@2,1
 factory: |
   .. .. .. ..
   .. S> b> ..
   .. .. .. ..
+---
+description: source feeds an inserter (inserter picks up behind it)
+graph: |
+  S@1,1 -> i@2,1
+factory: |
+  .. .. .. ..
+  .. S> i> ..
+  .. .. .. ..
+---
+description: belt feeds an east-facing splitter (2x1, spans two rows)
+graph: |
+  b@1,1 -> Y@2,1
+factory: |
+  .. .. .. ..
+  .. b> Y> ..
+  .. .. Y> ..
+  .. .. .. ..
+---
+description: east-facing splitter drops onto the belt ahead
+graph: |
+  Y@1,1 -> b@2,1
+factory: |
+  .. .. .. ..
+  .. Y> b> ..
+  .. Y> .. ..
+  .. .. .. ..
+---
+description: inserter feeds an assembler (anchor is its top-left tile)
+graph: |
+  i@0,2 -> a@1,1
+factory: |
+  .. .. .. .. ..
+  .. aaaaaaaa ..
+  i> aa    aa ..
+  .. aaaaaaaa ..
+  .. .. .. .. ..
+---
+description: assembler hands off to an inserter facing away
+graph: |
+  a@1,1 -> i@4,2
+factory: |
+  .. .. .. .. ..
+  .. aaaaaaaa ..
+  .. aa    aa i>
+  .. aaaaaaaa ..
+  .. .. .. .. ..
+---
+
