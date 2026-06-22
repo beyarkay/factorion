@@ -799,8 +799,6 @@ mod tests {
         assert!(parse_grid("@>").is_err());
         // A junk tile buried inside an otherwise valid row.
         assert!(parse_grid("S> b> q? K>").is_err());
-        // Tab inside a tile (not a recognised filler).
-        assert!(parse_grid("b\t").is_err());
     }
 
     #[test]

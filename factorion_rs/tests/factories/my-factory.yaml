@@ -1,0 +1,11 @@
+items:
+- { x: 2, y: 2, item: copper_cable }   # source (moved with the layout)
+- { x: 4, y: 2, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 15 }
+factory: |
+  .. .. .. .. .. .. ..
+  .. .. .. .. .. .. ..
+  .. .. S> b> K> .. ..
+  .. .. .. .. .. .. ..
+  .. .. .. .. .. .. ..
