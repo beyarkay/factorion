@@ -60,7 +60,7 @@ use serde::Deserialize;
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Misc, NodeId};
+use crate::types::{Channel, Direction, Item, Misc, NodeId, Pos};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
@@ -97,15 +97,6 @@ fn entity_for_char(c: char) -> Option<(Item, Misc)> {
         .map(|(_, item, misc)| (*item, *misc))
 }
 
-/// The (first) grid character for an entity — used for error messages.
-fn char_for_item(item: Item) -> char {
-    ENTITY_CHARS
-        .iter()
-        .find(|(_, i, _)| *i == item)
-        .map(|(c, _, _)| *c)
-        .unwrap_or('?')
-}
-
 fn dir_for_char(c: char) -> Option<Direction> {
     DIR_CHARS.iter().find(|(ch, _)| *ch == c).map(|(_, d)| *d)
 }
@@ -128,6 +119,24 @@ fn char_for_dir(dir: Direction) -> char {
         .find(|(_, d)| *d == dir)
         .map(|(c, _)| *c)
         .unwrap_or('.')
+}
+
+/// Axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of a tile set.
+/// `tiles` is always non-empty (an entity occupies at least its anchor).
+fn bbox(tiles: &[Pos]) -> (i64, i64, i64, i64) {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for p in tiles {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+/// Whether `p` lies on the perimeter of the bounding box (vs. its interior).
+fn on_perimeter(p: Pos, (min_x, min_y, max_x, max_y): (i64, i64, i64, i64)) -> bool {
+    p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y
 }
 
 /// A classified grid tile, before multi-tile entities are resolved.
@@ -158,8 +167,9 @@ fn classify(c0: char, c1: char) -> Result<Cell, String> {
     }
 
     let mut entity: Option<(Item, Misc)> = None;
+    // `dir_for_char` never yields `Direction::None`, so a non-None `dir` means
+    // we have already seen a direction marker — no separate flag needed.
     let mut dir = Direction::None;
-    let mut seen_dir = false;
     for c in [c0, c1] {
         if let Some(e) = entity_for_char(c) {
             match entity {
@@ -172,11 +182,10 @@ fn classify(c0: char, c1: char) -> Result<Cell, String> {
                 }
             }
         } else if let Some(d) = dir_for_char(c) {
-            if seen_dir {
+            if dir != Direction::None {
                 return Err(format!("two direction markers in tile '{c0}{c1}'"));
             }
             dir = d;
-            seen_dir = true;
         } else if c == '.' || c == ' ' {
             // filler: `.` reads as no-direction, ` ` is multi-tile padding.
         } else {
@@ -269,13 +278,12 @@ fn place_multi(
 
     // Bounding box, to tell perimeter tiles (must show the body char) from
     // interior tiles (may be left blank).
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-    for p in &tiles {
-        min_x = min_x.min(p.x);
-        min_y = min_y.min(p.y);
-        max_x = max_x.max(p.x);
-        max_y = max_y.max(p.y);
-    }
+    let bb = bbox(&tiles);
+
+    // Square entities are rotation-independent and carry no direction; linear
+    // entities must show their facing on every footprint tile. Either way every
+    // tile's direction must agree, so a stray marker (e.g. `a>`) is rejected.
+    let expected_dir = if square { Direction::None } else { dir };
 
     let grid_h = rows.len() as i64;
     let grid_w = rows[0].len() as i64;
@@ -293,27 +301,23 @@ fn place_multi(
                 "{item:?} at ({ax},{ay}) overlaps an entity already placed at ({tx},{ty})"
             ));
         }
-        let on_perimeter = p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y;
+        let perimeter = on_perimeter(*p, bb);
         match rows[ty][tx] {
-            // A body tile is fine anywhere. For square entities (rotation-
-            // independent) we don't insist the drawn directions agree.
+            // A body tile is fine anywhere, but its direction must agree with
+            // the rest of the footprint (None for square entities).
             Cell::Entity {
                 item: cell_item,
                 dir: cell_dir,
                 ..
-            } if cell_item == item && (square || cell_dir == dir) => {}
+            } if cell_item == item && cell_dir == expected_dir => {}
             // A blank interior tile is fine, but only in the interior.
-            Cell::Interior if !on_perimeter => {}
+            Cell::Interior if !perimeter => {}
             _ => {
                 return Err(format!(
                     "{item:?} at ({ax},{ay}): tile ({tx},{ty}) breaks the footprint \
                      (expected body '{}'{})",
-                    char_for_item(item),
-                    if on_perimeter {
-                        ""
-                    } else {
-                        " or blank interior"
-                    },
+                    render_char(item, Misc::None),
+                    if perimeter { "" } else { " or blank interior" },
                 ));
             }
         }
@@ -537,7 +541,12 @@ fn parse_graph_node(s: &str) -> Result<NodeId, String> {
 
 /// Compact `<char>@x,y` rendering of a node, for graph-mismatch messages.
 fn fmt_node(id: &NodeId) -> String {
-    format!("{}@{},{}", char_for_item(id.entity_kind), id.x, id.y)
+    format!(
+        "{}@{},{}",
+        render_char(id.entity_kind, Misc::None),
+        id.x,
+        id.y
+    )
 }
 
 /// Parse a single-document YAML factory into a [`FactorySpec`].
@@ -551,16 +560,18 @@ pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
 /// `---`) are skipped.
 pub(crate) fn parse_many(text: &str) -> Result<Vec<FactorySpec>, String> {
     let mut specs = Vec::new();
-    for doc in serde_yaml::Deserializer::from_str(text) {
+    // Number by document position in the file (1-based), not by parsed-spec
+    // count, so skipped empty documents don't shift the reported index.
+    for (i, doc) in serde_yaml::Deserializer::from_str(text).enumerate() {
+        let doc_no = i + 1;
         let value = serde_yaml::Value::deserialize(doc)
-            .map_err(|e| format!("factory #{}: YAML: {e}", specs.len() + 1))?;
+            .map_err(|e| format!("factory #{doc_no}: YAML: {e}"))?;
         if value.is_null() {
             continue;
         }
-        let header: Header = serde_yaml::from_value(value)
-            .map_err(|e| format!("factory #{}: YAML: {e}", specs.len() + 1))?;
-        let spec =
-            header_to_spec(header).map_err(|e| format!("factory #{}: {e}", specs.len() + 1))?;
+        let header: Header =
+            serde_yaml::from_value(value).map_err(|e| format!("factory #{doc_no}: YAML: {e}"))?;
+        let spec = header_to_spec(header).map_err(|e| format!("factory #{doc_no}: {e}"))?;
         specs.push(spec);
     }
     Ok(specs)
@@ -733,13 +744,8 @@ fn render_multi(
         }
     };
 
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-    for p in &tiles {
-        min_x = min_x.min(p.x);
-        min_y = min_y.min(p.y);
-        max_x = max_x.max(p.x);
-        max_y = max_y.max(p.y);
-    }
+    let bb = bbox(&tiles);
+    let (min_x, min_y, max_x, max_y) = bb;
     let multi_row = max_y > min_y;
     let multi_col = max_x > min_x;
     let ech = render_char(item, world.misc_at(ax, ay));
@@ -748,8 +754,7 @@ fn render_multi(
     for p in &tiles {
         let (tx, ty) = (p.x as usize, p.y as usize);
         done[ty][tx] = true;
-        let on_perimeter = p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y;
-        let (c0, c1) = if !on_perimeter {
+        let (c0, c1) = if !on_perimeter(*p, bb) {
             (' ', ' ') // blank interior
         } else if multi_row && multi_col {
             (ech, ech) // square box border
@@ -841,6 +846,29 @@ mod tests {
         assert!(classify('>', '<').is_err()); // two directions
         assert!(classify('x', 'y').is_err()); // no entity
         assert!(classify('S', 'b').is_err()); // two different entities
+    }
+
+    /// Guard: adding a placeable entity to the `Item` enum without wiring it
+    /// into the textual format must fail loudly here, rather than silently
+    /// rendering as `?` and being unparseable. Keeps `ENTITY_CHARS` exhaustive
+    /// and free of stray non-placeable entries.
+    #[test]
+    fn test_entity_registry_matches_placeable_items() {
+        for &item in crate::types::all_items() {
+            if item.is_placeable() {
+                assert!(
+                    ENTITY_CHARS.iter().any(|(_, i, _)| *i == item),
+                    "placeable {item:?} has no ENTITY_CHARS entry — add one (and a \
+                     fixture) so the textual format supports it"
+                );
+            }
+        }
+        for (ch, item, _) in ENTITY_CHARS {
+            assert!(
+                item.is_placeable(),
+                "ENTITY_CHARS entry '{ch}' maps to non-placeable {item:?}"
+            );
+        }
     }
 
     #[test]
@@ -981,6 +1009,15 @@ mod tests {
             "
             aaaaaaaa
             aa    ..
+            aaaaaaaa
+            "
+        )
+        .is_err());
+        // Stray direction marker on a (rotation-independent) square entity.
+        assert!(parse_grid(
+            "
+            a>aaaaaa
+            aa    aa
             aaaaaaaa
             "
         )

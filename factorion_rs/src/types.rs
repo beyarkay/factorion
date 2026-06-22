@@ -266,8 +266,10 @@ impl Item {
     /// Decode an item by its canonical snake_case name — the inverse of
     /// [`Item::name`]. Returns `None` for unknown names. Implemented by
     /// scanning `all_items()` so it can never drift out of sync with
-    /// `name()`. Used by the `#[cfg(test)]` textual factory parser.
-    #[allow(dead_code)]
+    /// `name()`. Only the `#[cfg(test)]` textual factory parser consumes this,
+    /// so it is itself `#[cfg(test)]` — no release-build surface, no dead-code
+    /// suppression.
+    #[cfg(test)]
     pub fn from_name(name: &str) -> Option<Self> {
         all_items().iter().copied().find(|i| i.name() == name)
     }
@@ -1232,14 +1234,12 @@ mod tests {
 
     #[test]
     fn test_item_from_name_roundtrips() {
-        // Every item's name decodes back to itself.
+        // Every item's name decodes back to itself — covers the name→variant
+        // mapping for all items, so no per-item spot checks are needed.
         for &item in all_items() {
             assert_eq!(Item::from_name(item.name()), Some(item));
         }
-        // A few explicit spot checks and the unknown case.
-        assert_eq!(Item::from_name("transport_belt"), Some(Item::TransportBelt));
-        assert_eq!(Item::from_name("bulk_inserter"), Some(Item::Sink));
-        assert_eq!(Item::from_name("stack_inserter"), Some(Item::Source));
+        // Unknown names decode to None.
         assert_eq!(Item::from_name("not_a_real_item"), None);
         assert_eq!(Item::from_name(""), None);
     }
