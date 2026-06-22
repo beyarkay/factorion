@@ -47,6 +47,8 @@
 //! The first body tile in reading order is the anchor (top-left), matching how
 //! `build_graph` re-derives multi-tile entities.
 
+use serde::Deserialize;
+
 use crate::entities::entity_tiles;
 use crate::types::{Channel, Direction, Item, Misc};
 use crate::world::World;
@@ -328,6 +330,125 @@ fn parse_grid(body: &str) -> Result<ParsedGrid, String> {
     Ok(ParsedGrid { world, placements })
 }
 
+// ── YAML header ──────────────────────────────────────────────────────────────
+
+/// The YAML front-matter. All fields optional; unknown keys are rejected so a
+/// typo'd key is an error rather than a silent no-op.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Header {
+    /// Per-coordinate item bindings. For a source this is what it emits, for a
+    /// sink what it counts, for an assembler the recipe (product). The `(x, y)`
+    /// may be any tile of a multi-tile entity — it resolves to the whole
+    /// footprint.
+    #[serde(default)]
+    items: Vec<ItemBinding>,
+    /// Expected per-sink deliveries, asserted by [`assert_throughput`].
+    #[serde(default)]
+    throughput: Vec<ThroughputEntry>,
+    /// Reserved: an expected-graph description. Parsed but not yet asserted.
+    #[serde(default)]
+    graph: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemBinding {
+    x: usize,
+    y: usize,
+    item: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThroughputEntry {
+    item: String,
+    per_second: f64,
+}
+
+/// A parsed factory fixture: the world plus the header's expected assertions.
+#[derive(Debug)]
+pub(crate) struct FactorySpec {
+    pub world: World,
+    pub expected_throughput: Vec<DeliverySpec>,
+    /// Raw `graph:` block from the header, if any. Reserved for a future
+    /// edge-set assertion; not interpreted yet.
+    pub expected_graph: Option<String>,
+}
+
+/// One expected sink delivery: an item and the rate at which it should arrive.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DeliverySpec {
+    pub item: Option<Item>,
+    pub per_second: f64,
+}
+
+/// Split the document into (header YAML, grid body) on the first line that is
+/// exactly `---`. With no separator, the whole input is the grid.
+fn split_envelope(text: &str) -> (&str, &str) {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_end_matches('\n').trim() == "---" {
+            return (&text[..offset], &text[offset + line.len()..]);
+        }
+        offset += line.len();
+    }
+    ("", text)
+}
+
+/// Route header item bindings to the world. Each binding lands on every tile of
+/// the entity that occupies its coordinate (so an assembler recipe reaches the
+/// anchor `build_graph` reads, whichever tile you name).
+fn apply_items(parsed: &mut ParsedGrid, bindings: &[ItemBinding]) -> Result<(), String> {
+    for b in bindings {
+        let item =
+            Item::from_name(&b.item).ok_or_else(|| format!("items: unknown item '{}'", b.item))?;
+        let tiles = parsed
+            .placements
+            .iter()
+            .find(|tiles| tiles.contains(&(b.x, b.y)))
+            .cloned()
+            .ok_or_else(|| format!("items: no entity at ({},{})", b.x, b.y))?;
+        for (tx, ty) in tiles {
+            parsed.world.set(tx, ty, Channel::Items, item as i64);
+        }
+    }
+    Ok(())
+}
+
+/// Parse a full textual factory (YAML header + `---` + grid) into a
+/// [`FactorySpec`].
+pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
+    let (header_src, body) = split_envelope(text);
+    let header: Header = if header_src.trim().is_empty() {
+        Header::default()
+    } else {
+        serde_yaml::from_str(header_src).map_err(|e| format!("header YAML: {e}"))?
+    };
+
+    let mut parsed = parse_grid(body)?;
+    apply_items(&mut parsed, &header.items)?;
+
+    let expected_throughput = header
+        .throughput
+        .iter()
+        .map(|t| {
+            let item = Item::from_name(&t.item)
+                .ok_or_else(|| format!("throughput: unknown item '{}'", t.item))?;
+            Ok(DeliverySpec {
+                item: Some(item),
+                per_second: t.per_second,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(FactorySpec {
+        world: parsed.world,
+        expected_throughput,
+        expected_graph: header.graph,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -521,5 +642,96 @@ mod tests {
             "
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_full_envelope_belt_chain() {
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_plate }
+- { x: 3, y: 0, item: copper_plate }
+throughput:
+- { item: copper_plate, per_second: 15 }
+---
+S> b> b> K> ..
+",
+        )
+        .unwrap();
+        // Geometry.
+        assert_eq!(spec.world.entity_at(0, 0), Some(Item::Source));
+        assert_eq!(spec.world.entity_at(3, 0), Some(Item::Sink));
+        // Item bindings landed on source and sink.
+        assert_eq!(spec.world.item_at(0, 0), Some(Item::CopperPlate));
+        assert_eq!(spec.world.item_at(3, 0), Some(Item::CopperPlate));
+        // Expected throughput parsed into typed form.
+        assert_eq!(
+            spec.expected_throughput,
+            vec![DeliverySpec {
+                item: Some(Item::CopperPlate),
+                per_second: 15.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_item_binding_fills_assembler_footprint() {
+        // Bind via a NON-anchor tile (2,2); it must still reach the anchor (1,1)
+        // and every other footprint tile.
+        let spec = parse(
+            "
+items:
+- { x: 2, y: 2, item: iron_gear_wheel }
+---
+.. .. .. .. ..
+.. aaaaaaaa ..
+.. aa    aa ..
+.. aaaaaaaa ..
+.. .. .. .. ..
+",
+        )
+        .unwrap();
+        for y in 1..=3 {
+            for x in 1..=3 {
+                assert_eq!(
+                    spec.world.item_at(x, y),
+                    Some(Item::IronGearWheel),
+                    "({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_envelope_without_header() {
+        // No `---` → whole input is the grid, header empty.
+        let spec = parse("S> b> K>").unwrap();
+        assert_eq!(spec.world.width(), 3);
+        assert!(spec.expected_throughput.is_empty());
+        assert!(spec.expected_graph.is_none());
+    }
+
+    #[test]
+    fn test_graph_field_captured() {
+        let spec = parse(
+            "
+graph: |
+  S@0,0 -> b@1,0
+---
+S> b> K>
+",
+        )
+        .unwrap();
+        assert_eq!(spec.expected_graph.as_deref(), Some("S@0,0 -> b@1,0\n"));
+    }
+
+    #[test]
+    fn test_header_errors() {
+        // Unknown item name.
+        assert!(parse("items:\n- { x: 0, y: 0, item: nope }\n---\nS>").is_err());
+        // Item binding on an empty tile.
+        assert!(parse("items:\n- { x: 1, y: 0, item: copper_plate }\n---\nS> ..").is_err());
+        // Unknown header key (deny_unknown_fields).
+        assert!(parse("bogus: 1\n---\nS>").is_err());
     }
 }
