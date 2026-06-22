@@ -50,8 +50,13 @@
 use serde::Deserialize;
 
 use crate::entities::entity_tiles;
+use crate::graph::build_graph;
+use crate::throughput::calc_throughput;
 use crate::types::{Channel, Direction, Item, Misc};
 use crate::world::World;
+
+/// Float tolerance for throughput comparisons.
+const TOL: f64 = 1e-9;
 
 /// Registry of grid characters → (entity, underground state).
 ///
@@ -95,6 +100,26 @@ fn char_for_item(item: Item) -> char {
 
 fn dir_for_char(c: char) -> Option<Direction> {
     DIR_CHARS.iter().find(|(ch, _)| *ch == c).map(|(_, d)| *d)
+}
+
+/// Grid character for rendering an entity, honouring its underground state
+/// (so `UndergroundBelt` + `UndergroundUp` renders as `u`, not `d`).
+fn render_char(item: Item, misc: Misc) -> char {
+    ENTITY_CHARS
+        .iter()
+        .find(|(_, i, m)| *i == item && *m == misc)
+        .or_else(|| ENTITY_CHARS.iter().find(|(_, i, _)| *i == item))
+        .map(|(c, _, _)| *c)
+        .unwrap_or('?')
+}
+
+/// Direction character for rendering; [`Direction::None`] renders as `.`.
+fn char_for_dir(dir: Direction) -> char {
+    DIR_CHARS
+        .iter()
+        .find(|(_, d)| *d == dir)
+        .map(|(c, _)| *c)
+        .unwrap_or('.')
 }
 
 /// A classified grid tile, before multi-tile entities are resolved.
@@ -449,6 +474,162 @@ pub(crate) fn parse(text: &str) -> Result<FactorySpec, String> {
     })
 }
 
+// ── Assertions & rendering ─────────────────────────────────────────────────
+
+/// Build the graph, compute throughput, and assert the per-sink deliveries
+/// match the header's `throughput:` as multisets (order-independent, within a
+/// float tolerance). Panics with the rendered factory on mismatch.
+pub(crate) fn assert_throughput(spec: &FactorySpec) {
+    let graph = build_graph(&spec.world);
+    let (deliveries, _unreachable) = calc_throughput(&graph);
+    let got: Vec<(Option<Item>, f64)> = deliveries.iter().map(|d| (d.item, d.achieved)).collect();
+    let want: Vec<(Option<Item>, f64)> = spec
+        .expected_throughput
+        .iter()
+        .map(|d| (d.item, d.per_second))
+        .collect();
+
+    let mut remaining = got.clone();
+    let mut unmatched_want = Vec::new();
+    for &(witem, wrate) in &want {
+        match remaining
+            .iter()
+            .position(|&(gitem, grate)| gitem == witem && (grate - wrate).abs() <= TOL)
+        {
+            Some(pos) => {
+                remaining.remove(pos);
+            }
+            None => unmatched_want.push((witem, wrate)),
+        }
+    }
+
+    assert!(
+        unmatched_want.is_empty() && remaining.is_empty(),
+        "throughput mismatch\n  expected: {want:?}\n  got:      {got:?}\n  \
+         unmatched expected: {unmatched_want:?}\n  unmatched got: {remaining:?}\n\
+         factory:\n{}",
+        render(&spec.world)
+    );
+}
+
+/// Render a [`World`] back into the grid format (geometry only — item bindings
+/// live in the header, not the grid). The inverse of [`parse_grid`] for the
+/// shapes the format supports, so `parse_grid(render(w))` round-trips geometry.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn render(world: &World) -> String {
+    let w = world.width();
+    let h = world.height();
+    let cols = if w == 0 { 0 } else { 3 * w - 1 };
+
+    // Start every tile as empty (`..`); fillers default to spaces.
+    let mut buf = vec![vec![' '; cols]; h];
+    for y in 0..h {
+        for x in 0..w {
+            buf[y][3 * x] = '.';
+            buf[y][3 * x + 1] = '.';
+        }
+    }
+
+    let mut done = vec![vec![false; w]; h];
+    for y in 0..h {
+        for x in 0..w {
+            if done[y][x] {
+                continue;
+            }
+            let item = match world.entity_at(x, y) {
+                Some(i) => i,
+                None => continue,
+            };
+            let (ew, eh) = item.size();
+            if ew == 1 && eh == 1 {
+                buf[y][3 * x] = render_char(item, world.misc_at(x, y));
+                buf[y][3 * x + 1] = char_for_dir(world.direction_at(x, y));
+                done[y][x] = true;
+            } else {
+                render_multi(&mut buf, &mut done, world, (x, y), item);
+            }
+        }
+    }
+
+    buf.iter()
+        .map(|row| row.iter().collect::<String>().trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render one multi-tile entity into the character buffer: a bordered box for
+/// square entities (blank interior) and a bracket/stack for linear ones.
+fn render_multi(
+    buf: &mut [Vec<char>],
+    done: &mut [Vec<bool>],
+    world: &World,
+    (ax, ay): (usize, usize),
+    item: Item,
+) {
+    let (ew, eh) = item.size();
+    let dir = world.direction_at(ax, ay);
+    let tiles = match entity_tiles(ax, ay, dir, ew, eh) {
+        Some(t) => t,
+        None => {
+            // Degenerate; fall back to a single tile so render never panics.
+            buf[ay][3 * ax] = render_char(item, world.misc_at(ax, ay));
+            buf[ay][3 * ax + 1] = char_for_dir(dir);
+            done[ay][ax] = true;
+            return;
+        }
+    };
+
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+    for p in &tiles {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    let multi_row = max_y > min_y;
+    let multi_col = max_x > min_x;
+    let ech = render_char(item, world.misc_at(ax, ay));
+    let dch = char_for_dir(dir);
+
+    for p in &tiles {
+        let (tx, ty) = (p.x as usize, p.y as usize);
+        done[ty][tx] = true;
+        let on_perimeter = p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y;
+        let (c0, c1) = if !on_perimeter {
+            (' ', ' ') // blank interior
+        } else if multi_row && multi_col {
+            (ech, ech) // square box border
+        } else if multi_col {
+            // horizontal bracket: caps on the ends, direction fill between
+            if p.x == min_x {
+                (ech, dch)
+            } else if p.x == max_x {
+                (dch, ech)
+            } else {
+                (dch, dch)
+            }
+        } else {
+            (ech, dch) // vertical stack
+        };
+        buf[ty][3 * tx] = c0;
+        buf[ty][3 * tx + 1] = c1;
+    }
+
+    // Fill the filler between horizontally-adjacent tiles of this entity when
+    // both touching characters are non-blank and equal (gives `aaaaaaaa` and
+    // `YvvvY` their solid look).
+    for p in &tiles {
+        let (tx, ty) = (p.x as usize, p.y as usize);
+        if tiles.iter().any(|q| q.x == p.x + 1 && q.y == p.y) {
+            let right = buf[ty][3 * tx + 1];
+            let next_left = buf[ty][3 * (tx + 1)];
+            if right != ' ' && right == next_left {
+                buf[ty][3 * tx + 2] = right;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -733,5 +914,77 @@ S> b> K>
         assert!(parse("items:\n- { x: 1, y: 0, item: copper_plate }\n---\nS> ..").is_err());
         // Unknown header key (deny_unknown_fields).
         assert!(parse("bogus: 1\n---\nS>").is_err());
+    }
+
+    #[test]
+    fn test_render_roundtrip_geometry() {
+        // Exercises every shape: single tiles, both undergrounds, a vertical
+        // splitter, and a boxed assembler.
+        let w1 = grid(
+            "
+            S> b> d> .. u> b> K>
+            .. .. .. .. .. .. ..
+            Y> .. aaaaaaaa .. ..
+            Y> .. aa    aa .. ..
+            .. .. aaaaaaaa .. ..
+            ",
+        );
+        let text = render(&w1);
+        let w2 = grid(&text);
+
+        assert_eq!(w1.width(), w2.width(), "rendered:\n{text}");
+        assert_eq!(w1.height(), w2.height(), "rendered:\n{text}");
+        for y in 0..w1.height() {
+            for x in 0..w1.width() {
+                assert_eq!(
+                    w1.entity_at(x, y),
+                    w2.entity_at(x, y),
+                    "entity ({x},{y})\n{text}"
+                );
+                assert_eq!(
+                    w1.direction_at(x, y),
+                    w2.direction_at(x, y),
+                    "dir ({x},{y})\n{text}"
+                );
+                assert_eq!(w1.misc_at(x, y), w2.misc_at(x, y), "misc ({x},{y})\n{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_assert_throughput_belt_chain() {
+        // End-to-end: parse → build_graph → calc_throughput → assert. A belt
+        // tops out at 15 items/s, so an infinite source delivers 15 to the sink.
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 15 }
+---
+S> b> b> K> ..
+",
+        )
+        .unwrap();
+        assert_throughput(&spec);
+    }
+
+    #[test]
+    #[should_panic(expected = "throughput mismatch")]
+    fn test_assert_throughput_detects_wrong_rate() {
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 999 }
+---
+S> b> b> K> ..
+",
+        )
+        .unwrap();
+        assert_throughput(&spec);
     }
 }
