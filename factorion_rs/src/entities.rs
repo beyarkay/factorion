@@ -157,8 +157,7 @@ impl FactoryEntity for TransportBelt {
                 // *entrance*, but never *inline into* an exit (items only come
                 // out of an exit). Skip a target facing the opposite direction.
                 let dst_is_droppable = matches!(dst_entity, Item::TransportBelt)
-                    || (dst_entity == Item::UndergroundBelt
-                        && dst_misc == Misc::UndergroundDown);
+                    || (dst_entity == Item::UndergroundBelt && dst_misc == Misc::UndergroundDown);
                 let dst_opposing = dst_is_droppable && dst_dir == dir.opposite();
                 // A *perpendicular* exit can still be side-loaded onto (not the
                 // inline same/opposite directions, which are the tunnel mouth).

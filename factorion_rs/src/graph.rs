@@ -196,12 +196,36 @@ mod tests {
     }
 
     const CONN_CFGS: &[ConnCfg] = &[
-        ConnCfg { label: "belt", item: Item::TransportBelt, misc: Misc::None },
-        ConnCfg { label: "inserter", item: Item::Inserter, misc: Misc::None },
-        ConnCfg { label: "ug_up", item: Item::UndergroundBelt, misc: Misc::UndergroundUp },
-        ConnCfg { label: "ug_down", item: Item::UndergroundBelt, misc: Misc::UndergroundDown },
-        ConnCfg { label: "source", item: Item::Source, misc: Misc::None },
-        ConnCfg { label: "sink", item: Item::Sink, misc: Misc::None },
+        ConnCfg {
+            label: "belt",
+            item: Item::TransportBelt,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "inserter",
+            item: Item::Inserter,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "ug_up",
+            item: Item::UndergroundBelt,
+            misc: Misc::UndergroundUp,
+        },
+        ConnCfg {
+            label: "ug_down",
+            item: Item::UndergroundBelt,
+            misc: Misc::UndergroundDown,
+        },
+        ConnCfg {
+            label: "source",
+            item: Item::Source,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "sink",
+            item: Item::Sink,
+            misc: Misc::None,
+        },
     ];
 
     const CONN_DIRS: &[(Direction, &str)] = &[
@@ -290,7 +314,13 @@ mod tests {
                             count += 1;
                             println!(
                                 "{:8}/{}  {:8}/{}  B@({:+},{:+})  {}",
-                                a.label, a_l, b.label, b_l, delta.0, delta.1, conn.arrow()
+                                a.label,
+                                a_l,
+                                b.label,
+                                b_l,
+                                delta.0,
+                                delta.1,
+                                conn.arrow()
                             );
                         }
                     }
@@ -385,8 +415,7 @@ mod tests {
                                     base, rotated,
                                     "rotating {}/{:?} + {}/{:?} (B@{:?}) by {}*90deg \
                                      changed connectivity ({:?} -> {:?})",
-                                    a.label, a_dir, b.label, b_dir, delta, turn, base,
-                                    rotated
+                                    a.label, a_dir, b.label, b_dir, delta, turn, base, rotated
                                 );
                             }
                         }
