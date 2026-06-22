@@ -1,0 +1,37 @@
+# Ground-truth connectivity, canonical adjacency: B is directly East of A.
+# Rows = (A, a_facing), Cols = (B, b_facing); entity order
+#   belt(B) inserter(I) ug_up(U) ug_down(D) source(S) sink(K), each x [N E S W].
+# Symbols:
+#   .  no edge
+#   >  A->B edge (row feeds col)
+#   <  B->A edge (col feeds row)
+#   x  both directions (a cycle)
+#   _  redundant lower-triangle cell; derived from its 180deg mirror
+#   b  source/sink behaves identically to a belt here; use the belt value
+# Source/sink connect exactly like belts EXCEPT they never connect to a
+# source/sink (those blocks are '.').
+row\col     BN BE BS BW  IN IE IS IW  UN UE US UW  DN DE DS DW  SN SE SS SW  KN KE KS KW
+belt/N      .  .  .  <   .  >  .  <   .  .  .  <   .  .  .  .   b  b  b  b   b  b  b  b
+belt/E      >  >  >  .   .  >  .  <   >  .  >  .   >  >  >  .   b  b  b  b   b  b  b  b
+belt/S      .  .  .  <   .  >  .  <   .  .  .  <   .  .  .  .   b  b  b  b   b  b  b  b
+belt/W      .  .  .  <   .  >  .  <   .  .  .  <   .  .  .  .   b  b  b  b   b  b  b  b
+inserter/N  _  _  _  _   .  .  .  .   .  .  .  .   .  .  .  .   b  b  b  b   b  b  b  b
+inserter/E  _  _  _  _   .  .  .  .   >  >  >  >   >  >  >  >   b  b  b  b   b  b  b  b
+inserter/S  _  _  _  _   .  .  .  .   .  .  .  .   .  .  .  .   b  b  b  b   b  b  b  b
+inserter/W  _  _  _  _   .  .  .  .   <  <  <  <   <  <  <  <   b  b  b  b   b  b  b  b
+ug_up/N     _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .   b  b  b  b   b  b  b  b
+ug_up/E     _  _  _  _   _  _  _  _   .  .  .  .   >  >  >  >   b  b  b  b   b  b  b  b
+ug_up/S     _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .   b  b  b  b   b  b  b  b
+ug_up/W     _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .   b  b  b  b   b  b  b  b
+ug_down/N   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   b  b  b  b   b  b  b  b
+ug_down/E   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   b  b  b  b   b  b  b  b
+ug_down/S   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   b  b  b  b   b  b  b  b
+ug_down/W   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   b  b  b  b   b  b  b  b
+source/N    _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .
+source/E    _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .
+source/S    _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .
+source/W    _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .   .  .  .  .
+sink/N      _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .
+sink/E      _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .
+sink/S      _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .
+sink/W      _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   _  _  _  _   .  .  .  .

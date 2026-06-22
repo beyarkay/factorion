@@ -187,6 +187,263 @@ mod tests {
     use super::*;
     use crate::types::{Direction, Misc};
 
+    /// 1x1 entity configs exercised by the exhaustive connectivity checks.
+    /// (Multi-tile assembler/splitter handled separately.)
+    struct ConnCfg {
+        label: &'static str,
+        item: Item,
+        misc: Misc,
+    }
+
+    const CONN_CFGS: &[ConnCfg] = &[
+        ConnCfg { label: "belt", item: Item::TransportBelt, misc: Misc::None },
+        ConnCfg { label: "inserter", item: Item::Inserter, misc: Misc::None },
+        ConnCfg { label: "ug_up", item: Item::UndergroundBelt, misc: Misc::UndergroundUp },
+        ConnCfg { label: "ug_down", item: Item::UndergroundBelt, misc: Misc::UndergroundDown },
+        ConnCfg { label: "source", item: Item::Source, misc: Misc::None },
+        ConnCfg { label: "sink", item: Item::Sink, misc: Misc::None },
+    ];
+
+    const CONN_DIRS: &[(Direction, &str)] = &[
+        (Direction::North, "N"),
+        (Direction::East, "E"),
+        (Direction::South, "S"),
+        (Direction::West, "W"),
+    ];
+
+    // The four orthogonal adjacencies: where B sits relative to A.
+    const CONN_DELTAS: &[(i64, i64)] = &[(-1, 0), (0, -1), (1, 0), (0, 1)];
+
+    fn place_conn_cfg(w: &mut World, x: usize, y: usize, c: &ConnCfg, dir: Direction) {
+        if c.item == Item::UndergroundBelt {
+            w.place_underground(x, y, dir, c.misc);
+        } else {
+            w.place(x, y, c.item, dir, None);
+        }
+    }
+
+    /// What the engine connects between two adjacent entities.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    enum Conn {
+        None,
+        AToB,
+        BToA,
+        Both,
+    }
+
+    impl Conn {
+        fn arrow(self) -> &'static str {
+            match self {
+                Conn::None => "  .  ",
+                Conn::AToB => "A->B",
+                Conn::BToA => "B->A",
+                Conn::Both => "A<->B",
+            }
+        }
+    }
+
+    /// Build a 2-entity world (A at centre, B at centre+delta) and return what
+    /// the engine connects via directed graph edges.
+    fn conn_between(
+        a: &ConnCfg,
+        a_dir: Direction,
+        b: &ConnCfg,
+        b_dir: Direction,
+        delta: (i64, i64),
+    ) -> Conn {
+        let (cx, cy) = (3usize, 3usize);
+        let bx = (cx as i64 + delta.0) as usize;
+        let by = (cy as i64 + delta.1) as usize;
+        let mut w = World::empty(7, 7);
+        place_conn_cfg(&mut w, cx, cy, a, a_dir);
+        place_conn_cfg(&mut w, bx, by, b, b_dir);
+        let g = build_graph(&w);
+        let ia = g.get_index(&NodeId::new(a.item, cx, cy)).unwrap();
+        let ib = g.get_index(&NodeId::new(b.item, bx, by)).unwrap();
+        let a2b = g.successors[ia].contains(&ib);
+        let b2a = g.successors[ib].contains(&ia);
+        match (a2b, b2a) {
+            (false, false) => Conn::None,
+            (true, false) => Conn::AToB,
+            (false, true) => Conn::BToA,
+            (true, true) => Conn::Both,
+        }
+    }
+
+    /// Dump every connection the engine makes across all 1x1 entity pairs ×
+    /// rotations × adjacencies, for cross-checking against ground truth (#122).
+    /// Run: cargo test --no-default-features dump_connectivity_table -- --nocapture --ignored
+    #[test]
+    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
+    fn dump_connectivity_table() {
+        let mut count = 0;
+        println!("\n=== CONNECTIVITY (A@centre, B@centre+delta; arrow = graph edge) ===");
+        for a in CONN_CFGS {
+            for &(a_dir, a_l) in CONN_DIRS {
+                for b in CONN_CFGS {
+                    for &(b_dir, b_l) in CONN_DIRS {
+                        for &delta in CONN_DELTAS {
+                            let conn = conn_between(a, a_dir, b, b_dir, delta);
+                            if conn == Conn::None {
+                                continue;
+                            }
+                            count += 1;
+                            println!(
+                                "{:8}/{}  {:8}/{}  B@({:+},{:+})  {}",
+                                a.label, a_l, b.label, b_l, delta.0, delta.1, conn.arrow()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        println!("=== {count} connecting combos ===");
+    }
+
+    /// Compact 6x6 "does A ever feed B?" matrix (A->B edge for any rotation /
+    /// adjacency), computed directly so there's no text-parsing fragility.
+    /// Run: cargo test --no-default-features dump_feeds_matrix -- --nocapture --ignored
+    #[test]
+    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
+    fn dump_feeds_matrix() {
+        let n = CONN_CFGS.len();
+        let mut feed = vec![vec![false; n]; n];
+        for (i, a) in CONN_CFGS.iter().enumerate() {
+            for (j, b) in CONN_CFGS.iter().enumerate() {
+                'combo: for &(a_dir, _) in CONN_DIRS {
+                    for &(b_dir, _) in CONN_DIRS {
+                        for &delta in CONN_DELTAS {
+                            match conn_between(a, a_dir, b, b_dir, delta) {
+                                Conn::AToB => feed[i][j] = true,
+                                Conn::BToA => feed[j][i] = true,
+                                Conn::Both => {
+                                    feed[i][j] = true;
+                                    feed[j][i] = true;
+                                }
+                                Conn::None => {}
+                            }
+                            if feed[i][j] && feed[j][i] {
+                                continue 'combo;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("\n=== FEEDS matrix: row R feeds col C (R->C edge exists) ===");
+        print!("{:9}", "feeds:");
+        for b in CONN_CFGS {
+            print!("{:>9}", b.label);
+        }
+        println!();
+        for (i, a) in CONN_CFGS.iter().enumerate() {
+            print!("{:9}", a.label);
+            for cell in feed[i].iter().take(n) {
+                print!("{:>9}", if *cell { "Y" } else { "." });
+            }
+            println!();
+        }
+    }
+
+    /// Rotate a facing 90° clockwise: the vector (dx,dy) -> (-dy,dx).
+    /// North(0,-1)->East(1,0)->South(0,1)->West(-1,0)->North.
+    fn rot90_dir(d: Direction) -> Direction {
+        match d {
+            Direction::North => Direction::East,
+            Direction::East => Direction::South,
+            Direction::South => Direction::West,
+            Direction::West => Direction::North,
+            Direction::None => Direction::None,
+        }
+    }
+
+    /// Rotate an adjacency delta 90° clockwise the same way: (dx,dy)->(-dy,dx).
+    fn rot90_delta(d: (i64, i64)) -> (i64, i64) {
+        (-d.1, d.0)
+    }
+
+    /// Rotating a whole 2-entity configuration by 90/180/270° must not change
+    /// what connects to what. A sits at the centre of a square world, so a
+    /// world rotation is exactly: rotate both facings and the adjacency delta
+    /// together. Proving this lets the full connectivity table drop the
+    /// rotation axis (4× fewer cases) without losing coverage.
+    #[test]
+    fn connectivity_is_rotation_invariant() {
+        for a in CONN_CFGS {
+            for &(a_dir, _) in CONN_DIRS {
+                for b in CONN_CFGS {
+                    for &(b_dir, _) in CONN_DIRS {
+                        for &delta in CONN_DELTAS {
+                            let base = conn_between(a, a_dir, b, b_dir, delta);
+                            let (mut ad, mut bd, mut d) = (a_dir, b_dir, delta);
+                            for turn in 1..=3 {
+                                ad = rot90_dir(ad);
+                                bd = rot90_dir(bd);
+                                d = rot90_delta(d);
+                                let rotated = conn_between(a, ad, b, bd, d);
+                                assert_eq!(
+                                    base, rotated,
+                                    "rotating {}/{:?} + {}/{:?} (B@{:?}) by {}*90deg \
+                                     changed connectivity ({:?} -> {:?})",
+                                    a.label, a_dir, b.label, b_dir, delta, turn, base,
+                                    rotated
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Full canonical connectivity matrix. Rotation invariance (proven above)
+    /// means one adjacency is the whole story, so fix B directly East of A and
+    /// vary both facings. Rows = (A, a_dir), cols = (B, b_dir).
+    /// Run: cargo test --no-default-features dump_canonical_matrix -- --nocapture --ignored
+    #[test]
+    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
+    fn dump_canonical_matrix() {
+        let delta = (1i64, 0i64);
+        fn ecode(label: &str) -> char {
+            match label {
+                "belt" => 'B',
+                "inserter" => 'I',
+                "ug_up" => 'U',
+                "ug_down" => 'D',
+                "source" => 'S',
+                "sink" => 'K',
+                _ => '?',
+            }
+        }
+        println!("\n=== CANONICAL CONNECTIVITY (B is East of A) ===");
+        println!("legend: '.' none   '>' A->B (row feeds col)   '<' B->A   'x' both");
+        println!("codes:  B=belt I=inserter U=ug_up D=ug_down S=source K=sink, + facing\n");
+        print!("{:11}", "row\\col");
+        for b in CONN_CFGS {
+            for &(_, bl) in CONN_DIRS {
+                print!("{:>3}", format!("{}{}", ecode(b.label), bl));
+            }
+        }
+        println!();
+        for a in CONN_CFGS {
+            for &(a_dir, al) in CONN_DIRS {
+                print!("{:<11}", format!("{}/{}", a.label, al));
+                for b in CONN_CFGS {
+                    for &(b_dir, _) in CONN_DIRS {
+                        let sym = match conn_between(a, a_dir, b, b_dir, delta) {
+                            Conn::None => '.',
+                            Conn::AToB => '>',
+                            Conn::BToA => '<',
+                            Conn::Both => 'x',
+                        };
+                        print!("{:>3}", sym);
+                    }
+                }
+                println!();
+            }
+        }
+    }
+
     #[test]
     fn test_empty_world_graph() {
         let w = World::empty(5, 5);
