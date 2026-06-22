@@ -1,0 +1,322 @@
+# Connectivity oracle: every case where the FIRST entity (A) is belt.
+# B is placed directly East of A; `graph:` is build_graph's exact edge set.
+# Glyphs: b belt, i inserter, u ug_up(exit), d ug_down(entrance), S source, K sink; facing ^>v<.
+description: belt/N vs belt/N
+graph: ""
+factory: |
+  .. b^ b^ ..
+---
+description: belt/N vs belt/E
+graph: ""
+factory: |
+  .. b^ b> ..
+---
+description: belt/N vs belt/S
+graph: ""
+factory: |
+  .. b^ bv ..
+---
+description: belt/N vs belt/W
+graph: "b@2,0 -> b@1,0"
+factory: |
+  .. b^ b< ..
+---
+description: belt/N vs inserter/N
+graph: ""
+factory: |
+  .. b^ i^ ..
+---
+description: belt/N vs inserter/E
+graph: "b@1,0 -> i@2,0"
+factory: |
+  .. b^ i> ..
+---
+description: belt/N vs inserter/S
+graph: ""
+factory: |
+  .. b^ iv ..
+---
+description: belt/N vs inserter/W
+graph: "i@2,0 -> b@1,0"
+factory: |
+  .. b^ i< ..
+---
+description: belt/N vs ug_up/N
+graph: ""
+factory: |
+  .. b^ u^ ..
+---
+description: belt/N vs ug_up/E
+graph: ""
+factory: |
+  .. b^ u> ..
+---
+description: belt/N vs ug_up/S
+graph: ""
+factory: |
+  .. b^ uv ..
+---
+description: belt/N vs ug_up/W
+graph: "u@2,0 -> b@1,0"
+factory: |
+  .. b^ u< ..
+---
+description: belt/N vs ug_down/N
+graph: ""
+factory: |
+  .. b^ d^ ..
+---
+description: belt/N vs ug_down/E
+graph: ""
+factory: |
+  .. b^ d> ..
+---
+description: belt/N vs ug_down/S
+graph: ""
+factory: |
+  .. b^ dv ..
+---
+description: belt/N vs ug_down/W
+graph: ""
+factory: |
+  .. b^ d< ..
+---
+description: belt/E vs belt/N
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> b^ ..
+---
+description: belt/E vs belt/E
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> b> ..
+---
+description: belt/E vs belt/S
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> bv ..
+---
+description: belt/E vs belt/W
+graph: ""
+factory: |
+  .. b> b< ..
+---
+description: belt/E vs inserter/N
+graph: ""
+factory: |
+  .. b> i^ ..
+---
+description: belt/E vs inserter/E
+graph: "b@1,0 -> i@2,0"
+factory: |
+  .. b> i> ..
+---
+description: belt/E vs inserter/S
+graph: ""
+factory: |
+  .. b> iv ..
+---
+description: belt/E vs inserter/W
+graph: "i@2,0 -> b@1,0"
+factory: |
+  .. b> i< ..
+---
+description: belt/E vs ug_up/N
+graph: "b@1,0 -> u@2,0"
+factory: |
+  .. b> u^ ..
+---
+description: belt/E vs ug_up/E
+graph: ""
+factory: |
+  .. b> u> ..
+---
+description: belt/E vs ug_up/S
+graph: "b@1,0 -> u@2,0"
+factory: |
+  .. b> uv ..
+---
+description: belt/E vs ug_up/W
+graph: ""
+factory: |
+  .. b> u< ..
+---
+description: belt/E vs ug_down/N
+graph: "b@1,0 -> d@2,0"
+factory: |
+  .. b> d^ ..
+---
+description: belt/E vs ug_down/E
+graph: "b@1,0 -> d@2,0"
+factory: |
+  .. b> d> ..
+---
+description: belt/E vs ug_down/S
+graph: "b@1,0 -> d@2,0"
+factory: |
+  .. b> dv ..
+---
+description: belt/E vs ug_down/W
+graph: ""
+factory: |
+  .. b> d< ..
+---
+description: belt/S vs belt/N
+graph: ""
+factory: |
+  .. bv b^ ..
+---
+description: belt/S vs belt/E
+graph: ""
+factory: |
+  .. bv b> ..
+---
+description: belt/S vs belt/S
+graph: ""
+factory: |
+  .. bv bv ..
+---
+description: belt/S vs belt/W
+graph: "b@2,0 -> b@1,0"
+factory: |
+  .. bv b< ..
+---
+description: belt/S vs inserter/N
+graph: ""
+factory: |
+  .. bv i^ ..
+---
+description: belt/S vs inserter/E
+graph: "b@1,0 -> i@2,0"
+factory: |
+  .. bv i> ..
+---
+description: belt/S vs inserter/S
+graph: ""
+factory: |
+  .. bv iv ..
+---
+description: belt/S vs inserter/W
+graph: "i@2,0 -> b@1,0"
+factory: |
+  .. bv i< ..
+---
+description: belt/S vs ug_up/N
+graph: ""
+factory: |
+  .. bv u^ ..
+---
+description: belt/S vs ug_up/E
+graph: ""
+factory: |
+  .. bv u> ..
+---
+description: belt/S vs ug_up/S
+graph: ""
+factory: |
+  .. bv uv ..
+---
+description: belt/S vs ug_up/W
+graph: "u@2,0 -> b@1,0"
+factory: |
+  .. bv u< ..
+---
+description: belt/S vs ug_down/N
+graph: ""
+factory: |
+  .. bv d^ ..
+---
+description: belt/S vs ug_down/E
+graph: ""
+factory: |
+  .. bv d> ..
+---
+description: belt/S vs ug_down/S
+graph: ""
+factory: |
+  .. bv dv ..
+---
+description: belt/S vs ug_down/W
+graph: ""
+factory: |
+  .. bv d< ..
+---
+description: belt/W vs belt/N
+graph: ""
+factory: |
+  .. b< b^ ..
+---
+description: belt/W vs belt/E
+graph: ""
+factory: |
+  .. b< b> ..
+---
+description: belt/W vs belt/S
+graph: ""
+factory: |
+  .. b< bv ..
+---
+description: belt/W vs belt/W
+graph: "b@2,0 -> b@1,0"
+factory: |
+  .. b< b< ..
+---
+description: belt/W vs inserter/N
+graph: ""
+factory: |
+  .. b< i^ ..
+---
+description: belt/W vs inserter/E
+graph: "b@1,0 -> i@2,0"
+factory: |
+  .. b< i> ..
+---
+description: belt/W vs inserter/S
+graph: ""
+factory: |
+  .. b< iv ..
+---
+description: belt/W vs inserter/W
+graph: "i@2,0 -> b@1,0"
+factory: |
+  .. b< i< ..
+---
+description: belt/W vs ug_up/N
+graph: ""
+factory: |
+  .. b< u^ ..
+---
+description: belt/W vs ug_up/E
+graph: ""
+factory: |
+  .. b< u> ..
+---
+description: belt/W vs ug_up/S
+graph: ""
+factory: |
+  .. b< uv ..
+---
+description: belt/W vs ug_up/W
+graph: "u@2,0 -> b@1,0"
+factory: |
+  .. b< u< ..
+---
+description: belt/W vs ug_down/N
+graph: ""
+factory: |
+  .. b< d^ ..
+---
+description: belt/W vs ug_down/E
+graph: ""
+factory: |
+  .. b< d> ..
+---
+description: belt/W vs ug_down/S
+graph: ""
+factory: |
+  .. b< dv ..
+---
+description: belt/W vs ug_down/W
+graph: ""
+factory: |
+  .. b< d< ..

@@ -1342,8 +1342,25 @@ def world2graph(world_WHC, debug=False):
                     src_direction = Direction(
                         world_WHC[src[0], src[1], Channel.DIRECTION.value]
                     )
-                    src_not_empty = src_entity.name != "empty"
-                    if src_not_empty:
+                    # A real inserter may only pick up from something that
+                    # carries or produces items: a source, belt, underground
+                    # belt, or assembler. Notably NOT another inserter (#122)
+                    # or a sink. The source (stack_inserter) and sink
+                    # (bulk_inserter) markers share this branch but keep the
+                    # permissive pickup: a sink legitimately receives from the
+                    # inserter behind it (an inserter can't *drop* onto a sink,
+                    # so delivery is the sink pulling), and a source's input is
+                    # ignored. Mirrors entities.rs::inserter_connections.
+                    if e.name == "inserter":
+                        src_is_pickable = src_entity.name in (
+                            "stack_inserter",  # Source marker
+                            "transport_belt",
+                            "underground_belt",
+                            "assembling_machine_1",
+                        )
+                    else:
+                        src_is_pickable = src_entity.name != "empty"
+                    if src_is_pickable:
                         pending_edges.append((
                             f"{src_entity.name}\n@{src[0]},{src[1]}",
                             f"{e.name}\n@{x},{y}",

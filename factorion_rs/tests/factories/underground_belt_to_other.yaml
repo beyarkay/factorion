@@ -1,0 +1,642 @@
+# Connectivity oracle: every case where the FIRST entity (A) is an underground belt (u=exit, d=entrance).
+# B is placed directly East of A; `graph:` is build_graph's exact edge set.
+# Glyphs: b belt, i inserter, u ug_up(exit), d ug_down(entrance), S source, K sink; facing ^>v<.
+description: ug_up/N vs belt/N
+graph: ""
+factory: |
+  .. u^ b^ ..
+---
+description: ug_up/N vs belt/E
+graph: ""
+factory: |
+  .. u^ b> ..
+---
+description: ug_up/N vs belt/S
+graph: ""
+factory: |
+  .. u^ bv ..
+---
+description: ug_up/N vs belt/W
+graph: "b@2,0 -> u@1,0"
+factory: |
+  .. u^ b< ..
+---
+description: ug_up/N vs inserter/N
+graph: ""
+factory: |
+  .. u^ i^ ..
+---
+description: ug_up/N vs inserter/E
+graph: "u@1,0 -> i@2,0"
+factory: |
+  .. u^ i> ..
+---
+description: ug_up/N vs inserter/S
+graph: ""
+factory: |
+  .. u^ iv ..
+---
+description: ug_up/N vs inserter/W
+graph: "i@2,0 -> u@1,0"
+factory: |
+  .. u^ i< ..
+---
+description: ug_up/N vs ug_up/N
+graph: ""
+factory: |
+  .. u^ u^ ..
+---
+description: ug_up/N vs ug_up/E
+graph: ""
+factory: |
+  .. u^ u> ..
+---
+description: ug_up/N vs ug_up/S
+graph: ""
+factory: |
+  .. u^ uv ..
+---
+description: ug_up/N vs ug_up/W
+graph: ""
+factory: |
+  .. u^ u< ..
+---
+description: ug_up/N vs ug_down/N
+graph: ""
+factory: |
+  .. u^ d^ ..
+---
+description: ug_up/N vs ug_down/E
+graph: ""
+factory: |
+  .. u^ d> ..
+---
+description: ug_up/N vs ug_down/S
+graph: ""
+factory: |
+  .. u^ dv ..
+---
+description: ug_up/N vs ug_down/W
+graph: ""
+factory: |
+  .. u^ d< ..
+---
+description: ug_up/E vs belt/N
+graph: "u@1,0 -> b@2,0"
+factory: |
+  .. u> b^ ..
+---
+description: ug_up/E vs belt/E
+graph: "u@1,0 -> b@2,0"
+factory: |
+  .. u> b> ..
+---
+description: ug_up/E vs belt/S
+graph: "u@1,0 -> b@2,0"
+factory: |
+  .. u> bv ..
+---
+description: ug_up/E vs belt/W
+graph: ""
+factory: |
+  .. u> b< ..
+---
+description: ug_up/E vs inserter/N
+graph: ""
+factory: |
+  .. u> i^ ..
+---
+description: ug_up/E vs inserter/E
+graph: "u@1,0 -> i@2,0"
+factory: |
+  .. u> i> ..
+---
+description: ug_up/E vs inserter/S
+graph: ""
+factory: |
+  .. u> iv ..
+---
+description: ug_up/E vs inserter/W
+graph: "i@2,0 -> u@1,0"
+factory: |
+  .. u> i< ..
+---
+description: ug_up/E vs ug_up/N
+graph: ""
+factory: |
+  .. u> u^ ..
+---
+description: ug_up/E vs ug_up/E
+graph: ""
+factory: |
+  .. u> u> ..
+---
+description: ug_up/E vs ug_up/S
+graph: ""
+factory: |
+  .. u> uv ..
+---
+description: ug_up/E vs ug_up/W
+graph: ""
+factory: |
+  .. u> u< ..
+---
+description: ug_up/E vs ug_down/N
+graph: "u@1,0 -> d@2,0"
+factory: |
+  .. u> d^ ..
+---
+description: ug_up/E vs ug_down/E
+graph: "u@1,0 -> d@2,0"
+factory: |
+  .. u> d> ..
+---
+description: ug_up/E vs ug_down/S
+graph: "u@1,0 -> d@2,0"
+factory: |
+  .. u> dv ..
+---
+description: ug_up/E vs ug_down/W
+graph: ""
+factory: |
+  .. u> d< ..
+---
+description: ug_up/S vs belt/N
+graph: ""
+factory: |
+  .. uv b^ ..
+---
+description: ug_up/S vs belt/E
+graph: ""
+factory: |
+  .. uv b> ..
+---
+description: ug_up/S vs belt/S
+graph: ""
+factory: |
+  .. uv bv ..
+---
+description: ug_up/S vs belt/W
+graph: "b@2,0 -> u@1,0"
+factory: |
+  .. uv b< ..
+---
+description: ug_up/S vs inserter/N
+graph: ""
+factory: |
+  .. uv i^ ..
+---
+description: ug_up/S vs inserter/E
+graph: "u@1,0 -> i@2,0"
+factory: |
+  .. uv i> ..
+---
+description: ug_up/S vs inserter/S
+graph: ""
+factory: |
+  .. uv iv ..
+---
+description: ug_up/S vs inserter/W
+graph: "i@2,0 -> u@1,0"
+factory: |
+  .. uv i< ..
+---
+description: ug_up/S vs ug_up/N
+graph: ""
+factory: |
+  .. uv u^ ..
+---
+description: ug_up/S vs ug_up/E
+graph: ""
+factory: |
+  .. uv u> ..
+---
+description: ug_up/S vs ug_up/S
+graph: ""
+factory: |
+  .. uv uv ..
+---
+description: ug_up/S vs ug_up/W
+graph: ""
+factory: |
+  .. uv u< ..
+---
+description: ug_up/S vs ug_down/N
+graph: ""
+factory: |
+  .. uv d^ ..
+---
+description: ug_up/S vs ug_down/E
+graph: ""
+factory: |
+  .. uv d> ..
+---
+description: ug_up/S vs ug_down/S
+graph: ""
+factory: |
+  .. uv dv ..
+---
+description: ug_up/S vs ug_down/W
+graph: ""
+factory: |
+  .. uv d< ..
+---
+description: ug_up/W vs belt/N
+graph: ""
+factory: |
+  .. u< b^ ..
+---
+description: ug_up/W vs belt/E
+graph: ""
+factory: |
+  .. u< b> ..
+---
+description: ug_up/W vs belt/S
+graph: ""
+factory: |
+  .. u< bv ..
+---
+description: ug_up/W vs belt/W
+graph: ""
+factory: |
+  .. u< b< ..
+---
+description: ug_up/W vs inserter/N
+graph: ""
+factory: |
+  .. u< i^ ..
+---
+description: ug_up/W vs inserter/E
+graph: "u@1,0 -> i@2,0"
+factory: |
+  .. u< i> ..
+---
+description: ug_up/W vs inserter/S
+graph: ""
+factory: |
+  .. u< iv ..
+---
+description: ug_up/W vs inserter/W
+graph: "i@2,0 -> u@1,0"
+factory: |
+  .. u< i< ..
+---
+description: ug_up/W vs ug_up/N
+graph: ""
+factory: |
+  .. u< u^ ..
+---
+description: ug_up/W vs ug_up/E
+graph: ""
+factory: |
+  .. u< u> ..
+---
+description: ug_up/W vs ug_up/S
+graph: ""
+factory: |
+  .. u< uv ..
+---
+description: ug_up/W vs ug_up/W
+graph: ""
+factory: |
+  .. u< u< ..
+---
+description: ug_up/W vs ug_down/N
+graph: ""
+factory: |
+  .. u< d^ ..
+---
+description: ug_up/W vs ug_down/E
+graph: ""
+factory: |
+  .. u< d> ..
+---
+description: ug_up/W vs ug_down/S
+graph: ""
+factory: |
+  .. u< dv ..
+---
+description: ug_up/W vs ug_down/W
+graph: "d@2,0 -> u@1,0"
+factory: |
+  .. u< d< ..
+---
+description: ug_down/N vs belt/N
+graph: ""
+factory: |
+  .. d^ b^ ..
+---
+description: ug_down/N vs belt/E
+graph: ""
+factory: |
+  .. d^ b> ..
+---
+description: ug_down/N vs belt/S
+graph: ""
+factory: |
+  .. d^ bv ..
+---
+description: ug_down/N vs belt/W
+graph: "b@2,0 -> d@1,0"
+factory: |
+  .. d^ b< ..
+---
+description: ug_down/N vs inserter/N
+graph: ""
+factory: |
+  .. d^ i^ ..
+---
+description: ug_down/N vs inserter/E
+graph: "d@1,0 -> i@2,0"
+factory: |
+  .. d^ i> ..
+---
+description: ug_down/N vs inserter/S
+graph: ""
+factory: |
+  .. d^ iv ..
+---
+description: ug_down/N vs inserter/W
+graph: "i@2,0 -> d@1,0"
+factory: |
+  .. d^ i< ..
+---
+description: ug_down/N vs ug_up/N
+graph: ""
+factory: |
+  .. d^ u^ ..
+---
+description: ug_down/N vs ug_up/E
+graph: ""
+factory: |
+  .. d^ u> ..
+---
+description: ug_down/N vs ug_up/S
+graph: ""
+factory: |
+  .. d^ uv ..
+---
+description: ug_down/N vs ug_up/W
+graph: "u@2,0 -> d@1,0"
+factory: |
+  .. d^ u< ..
+---
+description: ug_down/N vs ug_down/N
+graph: ""
+factory: |
+  .. d^ d^ ..
+---
+description: ug_down/N vs ug_down/E
+graph: ""
+factory: |
+  .. d^ d> ..
+---
+description: ug_down/N vs ug_down/S
+graph: ""
+factory: |
+  .. d^ dv ..
+---
+description: ug_down/N vs ug_down/W
+graph: ""
+factory: |
+  .. d^ d< ..
+---
+description: ug_down/E vs belt/N
+graph: ""
+factory: |
+  .. d> b^ ..
+---
+description: ug_down/E vs belt/E
+graph: ""
+factory: |
+  .. d> b> ..
+---
+description: ug_down/E vs belt/S
+graph: ""
+factory: |
+  .. d> bv ..
+---
+description: ug_down/E vs belt/W
+graph: ""
+factory: |
+  .. d> b< ..
+---
+description: ug_down/E vs inserter/N
+graph: ""
+factory: |
+  .. d> i^ ..
+---
+description: ug_down/E vs inserter/E
+graph: "d@1,0 -> i@2,0"
+factory: |
+  .. d> i> ..
+---
+description: ug_down/E vs inserter/S
+graph: ""
+factory: |
+  .. d> iv ..
+---
+description: ug_down/E vs inserter/W
+graph: "i@2,0 -> d@1,0"
+factory: |
+  .. d> i< ..
+---
+description: ug_down/E vs ug_up/N
+graph: ""
+factory: |
+  .. d> u^ ..
+---
+description: ug_down/E vs ug_up/E
+graph: "d@1,0 -> u@2,0"
+factory: |
+  .. d> u> ..
+---
+description: ug_down/E vs ug_up/S
+graph: ""
+factory: |
+  .. d> uv ..
+---
+description: ug_down/E vs ug_up/W
+graph: ""
+factory: |
+  .. d> u< ..
+---
+description: ug_down/E vs ug_down/N
+graph: ""
+factory: |
+  .. d> d^ ..
+---
+description: ug_down/E vs ug_down/E
+graph: ""
+factory: |
+  .. d> d> ..
+---
+description: ug_down/E vs ug_down/S
+graph: ""
+factory: |
+  .. d> dv ..
+---
+description: ug_down/E vs ug_down/W
+graph: ""
+factory: |
+  .. d> d< ..
+---
+description: ug_down/S vs belt/N
+graph: ""
+factory: |
+  .. dv b^ ..
+---
+description: ug_down/S vs belt/E
+graph: ""
+factory: |
+  .. dv b> ..
+---
+description: ug_down/S vs belt/S
+graph: ""
+factory: |
+  .. dv bv ..
+---
+description: ug_down/S vs belt/W
+graph: "b@2,0 -> d@1,0"
+factory: |
+  .. dv b< ..
+---
+description: ug_down/S vs inserter/N
+graph: ""
+factory: |
+  .. dv i^ ..
+---
+description: ug_down/S vs inserter/E
+graph: "d@1,0 -> i@2,0"
+factory: |
+  .. dv i> ..
+---
+description: ug_down/S vs inserter/S
+graph: ""
+factory: |
+  .. dv iv ..
+---
+description: ug_down/S vs inserter/W
+graph: "i@2,0 -> d@1,0"
+factory: |
+  .. dv i< ..
+---
+description: ug_down/S vs ug_up/N
+graph: ""
+factory: |
+  .. dv u^ ..
+---
+description: ug_down/S vs ug_up/E
+graph: ""
+factory: |
+  .. dv u> ..
+---
+description: ug_down/S vs ug_up/S
+graph: ""
+factory: |
+  .. dv uv ..
+---
+description: ug_down/S vs ug_up/W
+graph: "u@2,0 -> d@1,0"
+factory: |
+  .. dv u< ..
+---
+description: ug_down/S vs ug_down/N
+graph: ""
+factory: |
+  .. dv d^ ..
+---
+description: ug_down/S vs ug_down/E
+graph: ""
+factory: |
+  .. dv d> ..
+---
+description: ug_down/S vs ug_down/S
+graph: ""
+factory: |
+  .. dv dv ..
+---
+description: ug_down/S vs ug_down/W
+graph: ""
+factory: |
+  .. dv d< ..
+---
+description: ug_down/W vs belt/N
+graph: ""
+factory: |
+  .. d< b^ ..
+---
+description: ug_down/W vs belt/E
+graph: ""
+factory: |
+  .. d< b> ..
+---
+description: ug_down/W vs belt/S
+graph: ""
+factory: |
+  .. d< bv ..
+---
+description: ug_down/W vs belt/W
+graph: "b@2,0 -> d@1,0"
+factory: |
+  .. d< b< ..
+---
+description: ug_down/W vs inserter/N
+graph: ""
+factory: |
+  .. d< i^ ..
+---
+description: ug_down/W vs inserter/E
+graph: "d@1,0 -> i@2,0"
+factory: |
+  .. d< i> ..
+---
+description: ug_down/W vs inserter/S
+graph: ""
+factory: |
+  .. d< iv ..
+---
+description: ug_down/W vs inserter/W
+graph: "i@2,0 -> d@1,0"
+factory: |
+  .. d< i< ..
+---
+description: ug_down/W vs ug_up/N
+graph: ""
+factory: |
+  .. d< u^ ..
+---
+description: ug_down/W vs ug_up/E
+graph: ""
+factory: |
+  .. d< u> ..
+---
+description: ug_down/W vs ug_up/S
+graph: ""
+factory: |
+  .. d< uv ..
+---
+description: ug_down/W vs ug_up/W
+graph: "u@2,0 -> d@1,0"
+factory: |
+  .. d< u< ..
+---
+description: ug_down/W vs ug_down/N
+graph: ""
+factory: |
+  .. d< d^ ..
+---
+description: ug_down/W vs ug_down/E
+graph: ""
+factory: |
+  .. d< d> ..
+---
+description: ug_down/W vs ug_down/S
+graph: ""
+factory: |
+  .. d< dv ..
+---
+description: ug_down/W vs ug_down/W
+graph: ""
+factory: |
+  .. d< d< ..
