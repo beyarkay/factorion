@@ -1,0 +1,10 @@
+# A long long list of ~every 2-entity connection
+description: |
+  A
+items:
+  - { x: 0, y: 1, item: iron_plate }
+  - { x: 2, y: 0, item: iron_gear_wheel }
+factory: |
+  .. .. .. ..
+  .. S> b> ..
+  .. .. .. ..
