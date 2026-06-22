@@ -143,7 +143,10 @@ enum Cell {
     },
 }
 
-/// Classify a single two-character tile.
+/// Classify a single two-character tile. Every character must be meaningful:
+/// an entity, a direction marker, or a filler (`.` = none, ` ` = multi-tile
+/// padding). Anything else — or two directions, or two different entities — is
+/// an error, so a typo like `b@` is rejected rather than silently read as `b`.
 fn classify(c0: char, c1: char) -> Result<Cell, String> {
     if c0 == '.' && c1 == '.' {
         return Ok(Cell::Empty);
@@ -152,31 +155,37 @@ fn classify(c0: char, c1: char) -> Result<Cell, String> {
         return Ok(Cell::Interior);
     }
 
-    let dir = match (dir_for_char(c0), dir_for_char(c1)) {
-        (Some(_), Some(_)) => {
-            return Err(format!("two direction markers in tile '{c0}{c1}'"));
+    let mut entity: Option<(Item, Misc)> = None;
+    let mut dir = Direction::None;
+    let mut seen_dir = false;
+    for c in [c0, c1] {
+        if let Some(e) = entity_for_char(c) {
+            match entity {
+                None => entity = Some(e),
+                Some(prev) if prev == e => {} // repeated body char, e.g. `aa`
+                Some(_) => {
+                    return Err(format!(
+                        "two different entity characters in tile '{c0}{c1}'"
+                    ));
+                }
+            }
+        } else if let Some(d) = dir_for_char(c) {
+            if seen_dir {
+                return Err(format!("two direction markers in tile '{c0}{c1}'"));
+            }
+            dir = d;
+            seen_dir = true;
+        } else if c == '.' || c == ' ' {
+            // filler: `.` reads as no-direction, ` ` is multi-tile padding.
+        } else {
+            return Err(format!("unexpected character '{c}' in tile '{c0}{c1}'"));
         }
-        (Some(d), None) | (None, Some(d)) => d,
-        (None, None) => Direction::None,
-    };
+    }
 
-    let entity = match (entity_for_char(c0), entity_for_char(c1)) {
-        (Some(a), Some(b)) if a != b => {
-            return Err(format!(
-                "two different entity characters in tile '{c0}{c1}'"
-            ));
-        }
-        (Some(e), _) | (_, Some(e)) => e,
-        (None, None) => {
-            return Err(format!("tile '{c0}{c1}' has no entity character"));
-        }
-    };
-
-    Ok(Cell::Entity {
-        item: entity.0,
-        misc: entity.1,
-        dir,
-    })
+    match entity {
+        Some((item, misc)) => Ok(Cell::Entity { item, misc, dir }),
+        None => Err(format!("tile '{c0}{c1}' has no entity character")),
+    }
 }
 
 /// Tokenize the grid body into a rectangular `[y][x]` matrix of [`Cell`]s.
@@ -185,7 +194,8 @@ fn classify(c0: char, c1: char) -> Result<Cell, String> {
 /// literals can breathe and grids can be annotated). Leading and trailing
 /// whitespace on a line is stripped — the leftmost tile is never a blank
 /// interior (those are always enclosed by body characters), so indenting a grid
-/// for readability is safe. Short rows are right-padded with empty tiles.
+/// for readability is safe. The grid must be rectangular: every row carries the
+/// same number of tiles, or it is an error.
 fn tokenize(body: &str) -> Result<Vec<Vec<Cell>>, String> {
     let lines: Vec<&str> = body
         .lines()
@@ -197,7 +207,6 @@ fn tokenize(body: &str) -> Result<Vec<Vec<Cell>>, String> {
     }
 
     let mut rows: Vec<Vec<Cell>> = Vec::with_capacity(lines.len());
-    let mut width = 0usize;
     for (y, line) in lines.iter().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         let len = chars.len();
@@ -214,13 +223,18 @@ fn tokenize(body: &str) -> Result<Vec<Vec<Cell>>, String> {
             let c1 = chars[3 * x + 1];
             row.push(classify(c0, c1).map_err(|e| format!("row {y}, col {x}: {e}"))?);
         }
-        width = width.max(cols);
+        if let Some(first) = rows.first() {
+            if row.len() != first.len() {
+                return Err(format!(
+                    "row {y} has {} columns but row 0 has {}; the grid must be rectangular",
+                    row.len(),
+                    first.len()
+                ));
+            }
+        }
         rows.push(row);
     }
 
-    for row in &mut rows {
-        row.resize(width, Cell::Empty);
-    }
     Ok(rows)
 }
 
@@ -766,26 +780,36 @@ mod tests {
     }
 
     #[test]
-    fn test_ragged_rows_are_padded() {
-        // Second row is shorter; it should pad with empty tiles, not error.
-        let w = grid(
-            "
-            S> b> K>
-            b>
-            ",
-        );
-        assert_eq!(w.width(), 3);
-        assert_eq!(w.height(), 2);
-        assert_eq!(w.entity_at(0, 1), Some(Item::TransportBelt));
-        assert_eq!(w.entity_at(1, 1), None);
-    }
-
-    #[test]
     fn test_grid_errors() {
         // Width not of the form 3*cols-1.
         assert!(parse_grid("b>b>").is_err());
         // Stray blank tile outside any multi-tile entity.
         assert!(parse_grid("b>    b>").is_err());
+        // Entirely empty / whitespace grid.
+        assert!(parse_grid("   ").is_err());
+    }
+
+    #[test]
+    fn test_malformed_unexpected_characters() {
+        // Junk character paired with a valid entity — must NOT be read as `b`.
+        assert!(parse_grid("b@").is_err());
+        assert!(parse_grid("b1").is_err());
+        // Junk character on its own.
+        assert!(parse_grid("zz").is_err());
+        assert!(parse_grid("@>").is_err());
+        // A junk tile buried inside an otherwise valid row.
+        assert!(parse_grid("S> b> q? K>").is_err());
+        // Tab inside a tile (not a recognised filler).
+        assert!(parse_grid("b\t").is_err());
+    }
+
+    #[test]
+    fn test_malformed_non_rectangular() {
+        // Rows with differing column counts are rejected, not padded.
+        assert!(parse_grid("S> b> K>\nb>").is_err());
+        assert!(parse_grid("S> b>\nS> b> K>").is_err());
+        // A rectangular grid of the same entities is fine (control case).
+        assert!(parse_grid("S> b> K>\nb> b> b>").is_ok());
     }
 
     #[test]
@@ -1255,10 +1279,10 @@ factory: |
             .unwrap()
             .filter_map(Result::ok)
             .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
             .collect();
         files.sort();
-        assert!(!files.is_empty(), "no .txt factory files found in {dir}");
+        assert!(!files.is_empty(), "no .yaml factory files found in {dir}");
 
         for path in &files {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
