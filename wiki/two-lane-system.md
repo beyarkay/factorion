@@ -138,8 +138,8 @@ restrictive: e.g. a single inserter feeding a belt can saturate at most
 
 ### Tests
 
-All parity tests (`tests/test_parity.py`) would need to assert per-lane
-throughput against Rust, not just combined throughput.
+All throughput tests (`tests/test_handcrafted.py`) would need to assert
+per-lane throughput, not just combined throughput.
 
 ## When to add lanes
 

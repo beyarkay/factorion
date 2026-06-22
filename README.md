@@ -35,7 +35,7 @@ What's landed on `main` in the last week, newest first.
 - Added a binary "I'm done placing entities" output head so the agent can decide when to stop ([#103](https://github.com/beyarkay/factorion/pull/103))
 - Scaled the supervised pre-training smoke test up to 300k samples on an 11×11 grid ([#102](https://github.com/beyarkay/factorion/pull/102))
 - Built an interactive page for inspecting the model's predictions, and added W&B checkpoint uploads ([#100](https://github.com/beyarkay/factorion/pull/100))
-- Replaced the Python throughput solver with a Rust implementation for a big speedup ([#99](https://github.com/beyarkay/factorion/pull/99))
+- Moved throughput computation into a Rust implementation for a big speedup ([#99](https://github.com/beyarkay/factorion/pull/99))
 - Dropped the marimo notebook wrapper so `factorion.py` is a plain importable module ([#98](https://github.com/beyarkay/factorion/pull/98))
 - Made the agent predict all four channels of an entity placement (tile, entity type, item/recipe, orientation) ([#96](https://github.com/beyarkay/factorion/pull/96))
 - Logged per-task validation metrics and a per-head loss breakdown during pre-training ([#97](https://github.com/beyarkay/factorion/pull/97))
