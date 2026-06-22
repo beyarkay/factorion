@@ -1,0 +1,20 @@
+description: |
+  Regression for #87 (fan-out double-counts throughput). A source is bottlenecked
+  to 0.86 i/s by one inserter, feeding belt B. B then fans out to two inserters
+  (one above, one below). B only has 0.86 to give, so the two inserters should
+  SPLIT it (0.43 each → each sink gets 0.43). The bug copies B's full 0.86 to
+  every successor, so each inserter pulls 0.86 and each sink wrongly gets 0.86
+  (1.72 total).
+items:
+- { x: 0, y: 2, item: copper_cable }
+- { x: 2, y: 0, item: copper_cable }
+- { x: 2, y: 4, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.43 }
+- { item: copper_cable, per_second: 0.43 }
+factory: |
+  .. .. K^
+  .. .. i^
+  S> i> b>
+  .. .. iv
+  .. .. Kv
