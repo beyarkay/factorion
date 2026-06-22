@@ -266,7 +266,8 @@ impl Item {
     /// Decode an item by its canonical snake_case name — the inverse of
     /// [`Item::name`]. Returns `None` for unknown names. Implemented by
     /// scanning `all_items()` so it can never drift out of sync with
-    /// `name()`.
+    /// `name()`. Used by the `#[cfg(test)]` textual factory parser.
+    #[allow(dead_code)]
     pub fn from_name(name: &str) -> Option<Self> {
         all_items().iter().copied().find(|i| i.name() == name)
     }
