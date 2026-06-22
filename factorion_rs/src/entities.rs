@@ -6,6 +6,10 @@ use crate::world::World;
 /// An edge in the factory graph: (source_node, destination_node).
 pub type Edge = (NodeId, NodeId);
 
+/// How far an underground-belt entrance reaches for its paired exit
+/// (delta 1..UNDERGROUND_REACH — up to 5 tiles apart, like a yellow belt).
+const UNDERGROUND_REACH: i64 = 6;
+
 /// Trait abstracting over factory entity types.
 ///
 /// Each entity type implements this trait to define:
@@ -147,12 +151,23 @@ impl FactoryEntity for TransportBelt {
             let dy_u = dst_y as usize;
             if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
                 let dst_dir = world.direction_at(dx_u, dy_u);
+                let dst_misc = world.misc_at(dx_u, dy_u);
 
-                let dst_is_belt = matches!(dst_entity, Item::TransportBelt | Item::UndergroundBelt);
-                // Don't connect to a belt facing the opposite direction
-                let dst_opposing = dst_is_belt && dst_dir == dir.opposite();
+                // A belt hands off to another belt or into an underground
+                // *entrance*, but never *inline into* an exit (items only come
+                // out of an exit). Skip a target facing the opposite direction.
+                let dst_is_droppable = matches!(dst_entity, Item::TransportBelt)
+                    || (dst_entity == Item::UndergroundBelt
+                        && dst_misc == Misc::UndergroundDown);
+                let dst_opposing = dst_is_droppable && dst_dir == dir.opposite();
+                // A *perpendicular* exit can still be side-loaded onto (not the
+                // inline same/opposite directions, which are the tunnel mouth).
+                let dst_exit_sideload = dst_entity == Item::UndergroundBelt
+                    && dst_misc == Misc::UndergroundUp
+                    && dst_dir != dir
+                    && dst_dir != dir.opposite();
 
-                if dst_is_belt && !dst_opposing {
+                if (dst_is_droppable && !dst_opposing) || dst_exit_sideload {
                     edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
                 }
             }
@@ -309,42 +324,54 @@ impl FactoryEntity for UndergroundBelt {
         let mut edges = Vec::new();
         let (x, y) = pos;
         let self_id = NodeId::new(Item::UndergroundBelt, x, y);
+        if dir == Direction::None {
+            return edges;
+        }
+        let (dx, dy) = dir.delta();
 
-        let max_delta = match self.misc {
-            Misc::UndergroundDown => 6usize,
-            Misc::UndergroundUp => 1,
-            _ => return edges,
-        };
-
-        for delta in 1..max_delta {
-            let (dst_x, dst_y) = match dir {
-                Direction::East => (x as i64 + delta as i64, y as i64),
-                Direction::West => (x as i64 - delta as i64, y as i64),
-                Direction::North => (x as i64, y as i64 - delta as i64),
-                Direction::South => (x as i64, y as i64 + delta as i64),
-                Direction::None => continue,
-            };
-
-            if !world.in_bounds(dst_x, dst_y) {
-                continue;
+        match self.misc {
+            // Exit: items come *out* and flow onto the cell directly ahead,
+            // exactly like a belt's output — a belt or an underground
+            // *entrance*, unless it faces back at us. Nothing flows *into* an
+            // exit (its input is the tunnel, not the adjacent cell).
+            Misc::UndergroundUp => {
+                let (ax, ay) = (x as i64 + dx, y as i64 + dy);
+                if world.in_bounds(ax, ay) {
+                    let (au, av) = (ax as usize, ay as usize);
+                    if let Some(dst) = world.entity_at(au, av) {
+                        let droppable = matches!(dst, Item::TransportBelt)
+                            || (dst == Item::UndergroundBelt
+                                && world.misc_at(au, av) == Misc::UndergroundDown);
+                        if droppable && world.direction_at(au, av) != dir.opposite() {
+                            edges.push((self_id, NodeId::new(dst, au, av)));
+                        }
+                    }
+                }
             }
-
-            let dst_xu = dst_x as usize;
-            let dst_yu = dst_y as usize;
-            let dst_entity = match world.entity_at(dst_xu, dst_yu) {
-                Some(e) => e,
-                None => continue,
-            };
-
-            let going_underground =
-                dst_entity == Item::UndergroundBelt && self.misc == Misc::UndergroundDown;
-
-            let cxn_to_belt =
-                matches!(dst_entity, Item::TransportBelt) && self.misc == Misc::UndergroundUp;
-
-            if going_underground || cxn_to_belt {
-                edges.push((self_id.clone(), NodeId::new(dst_entity, dst_xu, dst_yu)));
+            // Entrance: its output goes underground to the paired exit — the
+            // first same-direction exit within reach. The tunnel passes beneath
+            // non-underground entities; the first underground belt it meets ends
+            // the search, and pairs only if that belt is a matching exit.
+            Misc::UndergroundDown => {
+                for delta in 1..UNDERGROUND_REACH {
+                    let (tx, ty) = (x as i64 + dx * delta, y as i64 + dy * delta);
+                    if !world.in_bounds(tx, ty) {
+                        break;
+                    }
+                    let (tu, tv) = (tx as usize, ty as usize);
+                    if let Some(e) = world.entity_at(tu, tv) {
+                        if e == Item::UndergroundBelt {
+                            if world.misc_at(tu, tv) == Misc::UndergroundUp
+                                && world.direction_at(tu, tv) == dir
+                            {
+                                edges.push((self_id, NodeId::new(e, tu, tv)));
+                            }
+                            break;
+                        }
+                    }
+                }
             }
+            _ => {}
         }
 
         edges
@@ -925,7 +952,7 @@ mod tests {
 
     #[test]
     fn test_underground_belt_up_connections() {
-        // Underground up at (3,0) facing east, belt at (4,0) facing east
+        // Underground exit at (3,0) facing east, belt at (4,0) facing east.
         let mut w = World::empty(5, 1);
         w.place_underground(3, 0, Direction::East, Misc::UndergroundUp);
         w.place(4, 0, Item::TransportBelt, Direction::East, None);
@@ -935,12 +962,14 @@ mod tests {
         };
         let edges = ub.connections((3, 0), Direction::East, &w);
 
-        // max_delta is 1 for UP, so it searches at delta=0 only... wait, range(1, 1) is empty.
-        // Hmm, looking at the Python: for UP, max_delta=1, range(1, 1) is empty.
-        // That means UP underground belts create no edges from their own connections()!
-        // The DOWN belt creates the edge to the UP belt. The UP belt's connection to
-        // the next transport belt is handled by the transport belt's connections().
-        assert_eq!(edges.len(), 0);
+        // An exit outputs like a belt: it feeds the cell directly ahead.
+        assert_eq!(
+            edges,
+            vec![(
+                NodeId::new(Item::UndergroundBelt, 3, 0),
+                NodeId::new(Item::TransportBelt, 4, 0),
+            )]
+        );
     }
 
     #[test]
