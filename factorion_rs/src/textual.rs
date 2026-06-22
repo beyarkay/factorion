@@ -987,4 +987,70 @@ S> b> b> K> ..
         .unwrap();
         assert_throughput(&spec);
     }
+
+    // ── Ports of existing throughput.rs tests, to show the format end-to-end ──
+
+    #[test]
+    fn test_port_inserter_limited() {
+        // throughput.rs::test_source_inserter_belt_sink — an inserter caps the
+        // line at its 0.86 i/s rate.
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+---
+S> i> b> K>
+",
+        )
+        .unwrap();
+        assert_throughput(&spec);
+    }
+
+    #[test]
+    fn test_port_splitter_split() {
+        // throughput.rs::test_splitter_split — one input fans out through a
+        // splitter to two sinks, 7.5 i/s each.
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 4, y: 0, item: copper_cable }
+- { x: 4, y: 1, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 7.5 }
+- { item: copper_cable, per_second: 7.5 }
+---
+S> b> Y> b> K> ..
+.. .. Y> b> K> ..
+",
+        )
+        .unwrap();
+        assert_throughput(&spec);
+    }
+
+    #[test]
+    fn test_port_disconnected_scores_zero() {
+        // throughput.rs::test_disconnected_entities — no path source→sink, so
+        // the sink's delivery is 0.
+        let spec = parse(
+            "
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 4, y: 4, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0 }
+---
+S> .. .. .. ..
+.. .. .. .. ..
+.. .. b> .. ..
+.. .. .. .. ..
+.. .. .. .. K>
+",
+        )
+        .unwrap();
+        assert_throughput(&spec);
+    }
 }
