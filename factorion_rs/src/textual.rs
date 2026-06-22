@@ -53,12 +53,14 @@
 //! The first body tile in reading order is the anchor (top-left), matching how
 //! `build_graph` re-derives multi-tile entities.
 
+use std::collections::HashSet;
+
 use serde::Deserialize;
 
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Misc};
+use crate::types::{Channel, Direction, Item, Misc, NodeId};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
@@ -399,7 +401,8 @@ struct Header {
     /// Expected per-sink deliveries, asserted by [`assert_throughput`].
     #[serde(default)]
     throughput: Vec<ThroughputEntry>,
-    /// Reserved: an expected-graph description. Parsed but not yet asserted.
+    /// Expected factory graph: one `A@x,y -> B@x,y` edge per line. Checked by
+    /// [`check_graph`]. Multi-tile entities are referenced by their anchor.
     #[serde(default)]
     graph: Option<String>,
 }
@@ -426,9 +429,10 @@ pub(crate) struct FactorySpec {
     pub expected_throughput: Vec<DeliverySpec>,
     /// Free-text description from the header, if any.
     pub description: Option<String>,
-    /// Raw `graph:` block from the header, if any. Reserved for a future
-    /// edge-set assertion; not interpreted yet.
-    pub expected_graph: Option<String>,
+    /// Expected directed edges from the `graph:` block, if any — each a
+    /// `(source, destination)` referenced by `<char>@x,y` (multi-tile entities
+    /// by their anchor). Asserted by [`check_graph`].
+    pub expected_graph: Option<Vec<(NodeId, NodeId)>>,
 }
 
 /// One expected sink delivery: an item and the rate at which it should arrive.
@@ -476,12 +480,64 @@ fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    let expected_graph = header.graph.as_deref().map(parse_graph_spec).transpose()?;
+
     Ok(FactorySpec {
         world: parsed.world,
         expected_throughput,
         description: header.description,
-        expected_graph: header.graph,
+        expected_graph,
     })
+}
+
+/// Parse a `graph:` block — one `A@x,y -> B@x,y` edge per line — into directed
+/// edges. Blank lines and `#` comments are ignored.
+fn parse_graph_spec(text: &str) -> Result<Vec<(NodeId, NodeId)>, String> {
+    let mut edges = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (lhs, rhs) = line
+            .split_once("->")
+            .ok_or_else(|| format!("graph edge '{line}': expected 'A@x,y -> B@x,y'"))?;
+        edges.push((parse_graph_node(lhs)?, parse_graph_node(rhs)?));
+    }
+    Ok(edges)
+}
+
+/// Parse one `<char>@x,y` node reference into a [`NodeId`].
+fn parse_graph_node(s: &str) -> Result<NodeId, String> {
+    let s = s.trim();
+    let (head, coords) = s
+        .split_once('@')
+        .ok_or_else(|| format!("graph node '{s}': expected '<entity>@x,y'"))?;
+    let head = head.trim();
+    let mut chars = head.chars();
+    let (ch, rest) = (chars.next(), chars.next());
+    let (item, _misc) = match (ch, rest) {
+        (Some(c), None) => entity_for_char(c)
+            .ok_or_else(|| format!("graph node '{s}': unknown entity character '{c}'"))?,
+        _ => return Err(format!("graph node '{s}': entity must be one character")),
+    };
+    let (xs, ys) = coords
+        .split_once(',')
+        .ok_or_else(|| format!("graph node '{s}': expected coordinates 'x,y'"))?;
+    let x = xs
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("graph node '{s}': invalid x coordinate"))?;
+    let y = ys
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("graph node '{s}': invalid y coordinate"))?;
+    Ok(NodeId::new(item, x, y))
+}
+
+/// Compact `<char>@x,y` rendering of a node, for graph-mismatch messages.
+fn fmt_node(id: &NodeId) -> String {
+    format!("{}@{},{}", char_for_item(id.entity_kind), id.x, id.y)
 }
 
 /// Parse a single-document YAML factory into a [`FactorySpec`].
@@ -560,6 +616,53 @@ pub(crate) fn check_throughput(spec: &FactorySpec) -> Result<(), String> {
 /// single in-line test assertion.
 pub(crate) fn assert_throughput(spec: &FactorySpec) {
     let outcome = check_throughput(spec);
+    assert!(outcome.is_ok(), "{}", outcome.err().unwrap_or_default());
+}
+
+/// Check the graph produced by parsing the factory against the header's
+/// `graph:` edge set (order-independent). Returns `Ok` when no `graph:` was
+/// given, otherwise `Err` listing the missing and unexpected edges.
+pub(crate) fn check_graph(spec: &FactorySpec) -> Result<(), String> {
+    let expected = match &spec.expected_graph {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+    let graph = build_graph(&spec.world);
+
+    let mut actual: HashSet<(NodeId, NodeId)> = HashSet::new();
+    for (i, succs) in graph.successors.iter().enumerate() {
+        for &j in succs {
+            actual.insert((graph.nodes[i].id.clone(), graph.nodes[j].id.clone()));
+        }
+    }
+    let expected: HashSet<(NodeId, NodeId)> = expected.iter().cloned().collect();
+
+    if actual == expected {
+        return Ok(());
+    }
+    let fmt_edge = |e: &(NodeId, NodeId)| format!("    {} -> {}", fmt_node(&e.0), fmt_node(&e.1));
+    let mut missing: Vec<String> = expected.difference(&actual).map(fmt_edge).collect();
+    let mut unexpected: Vec<String> = actual.difference(&expected).map(fmt_edge).collect();
+    missing.sort();
+    unexpected.sort();
+    let block = |label: &str, edges: &[String]| {
+        if edges.is_empty() {
+            format!("  {label}: (none)\n")
+        } else {
+            format!("  {label}:\n{}\n", edges.join("\n"))
+        }
+    };
+    Err(format!(
+        "graph mismatch\n{}{}factory:\n{}",
+        block("missing (in graph: but not produced)", &missing),
+        block("unexpected (produced but not in graph:)", &unexpected),
+        render(&spec.world)
+    ))
+}
+
+/// Like [`check_graph`] but panics on mismatch.
+pub(crate) fn assert_graph(spec: &FactorySpec) {
+    let outcome = check_graph(spec);
     assert!(outcome.is_ok(), "{}", outcome.err().unwrap_or_default());
 }
 
@@ -953,17 +1056,89 @@ factory: |
     }
 
     #[test]
-    fn test_graph_field_captured() {
+    fn test_graph_field_parsed_to_edges() {
         let spec = parse(
             "
 graph: |
   S@0,0 -> b@1,0
+  b@1,0 -> K@2,0
 factory: |
   S> b> K>
 ",
         )
         .unwrap();
-        assert_eq!(spec.expected_graph.as_deref(), Some("S@0,0 -> b@1,0\n"));
+        assert_eq!(
+            spec.expected_graph,
+            Some(vec![
+                (
+                    NodeId::new(Item::Source, 0, 0),
+                    NodeId::new(Item::TransportBelt, 1, 0),
+                ),
+                (
+                    NodeId::new(Item::TransportBelt, 1, 0),
+                    NodeId::new(Item::Sink, 2, 0),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_assert_graph_matches() {
+        // The full, correct edge set for S> b> K>.
+        let spec = parse(
+            "
+graph: |
+  S@0,0 -> b@1,0
+  b@1,0 -> K@2,0
+factory: |
+  S> b> K>
+",
+        )
+        .unwrap();
+        assert_graph(&spec);
+    }
+
+    #[test]
+    fn test_check_graph_detects_missing_and_extra_edges() {
+        // Missing b@1,0 -> K@2,0, and an invented edge that isn't produced.
+        let spec = parse(
+            "
+graph: |
+  S@0,0 -> b@1,0
+  S@0,0 -> K@2,0
+factory: |
+  S> b> K>
+",
+        )
+        .unwrap();
+        let err = check_graph(&spec).unwrap_err();
+        assert!(err.contains("graph mismatch"), "{err}");
+        assert!(err.contains("b@1,0 -> K@2,0"), "{err}"); // missing
+        assert!(err.contains("S@0,0 -> K@2,0"), "{err}"); // unexpected
+    }
+
+    #[test]
+    #[should_panic(expected = "graph mismatch")]
+    fn test_assert_graph_panics_on_mismatch() {
+        let spec = parse(
+            "
+graph: |
+  S@0,0 -> K@2,0
+factory: |
+  S> b> K>
+",
+        )
+        .unwrap();
+        assert_graph(&spec);
+    }
+
+    #[test]
+    fn test_graph_node_parse_errors() {
+        // Malformed graph specs are rejected at parse time.
+        assert!(parse("graph: |\n  S@0,0 b@1,0\nfactory: |\n  S> b>").is_err()); // no ->
+        assert!(parse("graph: |\n  Z@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
+        assert!(parse("graph: |\n  S@x,0 -> b@1,0\nfactory: |\n  S> b>").is_err());
+        // bad coord
     }
 
     #[test]
@@ -1265,7 +1440,7 @@ factory: |
     // ── Directory sweep ──────────────────────────────────────────────────────
 
     #[test]
-    fn test_factory_files_sweep() {
+    fn test_all_yamls_in_factories_dir() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/factories");
         let read = std::fs::read_dir(dir);
         assert!(
@@ -1310,6 +1485,12 @@ factory: |
                     result.is_ok(),
                     "{label}: {}",
                     result.err().unwrap_or_default()
+                );
+                let graph = check_graph(spec);
+                assert!(
+                    graph.is_ok(),
+                    "{label}: {}",
+                    graph.err().unwrap_or_default()
                 );
             }
         }
