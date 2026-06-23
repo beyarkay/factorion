@@ -66,7 +66,9 @@ class Args:
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     start_from: Optional[str] = None
-    """Path of a model from which to start the training (instead of from scratch)"""
+    """SFT checkpoint to start training from instead of from scratch: either a
+    local .pt path OR a W&B run id (e.g. an SFT run like 'j0s5y2mc', whose
+    model artifact is downloaded automatically)."""
     start_from_wandb: Optional[str] = None
     """wandb run id to continue from"""
 
@@ -161,6 +163,88 @@ def _append_run_tags(run, *tags: str) -> None:
     """Append tags to a (possibly None / disabled) W&B run."""
     if run is not None:
         run.tags = (run.tags or ()) + tags
+
+
+def _resolve_wandb_checkpoint(
+    run_spec: str, project: str, entity: Optional[str]
+) -> tuple[str, dict]:
+    """Resolve a W&B run id to (local_path, source_metadata). Downloads
+    the run's most recent model-type artifact to /tmp/factorion-checkpoints.
+
+    The metadata dict (run_id, run_url, run_name, artifact name) lets callers
+    record/display provenance (e.g. the factory_builder UI) instead of the
+    anonymous tmp download path.
+
+    `run_spec` is either a bare id ("abc123") or a full path
+    ("user/factorion/abc123"). Sets WANDB_MODE/WANDB_DISABLED back to online
+    for the duration of the call — a caller that disabled W&B (e.g. the
+    factory_builder local server) still needs to fetch the artifact."""
+    import wandb
+
+    prev_mode = os.environ.pop("WANDB_MODE", None)
+    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
+    try:
+        api = wandb.Api()
+        if run_spec.count("/") == 2:
+            run = api.run(run_spec)
+        else:
+            ent = entity or api.default_entity
+            run = api.run(f"{ent}/{project}/{run_spec}")
+        dest = Path("/tmp/factorion-checkpoints") / run.id
+        dest.mkdir(parents=True, exist_ok=True)
+
+        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        if not model_arts:
+            raise RuntimeError(
+                f"run {run.id} has no artifacts of type=model — "
+                f"was it trained with --track and the artifact-upload code?"
+            )
+        # Newest first. Each `download()` returns the local dir holding
+        # the artifact's files.
+        art = max(model_arts, key=lambda a: a.created_at)
+        local_dir = Path(art.download(root=str(dest / art.name.replace(":", "_"))))
+        pt_files = sorted(local_dir.glob("*.pt"))
+        if not pt_files:
+            raise RuntimeError(f"artifact {art.name} contains no .pt file")
+        path = str(pt_files[0])
+        print(f"Resolved {run_spec} -> {art.name} -> {path}")
+        source = {
+            "kind": "wandb",
+            "run_id": run.id,
+            "run_url": run.url,
+            "run_name": run.name,
+            "artifact": art.name,
+        }
+        return path, source
+    finally:
+        if prev_mode is not None:
+            os.environ["WANDB_MODE"] = prev_mode
+        if prev_disabled is not None:
+            os.environ["WANDB_DISABLED"] = prev_disabled
+
+
+def _resolve_start_from(
+    start_from: str, project: str, entity: Optional[str] = None
+) -> str:
+    """Resolve ``--start-from`` to a local ``.pt`` checkpoint path.
+
+    ``--start-from`` accepts either a local checkpoint path or a W&B run id
+    (e.g. an SFT run like ``j0s5y2mc``). A path that exists on disk is returned
+    unchanged. Otherwise the value is treated as a W&B run id and the run's
+    model artifact (SFT uploads its best checkpoint there) is downloaded via
+    the shared :func:`_resolve_wandb_checkpoint`.
+    """
+    if os.path.exists(start_from):
+        return start_from
+    # A value ending in .pt is clearly meant as a path — surface the missing
+    # file plainly instead of misinterpreting it as a W&B run id.
+    if start_from.endswith(".pt"):
+        raise FileNotFoundError(
+            f"--start-from='{start_from}' looks like a checkpoint path but does "
+            f"not exist."
+        )
+    path, _source = _resolve_wandb_checkpoint(start_from, project, entity)
+    return path
 
 
 def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=1.0, step_penalty=0.01):
@@ -1126,7 +1210,13 @@ if __name__ == "__main__":
         if args.track:
             _append_run_tags(run, f"start_from:{args.start_from}")
         print(f"Loading model weights from {args.start_from}")
-        agent.load_state_dict(torch.load(args.start_from))
+        ckpt_path = _resolve_start_from(
+            args.start_from, args.wandb_project_name, args.wandb_entity
+        )
+        # Load to CPU first; the SFT checkpoint may hold CUDA tensors (saved on
+        # a GPU pod) and the agent is moved onto `device` just below. This keeps
+        # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
+        agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
 
     agent.to(device)
 
