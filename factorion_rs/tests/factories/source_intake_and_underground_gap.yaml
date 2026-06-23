@@ -1,7 +1,9 @@
-# Regression oracle for the two bugs the removed Python `world2graph` had,
-# which the Rust `build_graph` does NOT (issue #178). Each case pins the
-# corrected behaviour as hand-written ground truth so it can never silently
-# come back.
+# Two connection rules that are easy to get wrong, pinned as hand-written
+# ground truth: (1) a source only gains an input edge from a belt that faces
+# into it, never from one facing away; (2) an underground entry pairs with
+# its exit across a gap. Both were bugs in the removed Python `world2graph`
+# (issue #178) that the Rust `build_graph` fixes — these cases stop them
+# silently coming back.
 
 # --- Bug 1: phantom source-input edge ---------------------------------------
 # The old Python builder modelled a source like a permissive inserter: it
