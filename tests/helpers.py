@@ -31,7 +31,6 @@ from factorion import (  # noqa: E402
     recipes,
     str2ent,
     str2item,
-    world2graph,
     world2html,
 )
 
@@ -42,7 +41,7 @@ from factorion import (  # noqa: E402
 def make_world(w, h=None):
     """Create an empty square WHC world tensor.
 
-    Python's world2graph requires square worlds, so we use max(w, h).
+    Several lesson generators assume a square grid, so we use max(w, h).
     """
     if h is None:
         h = w
@@ -97,17 +96,6 @@ def set_multi_tile_entity(world, entity_name, x, y, direction, item_name="empty"
 def set_splitter(world, x, y, direction, item_name="empty"):
     """Place a splitter at anchor (x, y), filling all occupied tiles."""
     set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
-
-
-def rust_factory_graph(world_WHC):
-    """Build a factory's connection graph via the Rust engine, as a networkx
-    ``DiGraph``.
-
-    A named alias for :func:`factorion.build_graph_nx` used by the
-    Python-vs-Rust equivalence tests; identical node labels and nx interface
-    to the (deprecated) ``world2graph``.
-    """
-    return build_graph_nx(world_WHC)
 
 
 def build_factory_graph(world_WHC):

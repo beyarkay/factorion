@@ -4,8 +4,8 @@ These pin down the behaviour the rest of the codebase relies on when it
 turns a world tensor into a connection graph: the exact node set, the
 exact edge set, and source→sink reachability. Every test goes through
 ``helpers.build_factory_graph`` — the single indirection point for graph
-construction, now backed by the Rust engine (``factorion_rs.py_build_graph``).
-These snapshots were first frozen against the legacy Python ``world2graph``
+construction, backed by the Rust engine (``factorion_rs.py_build_graph``).
+These snapshots were first frozen against the legacy Python graph builder
 for the clean worlds where the two engines agree, so they doubled as the
 migration's safety net and remain the permanent characterization of the
 Rust graph builder.
@@ -272,7 +272,7 @@ class TestGeneratedWorldConnectivity:
     """For known-correct factories, every source reaches some sink and every
     sink is reached by some source through the constructed graph. Holds for
     *all* lesson kinds — including the underground lessons the legacy Python
-    world2graph mis-wired — now that build_factory_graph runs on the Rust
+    graph builder mis-wired — now that build_factory_graph runs on the Rust
     engine (issue #178)."""
 
     @pytest.mark.parametrize("kind", _CONNECTIVITY_KINDS, ids=lambda k: k.name)

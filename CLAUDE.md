@@ -31,7 +31,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - **ML Framework**: PyTorch (`torch`)
 - **Experiment Tracking**: Weights & Biases (`wandb`)
 - **CLI Parsing**: tyro (dataclass-based)
-- **Graphs**: networkx (throughput calculation)
+- **Graphs**: networkx (flow-graph visualization only; graph construction and throughput live in the Rust engine)
 
 ## Project Structure
 

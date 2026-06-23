@@ -1158,7 +1158,7 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Matches the Python format: "entity_name\n@x,y".
+/// Its [`label`](NodeId::label) renders as `"entity_name\n@x,y"`.
 ///
 /// `entity_kind` is an `Item` (post-unification) and should always be
 /// placeable — only placeable items become graph nodes.

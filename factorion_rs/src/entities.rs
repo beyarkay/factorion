@@ -178,7 +178,8 @@ impl FactoryEntity for AssemblingMachine {
                 if (0..3).contains(&ddx) && (0..3).contains(&ddy) {
                     continue;
                 }
-                // Skip corners (matching Python)
+                // Skip corners: only the orthogonal perimeter slots can hold an
+                // inserter that reaches into the assembler body.
                 if (ddx == -1 || ddx == 3) && (ddy == -1 || ddy == 3) {
                     continue;
                 }
@@ -190,9 +191,9 @@ impl FactoryEntity for AssemblingMachine {
                     None => continue,
                 };
 
-                // Only inserter-like entities can interact with assembling machines.
-                // In Python, Source (stack_inserter) and Sink (bulk_inserter)
-                // both contain "inserter" in their name, so they match too.
+                // Only inserter-like entities can interact with assembling
+                // machines. The Source and Sink markers count too: they insert
+                // into / pull from the assembler exactly like a plain inserter.
                 if !matches!(other_entity, Item::Inserter | Item::Source | Item::Sink) {
                     continue;
                 }
@@ -329,9 +330,9 @@ impl FactoryEntity for UndergroundBelt {
 
 // ── Source (stack_inserter) ─────────────────────────────────────────────────
 //
-// In the Python code, stack_inserter contains "inserter" in its name, so it
-// uses the same inserter connection logic: picks up from behind, drops onto
-// belts/assemblers ahead. Its special behavior is that it has infinite output.
+// A source (stack_inserter) uses the same inserter connection logic: picks up
+// from behind, drops onto belts/assemblers ahead. Its special behavior is that
+// it has infinite output.
 
 pub struct Source {
     item: Option<Item>,
@@ -891,13 +892,13 @@ mod tests {
         // Wait, let me re-check: ddx = 0 - 1 = -1, ddy = 1 - 1 = 0.
         // Condition: other_d == EAST and ddx > 0 → ddx = -1, not > 0 → NOT inserting into.
         // other_d == WEST and ddx < 0 → East != West → not this.
-        // Actually let me re-derive. The Python code:
-        //   if (other_d == Direction.NORTH and dy < 0)
-        //     or (other_d == Direction.SOUTH and dy > 0)
-        //     or (other_d == Direction.WEST and dx < 0)
-        //     or (other_d == Direction.EAST and dx > 0):
-        //       src = self_str (assembler)
-        //       dst = other_str (inserter)
+        // Actually let me re-derive from the assembler→inserter rule: when
+        //   (other_d == North and ddy < 0)
+        //     or (other_d == South and ddy > 0)
+        //     or (other_d == West and ddx < 0)
+        //     or (other_d == East and ddx > 0)
+        // the edge is assembler → inserter (the assembler outputs to it);
+        // otherwise it is inserter → assembler.
         // So when inserter direction matches the offset direction from assembler → assembler outputs to inserter.
         // For inserter at (0,1): ddx = -1, ddy = 0, dir = East. East and ddx > 0? No. So it's other → self = inserter → assembler.
         // For inserter at (4,2): ddx = 3, ddy = 1, dir = East. East and ddx > 0? Yes. So it's self → other = assembler → inserter.

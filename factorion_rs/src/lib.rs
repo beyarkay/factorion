@@ -83,7 +83,7 @@ type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
 ///
 /// This is enough to rebuild a `networkx.DiGraph` for connectivity checks and
 /// visualization layout, and is the single Python entry point for factory
-/// graph construction (replacing the former Python `world2graph`).
+/// graph construction.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn py_build_graph(world: PyReadonlyArray3<i64>) -> PyResult<PyGraphData> {
