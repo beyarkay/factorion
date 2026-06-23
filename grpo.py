@@ -929,6 +929,14 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
             f"Rvar={metrics.get('diversity/reward_var', 0):.3f}"
         )
 
+    # Always run a final held-out eval so the summary reflects the trained
+    # policy regardless of whether the last iteration landed on eval_every.
+    final_eval: dict = {}
+    if eval_grids:
+        final_eval = greedy_eval(policy, args, eval_grids, device)
+        if run is not None:
+            run.log(final_eval, step=samples_seen)
+
     torch.save(policy.state_dict(), args.checkpoint_path)
     runtime = time.time() - t0
     print(f"Checkpoint saved to {args.checkpoint_path}")
@@ -944,8 +952,9 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
         "learning_rate": args.learning_rate,
         "reward_mode": args.reward_mode,
         "samples_seen": samples_seen,
-        "final_eval_throughput": last_metrics.get("eval/throughput"),
-        "final_eval_success_rate": last_metrics.get("eval/success_rate"),
+        "final_eval_throughput": final_eval.get("eval/throughput"),
+        "final_eval_success_rate": final_eval.get("eval/success_rate"),
+        "final_eval_dir_acc_vs_ref": final_eval.get("eval/dir_acc_vs_ref"),
         "final_rollout_throughput": last_metrics.get("rollout/mean_throughput"),
         "final_kl_ref": last_metrics.get("loss/kl_ref"),
         "final_off_reference_success": last_metrics.get("diversity/off_reference_success"),
