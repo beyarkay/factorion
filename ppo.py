@@ -45,6 +45,7 @@ for _ in range(moving_average_length):
 min_belts_thoughputs = [deque(maxlen=100) for _ in range(10)]
 
 @dataclass
+# Best hyperparameters from W&B sweep: https://wandb.ai/beyarkay/factorion/sweeps/54rz47hy
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
@@ -76,7 +77,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 5.86e-4
+    learning_rate: float = 2.35466e-05
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -84,9 +85,9 @@ class Args:
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9857
+    gamma: float = 0.993297
     """the discount factor gamma"""
-    gae_lambda: float = 0.8014
+    gae_lambda: float = 0.926371
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
@@ -99,9 +100,9 @@ class Args:
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef_start: float = 0.02041
+    ent_coef_start: float = 0.0232489
     """entropy coefficient at the start of training (high = more exploration)"""
-    ent_coef_end: float = 0.0004576
+    ent_coef_end: float = 4.33997e-05
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.7426
     """coefficient of the value function"""
