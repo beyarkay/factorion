@@ -1,77 +1,82 @@
-# sweep.yaml — PPO hyperparameter sweep
+# sweep.yaml — PPO RL-finetuning sweep (from the SFT base j0s5y2mc)
+#
+# Goal: find hyperparameters under which PPO *exceeds* the SFT base's
+# eval/throughput_eot (~0.11) instead of degrading it. A baseline run
+# (isq08ia3) started at the SFT level and collapsed to ~0.05: the agent learned
+# to declare end-of-turn almost immediately (rollout/length 58 -> 5, eot_rate
+# -> 1.0) and the policy went deterministic (ent_coef=0). So this sweep targets
+# the levers behind that collapse, not the architecture.
+#
+# Fixed (NOT swept): the run continues a specific SFT checkpoint, so the
+# architecture (layers/kernel) and grid size MUST match it — sweeping them would
+# break load_state_dict. --start-from / --size / --total-timesteps /
+# --critic-warmup / --eval-every are pinned in `command` below.
 
 method: bayes
-run_cap: 20
+run_cap: 30
 metric:
-  name: "eval/throughput_eot"
+  name: "eval/throughput_eot"   # greedy held-out, EOT-respecting; beat ~0.11
   goal: maximize
 
 parameters:
+  # ── Stop the immediate-EOT collapse ──────────────────────────────────
+  # step_penalty rewards declaring "done" early; 0.01 drove length->5. Test
+  # all the way down to 0 (no early-stop pressure).
+  step_penalty:
+    values: [0.0, 0.002, 0.005, 0.01]
+
+  # Make the terminal throughput reward dominate any per-step cost, so there's
+  # a real incentive to keep building.
+  throughput_reward_scale:
+    values: [1.0, 3.0, 5.0]
+
+  # ── Keep exploring instead of collapsing deterministically ───────────
+  # ent_coef=0 let the SFT policy's build attempts collapse before earning
+  # reward; give it some entropy (annealed start -> end).
   ent_coef_start:
     distribution: log_uniform_values
-    min: 0.005
-    max: 0.2
-
+    min: 5e-4
+    max: 5e-2
   ent_coef_end:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 0.01
+    min: 1e-5
+    max: 5e-3
 
+  # ── Move the policy enough (updates were ~zero by the end) ───────────
   learning_rate:
     distribution: log_uniform_values
-    min: 5e-5
-    max: 1e-3
+    min: 2e-5
+    max: 5e-4
+  target_kl:
+    values: [0.02, 0.05, 0.15]   # bigger trust region = more movement/rollout
 
-  chan1:
-    values: [32, 48, 64]
-
-  chan2:
-    values: [48, 64]
-
-  chan3:
-    values: [48, 64]
-
-  clip_coef:
-    distribution: uniform
-    min: 0.18
-    max: 0.32
-
+  # ── Credit assignment for the sparse terminal throughput reward ──────
+  # ~100-step episodes: the default gamma 0.986 discounts the terminal reward
+  # to ~0.24 at step 0, and gae_lambda 0.80 is a short horizon. Push both up so
+  # the end-of-episode throughput propagates back to early placements.
   gamma:
     distribution: uniform
-    min: 0.95
+    min: 0.985
     max: 0.999
-
   gae_lambda:
     distribution: uniform
-    min: 0.8
-    max: 0.975
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  vf_coef:
-    distribution: uniform
-    min: 0.5
-    max: 0.9
-
-  max_grad_norm:
-    distribution: uniform
-    min: 0.75
-    max: 2.5
-
-  adam_epsilon:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 2e-4
+    min: 0.9
+    max: 0.99
 
 program: ppo.py
 
 command:
   - bash
   - run_sweep.sh
+  - --start-from
+  - j0s5y2mc          # existing SFT base; pins architecture + grid size
+  - --size
+  - "11"
   - --total-timesteps
-  - 250_000
+  - "500000"          # plenty per the baseline run
+  - --critic-warmup
+  - "10"
+  - --eval-every
+  - "7"               # dense eval/* so the bayes metric has resolution
   - --track
   - ${args}
