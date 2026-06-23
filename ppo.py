@@ -38,7 +38,6 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-# episodic_returns = deque(maxlen=100)
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -325,11 +324,9 @@ def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'throughput_reward_scale': throughput_reward_scale,
                        'step_penalty': step_penalty})
-        # kwargs.update({'size': size, 'max_steps': 6})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
-            # env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda _: True)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     return thunk
@@ -361,11 +358,8 @@ def get_pretty_format(tensor, entity_dir_map):
     assert isinstance(tensor, torch.Tensor), f"Input must be a torch tensor but is {tensor}"
     assert tensor.ndim == 3 and tensor.shape[0] >= 2, f"Tensor must have shape (2+, W, H) but has shape {tensor.shape}"
     assert tensor.shape[1] == tensor.shape[2], f"Expected world to be square, but is of shape {tensor.shape}"
-    # assert torch.is_integral(tensor), "Tensor must contain integers"
 
     _, W, H = tensor.shape
-    # entities = tensor[Channel.ENTITIES.value]
-    # directions = tensor[Channel.DIRECTION.value]
     entities = tensor[0]
     directions = tensor[1]
 
@@ -574,7 +568,6 @@ class FactorioEnv(gym.Env):
         return self._world_CWH.cpu().numpy(), self._get_info()
 
     def step(self, action):
-        # print(f"Stepping env with action {action}")
         x, y = action["xy"]
         entity_id = action["entity"]
         direc = action["direction"]
@@ -582,7 +575,6 @@ class FactorioEnv(gym.Env):
         misc = action["misc"]
 
 
-        # (x, y), entity_id, direc = action
         assert 0 <= x < self._world_CWH.shape[1], f"x={x} out of bounds [0, {self._world_CWH.shape[1]})"
         assert 0 <= y < self._world_CWH.shape[2], f"y={y} out of bounds [0, {self._world_CWH.shape[2]})"
         source_id = self._source_id
@@ -608,10 +600,8 @@ class FactorioEnv(gym.Env):
 
         # Check that the action is actually valid
         if not (0 <= entity_id < len(entities)):
-            # entity_id out of range
             action_is_invalid = True
         elif not (0 <= direc < len(Direction)):
-            # direction out of range
             action_is_invalid = True
         elif entity_id in (source_id, sink_id):
             # agent tried to place a source or sink
@@ -1208,7 +1198,6 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    # 16 * 256 * (50000/(16*256))
     num_gsteps = args.num_envs * args.num_steps * args.num_iterations
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
@@ -1297,7 +1286,6 @@ if __name__ == "__main__":
     print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
-    # env setup
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)],
     )
@@ -1420,7 +1408,6 @@ if __name__ == "__main__":
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
-        # print(f"{iteration=}")
         # Critic warm-up: the actor stays frozen for the first
         # critic_warmup iterations (only the value head trains), then we
         # unfreeze once and run normal PPO from there.
@@ -1470,11 +1457,8 @@ if __name__ == "__main__":
                 for h, e in agent._last_head_entropy.items():
                     _head_ent_sum[h] += float(e)
                 _eot_prob_sum += float(agent._last_eot_prob)
-                # Flatten action
-                # (xy_B2, direc_B1, entities_B1) = action_ED
 
-                # Unpack the action
-                x_B, y_B = action_ED["xy"].unbind(dim=1)  # Unbind xy into x and y
+                x_B, y_B = action_ED["xy"].unbind(dim=1)
                 ent_B = action_ED["entity"]
                 dir_B = action_ED["direction"]
                 item_B = action_ED["item"]
@@ -1565,7 +1549,6 @@ if __name__ == "__main__":
                 advantages_SE[t] = lastgaelam
             returns_SE = advantages_SE + values_SE
 
-        # flatten the batch
         obs_B = obs_SECWH.reshape((-1,) + obs_shape)
         logprobs_B = logprobs_SE.reshape(-1)
         # NOTE: maybe have to convert back to tuple of batches
@@ -1573,8 +1556,6 @@ if __name__ == "__main__":
         advantages_B = advantages_SE.reshape(-1)
         returns_B = returns_SE.reshape(-1)
         values_B = values_SE.reshape(-1)
-
-        # print()
 
         # Optimizing the policy and value network
         update_start = time.time()
@@ -1645,7 +1626,6 @@ if __name__ == "__main__":
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
-        # print()
 
         y_pred, y_true = values_B.cpu().numpy(), returns_B.cpu().numpy()
         var_y = np.var(y_true)
@@ -1774,8 +1754,6 @@ if __name__ == "__main__":
         _append_run_tags(run, f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     if runtime > 60 * 5: # 5 minutes
-        # avg_throughput = 0 if len(final_throughputs) == 0 else float(sum(final_throughputs) / len(final_throughputs))
-        # Save the model to a file
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-').replace(' ', '_')
         agent_name = f"agent-{run_name_dir_safe}"
         print(f"Saving model to artifacts/{agent_name}.pt")

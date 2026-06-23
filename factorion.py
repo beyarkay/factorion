@@ -260,7 +260,6 @@ def item_str2b64img(item, base_path="factorio-icons"):
 
 def new_world(width=8, height=8):
     channels = len(Channel)
-    #     print(f"Making world w={width}, h={height}, c={channels}")
     world = np.zeros((width, height, channels), dtype=int)
     world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
     world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
@@ -292,8 +291,6 @@ def add_entity(
 
     world[x, y, Channel.ENTITIES.value] = proto.value
     world[x, y, Channel.DIRECTION.value] = direction.value
-    # world[x, y, Channel.ITEMS.value] = recipe_proto.value
-    # world[x, y, Channel.MISC.value] = misc.value
 
 
 def world2html(world_WHC, highlights=None):
@@ -317,9 +314,6 @@ def world2html(world_WHC, highlights=None):
         Direction.EAST.value: "→",
         Direction.SOUTH.value: "↓",
         Direction.WEST.value: "←",
-        # 0: "↘",
-        # 10: "↙",
-        # 14: "↖",
     }
     html = ["<table style='border-collapse: collapse;'>"]
     W, H, C = world_WHC.shape
@@ -405,7 +399,6 @@ def world2html(world_WHC, highlights=None):
                 else ""
             )
 
-            #             print(direction_arrow, direction)
             available = (
                 world_WHC[x, y, Channel.FOOTPRINT.value]
                 == Footprint.AVAILABLE.value
@@ -427,7 +420,6 @@ def world2html(world_WHC, highlights=None):
                 )
             else:
                 bg_style = ""
-            #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
 
             ghost_imgs = "\n".join(
                 [
@@ -948,10 +940,6 @@ def plot_flow_network(G):
         font_weight="bold",
     )
 
-    # Add throughput labels
-    #     labels = {node: G.nodes[node].get("throughput", {}) for node in G.nodes}
-    #     nx.draw_networkx_labels(G, pos, labels=labels, font_color="red")
-
     plt.show()
 
 
@@ -1040,19 +1028,8 @@ def normalise_world(world_T, og_world):
         empty_entity_value
     )
 
-    # # Ensure belts don't have recipes
-    # belt_entity_value = str2ent('transport_belt').value
-    # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
-    # world_T[:, :, Channel.ITEMS.value][belt_entities] = empty_entity_value
-
-    # # Ensure all empty entities have no recipe, no direction
-    # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
-    # world_T[:, :, Channel.ITEMS.value][no_entity] = empty_entity_value
-    # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
-
     # Ensure the model can't just overwrite existing factories with a simpler thing.
     tworld = og_world.clone().detach().to(torch.int64)
-    # tworld = torch.tensor(og_world, dtype=torch.int64)
     original_had_something = (
         tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
     )
@@ -1140,9 +1117,6 @@ def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
         w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
     assert limit > 0, "Infinite loop blocked"
 
-    # Add the source + sink to the world
-    # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
-    # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
     if source_item is not None:
         w[source[0], source[1], Channel.ITEMS.value] = source_item
     if sink_item is not None:
@@ -1196,9 +1170,7 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         normalised_world = normalise_world(
             sample_world(probabilities), original_world
         )
-        # value = critic(normalised_world)
         value = critic(normalised_world.to(torch.float))
-        # Maybe having throughput being calculated as a black box is the problem?
         # FIXME(#161): still the old fixed /15.0 normalization. This is the
         # legacy RL-from-scratch eval (no current callers) and its random
         # get_new_world() inputs have no reference factory to normalize by, so
@@ -1386,9 +1358,7 @@ def build_factory(
         # Choose a random source/sink
         original_count = max(500, size * size * 4)
         count = original_count
-        # print(f'count is {count}')
         while count > 0:
-            # print(f"{count} attmempting to place source/sink")
             count -= 1
             pos1 = torch.randint(0, H * W, (1,))
             pos2 = torch.randint(0, H * W, (1,))
@@ -1430,18 +1400,13 @@ def build_factory(
             world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
                 sink_dir.value
             )
-            # print(world_CWH)
-            # print(f"world so far: ")
-            # print(world_CWH[0])
 
             paths = find_belt_paths_with_source_sink_orient(
                 entities=world_CWH[Channel.ENTITIES.value],
                 directions=world_CWH[Channel.DIRECTION.value],
             )
             # Remove all paths that would require placing too many entities
-            # print('found paths', len(paths))
             paths = list(filter(lambda p: len(p) <= max_entities, paths))
-            # print('filtered paths', len(paths))
 
             if len(paths) == 0:
                 world_CWH = torch.tensor(

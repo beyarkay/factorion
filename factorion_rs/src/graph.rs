@@ -434,11 +434,6 @@ mod tests {
             .unwrap();
         assert!(g.successors[ug_down].contains(&ug_up));
 
-        // Belt(0,0) should NOT connect to underground_down (belt doesn't connect to
-        // underground_down because its src_is_beltish check excludes underground_down)
-        // Actually wait: Belt at (0,0) facing east, underground at (1,0) is ahead.
-        // The belt's connections check dst: is it a belt? UndergroundBelt is belt-ish → dst_is_belt = true.
-        // Not opposing direction → should connect.
         let belt0 = g
             .get_index(&NodeId::new(Item::TransportBelt, 0, 0))
             .unwrap();

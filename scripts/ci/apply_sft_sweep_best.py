@@ -132,7 +132,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # ── Fetch best run from sweep ────────────────────────────────
     api = wandb.Api()
     try:
         sweep = api.sweep(args.sweep_path)
@@ -166,7 +165,6 @@ def main():
     print(f"Best run: {best_run.name} ({metric_name}={best_metric:.4f})")
     print(f"Sweep URL: {sweep_url}")
 
-    # ── Update sft.py ────────────────────────────────────────────
     print(f"\nUpdating {args.sft_file}...")
     changed = update_sft_defaults(args.sft_file, best_run.config, sweep_url)
 
@@ -180,7 +178,6 @@ def main():
         print("Dry run -- not creating branch or PR.")
         return
 
-    # ── Create branch, commit, push, open PR ─────────────────────
     branch_name = f"sft-sweep/apply-best-{sweep_id}"
 
     run(["git", "config", "user.name", "github-actions[bot]"])
