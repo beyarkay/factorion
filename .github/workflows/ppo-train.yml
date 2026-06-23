@@ -27,11 +27,6 @@ on:
         required: false
         default: "10"
         type: string
-      start_curriculum_level:
-        description: "num_missing_entities cap (~2*size blanks the whole factory)"
-        required: false
-        default: "22"
-        type: string
       ent_coef:
         description: "Entropy bonus (constant; sets both start & end). 0 = no entropy bonus, right for finetuning an SFT policy"
         required: false
@@ -146,7 +141,6 @@ jobs:
             TOTAL_TIMESTEPS="${{ inputs.total_timesteps }}" \
             SIZE="${{ inputs.size }}" \
             CRITIC_WARMUP="${{ inputs.critic_warmup }}" \
-            START_CURRICULUM_LEVEL="${{ inputs.start_curriculum_level }}" \
             ENT_COEF="${{ inputs.ent_coef }}" \
             LEARNING_RATE="${{ inputs.learning_rate }}" \
             TARGET_KL="${{ inputs.target_kl }}" \

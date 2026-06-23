@@ -144,10 +144,14 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
-    start_curriculum_level: int = 1
-    """Starting curriculum level (num_missing_entities). Useful when loading an SFT checkpoint that already handles easy levels."""
     critic_warmup: int = 0
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
+    eval_every: int = 20
+    """Run the greedy held-out eval (eval/throughput, eval/throughput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
+    eval_seeds_per_kind: int = 12
+    """Held-out factories per LessonKind in the greedy eval set."""
+    eval_num_envs: int = 8
+    """Parallel envs for the greedy eval rollout."""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -162,6 +166,74 @@ def _append_run_tags(run, *tags: str) -> None:
     """Append tags to a (possibly None / disabled) W&B run."""
     if run is not None:
         run.tags = (run.tags or ()) + tags
+
+
+def _run_signature(args) -> str:
+    """Filename-safe W&B run name encoding the key hyperparameters, so runs are
+    identifiable at a glance instead of by timestamp (mirrors SFT's naming).
+    e.g. ``ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1``."""
+    layers = "-".join(str(c) for c in layers_from_args(args))
+    sig = f"ppo-s{args.size}-lr{args.learning_rate:g}-ent{args.ent_coef_start:g}"
+    if args.ent_coef_end != args.ent_coef_start:
+        sig += f"_{args.ent_coef_end:g}"
+    if args.target_kl is not None:
+        sig += f"-kl{args.target_kl:g}"
+    if args.critic_warmup:
+        sig += f"-cw{args.critic_warmup}"
+    if args.start_from:
+        sig += f"-from{args.start_from}"
+    sig += f"-c{layers}-seed{args.seed}"
+    return sig
+
+
+def _build_eval_set(args) -> dict:
+    """Fixed held-out (seed -> LessonKind.value) factories for the greedy eval,
+    disjoint from the training seeds. Each LessonKind gets its own high seed
+    range so seeds never collide across kinds; only seeds where build_factory
+    succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
+    out: dict = {}
+    for ki, kind in enumerate(LessonKind):
+        base = 9_000_000 + args.seed + ki * 100_000
+        found, s = 0, base
+        while found < args.eval_seeds_per_kind and s < base + 5000:
+            if build_factory(size=args.size, kind=kind, seed=s) is not None:
+                out[s] = kind.value
+                found += 1
+            s += 1
+    return out
+
+
+def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
+    """Greedy held-out throughput eval, mirroring SFT's val/throughput[_eot] so
+    the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
+    run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
+    be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
+    from types import SimpleNamespace
+
+    from sft import run_rollout_eval
+
+    # Duck-typed args shim: run_rollout_eval only reads .size/.seed/.max_level.
+    eval_args = SimpleNamespace(size=args.size, seed=args.seed, max_level=0)
+    roll = run_rollout_eval(
+        agent,
+        eval_args,  # ty: ignore[invalid-argument-type]
+        eval_seeds_to_kind,
+        device,
+        max_seeds=len(eval_seeds_to_kind),
+        eot_threshold=0.5,
+        num_envs=args.eval_num_envs,
+    )
+    metrics = {
+        "eval/throughput": roll["overall"],
+        "eval/throughput_eot": roll["overall_eot"],
+    }
+    for kn, thp in roll["per_kind"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            metrics[f"eval/{kn}/throughput"] = thp
+    for kn, thp in roll["per_kind_eot"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            metrics[f"eval/{kn}/throughput_eot"] = thp
+    return metrics
 
 
 def _resolve_wandb_checkpoint(
@@ -365,12 +437,19 @@ class FactorioEnv(gym.Env):
         self._reset_options = options if options is not None else {}
 
         self.steps = 0
+        # Overwritten in reset() with the episode's actual lesson; default keeps
+        # _get_info() safe if it is ever called before the first reset.
+        self._kind = LessonKind.MOVE_ONE_ITEM
 
     def _get_obs(self):
         return self._world_CWH
 
     def _get_info(self):
         return {
+            # Lesson kind as an int (LessonKind.value) so SyncVectorEnv can
+            # stack it across envs; the rollout loop buckets per-lesson metrics
+            # by LessonKind(int).name.
+            'kind': self._kind.value,
             # thput_raw: raw items/second (reference-free). thput_normed:
             # raw / per-factory max, clamped to [0, 1] (1.0 == reproduced the
             # reference factory's throughput). See FIXME(#161) in step().
@@ -464,6 +543,7 @@ class FactorioEnv(gym.Env):
                     f"build_factory returned None for kind={kind} "
                     f"seed={self._seed}"
                 )
+        self._kind = kind
         self._solved_world_CWH = factory.world_CWH
         # Per-factory maximum throughput: the raw items/second the complete,
         # correct factory carries. We normalize the agent's raw throughput by
@@ -1076,14 +1156,29 @@ class AgentCNN(nn.Module):
             dist_m.log_prob(misc_B) +
             dist_eot.log_prob(eot_B)
         )
-        entropy_B = (
-            dist_tile.entropy() +
-            dist_e.entropy() +
-            dist_d.entropy() +
-            dist_i.entropy() +
-            dist_m.entropy() +
-            dist_eot.entropy()
-        )
+        # Per-head entropies, summed into the joint entropy used by PPO. Kept
+        # individually so the rollout can log policy/entropy_{head} (which heads
+        # are still exploring vs collapsed) — the RL analog of SFT's per-head
+        # accuracy. Stashed as detached scalars (cheap; mirrors the
+        # self.time_for_* attributes already set here, so it stays eager-safe).
+        ent_tile = dist_tile.entropy()
+        ent_e = dist_e.entropy()
+        ent_d = dist_d.entropy()
+        ent_i = dist_i.entropy()
+        ent_m = dist_m.entropy()
+        ent_eot = dist_eot.entropy()
+        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m + ent_eot
+        self._last_head_entropy = {
+            "tile": ent_tile.mean().detach(),
+            "entity": ent_e.mean().detach(),
+            "direction": ent_d.mean().detach(),
+            "item": ent_i.mean().detach(),
+            "misc": ent_m.mean().detach(),
+            "eot": ent_eot.mean().detach(),
+        }
+        # Bernoulli(logits).probs == sigmoid(logits); compute directly (ty's
+        # torch stubs don't expose the lazy .probs property).
+        self._last_eot_prob = torch.sigmoid(eot_logit_B).mean().detach()
 
         action_out = {
             "xy": torch.stack([x_B, y_B], dim=1),
@@ -1106,8 +1201,7 @@ if __name__ == "__main__":
     num_gsteps = args.num_envs * args.num_steps * args.num_iterations
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
-    iso8601 = datetime.now().replace(microsecond=0).isoformat(sep='T')
-    run_name = f"{iso8601} seed{args.seed}"
+    run_name = _run_signature(args)
     run = None
     if args.track:
         import wandb
@@ -1137,22 +1231,35 @@ if __name__ == "__main__":
             f"k:{args.kernel_size}",
         )
 
-        # Define metric axes and summary aggregation
+        # Define metric axes and summary aggregation. global_step (env steps)
+        # is the x-axis for every panel. eval/* (greedy held-out throughput) is
+        # the headline progress signal, so it summarises to its max.
         wandb.define_metric("*", step_metric="global_step")
-        for m in ["throughput", "thput_raw", "reward", "length", "invalid_frac",
-                   "num_entities", "entity_efficiency", "frac_reachable"]:
-            wandb.define_metric(f"episode/{m}", summary="last")
-        for m in ["tile_location", "tile_entity", "tile_direction",
-                   "delta_location", "delta_entity", "delta_direction"]:
-            wandb.define_metric(f"shaping/{m}", summary="last")
-        wandb.define_metric("curriculum/score", summary="max")
-        wandb.define_metric("curriculum/level", summary="max")
-        wandb.define_metric("curriculum/throughput_avg", summary="last")
-        for m in ["policy", "value", "entropy", "approx_kl", "clipfrac", "explained_var"]:
+        _LESSONS = [k.name for k in LessonKind]
+        wandb.define_metric("eval/throughput", summary="max")
+        wandb.define_metric("eval/throughput_eot", summary="max")
+        wandb.define_metric("eval/seconds", summary="last")
+        for ln in _LESSONS:
+            wandb.define_metric(f"eval/{ln}/throughput", summary="max")
+            wandb.define_metric(f"eval/{ln}/throughput_eot", summary="max")
+        for m in ["throughput", "thput_raw", "reward", "length", "eot_rate",
+                  "invalid_frac", "num_entities", "entity_efficiency",
+                  "frac_reachable"]:
+            wandb.define_metric(f"rollout/{m}", summary="last")
+        for ln in _LESSONS:
+            for m in ["throughput", "reward", "length"]:
+                wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
+        for m in ["entropy", "eot_prob"]:
+            wandb.define_metric(f"policy/{m}", summary="last")
+        for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
+            wandb.define_metric(f"policy/entropy_{h}", summary="last")
+        for m in ["policy", "value", "entropy", "total", "approx_kl",
+                  "clipfrac", "explained_variance"]:
             wandb.define_metric(f"losses/{m}", summary="last")
-        for m in ["lr", "ent_coef", "grad_norm"]:
+        for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
             wandb.define_metric(f"optim/{m}", summary="last")
-        wandb.define_metric("perf/sps", summary="last")
+        for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
+            wandb.define_metric(f"perf/{m}", summary="last")
     print("Registering factorio Gym env")
     # Register the factorio env. This runs only under __main__, so pass the
     # class directly rather than "ppo:FactorioEnv" — a string entry_point would
@@ -1263,7 +1370,6 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    max_missing_entities = args.start_curriculum_level
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
@@ -1276,15 +1382,9 @@ if __name__ == "__main__":
     unclipped_grad_norm = np.nan
     approx_kl = np.nan
 
-    # Log initial eval metrics at step 0 (before any training)
-    if args.track:
-        wandb.log({
-            "curriculum/level": max_missing_entities,
-            "curriculum/score": (max_missing_entities - 1) + final_thputs_100ma,
-            "curriculum/throughput_avg": final_thputs_100ma,
-        }, step=0)
-
-    # Accumulate episode-level metrics during rollout, log means once per iteration
+    # Accumulate episode-level metrics during the rollout, then log means once
+    # per iteration. Per-lesson keys (rollout/{LESSON}/*) are recorded only by
+    # episodes of that lesson, so each averages over just its own episodes.
     _episode_metrics: dict[str, list[float]] = {}
 
     def _record_episode(metrics: dict[str, float]) -> None:
@@ -1298,7 +1398,13 @@ if __name__ == "__main__":
         _episode_metrics.clear()
         return means
 
-    _next_eval_log_step = 256
+    # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
+    # eval/* — directly comparable to the SFT baseline's val/throughput[_eot].
+    eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
+    if eval_seeds_to_kind:
+        print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
+              f"every {args.eval_every} iters")
+
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
@@ -1327,10 +1433,16 @@ if __name__ == "__main__":
         ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
         ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
+        # Per-iteration accumulators for the acting policy's distribution shape
+        # (the policy/* metrics): summed over rollout steps, meaned at log time.
+        _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
+        _eot_prob_sum = 0.0
+        rollout_start = time.time()
+
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             if (step+1) % 10 == 0 or step + 1 == args.num_steps:
-                pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; score:{(max_missing_entities - 1) + final_thputs_100ma:.2f} (lvl:{max_missing_entities} thput:{final_thputs_100ma:.2f})")
+                pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; thput:{final_thputs_100ma:.3f}")
             obs_SECWH[step] = next_obs_ECWH
             dones_SE[step] = next_done
 
@@ -1340,6 +1452,11 @@ if __name__ == "__main__":
                 # D for dictionary
                 action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
                 values_SE[step] = value_E
+                # Accumulate the acting policy's per-head entropy + eot prob
+                # (stashed by get_action_and_value) for the policy/* metrics.
+                for h, e in agent._last_head_entropy.items():
+                    _head_ent_sum[h] += float(e)
+                _eot_prob_sum += float(agent._last_eot_prob)
 
                 x_B, y_B = action_ED["xy"].unbind(dim=1)
                 ent_B = action_ED["entity"]
@@ -1387,43 +1504,33 @@ if __name__ == "__main__":
                     # This environment finished, extract its stats
                     episode_return = infos["episode"]["r"][i]
                     episode_len = infos["episode"]["l"][i]
-                    # Curriculum score relies on throughput ∈ [0, 1] (level
-                    # advance must dominate within-level gain), so track the
-                    # normalized value; also log raw items/sec for visibility.
                     end_of_episode_thput = infos["thput_normed"][i]
                     end_of_episode_thput_raw = infos["thput_raw"][i]
-                    final_frac_reachable = infos["frac_reachable"][i]
+                    # eot_rate: ended by the EOT action (termination) vs hitting
+                    # max_steps (truncation).
+                    ended_by_eot = 1.0 if bool(terminations[i]) else 0.0
+                    lesson = LessonKind(int(infos["kind"][i])).name
 
                     end_of_episode_thputs.append(end_of_episode_thput)
 
                     _record_episode({
-                        "episode/throughput": float(end_of_episode_thput),
-                        "episode/thput_raw": float(end_of_episode_thput_raw),
-                        "episode/reward": float(episode_return),
-                        "episode/length": float(episode_len),
-                        "episode/invalid_frac": float(infos['frac_invalid_actions'][i]),
-                        "episode/num_entities": float(infos['num_entities'][i]),
-                        "episode/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
-                        "episode/frac_reachable": float(final_frac_reachable),
-                        "shaping/tile_location": float(infos['tile_match_location'][i]),
-                        "shaping/tile_entity": float(infos['tile_match_entity'][i]),
-                        "shaping/tile_direction": float(infos['tile_match_direction'][i]),
-                        "shaping/delta_location": float(infos['shaping_location_delta'][i]),
-                        "shaping/delta_entity": float(infos['shaping_entity_delta'][i]),
-                        "shaping/delta_direction": float(infos['shaping_direction_delta'][i]),
+                        "rollout/throughput": float(end_of_episode_thput),
+                        "rollout/thput_raw": float(end_of_episode_thput_raw),
+                        "rollout/reward": float(episode_return),
+                        "rollout/length": float(episode_len),
+                        "rollout/eot_rate": ended_by_eot,
+                        "rollout/invalid_frac": float(infos['frac_invalid_actions'][i]),
+                        "rollout/num_entities": float(infos['num_entities'][i]),
+                        "rollout/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
+                        "rollout/frac_reachable": float(infos["frac_reachable"][i]),
+                        # Per-lesson breakdown — each averages over only this
+                        # lesson's episodes (the key is recorded just for them).
+                        f"rollout/{lesson}/throughput": float(end_of_episode_thput),
+                        f"rollout/{lesson}/reward": float(episode_return),
+                        f"rollout/{lesson}/length": float(episode_len),
                     })
 
-            # Log eval metrics every 256 global steps during rollout
-            if args.track and global_step >= _next_eval_log_step:
-                final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-                eval_metrics = {
-                    "curriculum/level": max_missing_entities,
-                    "curriculum/score": (max_missing_entities - 1) + final_thputs_100ma,
-                    "curriculum/throughput_avg": final_thputs_100ma,
-                }
-                eval_metrics.update(_flush_episode_means())
-                wandb.log(eval_metrics, step=global_step)
-                _next_eval_log_step = global_step + 256
+        rollout_seconds = time.time() - rollout_start
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -1451,10 +1558,11 @@ if __name__ == "__main__":
         values_B = values_SE.reshape(-1)
 
         # Optimizing the policy and value network
+        update_start = time.time()
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
         for epoch in range(args.update_epochs):
-            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; score:{(max_missing_entities - 1) + final_thputs_100ma:.2f}")
+            pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; thput:{final_thputs_100ma:.3f}")
             np.random.shuffle(idxs_B)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
@@ -1523,36 +1631,54 @@ if __name__ == "__main__":
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
+        update_seconds = time.time() - update_start
+
+        # ── Greedy held-out eval (every eval_every iters + the final one) ──
+        eval_metrics: dict = {}
+        eval_seconds = 0.0
+        if eval_seeds_to_kind and (
+            iteration % args.eval_every == 0 or iteration == args.num_iterations
+        ):
+            t_eval = time.time()
+            eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
+            eval_seconds = time.time() - t_eval
+            eval_metrics["eval/seconds"] = eval_seconds
+
         # ── Per-iteration logging ──────────────────────────────────────
+        n_steps = max(1, args.num_steps)
         iter_metrics = {
             "global_step": global_step,
             "losses/policy": pg_loss.item(),
             "losses/value": v_loss.item(),
             "losses/entropy": entropy_loss.item(),
+            "losses/total": loss.item(),
             "losses/approx_kl": float(approx_kl),
-            "losses/clipfrac": np.mean(clipfracs),
-            "losses/explained_var": explained_var,
+            "losses/clipfrac": float(np.mean(clipfracs)),
+            "losses/explained_variance": explained_var,
+            # policy/* describe the ACTING policy's distribution (meaned over the
+            # rollout steps), the RL analog of SFT's per-head metrics.
+            "policy/entropy": sum(_head_ent_sum.values()) / n_steps,
+            "policy/eot_prob": _eot_prob_sum / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
             "optim/grad_norm": float(unclipped_grad_norm),
             "optim/critic_warmup": 1.0 if in_warmup else 0.0,
             "perf/sps": int(global_step / (time.time() - start_time)),
+            "perf/rollout_seconds": rollout_seconds,
+            "perf/update_seconds": update_seconds,
+            "perf/eval_seconds": eval_seconds,
         }
+        for h, s in _head_ent_sum.items():
+            iter_metrics[f"policy/entropy_{h}"] = s / n_steps
+        iter_metrics.update(eval_metrics)
 
-        # Flush episode means (empty dict if no episodes ended this iteration)
+        # Flush rollout episode means (empty if no episodes ended this iter)
         iter_metrics.update(_flush_episode_means())
 
-        # Throughput metrics. The task is now fixed full-blank
-        # (build-from-empty), so there's no curriculum to climb: the score is
-        # just the moving-average throughput. The curriculum/* keys are kept
-        # (level pinned to start_curriculum_level) so existing dashboards and
-        # the CI summary parser keep working.
+        # Moving-average rollout throughput drives the pbar + final summary.
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-            iter_metrics["curriculum/level"] = max_missing_entities
-            iter_metrics["curriculum/score"] = (max_missing_entities - 1) + final_thputs_100ma
-            iter_metrics["curriculum/throughput_avg"] = final_thputs_100ma
 
         # Single wandb.log() call per iteration
         if args.track:
@@ -1593,7 +1719,7 @@ if __name__ == "__main__":
                 Path('videos').mkdir(parents=True, exist_ok=True)
 
                 for env_idx in range(num_render_envs):
-                    output_path = f'videos/world_inits/{iso8601}_size{args.size}_missing{max_missing_entities}_iter{iteration:06}_env{env_idx}.mp4'
+                    output_path = f'videos/world_inits/{iso8601}_size{args.size}_blank_iter{iteration:06}_env{env_idx}.mp4'
 
                     ffmpeg_cmd = [
                         'ffmpeg',
@@ -1617,10 +1743,6 @@ if __name__ == "__main__":
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 render_envs.close()
     final_thput = 0 if len(end_of_episode_thputs) == 0 else sum(end_of_episode_thputs) / len(end_of_episode_thputs)
-    # curriculum_score: monotonically increasing with agent capability.
-    # Advancing a curriculum level is always worth more than any throughput
-    # gain within a level (since throughput is in [0, 1]).
-    curriculum_score = (max_missing_entities - 1) + final_thput
     def format_duration(seconds: float) -> str:
         total_seconds = int(round(seconds))
         hours = total_seconds // 3600
@@ -1629,7 +1751,7 @@ if __name__ == "__main__":
         return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
     runtime = time.time() - start_time
     if args.track:
-        _append_run_tags(run, f"score:{curriculum_score:.2f}", f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
+        _append_run_tags(run, f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     if runtime > 60 * 5: # 5 minutes
         run_name_dir_safe = run_name.replace('/', '-').replace(':', '-').replace(' ', '_')
@@ -1649,8 +1771,6 @@ if __name__ == "__main__":
         "global_step": global_step,
         "total_timesteps": args.total_timesteps,
         "moving_avg_throughput": round(final_thput, 4),
-        "curriculum_score": round(curriculum_score, 4),
-        "max_missing_entities": max_missing_entities,
         "runtime_seconds": round(runtime, 1),
         "runtime_human": format_duration(runtime),
         "sps": int(global_step / runtime) if runtime > 0 else 0,
