@@ -97,7 +97,6 @@ def compare_metrics(
 
         value = metrics[metric_name]
 
-        # Check absolute bounds
         if "min" in constraint and value < constraint["min"]:
             failures.append(
                 f"{metric_name}: {value:.6g} < minimum threshold {constraint['min']:.6g}"
@@ -163,7 +162,6 @@ def main():
         print("ERROR: Must specify --run-id or --run-name")
         sys.exit(1)
 
-    # Find the run
     api = wandb.Api()
     if args.run_id:
         full_project = f"{args.entity}/{args.project}" if args.entity else args.project
@@ -174,15 +172,12 @@ def main():
     print(f"Found run: {run.name} (id={run.id}, state={run.state})")
     print(f"  URL: {run.url}")
 
-    # Check run completed
     if not check_run_completed(run):
         sys.exit(1)
 
-    # Load baseline
     with open(args.baseline_file) as f:
         baseline = json.load(f)
 
-    # Get run summary metrics
     metrics = dict(run.summary)
 
     print("\nMetrics vs baseline:")
@@ -209,7 +204,6 @@ def main():
 
         print(f"  {metric_name:<38} {value_str:>12} {threshold_str:>12} {status:>8}")
 
-    # Compare
     passed, failures, warnings = compare_metrics(metrics, baseline)
 
     if warnings:

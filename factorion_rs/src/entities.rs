@@ -211,10 +211,8 @@ impl FactoryEntity for AssemblingMachine {
                     || (other_dir == Direction::East && ddx > 0);
 
                 if assembler_outputs_to_entity {
-                    // Assembler → entity (entity takes from assembler)
                     edges.push((self_id.clone(), other_id));
                 } else {
-                    // Entity → Assembler (entity feeds into assembler)
                     edges.push((other_id, self_id.clone()));
                 }
             }
@@ -496,7 +494,6 @@ fn inserter_connections(
         let dx_u = dst_x as usize;
         let dy_u = dst_y as usize;
         if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
-            // Can only insert into belts or assembling machines
             let dst_is_insertable = matches!(
                 dst_entity,
                 Item::TransportBelt
@@ -887,21 +884,6 @@ mod tests {
         let edges = asm.connections((1, 1), Direction::None, &w);
 
         assert_eq!(edges.len(), 2);
-        // Inserter at (0,1) facing east, ddx=-1 → the inserter is to the left.
-        // other_d == East, ddx < 0 → matches condition for "assembler → inserter" (output).
-        // Wait, let me re-check: ddx = 0 - 1 = -1, ddy = 1 - 1 = 0.
-        // Condition: other_d == EAST and ddx > 0 → ddx = -1, not > 0 → NOT inserting into.
-        // other_d == WEST and ddx < 0 → East != West → not this.
-        // Actually let me re-derive from the assembler→inserter rule: when
-        //   (other_d == North and ddy < 0)
-        //     or (other_d == South and ddy > 0)
-        //     or (other_d == West and ddx < 0)
-        //     or (other_d == East and ddx > 0)
-        // the edge is assembler → inserter (the assembler outputs to it);
-        // otherwise it is inserter → assembler.
-        // So when inserter direction matches the offset direction from assembler → assembler outputs to inserter.
-        // For inserter at (0,1): ddx = -1, ddy = 0, dir = East. East and ddx > 0? No. So it's other → self = inserter → assembler.
-        // For inserter at (4,2): ddx = 3, ddy = 1, dir = East. East and ddx > 0? Yes. So it's self → other = assembler → inserter.
     }
 
     #[test]

@@ -199,8 +199,6 @@ def cohens_d(a: list[float], b: list[float], paired: bool = False) -> float:
     return (mean(a) - mean(b)) / pooled_std
 
 
-# ── Metric extraction ─────────────────────────────────────────────
-
 METRICS_TO_COMPARE = [
     {
         "key": "curriculum_score",
@@ -256,7 +254,6 @@ def pair_by_seed(
     Returns (pr_vals, base_vals, is_paired).  When pairing succeeds, both
     lists are aligned so that index i corresponds to the same seed.
     """
-    # Build seed -> value maps
     pr_by_seed = {}
     for r in pr_results:
         seed = r.get("seed") or r.get("seed_file")
@@ -269,7 +266,6 @@ def pair_by_seed(
         if seed is not None and key in r:
             base_by_seed[int(seed)] = float(r[key])
 
-    # Find common seeds
     common = sorted(set(pr_by_seed) & set(base_by_seed))
 
     if len(common) >= 2:
@@ -277,7 +273,6 @@ def pair_by_seed(
         base_vals = [base_by_seed[s] for s in common]
         return pr_vals, base_vals, True
 
-    # Fallback: unpaired
     return extract_metric(pr_results, key), extract_metric(baseline_results, key), False
 
 
@@ -309,9 +304,6 @@ def verdict_icon(verdict: str) -> str:
         return "&#x274C;"  # red X
     else:
         return "&#x2796;"  # dash
-
-
-# ── Report generation ──────────────────────────────────────────────
 
 
 def generate_report(
@@ -349,7 +341,6 @@ def generate_report(
     lines.append(f"- Timesteps per seed: {timesteps:,}" if isinstance(timesteps, int) else f"- Timesteps per seed: {timesteps}")
     lines.append("")
 
-    # Summary table
     lines.append("### Comparison")
     lines.append("")
     lines.append(f"| Metric | main (n={n_base}) | PR (n={n_pr}) | Change | p-value | Verdict |")
@@ -405,12 +396,10 @@ def generate_report(
             "verdict": v,
         })
 
-    # Per-seed detail table
     lines.append("")
     lines.append("<details><summary>Per-seed details</summary>")
     lines.append("")
 
-    # Curriculum score per seed (paired by seed number)
     lines.append("#### Curriculum score per seed")
     lines.append("")
 
@@ -440,7 +429,6 @@ def generate_report(
             diff_str = "-"
         lines.append(f"| {seed} | {base_val} | {pr_val} | {diff_str} |")
 
-    # W&B links
     lines.append("")
     lines.append("#### W&B run links")
     lines.append("")
@@ -459,9 +447,6 @@ def generate_report(
     lines.append(f"<sub>Commit {commit_sha[:8]} | PR #{pr_number}</sub>")
 
     return "\n".join(lines)
-
-
-# ── CLI ────────────────────────────────────────────────────────────
 
 
 def main():

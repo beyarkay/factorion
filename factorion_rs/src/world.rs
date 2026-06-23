@@ -218,7 +218,6 @@ mod tests {
     use super::*;
 
     fn make_3x3_world() -> World {
-        // 3x3 world, NUM_CHANNELS channels, all zeros
         World::empty(3, 3)
     }
 
@@ -252,7 +251,6 @@ mod tests {
         assert_eq!(w.direction_at(1, 2), Direction::East);
         assert_eq!(w.item_at(1, 2), Some(Item::CopperCable));
 
-        // Other cells still empty
         assert_eq!(w.entity_at(0, 0), None);
     }
 
@@ -271,7 +269,6 @@ mod tests {
     fn test_set_entity_types() {
         let mut w = World::empty(5, 5);
 
-        // Place a source at (0,0) facing east
         w.place(
             0,
             0,
@@ -280,10 +277,8 @@ mod tests {
             Some(Item::ElectronicCircuit),
         );
 
-        // Place a belt at (1,0) facing east — no item carried
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
 
-        // Place a sink at (2,0) facing east
         w.place(
             2,
             0,
