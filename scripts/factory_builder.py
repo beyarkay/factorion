@@ -56,7 +56,12 @@ from factorion import (  # noqa: E402
     new_world,
     plot_flow_network,
 )
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import (  # noqa: E402
+    AgentCNN,
+    FactorioEnv,
+    _resolve_wandb_checkpoint,
+    make_env,
+)
 
 
 # Order shown in the palette and dropdowns.
@@ -1487,65 +1492,6 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
         self._send_json(result)
-
-
-def _resolve_wandb_checkpoint(
-    run_spec: str, project: str, entity: Optional[str]
-) -> tuple[str, dict]:
-    """Resolve a W&B run id to (local_path, source_metadata). Downloads
-    the run's most recent model-type artifact to /tmp/factorion-checkpoints.
-
-    The metadata dict (run_id, run_url, run_name, artifact name) is
-    propagated up to _CHECKPOINT_SOURCE so the UI can show
-    "loaded: <artifact> (wandb)" with a clickable link to the run
-    instead of the anonymous tmp download path.
-
-    `run_spec` is either a bare id ("abc123") or a full path
-    ("user/factorion/abc123"). Sets WANDB_MODE back to online for the
-    duration of the call — the module's earlier setdefault to disabled
-    is for the local HTTP server, not for fetching."""
-    import wandb
-
-    prev_mode = os.environ.pop("WANDB_MODE", None)
-    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
-    try:
-        api = wandb.Api()
-        if run_spec.count("/") == 2:
-            run = api.run(run_spec)
-        else:
-            ent = entity or api.default_entity
-            run = api.run(f"{ent}/{project}/{run_spec}")
-        dest = Path("/tmp/factorion-checkpoints") / run.id
-        dest.mkdir(parents=True, exist_ok=True)
-
-        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
-        if not model_arts:
-            raise RuntimeError(
-                f"run {run.id} has no artifacts of type=model — "
-                f"was it trained with --track and the artifact-upload code?"
-            )
-        # Newest first. Each `download()` returns the local dir holding
-        # the artifact's files.
-        art = max(model_arts, key=lambda a: a.created_at)
-        local_dir = Path(art.download(root=str(dest / art.name.replace(":", "_"))))
-        pt_files = sorted(local_dir.glob("*.pt"))
-        if not pt_files:
-            raise RuntimeError(f"artifact {art.name} contains no .pt file")
-        path = str(pt_files[0])
-        print(f"Resolved {run_spec} -> {art.name} -> {path}")
-        source = {
-            "kind": "wandb",
-            "run_id": run.id,
-            "run_url": run.url,
-            "run_name": run.name,
-            "artifact": art.name,
-        }
-        return path, source
-    finally:
-        if prev_mode is not None:
-            os.environ["WANDB_MODE"] = prev_mode
-        if prev_disabled is not None:
-            os.environ["WANDB_DISABLED"] = prev_disabled
 
 
 def main(args: Args) -> None:

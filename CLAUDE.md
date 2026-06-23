@@ -17,8 +17,8 @@ Factorion trains agents to autonomously design and build factories inspired by F
 The training pipeline is moving toward an **LLM-style two-stage split**:
 
 1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
-2. **SFT pretraining** — supervised training on those pairs (see `sft.py` when PR #47 lands) gives the policy a strong prior over entity placement.
-3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start_from` and skip easy curriculum levels via `--start_curriculum_level`.
+2. **SFT pretraining** — `sft.py` runs supervised training on those pairs, giving the policy a strong prior over entity placement. It uploads the best checkpoint as a W&B artifact (type `model`, containing `sft_checkpoint.pt`) so RL can pull it by run id.
+3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start-from` (accepts **either** a local `.pt` path **or** a W&B run id like `j0s5y2mc` — the run's model artifact is downloaded automatically) and skip easy curriculum levels via `--start-curriculum-level`. The canonical SFT base is run **`j0s5y2mc`**; the bar PPO must clear is its `val/throughput_eot ≈ 0.11` (see "Throughput metrics" below).
 
 Historically the project did RL-from-scratch with heavy scaffolding (curriculum on `num_missing_entities`, reward shaping, action masking) to handle the sparse-reward problem. Most of that scaffolding still exists but its role changes under the new pipeline: the curriculum axis becomes a data-sampling knob during SFT, and RL starts from a much better policy so sparse rewards matter less.
 
@@ -36,11 +36,36 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 ## Project Structure
 
 - `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
-- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
-- `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config.
+- `sft.py` — Supervised pretraining. `SFTArgs` dataclass, `extract_expert_actions` (factory pair → training tuples), `run_rollout_eval` (greedy throughput eval), `train_sft` (training loop). Imports `AgentCNN`/`FactorioEnv` **from `ppo.py`**, so the SFT and PPO policies are literally the same network — a checkpoint from one loads into the other.
+- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`, `LessonKind`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
+- `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
+- `scripts/factory_builder.py` — Local HTTP UI to hand-build factories and query a checkpoint's predictions. Shares `_resolve_wandb_checkpoint` with `ppo.py`.
+- `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py`/`apply_sft_sweep_best.py` (W&B sweeps → PR), `runpod_create.py`/`runpod_destroy.py`.
+- `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
+- `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config (PPO; metric `curriculum/score`).
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
 - `factorio-data/` — Git submodule with Factorio game data.
 - `factorio-icons/` — Entity icon PNGs.
+
+### Codebase map (grep these symbols)
+
+- **State tensor** is `(C, W, H)` with `C = len(Channel) = 5` channels: `ENTITIES`, `DIRECTION`, `ITEMS` (recipe/filter), `MISC` (underground up/down), `FOOTPRINT` (1 = buildable).
+- **Lessons** (`LessonKind` in `factorion.py`): `MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, `ASSEMBLE_1IN_1OUT`, `MOVE_VIA_UG_BELT`, `ASSEMBLE_2IN_1OUT`, `FROM_BLUEPRINT`. Each `build_factory(size, kind, seed, ...)` returns `Optional[Factory]` (rejection sampling can fail → `None`); `blank_entities(factory, num_missing_entities, seed)` removes N entity *units* (multi-tile entities count as one).
+- **`ppo.py`**: `Args` (all PPO hyperparams + `start_from`, `start_curriculum_level`, `critic_warmup`), `FactorioEnv` (`reset`/`step`; reward = `-step_penalty` per step `+ throughput_reward_scale * thput_normed` on termination; `eot` is a real action that ends the episode), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading).
+- **`sft.py`**: `run_rollout_eval` returns `RolloutEval` with `overall`/`overall_eot` and per-`LessonKind` breakdowns; checkpoint is selected on `val/throughput` (EOT ignored).
+
+## Throughput metrics (`throughput` vs `throughput_eot`)
+
+Both come from a greedy rollout that blanks the **whole** grid and rebuilds from empty (the honest "can it build from scratch" test). Per-factory throughput is `info['thput_normed']` ∈ [0, 1] — raw items/sec ÷ that factory's max, so a perfectly-rebuilt factory scores 1.0 regardless of belt speed. Defined in `sft.py:run_rollout_eval`:
+
+- **`throughput`** (`overall`) — build skill *ignoring* the EOT head: step until the env finishes (throughput 1.0 or max_steps) and take the final throughput. "Can the model physically reconstruct the factory?"
+- **`throughput_eot`** (`overall_eot`) — build skill *respecting* the EOT head: snapshot the throughput the first time the EOT prob crosses `rollout_eot_threshold` (0.5); if it never fires, fall back to the final throughput. "How good is the factory at the moment the model decides it's done?"
+
+`throughput_eot ≤ throughput` whenever the model stops early. **The RL goal is for PPO's achieved throughput to exceed the SFT base's `val/throughput_eot` (≈0.11 for `j0s5y2mc`).** Per-lesson the SFT base is uneven (MOVE_ONE_ITEM ~0.38, assembler lessons ~0).
+
+## SFT → PPO handoff
+
+`ppo.py --start-from <ckpt>` loads the full SFT `AgentCNN` state dict (encoder + every policy/eot head). The **critic head is the only part SFT never trained**, so `--critic-warmup N` freezes the actor (encoder + policy heads) for N iterations and trains the value head alone against the fixed SFT features before joint PPO begins; LR anneal + entropy schedule restart at the unfreeze. For finetuning an SFT policy, set `--ent-coef-start/--ent-coef-end 0` and a small `--learning-rate` (e.g. 5e-5). `--start-curriculum-level` sets the `num_missing_entities` cap so RL can skip the easy levels the SFT model already solves.
 
 ## Python Environment
 
