@@ -7,7 +7,6 @@ use crate::world::World;
 /// A node in the factory graph.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
-    #[allow(dead_code)]
     pub id: NodeId,
     pub entity_kind: Item,
     /// The item carried/produced/configured at this tile, if any. `None`

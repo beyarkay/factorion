@@ -1174,7 +1174,6 @@ impl NodeId {
         Self { entity_kind, x, y }
     }
 
-    #[allow(dead_code)]
     pub fn label(&self) -> String {
         format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
     }

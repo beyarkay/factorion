@@ -3,6 +3,7 @@
 import os
 import sys
 
+import networkx as nx
 import numpy as np
 import torch
 
@@ -98,6 +99,21 @@ def set_splitter(world, x, y, direction, item_name="empty"):
     set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
 
 
+def rust_factory_graph(world_WHC):
+    """Build a factory's connection graph via the Rust engine, as a networkx
+    ``DiGraph``.
+
+    Node labels (``f"{entity_name}\\n@{x},{y}"``) and edges come straight from
+    ``factorion_rs.py_build_graph``, so the result is API-compatible with the
+    (deprecated) Python ``world2graph`` — same node names, same nx interface.
+    """
+    nodes, edges = factorion_rs.py_build_graph(world_WHC.numpy().astype(np.int64))
+    graph = nx.DiGraph()
+    graph.add_nodes_from(nodes)
+    graph.add_edges_from((nodes[i], nodes[j]) for i, j in edges)
+    return graph
+
+
 def build_factory_graph(world_WHC):
     """Build a factory's connection graph as a networkx ``DiGraph``.
 
@@ -106,7 +122,7 @@ def build_factory_graph(world_WHC):
     the engine's entity-connection rules. Currently delegates to the Python
     ``world2graph``; this is the one place that will be repointed at the
     Rust engine when ``world2graph`` is removed (issue #178), so the
-    characterization tests below keep passing across the swap.
+    characterization tests built on it keep passing across the swap.
     """
     return world2graph(world_WHC)
 
