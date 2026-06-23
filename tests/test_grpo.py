@@ -15,7 +15,13 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
-from grpo import GRPOArgs, policy_step, train_grpo  # noqa: E402
+from grpo import (  # noqa: E402
+    GRPOArgs,
+    collect_rollout,
+    policy_step,
+    select_grids,
+    train_grpo,
+)
 
 ENV_ID = "factorion/FactorioEnv-v0-grpo-test"
 
@@ -156,3 +162,88 @@ def agent_channels():
 def _dummy_action(obs):
     B = obs.shape[0]
     return torch.zeros((B, 6), dtype=torch.long)
+
+
+def _tiny_agent(size=5):
+    envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "grpo-test")])
+    agent = AgentCNN(envs, **TINY)
+    envs.close()
+    return agent
+
+
+class TestSelectGrids:
+    def test_all_grids_are_realisable(self, registered_env):
+        import random
+
+        from factorion import build_factory
+
+        args = GRPOArgs(size=5, num_grids=6, num_missing_max=3, start_from="x", **TINY)
+        grids = select_grids(args, random.Random(0))
+        assert len(grids) == 6
+        for seed, kind, num_missing in grids:
+            assert build_factory(size=5, kind=kind, seed=seed) is not None
+            assert 1 <= num_missing <= 3
+
+
+class TestCollectRollout:
+    def _rollout(self, size=5, num_grids=2, group_size=3, seed=0):
+        args = GRPOArgs(
+            size=size,
+            num_grids=num_grids,
+            group_size=group_size,
+            num_missing_max=2,
+            temperature=1.2,
+            start_from="x",
+            **TINY,
+        )
+        import random
+
+        grids = select_grids(args, random.Random(seed))
+        policy = _tiny_agent(size)
+        ref = _tiny_agent(size)
+        gen = torch.Generator().manual_seed(seed)
+        batch = collect_rollout(policy, ref, args, grids, torch.device("cpu"), gen)
+        return args, batch
+
+    def test_group_shares_initial_grid(self, registered_env):
+        """All group_size lanes of a group must start from the identical grid
+        (same solved world) — the core GRPO precondition."""
+        args, batch = self._rollout()
+        G = args.group_size
+        for g in range(args.num_grids):
+            ref_world = batch.solved_world_B[g * G]
+            for j in range(1, G):
+                assert torch.equal(batch.solved_world_B[g * G + j], ref_world), (
+                    f"group {g} lane {j} has a different grid"
+                )
+
+    def test_groups_differ_from_each_other(self, registered_env):
+        """Distinct grids should (almost surely) have distinct solved worlds."""
+        args, batch = self._rollout(num_grids=2, group_size=2)
+        G = args.group_size
+        assert not torch.equal(batch.solved_world_B[0], batch.solved_world_B[G])
+
+    def test_finished_lanes_store_no_extra_transitions(self, registered_env):
+        """Transition count per lane must equal its episode length, and never
+        exceed max_steps (a deactivated lane stores nothing further)."""
+        args, batch = self._rollout()
+        B = args.num_grids * args.group_size
+        # env truncates at steps>max_steps (pre-increment), so a non-connecting
+        # lane stores up to max_steps+2 transitions.
+        max_transitions = 2 * args.size + 2
+        for lane in range(B):
+            n = int((batch.lane_of_N == lane).sum())
+            assert n == int(batch.steps_B[lane]), (
+                f"lane {lane}: {n} transitions != steps_B {int(batch.steps_B[lane])}"
+            )
+            assert 1 <= n <= max_transitions, f"lane {lane} stored {n} transitions"
+        # total transitions accounted for
+        assert batch.obs_NCWH.shape[0] == int(batch.steps_B.sum())
+
+    def test_shapes_consistent(self, registered_env):
+        args, batch = self._rollout()
+        N = batch.obs_NCWH.shape[0]
+        assert batch.actions_N6.shape == (N, 6)
+        assert batch.old_logp_N.shape == (N,)
+        assert batch.ref_logp_N.shape == (N,)
+        assert batch.lane_of_N.shape == (N,)

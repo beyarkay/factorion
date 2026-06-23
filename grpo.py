@@ -31,7 +31,7 @@ import os
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -275,6 +275,245 @@ def policy_step(
     )
     out_B6 = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
     return out_B6, logp_B, entropy_B
+
+
+def _max_steps(args: GRPOArgs) -> int:
+    # Short horizon ("one entity per step over a belt chain"), matching ppo.py's
+    # make_env. NOT FactorioEnv's default of size*size, which would make
+    # episodes (and the completion bonus) ~size times longer.
+    return 2 * args.size
+
+
+def _make_rollout_env(args: GRPOArgs) -> FactorioEnv:
+    # idx=0 so reset(seed) is an exact pass-through: the grid is a pure
+    # function of (size, kind, seed), letting a group of lanes share one grid.
+    return FactorioEnv(size=args.size, max_steps=_max_steps(args), idx=0)
+
+
+def select_grids(
+    args: GRPOArgs, rng: random.Random
+) -> list[tuple[int, LessonKind, int]]:
+    """Pick `num_grids` distinct, pre-validated grids `(seed, kind, num_missing)`.
+
+    Each grid gets a random LessonKind and a random num_missing in
+    [num_missing_min, cap] so a batch straddles the success boundary (some
+    groups all-connect, some none — that's where group-relative advantage has
+    signal). We probe build_factory once per candidate and skip seeds it can't
+    realise (rejection sampling exhausts on tight grids / hard kinds), because
+    FactorioEnv.reset *raises* on a None factory when the kind is pinned."""
+    cap = args.num_missing_max if args.num_missing_max > 0 else 2 * args.size
+    lo = max(1, args.num_missing_min)
+    hi = max(lo, cap)
+    kinds = list(LessonKind)
+    grids: list[tuple[int, LessonKind, int]] = []
+    seed = rng.randrange(1, 2**31 - args.num_grids * 64 - 1)
+    attempts = 0
+    max_attempts = args.num_grids * 64
+    while len(grids) < args.num_grids and attempts < max_attempts:
+        attempts += 1
+        seed += 1
+        kind = kinds[rng.randrange(len(kinds))]
+        try:
+            ok = build_factory(size=args.size, kind=kind, seed=seed) is not None
+        except Exception:
+            ok = False
+        if not ok:
+            continue
+        grids.append((seed, kind, rng.randint(lo, hi)))
+    if len(grids) < args.num_grids:
+        raise RuntimeError(
+            f"select_grids: only validated {len(grids)}/{args.num_grids} grids "
+            f"in {attempts} attempts (size={args.size})"
+        )
+    return grids
+
+
+@dataclass
+class RolloutBatch:
+    """Flattened transitions from one GRPO rollout, plus the per-lane reward
+    ingredients and final/solved worlds the reward + diversity stages consume.
+
+    N = total transitions across all lanes (variable, since episodes vary in
+    length). B = num_grids * group_size lanes. A transition is one placement
+    step; a lane that terminated early simply contributes fewer rows."""
+
+    obs_NCWH: torch.Tensor
+    actions_N6: torch.Tensor
+    old_logp_N: torch.Tensor
+    ref_logp_N: torch.Tensor
+    lane_of_N: torch.Tensor  # (N,) which lane each transition came from
+    group_of_lane_B: torch.Tensor  # (B,) lane -> group id (lane // G)
+    # per-lane reward ingredients
+    thp_final_B: torch.Tensor  # (B,) last throughput the env reported
+    terminated_B: torch.Tensor  # (B,) 1.0 if the lane connected (throughput>=1)
+    completion_bonus_B: torch.Tensor  # (B,) max_steps - steps_at_terminal
+    steps_B: torch.Tensor  # (B,) episode length (transitions stored)
+    # per-lane worlds for diversity metrics
+    final_world_B: list = field(default_factory=list)
+    solved_world_B: list = field(default_factory=list)
+
+
+def collect_rollout(
+    policy: AgentCNN,
+    ref: AgentCNN,
+    args: GRPOArgs,
+    grids: list[tuple[int, LessonKind, int]],
+    device,
+    generator: Optional[torch.Generator] = None,
+) -> RolloutBatch:
+    """Sample a GROUP of `group_size` complete episodes for each grid, in
+    lockstep across all B = num_grids*group_size lanes.
+
+    Lockstep (not a refill queue) keeps groups intact: lane g*G+j always
+    belongs to grid g, so the Dr. GRPO baseline is computed over completions of
+    the *same* grid. Finished lanes are masked out — they keep getting fed
+    through the batched forward (cheap; episodes are short) but store no further
+    transitions and are never stepped again."""
+    G = args.group_size
+    B = len(grids) * G
+    T = args.temperature
+    H = args.size
+
+    envs = [_make_rollout_env(args) for _ in range(B)]
+
+    # Reset ALL lanes before any sampling. build_factory/blank_entities reseed
+    # the global RNG on each reset; doing them up front (then sampling via the
+    # explicit `generator`) keeps action draws independent of grid seeds.
+    obs_B = [None] * B
+    last_thp = [0.0] * B
+    solved_world_B = [None] * B
+    for g, (seed, kind, num_missing) in enumerate(grids):
+        for j in range(G):
+            lane = g * G + j
+            o, info = envs[lane].reset(
+                seed=seed,
+                options={"num_missing_entities": num_missing, "kind": kind},
+            )
+            obs_B[lane] = o
+            last_thp[lane] = float(info.get("throughput", 0.0))
+            solved_world_B[lane] = envs[lane]._solved_world_CWH.clone()
+
+    active = [True] * B
+    n_trans = [0] * B
+    terminated_B = [0.0] * B
+    completion_bonus_B = [0.0] * B
+    final_world_B = [None] * B
+    steps_B = [0] * B
+
+    obs_rows: list[torch.Tensor] = []
+    act_rows: list[torch.Tensor] = []
+    old_lp: list[torch.Tensor] = []
+    ref_lp: list[torch.Tensor] = []
+    lane_ids: list[int] = []
+
+    max_steps = _max_steps(args)
+    with torch.no_grad():
+        # Loop until every lane has terminated/truncated. The env truncates
+        # when steps>max_steps (checked pre-increment), so a non-connecting
+        # lane needs up to max_steps+2 steps; +4 leaves margin so truncation
+        # always fires inside the loop, never via the fallback below.
+        for _t in range(max_steps + 4):
+            if not any(active):
+                break
+            obs_batch = torch.as_tensor(
+                np.stack(obs_B), dtype=torch.float32, device=device
+            )
+            action_B6, logp_B, _ent = policy_step(
+                policy, obs_batch, temperature=T, generator=generator
+            )
+            _a, ref_logp_B, _e = policy_step(
+                ref, obs_batch, temperature=T, action_B6=action_B6
+            )
+
+            # ── EOT stop signal — OFF in v1 (honor_eot defaults False) ──
+            # Under this reward, connecting auto-terminates the episode
+            # (throughput>=1) and stopping early is never beneficial, so the
+            # SFT eot head is a pure confound here: honoring it can truncate a
+            # near-complete factory and inject reward variance for no gain. We
+            # therefore neither stop on it nor RL-train it in v1. `--honor-eot`
+            # flips it on for later experiments. Tracking: see the EOT GitHub
+            # issue referenced in the project notes.
+            eot_stop = [False] * B
+            if args.honor_eot:
+                encoded = policy.encoder(obs_batch)
+                eot_prob_B = torch.sigmoid(policy.eot_head(encoded).squeeze(-1))
+                eot_stop = (eot_prob_B > args.eot_threshold).tolist()
+
+            for lane in range(B):
+                if not active[lane]:
+                    continue
+                if eot_stop[lane]:
+                    # Agent chose to stop without an env step: no transition,
+                    # episode ends with whatever it has placed so far.
+                    active[lane] = False
+                    terminated_B[lane] = 0.0
+                    completion_bonus_B[lane] = 0.0
+                    final_world_B[lane] = envs[lane]._world_CWH.clone()
+                    steps_B[lane] = n_trans[lane]
+                    continue
+
+                obs_rows.append(obs_batch[lane].cpu())
+                act_rows.append(action_B6[lane].cpu())
+                old_lp.append(logp_B[lane].cpu())
+                ref_lp.append(ref_logp_B[lane].cpu())
+                lane_ids.append(lane)
+                n_trans[lane] += 1
+
+                act = action_B6[lane].tolist()
+                action_dict = {
+                    "xy": np.array([act[0], act[1]], dtype=int),
+                    "entity": int(act[2]),
+                    "direction": int(act[3]),
+                    "item": int(act[4]),
+                    "misc": int(act[5]),
+                }
+                next_obs, _r, terminated, truncated, info = envs[lane].step(action_dict)
+                last_thp[lane] = float(info.get("throughput", 0.0))
+                if terminated or truncated:
+                    active[lane] = False
+                    terminated_B[lane] = 1.0 if terminated else 0.0
+                    completion_bonus_B[lane] = float(info.get("completion_bonus", 0.0))
+                    final_world_B[lane] = envs[lane]._world_CWH.clone()
+                    steps_B[lane] = n_trans[lane]
+                else:
+                    obs_B[lane] = next_obs
+
+    # Lanes that somehow never deactivated (shouldn't happen) get closed out.
+    for lane in range(B):
+        if final_world_B[lane] is None:
+            final_world_B[lane] = envs[lane]._world_CWH.clone()
+            steps_B[lane] = n_trans[lane]
+    for e in envs:
+        e.close()
+
+    group_of_lane = torch.tensor([lane // G for lane in range(B)], dtype=torch.long)
+    if obs_rows:
+        obs_NCWH = torch.stack(obs_rows).to(device)
+        actions_N6 = torch.stack(act_rows).to(device)
+        old_logp_N = torch.stack(old_lp).to(device)
+        ref_logp_N = torch.stack(ref_lp).to(device)
+        lane_of_N = torch.tensor(lane_ids, dtype=torch.long, device=device)
+    else:
+        obs_NCWH = torch.empty((0, len(Channel), H, H), device=device)
+        actions_N6 = torch.empty((0, 6), dtype=torch.long, device=device)
+        old_logp_N = torch.empty((0,), device=device)
+        ref_logp_N = torch.empty((0,), device=device)
+        lane_of_N = torch.empty((0,), dtype=torch.long, device=device)
+
+    return RolloutBatch(
+        obs_NCWH=obs_NCWH,
+        actions_N6=actions_N6,
+        old_logp_N=old_logp_N,
+        ref_logp_N=ref_logp_N,
+        lane_of_N=lane_of_N,
+        group_of_lane_B=group_of_lane,
+        thp_final_B=torch.tensor(last_thp, dtype=torch.float32),
+        terminated_B=torch.tensor(terminated_B, dtype=torch.float32),
+        completion_bonus_B=torch.tensor(completion_bonus_B, dtype=torch.float32),
+        steps_B=torch.tensor(steps_B, dtype=torch.float32),
+        final_world_B=final_world_B,
+        solved_world_B=solved_world_B,
+    )
 
 
 def train_grpo(args: GRPOArgs) -> AgentCNN:
