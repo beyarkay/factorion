@@ -1060,9 +1060,9 @@ class TestAssemble1In1OutMissingEntities:
     def test_assembler_can_be_removed(self):
         """With a generous num_missing, the assembler must occasionally be
         blanked — otherwise the item head never sees a non-zero recipe
-        target during SFT (see issue #107). `inf` short-circuits removal
-        in _remove_entities, so we use a large finite value matching the
-        SFT default (max_level = size*size)."""
+        target during SFT (see issue #107). We use a finite value (not `inf`,
+        which removes everything every time) so removal stays probabilistic
+        and we can assert it happens at least sometimes."""
         removed_count = 0
         for seed in range(60):
             factory = build_factory(
@@ -1830,8 +1830,11 @@ class TestMoveViaUgBeltMissingEntities:
         were blanked)."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed)
         assert factory is not None
+        # Read the wall from the solved layout: a full blank removes the UG
+        # belts, so the wall can't be inferred from the blanked world's
+        # entities. Blanking never touches FOOTPRINT, so the wall must survive.
+        info = _ug_layout_info(factory.world_CWH)
         world, _ = blank_entities(factory, num_missing_entities=float("inf"))
-        info = _ug_layout_info(world)
         # The wall spans full perpendicular; any non-wall tile must be
         # AVAILABLE (already covered by other tests for num_missing=0;
         # here we just re-assert it survives blanking).
@@ -2358,4 +2361,55 @@ class TestAssemble2In1OutRecipeSelection:
         assert len(seen_names) >= expected_distinct, (
             f"Expected ≥ {expected_distinct} distinct recipes across 200 "
             f"seeds, only saw {len(seen_names)}: {seen_names}"
+        )
+
+
+class TestFullBlankActuallyEmptiesWorld:
+    """Regression for the `num_missing_entities=inf` early-return bug.
+
+    `_remove_entities` used to short-circuit on `inf` and return the entity
+    count WITHOUT mutating the world tensor, so a "full blank" handed back the
+    fully-built factory. The PPO env always resets with `inf`, so every episode
+    started from a complete factory: the agent learned to declare end-of-turn on
+    step 1 and bank throughput 1.0 for building nothing. A full blank must
+    actually empty the grid down to the protected source/sink.
+    """
+
+    @pytest.mark.parametrize("seed", range(8))
+    def test_inf_blank_removes_entities_and_kills_throughput(self, seed):
+        f = build_factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert f is not None
+        solved_ents = int(f.world_CWH[Channel.ENTITIES.value].count_nonzero())
+        max_tp, _ = rs_throughput(f.world_CWH.permute(1, 2, 0))
+        assert max_tp > 0  # a real factory to blank
+
+        partial, removed = blank_entities(f, num_missing_entities=float("inf"))
+        partial_ents = int(partial[Channel.ENTITIES.value].count_nonzero())
+        partial_tp, _ = rs_throughput(partial.permute(1, 2, 0))
+
+        # The world must actually shrink — the bug left it == solved_ents.
+        assert partial_ents < solved_ents, (
+            f"seed={seed}: inf blank left the world unchanged "
+            f"({partial_ents} entities, solved had {solved_ents})"
+        )
+        assert removed > 0
+        # MOVE_ONE_ITEM has only the source + sink protected, so a full blank
+        # strips the whole belt path and throughput collapses to zero.
+        assert partial_ents == 2  # source + sink remain
+        assert partial_tp == 0.0, (
+            f"seed={seed}: fully-blanked factory still carries throughput "
+            f"{partial_tp} — the agent would have nothing to build"
+        )
+
+    @pytest.mark.parametrize("seed", range(8))
+    def test_inf_blank_matches_size_squared_blank(self, seed):
+        """`inf` should be equivalent to a finite blank ≥ the entity count
+        (what the SFT pipeline passes as `size*size`)."""
+        f = build_factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
+        assert f is not None
+        inf_world, inf_removed = blank_entities(f, num_missing_entities=float("inf"))
+        fin_world, fin_removed = blank_entities(f, num_missing_entities=11 * 11)
+        assert inf_removed == fin_removed
+        assert int(inf_world[Channel.ENTITIES.value].count_nonzero()) == int(
+            fin_world[Channel.ENTITIES.value].count_nonzero()
         )

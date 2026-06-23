@@ -1254,7 +1254,7 @@ def build_graph_nx(world_WHC):
 
 
 def _remove_entities(
-    world_CWH, num_missing_entities, total_entities, protected_positions=None
+    world_CWH, num_missing_entities, protected_positions=None
 ):
     """Remove entities from a completed lesson, respecting multi-tile units.
 
@@ -1275,12 +1275,10 @@ def _remove_entities(
 
     Returns min_entities_required (number of entity units removed).
     For multi-tile entities (e.g. splitters), all tiles are removed together
-    as a single unit.
+    as a single unit. ``num_missing_entities=inf`` removes every removable
+    unit (a full blank down to the protected source/sink).
     """
     protected_positions = protected_positions or set()
-
-    if num_missing_entities == float("inf"):
-        return total_entities
 
     C, W, H = world_CWH.shape
     skip = {str2ent("source").value, str2ent("sink").value, str2ent("empty").value}
@@ -2739,7 +2737,6 @@ def blank_entities(
     min_entities_required = _remove_entities(
         partial,
         num_missing_entities,
-        factory.total_entities,
         protected_positions=set(factory.protected_positions),
     )
     return partial, min_entities_required
