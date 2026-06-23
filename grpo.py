@@ -38,6 +38,7 @@ from typing import Optional
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions import Categorical
@@ -580,6 +581,80 @@ def broadcast_advantages(
 ) -> torch.Tensor:
     """Scatter each lane's scalar advantage onto all of its transitions."""
     return A_B.to(lane_of_N.device)[lane_of_N]
+
+
+def grpo_update(
+    policy: AgentCNN,
+    optimizer: optim.Optimizer,
+    batch: RolloutBatch,
+    A_N: torch.Tensor,
+    args: GRPOArgs,
+) -> dict:
+    """One GRPO optimisation pass: update_epochs inner epochs of PPO-style
+    clipping plus a k3 KL penalty toward the frozen reference.
+
+    pi_theta_old is the rollout-time logp (batch.old_logp_N), fixed across the
+    inner epochs; ratio = exp(new_logp - old_logp). The KL uses the k3
+    estimator on the summed joint logps:
+
+        kl = exp(ref - new) - (ref - new) - 1   (>= 0, estimates KL(pi||ref))
+
+    where `new` carries gradient and the stored `ref` is constant. There is no
+    critic and no minibatching — the batch is small (sim-bound), so each epoch
+    is a full-batch step."""
+    N = batch.obs_NCWH.shape[0]
+    if N == 0:
+        return {"loss/total": float("nan"), "grpo/n_transitions": 0}
+
+    eps = args.clip_coef
+    old_logp_N = batch.old_logp_N
+    ref_logp_N = batch.ref_logp_N
+
+    last: dict = {}
+    for _epoch in range(args.update_epochs):
+        _a, new_logp_N, entropy_N = policy_step(
+            policy,
+            batch.obs_NCWH,
+            temperature=args.temperature,
+            action_B6=batch.actions_N6,
+        )
+        logratio_N = new_logp_N - old_logp_N
+        ratio_N = logratio_N.exp()
+
+        # clipped surrogate (maximise advantage-weighted ratio => minimise -min)
+        pg1 = -A_N * ratio_N
+        pg2 = -A_N * torch.clamp(ratio_N, 1 - eps, 1 + eps)
+        pg_loss = torch.max(pg1, pg2).mean()
+
+        # k3 KL(pi_theta || pi_ref)
+        ref_logratio_N = ref_logp_N - new_logp_N
+        kl_N = ref_logratio_N.exp() - ref_logratio_N - 1.0
+        kl_loss = kl_N.mean()
+
+        entropy = entropy_N.mean()
+        loss = pg_loss + args.beta_kl * kl_loss - args.ent_coef * entropy
+
+        optimizer.zero_grad()
+        loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+        optimizer.step()
+
+        with torch.no_grad():
+            # Schulman's low-variance approx of KL(old || new); ~0 early.
+            approx_kl = ((ratio_N - 1) - logratio_N).mean()
+            clipfrac = ((ratio_N - 1.0).abs() > eps).float().mean()
+        last = {
+            "loss/total": loss.item(),
+            "loss/policy": pg_loss.item(),
+            "loss/kl_ref": kl_loss.item(),
+            "loss/entropy": entropy.item(),
+            "grpo/ratio_mean": ratio_N.mean().item(),
+            "grpo/clipfrac": clipfrac.item(),
+            "grpo/approx_kl": approx_kl.item(),
+            "grpo/grad_norm": float(grad_norm),
+            "grpo/n_transitions": N,
+        }
+    return last
 
 
 def train_grpo(args: GRPOArgs) -> AgentCNN:

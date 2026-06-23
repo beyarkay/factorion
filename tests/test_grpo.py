@@ -18,9 +18,11 @@ from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 from grpo import (  # noqa: E402
     GRPOArgs,
     RolloutBatch,
+    broadcast_advantages,
     collect_rollout,
     compute_advantages,
     compute_rewards,
+    grpo_update,
     policy_step,
     select_grids,
     train_grpo,
@@ -319,3 +321,66 @@ class TestAdvantages:
         A = compute_advantages(R, group_size=2)
         for g in range(3):
             assert abs(float(A[2 * g] + A[2 * g + 1])) < 1e-6
+
+
+class TestGRPOUpdate:
+    def _setup(self, size=5, seed=0, **arg_overrides):
+        import random
+
+        base = dict(
+            size=size,
+            num_grids=2,
+            group_size=3,
+            num_missing_max=2,
+            temperature=1.1,
+            start_from="x",
+        )
+        base.update(arg_overrides)
+        args = GRPOArgs(**base, **TINY)
+        grids = select_grids(args, random.Random(seed))
+        policy = _tiny_agent(size)
+        ref = _tiny_agent(size)
+        gen = torch.Generator().manual_seed(seed)
+        batch = collect_rollout(policy, ref, args, grids, torch.device("cpu"), gen)
+        R = compute_rewards(batch, args)
+        A_N = broadcast_advantages(compute_advantages(R, args.group_size), batch.lane_of_N)
+        return args, policy, batch, A_N
+
+    def test_ratio_one_and_finite_loss_with_zero_lr(self):
+        """With lr=0 and one inner epoch the policy is unchanged, so ratio==1,
+        approx_kl==0, the loss is finite and the k3 KL to ref is >= 0."""
+        args, policy, batch, A_N = self._setup(learning_rate=0.0, update_epochs=1)
+        opt = torch.optim.Adam(policy.parameters(), lr=0.0)
+        m = grpo_update(policy, opt, batch, A_N, args)
+        assert abs(m["grpo/ratio_mean"] - 1.0) < 1e-5
+        assert abs(m["grpo/approx_kl"]) < 1e-5
+        assert m["loss/kl_ref"] >= -1e-6
+        assert np.isfinite(m["loss/total"])
+
+    def test_update_changes_weights(self):
+        """A real step (lr>0) with nonzero advantages moves the policy params.
+        Advantages are injected synthetically so the test never depends on a
+        rollout happening to have reward variance."""
+        args, policy, batch, _A = self._setup(learning_rate=1e-2, update_epochs=2)
+        N = batch.obs_NCWH.shape[0]
+        assert N > 0
+        # alternating +1/-1 advantages — guaranteed nonzero gradient signal
+        A_N = torch.where(
+            torch.arange(N) % 2 == 0, torch.ones(N), -torch.ones(N)
+        )
+        before = [p.detach().clone() for p in policy.parameters()]
+        opt = torch.optim.Adam(policy.parameters(), lr=1e-2)
+        m = grpo_update(policy, opt, batch, A_N, args)
+        after = list(policy.parameters())
+        moved = any(not torch.equal(b, a) for b, a in zip(before, after))
+        assert moved, "expected the policy weights to change after an update"
+        assert np.isfinite(m["loss/total"])
+        assert m["loss/kl_ref"] >= -1e-6
+
+    def test_empty_batch_is_safe(self):
+        args = GRPOArgs(size=5, group_size=2, start_from="x", **TINY)
+        policy = _tiny_agent(5)
+        empty = _fake_batch(thp=[], terminated=[], bonus=[])
+        opt = torch.optim.Adam(policy.parameters(), lr=1e-3)
+        m = grpo_update(policy, opt, empty, torch.empty((0,)), args)
+        assert m["grpo/n_transitions"] == 0
