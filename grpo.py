@@ -40,6 +40,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 import tyro
+from torch.distributions import Categorical
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: F401,E402  (imported for its side-effect: the env's solver)
@@ -184,6 +185,96 @@ def _build_agent(args: GRPOArgs, envs, device) -> AgentCNN:
     print(f"Loading SFT weights from {args.start_from}")
     agent.load_state_dict(torch.load(args.start_from, map_location=device))
     return agent.to(device)
+
+
+def _sample(dist: Categorical, generator: Optional[torch.Generator]) -> torch.Tensor:
+    """Sample category indices, optionally from an explicit Generator.
+
+    A dedicated generator decouples action sampling from the global torch RNG,
+    which build_factory()/blank_entities() reseed on every env.reset — without
+    it, action draws would correlate with grid seeds. multinomial runs on CPU
+    so the generator works regardless of the policy's device (mps generators
+    are finicky)."""
+    if generator is None:
+        return dist.sample()
+    idx = torch.multinomial(dist.probs.to("cpu"), 1, generator=generator).squeeze(-1)
+    return idx.to(dist.probs.device)
+
+
+def policy_step(
+    agent: AgentCNN,
+    obs_BCWH: torch.Tensor,
+    temperature: float = 1.0,
+    action_B6: Optional[torch.Tensor] = None,
+    generator: Optional[torch.Generator] = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Temperature-aware replication of AgentCNN.get_action_and_value's action
+    path. Sampling (action_B6=None) and scoring (action_B6 given) share ONE
+    code path so the temperature is applied identically — to the tile logits
+    AND all four per-tile head logits — guaranteeing old-logp, new-logp and
+    ref-logp describe the same temperature-T policy and the ratio stays a clean
+    importance ratio.
+
+    We deliberately do NOT call agent.get_action_and_value: it has no
+    temperature knob and also computes the (unused) value head. At T=1.0 this
+    is numerically identical to get_action_and_value's logp/entropy.
+
+    Action layout (B, 6) int columns: [x, y, entity, direction, item, misc] —
+    the same convention the env's step() and get_action_and_value's scoring
+    path use. Returns (action_B6, logp_B, entropy_B); logp/entropy are SUMS
+    over the 5 categorical heads (tile, entity, dir, item, misc). EOT is a
+    separate head and is intentionally excluded.
+    """
+    encoded_BCWH = agent.encoder(obs_BCWH)
+    B = encoded_BCWH.shape[0]
+    H = agent.height
+
+    # ── tile selection (joint x,y via 1x1 conv) ──
+    tile_logits_BN = agent.tile_logits(encoded_BCWH).reshape(B, -1) / temperature
+    dist_tile = Categorical(logits=tile_logits_BN)
+    if action_B6 is None:
+        tile_idx_B = _sample(dist_tile, generator)
+    else:
+        # Reconstruct tile index from stored (x, y) exactly as
+        # get_action_and_value does (ppo.py:915): tile = x*height + y.
+        tile_idx_B = action_B6[:, 0] * H + action_B6[:, 1]
+    x_B = tile_idx_B // H
+    y_B = tile_idx_B % H
+
+    # ── per-tile heads conditioned on features at the selected tile ──
+    batch_idx = torch.arange(B, device=encoded_BCWH.device)
+    feats_BC = encoded_BCWH[batch_idx, :, x_B, y_B]
+    dist_e = Categorical(logits=agent.ent_head(feats_BC) / temperature)
+    dist_d = Categorical(logits=agent.dir_head(feats_BC) / temperature)
+    dist_i = Categorical(logits=agent.item_head(feats_BC) / temperature)
+    dist_m = Categorical(logits=agent.misc_head(feats_BC) / temperature)
+    if action_B6 is None:
+        ent_B = _sample(dist_e, generator)
+        dir_B = _sample(dist_d, generator)
+        item_B = _sample(dist_i, generator)
+        misc_B = _sample(dist_m, generator)
+    else:
+        ent_B = action_B6[:, 2]
+        dir_B = action_B6[:, 3]
+        item_B = action_B6[:, 4]
+        misc_B = action_B6[:, 5]
+
+    logp_B = (
+        dist_tile.log_prob(tile_idx_B)
+        + dist_e.log_prob(ent_B)
+        + dist_d.log_prob(dir_B)
+        + dist_i.log_prob(item_B)
+        + dist_m.log_prob(misc_B)
+    )
+    entropy_B = (
+        dist_tile.entropy()
+        + dist_e.entropy()
+        + dist_d.entropy()
+        + dist_i.entropy()
+        + dist_m.entropy()
+    )
+    out_B6 = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
+    return out_B6, logp_B, entropy_B
 
 
 def train_grpo(args: GRPOArgs) -> AgentCNN:
