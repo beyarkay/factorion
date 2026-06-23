@@ -1,0 +1,33 @@
+# An inserter must not be able to insert *into* a Source. A Source is an
+# infinite producer, not a container, so an inserter pointed at one should make
+# no connection — every case below expects an empty graph.
+#
+# `ignored: true` on each: the engine is currently WRONG here, producing a
+# spurious `inserter -> source` edge. Once the engine stops connecting inserters
+# to sources, drop the `ignored:` lines and these become live regression tests.
+
+description: inserter below the source, facing up into it
+ignored: true
+graph: ""
+factory: |
+  S>
+  i^
+---
+description: inserter above the source, facing down into it
+ignored: true
+graph: ""
+factory: |
+  iv
+  S>
+---
+description: inserter right of the source, facing left into it
+ignored: true
+graph: ""
+factory: |
+  S> i<
+---
+description: inserter left of the source, facing right into it
+ignored: true
+graph: ""
+factory: |
+  i> S>

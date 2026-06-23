@@ -1,0 +1,14 @@
+description: |
+  Regression fixture for `ignored: true`. The expected throughput below is
+  deliberately wrong (a belt delivers 15 i/s, not 999); `ignored: true` parks
+  the fixture so the directory sweep parses it but does not assert it. Do NOT
+  "fix" the number — removing the `ignored:` line should make the sweep fail,
+  which is exactly the regression this fixture guards against.
+ignored: true
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 3, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 999 }
+factory: |
+  S> b> b> K> ..
