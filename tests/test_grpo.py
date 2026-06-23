@@ -88,6 +88,10 @@ class TestTrainGRPOEndToEnd:
             s = json.load(f)
         assert s["size"] == size
         assert s["start_from"] == sft_ckpt
+        assert s["num_iterations"] == 2
+        # the loop actually ran and recorded optimisation pressure
+        assert "samples_seen" in s and s["samples_seen"] > 0
+        assert "final_rollout_throughput" in s
 
         # The saved checkpoint must load back into a fresh AgentCNN (so
         # ppo.py --start_from and a follow-up GRPO run can both consume it).

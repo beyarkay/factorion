@@ -31,7 +31,7 @@ import os
 import random
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import tqdm
 import tyro
 from torch.distributions import Categorical
 
@@ -440,8 +441,8 @@ def collect_rollout(
             # SFT eot head is a pure confound here: honoring it can truncate a
             # near-complete factory and inject reward variance for no gain. We
             # therefore neither stop on it nor RL-train it in v1. `--honor-eot`
-            # flips it on for later experiments. Tracking: see the EOT GitHub
-            # issue referenced in the project notes.
+            # flips it on for later experiments. Tracking:
+            # https://github.com/beyarkay/factorion/issues/181
             eot_stop = [False] * B
             if args.honor_eot:
                 encoded = policy.encoder(obs_batch)
@@ -816,13 +817,40 @@ def grpo_update(
     return last
 
 
+def _select_eval_grids(
+    args: GRPOArgs,
+) -> list[tuple[int, LessonKind, int]]:
+    """Build the fixed held-out eval set once, from a seed stream independent
+    of the per-iteration training stream (collisions over the 2**31 seed space
+    are vanishingly unlikely for ~eval_max_seeds grids)."""
+    if args.eval_every <= 0 or args.n_held_out_seeds <= 0:
+        return []
+    n = min(args.eval_max_seeds, args.n_held_out_seeds)
+    eval_args = replace(args, num_grids=n)
+    return select_grids(eval_args, random.Random(args.seed * 1_000_003 + 7))
+
+
+def _rollout_metrics(batch: RolloutBatch, R_B: torch.Tensor, A_N: torch.Tensor) -> dict:
+    return {
+        "reward/mean": R_B.mean().item() if R_B.numel() else 0.0,
+        "reward/std": R_B.std(unbiased=False).item() if R_B.numel() > 1 else 0.0,
+        "advantage/abs_mean": A_N.abs().mean().item() if A_N.numel() else 0.0,
+        "rollout/mean_throughput": batch.thp_final_B.mean().item(),
+        "rollout/success_rate": (batch.terminated_B >= 1.0).float().mean().item(),
+        "rollout/mean_episode_len": batch.steps_B.mean().item(),
+    }
+
+
 def train_grpo(args: GRPOArgs) -> AgentCNN:
     """GRPO finetuning entry point. Mirrors sft.train_sft's contract: callable
     directly with a GRPOArgs, returns the trained agent, and writes a
     checkpoint + summary JSON.
 
-    NOTE: this is the skeleton (checkpoint/reference plumbing only). The
-    rollout → advantage → update loop is added in subsequent commits."""
+    Each outer iteration: select grids → sample a group per grid → score with
+    outcome reward → Dr. GRPO advantages → clipped+KL update → (periodically)
+    greedy held-out eval. We deliberately do NOT torch.compile: the dual-policy
+    setup and the per-iteration-variable flattened batch size would thrash the
+    compile cache for no win (the simulator dominates wall-clock)."""
     t0 = time.time()
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -845,7 +873,7 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
     ref.requires_grad_(False)
     envs.close()
 
-    optimizer = optim.Adam(  # noqa: F841  (used by the training loop in later commits)
+    optimizer = optim.Adam(
         policy.parameters(), lr=args.learning_rate, eps=args.adam_epsilon
     )
 
@@ -862,7 +890,44 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
             tags=["grpo"] + (args.tags or []),
         )
 
-    # ── (training loop added in later commits) ───────────────────────────
+    eval_grids = _select_eval_grids(args)
+
+    samples_seen = 0
+    last_metrics: dict = {}
+    pbar = tqdm.trange(1, args.num_iterations + 1)
+    for iteration in pbar:
+        # Independent RNG streams: grid selection per iteration, action
+        # sampling via its own Generator (decoupled from grid-seed reseeds).
+        grid_rng = random.Random(args.seed * 1_000_003 + iteration)
+        sample_gen = torch.Generator().manual_seed((args.seed * 7919 + iteration) % (2**31))
+
+        grids = select_grids(args, grid_rng)
+        batch = collect_rollout(policy, ref, args, grids, device, sample_gen)
+        R_B = compute_rewards(batch, args)
+        A_N = broadcast_advantages(
+            compute_advantages(R_B, args.group_size), batch.lane_of_N
+        )
+        update_metrics = grpo_update(policy, optimizer, batch, A_N, args)
+        samples_seen += int(batch.obs_NCWH.shape[0])
+
+        metrics = {"train/iteration": iteration, "train/samples_seen": samples_seen}
+        metrics.update(update_metrics)
+        metrics.update(_rollout_metrics(batch, R_B, A_N))
+        metrics.update(compute_diversity(batch, R_B, args))
+        if eval_grids and (iteration % args.eval_every == 0 or iteration == 1):
+            metrics.update(greedy_eval(policy, args, eval_grids, device))
+
+        # x-axis = optimisation pressure (samples_seen), not iteration index,
+        # so runs with different num_grids/group_size stay comparable.
+        if run is not None:
+            run.log(metrics, step=samples_seen)
+        last_metrics = metrics
+        pbar.set_description(
+            f"it{iteration} thp={metrics.get('rollout/mean_throughput', 0):.2f} "
+            f"succ={metrics.get('rollout/success_rate', 0):.2f} "
+            f"klref={metrics.get('loss/kl_ref', 0):.3f} "
+            f"Rvar={metrics.get('diversity/reward_var', 0):.3f}"
+        )
 
     torch.save(policy.state_dict(), args.checkpoint_path)
     runtime = time.time() - t0
@@ -874,6 +939,16 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
         "num_iterations": args.num_iterations,
         "num_grids": args.num_grids,
         "group_size": args.group_size,
+        "temperature": args.temperature,
+        "beta_kl": args.beta_kl,
+        "learning_rate": args.learning_rate,
+        "reward_mode": args.reward_mode,
+        "samples_seen": samples_seen,
+        "final_eval_throughput": last_metrics.get("eval/throughput"),
+        "final_eval_success_rate": last_metrics.get("eval/success_rate"),
+        "final_rollout_throughput": last_metrics.get("rollout/mean_throughput"),
+        "final_kl_ref": last_metrics.get("loss/kl_ref"),
+        "final_off_reference_success": last_metrics.get("diversity/off_reference_success"),
         "start_from": args.start_from,
         "checkpoint_path": args.checkpoint_path,
         "runtime_seconds": round(runtime, 1),
