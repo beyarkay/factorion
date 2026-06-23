@@ -146,7 +146,7 @@ class Args:
     """Tags to apply to the wandb run."""
     critic_warmup: int = 0
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
-    eval_every: int = 20
+    eval_every: int = 7
     """Run the greedy held-out eval (eval/throughput, eval/throughput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""

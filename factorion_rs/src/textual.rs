@@ -20,6 +20,12 @@
 //! documents with `---` (YAML's native document separator) and parse with
 //! [`parse_many`].
 //!
+//! A document may carry `ignored: true` to keep a fixture in the file while the
+//! directory sweep skips its assertions — the textual analogue of Rust's
+//! `#[ignore]`. The grid and header must still parse; only the
+//! `throughput:`/`graph:` checks are skipped. An empty file (or one of only
+//! comments / `---` separators) holds zero factories and the sweep skips it.
+//!
 //! ## Grid encoding
 //!
 //! Every tile is exactly **two characters**, and tiles are separated by one
@@ -396,6 +402,12 @@ struct Header {
     /// it documents intent as real content rather than a throwaway comment.
     #[serde(default)]
     description: Option<String>,
+    /// When `true`, the directory sweep parses this factory (so its grid and
+    /// header must still be valid) but skips its `throughput:`/`graph:`
+    /// assertions — the textual analogue of Rust's `#[ignore]`. Use it to park
+    /// a known-failing fixture without deleting it.
+    #[serde(default)]
+    ignored: bool,
     /// Per-coordinate item bindings. For a source this is what it emits, for a
     /// sink what it counts, for an assembler the recipe (product). The `(x, y)`
     /// may be any tile of a multi-tile entity — it resolves to the whole
@@ -433,6 +445,9 @@ pub(crate) struct FactorySpec {
     pub expected_throughput: Vec<DeliverySpec>,
     /// Free-text description from the header, if any.
     pub description: Option<String>,
+    /// When `true`, the directory sweep skips this factory's assertions (see
+    /// [`Header::ignored`]).
+    pub ignored: bool,
     /// Expected directed edges from the `graph:` block, if any — each a
     /// `(source, destination)` referenced by `<char>@x,y` (multi-tile entities
     /// by their anchor). Asserted by [`check_graph`].
@@ -490,6 +505,7 @@ fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
         world: parsed.world,
         expected_throughput,
         description: header.description,
+        ignored: header.ignored,
         expected_graph,
     })
 }
@@ -1090,6 +1106,30 @@ factory: |
         assert!(spec.expected_throughput.is_empty());
         assert!(spec.description.is_none());
         assert!(spec.expected_graph.is_none());
+        // `ignored` defaults to false when the key is absent.
+        assert!(!spec.ignored);
+    }
+
+    #[test]
+    fn test_ignored_field_parsed() {
+        // `ignored: true` is captured on the spec; the grid still parses so the
+        // sweep can park (but not delete) the fixture.
+        let spec = parse("ignored: true\nfactory: |\n  S> b> K>").unwrap();
+        assert!(spec.ignored);
+        assert_eq!(spec.world.width(), 3);
+        // Explicit `ignored: false` round-trips to the default.
+        let spec = parse("ignored: false\nfactory: |\n  S> b> K>").unwrap();
+        assert!(!spec.ignored);
+    }
+
+    #[test]
+    fn test_empty_yaml_yields_no_factories() {
+        // An empty file, a comment-only file, and a lone separator each hold
+        // zero factories rather than erroring — the directory sweep skips them.
+        assert!(parse_many("").unwrap().is_empty());
+        assert!(parse_many("\n\n  \n").unwrap().is_empty());
+        assert!(parse_many("# only a comment\n").unwrap().is_empty());
+        assert!(parse_many("---\n").unwrap().is_empty());
     }
 
     #[test]
@@ -1505,9 +1545,18 @@ factory: |
                 parsed.err().unwrap_or_default()
             );
             let specs = parsed.unwrap();
-            assert!(!specs.is_empty(), "{display}: no factories found");
+            // An empty file (or one of only comments / `---` separators) holds
+            // no factories — that is allowed; there is simply nothing to assert.
+            if specs.is_empty() {
+                continue;
+            }
 
             for (i, spec) in specs.iter().enumerate() {
+                // `ignored: true` parks a fixture in the file without running
+                // its assertions — the textual analogue of Rust's `#[ignore]`.
+                if spec.ignored {
+                    continue;
+                }
                 // A clickable, descriptive banner prepended to any failure so
                 // the output says exactly which file/factory and what it is.
                 let mut banner = format!("\n===== FAILED: {display} =====\n");
