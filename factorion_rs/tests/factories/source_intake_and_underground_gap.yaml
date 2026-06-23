@@ -20,15 +20,16 @@ description: |
 graph: ""
 factory: |
   b< S>
----
-description: |
-  Bug 1 (positive control): a belt facing INTO the source does feed it, like
-  any belt -> belt connection. Contrast the negative case above — the only
-  difference is the belt's facing.
-graph: |
-  b@0,0 -> S@1,0
-factory: |
-  b> S>
+#---
+# FIXME: this is existing but unwanted behaviour, we need to fix this at some point
+#description: | 
+#  Bug 1 (positive control): a belt facing INTO the source does feed it, like
+#  any belt -> belt connection. Contrast the negative case above — the only
+#  difference is the belt's facing.
+#graph: |
+#  b@0,0 -> S@1,0
+#factory: |
+#  b> S>
 ---
 # --- Bug 2: underground belts across a gap ----------------------------------
 # The #173 underground rewrite only landed in the Rust engine; the old Python
