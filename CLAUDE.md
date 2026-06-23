@@ -36,7 +36,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 ## Project Structure
 
 - `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
-- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, throughput calculation. Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
+- `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
 - `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config.
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
 - `factorio-data/` — Git submodule with Factorio game data.
@@ -96,7 +96,7 @@ Rust unit tests:
 cd factorion_rs && cargo test && cd ..
 ```
 
-Benchmarks (Python vs Rust throughput):
+Benchmarks (Rust throughput):
 
 ```bash
 WANDB_MODE=disabled WANDB_DISABLED=true uv run python tests/bench_throughput.py

@@ -51,7 +51,7 @@ use world::World;
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
 ///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
 ///
-/// Returns: (score, num_unreachable) matching funge_throughput's signature.
+/// Returns: (score, num_unreachable).
 /// The score is the power mean (see [`factory_score`]) of each sink's
 /// achieved throughput of its configured item, so unused / under-served
 /// sinks drag it down rather than being hidden by a fully-fed sink.

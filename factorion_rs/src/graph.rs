@@ -257,17 +257,6 @@ mod tests {
         Both,
     }
 
-    impl Conn {
-        fn arrow(self) -> &'static str {
-            match self {
-                Conn::None => "  .  ",
-                Conn::AToB => "A->B",
-                Conn::BToA => "B->A",
-                Conn::Both => "A<->B",
-            }
-        }
-    }
-
     /// Build a 2-entity world (A at centre, B at centre+delta) and return what
     /// the engine connects via directed graph edges.
     fn conn_between(
@@ -293,87 +282,6 @@ mod tests {
             (true, false) => Conn::AToB,
             (false, true) => Conn::BToA,
             (true, true) => Conn::Both,
-        }
-    }
-
-    /// Dump every connection the engine makes across all 1x1 entity pairs ×
-    /// rotations × adjacencies, for cross-checking against ground truth (#122).
-    /// Run: cargo test --no-default-features dump_connectivity_table -- --nocapture --ignored
-    #[test]
-    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
-    fn dump_connectivity_table() {
-        let mut count = 0;
-        println!("\n=== CONNECTIVITY (A@centre, B@centre+delta; arrow = graph edge) ===");
-        for a in CONN_CFGS {
-            for &(a_dir, a_l) in CONN_DIRS {
-                for b in CONN_CFGS {
-                    for &(b_dir, b_l) in CONN_DIRS {
-                        for &delta in CONN_DELTAS {
-                            let conn = conn_between(a, a_dir, b, b_dir, delta);
-                            if conn == Conn::None {
-                                continue;
-                            }
-                            count += 1;
-                            println!(
-                                "{:8}/{}  {:8}/{}  B@({:+},{:+})  {}",
-                                a.label,
-                                a_l,
-                                b.label,
-                                b_l,
-                                delta.0,
-                                delta.1,
-                                conn.arrow()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        println!("=== {count} connecting combos ===");
-    }
-
-    /// Compact 6x6 "does A ever feed B?" matrix (A->B edge for any rotation /
-    /// adjacency), computed directly so there's no text-parsing fragility.
-    /// Run: cargo test --no-default-features dump_feeds_matrix -- --nocapture --ignored
-    #[test]
-    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
-    fn dump_feeds_matrix() {
-        let n = CONN_CFGS.len();
-        let mut feed = vec![vec![false; n]; n];
-        for (i, a) in CONN_CFGS.iter().enumerate() {
-            for (j, b) in CONN_CFGS.iter().enumerate() {
-                'combo: for &(a_dir, _) in CONN_DIRS {
-                    for &(b_dir, _) in CONN_DIRS {
-                        for &delta in CONN_DELTAS {
-                            match conn_between(a, a_dir, b, b_dir, delta) {
-                                Conn::AToB => feed[i][j] = true,
-                                Conn::BToA => feed[j][i] = true,
-                                Conn::Both => {
-                                    feed[i][j] = true;
-                                    feed[j][i] = true;
-                                }
-                                Conn::None => {}
-                            }
-                            if feed[i][j] && feed[j][i] {
-                                continue 'combo;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        println!("\n=== FEEDS matrix: row R feeds col C (R->C edge exists) ===");
-        print!("{:9}", "feeds:");
-        for b in CONN_CFGS {
-            print!("{:>9}", b.label);
-        }
-        println!();
-        for (i, a) in CONN_CFGS.iter().enumerate() {
-            print!("{:9}", a.label);
-            for cell in feed[i].iter().take(n) {
-                print!("{:>9}", if *cell { "Y" } else { "." });
-            }
-            println!();
         }
     }
 
@@ -423,54 +331,6 @@ mod tests {
                         }
                     }
                 }
-            }
-        }
-    }
-
-    /// Full canonical connectivity matrix. Rotation invariance (proven above)
-    /// means one adjacency is the whole story, so fix B directly East of A and
-    /// vary both facings. Rows = (A, a_dir), cols = (B, b_dir).
-    /// Run: cargo test --no-default-features dump_canonical_matrix -- --nocapture --ignored
-    #[test]
-    #[ignore = "diagnostic dump, run explicitly with --nocapture"]
-    fn dump_canonical_matrix() {
-        let delta = (1i64, 0i64);
-        fn ecode(label: &str) -> char {
-            match label {
-                "belt" => 'B',
-                "inserter" => 'I',
-                "ug_up" => 'U',
-                "ug_down" => 'D',
-                "source" => 'S',
-                "sink" => 'K',
-                _ => '?',
-            }
-        }
-        println!("\n=== CANONICAL CONNECTIVITY (B is East of A) ===");
-        println!("legend: '.' none   '>' A->B (row feeds col)   '<' B->A   'x' both");
-        println!("codes:  B=belt I=inserter U=ug_up D=ug_down S=source K=sink, + facing\n");
-        print!("{:11}", "row\\col");
-        for b in CONN_CFGS {
-            for &(_, bl) in CONN_DIRS {
-                print!("{:>3}", format!("{}{}", ecode(b.label), bl));
-            }
-        }
-        println!();
-        for a in CONN_CFGS {
-            for &(a_dir, al) in CONN_DIRS {
-                print!("{:<11}", format!("{}/{}", a.label, al));
-                for b in CONN_CFGS {
-                    for &(b_dir, _) in CONN_DIRS {
-                        let sym = match conn_between(a, a_dir, b, b_dir, delta) {
-                            Conn::None => '.',
-                            Conn::AToB => '>',
-                            Conn::BToA => '<',
-                            Conn::Both => 'x',
-                        };
-                        print!("{:>3}", sym);
-                    }
-                }
-                println!();
             }
         }
     }

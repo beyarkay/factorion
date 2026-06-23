@@ -207,7 +207,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     }
 
     // 4. Count unreachable nodes
-    // Match Python: unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
+    // unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
     // source to sink, both will be in the intersection. If not, they're unreachable.

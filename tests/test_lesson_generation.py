@@ -14,7 +14,6 @@ from helpers import (
     Misc,
     blank_entities,
     build_factory,
-    compare_throughput,
     entities,
     items,
     recipes,
@@ -139,11 +138,11 @@ class TestSplitterSplitManySeeds:
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
-class TestSplitterSplitParity:
-    """Python and Rust throughput must agree on generated splitter-split factories."""
+class TestSplitterSplitThroughput:
+    """Rust throughput must be positive on generated splitter-split factories."""
 
     @pytest.mark.parametrize("seed", range(30))
-    def test_parity_size_10(self, seed):
+    def test_throughput_size_10(self, seed):
         factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
         )
         assert factory is not None
@@ -423,11 +422,11 @@ class TestSplitterMergeManySeeds:
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
-class TestSplitterMergeParity:
-    """Python and Rust throughput must agree on generated splitter-merge factories."""
+class TestSplitterMergeThroughput:
+    """Rust throughput must be positive on generated splitter-merge factories."""
 
     @pytest.mark.parametrize("seed", range(30))
-    def test_parity_size_10(self, seed):
+    def test_throughput_size_10(self, seed):
         factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
         )
         assert factory is not None
@@ -874,11 +873,11 @@ class TestAssemble1In1OutManySeeds:
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
-class TestAssemble1In1OutParity:
-    """Python and Rust throughput must agree on generated factories."""
+class TestAssemble1In1OutThroughput:
+    """Rust throughput must be positive on generated factories."""
 
     @pytest.mark.parametrize("seed", range(30))
-    def test_parity_size_10(self, seed):
+    def test_throughput_size_10(self, seed):
         factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed
         )
         assert factory is not None
@@ -1626,13 +1625,13 @@ class TestMoveViaUgBeltBasic:
         assert tp > 0
 
     @pytest.mark.parametrize("seed", range(20))
-    def test_throughput_parity(self, seed):
-        """Python and Rust throughput agree on solved layouts."""
+    def test_throughput(self, seed):
+        """Rust throughput runs without error on solved layouts."""
         factory = build_factory(size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
-        compare_throughput(world.permute(1, 2, 0))
+        rs_throughput(world.permute(1, 2, 0))
 
 
 class TestMoveViaUgBeltGeometry:

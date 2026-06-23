@@ -1204,7 +1204,10 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         # get_new_world() inputs have no reference factory to normalize by, so
         # there's no per-factory max to use here — left as-is intentionally.
         throughput = torch.tensor(
-            funge_throughput(normalised_world)[0] / 15.0,
+            factorion_rs.simulate_throughput(
+                normalised_world.to(torch.int64).numpy()
+            )[0]
+            / 15.0,
             dtype=value.dtype,
         )
         num_entities = (
@@ -1227,14 +1230,6 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
     )
 
     return evals, avg_throughput, float(avg_num_entities)
-
-
-def funge_throughput(world, debug=False):
-    assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
-    assert len(world.shape) == 3, (
-        f"Expected world to have 3 dimensions, but is of shape {world.shape}"
-    )
-    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
 
 def build_graph_nx(world_WHC):
@@ -1670,7 +1665,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -1834,7 +1831,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2079,7 +2078,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2313,7 +2314,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Sanity: the solved factory must deliver items.
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2586,7 +2589,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2666,7 +2671,9 @@ def build_factory(
             # gaps inside the blueprint's own footprint.
             world_CWH = _extend_belt_chains(world_CWH)
 
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 

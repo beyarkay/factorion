@@ -1,4 +1,4 @@
-"""Shared test fixtures and utilities for throughput parity tests."""
+"""Shared test fixtures and utilities for throughput tests."""
 
 import os
 import sys
@@ -110,10 +110,5 @@ def build_factory_graph(world_WHC):
 
 
 def rs_throughput(world):
-    """Rust throughput via Python bindings."""
+    """Throughput via the Rust engine's Python bindings."""
     return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
-
-
-def compare_throughput(world, tolerance=1e-6):
-    """Return Rust throughput (Python solver has been removed)."""
-    return rs_throughput(world)
