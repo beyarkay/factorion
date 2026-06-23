@@ -19,7 +19,6 @@ import time
 
 import runpod
 
-# Ordered fallback list: try A100 first, then fall back to other GPUs
 GPU_FALLBACKS = [
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A6000",
@@ -75,7 +74,6 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
 
     pod_id = pod["id"]
 
-    # Wait for pod to reach running state
     start_time = time.time()
     while time.time() - start_time < timeout:
         status = runpod.get_pod(pod_id)
@@ -84,7 +82,6 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
         elapsed = int(time.time() - start_time)
 
         if desired == "RUNNING" and runtime:
-            # Extract public SSH IP and port from runtime ports
             ssh_host = None
             ssh_port = 22
             ports = runtime.get("ports", []) or []
@@ -110,7 +107,6 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
         print(f"  Waiting... ({elapsed}s, desired={desired})", flush=True)
         time.sleep(10)
 
-    # Timeout - clean up the pod
     print(f"ERROR: Pod {pod_id} did not start within {timeout}s. Terminating.")
     try:
         runpod.terminate_pod(pod_id)

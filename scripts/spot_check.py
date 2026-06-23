@@ -120,7 +120,6 @@ def run_scenario(kind: LessonKind, name: str, args: Args) -> dict:
                 f'</div>'
             )
 
-    # Write single HTML page per scenario
     tps = throughputs
     summary = (
         f"{passed}/{generated} passed"
@@ -173,7 +172,6 @@ def main():
         result = run_scenario(kind, name, args)
         results.append(result)
 
-    # Print summary
     print()
     print("=" * 60)
     print(f"{'Scenario':<20} {'Gen':>5} {'Pass':>5} {'Fail':>5} {'Min TP':>8} {'Max TP':>8} {'Avg TP':>8}")
