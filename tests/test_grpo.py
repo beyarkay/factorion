@@ -17,7 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 from grpo import (  # noqa: E402
     GRPOArgs,
+    RolloutBatch,
     collect_rollout,
+    compute_advantages,
+    compute_rewards,
     policy_step,
     select_grids,
     train_grpo,
@@ -247,3 +250,72 @@ class TestCollectRollout:
         assert batch.old_logp_N.shape == (N,)
         assert batch.ref_logp_N.shape == (N,)
         assert batch.lane_of_N.shape == (N,)
+
+
+def _fake_batch(thp, terminated, bonus, per_step=None):
+    """Minimal RolloutBatch carrying just the reward ingredients."""
+    B = len(thp)
+    z = torch.zeros((0,), dtype=torch.long)
+    return RolloutBatch(
+        obs_NCWH=torch.empty((0, 5, 5, 5)),
+        actions_N6=torch.empty((0, 6), dtype=torch.long),
+        old_logp_N=torch.empty((0,)),
+        ref_logp_N=torch.empty((0,)),
+        lane_of_N=z,
+        group_of_lane_B=torch.arange(B),
+        thp_final_B=torch.tensor(thp, dtype=torch.float32),
+        terminated_B=torch.tensor(terminated, dtype=torch.float32),
+        completion_bonus_B=torch.tensor(bonus, dtype=torch.float32),
+        steps_B=torch.zeros(B),
+        per_step_reward_B=torch.tensor(
+            per_step if per_step is not None else [0.0] * B, dtype=torch.float32
+        ),
+    )
+
+
+class TestRewards:
+    def test_outcome_reward(self):
+        # lane0 connected (thp=1, bonus=8); lane1 failed (thp=0.4, bonus ignored)
+        batch = _fake_batch(thp=[1.0, 0.4], terminated=[1.0, 0.0], bonus=[8.0, 5.0])
+        args = GRPOArgs(reward_scale=0.1, completion_bonus_coef=1.0, start_from="x")
+        R = compute_rewards(batch, args)
+        assert torch.allclose(R, torch.tensor([0.1 * (1.0 + 8.0), 0.1 * 0.4]))
+
+    def test_bonus_only_when_terminated(self):
+        batch = _fake_batch(thp=[0.9], terminated=[0.0], bonus=[8.0])
+        args = GRPOArgs(reward_scale=1.0, start_from="x")
+        R = compute_rewards(batch, args)
+        assert torch.allclose(R, torch.tensor([0.9]))  # no bonus
+
+    def test_per_step_mode_uses_accumulated_reward(self):
+        batch = _fake_batch(
+            thp=[1.0], terminated=[1.0], bonus=[8.0], per_step=[3.0]
+        )
+        args = GRPOArgs(
+            reward_mode="per_step", reward_scale=1.0, completion_bonus_coef=1.0, start_from="x"
+        )
+        R = compute_rewards(batch, args)
+        assert torch.allclose(R, torch.tensor([3.0 + 8.0]))
+
+
+class TestAdvantages:
+    def test_per_group_zero_mean(self):
+        R = torch.tensor([0.0, 4.0, 1.0, 1.0])  # 2 groups of 2
+        A = compute_advantages(R, group_size=2)
+        # group means subtracted within each group
+        assert torch.allclose(A, torch.tensor([-2.0, 2.0, 0.0, 0.0]))
+
+    def test_no_std_normalization(self):
+        """Dr. GRPO does NOT divide by the group std. With group [0, 4]
+        (std=2), std-normalized advantages would be [-1, 1]; we want the raw
+        [-2, 2]."""
+        R = torch.tensor([0.0, 4.0])
+        A = compute_advantages(R, group_size=2)
+        assert torch.allclose(A, torch.tensor([-2.0, 2.0]))
+        assert not torch.allclose(A, torch.tensor([-1.0, 1.0]))
+
+    def test_each_group_sums_to_zero(self):
+        R = torch.tensor([3.0, 1.0, 2.0, 5.0, 9.0, 1.0])  # 3 groups of 2
+        A = compute_advantages(R, group_size=2)
+        for g in range(3):
+            assert abs(float(A[2 * g] + A[2 * g + 1])) < 1e-6

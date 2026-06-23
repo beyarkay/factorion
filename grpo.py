@@ -51,6 +51,7 @@ from factorion import (  # noqa: E402
     build_factory,
 )
 
+from ppo import Args as PPOArgs  # noqa: E402  (env reward coeffs live as its class defaults)
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 GRPO_ENV_ID = "factorion/FactorioEnv-v0-grpo"
@@ -348,6 +349,7 @@ class RolloutBatch:
     terminated_B: torch.Tensor  # (B,) 1.0 if the lane connected (throughput>=1)
     completion_bonus_B: torch.Tensor  # (B,) max_steps - steps_at_terminal
     steps_B: torch.Tensor  # (B,) episode length (transitions stored)
+    per_step_reward_B: torch.Tensor  # (B,) sum of PPO-style per-step reward
     # per-lane worlds for diversity metrics
     final_world_B: list = field(default_factory=list)
     solved_world_B: list = field(default_factory=list)
@@ -399,6 +401,12 @@ def collect_rollout(
     completion_bonus_B = [0.0] * B
     final_world_B = [None] * B
     steps_B = [0] * B
+    # Σ of the env's PPO-style per-step reward, captured so reward_mode=
+    # "per_step" is a faithful reconstruction. The env reads its coeffs from
+    # the Args *class* defaults (the `'args' not in locals()` branch in
+    # FactorioEnv.step), so we read the same attrs here.
+    per_step_sum = [0.0] * B
+    _ct, _cv = PPOArgs.coeff_throughput, PPOArgs.coeff_validity
 
     obs_rows: list[torch.Tensor] = []
     act_rows: list[torch.Tensor] = []
@@ -469,6 +477,22 @@ def collect_rollout(
                 }
                 next_obs, _r, terminated, truncated, info = envs[lane].step(action_dict)
                 last_thp[lane] = float(info.get("throughput", 0.0))
+
+                # PPO-style per-step reward (throughput+validity, normalized),
+                # + shaping deltas unless drop_shaping. Shaping is
+                # potential-based so its episode sum telescopes to a path-
+                # independent constant that ~cancels in the group baseline.
+                valid_t = 0.0 if any(info.get("invalid_reason", {}).values()) else 1.0
+                per_step_sum[lane] += (
+                    _ct * last_thp[lane] + _cv * valid_t
+                ) / (_ct + _cv)
+                if not args.drop_shaping:
+                    per_step_sum[lane] += (
+                        float(info.get("shaping_location_delta", 0.0))
+                        + float(info.get("shaping_entity_delta", 0.0))
+                        + float(info.get("shaping_direction_delta", 0.0))
+                    )
+
                 if terminated or truncated:
                     active[lane] = False
                     terminated_B[lane] = 1.0 if terminated else 0.0
@@ -511,9 +535,51 @@ def collect_rollout(
         terminated_B=torch.tensor(terminated_B, dtype=torch.float32),
         completion_bonus_B=torch.tensor(completion_bonus_B, dtype=torch.float32),
         steps_B=torch.tensor(steps_B, dtype=torch.float32),
+        per_step_reward_B=torch.tensor(per_step_sum, dtype=torch.float32),
         final_world_B=final_world_B,
         solved_world_B=solved_world_B,
     )
+
+
+def compute_rewards(batch: RolloutBatch, args: GRPOArgs) -> torch.Tensor:
+    """Scalar episode return R_i per lane (B,).
+
+    "outcome" (default, standard GRPO): R_i = scale*(thp_final + bonus_coef *
+    bonus), where bonus is the terminal (max_steps - steps) only when the lane
+    connected. Pure outcome reward — no per-step bookkeeping.
+
+    "per_step" (PPO-faithful, opt-in): the env's summed per-step
+    (throughput+validity) reward (with shaping unless drop_shaping) plus the
+    same terminal bonus — for an apples-to-apples comparison with PPO."""
+    bonus = args.completion_bonus_coef * batch.terminated_B * batch.completion_bonus_B
+    if args.reward_mode == "outcome":
+        core = batch.thp_final_B + bonus
+    elif args.reward_mode == "per_step":
+        core = batch.per_step_reward_B + bonus
+    else:
+        raise ValueError(f"unknown reward_mode {args.reward_mode!r}")
+    return args.reward_scale * core
+
+
+def compute_advantages(R_B: torch.Tensor, group_size: int) -> torch.Tensor:
+    """Dr. GRPO advantage: A_i = R_i - mean_group(R).
+
+    NO division by the group std and NO per-response length normalization —
+    both inject bias (Liu et al.). std-normalization in particular blows up the
+    gradient on easy/hard grids where reward variance is tiny. Lanes are
+    group-contiguous (lane = g*G + j, guaranteed by collect_rollout), so a
+    reshape recovers the groups."""
+    num_groups = R_B.shape[0] // group_size
+    grouped = R_B.view(num_groups, group_size)
+    baseline = grouped.mean(dim=1, keepdim=True)
+    return (grouped - baseline).reshape(-1)
+
+
+def broadcast_advantages(
+    A_B: torch.Tensor, lane_of_N: torch.Tensor
+) -> torch.Tensor:
+    """Scatter each lane's scalar advantage onto all of its transitions."""
+    return A_B.to(lane_of_N.device)[lane_of_N]
 
 
 def train_grpo(args: GRPOArgs) -> AgentCNN:
