@@ -1,0 +1,49 @@
+# Regression oracle for the two bugs the removed Python `world2graph` had,
+# which the Rust `build_graph` does NOT (issue #178). Each case pins the
+# corrected behaviour as hand-written ground truth so it can never silently
+# come back.
+
+# --- Bug 1: phantom source-input edge ---------------------------------------
+# The old Python builder modelled a source like a permissive inserter: it
+# would pull from whatever sat behind it, adding a spurious `belt -> source`
+# edge even when that belt faced away. A source is a pure producer; it
+# connects like a belt and must not gain an input edge from a belt that
+# isn't feeding it.
+
+description: |
+  Bug 1 (negative): a belt directly behind a source, facing AWAY, must
+  produce NO edge. The removed Python builder added a phantom belt -> source
+  here; build_graph connects source/sink like belts, so a belt facing away
+  feeds nothing.
+graph: ""
+factory: |
+  b< S>
+---
+description: |
+  Bug 1 (positive control): a belt facing INTO the source does feed it, like
+  any belt -> belt connection. Contrast the negative case above — the only
+  difference is the belt's facing.
+graph: |
+  b@0,0 -> S@1,0
+factory: |
+  b> S>
+---
+# --- Bug 2: underground belts across a gap ----------------------------------
+# The #173 underground rewrite only landed in the Rust engine; the old Python
+# builder failed to pair an underground entry with its exit across a gap, so
+# source -> ... -> sink runs through an underground were left disconnected.
+# Here the entry (d) pairs with the exit (u) three tiles away, and the exit
+# feeds the belt ahead — the two edges Python dropped.
+description: |
+  Bug 2: a full source -> belt -> underground-entry -> (gap) ->
+  underground-exit -> belt -> sink run. The d -> u (across the gap) and
+  u -> b (exit feeds the belt ahead) edges are the ones the removed Python
+  builder mis-wired.
+graph: |
+  S@0,0 -> b@1,0
+  b@1,0 -> d@2,0
+  d@2,0 -> u@5,0
+  u@5,0 -> b@6,0
+  b@6,0 -> K@7,0
+factory: |
+  S> b> d> .. .. u> b> K>
