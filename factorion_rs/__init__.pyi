@@ -27,6 +27,17 @@ def simulate_throughput(world: NDArray[np.int64]) -> tuple[float, int]:
     """(throughput, num_unreachable) for a (W, H, C) int64 world array."""
     ...
 
+def py_build_graph(
+    world: NDArray[np.int64],
+) -> tuple[list[str], list[tuple[int, int]]]:
+    """Factory connection graph for a (W, H, C) int64 world array.
+
+    Returns (node_labels, edges): node labels in the engine's
+    ``"{entity_name}\\n@{x},{y}"`` format, and ``(src_index, dst_index)`` edges
+    indexing into them.
+    """
+    ...
+
 def py_entity_tiles(
     x: int, y: int, direction: int, width: int, height: int
 ) -> list[tuple[int, int]] | None:

@@ -1,0 +1,42 @@
+# Independent oracle for the 3x3 assembler's perimeter connections. An
+# inserter on an orthogonal (non-corner) edge slot connects to the assembler;
+# the edge direction follows real inserter semantics — it drops at the tile
+# it faces and picks up from the tile behind it:
+#   * facing INTO the body  -> inserter -> assembler
+#   * facing AWAY from body  -> assembler -> inserter (it pulls from behind)
+# All four edges (W/E/N/S) x both directions, derived by hand, asserted
+# edge-for-edge against build_graph. Anchor = the assembler's top-left tile.
+
+description: west edge, inserter faces east into the body -> inserter feeds assembler
+graph: |
+  i@0,1 -> a@1,0
+factory: |
+  .. aaaaaaaa
+  i> aa    aa
+  .. aaaaaaaa
+---
+description: east edge, inserter faces east away from the body -> assembler feeds inserter
+graph: |
+  a@0,0 -> i@3,1
+factory: |
+  aaaaaaaa ..
+  aa    aa i>
+  aaaaaaaa ..
+---
+description: north edge, inserter faces south into the body -> inserter feeds assembler
+graph: |
+  i@1,0 -> a@0,1
+factory: |
+  .. iv ..
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+---
+description: south edge, inserter faces south away from the body -> assembler feeds inserter
+graph: |
+  a@0,0 -> i@1,3
+factory: |
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+  .. iv ..

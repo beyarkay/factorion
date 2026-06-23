@@ -1,8 +1,8 @@
-# DISABLED pending the source/sink-as-belt engine refactor.
-# Every connectivity case where A or B is a source or sink. The engine
-# still models source/sink like permissive inserters (not belts), so
-# these fail. Re-enable by renaming to `.yaml` once source/sink connect
-# like belts (except never to each other).
+# Every adjacent (entity, direction) x (source/sink, direction) pair, with
+# the exact edge build_graph produces. Source and sink connect like belts
+# (#174) and never to each other: a belt/inserter facing a source or sink
+# feeds it, one facing away produces nothing. Asserted edge-for-edge by
+# check_graph in test_all_yamls_in_factories_dir.
 
 description: belt/N vs source/N
 graph: ""
