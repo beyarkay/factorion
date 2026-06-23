@@ -7,23 +7,22 @@ those terms inject bias — std-normalization especially blows up the gradient o
 easy/hard grids where reward variance is tiny.
 
 Why GRPO instead of PPO here? The reward is verifiable and outcome-dominated
-(throughput jumps to ~1 the moment source connects to sink, plus a terminal
-completion bonus). A learned value function buys little against a near-terminal
-step-function reward, and the critic is the main source of PPO's tuning surface
-and failure modes (value clip, GAE lambda, value-loss coef, shared-encoder
-corruption). GRPO deletes the critic entirely: it samples a *group* of G
-completions on the *same* seeded grid, scores each by final reward, and
-normalizes within the group. Two distinct valid belt paths both score ~1 and
-both get non-negative advantage — the baseline is diversity-neutral, which is
-exactly the path-agnostic objective we want.
+(the terminal throughput reward dominates the small per-step penalty). A learned
+value function buys little against a near-terminal reward, and the critic is the
+main source of PPO's tuning surface and failure modes (value clip, GAE lambda,
+value-loss coef, shared-encoder corruption). GRPO deletes the critic entirely:
+it samples a *group* of G completions on the *same* seeded grid, scores each by
+its episode return, and normalizes within the group. Two distinct valid belt
+paths both score ~1 and both get non-negative advantage — the baseline is
+diversity-neutral, which is exactly the path-agnostic objective we want.
 
-Pipeline position: SFT pretraining gives the policy a strong placement prior
-(~0.68 throughput / ~0.78 dir_acc); GRPO finetunes it. Load an SFT checkpoint
-with --start-from.
+Pipeline position: SFT pretraining gives the policy a strong placement prior;
+GRPO finetunes it. Load an SFT checkpoint with --start-from (a local .pt; the
+network shape must match via --layers/--kernel-size).
 
 Usage:
-    python sft.py --size 8 --checkpoint-path sft.pt ...   # produce the prior
-    python grpo.py --start-from sft.pt --size 8 --track ...
+    python sft.py --size 8 --layer1 48 --layer2 48 --layer3 64 ...   # the prior
+    python grpo.py --start-from sft.pt --size 8 --layers 48 48 64 --track ...
 """
 
 import json
@@ -42,18 +41,16 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 import tyro
-from torch.distributions import Categorical
+from torch.distributions import Bernoulli, Categorical
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: F401,E402  (imported for its side-effect: the env's solver)
 from factorion import (  # noqa: E402
     Channel,
     LessonKind,
-    blank_entities,
     build_factory,
 )
 
-from ppo import Args as PPOArgs  # noqa: E402  (env reward coeffs live as its class defaults)
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 GRPO_ENV_ID = "factorion/FactorioEnv-v0-grpo"
@@ -75,13 +72,27 @@ class GRPOArgs:
     wandb_group: Optional[str] = None
     tags: Optional[list[str]] = None
 
-    # ── network (must match the SFT checkpoint) ──────────────────────────
-    chan1: int = 48
-    chan2: int = 48
-    chan3: int = 64
-    flat_dim: int = 128
-    """unused by AgentCNN (it recomputes chan3*W*H); kept for ctor compat"""
+    # ── network (must match the SFT checkpoint's shape) ──────────────────
+    layers: tuple[int, ...] = (93, 69, 96)
+    """encoder conv widths, one conv per entry — must match the checkpoint.
+    Default is the canonical SFT base (run j0s5y2mc)."""
+    kernel_size: int = 3
+    """conv kernel size (odd); must match the checkpoint"""
+    dropout: float = 0.0
+    """encoder Dropout2d. Off for RL finetuning; the value does not affect
+    state_dict loading (Dropout2d has no params)."""
     tile_head_std: float = 0.02208
+
+    # ── reward (env paid: -step_penalty/step + throughput_reward_scale*thput) ──
+    throughput_reward_scale: float = 1.0
+    """terminal throughput reward scale (paid on eot or max_steps); thput is
+    in [0, 1] so this is the max terminal reward. Matches the env default."""
+    step_penalty: float = 0.01
+    """per-step penalty. Matches the env default."""
+    reward_scale: float = 1.0
+    """extra multiplier on the episode return R_i before advantages. The env
+    reward is already O(1), so 1.0 is the faithful default; raise it to scale
+    up the (Dr. GRPO, un-normalized) advantage magnitude."""
 
     # ── GRPO sampling ────────────────────────────────────────────────────
     num_iterations: int = 200
@@ -112,23 +123,6 @@ class GRPOArgs:
     """small entropy bonus; raise only if the policy collapses prematurely"""
     adam_epsilon: float = 1e-8
 
-    # ── reward (outcome-only by default) ─────────────────────────────────
-    reward_mode: str = "outcome"
-    """"outcome": R_i = scale*(thp_final + bonus_coef*bonus). "per_step": the
-    PPO-faithful sum of per-step (throughput+validity) reward (minus shaping
-    when drop_shaping). Outcome is the v1 default — standard GRPO, and the
-    advantage is dominated by the same connect/not-connect signal anyway."""
-    reward_scale: float = 0.1
-    """multiplies R_i. Dr. GRPO drops std-normalization, so we lose its
-    automatic scale-invariance; reward_scale keeps |advantage| ~ O(1) against
-    a completion bonus that can reach ~2*size."""
-    completion_bonus_coef: float = 1.0
-    """weight on the terminal (max_steps - steps) bonus inside R_i"""
-    drop_shaping: bool = True
-    """drop potential-based shaping from R_i (only affects reward_mode=
-    "per_step"; shaping is policy-invariant so it ~cancels in the group
-    baseline — kept as a knob to verify that empirically, per spec)"""
-
     # ── grid difficulty ──────────────────────────────────────────────────
     num_missing_min: int = 1
     num_missing_max: int = 0
@@ -136,8 +130,14 @@ class GRPOArgs:
     [num_missing_min, cap] so groups straddle the success boundary."""
 
     # ── end-of-turn (EOT) ────────────────────────────────────────────────
-    # See the rollout stop-condition for the rationale. v1: episodes end only
-    # on connection or max_steps; EOT is neither used to stop nor RL-trained.
+    # EOT is a real action (Discrete(2)) the env consumes: terminated when the
+    # agent emits eot=1, else truncated at max_steps. With the per-step penalty
+    # the env *can* now reward stopping early (once the factory can't improve),
+    # so EOT is genuinely learnable here — unlike the pre-rebase reward. v1
+    # keeps it OFF (honor_eot=False): eot is forced to 0, excluded from the
+    # objective, episodes run to max_steps and collect the terminal throughput
+    # reward on truncation. Flip --honor-eot to sample+train it. Tracking +
+    # rationale: https://github.com/beyarkay/factorion/issues/181
     honor_eot: bool = False
     eot_threshold: float = 0.5
 
@@ -175,11 +175,10 @@ def _build_agent(args: GRPOArgs, envs, device) -> AgentCNN:
     from the *same* SFT weights (we never deepcopy a mid-training policy)."""
     agent = AgentCNN(
         envs,
-        chan1=args.chan1,
-        chan2=args.chan2,
-        chan3=args.chan3,
-        flat_dim=args.flat_dim,
+        layers=list(args.layers),
+        kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        dropout=args.dropout,
     )
     if not args.start_from:
         raise ValueError(
@@ -190,8 +189,11 @@ def _build_agent(args: GRPOArgs, envs, device) -> AgentCNN:
     return agent.to(device)
 
 
-def _sample(dist: Categorical, generator: Optional[torch.Generator]) -> torch.Tensor:
-    """Sample category indices, optionally from an explicit Generator.
+def _sample_categorical(
+    logits_BN: torch.Tensor, generator: Optional[torch.Generator]
+) -> torch.Tensor:
+    """Sample category indices from logits, optionally via an explicit
+    Generator.
 
     A dedicated generator decouples action sampling from the global torch RNG,
     which build_factory()/blank_entities() reseed on every env.reset — without
@@ -199,34 +201,46 @@ def _sample(dist: Categorical, generator: Optional[torch.Generator]) -> torch.Te
     so the generator works regardless of the policy's device (mps generators
     are finicky)."""
     if generator is None:
-        return dist.sample()
-    idx = torch.multinomial(dist.probs.to("cpu"), 1, generator=generator).squeeze(-1)
-    return idx.to(dist.probs.device)
+        return Categorical(logits=logits_BN).sample()
+    probs = torch.softmax(logits_BN, dim=-1)
+    idx = torch.multinomial(probs.to("cpu"), 1, generator=generator).squeeze(-1)
+    return idx.to(logits_BN.device)
+
+
+def _sample_bernoulli(
+    logit_B: torch.Tensor, generator: Optional[torch.Generator]
+) -> torch.Tensor:
+    if generator is None:
+        return Bernoulli(logits=logit_B).sample()
+    bits = torch.bernoulli(torch.sigmoid(logit_B).to("cpu"), generator=generator)
+    return bits.to(logit_B.device)
 
 
 def policy_step(
     agent: AgentCNN,
     obs_BCWH: torch.Tensor,
     temperature: float = 1.0,
-    action_B6: Optional[torch.Tensor] = None,
+    action_B7: Optional[torch.Tensor] = None,
     generator: Optional[torch.Generator] = None,
+    include_eot: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Temperature-aware replication of AgentCNN.get_action_and_value's action
-    path. Sampling (action_B6=None) and scoring (action_B6 given) share ONE
-    code path so the temperature is applied identically — to the tile logits
-    AND all four per-tile head logits — guaranteeing old-logp, new-logp and
-    ref-logp describe the same temperature-T policy and the ratio stays a clean
-    importance ratio.
+    path. Sampling (action_B7=None) and scoring (action_B7 given) share ONE
+    code path so the temperature is applied identically — to the tile logits,
+    all four per-tile head logits, AND the EOT logit — guaranteeing old-logp,
+    new-logp and ref-logp describe the same temperature-T policy.
 
     We deliberately do NOT call agent.get_action_and_value: it has no
-    temperature knob and also computes the (unused) value head. At T=1.0 this
-    is numerically identical to get_action_and_value's logp/entropy.
+    temperature knob and also computes the (unused) value head. At T=1.0 with
+    include_eot=True this is numerically identical to get_action_and_value's
+    logp/entropy.
 
-    Action layout (B, 6) int columns: [x, y, entity, direction, item, misc] —
-    the same convention the env's step() and get_action_and_value's scoring
-    path use. Returns (action_B6, logp_B, entropy_B); logp/entropy are SUMS
-    over the 5 categorical heads (tile, entity, dir, item, misc). EOT is a
-    separate head and is intentionally excluded.
+    Action layout (B, 7) int columns: [x, y, entity, direction, item, misc, eot]
+    — the convention the env's step() and get_action_and_value's scoring path
+    use. logp/entropy sum the 5 categorical heads (tile, entity, dir, item,
+    misc) plus, iff include_eot, the EOT Bernoulli. With include_eot=False the
+    EOT column is forced to 0 and left out of the objective entirely (v1
+    behaviour: the agent never stops early and eot is never RL-trained).
     """
     encoded_BCWH = agent.encoder(obs_BCWH)
     B = encoded_BCWH.shape[0]
@@ -235,32 +249,44 @@ def policy_step(
     # ── tile selection (joint x,y via 1x1 conv) ──
     tile_logits_BN = agent.tile_logits(encoded_BCWH).reshape(B, -1) / temperature
     dist_tile = Categorical(logits=tile_logits_BN)
-    if action_B6 is None:
-        tile_idx_B = _sample(dist_tile, generator)
+    if action_B7 is None:
+        tile_idx_B = _sample_categorical(tile_logits_BN, generator)
     else:
         # Reconstruct tile index from stored (x, y) exactly as
-        # get_action_and_value does (ppo.py:915): tile = x*height + y.
-        tile_idx_B = action_B6[:, 0] * H + action_B6[:, 1]
+        # get_action_and_value does (ppo.py): tile = x*height + y.
+        tile_idx_B = action_B7[:, 0] * H + action_B7[:, 1]
     x_B = tile_idx_B // H
     y_B = tile_idx_B % H
 
     # ── per-tile heads conditioned on features at the selected tile ──
     batch_idx = torch.arange(B, device=encoded_BCWH.device)
     feats_BC = encoded_BCWH[batch_idx, :, x_B, y_B]
-    dist_e = Categorical(logits=agent.ent_head(feats_BC) / temperature)
-    dist_d = Categorical(logits=agent.dir_head(feats_BC) / temperature)
-    dist_i = Categorical(logits=agent.item_head(feats_BC) / temperature)
-    dist_m = Categorical(logits=agent.misc_head(feats_BC) / temperature)
-    if action_B6 is None:
-        ent_B = _sample(dist_e, generator)
-        dir_B = _sample(dist_d, generator)
-        item_B = _sample(dist_i, generator)
-        misc_B = _sample(dist_m, generator)
+    ent_logits = agent.ent_head(feats_BC) / temperature
+    dir_logits = agent.dir_head(feats_BC) / temperature
+    item_logits = agent.item_head(feats_BC) / temperature
+    misc_logits = agent.misc_head(feats_BC) / temperature
+    eot_logit_B = agent.eot_head(encoded_BCWH).squeeze(-1) / temperature
+    dist_e = Categorical(logits=ent_logits)
+    dist_d = Categorical(logits=dir_logits)
+    dist_i = Categorical(logits=item_logits)
+    dist_m = Categorical(logits=misc_logits)
+    dist_eot = Bernoulli(logits=eot_logit_B)
+
+    if action_B7 is None:
+        ent_B = _sample_categorical(ent_logits, generator)
+        dir_B = _sample_categorical(dir_logits, generator)
+        item_B = _sample_categorical(item_logits, generator)
+        misc_B = _sample_categorical(misc_logits, generator)
+        if include_eot:
+            eot_B = _sample_bernoulli(eot_logit_B, generator)
+        else:
+            eot_B = torch.zeros(B, device=encoded_BCWH.device)
     else:
-        ent_B = action_B6[:, 2]
-        dir_B = action_B6[:, 3]
-        item_B = action_B6[:, 4]
-        misc_B = action_B6[:, 5]
+        ent_B = action_B7[:, 2]
+        dir_B = action_B7[:, 3]
+        item_B = action_B7[:, 4]
+        misc_B = action_B7[:, 5]
+        eot_B = action_B7[:, 6].float()
 
     logp_B = (
         dist_tile.log_prob(tile_idx_B)
@@ -276,21 +302,33 @@ def policy_step(
         + dist_i.entropy()
         + dist_m.entropy()
     )
-    out_B6 = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
-    return out_B6, logp_B, entropy_B
+    if include_eot:
+        logp_B = logp_B + dist_eot.log_prob(eot_B)
+        entropy_B = entropy_B + dist_eot.entropy()
+
+    out_B7 = torch.stack(
+        [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B.long()], dim=1
+    )
+    return out_B7, logp_B, entropy_B
 
 
 def _max_steps(args: GRPOArgs) -> int:
     # Short horizon ("one entity per step over a belt chain"), matching ppo.py's
     # make_env. NOT FactorioEnv's default of size*size, which would make
-    # episodes (and the completion bonus) ~size times longer.
+    # episodes ~size times longer.
     return 2 * args.size
 
 
 def _make_rollout_env(args: GRPOArgs) -> FactorioEnv:
     # idx=0 so reset(seed) is an exact pass-through: the grid is a pure
     # function of (size, kind, seed), letting a group of lanes share one grid.
-    return FactorioEnv(size=args.size, max_steps=_max_steps(args), idx=0)
+    return FactorioEnv(
+        size=args.size,
+        max_steps=_max_steps(args),
+        idx=0,
+        throughput_reward_scale=args.throughput_reward_scale,
+        step_penalty=args.step_penalty,
+    )
 
 
 def select_grids(
@@ -338,20 +376,19 @@ class RolloutBatch:
 
     N = total transitions across all lanes (variable, since episodes vary in
     length). B = num_grids * group_size lanes. A transition is one placement
-    step; a lane that terminated early simply contributes fewer rows."""
+    step; a lane that emitted eot early simply contributes fewer rows."""
 
     obs_NCWH: torch.Tensor
-    actions_N6: torch.Tensor
+    actions_N7: torch.Tensor
     old_logp_N: torch.Tensor
     ref_logp_N: torch.Tensor
     lane_of_N: torch.Tensor  # (N,) which lane each transition came from
     group_of_lane_B: torch.Tensor  # (B,) lane -> group id (lane // G)
     # per-lane reward ingredients
-    thp_final_B: torch.Tensor  # (B,) last throughput the env reported
-    terminated_B: torch.Tensor  # (B,) 1.0 if the lane connected (throughput>=1)
-    completion_bonus_B: torch.Tensor  # (B,) max_steps - steps_at_terminal
+    cum_reward_B: torch.Tensor  # (B,) summed env reward over the episode
+    thput_final_B: torch.Tensor  # (B,) last thput_normed the env reported
+    eot_terminated_B: torch.Tensor  # (B,) 1.0 if the agent emitted eot
     steps_B: torch.Tensor  # (B,) episode length (transitions stored)
-    per_step_reward_B: torch.Tensor  # (B,) sum of PPO-style per-step reward
     # per-lane worlds for diversity metrics
     final_world_B: list = field(default_factory=list)
     solved_world_B: list = field(default_factory=list)
@@ -372,20 +409,21 @@ def collect_rollout(
     belongs to grid g, so the Dr. GRPO baseline is computed over completions of
     the *same* grid. Finished lanes are masked out — they keep getting fed
     through the batched forward (cheap; episodes are short) but store no further
-    transitions and are never stepped again."""
+    transitions and are never stepped again. Episodes end on eot (only when
+    honor_eot) or max_steps; either way the env pays the terminal throughput
+    reward, so the summed reward R_i is a complete episode return."""
     G = args.group_size
     B = len(grids) * G
     T = args.temperature
-    H = args.size
 
     envs = [_make_rollout_env(args) for _ in range(B)]
 
     # Reset ALL lanes before any sampling. build_factory/blank_entities reseed
     # the global RNG on each reset; doing them up front (then sampling via the
     # explicit `generator`) keeps action draws independent of grid seeds.
-    obs_B = [None] * B
+    init_obs: list[np.ndarray] = []
     last_thp = [0.0] * B
-    solved_world_B = [None] * B
+    solved_world_B: list = [None] * B
     for g, (seed, kind, num_missing) in enumerate(grids):
         for j in range(G):
             lane = g * G + j
@@ -393,22 +431,17 @@ def collect_rollout(
                 seed=seed,
                 options={"num_missing_entities": num_missing, "kind": kind},
             )
-            obs_B[lane] = o
-            last_thp[lane] = float(info.get("throughput", 0.0))
+            init_obs.append(o)  # appended in lane order (lane = g*G + j)
+            last_thp[lane] = float(info.get("thput_normed", 0.0))
             solved_world_B[lane] = envs[lane]._solved_world_CWH.clone()
+    obs_B = np.stack(init_obs)  # (B, C, W, H); rows updated in-place per step
 
     active = [True] * B
     n_trans = [0] * B
-    terminated_B = [0.0] * B
-    completion_bonus_B = [0.0] * B
-    final_world_B = [None] * B
+    cum_reward = [0.0] * B
+    eot_terminated = [0.0] * B
+    final_world_B: list = [None] * B
     steps_B = [0] * B
-    # Σ of the env's PPO-style per-step reward, captured so reward_mode=
-    # "per_step" is a faithful reconstruction. The env reads its coeffs from
-    # the Args *class* defaults (the `'args' not in locals()` branch in
-    # FactorioEnv.step), so we read the same attrs here.
-    per_step_sum = [0.0] * B
-    _ct, _cv = PPOArgs.coeff_throughput, PPOArgs.coeff_validity
 
     obs_rows: list[torch.Tensor] = []
     act_rows: list[torch.Tensor] = []
@@ -418,87 +451,56 @@ def collect_rollout(
 
     max_steps = _max_steps(args)
     with torch.no_grad():
-        # Loop until every lane has terminated/truncated. The env truncates
-        # when steps>max_steps (checked pre-increment), so a non-connecting
-        # lane needs up to max_steps+2 steps; +4 leaves margin so truncation
-        # always fires inside the loop, never via the fallback below.
+        # The env truncates when steps>max_steps (checked pre-increment), so a
+        # non-eot lane needs up to max_steps+2 steps; +4 leaves margin so every
+        # lane terminates inside the loop, never via the fallback below.
         for _t in range(max_steps + 4):
             if not any(active):
                 break
-            obs_batch = torch.as_tensor(
-                np.stack(obs_B), dtype=torch.float32, device=device
-            )
-            action_B6, logp_B, _ent = policy_step(
-                policy, obs_batch, temperature=T, generator=generator
+            obs_batch = torch.as_tensor(obs_B, dtype=torch.float32, device=device)
+            action_B7, logp_B, _ent = policy_step(
+                policy,
+                obs_batch,
+                temperature=T,
+                generator=generator,
+                include_eot=args.honor_eot,
             )
             _a, ref_logp_B, _e = policy_step(
-                ref, obs_batch, temperature=T, action_B6=action_B6
+                ref,
+                obs_batch,
+                temperature=T,
+                action_B7=action_B7,
+                include_eot=args.honor_eot,
             )
-
-            # ── EOT stop signal — OFF in v1 (honor_eot defaults False) ──
-            # Under this reward, connecting auto-terminates the episode
-            # (throughput>=1) and stopping early is never beneficial, so the
-            # SFT eot head is a pure confound here: honoring it can truncate a
-            # near-complete factory and inject reward variance for no gain. We
-            # therefore neither stop on it nor RL-train it in v1. `--honor-eot`
-            # flips it on for later experiments. Tracking:
-            # https://github.com/beyarkay/factorion/issues/181
-            eot_stop = [False] * B
-            if args.honor_eot:
-                encoded = policy.encoder(obs_batch)
-                eot_prob_B = torch.sigmoid(policy.eot_head(encoded).squeeze(-1))
-                eot_stop = (eot_prob_B > args.eot_threshold).tolist()
 
             for lane in range(B):
                 if not active[lane]:
                     continue
-                if eot_stop[lane]:
-                    # Agent chose to stop without an env step: no transition,
-                    # episode ends with whatever it has placed so far.
-                    active[lane] = False
-                    terminated_B[lane] = 0.0
-                    completion_bonus_B[lane] = 0.0
-                    final_world_B[lane] = envs[lane]._world_CWH.clone()
-                    steps_B[lane] = n_trans[lane]
-                    continue
 
                 obs_rows.append(obs_batch[lane].cpu())
-                act_rows.append(action_B6[lane].cpu())
+                act_rows.append(action_B7[lane].cpu())
                 old_lp.append(logp_B[lane].cpu())
                 ref_lp.append(ref_logp_B[lane].cpu())
                 lane_ids.append(lane)
                 n_trans[lane] += 1
 
-                act = action_B6[lane].tolist()
+                act = action_B7[lane].tolist()
                 action_dict = {
                     "xy": np.array([act[0], act[1]], dtype=int),
                     "entity": int(act[2]),
                     "direction": int(act[3]),
                     "item": int(act[4]),
                     "misc": int(act[5]),
+                    "eot": int(act[6]),
                 }
-                next_obs, _r, terminated, truncated, info = envs[lane].step(action_dict)
-                last_thp[lane] = float(info.get("throughput", 0.0))
-
-                # PPO-style per-step reward (throughput+validity, normalized),
-                # + shaping deltas unless drop_shaping. Shaping is
-                # potential-based so its episode sum telescopes to a path-
-                # independent constant that ~cancels in the group baseline.
-                valid_t = 0.0 if any(info.get("invalid_reason", {}).values()) else 1.0
-                per_step_sum[lane] += (
-                    _ct * last_thp[lane] + _cv * valid_t
-                ) / (_ct + _cv)
-                if not args.drop_shaping:
-                    per_step_sum[lane] += (
-                        float(info.get("shaping_location_delta", 0.0))
-                        + float(info.get("shaping_entity_delta", 0.0))
-                        + float(info.get("shaping_direction_delta", 0.0))
-                    )
-
+                next_obs, reward, terminated, truncated, info = envs[lane].step(
+                    action_dict
+                )
+                cum_reward[lane] += float(reward)
+                last_thp[lane] = float(info.get("thput_normed", 0.0))
                 if terminated or truncated:
                     active[lane] = False
-                    terminated_B[lane] = 1.0 if terminated else 0.0
-                    completion_bonus_B[lane] = float(info.get("completion_bonus", 0.0))
+                    eot_terminated[lane] = 1.0 if terminated else 0.0
                     final_world_B[lane] = envs[lane]._world_CWH.clone()
                     steps_B[lane] = n_trans[lane]
                 else:
@@ -515,29 +517,28 @@ def collect_rollout(
     group_of_lane = torch.tensor([lane // G for lane in range(B)], dtype=torch.long)
     if obs_rows:
         obs_NCWH = torch.stack(obs_rows).to(device)
-        actions_N6 = torch.stack(act_rows).to(device)
+        actions_N7 = torch.stack(act_rows).to(device)
         old_logp_N = torch.stack(old_lp).to(device)
         ref_logp_N = torch.stack(ref_lp).to(device)
         lane_of_N = torch.tensor(lane_ids, dtype=torch.long, device=device)
     else:
-        obs_NCWH = torch.empty((0, len(Channel), H, H), device=device)
-        actions_N6 = torch.empty((0, 6), dtype=torch.long, device=device)
+        obs_NCWH = torch.empty((0, len(Channel), args.size, args.size), device=device)
+        actions_N7 = torch.empty((0, 7), dtype=torch.long, device=device)
         old_logp_N = torch.empty((0,), device=device)
         ref_logp_N = torch.empty((0,), device=device)
         lane_of_N = torch.empty((0,), dtype=torch.long, device=device)
 
     return RolloutBatch(
         obs_NCWH=obs_NCWH,
-        actions_N6=actions_N6,
+        actions_N7=actions_N7,
         old_logp_N=old_logp_N,
         ref_logp_N=ref_logp_N,
         lane_of_N=lane_of_N,
         group_of_lane_B=group_of_lane,
-        thp_final_B=torch.tensor(last_thp, dtype=torch.float32),
-        terminated_B=torch.tensor(terminated_B, dtype=torch.float32),
-        completion_bonus_B=torch.tensor(completion_bonus_B, dtype=torch.float32),
+        cum_reward_B=torch.tensor(cum_reward, dtype=torch.float32),
+        thput_final_B=torch.tensor(last_thp, dtype=torch.float32),
+        eot_terminated_B=torch.tensor(eot_terminated, dtype=torch.float32),
         steps_B=torch.tensor(steps_B, dtype=torch.float32),
-        per_step_reward_B=torch.tensor(per_step_sum, dtype=torch.float32),
         final_world_B=final_world_B,
         solved_world_B=solved_world_B,
     )
@@ -546,21 +547,12 @@ def collect_rollout(
 def compute_rewards(batch: RolloutBatch, args: GRPOArgs) -> torch.Tensor:
     """Scalar episode return R_i per lane (B,).
 
-    "outcome" (default, standard GRPO): R_i = scale*(thp_final + bonus_coef *
-    bonus), where bonus is the terminal (max_steps - steps) only when the lane
-    connected. Pure outcome reward — no per-step bookkeeping.
-
-    "per_step" (PPO-faithful, opt-in): the env's summed per-step
-    (throughput+validity) reward (with shaping unless drop_shaping) plus the
-    same terminal bonus — for an apples-to-apples comparison with PPO."""
-    bonus = args.completion_bonus_coef * batch.terminated_B * batch.completion_bonus_B
-    if args.reward_mode == "outcome":
-        core = batch.thp_final_B + bonus
-    elif args.reward_mode == "per_step":
-        core = batch.per_step_reward_B + bonus
-    else:
-        raise ValueError(f"unknown reward_mode {args.reward_mode!r}")
-    return args.reward_scale * core
+    R_i = reward_scale * (summed env reward over the episode), i.e. the env's
+    own reward — `throughput_reward_scale * thput_normed_final - steps *
+    step_penalty`. This is the cleanest, most PPO-faithful signal: the env's
+    reward is already outcome-dominated and O(1), so no bespoke reward shaping
+    is needed in GRPO."""
+    return args.reward_scale * batch.cum_reward_B
 
 
 def compute_advantages(R_B: torch.Tensor, group_size: int) -> torch.Tensor:
@@ -577,9 +569,7 @@ def compute_advantages(R_B: torch.Tensor, group_size: int) -> torch.Tensor:
     return (grouped - baseline).reshape(-1)
 
 
-def broadcast_advantages(
-    A_B: torch.Tensor, lane_of_N: torch.Tensor
-) -> torch.Tensor:
+def broadcast_advantages(A_B: torch.Tensor, lane_of_N: torch.Tensor) -> torch.Tensor:
     """Scatter each lane's scalar advantage onto all of its transitions."""
     return A_B.to(lane_of_N.device)[lane_of_N]
 
@@ -602,10 +592,11 @@ def compute_diversity(batch: RolloutBatch, R_B: torch.Tensor, args: GRPOArgs) ->
         ~0); raise temperature / lower beta_kl.
       - diversity/unique_path_frac: mean fraction of DISTINCT final layouts
         within a group. GRPO should push this UP vs SFT.
-      - diversity/off_reference_success: of the WORKING (connected) factories,
-        the fraction whose layout differs from the SFT reference solution. The
-        cleanest single number for "did RL escape the single-path anchor."
-      - diversity/working_frac: fraction of lanes that connected.
+      - diversity/off_reference_success: of the WORKING (thput_normed>=1)
+        factories, the fraction whose layout differs from the SFT reference
+        solution. The cleanest single number for "did RL escape the single-path
+        anchor."
+      - diversity/working_frac: fraction of lanes that fully rebuilt.
       - diversity/dir_acc_vs_ref: mean full-grid direction match to reference
         (REPORTED, not a target — see greedy_eval)."""
     G = args.group_size
@@ -629,7 +620,7 @@ def compute_diversity(batch: RolloutBatch, R_B: torch.Tensor, args: GRPOArgs) ->
         fe, se = fw[Channel.ENTITIES.value], sw[Channel.ENTITIES.value]
         fd, sd = fw[Channel.DIRECTION.value], sw[Channel.DIRECTION.value]
         dir_accs.append((fd == sd).float().mean().item())
-        if batch.terminated_B[lane] >= 1.0:
+        if batch.thput_final_B[lane] >= 1.0:
             working += 1
             on_reference = torch.equal(fe, se) and torch.equal(fd, sd)
             if not on_reference:
@@ -653,10 +644,11 @@ def greedy_eval(
     """Batched greedy rollout on held-out grids (argmax every head), mirroring
     sft.run_rollout_eval but self-contained and using the GRPO horizon.
 
-    Episodes end on connection (throughput>=1) or max_steps; EOT is honored
-    only when args.honor_eot, so the regime matches training. Reports:
-      - eval/throughput: mean final throughput (the real objective)
-      - eval/success_rate: fraction that fully connect source->sink
+    EOT is emitted (argmax → eot_prob>threshold) only when args.honor_eot, so
+    the regime matches training; otherwise the env truncates at max_steps.
+    Reports:
+      - eval/throughput: mean final thput_normed (the real objective)
+      - eval/success_rate: fraction that fully rebuild (thput_normed>=1)
       - eval/dir_acc_vs_ref: mean tile_match_direction (REPORTED, NOT a target
         — under working GRPO this may fall while throughput rises, because the
         actor produces valid OFF-reference paths)."""
@@ -672,7 +664,7 @@ def greedy_eval(
             chunk = val_grids[start : start + K]
             n = len(chunk)
             envs = [_make_rollout_env(args) for _ in range(n)]
-            obs = [None] * n
+            init_obs: list[np.ndarray] = []
             last_thp = [0.0] * n
             last_dir = [0.0] * n
             for i, (seed, kind, num_missing) in enumerate(chunk):
@@ -680,15 +672,16 @@ def greedy_eval(
                     seed=seed,
                     options={"num_missing_entities": num_missing, "kind": kind},
                 )
-                obs[i] = o
-                last_thp[i] = float(info.get("throughput", 0.0))
+                init_obs.append(o)
+                last_thp[i] = float(info.get("thput_normed", 0.0))
                 last_dir[i] = float(info.get("tile_match_direction", 0.0))
+            obs = np.stack(init_obs)  # (n, C, W, H); rows updated per step
 
             active = [True] * n
             for _t in range(max_steps + 4):
                 if not any(active):
                     break
-                obs_b = torch.as_tensor(np.stack(obs), dtype=torch.float32, device=device)
+                obs_b = torch.as_tensor(obs, dtype=torch.float32, device=device)
                 encoded = policy.encoder(obs_b)
                 tile = policy.tile_logits(encoded).reshape(n, -1).argmax(dim=1)
                 x = tile // args.size
@@ -707,18 +700,16 @@ def greedy_eval(
                 for i in range(n):
                     if not active[i]:
                         continue
-                    if bool(eot[i]):
-                        active[i] = False
-                        continue
                     action = {
                         "xy": np.array([int(x[i]), int(y[i])], dtype=int),
                         "entity": int(ent[i]),
                         "direction": int(dir_[i]),
                         "item": int(item[i]),
                         "misc": int(misc[i]),
+                        "eot": int(bool(eot[i])),
                     }
                     no, _r, term, trunc, info = envs[i].step(action)
-                    last_thp[i] = float(info.get("throughput", 0.0))
+                    last_thp[i] = float(info.get("thput_normed", 0.0))
                     last_dir[i] = float(info.get("tile_match_direction", 0.0))
                     if term or trunc:
                         active[i] = False
@@ -759,9 +750,10 @@ def grpo_update(
 
         kl = exp(ref - new) - (ref - new) - 1   (>= 0, estimates KL(pi||ref))
 
-    where `new` carries gradient and the stored `ref` is constant. There is no
-    critic and no minibatching — the batch is small (sim-bound), so each epoch
-    is a full-batch step."""
+    where `new` carries gradient and the stored `ref` is constant. include_eot
+    matches the rollout (args.honor_eot) so logp is computed over exactly the
+    action components that were sampled. No critic, no minibatching — the batch
+    is small (sim-bound), so each epoch is a full-batch step."""
     N = batch.obs_NCWH.shape[0]
     if N == 0:
         return {"loss/total": float("nan"), "grpo/n_transitions": 0}
@@ -776,7 +768,8 @@ def grpo_update(
             policy,
             batch.obs_NCWH,
             temperature=args.temperature,
-            action_B6=batch.actions_N6,
+            action_B7=batch.actions_N7,
+            include_eot=args.honor_eot,
         )
         logratio_N = new_logp_N - old_logp_N
         ratio_N = logratio_N.exp()
@@ -817,9 +810,7 @@ def grpo_update(
     return last
 
 
-def _select_eval_grids(
-    args: GRPOArgs,
-) -> list[tuple[int, LessonKind, int]]:
+def _select_eval_grids(args: GRPOArgs) -> list[tuple[int, LessonKind, int]]:
     """Build the fixed held-out eval set once, from a seed stream independent
     of the per-iteration training stream (collisions over the 2**31 seed space
     are vanishingly unlikely for ~eval_max_seeds grids)."""
@@ -835,8 +826,9 @@ def _rollout_metrics(batch: RolloutBatch, R_B: torch.Tensor, A_N: torch.Tensor) 
         "reward/mean": R_B.mean().item() if R_B.numel() else 0.0,
         "reward/std": R_B.std(unbiased=False).item() if R_B.numel() > 1 else 0.0,
         "advantage/abs_mean": A_N.abs().mean().item() if A_N.numel() else 0.0,
-        "rollout/mean_throughput": batch.thp_final_B.mean().item(),
-        "rollout/success_rate": (batch.terminated_B >= 1.0).float().mean().item(),
+        "rollout/mean_throughput": batch.thput_final_B.mean().item(),
+        "rollout/success_rate": (batch.thput_final_B >= 1.0).float().mean().item(),
+        "rollout/eot_terminated_frac": batch.eot_terminated_B.mean().item(),
         "rollout/mean_episode_len": batch.steps_B.mean().item(),
     }
 
@@ -847,10 +839,10 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
     checkpoint + summary JSON.
 
     Each outer iteration: select grids → sample a group per grid → score with
-    outcome reward → Dr. GRPO advantages → clipped+KL update → (periodically)
-    greedy held-out eval. We deliberately do NOT torch.compile: the dual-policy
-    setup and the per-iteration-variable flattened batch size would thrash the
-    compile cache for no win (the simulator dominates wall-clock)."""
+    the env's episode return → Dr. GRPO advantages → clipped+KL update →
+    (periodically) greedy held-out eval. We deliberately do NOT torch.compile:
+    the dual-policy setup and the per-iteration-variable flattened batch size
+    would thrash the compile cache for no win (the simulator dominates)."""
     t0 = time.time()
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -860,11 +852,10 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
     print(f"running GRPO on {device}")
 
     # AgentCNN needs a vector env to read grid size / catalog sizes at init.
+    # String entry_point (like sft.py) so the registration type-checks.
     if GRPO_ENV_ID not in gym.registry:
-        gym.register(id=GRPO_ENV_ID, entry_point=FactorioEnv)
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(GRPO_ENV_ID, 0, False, args.size, "grpo")]
-    )
+        gym.register(id=GRPO_ENV_ID, entry_point="ppo:FactorioEnv")
+    envs = gym.vector.SyncVectorEnv([make_env(GRPO_ENV_ID, 0, False, args.size, "grpo")])
 
     policy = _build_agent(args, envs, device)
     # Reference policy: a frozen copy of the SFT prior for KL regularization.
@@ -950,7 +941,7 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
         "temperature": args.temperature,
         "beta_kl": args.beta_kl,
         "learning_rate": args.learning_rate,
-        "reward_mode": args.reward_mode,
+        "honor_eot": args.honor_eot,
         "samples_seen": samples_seen,
         "final_eval_throughput": final_eval.get("eval/throughput"),
         "final_eval_success_rate": final_eval.get("eval/success_rate"),
