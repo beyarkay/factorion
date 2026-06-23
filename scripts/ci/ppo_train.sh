@@ -15,8 +15,6 @@
 #   TOTAL_TIMESTEPS        - PPO total timesteps (default: 500000)
 #   SIZE                   - grid size; MUST match the SFT checkpoint (default: 11)
 #   CRITIC_WARMUP          - critic-only warm-up iterations (default: 10)
-#   START_CURRICULUM_LEVEL - num_missing_entities cap; ~2*size blanks the whole
-#                            MOVE_ONE_ITEM factory each episode (default: 22)
 #   SEED                   - random seed (default: 1)
 #   WATCHDOG_SECONDS       - self-terminate watchdog timeout (default: 7200 = 2h)
 #   PR_NUMBER, COMMIT_SHA  - tagging
@@ -28,7 +26,6 @@ set -euo pipefail
 TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-500000}"
 SIZE="${SIZE:-11}"
 CRITIC_WARMUP="${CRITIC_WARMUP:-10}"
-START_CURRICULUM_LEVEL="${START_CURRICULUM_LEVEL:-22}"
 ENT_COEF="${ENT_COEF:-0}"
 LEARNING_RATE="${LEARNING_RATE:-5e-5}"
 TARGET_KL="${TARGET_KL:-0.02}"
@@ -47,7 +44,6 @@ echo "  start_from:          ${START_FROM}"
 echo "  total_timesteps:     ${TOTAL_TIMESTEPS}"
 echo "  size:                ${SIZE}"
 echo "  critic_warmup:       ${CRITIC_WARMUP}"
-echo "  start_curric_level:  ${START_CURRICULUM_LEVEL}"
 echo "  ent_coef:            ${ENT_COEF}"
 echo "  learning_rate:       ${LEARNING_RATE}"
 echo "  target_kl:           ${TARGET_KL}"
@@ -101,7 +97,6 @@ python ppo.py \
     --size "$SIZE" \
     --start-from "$START_FROM" \
     --critic-warmup "$CRITIC_WARMUP" \
-    --start-curriculum-level "$START_CURRICULUM_LEVEL" \
     --ent-coef-start "$ENT_COEF" \
     --ent-coef-end "$ENT_COEF" \
     --learning-rate "$LEARNING_RATE" \
@@ -137,8 +132,6 @@ print(f'''## PPO Train Results (RL from SFT)
 | Metric | Value |
 |--------|-------|
 | **Moving-avg throughput** | {s['moving_avg_throughput']:.4f} |
-| **Curriculum score** | {s['curriculum_score']:.4f} |
-| **Max missing entities** | {s['max_missing_entities']} |
 | **Total timesteps** | {s['total_timesteps']:,} |
 | **Global step** | {s['global_step']:,} |
 | **Runtime** | {s['runtime_human']} |

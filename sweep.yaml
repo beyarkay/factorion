@@ -3,7 +3,7 @@
 method: bayes
 run_cap: 20
 metric:
-  name: "curriculum/score"
+  name: "eval/throughput_eot"
   goal: maximize
 
 parameters:
