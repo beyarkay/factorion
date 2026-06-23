@@ -3,9 +3,10 @@
 Spins up a tiny local HTTP server that serves a drag-and-drop UI for
 designing a factory and visualising the flow graph it produces.
 
-The browser POSTs the grid to the server, which runs ``world2graph`` for
-visualisation and ``factorion_rs.simulate_throughput`` for throughput,
-then returns a rendered graph image.
+The browser POSTs the grid to the server, which builds the flow graph via
+the Rust engine (``factorion_rs.py_build_graph``) for visualisation and runs
+``factorion_rs.simulate_throughput`` for throughput, then returns a rendered
+graph image.
 
 Usage:
     uv run python scripts/factory_builder.py
@@ -48,12 +49,12 @@ from factorion import (  # noqa: E402
     LessonKind,
     Misc,
     build_factory,
+    build_graph_nx,
     ent_str2b64img,
     entities,
     items,
     new_world,
     plot_flow_network,
-    world2graph,
 )
 from ppo import (  # noqa: E402
     AgentCNN,
@@ -224,10 +225,10 @@ def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
 
 
 def render_graph_png(grid: list[list[dict]]) -> dict:
-    """Build the world, run world2graph, and return a base64 PNG plus
-    text describing the nodes/edges/throughput."""
+    """Build the world, construct its graph via the Rust engine, and return a
+    base64 PNG plus text describing the nodes/edges/throughput."""
     world = build_world(grid)
-    G = world2graph(world)
+    G = build_graph_nx(world)
     if len(G.nodes) == 0:
         return {
             "png": "",

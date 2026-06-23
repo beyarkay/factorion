@@ -23,6 +23,7 @@ from factorion import (  # noqa: E402
     Misc,
     blank_entities,
     build_factory,
+    build_graph_nx,
     entities,
     find_belt_path,
     find_belt_paths_with_source_sink_orient,
@@ -30,7 +31,6 @@ from factorion import (  # noqa: E402
     recipes,
     str2ent,
     str2item,
-    world2graph,
     world2html,
 )
 
@@ -41,7 +41,7 @@ from factorion import (  # noqa: E402
 def make_world(w, h=None):
     """Create an empty square WHC world tensor.
 
-    Python's world2graph requires square worlds, so we use max(w, h).
+    Several lesson generators assume a square grid, so we use max(w, h).
     """
     if h is None:
         h = w
@@ -96,6 +96,17 @@ def set_multi_tile_entity(world, entity_name, x, y, direction, item_name="empty"
 def set_splitter(world, x, y, direction, item_name="empty"):
     """Place a splitter at anchor (x, y), filling all occupied tiles."""
     set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
+
+
+def build_factory_graph(world_WHC):
+    """Build a factory's connection graph as a networkx ``DiGraph``.
+
+    The single indirection point for graph construction across the test
+    suite. Nodes are named ``f"{entity_name}\\n@{x},{y}"`` and edges follow
+    the engine's entity-connection rules. Delegates to the Rust engine via
+    ``factorion.build_graph_nx`` (issue #178).
+    """
+    return build_graph_nx(world_WHC)
 
 
 def rs_throughput(world):

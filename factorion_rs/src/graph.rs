@@ -7,7 +7,6 @@ use crate::world::World;
 /// A node in the factory graph.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
-    #[allow(dead_code)]
     pub id: NodeId,
     pub entity_kind: Item,
     /// The item carried/produced/configured at this tile, if any. `None`
@@ -60,7 +59,10 @@ impl FactoryGraph {
     }
 }
 
-/// Build a directed graph from a World, mirroring the Python `world2graph` function.
+/// Build a directed graph from a World: one node per placeable entity (the
+/// anchor tile only, for multi-tile units), with edges per the engine's
+/// entity-connection rules. This is the single source of truth for factory
+/// graph construction.
 pub fn build_graph(world: &World) -> FactoryGraph {
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();

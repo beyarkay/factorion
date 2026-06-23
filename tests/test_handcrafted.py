@@ -24,7 +24,7 @@ from helpers import (
     rs_throughput,
     set_assembler,
     set_entity,
-    world2graph,
+    build_factory_graph,
 )
 
 
@@ -441,7 +441,7 @@ _DELTA = {
 
 def _assembler_edges(world, assembler_x, assembler_y):
     """Return edges (src_node, dst_node) touching any tile of the 3x3 assembler."""
-    G = world2graph(world)
+    G = build_factory_graph(world)
     body_tiles = {
         (assembler_x + dx, assembler_y + dy) for dx in range(3) for dy in range(3)
     }

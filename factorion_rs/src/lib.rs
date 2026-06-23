@@ -64,6 +64,41 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     Ok((factory_score(&deliveries), num_unreachable))
 }
 
+/// Python-facing shape of a built factory graph: the node labels and the
+/// `(src_index, dst_index)` edges indexing into them.
+#[cfg(feature = "pyo3-bindings")]
+type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
+
+/// Build the factory connection graph and return it as plain Python data.
+///
+/// Input: numpy array of shape (W, H, C), dtype i64 — the same world tensor
+/// `simulate_throughput` takes.
+///
+/// Returns `(nodes, edges)` where:
+///   * `nodes` is a list of node labels in the engine's
+///     `"{entity_name}\n@{x},{y}"` format (one per placeable entity, anchor
+///     tile only for multi-tile entities), and
+///   * `edges` is a list of `(src_index, dst_index)` pairs indexing into
+///     `nodes`.
+///
+/// This is enough to rebuild a `networkx.DiGraph` for connectivity checks and
+/// visualization layout, and is the single Python entry point for factory
+/// graph construction.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_build_graph(world: PyReadonlyArray3<i64>) -> PyResult<PyGraphData> {
+    let world = World::from_numpy(&world);
+    let graph = build_graph(&world);
+    let nodes: Vec<String> = graph.nodes.iter().map(|node| node.id.label()).collect();
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (src, succ) in graph.successors.iter().enumerate() {
+        for &dst in succ {
+            edges.push((src, dst));
+        }
+    }
+    Ok((nodes, edges))
+}
+
 /// Compute all tiles occupied by a multi-tile entity.
 ///
 /// Args:
@@ -147,6 +182,7 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
+    m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
