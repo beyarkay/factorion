@@ -3,7 +3,7 @@
 Run with:
     python tests/bench_throughput.py
 
-All calls go through Python (the Rust version is called via its Python bindings),
+All calls go through the Rust engine's Python bindings,
 mirroring real-world usage in FactorioEnv.step().
 
 Covers:

@@ -120,7 +120,7 @@ Three lesson generators use splitters:
 
 - `SPLITTER_SPLIT`: 1 source → belts → splitter → 2×(belts → sink)
 - `SPLITTER_MERGE`: 2×(source → belts) → splitter → belts → 1 sink
-- Both are tested across many seeds, grid sizes, and with Rust/Python parity
+- Both are tested across many seeds and grid sizes
 
 ### Not Implemented
 
