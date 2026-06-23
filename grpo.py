@@ -583,6 +583,66 @@ def broadcast_advantages(
     return A_B.to(lane_of_N.device)[lane_of_N]
 
 
+def _layout_key(world: torch.Tensor) -> tuple:
+    """Hashable identity of a factory layout: its entity + direction channels.
+    Two completions with the same key placed the same things facing the same
+    way (same path); different keys = genuinely different layouts."""
+    ent = world[Channel.ENTITIES.value].reshape(-1).to(torch.int64).tolist()
+    dirc = world[Channel.DIRECTION.value].reshape(-1).to(torch.int64).tolist()
+    return (tuple(ent), tuple(dirc))
+
+
+def compute_diversity(batch: RolloutBatch, R_B: torch.Tensor, args: GRPOArgs) -> dict:
+    """Diversity + off-reference metrics — where GRPO should distinguish itself
+    from SFT and from a reference-anchored critic.
+
+      - diversity/reward_var: mean intra-group reward variance. ~0 across most
+        groups means the learning signal is dead (group collapse → advantages
+        ~0); raise temperature / lower beta_kl.
+      - diversity/unique_path_frac: mean fraction of DISTINCT final layouts
+        within a group. GRPO should push this UP vs SFT.
+      - diversity/off_reference_success: of the WORKING (connected) factories,
+        the fraction whose layout differs from the SFT reference solution. The
+        cleanest single number for "did RL escape the single-path anchor."
+      - diversity/working_frac: fraction of lanes that connected.
+      - diversity/dir_acc_vs_ref: mean full-grid direction match to reference
+        (REPORTED, not a target — see greedy_eval)."""
+    G = args.group_size
+    B = len(batch.final_world_B)
+    num_groups = B // G
+
+    grouped = R_B.view(num_groups, G)
+    reward_var = grouped.var(dim=1, unbiased=False).mean().item()
+
+    unique_fracs = []
+    for g in range(num_groups):
+        keys = {_layout_key(batch.final_world_B[g * G + j]) for j in range(G)}
+        unique_fracs.append(len(keys) / G)
+
+    working = 0
+    off_ref = 0
+    dir_accs = []
+    for lane in range(B):
+        fw = batch.final_world_B[lane]
+        sw = batch.solved_world_B[lane]
+        fe, se = fw[Channel.ENTITIES.value], sw[Channel.ENTITIES.value]
+        fd, sd = fw[Channel.DIRECTION.value], sw[Channel.DIRECTION.value]
+        dir_accs.append((fd == sd).float().mean().item())
+        if batch.terminated_B[lane] >= 1.0:
+            working += 1
+            on_reference = torch.equal(fe, se) and torch.equal(fd, sd)
+            if not on_reference:
+                off_ref += 1
+
+    return {
+        "diversity/reward_var": reward_var,
+        "diversity/unique_path_frac": float(np.mean(unique_fracs)) if unique_fracs else 0.0,
+        "diversity/off_reference_success": (off_ref / working) if working else 0.0,
+        "diversity/working_frac": working / B if B else 0.0,
+        "diversity/dir_acc_vs_ref": float(np.mean(dir_accs)) if dir_accs else 0.0,
+    }
+
+
 def greedy_eval(
     policy: AgentCNN,
     args: GRPOArgs,

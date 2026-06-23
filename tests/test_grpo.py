@@ -21,6 +21,7 @@ from grpo import (  # noqa: E402
     broadcast_advantages,
     collect_rollout,
     compute_advantages,
+    compute_diversity,
     compute_rewards,
     greedy_eval,
     grpo_update,
@@ -409,3 +410,97 @@ class TestGreedyEval:
         m = greedy_eval(policy, args, [], torch.device("cpu"))
         assert m["eval/n"] == 0
         assert m["eval/throughput"] == 0.0
+
+
+def _world(size, fill=0):
+    from factorion import Channel
+
+    return torch.full((len(Channel), size, size), fill, dtype=torch.float32)
+
+
+def _batch_with_worlds(final_worlds, solved_worlds, terminated):
+    B = len(final_worlds)
+    z = torch.zeros((0,), dtype=torch.long)
+    return RolloutBatch(
+        obs_NCWH=torch.empty((0, 5, 5, 5)),
+        actions_N6=torch.empty((0, 6), dtype=torch.long),
+        old_logp_N=torch.empty((0,)),
+        ref_logp_N=torch.empty((0,)),
+        lane_of_N=z,
+        group_of_lane_B=torch.arange(B),
+        thp_final_B=torch.zeros(B),
+        terminated_B=torch.tensor(terminated, dtype=torch.float32),
+        completion_bonus_B=torch.zeros(B),
+        steps_B=torch.zeros(B),
+        per_step_reward_B=torch.zeros(B),
+        final_world_B=final_worlds,
+        solved_world_B=solved_worlds,
+    )
+
+
+class TestDiversity:
+    def test_off_reference_and_unique_paths(self):
+        from factorion import Channel
+
+        size = 5
+        solved = _world(size)
+        solved[Channel.ENTITIES.value, 0, 0] = 1  # the "reference" layout
+
+        on_ref = solved.clone()  # identical to reference
+        off_ref = solved.clone()
+        off_ref[Channel.ENTITIES.value, 0, 1] = 1  # a different (but working) path
+
+        # 1 group of 2: lane0 on-reference, lane1 off-reference, both connected
+        batch = _batch_with_worlds(
+            final_worlds=[on_ref, off_ref],
+            solved_worlds=[solved, solved],
+            terminated=[1.0, 1.0],
+        )
+        args = GRPOArgs(size=size, group_size=2, start_from="x", **TINY)
+        R_B = torch.tensor([1.0, 3.0])
+        m = compute_diversity(batch, R_B, args)
+
+        # intra-group var of [1,3] (population) = 1.0
+        assert abs(m["diversity/reward_var"] - 1.0) < 1e-6
+        # two distinct layouts in the group
+        assert m["diversity/unique_path_frac"] == 1.0
+        # 1 of 2 working factories is off-reference
+        assert abs(m["diversity/off_reference_success"] - 0.5) < 1e-6
+        assert m["diversity/working_frac"] == 1.0
+
+    def test_identical_group_has_zero_variance_and_no_diversity(self):
+        size = 5
+        w = _world(size)
+        batch = _batch_with_worlds(
+            final_worlds=[w.clone(), w.clone()],
+            solved_worlds=[w.clone(), w.clone()],
+            terminated=[1.0, 1.0],
+        )
+        args = GRPOArgs(size=size, group_size=2, start_from="x", **TINY)
+        m = compute_diversity(batch, torch.tensor([2.0, 2.0]), args)
+        assert m["diversity/reward_var"] == 0.0
+        assert m["diversity/unique_path_frac"] == 0.5  # 1 unique / 2
+        # final == solved everywhere -> all working factories are on-reference
+        assert m["diversity/off_reference_success"] == 0.0
+
+    def test_runs_on_real_rollout(self, registered_env):
+        import random
+
+        args = GRPOArgs(
+            size=5, num_grids=2, group_size=3, num_missing_max=2, start_from="x", **TINY
+        )
+        grids = select_grids(args, random.Random(3))
+        policy, ref = _tiny_agent(5), _tiny_agent(5)
+        gen = torch.Generator().manual_seed(3)
+        batch = collect_rollout(policy, ref, args, grids, torch.device("cpu"), gen)
+        R_B = compute_rewards(batch, args)
+        m = compute_diversity(batch, R_B, args)
+        for k in (
+            "diversity/reward_var",
+            "diversity/unique_path_frac",
+            "diversity/off_reference_success",
+            "diversity/working_frac",
+            "diversity/dir_acc_vs_ref",
+        ):
+            assert k in m and np.isfinite(m[k])
+        assert 0.0 <= m["diversity/unique_path_frac"] <= 1.0
