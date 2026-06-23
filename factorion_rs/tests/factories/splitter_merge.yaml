@@ -1,0 +1,16 @@
+description: |
+  Two sources feed two belts into a splitter, which merges them onto a
+  single output belt to one sink. The splitter (2x1) faces east, so its two
+  tiles span two rows; only the top output lane is used, the bottom output
+  lane drains nowhere. Mirror image of splitter_split.yaml. Graph-only — the
+  point is the merge connectivity, not a throughput figure.
+graph: |
+  S@0,0 -> b@1,0
+  S@0,1 -> b@1,1
+  b@1,0 -> Y@2,0
+  b@1,1 -> Y@2,0
+  Y@2,0 -> b@3,0
+  b@3,0 -> K@4,0
+factory: |
+  S> b> Y> b> K>
+  S> b> Y> .. ..

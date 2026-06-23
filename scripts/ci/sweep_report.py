@@ -60,7 +60,6 @@ def main():
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
 
-    # Fetch all runs, keep only finished ones
     runs = [r for r in sweep.runs if r.state == "finished"]
 
     # sweep_path is entity/project/sweep_id — W&B URLs need /sweeps/ before the ID
@@ -80,7 +79,6 @@ def main():
         print(md)
         return
 
-    # Sort runs by the sweep metric
     missing = float("-inf") if reverse else float("inf")
 
     def get_metric(run):
@@ -94,7 +92,6 @@ def main():
 
     md_lines = []
 
-    # ── Header ────────────────────────────────────────────────────
     md_lines.append("## W&B Hyperparameter Sweep Results\n")
     md_lines.append("| | |")
     md_lines.append("|---|---|")
@@ -108,7 +105,6 @@ def main():
     md_lines.append(f"| **Best value** | **{best_metric:.4f}** |")
     md_lines.append("")
 
-    # ── Best hyperparameters ──────────────────────────────────────
     md_lines.append("### Best Hyperparameters\n")
     md_lines.append("| Parameter | Value |")
     md_lines.append("|-----------|-------|")
@@ -124,11 +120,9 @@ def main():
     best_run_url = best_run.url
     md_lines.append(f"\n[View best run on W&B]({best_run_url})\n")
 
-    # ── Top N runs table ──────────────────────────────────────────
     top_n = min(args.top_n, len(runs))
     md_lines.append(f"### Top {top_n} Runs\n")
 
-    # Build header row
     header_parts = ["Rank"]
     for p in param_names:
         header_parts.append(f"`{p}`")
@@ -158,7 +152,6 @@ def main():
 
     md_lines.append("")
 
-    # ── Parameter ranges (collapsed) ─────────────────────────────
     md_lines.append(
         "<details><summary>Sweep parameter ranges</summary>\n"
     )

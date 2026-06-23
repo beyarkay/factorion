@@ -260,7 +260,6 @@ def item_str2b64img(item, base_path="factorio-icons"):
 
 def new_world(width=8, height=8):
     channels = len(Channel)
-    #     print(f"Making world w={width}, h={height}, c={channels}")
     world = np.zeros((width, height, channels), dtype=int)
     world[:, :, Channel.ENTITIES.value] = str2ent("empty").value
     world[:, :, Channel.DIRECTION.value] = Direction.NONE.value
@@ -292,8 +291,6 @@ def add_entity(
 
     world[x, y, Channel.ENTITIES.value] = proto.value
     world[x, y, Channel.DIRECTION.value] = direction.value
-    # world[x, y, Channel.ITEMS.value] = recipe_proto.value
-    # world[x, y, Channel.MISC.value] = misc.value
 
 
 def world2html(world_WHC, highlights=None):
@@ -317,9 +314,6 @@ def world2html(world_WHC, highlights=None):
         Direction.EAST.value: "→",
         Direction.SOUTH.value: "↓",
         Direction.WEST.value: "←",
-        # 0: "↘",
-        # 10: "↙",
-        # 14: "↖",
     }
     html = ["<table style='border-collapse: collapse;'>"]
     W, H, C = world_WHC.shape
@@ -405,7 +399,6 @@ def world2html(world_WHC, highlights=None):
                 else ""
             )
 
-            #             print(direction_arrow, direction)
             available = (
                 world_WHC[x, y, Channel.FOOTPRINT.value]
                 == Footprint.AVAILABLE.value
@@ -427,7 +420,6 @@ def world2html(world_WHC, highlights=None):
                 )
             else:
                 bg_style = ""
-            #             tint_style = "filter: brightness(1.5) sepia(1) hue-rotate(30deg);" if available else ""
 
             ghost_imgs = "\n".join(
                 [
@@ -948,10 +940,6 @@ def plot_flow_network(G):
         font_weight="bold",
     )
 
-    # Add throughput labels
-    #     labels = {node: G.nodes[node].get("throughput", {}) for node in G.nodes}
-    #     nx.draw_networkx_labels(G, pos, labels=labels, font_color="red")
-
     plt.show()
 
 
@@ -1040,19 +1028,8 @@ def normalise_world(world_T, og_world):
         empty_entity_value
     )
 
-    # # Ensure belts don't have recipes
-    # belt_entity_value = str2ent('transport_belt').value
-    # belt_entities = (world_T[:, :, Channel.ENTITIES.value] == belt_entity_value)
-    # world_T[:, :, Channel.ITEMS.value][belt_entities] = empty_entity_value
-
-    # # Ensure all empty entities have no recipe, no direction
-    # no_entity = (world_T[:, :, Channel.ENTITIES.value] == empty_entity_value)
-    # world_T[:, :, Channel.ITEMS.value][no_entity] = empty_entity_value
-    # world_T[:, :, Channel.DIRECTION.value][no_entity] = Direction.NONE.value
-
     # Ensure the model can't just overwrite existing factories with a simpler thing.
     tworld = og_world.clone().detach().to(torch.int64)
-    # tworld = torch.tensor(og_world, dtype=torch.int64)
     original_had_something = (
         tworld[:, :, Channel.ENTITIES.value] != empty_entity_value
     )
@@ -1140,9 +1117,6 @@ def get_new_world(seed, n=6, min_belts=None, source_item=None, sink_item=None):
         w[sink[0], sink[1], Channel.ENTITIES.value] = empty_value
     assert limit > 0, "Infinite loop blocked"
 
-    # Add the source + sink to the world
-    # w[source[0], source[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
-    # w[sink[0], sink[1], Channel.ITEMS.value] = str2ent('electronic_circuit').value
     if source_item is not None:
         w[source[0], source[1], Channel.ITEMS.value] = source_item
     if sink_item is not None:
@@ -1196,15 +1170,16 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
         normalised_world = normalise_world(
             sample_world(probabilities), original_world
         )
-        # value = critic(normalised_world)
         value = critic(normalised_world.to(torch.float))
-        # Maybe having throughput being calculated as a black box is the problem?
         # FIXME(#161): still the old fixed /15.0 normalization. This is the
         # legacy RL-from-scratch eval (no current callers) and its random
         # get_new_world() inputs have no reference factory to normalize by, so
         # there's no per-factory max to use here — left as-is intentionally.
         throughput = torch.tensor(
-            funge_throughput(normalised_world)[0] / 15.0,
+            factorion_rs.simulate_throughput(
+                normalised_world.to(torch.int64).numpy()
+            )[0]
+            / 15.0,
             dtype=value.dtype,
         )
         num_entities = (
@@ -1229,399 +1204,29 @@ def eval_model(actor, critic, pars, num_evaluations=1_000, pbar=False):
     return evals, avg_throughput, float(avg_num_entities)
 
 
-def funge_throughput(world, debug=False):
-    assert torch.is_tensor(world), f"world is {type(world)}, not a tensor"
-    assert len(world.shape) == 3, (
-        f"Expected world to have 3 dimensions, but is of shape {world.shape}"
-    )
-    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+def build_graph_nx(world_WHC):
+    """Build the factory connection graph as a networkx ``DiGraph``.
 
+    The Rust engine (``factorion_rs.py_build_graph``) is the single source of
+    truth for entity connectivity; this thin wrapper rebuilds its
+    ``(node_labels, edges)`` output into a ``networkx`` graph for connectivity
+    queries and drawing/layout. Nodes are labelled
+    ``f"{entity_name}\\n@{x},{y}"`` and edges follow the engine's
+    entity-connection rules.
 
-def world2graph(world_WHC, debug=False):
-    assert torch.is_tensor(world_WHC), (
-        f"world is {type(world_WHC)}, not a tensor"
-    )
-    assert len(world_WHC.shape) == 3, (
-        f"Expected world to have 3 dimensions, but is of shape {world_WHC.shape}"
-    )
-    assert world_WHC.shape[0] == world_WHC.shape[1], (
-        f"Expected world to be square, but is of shape {world_WHC.shape}"
-    )
-    world_WHC = world_WHC.numpy()
+    Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
+    ``factorion_rs.simulate_throughput`` takes.
+    """
+    arr = world_WHC.numpy() if hasattr(world_WHC, "numpy") else np.asarray(world_WHC)
+    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64))
     G = nx.DiGraph()
-    # Maps secondary tile (x,y) → anchor (x,y) for multi-tile entities.
-    # Used to skip secondary tiles during node creation and to remap
-    # edge endpoints so all edges point to the anchor node.
-    anchor_of = {}
-
-    def dbg(s):
-        if debug:
-            print(s)
-
-    def remap_node_name(name):
-        """If a node name references a secondary tile, remap to anchor."""
-        parts = name.split("\n@")
-        if len(parts) == 2:
-            coords = parts[1].split(",")
-            pos = (int(coords[0]), int(coords[1]))
-            if pos in anchor_of:
-                ax, ay = anchor_of[pos]
-                return f"{parts[0]}\n@{ax},{ay}"
-        return name
-
-    pending_edges = []
-
-    W, H, C = world_WHC.shape
-    for x in range(W):
-        for y in range(H):
-            e = entities[world_WHC[x, y, Channel.ENTITIES.value]]
-            if e.name == "empty":
-                continue
-            if (x, y) in anchor_of:
-                continue
-
-            # TODO somehow `item` is 0 even though it should be disallowed
-            item = items[world_WHC[x, y, Channel.ITEMS.value]]
-            d = Direction(world_WHC[x, y, Channel.DIRECTION.value])
-
-            input_ = {}
-            output = {}
-            if e.name == "stack_inserter":
-                output = {item.name: float("inf")}
-
-            self_name = f"{e.name}\n@{x},{y}"
-            G.add_node(
-                self_name,
-                input_=input_,
-                output=output,
-                recipe=item.name if "assembling_machine" in e.name else None,
-            )
-            dbg(
-                f"Created node {repr(self_name)}: {G.nodes[self_name]}, direction is {d}, recipe is {item.name}"
-            )
-
-            # Register secondary tiles → anchor for multi-tile entities.
-            # Square entities (e.g. 3x3 assembler) are direction-independent,
-            # so use EAST as default when direction is NONE.
-            if e.width > 1 or e.height > 1:
-                tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
-                if tiles is not None:
-                    for tile in tiles[1:]:
-                        anchor_of[tile] = (x, y)
-
-            # Figure out coords for source and destination
-            if d == Direction.EAST:
-                src = [x - 1, y]
-                dst = [x + 1, y]
-            elif d == Direction.WEST:
-                src = [x + 1, y]
-                dst = [x - 1, y]
-            elif d == Direction.NORTH:
-                src = [x, y + 1]
-                dst = [x, y - 1]
-            elif d == Direction.SOUTH:
-                src = [x, y - 1]
-                dst = [x, y + 1]
-            elif d == Direction.NONE:
-                # If there's no direction, logic will be handled in the handlers
-                src = [x, y]
-                dst = [x, y]
-            else:
-                assert False, f"Can't handle direction {d} for entity {e}"
-            # Connect the inserters' & belts' nodes
-            # Here we connect nodes twice, once on source->me and again on me->destination.
-            x_src_valid = 0 <= src[0] < len(world_WHC)
-            y_src_valid = 0 <= src[1] < len(world_WHC[0])
-            x_dst_valid = 0 <= dst[0] < len(world_WHC)
-            y_dst_valid = 0 <= dst[1] < len(world_WHC[0])
-            if "inserter" in e.name:
-                if x_src_valid and y_src_valid:
-                    src_entity = entities[
-                        world_WHC[src[0], src[1], Channel.ENTITIES.value]
-                    ]
-                    src_direction = Direction(
-                        world_WHC[src[0], src[1], Channel.DIRECTION.value]
-                    )
-                    src_not_empty = src_entity.name != "empty"
-                    if src_not_empty:
-                        pending_edges.append((
-                            f"{src_entity.name}\n@{src[0]},{src[1]}",
-                            f"{e.name}\n@{x},{y}",
-                        ))
-                        dbg(
-                            f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}"
-                        )
-                if x_dst_valid and y_dst_valid:
-                    dst_entity = entities[
-                        world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                    ]
-                    # TODO: This doesn't allow for the case where
-                    # an inserter can put things on the ground to
-                    # be picked up by another inserter
-                    dst_is_insertable = (
-                        "belt" in dst_entity.name
-                        or "assembling_machine" in dst_entity.name
-                    )
-                    if dst_is_insertable:
-                        pending_edges.append((
-                            f"{e.name}\n@{x},{y}",
-                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                        ))
-                        dbg(
-                            f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}"
-                        )
-
-            elif "transport_belt" in e.name:
-                if x_src_valid and y_src_valid:
-                    src_entity = entities[
-                        world_WHC[src[0], src[1], Channel.ENTITIES.value]
-                    ]
-                    src_direction = Direction(
-                        world_WHC[src[0], src[1], Channel.DIRECTION.value]
-                    )
-                    src_misc = Misc(
-                        world_WHC[src[0], src[1], Channel.MISC.value]
-                    )
-                    src_is_beltish = (
-                        "belt" in src_entity.name
-                        # Check the other belt is directly behind me and
-                        # pointing the same direction
-                        and src_direction == d
-                        # Check that the other is not a downwards underground belt
-                        and not (
-                            "underground_belt" in src_entity.name
-                            and src_misc == Misc.UNDERGROUND_DOWN
-                        )
-                    )
-                    if src_is_beltish:
-                        pending_edges.append((
-                            f"{src_entity.name}\n@{src[0]},{src[1]}",
-                            f"{e.name}\n@{x},{y}",
-                        ))
-                        dbg(
-                            f"{src_entity.name}@{src[0]},{src[1]} -> {e.name}@{x},{y}",
-                        )
-
-                if x_dst_valid and y_dst_valid:
-                    dst_entity = entities[
-                        world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                    ]
-                    dst_direction = Direction(
-                        world_WHC[dst[0], dst[1], Channel.DIRECTION.value]
-                    )
-                    dst_misc = Misc(
-                        world_WHC[dst[0], dst[1], Channel.MISC.value]
-                    )
-                    dst_not_empty = dst_entity.name != "empty"
-                    dst_is_belt = "belt" in dst_entity.name
-                    opposite = Direction.SOUTH.value - Direction.NORTH.value
-                    dst_opposing_belt = (
-                        dst_is_belt
-                        and abs(dst_direction.value - d.value) == opposite
-                    )
-                    # various underground belt checks
-                    # TODO figure out these checks
-                    dest_underground_ok = (
-                        True
-                        # "underground_belt" not in dst_entity.name
-                        # or (
-                        #     (dst_direction.value == d.value and dst_misc.value == Misc.UNDERGROUND_DOWN)
-                        # )
-                    )
-                    if (
-                        dst_is_belt
-                        and not dst_opposing_belt
-                        and dest_underground_ok
-                    ):
-                        pending_edges.append((
-                            f"{e.name}\n@{x},{y}",
-                            f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                        ))
-                        dbg(
-                            f"{e.name}@{x},{y} -> {dst_entity.name}@{dst[0]},{dst[1]}",
-                        )
-
-            # connect up the assembling machines
-            elif "assembling_machine" in e.name:
-                dbg(f"Connecting assembler {e}")
-                # search the blocks around the 3x3 assembling machine for inputs
-                for dx in range(-1, 4):
-                    if not (0 <= x + dx < W):
-                        # omit tiles outside the world
-                        continue
-                    for dy in range(-1, 4):
-                        if not (0 <= y + dy < H):
-                            # omit tiles outside the world
-                            continue
-                        if 0 <= dx < 3 and 0 <= dy < 3:
-                            # omit tiles inside the assembler
-                            continue
-                        if dx in (-1, 3) and dy in (-1, 3):
-                            # Omit corners
-                            continue
-                        other_e = entities[
-                            world_WHC[x + dx, y + dy, Channel.ENTITIES.value]
-                        ]
-                        other_d = Direction(
-                            world_WHC[x + dx, y + dy, Channel.DIRECTION.value]
-                        )
-                        # Only inserters can insert into an assembling machine
-                        if "inserter" not in other_e.name:
-                            continue
-                        #                         if f"{other_e.name}\n@{x + dx},{y + dy}" == 'inserter\n@2,0':
-                        #                             print(other_e, e, other_d, dy, dx)
-
-                        # dbg(f"{dx=},{dy=}")
-                        # dbg(f"{x+dx=},{y+dy=},{other_e=}")
-                        other_str = f"{other_e.name}\n@{x + dx},{y + dy}"
-                        self_str = f"{e.name}\n@{x},{y}"
-
-                        # Direction is self -> other
-                        if (
-                            (other_d == Direction.NORTH and dy < 0)
-                            or (other_d == Direction.SOUTH and dy > 0)
-                            or (other_d == Direction.WEST and dx < 0)
-                            or (other_d == Direction.EAST and dx > 0)
-                        ):
-                            #                             print(f'self -> other')
-                            src = self_str
-                            dst = other_str
-                        else:
-                            # Direction is other -> self
-                            #                             print(f'other -> self')
-                            src = other_str
-                            dst = self_str
-
-                        pending_edges.append((src, dst))
-                        dbg(f"{repr(src)} -> {repr(dst)}")
-
-            elif "underground_belt" in e.name:
-                m = Misc(world_WHC[x, y, Channel.MISC.value])
-                # Only down-undergrounds look for their upgoing counterparts,
-                # not the other way aroud
-                assert e.name == "underground_belt", (
-                    "don't know how to handle other undergrounds yet"
-                )
-                if m == Misc.UNDERGROUND_DOWN:
-                    max_delta = 6
-                elif m == Misc.UNDERGROUND_UP:
-                    max_delta = 1
-                else:
-                    assert False, (
-                        f"Underground belts must be either UP or DOWN, not {m}"
-                    )
-                for delta in range(1, max_delta):
-                    if d == Direction.EAST:
-                        src = [x - 1, y]
-                        dst = [x + delta, y]
-                    elif d == Direction.WEST:
-                        src = [x + 1, y]
-                        dst = [x - delta, y]
-                    elif d == Direction.NORTH:
-                        src = [x, y + 1]
-                        dst = [x, y - delta]
-                    elif d == Direction.SOUTH:
-                        src = [x, y - 1]
-                        dst = [x, y + delta]
-                    x_valid = 0 <= dst[0] < len(world_WHC)
-                    y_valid = 0 <= dst[1] < len(world_WHC[0])
-                    if x_valid and y_valid:
-                        dst_entity = entities[
-                            world_WHC[dst[0], dst[1], Channel.ENTITIES.value]
-                        ]
-                        going_underground = (
-                            dst_entity.name == "underground_belt"
-                            and m == Misc.UNDERGROUND_DOWN
-                        )
-                        cxn_to_belt = (
-                            "transport_belt" in dst_entity.name
-                            and m == Misc.UNDERGROUND_UP
-                        )
-                        if going_underground or cxn_to_belt:
-                            pending_edges.append((
-                                f"{e.name}\n@{x},{y}",
-                                f"{dst_entity.name}\n@{dst[0]},{dst[1]}",
-                            ))
-            elif "splitter" in e.name:
-                tiles = factorion_rs.py_entity_tiles(x, y, d.value, e.width, e.height)
-                if tiles is None:
-                    continue
-
-                dx, dy = DIR_TO_DELTA.get(d, (0, 0))
-                opposite_dir = {
-                    Direction.NORTH: Direction.SOUTH,
-                    Direction.SOUTH: Direction.NORTH,
-                    Direction.EAST: Direction.WEST,
-                    Direction.WEST: Direction.EAST,
-                }.get(d, Direction.NONE)
-
-                for tx, ty in tiles:
-                    # Input: cell behind this tile
-                    in_cell = (tx - dx, ty - dy)
-                    if (
-                        0 <= in_cell[0] < W
-                        and 0 <= in_cell[1] < H
-                        and in_cell not in tiles
-                    ):
-                        in_ent = entities[
-                            world_WHC[in_cell[0], in_cell[1], Channel.ENTITIES.value]
-                        ]
-                        in_dir = Direction(
-                            world_WHC[in_cell[0], in_cell[1], Channel.DIRECTION.value]
-                        )
-                        # Only accept belt-like entities or sources/sinks
-                        # pointing in the same direction as the splitter
-                        in_is_belt = "belt" in in_ent.name and in_dir == d
-                        in_is_source_sink = in_ent.name in (
-                            "stack_inserter", "bulk_inserter"
-                        ) and in_dir == d
-                        if in_is_belt or in_is_source_sink:
-                            pending_edges.append((
-                                f"{in_ent.name}\n@{in_cell[0]},{in_cell[1]}",
-                                self_name,
-                            ))
-
-                    # Output: cell ahead of this tile
-                    out_cell = (tx + dx, ty + dy)
-                    if (
-                        0 <= out_cell[0] < W
-                        and 0 <= out_cell[1] < H
-                        and out_cell not in tiles
-                    ):
-                        out_ent = entities[
-                            world_WHC[
-                                out_cell[0], out_cell[1], Channel.ENTITIES.value
-                            ]
-                        ]
-                        out_dir = Direction(
-                            world_WHC[
-                                out_cell[0], out_cell[1], Channel.DIRECTION.value
-                            ]
-                        )
-                        # Only connect to belt-like entities or sinks,
-                        # not facing the opposite direction
-                        out_is_belt = "belt" in out_ent.name
-                        out_is_sink = out_ent.name in (
-                            "stack_inserter", "bulk_inserter"
-                        )
-                        if (out_is_belt or out_is_sink) and out_dir != opposite_dir:
-                            pending_edges.append((
-                                self_name,
-                                f"{out_ent.name}\n@{out_cell[0]},{out_cell[1]}",
-                            ))
-
-            else:
-                assert False, f"Don't know how to handle {e.name} at {x} {y}"
-
-    # Add edges, remapping any endpoint that references a secondary tile
-    for src, dst in pending_edges:
-        G.add_edge(remap_node_name(src), remap_node_name(dst))
-
+    G.add_nodes_from(nodes)
+    G.add_edges_from((nodes[i], nodes[j]) for i, j in edges)
     return G
 
 
 def _remove_entities(
-    world_CWH, num_missing_entities, total_entities, protected_positions=None
+    world_CWH, num_missing_entities, protected_positions=None
 ):
     """Remove entities from a completed lesson, respecting multi-tile units.
 
@@ -1642,12 +1247,10 @@ def _remove_entities(
 
     Returns min_entities_required (number of entity units removed).
     For multi-tile entities (e.g. splitters), all tiles are removed together
-    as a single unit.
+    as a single unit. ``num_missing_entities=inf`` removes every removable
+    unit (a full blank down to the protected source/sink).
     """
     protected_positions = protected_positions or set()
-
-    if num_missing_entities == float("inf"):
-        return total_entities
 
     C, W, H = world_CWH.shape
     skip = {str2ent("source").value, str2ent("sink").value, str2ent("empty").value}
@@ -1755,9 +1358,7 @@ def build_factory(
         # Choose a random source/sink
         original_count = max(500, size * size * 4)
         count = original_count
-        # print(f'count is {count}')
         while count > 0:
-            # print(f"{count} attmempting to place source/sink")
             count -= 1
             pos1 = torch.randint(0, H * W, (1,))
             pos2 = torch.randint(0, H * W, (1,))
@@ -1799,18 +1400,13 @@ def build_factory(
             world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
                 sink_dir.value
             )
-            # print(world_CWH)
-            # print(f"world so far: ")
-            # print(world_CWH[0])
 
             paths = find_belt_paths_with_source_sink_orient(
                 entities=world_CWH[Channel.ENTITIES.value],
                 directions=world_CWH[Channel.DIRECTION.value],
             )
             # Remove all paths that would require placing too many entities
-            # print('found paths', len(paths))
             paths = list(filter(lambda p: len(p) <= max_entities, paths))
-            # print('filtered paths', len(paths))
 
             if len(paths) == 0:
                 world_CWH = torch.tensor(
@@ -2032,7 +1628,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2196,7 +1794,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2441,7 +2041,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2675,7 +2277,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Sanity: the solved factory must deliver items.
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -2948,7 +2552,9 @@ def build_factory(
                 world_CWH[Channel.DIRECTION.value, x, y] = d.value
 
             # Verify throughput > 0
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -3028,7 +2634,9 @@ def build_factory(
             # gaps inside the blueprint's own footprint.
             world_CWH = _extend_belt_chains(world_CWH)
 
-            tp, _ = funge_throughput(world_CWH.permute(1, 2, 0))
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
             if tp <= 0:
                 continue
 
@@ -3094,7 +2702,6 @@ def blank_entities(
     min_entities_required = _remove_entities(
         partial,
         num_missing_entities,
-        factory.total_entities,
         protected_positions=set(factory.protected_positions),
     )
     return partial, min_entities_required

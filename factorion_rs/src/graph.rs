@@ -7,7 +7,6 @@ use crate::world::World;
 /// A node in the factory graph.
 #[derive(Debug, Clone)]
 pub struct GraphNode {
-    #[allow(dead_code)]
     pub id: NodeId,
     pub entity_kind: Item,
     /// The item carried/produced/configured at this tile, if any. `None`
@@ -60,7 +59,10 @@ impl FactoryGraph {
     }
 }
 
-/// Build a directed graph from a World, mirroring the Python `world2graph` function.
+/// Build a directed graph from a World: one node per placeable entity (the
+/// anchor tile only, for multi-tile units), with edges per the engine's
+/// entity-connection rules. This is the single source of truth for factory
+/// graph construction.
 pub fn build_graph(world: &World) -> FactoryGraph {
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
@@ -187,6 +189,152 @@ mod tests {
     use super::*;
     use crate::types::{Direction, Misc};
 
+    /// 1x1 entity configs exercised by the exhaustive connectivity checks.
+    /// (Multi-tile assembler/splitter handled separately.)
+    struct ConnCfg {
+        label: &'static str,
+        item: Item,
+        misc: Misc,
+    }
+
+    const CONN_CFGS: &[ConnCfg] = &[
+        ConnCfg {
+            label: "belt",
+            item: Item::TransportBelt,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "inserter",
+            item: Item::Inserter,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "ug_up",
+            item: Item::UndergroundBelt,
+            misc: Misc::UndergroundUp,
+        },
+        ConnCfg {
+            label: "ug_down",
+            item: Item::UndergroundBelt,
+            misc: Misc::UndergroundDown,
+        },
+        ConnCfg {
+            label: "source",
+            item: Item::Source,
+            misc: Misc::None,
+        },
+        ConnCfg {
+            label: "sink",
+            item: Item::Sink,
+            misc: Misc::None,
+        },
+    ];
+
+    const CONN_DIRS: &[(Direction, &str)] = &[
+        (Direction::North, "N"),
+        (Direction::East, "E"),
+        (Direction::South, "S"),
+        (Direction::West, "W"),
+    ];
+
+    // The four orthogonal adjacencies: where B sits relative to A.
+    const CONN_DELTAS: &[(i64, i64)] = &[(-1, 0), (0, -1), (1, 0), (0, 1)];
+
+    fn place_conn_cfg(w: &mut World, x: usize, y: usize, c: &ConnCfg, dir: Direction) {
+        if c.item == Item::UndergroundBelt {
+            w.place_underground(x, y, dir, c.misc);
+        } else {
+            w.place(x, y, c.item, dir, None);
+        }
+    }
+
+    /// What the engine connects between two adjacent entities.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    enum Conn {
+        None,
+        AToB,
+        BToA,
+        Both,
+    }
+
+    /// Build a 2-entity world (A at centre, B at centre+delta) and return what
+    /// the engine connects via directed graph edges.
+    fn conn_between(
+        a: &ConnCfg,
+        a_dir: Direction,
+        b: &ConnCfg,
+        b_dir: Direction,
+        delta: (i64, i64),
+    ) -> Conn {
+        let (cx, cy) = (3usize, 3usize);
+        let bx = (cx as i64 + delta.0) as usize;
+        let by = (cy as i64 + delta.1) as usize;
+        let mut w = World::empty(7, 7);
+        place_conn_cfg(&mut w, cx, cy, a, a_dir);
+        place_conn_cfg(&mut w, bx, by, b, b_dir);
+        let g = build_graph(&w);
+        let ia = g.get_index(&NodeId::new(a.item, cx, cy)).unwrap();
+        let ib = g.get_index(&NodeId::new(b.item, bx, by)).unwrap();
+        let a2b = g.successors[ia].contains(&ib);
+        let b2a = g.successors[ib].contains(&ia);
+        match (a2b, b2a) {
+            (false, false) => Conn::None,
+            (true, false) => Conn::AToB,
+            (false, true) => Conn::BToA,
+            (true, true) => Conn::Both,
+        }
+    }
+
+    /// Rotate a facing 90° clockwise: the vector (dx,dy) -> (-dy,dx).
+    /// North(0,-1)->East(1,0)->South(0,1)->West(-1,0)->North.
+    fn rot90_dir(d: Direction) -> Direction {
+        match d {
+            Direction::North => Direction::East,
+            Direction::East => Direction::South,
+            Direction::South => Direction::West,
+            Direction::West => Direction::North,
+            Direction::None => Direction::None,
+        }
+    }
+
+    /// Rotate an adjacency delta 90° clockwise the same way: (dx,dy)->(-dy,dx).
+    fn rot90_delta(d: (i64, i64)) -> (i64, i64) {
+        (-d.1, d.0)
+    }
+
+    /// Rotating a whole 2-entity configuration by 90/180/270° must not change
+    /// what connects to what. A sits at the centre of a square world, so a
+    /// world rotation is exactly: rotate both facings and the adjacency delta
+    /// together. Proving this lets the full connectivity table drop the
+    /// rotation axis (4× fewer cases) without losing coverage.
+    #[test]
+    fn connectivity_is_rotation_invariant() {
+        for a in CONN_CFGS {
+            for &(a_dir, _) in CONN_DIRS {
+                for b in CONN_CFGS {
+                    for &(b_dir, _) in CONN_DIRS {
+                        for &delta in CONN_DELTAS {
+                            let base = conn_between(a, a_dir, b, b_dir, delta);
+                            let (mut ad, mut bd, mut d) = (a_dir, b_dir, delta);
+                            for turn in 1..=3 {
+                                ad = rot90_dir(ad);
+                                bd = rot90_dir(bd);
+                                d = rot90_delta(d);
+                                let rotated = conn_between(a, ad, b, bd, d);
+                                assert_eq!(
+                                    base, rotated,
+                                    "rotating {}/{:?} + {}/{:?} (B@{:?}) by {}*90deg \
+                                     changed connectivity ({:?} -> {:?})",
+                                    a.label, a_dir, b.label, b_dir, delta, turn, base, rotated
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_empty_world_graph() {
         let w = World::empty(5, 5);
@@ -286,11 +434,6 @@ mod tests {
             .unwrap();
         assert!(g.successors[ug_down].contains(&ug_up));
 
-        // Belt(0,0) should NOT connect to underground_down (belt doesn't connect to
-        // underground_down because its src_is_beltish check excludes underground_down)
-        // Actually wait: Belt at (0,0) facing east, underground at (1,0) is ahead.
-        // The belt's connections check dst: is it a belt? UndergroundBelt is belt-ish → dst_is_belt = true.
-        // Not opposing direction → should connect.
         let belt0 = g
             .get_index(&NodeId::new(Item::TransportBelt, 0, 0))
             .unwrap();

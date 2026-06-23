@@ -89,7 +89,6 @@ def update_ppo_defaults(ppo_path: str, best_config: dict, sweep_url: str) -> lis
         changed.append((param_name, old_val, formatted))
         print(f"  {param_name}: {old_val} -> {formatted}")
 
-    # Add sweep URL comment above the class if not already present
     sweep_comment = f"# Best hyperparameters from W&B sweep: {sweep_url}"
     # Replace existing sweep comment if present, otherwise insert before "class Args"
     existing_pattern = r"^# Best hyperparameters from W&B sweep: .+\n"
@@ -142,7 +141,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # ── Fetch best run from sweep ────────────────────────────────
     api = wandb.Api()
     try:
         sweep = api.sweep(args.sweep_path)
@@ -151,7 +149,7 @@ def main():
         sys.exit(1)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "curriculum/score")
+    metric_name = metric_cfg.get("name", "eval/throughput_eot")
     metric_goal = metric_cfg.get("goal", "maximize")
     reverse = metric_goal == "maximize"
 
@@ -176,7 +174,6 @@ def main():
     print(f"Best run: {best_run.name} ({metric_name}={best_metric:.4f})")
     print(f"Sweep URL: {sweep_url}")
 
-    # ── Update ppo.py ────────────────────────────────────────────
     print(f"\nUpdating {args.ppo_file}...")
     changed = update_ppo_defaults(args.ppo_file, best_run.config, sweep_url)
 
@@ -190,14 +187,11 @@ def main():
         print("Dry run — not creating branch or PR.")
         return
 
-    # ── Create branch, commit, push, open PR ─────────────────────
     branch_name = f"sweep/apply-best-{sweep_id}"
 
-    # Configure git for CI
     run(["git", "config", "user.name", "github-actions[bot]"])
     run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"])
 
-    # Create and switch to new branch from base
     result = run(["git", "checkout", "-b", branch_name], check=False)
     if result.returncode != 0:
         # Branch might already exist
@@ -205,7 +199,6 @@ def main():
 
     run(["git", "add", args.ppo_file])
 
-    # Build commit message
     commit_lines = [
         f"Update hyperparameters from sweep {sweep_id}",
         "",
@@ -223,7 +216,6 @@ def main():
     run(["git", "commit", "-m", commit_msg])
     run(["git", "push", "-u", "origin", branch_name])
 
-    # Build PR body
     pr_body_lines = [
         "## Apply best hyperparameters from sweep",
         "",

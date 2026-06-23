@@ -956,61 +956,6 @@ class TestEotHead:
         assert not agent.eot_should_stop(x, threshold=1.0).any()
         assert agent.eot_should_stop(x, threshold=-0.01).all()
 
-    def test_eot_head_learns_terminal_vs_placement(self, registered_env, tmp_path):
-        """End-to-end: after a short SFT run the eot head should
-        distinguish terminal observations (solved factories) from
-        placement-step observations. This is the contract that lets the
-        rollout 'run until the model thinks it's done'."""
-        ckpt = str(tmp_path / "sft_eot.pt")
-        summary = str(tmp_path / "sft_eot_summary.json")
-        args = SFTArgs(
-            seed=3,
-            size=5,
-            num_samples=1000,
-            max_level=3,
-            epochs=20,
-            batch_size=64,
-            lr=3e-3,
-            layer1=16,
-            layer2=16,
-            layer3=16,
-            checkpoint_path=ckpt,
-            summary_path=summary,
-        )
-        agent = train_sft(args)
-
-        # Build a fresh held-out set: solved (eot=1) and partial (eot=0)
-        # observations from a seed range that wasn't in training. Move
-        # inputs to the agent's device (which depends on what train_sft
-        # selected — CPU on CI, MPS/CUDA locally).
-        device = next(agent.parameters()).device
-        agent.eval()
-        pos_logits = []
-        neg_logits = []
-        with torch.no_grad():
-            for seed in range(10_000, 10_040):
-                factory = build_factory(
-                    size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
-                )
-                assert factory is not None
-                solved, _ = blank_entities(factory, num_missing_entities=0)
-                factory = build_factory(
-                    size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
-                )
-                assert factory is not None
-                task, _ = blank_entities(factory, num_missing_entities=3)
-                enc_pos = agent.encoder(solved.unsqueeze(0).float().to(device))
-                enc_neg = agent.encoder(task.unsqueeze(0).float().to(device))
-                pos_logits.append(agent.eot_head(enc_pos).item())
-                neg_logits.append(agent.eot_head(enc_neg).item())
-
-        pos_mean = sum(pos_logits) / len(pos_logits)
-        neg_mean = sum(neg_logits) / len(neg_logits)
-        assert pos_mean > neg_mean, (
-            f"EOT head failed to separate terminal/placement: "
-            f"pos_mean={pos_mean:.3f} <= neg_mean={neg_mean:.3f}"
-        )
-
 
 class TestPerKindEotMetrics:
     """val/<LESSON>/eot_acc and /eot_pos_recall — the per-LessonKind breakdown

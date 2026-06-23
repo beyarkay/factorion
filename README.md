@@ -35,7 +35,7 @@ What's landed on `main` in the last week, newest first.
 - Added a binary "I'm done placing entities" output head so the agent can decide when to stop ([#103](https://github.com/beyarkay/factorion/pull/103))
 - Scaled the supervised pre-training smoke test up to 300k samples on an 11×11 grid ([#102](https://github.com/beyarkay/factorion/pull/102))
 - Built an interactive page for inspecting the model's predictions, and added W&B checkpoint uploads ([#100](https://github.com/beyarkay/factorion/pull/100))
-- Replaced the Python throughput solver with a Rust implementation for a big speedup ([#99](https://github.com/beyarkay/factorion/pull/99))
+- Moved throughput computation into a Rust implementation for a big speedup ([#99](https://github.com/beyarkay/factorion/pull/99))
 - Dropped the marimo notebook wrapper so `factorion.py` is a plain importable module ([#98](https://github.com/beyarkay/factorion/pull/98))
 - Made the agent predict all four channels of an entity placement (tile, entity type, item/recipe, orientation) ([#96](https://github.com/beyarkay/factorion/pull/96))
 - Logged per-task validation metrics and a per-head loss breakdown during pre-training ([#97](https://github.com/beyarkay/factorion/pull/97))
@@ -158,6 +158,10 @@ refines the policy to maximise actual throughput — pushing beyond the
 lesson-generator's solutions when a better layout exists. Starting from a
 decent pretrained policy means the sparse-reward problem (most factories
 throughput=0) bites much less than in the original RL-from-scratch setup.
+Point `--start-from` at either a local `.pt` file or a W&B run id (e.g. an SFT
+run like `j0s5y2mc`, whose model artifact is fetched automatically), and use
+`--critic-warmup` to train the fresh value head before unfreezing the policy.
+The aim is for PPO to beat the SFT base's `val/throughput_eot`.
 
 Historically the project trained RL from scratch with an explicit curriculum
 that ramped `num_missing_entities` over time. That scaffolding still exists

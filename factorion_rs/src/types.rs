@@ -263,6 +263,17 @@ impl Item {
         }
     }
 
+    /// Decode an item by its canonical snake_case name — the inverse of
+    /// [`Item::name`]. Returns `None` for unknown names. Implemented by
+    /// scanning `all_items()` so it can never drift out of sync with
+    /// `name()`. Only the `#[cfg(test)]` textual factory parser consumes this,
+    /// so it is itself `#[cfg(test)]` — no release-build surface, no dead-code
+    /// suppression.
+    #[cfg(test)]
+    pub fn from_name(name: &str) -> Option<Self> {
+        all_items().iter().copied().find(|i| i.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Item::TransportBelt => "transport_belt",
@@ -1147,7 +1158,7 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Matches the Python format: "entity_name\n@x,y".
+/// Its [`label`](NodeId::label) renders as `"entity_name\n@x,y"`.
 ///
 /// `entity_kind` is an `Item` (post-unification) and should always be
 /// placeable — only placeable items become graph nodes.
@@ -1163,7 +1174,6 @@ impl NodeId {
         Self { entity_kind, x, y }
     }
 
-    #[allow(dead_code)]
     pub fn label(&self) -> String {
         format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
     }
@@ -1219,6 +1229,18 @@ mod tests {
         assert_eq!(Item::from_i64(last), Some(Item::Source));
         assert_eq!(Item::from_i64(9999), None);
         assert_eq!(Item::from_i64(-1), None);
+    }
+
+    #[test]
+    fn test_item_from_name_roundtrips() {
+        // Every item's name decodes back to itself — covers the name→variant
+        // mapping for all items, so no per-item spot checks are needed.
+        for &item in all_items() {
+            assert_eq!(Item::from_name(item.name()), Some(item));
+        }
+        // Unknown names decode to None.
+        assert_eq!(Item::from_name("not_a_real_item"), None);
+        assert_eq!(Item::from_name(""), None);
     }
 
     #[test]

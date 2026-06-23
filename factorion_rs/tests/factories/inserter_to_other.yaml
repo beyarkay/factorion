@@ -1,0 +1,322 @@
+# Connectivity oracle: every case where the FIRST entity (A) is inserter.
+# B is placed directly East of A; `graph:` is build_graph's exact edge set.
+# Glyphs: b belt, i inserter, u ug_up(exit), d ug_down(entrance), S source, K sink; facing ^>v<.
+description: inserter/N vs belt/N
+graph: ""
+factory: |
+  .. i^ b^ ..
+---
+description: inserter/N vs belt/E
+graph: ""
+factory: |
+  .. i^ b> ..
+---
+description: inserter/N vs belt/S
+graph: ""
+factory: |
+  .. i^ bv ..
+---
+description: inserter/N vs belt/W
+graph: ""
+factory: |
+  .. i^ b< ..
+---
+description: inserter/N vs inserter/N
+graph: ""
+factory: |
+  .. i^ i^ ..
+---
+description: inserter/N vs inserter/E
+graph: ""
+factory: |
+  .. i^ i> ..
+---
+description: inserter/N vs inserter/S
+graph: ""
+factory: |
+  .. i^ iv ..
+---
+description: inserter/N vs inserter/W
+graph: ""
+factory: |
+  .. i^ i< ..
+---
+description: inserter/N vs ug_up/N
+graph: ""
+factory: |
+  .. i^ u^ ..
+---
+description: inserter/N vs ug_up/E
+graph: ""
+factory: |
+  .. i^ u> ..
+---
+description: inserter/N vs ug_up/S
+graph: ""
+factory: |
+  .. i^ uv ..
+---
+description: inserter/N vs ug_up/W
+graph: ""
+factory: |
+  .. i^ u< ..
+---
+description: inserter/N vs ug_down/N
+graph: ""
+factory: |
+  .. i^ d^ ..
+---
+description: inserter/N vs ug_down/E
+graph: ""
+factory: |
+  .. i^ d> ..
+---
+description: inserter/N vs ug_down/S
+graph: ""
+factory: |
+  .. i^ dv ..
+---
+description: inserter/N vs ug_down/W
+graph: ""
+factory: |
+  .. i^ d< ..
+---
+description: inserter/E vs belt/N
+graph: "i@1,0 -> b@2,0"
+factory: |
+  .. i> b^ ..
+---
+description: inserter/E vs belt/E
+graph: "i@1,0 -> b@2,0"
+factory: |
+  .. i> b> ..
+---
+description: inserter/E vs belt/S
+graph: "i@1,0 -> b@2,0"
+factory: |
+  .. i> bv ..
+---
+description: inserter/E vs belt/W
+graph: "i@1,0 -> b@2,0"
+factory: |
+  .. i> b< ..
+---
+description: inserter/E vs inserter/N
+graph: ""
+factory: |
+  .. i> i^ ..
+---
+description: inserter/E vs inserter/E
+graph: ""
+factory: |
+  .. i> i> ..
+---
+description: inserter/E vs inserter/S
+graph: ""
+factory: |
+  .. i> iv ..
+---
+description: inserter/E vs inserter/W
+graph: ""
+factory: |
+  .. i> i< ..
+---
+description: inserter/E vs ug_up/N
+graph: "i@1,0 -> u@2,0"
+factory: |
+  .. i> u^ ..
+---
+description: inserter/E vs ug_up/E
+graph: "i@1,0 -> u@2,0"
+factory: |
+  .. i> u> ..
+---
+description: inserter/E vs ug_up/S
+graph: "i@1,0 -> u@2,0"
+factory: |
+  .. i> uv ..
+---
+description: inserter/E vs ug_up/W
+graph: "i@1,0 -> u@2,0"
+factory: |
+  .. i> u< ..
+---
+description: inserter/E vs ug_down/N
+graph: "i@1,0 -> d@2,0"
+factory: |
+  .. i> d^ ..
+---
+description: inserter/E vs ug_down/E
+graph: "i@1,0 -> d@2,0"
+factory: |
+  .. i> d> ..
+---
+description: inserter/E vs ug_down/S
+graph: "i@1,0 -> d@2,0"
+factory: |
+  .. i> dv ..
+---
+description: inserter/E vs ug_down/W
+graph: "i@1,0 -> d@2,0"
+factory: |
+  .. i> d< ..
+---
+description: inserter/S vs belt/N
+graph: ""
+factory: |
+  .. iv b^ ..
+---
+description: inserter/S vs belt/E
+graph: ""
+factory: |
+  .. iv b> ..
+---
+description: inserter/S vs belt/S
+graph: ""
+factory: |
+  .. iv bv ..
+---
+description: inserter/S vs belt/W
+graph: ""
+factory: |
+  .. iv b< ..
+---
+description: inserter/S vs inserter/N
+graph: ""
+factory: |
+  .. iv i^ ..
+---
+description: inserter/S vs inserter/E
+graph: ""
+factory: |
+  .. iv i> ..
+---
+description: inserter/S vs inserter/S
+graph: ""
+factory: |
+  .. iv iv ..
+---
+description: inserter/S vs inserter/W
+graph: ""
+factory: |
+  .. iv i< ..
+---
+description: inserter/S vs ug_up/N
+graph: ""
+factory: |
+  .. iv u^ ..
+---
+description: inserter/S vs ug_up/E
+graph: ""
+factory: |
+  .. iv u> ..
+---
+description: inserter/S vs ug_up/S
+graph: ""
+factory: |
+  .. iv uv ..
+---
+description: inserter/S vs ug_up/W
+graph: ""
+factory: |
+  .. iv u< ..
+---
+description: inserter/S vs ug_down/N
+graph: ""
+factory: |
+  .. iv d^ ..
+---
+description: inserter/S vs ug_down/E
+graph: ""
+factory: |
+  .. iv d> ..
+---
+description: inserter/S vs ug_down/S
+graph: ""
+factory: |
+  .. iv dv ..
+---
+description: inserter/S vs ug_down/W
+graph: ""
+factory: |
+  .. iv d< ..
+---
+description: inserter/W vs belt/N
+graph: "b@2,0 -> i@1,0"
+factory: |
+  .. i< b^ ..
+---
+description: inserter/W vs belt/E
+graph: "b@2,0 -> i@1,0"
+factory: |
+  .. i< b> ..
+---
+description: inserter/W vs belt/S
+graph: "b@2,0 -> i@1,0"
+factory: |
+  .. i< bv ..
+---
+description: inserter/W vs belt/W
+graph: "b@2,0 -> i@1,0"
+factory: |
+  .. i< b< ..
+---
+description: inserter/W vs inserter/N
+graph: ""
+factory: |
+  .. i< i^ ..
+---
+description: inserter/W vs inserter/E
+graph: ""
+factory: |
+  .. i< i> ..
+---
+description: inserter/W vs inserter/S
+graph: ""
+factory: |
+  .. i< iv ..
+---
+description: inserter/W vs inserter/W
+graph: ""
+factory: |
+  .. i< i< ..
+---
+description: inserter/W vs ug_up/N
+graph: "u@2,0 -> i@1,0"
+factory: |
+  .. i< u^ ..
+---
+description: inserter/W vs ug_up/E
+graph: "u@2,0 -> i@1,0"
+factory: |
+  .. i< u> ..
+---
+description: inserter/W vs ug_up/S
+graph: "u@2,0 -> i@1,0"
+factory: |
+  .. i< uv ..
+---
+description: inserter/W vs ug_up/W
+graph: "u@2,0 -> i@1,0"
+factory: |
+  .. i< u< ..
+---
+description: inserter/W vs ug_down/N
+graph: "d@2,0 -> i@1,0"
+factory: |
+  .. i< d^ ..
+---
+description: inserter/W vs ug_down/E
+graph: "d@2,0 -> i@1,0"
+factory: |
+  .. i< d> ..
+---
+description: inserter/W vs ug_down/S
+graph: "d@2,0 -> i@1,0"
+factory: |
+  .. i< dv ..
+---
+description: inserter/W vs ug_down/W
+graph: "d@2,0 -> i@1,0"
+factory: |
+  .. i< d< ..

@@ -1,7 +1,7 @@
-"""Handcrafted mini-world parity tests.
+"""Handcrafted mini-world throughput tests.
 
-Each test builds a small, specific factory layout by hand and verifies that
-the Python and Rust throughput implementations agree.  The worlds exercise
+Each test builds a small, specific factory layout by hand and verifies the
+Rust throughput engine's output.  The worlds exercise
 edge-cases that random fuzz testing is unlikely to hit:
 
 - Zigzag belts (S-curves, U-turns, spirals)
@@ -20,11 +20,11 @@ import pytest
 from helpers import (
     Direction,
     Misc,
-    compare_throughput,
     make_world,
+    rs_throughput,
     set_assembler,
     set_entity,
-    world2graph,
+    build_factory_graph,
 )
 
 
@@ -46,7 +46,7 @@ class TestZigzagBelts:
         set_entity(world, 1, 3, "transport_belt", Direction.EAST)
         set_entity(world, 2, 3, "transport_belt", Direction.EAST)
         set_entity(world, 3, 3, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_u_turn_south_west_north(self):
@@ -58,7 +58,7 @@ class TestZigzagBelts:
         set_entity(world, 1, 2, "transport_belt", Direction.NORTH)
         set_entity(world, 1, 1, "transport_belt", Direction.NORTH)
         set_entity(world, 1, 0, "bulk_inserter", Direction.NORTH, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_zigzag_3_turns(self):
@@ -75,7 +75,7 @@ class TestZigzagBelts:
         set_entity(world, 3, 3, "transport_belt", Direction.WEST)
         set_entity(world, 2, 3, "transport_belt", Direction.SOUTH)
         set_entity(world, 2, 4, "bulk_inserter", Direction.SOUTH, "copper_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_spiral_inward(self):
@@ -95,7 +95,7 @@ class TestZigzagBelts:
         set_entity(world, 2, 3, "transport_belt", Direction.NORTH)
         set_entity(world, 2, 2, "transport_belt", Direction.WEST)
         set_entity(world, 1, 2, "bulk_inserter", Direction.WEST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_long_serpentine(self):
@@ -113,7 +113,7 @@ class TestZigzagBelts:
         for x in range(1, 6):
             set_entity(world, x, 2, "transport_belt", Direction.EAST)
         set_entity(world, 6, 2, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
 
@@ -128,7 +128,7 @@ class TestBeltMerging:
         set_entity(world, 0, 1, "transport_belt", Direction.EAST)
         set_entity(world, 1, 1, "transport_belt", Direction.EAST)
         set_entity(world, 2, 1, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_side_loading_belts(self):
@@ -139,7 +139,7 @@ class TestBeltMerging:
         set_entity(world, 1, 1, "transport_belt", Direction.EAST)
         set_entity(world, 2, 1, "transport_belt", Direction.EAST)
         set_entity(world, 3, 1, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_parallel_paths_to_sink(self):
@@ -151,7 +151,7 @@ class TestBeltMerging:
         set_entity(world, 0, 2, "stack_inserter", Direction.EAST, "iron_plate")
         set_entity(world, 1, 2, "transport_belt", Direction.EAST)
         set_entity(world, 2, 2, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         # Two fully-fed sinks at 15 each → power-mean score is the per-sink
         # 15.0 (equally-served sinks), not the 30.0 sum.
         assert t == pytest.approx(15.0, abs=1e-6)
@@ -170,7 +170,7 @@ class TestInserterPatterns:
         set_entity(world, 3, 0, "inserter", Direction.EAST)
         set_entity(world, 4, 0, "transport_belt", Direction.EAST)
         set_entity(world, 5, 0, "bulk_inserter", Direction.EAST, "copper_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(0.86, abs=1e-6)
 
     def test_inserter_feeds_belt_chain(self):
@@ -181,7 +181,7 @@ class TestInserterPatterns:
         for x in range(2, 7):
             set_entity(world, x, 0, "transport_belt", Direction.EAST)
         set_entity(world, 7, 0, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(0.86, abs=1e-6)
 
     def test_inserter_between_belts(self):
@@ -194,7 +194,7 @@ class TestInserterPatterns:
         set_entity(world, 4, 0, "transport_belt", Direction.EAST)
         set_entity(world, 5, 0, "transport_belt", Direction.EAST)
         set_entity(world, 6, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(0.86, abs=1e-6)
 
     def test_inserter_all_directions(self):
@@ -213,7 +213,7 @@ class TestInserterPatterns:
             set_entity(world, *ins_pos, "inserter", direction)
             set_entity(world, *belt_pos, "transport_belt", direction)
             set_entity(world, *sink_pos, "bulk_inserter", direction, "iron_plate")
-            t, u = compare_throughput(world)
+            t, u = rs_throughput(world)
             assert t == pytest.approx(0.86, abs=1e-6), (
                 f"Failed for direction {direction}"
             )
@@ -238,7 +238,7 @@ class TestUndergroundBeltPatterns:
         )
         set_entity(world, 4, 0, "transport_belt", Direction.EAST)
         set_entity(world, 5, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_underground_max_range(self):
@@ -255,7 +255,7 @@ class TestUndergroundBeltPatterns:
         )
         set_entity(world, 7, 0, "transport_belt", Direction.EAST)
         set_entity(world, 8, 0, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_chained_underground_belts(self):
@@ -281,7 +281,7 @@ class TestUndergroundBeltPatterns:
             misc=Misc.UNDERGROUND_UP.value,
         )
         set_entity(world, 11, 0, "bulk_inserter", Direction.EAST, "copper_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_underground_vertical_south(self):
@@ -299,7 +299,7 @@ class TestUndergroundBeltPatterns:
         )
         set_entity(world, 0, 6, "transport_belt", Direction.SOUTH)
         set_entity(world, 0, 7, "bulk_inserter", Direction.SOUTH, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_underground_with_obstacle(self):
@@ -319,7 +319,7 @@ class TestUndergroundBeltPatterns:
         )
         set_entity(world, 6, 0, "transport_belt", Direction.EAST)
         set_entity(world, 7, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
 
@@ -337,7 +337,7 @@ class TestAssemblingMachines:
         set_entity(world, 6, 2, "transport_belt", Direction.EAST)
         set_entity(world, 7, 2, "transport_belt", Direction.EAST)
         set_entity(world, 8, 2, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_electronic_circuit_factory(self):
@@ -352,7 +352,7 @@ class TestAssemblingMachines:
         set_entity(world, 6, 3, "transport_belt", Direction.EAST)
         set_entity(world, 7, 3, "transport_belt", Direction.EAST)
         set_entity(world, 8, 3, "bulk_inserter", Direction.EAST, "electronic_circuit")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_assembler_with_belt_input(self):
@@ -367,7 +367,7 @@ class TestAssemblingMachines:
         set_entity(world, 8, 2, "transport_belt", Direction.EAST)
         set_entity(world, 9, 2, "transport_belt", Direction.EAST)
         set_entity(world, 10, 2, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_assembler_no_input_connected(self):
@@ -376,7 +376,7 @@ class TestAssemblingMachines:
         set_assembler(world, 2, 1, "copper_cable")
         set_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_plate")
         set_entity(world, 6, 4, "bulk_inserter", Direction.EAST, "copper_cable")
-        compare_throughput(world)
+        rs_throughput(world)
 
 
 # ── Exhaustive assembler perimeter coverage ────────────────────────────────
@@ -441,7 +441,7 @@ _DELTA = {
 
 def _assembler_edges(world, assembler_x, assembler_y):
     """Return edges (src_node, dst_node) touching any tile of the 3x3 assembler."""
-    G = world2graph(world)
+    G = build_factory_graph(world)
     body_tiles = {
         (assembler_x + dx, assembler_y + dy) for dx in range(3) for dy in range(3)
     }
@@ -566,7 +566,7 @@ class TestAssemblerPerimeterConnections:
         set_entity(world, self.AX + 4, self.AY + 1, "bulk_inserter",
                    Direction.EAST, "copper_cable")
 
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         assert tp > 0, (
             f"throughput should be > 0 regardless of assembler direction {assembler_dir.name}"
         )
@@ -625,7 +625,7 @@ class TestAssemblerPerimeterThroughput:
         self._place_input_chain(world, offset, toward_dir, "copper_plate")
         self._place_output_chain(world, self._OUT_OFFSET, self._OUT_AWAY_DIR,
                                  "copper_cable")
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         assert tp > 0, f"slot {label}: expected > 0 throughput, got {tp}"
 
     @pytest.mark.parametrize("label,offset,toward_dir", _PERIMETER_SLOTS)
@@ -645,7 +645,7 @@ class TestAssemblerPerimeterThroughput:
                                 "copper_plate")
         away_dir = _OPPOSITE[toward_dir]
         self._place_output_chain(world, offset, away_dir, "copper_cable")
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         assert tp > 0, f"slot {label}: expected > 0 throughput, got {tp}"
 
     @pytest.mark.parametrize("label_cu,off_cu,toward_cu", _PERIMETER_SLOTS)
@@ -668,7 +668,7 @@ class TestAssemblerPerimeterThroughput:
         self._place_input_chain(world, off_fe, toward_fe, "iron_plate")
         self._place_output_chain(world, self._OUT_OFFSET, self._OUT_AWAY_DIR,
                                  "electronic_circuit")
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         assert tp > 0, (
             f"cu@{label_cu}, fe@{label_fe}: expected > 0 throughput, got {tp}"
         )
@@ -769,7 +769,7 @@ class TestCanonical2In1OutTile:
     def test_produces_electronic_circuits(self):
         """The tile should produce electronic circuits with nonzero throughput."""
         world = self._build_tile()
-        tp, unreachable = compare_throughput(world)
+        tp, unreachable = rs_throughput(world)
         assert tp > 0, f"expected > 0 throughput, got {tp}"
         # Bottleneck analysis:
         #   - 2 inserters per assembler, each capped at 0.86 i/s
@@ -794,7 +794,7 @@ class TestCanonical2In1OutTile:
         world = self._build_tile()
         # Remove inserter at (1,2) (asm1's belt-B feed)
         set_entity(world, 1, 2, "empty", Direction.NONE)
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         expected_full = 2 * 2 * (0.86 / 6.0)
         expected_half = expected_full / 2
         assert abs(tp - expected_half) < 1e-3, (
@@ -813,7 +813,7 @@ class TestCanonical2In1OutTile:
         """
         world = self._build_tile()
         set_entity(world, 6, 1, "empty", Direction.NONE)
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         expected_full = 2 * 2 * (0.86 / 6.0)
         expected_half = expected_full / 2
         assert abs(tp - expected_half) < 1e-3, (
@@ -830,14 +830,14 @@ class TestCanonical2In1OutTile:
         """
         world = self._build_tile()
         set_entity(world, 1, 1, "empty", Direction.NONE)
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         assert tp == 0, f"expected 0 (belt B fully broken), got {tp}"
 
     def test_removing_output_inserter_halves_throughput(self):
         """Removing one output inserter means one assembler's product is stranded."""
         world = self._build_tile()
         set_entity(world, 3, 6, "empty", Direction.NONE)  # asm1's output
-        tp, _ = compare_throughput(world)
+        tp, _ = rs_throughput(world)
         expected_full = 2 * 2 * (0.86 / 6.0)
         expected_half = expected_full / 2
         assert abs(tp - expected_half) < 1e-3, (
@@ -860,7 +860,7 @@ class TestDifferentItems:
         set_entity(world, 1, 0, "transport_belt", Direction.EAST)
         set_entity(world, 2, 0, "transport_belt", Direction.EAST)
         set_entity(world, 3, 0, "bulk_inserter", Direction.EAST, item)
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_two_different_item_paths(self):
@@ -872,7 +872,7 @@ class TestDifferentItems:
         set_entity(world, 0, 2, "stack_inserter", Direction.EAST, "iron_plate")
         set_entity(world, 1, 2, "transport_belt", Direction.EAST)
         set_entity(world, 2, 2, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
 
@@ -892,7 +892,7 @@ class TestMultiSourceSink:
         set_entity(world, 2, 1, "transport_belt", Direction.EAST)
         set_entity(world, 3, 1, "transport_belt", Direction.EAST)
         set_entity(world, 4, 1, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_one_source_two_sinks(self):
@@ -903,7 +903,7 @@ class TestMultiSourceSink:
         set_entity(world, 2, 2, "transport_belt", Direction.NORTH)
         set_entity(world, 2, 1, "transport_belt", Direction.EAST)
         set_entity(world, 3, 1, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_three_parallel_paths(self):
@@ -915,7 +915,7 @@ class TestMultiSourceSink:
             set_entity(world, 2, row, "transport_belt", Direction.EAST)
             set_entity(world, 3, row, "transport_belt", Direction.EAST)
             set_entity(world, 4, row, "bulk_inserter", Direction.EAST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         # Three fully-fed sinks at 15 each → power-mean score is 15.0, not 45.
         assert t == pytest.approx(15.0, abs=1e-6)
 
@@ -941,7 +941,7 @@ class TestMixedEntities:
         )
         set_entity(world, 8, 0, "transport_belt", Direction.EAST)
         set_entity(world, 9, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(0.86, abs=1e-6)
 
     def test_underground_into_zigzag(self):
@@ -960,7 +960,7 @@ class TestMixedEntities:
         set_entity(world, 6, 0, "transport_belt", Direction.SOUTH)
         set_entity(world, 6, 1, "transport_belt", Direction.WEST)
         set_entity(world, 5, 1, "bulk_inserter", Direction.WEST, "iron_plate")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_full_factory_copper_cable(self):
@@ -976,7 +976,7 @@ class TestMixedEntities:
         set_entity(world, 9, 2, "transport_belt", Direction.EAST)
         set_entity(world, 10, 2, "transport_belt", Direction.EAST)
         set_entity(world, 11, 2, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
     def test_full_factory_electronic_circuit(self):
@@ -996,7 +996,7 @@ class TestMixedEntities:
         set_entity(
             world, 10, 4, "bulk_inserter", Direction.EAST, "electronic_circuit"
         )
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0
 
 
@@ -1010,7 +1010,7 @@ class TestUnreachablePatterns:
         for x in range(4):
             for y in range(4):
                 set_entity(world, x, y, "transport_belt", Direction.EAST)
-        compare_throughput(world)
+        rs_throughput(world)
 
     def test_connected_path_plus_disconnected_island(self):
         """Working path + disconnected belt island."""
@@ -1022,7 +1022,7 @@ class TestUnreachablePatterns:
         set_entity(world, 5, 4, "transport_belt", Direction.EAST)
         set_entity(world, 4, 5, "transport_belt", Direction.EAST)
         set_entity(world, 5, 5, "transport_belt", Direction.EAST)
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_source_belt_dead_end(self):
@@ -1031,7 +1031,7 @@ class TestUnreachablePatterns:
         set_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_cable")
         set_entity(world, 1, 0, "transport_belt", Direction.EAST)
         set_entity(world, 2, 0, "transport_belt", Direction.EAST)
-        compare_throughput(world)
+        rs_throughput(world)
 
     def test_sink_belt_no_source(self):
         """Belt -> belt -> sink (no source)."""
@@ -1039,7 +1039,7 @@ class TestUnreachablePatterns:
         set_entity(world, 0, 0, "transport_belt", Direction.EAST)
         set_entity(world, 1, 0, "transport_belt", Direction.EAST)
         set_entity(world, 2, 0, "bulk_inserter", Direction.EAST, "iron_plate")
-        compare_throughput(world)
+        rs_throughput(world)
 
 
 # ── Large / stress test worlds ───────────────────────────────────────────────
@@ -1053,7 +1053,7 @@ class TestLargeWorlds:
         for x in range(1, 21):
             set_entity(world, x, 0, "transport_belt", Direction.EAST)
         set_entity(world, 21, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_grid_of_belts_10x10(self):
@@ -1066,7 +1066,7 @@ class TestLargeWorlds:
         for y in range(1, 10):
             for x in range(1, 11):
                 set_entity(world, x, y, "transport_belt", Direction.EAST)
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_many_parallel_paths_5(self):
@@ -1083,7 +1083,7 @@ class TestLargeWorlds:
             set_entity(
                 world, 5, row, "bulk_inserter", Direction.EAST, "copper_plate"
             )
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         # Five fully-fed sinks at 15 each → power-mean score is 15.0, not 75.
         assert t == pytest.approx(15.0, abs=1e-6)
 
@@ -1100,7 +1100,7 @@ class TestBeltDirectionEdgeCases:
         set_entity(world, 2, 0, "transport_belt", Direction.EAST)
         set_entity(world, 3, 0, "bulk_inserter", Direction.EAST, "iron_plate")
         set_entity(world, 2, 1, "transport_belt", Direction.SOUTH)
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t == pytest.approx(15.0, abs=1e-6)
 
     def test_belt_facing_away_from_sink(self):
@@ -1111,7 +1111,7 @@ class TestBeltDirectionEdgeCases:
         set_entity(world, 2, 0, "transport_belt", Direction.EAST)
         set_entity(world, 3, 0, "transport_belt", Direction.WEST)
         set_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "copper_cable")
-        compare_throughput(world)
+        rs_throughput(world)
 
     def test_all_belts_face_center(self):
         """4 belts facing center from all directions (convergence point)."""
@@ -1123,5 +1123,5 @@ class TestBeltDirectionEdgeCases:
         set_entity(world, 4, 2, "bulk_inserter", Direction.EAST, "copper_cable")
         set_entity(world, 2, 1, "transport_belt", Direction.SOUTH)
         set_entity(world, 2, 3, "transport_belt", Direction.NORTH)
-        t, u = compare_throughput(world)
+        t, u = rs_throughput(world)
         assert t > 0

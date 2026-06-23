@@ -1,0 +1,99 @@
+# A long long list of ~every 2-entity connection
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> b> ..
+---
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> b^ ..
+---
+graph: "b@1,0 -> b@2,0"
+factory: |
+  .. b> bv ..
+---
+graph: ""
+factory: |
+  .. b> b< ..
+---
+description: sink pulls from the belt behind it
+graph: "b@1,0 -> K@2,0"
+factory: |
+  .. b> K> ..
+---
+description: belt feeds an underground entrance
+graph: "b@1,0 -> d@2,0"
+factory: |
+  .. b> d> ..
+---
+description: underground exit feeds the belt ahead
+graph: "u@1,0 -> b@2,0"
+factory: |
+  .. u> b> ..
+---
+description: underground entrance tunnels to its paired exit
+graph: "d@1,0 -> u@3,0"
+factory: |
+  .. d> .. u> ..
+---
+description: belt feeds an inserter
+graph: "b@1,0 -> i@2,0"
+factory: |
+  .. b> i> ..
+---
+description: inserter drops onto the belt ahead
+graph: "i@1,0 -> b@2,0"
+factory: |
+  .. i> b> ..
+---
+description: source drops onto a belt
+graph: "S@1,0 -> b@2,0"
+factory: |
+  .. S> b> ..
+---
+description: source feeds an inserter (inserter picks up behind it)
+graph: "S@1,0 -> i@2,0"
+factory: |
+  .. S> i> ..
+---
+description: belt feeds an east-facing splitter (2x1, spans two rows)
+graph: "b@1,0 -> Y@2,0"
+factory: |
+  .. b> Y> ..
+  .. .. Y> ..
+---
+graph: "b@1,1 -> Y@2,0"
+factory: |
+  .. .. Y> ..
+  .. b> Y> ..
+---
+graph: "Y@1,0 -> b@2,0"
+factory: |
+  .. Y> b> ..
+  .. Y> .. ..
+---
+graph: "Y@1,0 -> b@2,1"
+factory: |
+  .. Y> .. ..
+  .. Y> b> ..
+---
+description: east-facing splitter drops onto the belt ahead
+graph: "Y@1,0 -> b@2,0"
+factory: |
+  .. Y> b> ..
+  .. Y> .. ..
+---
+description: inserter feeds an assembler (anchor is its top-left tile)
+graph: "i@0,1 -> a@1,0"
+factory: |
+  .. aaaaaaaa ..
+  i> aa    aa ..
+  .. aaaaaaaa ..
+---
+description: assembler hands off to an inserter facing away
+graph: "a@1,0 -> i@4,1"
+factory: |
+  .. aaaaaaaa ..
+  .. aa    aa i>
+  .. aaaaaaaa ..
+---
+

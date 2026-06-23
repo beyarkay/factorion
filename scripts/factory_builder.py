@@ -3,9 +3,10 @@
 Spins up a tiny local HTTP server that serves a drag-and-drop UI for
 designing a factory and visualising the flow graph it produces.
 
-The browser POSTs the grid to the server, which runs ``world2graph`` for
-visualisation and ``factorion_rs.simulate_throughput`` for throughput,
-then returns a rendered graph image.
+The browser POSTs the grid to the server, which builds the flow graph via
+the Rust engine (``factorion_rs.py_build_graph``) for visualisation and runs
+``factorion_rs.simulate_throughput`` for throughput, then returns a rendered
+graph image.
 
 Usage:
     uv run python scripts/factory_builder.py
@@ -48,14 +49,19 @@ from factorion import (  # noqa: E402
     LessonKind,
     Misc,
     build_factory,
+    build_graph_nx,
     ent_str2b64img,
     entities,
     items,
     new_world,
     plot_flow_network,
-    world2graph,
 )
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from ppo import (  # noqa: E402
+    AgentCNN,
+    FactorioEnv,
+    _resolve_wandb_checkpoint,
+    make_env,
+)
 
 
 # Order shown in the palette and dropdowns.
@@ -111,11 +117,11 @@ class Args:
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
     the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = "kkcv6xe3"
+    wandb_run: Optional[str] = "j0s5y2mc"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
     and loaded. Mutually exclusive with --checkpoint. Defaults to the
-    canonical SFT run kkcv6xe3 (sft-11x11, best_val_throughput 0.335)."""
+    canonical SFT run j0s5y2mc (sft-11x11, best_val_throughput 0.335)."""
     wandb_project: str = "factorion"
     """W&B project to look in when --wandb-run is a bare id."""
     wandb_entity: Optional[str] = None
@@ -219,10 +225,10 @@ def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
 
 
 def render_graph_png(grid: list[list[dict]]) -> dict:
-    """Build the world, run world2graph, and return a base64 PNG plus
-    text describing the nodes/edges/throughput."""
+    """Build the world, construct its graph via the Rust engine, and return a
+    base64 PNG plus text describing the nodes/edges/throughput."""
     world = build_world(grid)
-    G = world2graph(world)
+    G = build_graph_nx(world)
     if len(G.nodes) == 0:
         return {
             "png": "",
@@ -1486,65 +1492,6 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             result = {"error": f"{type(e).__name__}: {e}"}
         self._send_json(result)
-
-
-def _resolve_wandb_checkpoint(
-    run_spec: str, project: str, entity: Optional[str]
-) -> tuple[str, dict]:
-    """Resolve a W&B run id to (local_path, source_metadata). Downloads
-    the run's most recent model-type artifact to /tmp/factorion-checkpoints.
-
-    The metadata dict (run_id, run_url, run_name, artifact name) is
-    propagated up to _CHECKPOINT_SOURCE so the UI can show
-    "loaded: <artifact> (wandb)" with a clickable link to the run
-    instead of the anonymous tmp download path.
-
-    `run_spec` is either a bare id ("abc123") or a full path
-    ("user/factorion/abc123"). Sets WANDB_MODE back to online for the
-    duration of the call — the module's earlier setdefault to disabled
-    is for the local HTTP server, not for fetching."""
-    import wandb
-
-    prev_mode = os.environ.pop("WANDB_MODE", None)
-    prev_disabled = os.environ.pop("WANDB_DISABLED", None)
-    try:
-        api = wandb.Api()
-        if run_spec.count("/") == 2:
-            run = api.run(run_spec)
-        else:
-            ent = entity or api.default_entity
-            run = api.run(f"{ent}/{project}/{run_spec}")
-        dest = Path("/tmp/factorion-checkpoints") / run.id
-        dest.mkdir(parents=True, exist_ok=True)
-
-        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
-        if not model_arts:
-            raise RuntimeError(
-                f"run {run.id} has no artifacts of type=model — "
-                f"was it trained with --track and the artifact-upload code?"
-            )
-        # Newest first. Each `download()` returns the local dir holding
-        # the artifact's files.
-        art = max(model_arts, key=lambda a: a.created_at)
-        local_dir = Path(art.download(root=str(dest / art.name.replace(":", "_"))))
-        pt_files = sorted(local_dir.glob("*.pt"))
-        if not pt_files:
-            raise RuntimeError(f"artifact {art.name} contains no .pt file")
-        path = str(pt_files[0])
-        print(f"Resolved {run_spec} -> {art.name} -> {path}")
-        source = {
-            "kind": "wandb",
-            "run_id": run.id,
-            "run_url": run.url,
-            "run_name": run.name,
-            "artifact": art.name,
-        }
-        return path, source
-    finally:
-        if prev_mode is not None:
-            os.environ["WANDB_MODE"] = prev_mode
-        if prev_disabled is not None:
-            os.environ["WANDB_DISABLED"] = prev_disabled
 
 
 def main(args: Args) -> None:

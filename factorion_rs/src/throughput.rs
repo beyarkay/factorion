@@ -78,7 +78,6 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         return (Vec::new(), 0);
     }
 
-    // Identify sources and sinks
     let sources: Vec<usize> = (0..graph.node_count())
         .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
         .collect();
@@ -110,13 +109,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut in_queue: HashSet<usize> = HashSet::new();
 
-    // Initialize: enqueue all sources (in-degree 0 among reachable nodes)
     for &s in &sources {
         queue.push_back(s);
         in_queue.insert(s);
     }
 
-    // Clone the graph's nodes into a mutable working copy
     let mut node_inputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.input.clone()).collect();
     let mut node_outputs: Vec<HashMap<Item, f64>> =
@@ -207,7 +204,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     }
 
     // 4. Count unreachable nodes
-    // Match Python: unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
+    // unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
     // source to sink, both will be in the intersection. If not, they're unreachable.

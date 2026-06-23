@@ -1,0 +1,1605 @@
+# Every adjacent (entity, direction) x (source/sink, direction) pair, with
+# the exact edge build_graph produces. Source and sink connect like belts
+# (#174) and never to each other: a belt/inserter facing a source or sink
+# feeds it, one facing away produces nothing. Asserted edge-for-edge by
+# check_graph in test_all_yamls_in_factories_dir.
+
+description: belt/N vs source/N
+graph: ""
+factory: |
+  .. b^ S^ ..
+---
+description: belt/N vs source/E
+graph: ""
+factory: |
+  .. b^ S> ..
+---
+description: belt/N vs source/S
+graph: ""
+factory: |
+  .. b^ Sv ..
+---
+description: belt/N vs source/W
+graph: "S@2,0 -> b@1,0"
+factory: |
+  .. b^ S< ..
+---
+description: belt/N vs sink/N
+graph: ""
+factory: |
+  .. b^ K^ ..
+---
+description: belt/N vs sink/E
+graph: ""
+factory: |
+  .. b^ K> ..
+---
+description: belt/N vs sink/S
+graph: ""
+factory: |
+  .. b^ Kv ..
+---
+description: belt/N vs sink/W
+graph: "K@2,0 -> b@1,0"
+factory: |
+  .. b^ K< ..
+---
+description: belt/E vs source/N
+graph: "b@1,0 -> S@2,0"
+factory: |
+  .. b> S^ ..
+---
+description: belt/E vs source/E
+graph: "b@1,0 -> S@2,0"
+factory: |
+  .. b> S> ..
+---
+description: belt/E vs source/S
+graph: "b@1,0 -> S@2,0"
+factory: |
+  .. b> Sv ..
+---
+description: belt/E vs source/W
+graph: ""
+factory: |
+  .. b> S< ..
+---
+description: belt/E vs sink/N
+graph: "b@1,0 -> K@2,0"
+factory: |
+  .. b> K^ ..
+---
+description: belt/E vs sink/E
+graph: "b@1,0 -> K@2,0"
+factory: |
+  .. b> K> ..
+---
+description: belt/E vs sink/S
+graph: "b@1,0 -> K@2,0"
+factory: |
+  .. b> Kv ..
+---
+description: belt/E vs sink/W
+graph: ""
+factory: |
+  .. b> K< ..
+---
+description: belt/S vs source/N
+graph: ""
+factory: |
+  .. bv S^ ..
+---
+description: belt/S vs source/E
+graph: ""
+factory: |
+  .. bv S> ..
+---
+description: belt/S vs source/S
+graph: ""
+factory: |
+  .. bv Sv ..
+---
+description: belt/S vs source/W
+graph: "S@2,0 -> b@1,0"
+factory: |
+  .. bv S< ..
+---
+description: belt/S vs sink/N
+graph: ""
+factory: |
+  .. bv K^ ..
+---
+description: belt/S vs sink/E
+graph: ""
+factory: |
+  .. bv K> ..
+---
+description: belt/S vs sink/S
+graph: ""
+factory: |
+  .. bv Kv ..
+---
+description: belt/S vs sink/W
+graph: "K@2,0 -> b@1,0"
+factory: |
+  .. bv K< ..
+---
+description: belt/W vs source/N
+graph: ""
+factory: |
+  .. b< S^ ..
+---
+description: belt/W vs source/E
+graph: ""
+factory: |
+  .. b< S> ..
+---
+description: belt/W vs source/S
+graph: ""
+factory: |
+  .. b< Sv ..
+---
+description: belt/W vs source/W
+graph: "S@2,0 -> b@1,0"
+factory: |
+  .. b< S< ..
+---
+description: belt/W vs sink/N
+graph: ""
+factory: |
+  .. b< K^ ..
+---
+description: belt/W vs sink/E
+graph: ""
+factory: |
+  .. b< K> ..
+---
+description: belt/W vs sink/S
+graph: ""
+factory: |
+  .. b< Kv ..
+---
+description: belt/W vs sink/W
+graph: "K@2,0 -> b@1,0"
+factory: |
+  .. b< K< ..
+---
+description: inserter/N vs source/N
+graph: ""
+factory: |
+  .. i^ S^ ..
+---
+description: inserter/N vs source/E
+graph: ""
+factory: |
+  .. i^ S> ..
+---
+description: inserter/N vs source/S
+graph: ""
+factory: |
+  .. i^ Sv ..
+---
+description: inserter/N vs source/W
+graph: ""
+factory: |
+  .. i^ S< ..
+---
+description: inserter/N vs sink/N
+graph: ""
+factory: |
+  .. i^ K^ ..
+---
+description: inserter/N vs sink/E
+graph: ""
+factory: |
+  .. i^ K> ..
+---
+description: inserter/N vs sink/S
+graph: ""
+factory: |
+  .. i^ Kv ..
+---
+description: inserter/N vs sink/W
+graph: ""
+factory: |
+  .. i^ K< ..
+---
+description: inserter/E vs source/N
+graph: "i@1,0 -> S@2,0"
+factory: |
+  .. i> S^ ..
+---
+description: inserter/E vs source/E
+graph: "i@1,0 -> S@2,0"
+factory: |
+  .. i> S> ..
+---
+description: inserter/E vs source/S
+graph: "i@1,0 -> S@2,0"
+factory: |
+  .. i> Sv ..
+---
+description: inserter/E vs source/W
+graph: "i@1,0 -> S@2,0"
+factory: |
+  .. i> S< ..
+---
+description: inserter/E vs sink/N
+graph: "i@1,0 -> K@2,0"
+factory: |
+  .. i> K^ ..
+---
+description: inserter/E vs sink/E
+graph: "i@1,0 -> K@2,0"
+factory: |
+  .. i> K> ..
+---
+description: inserter/E vs sink/S
+graph: "i@1,0 -> K@2,0"
+factory: |
+  .. i> Kv ..
+---
+description: inserter/E vs sink/W
+graph: "i@1,0 -> K@2,0"
+factory: |
+  .. i> K< ..
+---
+description: inserter/S vs source/N
+graph: ""
+factory: |
+  .. iv S^ ..
+---
+description: inserter/S vs source/E
+graph: ""
+factory: |
+  .. iv S> ..
+---
+description: inserter/S vs source/S
+graph: ""
+factory: |
+  .. iv Sv ..
+---
+description: inserter/S vs source/W
+graph: ""
+factory: |
+  .. iv S< ..
+---
+description: inserter/S vs sink/N
+graph: ""
+factory: |
+  .. iv K^ ..
+---
+description: inserter/S vs sink/E
+graph: ""
+factory: |
+  .. iv K> ..
+---
+description: inserter/S vs sink/S
+graph: ""
+factory: |
+  .. iv Kv ..
+---
+description: inserter/S vs sink/W
+graph: ""
+factory: |
+  .. iv K< ..
+---
+description: inserter/W vs source/N
+graph: "S@2,0 -> i@1,0"
+factory: |
+  .. i< S^ ..
+---
+description: inserter/W vs source/E
+graph: "S@2,0 -> i@1,0"
+factory: |
+  .. i< S> ..
+---
+description: inserter/W vs source/S
+graph: "S@2,0 -> i@1,0"
+factory: |
+  .. i< Sv ..
+---
+description: inserter/W vs source/W
+graph: "S@2,0 -> i@1,0"
+factory: |
+  .. i< S< ..
+---
+description: inserter/W vs sink/N
+graph: "K@2,0 -> i@1,0"
+factory: |
+  .. i< K^ ..
+---
+description: inserter/W vs sink/E
+graph: "K@2,0 -> i@1,0"
+factory: |
+  .. i< K> ..
+---
+description: inserter/W vs sink/S
+graph: "K@2,0 -> i@1,0"
+factory: |
+  .. i< Kv ..
+---
+description: inserter/W vs sink/W
+graph: "K@2,0 -> i@1,0"
+factory: |
+  .. i< K< ..
+---
+description: sink/N vs belt/N
+graph: ""
+factory: |
+  .. K^ b^ ..
+---
+description: sink/N vs belt/E
+graph: ""
+factory: |
+  .. K^ b> ..
+---
+description: sink/N vs belt/S
+graph: ""
+factory: |
+  .. K^ bv ..
+---
+description: sink/N vs belt/W
+graph: "b@2,0 -> K@1,0"
+factory: |
+  .. K^ b< ..
+---
+description: sink/N vs inserter/N
+graph: ""
+factory: |
+  .. K^ i^ ..
+---
+description: sink/N vs inserter/E
+graph: "K@1,0 -> i@2,0"
+factory: |
+  .. K^ i> ..
+---
+description: sink/N vs inserter/S
+graph: ""
+factory: |
+  .. K^ iv ..
+---
+description: sink/N vs inserter/W
+graph: "i@2,0 -> K@1,0"
+factory: |
+  .. K^ i< ..
+---
+description: sink/N vs ug_up/N
+graph: ""
+factory: |
+  .. K^ u^ ..
+---
+description: sink/N vs ug_up/E
+graph: ""
+factory: |
+  .. K^ u> ..
+---
+description: sink/N vs ug_up/S
+graph: ""
+factory: |
+  .. K^ uv ..
+---
+description: sink/N vs ug_up/W
+graph: "u@2,0 -> K@1,0"
+factory: |
+  .. K^ u< ..
+---
+description: sink/N vs ug_down/N
+graph: ""
+factory: |
+  .. K^ d^ ..
+---
+description: sink/N vs ug_down/E
+graph: ""
+factory: |
+  .. K^ d> ..
+---
+description: sink/N vs ug_down/S
+graph: ""
+factory: |
+  .. K^ dv ..
+---
+description: sink/N vs ug_down/W
+graph: ""
+factory: |
+  .. K^ d< ..
+---
+description: sink/N vs source/N
+graph: ""
+factory: |
+  .. K^ S^ ..
+---
+description: sink/N vs source/E
+graph: ""
+factory: |
+  .. K^ S> ..
+---
+description: sink/N vs source/S
+graph: ""
+factory: |
+  .. K^ Sv ..
+---
+description: sink/N vs source/W
+graph: ""
+factory: |
+  .. K^ S< ..
+---
+description: sink/N vs sink/N
+graph: ""
+factory: |
+  .. K^ K^ ..
+---
+description: sink/N vs sink/E
+graph: ""
+factory: |
+  .. K^ K> ..
+---
+description: sink/N vs sink/S
+graph: ""
+factory: |
+  .. K^ Kv ..
+---
+description: sink/N vs sink/W
+graph: ""
+factory: |
+  .. K^ K< ..
+---
+description: sink/E vs belt/N
+graph: "K@1,0 -> b@2,0"
+factory: |
+  .. K> b^ ..
+---
+description: sink/E vs belt/E
+graph: "K@1,0 -> b@2,0"
+factory: |
+  .. K> b> ..
+---
+description: sink/E vs belt/S
+graph: "K@1,0 -> b@2,0"
+factory: |
+  .. K> bv ..
+---
+description: sink/E vs belt/W
+graph: ""
+factory: |
+  .. K> b< ..
+---
+description: sink/E vs inserter/N
+graph: ""
+factory: |
+  .. K> i^ ..
+---
+description: sink/E vs inserter/E
+graph: "K@1,0 -> i@2,0"
+factory: |
+  .. K> i> ..
+---
+description: sink/E vs inserter/S
+graph: ""
+factory: |
+  .. K> iv ..
+---
+description: sink/E vs inserter/W
+graph: "i@2,0 -> K@1,0"
+factory: |
+  .. K> i< ..
+---
+description: sink/E vs ug_up/N
+graph: "K@1,0 -> u@2,0"
+factory: |
+  .. K> u^ ..
+---
+description: sink/E vs ug_up/E
+graph: ""
+factory: |
+  .. K> u> ..
+---
+description: sink/E vs ug_up/S
+graph: "K@1,0 -> u@2,0"
+factory: |
+  .. K> uv ..
+---
+description: sink/E vs ug_up/W
+graph: ""
+factory: |
+  .. K> u< ..
+---
+description: sink/E vs ug_down/N
+graph: "K@1,0 -> d@2,0"
+factory: |
+  .. K> d^ ..
+---
+description: sink/E vs ug_down/E
+graph: "K@1,0 -> d@2,0"
+factory: |
+  .. K> d> ..
+---
+description: sink/E vs ug_down/S
+graph: "K@1,0 -> d@2,0"
+factory: |
+  .. K> dv ..
+---
+description: sink/E vs ug_down/W
+graph: ""
+factory: |
+  .. K> d< ..
+---
+description: sink/E vs source/N
+graph: ""
+factory: |
+  .. K> S^ ..
+---
+description: sink/E vs source/E
+graph: ""
+factory: |
+  .. K> S> ..
+---
+description: sink/E vs source/S
+graph: ""
+factory: |
+  .. K> Sv ..
+---
+description: sink/E vs source/W
+graph: ""
+factory: |
+  .. K> S< ..
+---
+description: sink/E vs sink/N
+graph: ""
+factory: |
+  .. K> K^ ..
+---
+description: sink/E vs sink/E
+graph: ""
+factory: |
+  .. K> K> ..
+---
+description: sink/E vs sink/S
+graph: ""
+factory: |
+  .. K> Kv ..
+---
+description: sink/E vs sink/W
+graph: ""
+factory: |
+  .. K> K< ..
+---
+description: sink/S vs belt/N
+graph: ""
+factory: |
+  .. Kv b^ ..
+---
+description: sink/S vs belt/E
+graph: ""
+factory: |
+  .. Kv b> ..
+---
+description: sink/S vs belt/S
+graph: ""
+factory: |
+  .. Kv bv ..
+---
+description: sink/S vs belt/W
+graph: "b@2,0 -> K@1,0"
+factory: |
+  .. Kv b< ..
+---
+description: sink/S vs inserter/N
+graph: ""
+factory: |
+  .. Kv i^ ..
+---
+description: sink/S vs inserter/E
+graph: "K@1,0 -> i@2,0"
+factory: |
+  .. Kv i> ..
+---
+description: sink/S vs inserter/S
+graph: ""
+factory: |
+  .. Kv iv ..
+---
+description: sink/S vs inserter/W
+graph: "i@2,0 -> K@1,0"
+factory: |
+  .. Kv i< ..
+---
+description: sink/S vs ug_up/N
+graph: ""
+factory: |
+  .. Kv u^ ..
+---
+description: sink/S vs ug_up/E
+graph: ""
+factory: |
+  .. Kv u> ..
+---
+description: sink/S vs ug_up/S
+graph: ""
+factory: |
+  .. Kv uv ..
+---
+description: sink/S vs ug_up/W
+graph: "u@2,0 -> K@1,0"
+factory: |
+  .. Kv u< ..
+---
+description: sink/S vs ug_down/N
+graph: ""
+factory: |
+  .. Kv d^ ..
+---
+description: sink/S vs ug_down/E
+graph: ""
+factory: |
+  .. Kv d> ..
+---
+description: sink/S vs ug_down/S
+graph: ""
+factory: |
+  .. Kv dv ..
+---
+description: sink/S vs ug_down/W
+graph: ""
+factory: |
+  .. Kv d< ..
+---
+description: sink/S vs source/N
+graph: ""
+factory: |
+  .. Kv S^ ..
+---
+description: sink/S vs source/E
+graph: ""
+factory: |
+  .. Kv S> ..
+---
+description: sink/S vs source/S
+graph: ""
+factory: |
+  .. Kv Sv ..
+---
+description: sink/S vs source/W
+graph: ""
+factory: |
+  .. Kv S< ..
+---
+description: sink/S vs sink/N
+graph: ""
+factory: |
+  .. Kv K^ ..
+---
+description: sink/S vs sink/E
+graph: ""
+factory: |
+  .. Kv K> ..
+---
+description: sink/S vs sink/S
+graph: ""
+factory: |
+  .. Kv Kv ..
+---
+description: sink/S vs sink/W
+graph: ""
+factory: |
+  .. Kv K< ..
+---
+description: sink/W vs belt/N
+graph: ""
+factory: |
+  .. K< b^ ..
+---
+description: sink/W vs belt/E
+graph: ""
+factory: |
+  .. K< b> ..
+---
+description: sink/W vs belt/S
+graph: ""
+factory: |
+  .. K< bv ..
+---
+description: sink/W vs belt/W
+graph: "b@2,0 -> K@1,0"
+factory: |
+  .. K< b< ..
+---
+description: sink/W vs inserter/N
+graph: ""
+factory: |
+  .. K< i^ ..
+---
+description: sink/W vs inserter/E
+graph: "K@1,0 -> i@2,0"
+factory: |
+  .. K< i> ..
+---
+description: sink/W vs inserter/S
+graph: ""
+factory: |
+  .. K< iv ..
+---
+description: sink/W vs inserter/W
+graph: "i@2,0 -> K@1,0"
+factory: |
+  .. K< i< ..
+---
+description: sink/W vs ug_up/N
+graph: ""
+factory: |
+  .. K< u^ ..
+---
+description: sink/W vs ug_up/E
+graph: ""
+factory: |
+  .. K< u> ..
+---
+description: sink/W vs ug_up/S
+graph: ""
+factory: |
+  .. K< uv ..
+---
+description: sink/W vs ug_up/W
+graph: "u@2,0 -> K@1,0"
+factory: |
+  .. K< u< ..
+---
+description: sink/W vs ug_down/N
+graph: ""
+factory: |
+  .. K< d^ ..
+---
+description: sink/W vs ug_down/E
+graph: ""
+factory: |
+  .. K< d> ..
+---
+description: sink/W vs ug_down/S
+graph: ""
+factory: |
+  .. K< dv ..
+---
+description: sink/W vs ug_down/W
+graph: ""
+factory: |
+  .. K< d< ..
+---
+description: sink/W vs source/N
+graph: ""
+factory: |
+  .. K< S^ ..
+---
+description: sink/W vs source/E
+graph: ""
+factory: |
+  .. K< S> ..
+---
+description: sink/W vs source/S
+graph: ""
+factory: |
+  .. K< Sv ..
+---
+description: sink/W vs source/W
+graph: ""
+factory: |
+  .. K< S< ..
+---
+description: sink/W vs sink/N
+graph: ""
+factory: |
+  .. K< K^ ..
+---
+description: sink/W vs sink/E
+graph: ""
+factory: |
+  .. K< K> ..
+---
+description: sink/W vs sink/S
+graph: ""
+factory: |
+  .. K< Kv ..
+---
+description: sink/W vs sink/W
+graph: ""
+factory: |
+  .. K< K< ..
+---
+description: source/N vs belt/N
+graph: ""
+factory: |
+  .. S^ b^ ..
+---
+description: source/N vs belt/E
+graph: ""
+factory: |
+  .. S^ b> ..
+---
+description: source/N vs belt/S
+graph: ""
+factory: |
+  .. S^ bv ..
+---
+description: source/N vs belt/W
+graph: "b@2,0 -> S@1,0"
+factory: |
+  .. S^ b< ..
+---
+description: source/N vs inserter/N
+graph: ""
+factory: |
+  .. S^ i^ ..
+---
+description: source/N vs inserter/E
+graph: "S@1,0 -> i@2,0"
+factory: |
+  .. S^ i> ..
+---
+description: source/N vs inserter/S
+graph: ""
+factory: |
+  .. S^ iv ..
+---
+description: source/N vs inserter/W
+graph: "i@2,0 -> S@1,0"
+factory: |
+  .. S^ i< ..
+---
+description: source/N vs ug_up/N
+graph: ""
+factory: |
+  .. S^ u^ ..
+---
+description: source/N vs ug_up/E
+graph: ""
+factory: |
+  .. S^ u> ..
+---
+description: source/N vs ug_up/S
+graph: ""
+factory: |
+  .. S^ uv ..
+---
+description: source/N vs ug_up/W
+graph: "u@2,0 -> S@1,0"
+factory: |
+  .. S^ u< ..
+---
+description: source/N vs ug_down/N
+graph: ""
+factory: |
+  .. S^ d^ ..
+---
+description: source/N vs ug_down/E
+graph: ""
+factory: |
+  .. S^ d> ..
+---
+description: source/N vs ug_down/S
+graph: ""
+factory: |
+  .. S^ dv ..
+---
+description: source/N vs ug_down/W
+graph: ""
+factory: |
+  .. S^ d< ..
+---
+description: source/N vs source/N
+graph: ""
+factory: |
+  .. S^ S^ ..
+---
+description: source/N vs source/E
+graph: ""
+factory: |
+  .. S^ S> ..
+---
+description: source/N vs source/S
+graph: ""
+factory: |
+  .. S^ Sv ..
+---
+description: source/N vs source/W
+graph: ""
+factory: |
+  .. S^ S< ..
+---
+description: source/N vs sink/N
+graph: ""
+factory: |
+  .. S^ K^ ..
+---
+description: source/N vs sink/E
+graph: ""
+factory: |
+  .. S^ K> ..
+---
+description: source/N vs sink/S
+graph: ""
+factory: |
+  .. S^ Kv ..
+---
+description: source/N vs sink/W
+graph: ""
+factory: |
+  .. S^ K< ..
+---
+description: source/E vs belt/N
+graph: "S@1,0 -> b@2,0"
+factory: |
+  .. S> b^ ..
+---
+description: source/E vs belt/E
+graph: "S@1,0 -> b@2,0"
+factory: |
+  .. S> b> ..
+---
+description: source/E vs belt/S
+graph: "S@1,0 -> b@2,0"
+factory: |
+  .. S> bv ..
+---
+description: source/E vs belt/W
+graph: ""
+factory: |
+  .. S> b< ..
+---
+description: source/E vs inserter/N
+graph: ""
+factory: |
+  .. S> i^ ..
+---
+description: source/E vs inserter/E
+graph: "S@1,0 -> i@2,0"
+factory: |
+  .. S> i> ..
+---
+description: source/E vs inserter/S
+graph: ""
+factory: |
+  .. S> iv ..
+---
+description: source/E vs inserter/W
+graph: "i@2,0 -> S@1,0"
+factory: |
+  .. S> i< ..
+---
+description: source/E vs ug_up/N
+graph: "S@1,0 -> u@2,0"
+factory: |
+  .. S> u^ ..
+---
+description: source/E vs ug_up/E
+graph: ""
+factory: |
+  .. S> u> ..
+---
+description: source/E vs ug_up/S
+graph: "S@1,0 -> u@2,0"
+factory: |
+  .. S> uv ..
+---
+description: source/E vs ug_up/W
+graph: ""
+factory: |
+  .. S> u< ..
+---
+description: source/E vs ug_down/N
+graph: "S@1,0 -> d@2,0"
+factory: |
+  .. S> d^ ..
+---
+description: source/E vs ug_down/E
+graph: "S@1,0 -> d@2,0"
+factory: |
+  .. S> d> ..
+---
+description: source/E vs ug_down/S
+graph: "S@1,0 -> d@2,0"
+factory: |
+  .. S> dv ..
+---
+description: source/E vs ug_down/W
+graph: ""
+factory: |
+  .. S> d< ..
+---
+description: source/E vs source/N
+graph: ""
+factory: |
+  .. S> S^ ..
+---
+description: source/E vs source/E
+graph: ""
+factory: |
+  .. S> S> ..
+---
+description: source/E vs source/S
+graph: ""
+factory: |
+  .. S> Sv ..
+---
+description: source/E vs source/W
+graph: ""
+factory: |
+  .. S> S< ..
+---
+description: source/E vs sink/N
+graph: ""
+factory: |
+  .. S> K^ ..
+---
+description: source/E vs sink/E
+graph: ""
+factory: |
+  .. S> K> ..
+---
+description: source/E vs sink/S
+graph: ""
+factory: |
+  .. S> Kv ..
+---
+description: source/E vs sink/W
+graph: ""
+factory: |
+  .. S> K< ..
+---
+description: source/S vs belt/N
+graph: ""
+factory: |
+  .. Sv b^ ..
+---
+description: source/S vs belt/E
+graph: ""
+factory: |
+  .. Sv b> ..
+---
+description: source/S vs belt/S
+graph: ""
+factory: |
+  .. Sv bv ..
+---
+description: source/S vs belt/W
+graph: "b@2,0 -> S@1,0"
+factory: |
+  .. Sv b< ..
+---
+description: source/S vs inserter/N
+graph: ""
+factory: |
+  .. Sv i^ ..
+---
+description: source/S vs inserter/E
+graph: "S@1,0 -> i@2,0"
+factory: |
+  .. Sv i> ..
+---
+description: source/S vs inserter/S
+graph: ""
+factory: |
+  .. Sv iv ..
+---
+description: source/S vs inserter/W
+graph: "i@2,0 -> S@1,0"
+factory: |
+  .. Sv i< ..
+---
+description: source/S vs ug_up/N
+graph: ""
+factory: |
+  .. Sv u^ ..
+---
+description: source/S vs ug_up/E
+graph: ""
+factory: |
+  .. Sv u> ..
+---
+description: source/S vs ug_up/S
+graph: ""
+factory: |
+  .. Sv uv ..
+---
+description: source/S vs ug_up/W
+graph: "u@2,0 -> S@1,0"
+factory: |
+  .. Sv u< ..
+---
+description: source/S vs ug_down/N
+graph: ""
+factory: |
+  .. Sv d^ ..
+---
+description: source/S vs ug_down/E
+graph: ""
+factory: |
+  .. Sv d> ..
+---
+description: source/S vs ug_down/S
+graph: ""
+factory: |
+  .. Sv dv ..
+---
+description: source/S vs ug_down/W
+graph: ""
+factory: |
+  .. Sv d< ..
+---
+description: source/S vs source/N
+graph: ""
+factory: |
+  .. Sv S^ ..
+---
+description: source/S vs source/E
+graph: ""
+factory: |
+  .. Sv S> ..
+---
+description: source/S vs source/S
+graph: ""
+factory: |
+  .. Sv Sv ..
+---
+description: source/S vs source/W
+graph: ""
+factory: |
+  .. Sv S< ..
+---
+description: source/S vs sink/N
+graph: ""
+factory: |
+  .. Sv K^ ..
+---
+description: source/S vs sink/E
+graph: ""
+factory: |
+  .. Sv K> ..
+---
+description: source/S vs sink/S
+graph: ""
+factory: |
+  .. Sv Kv ..
+---
+description: source/S vs sink/W
+graph: ""
+factory: |
+  .. Sv K< ..
+---
+description: source/W vs belt/N
+graph: ""
+factory: |
+  .. S< b^ ..
+---
+description: source/W vs belt/E
+graph: ""
+factory: |
+  .. S< b> ..
+---
+description: source/W vs belt/S
+graph: ""
+factory: |
+  .. S< bv ..
+---
+description: source/W vs belt/W
+graph: "b@2,0 -> S@1,0"
+factory: |
+  .. S< b< ..
+---
+description: source/W vs inserter/N
+graph: ""
+factory: |
+  .. S< i^ ..
+---
+description: source/W vs inserter/E
+graph: "S@1,0 -> i@2,0"
+factory: |
+  .. S< i> ..
+---
+description: source/W vs inserter/S
+graph: ""
+factory: |
+  .. S< iv ..
+---
+description: source/W vs inserter/W
+graph: "i@2,0 -> S@1,0"
+factory: |
+  .. S< i< ..
+---
+description: source/W vs ug_up/N
+graph: ""
+factory: |
+  .. S< u^ ..
+---
+description: source/W vs ug_up/E
+graph: ""
+factory: |
+  .. S< u> ..
+---
+description: source/W vs ug_up/S
+graph: ""
+factory: |
+  .. S< uv ..
+---
+description: source/W vs ug_up/W
+graph: "u@2,0 -> S@1,0"
+factory: |
+  .. S< u< ..
+---
+description: source/W vs ug_down/N
+graph: ""
+factory: |
+  .. S< d^ ..
+---
+description: source/W vs ug_down/E
+graph: ""
+factory: |
+  .. S< d> ..
+---
+description: source/W vs ug_down/S
+graph: ""
+factory: |
+  .. S< dv ..
+---
+description: source/W vs ug_down/W
+graph: ""
+factory: |
+  .. S< d< ..
+---
+description: source/W vs source/N
+graph: ""
+factory: |
+  .. S< S^ ..
+---
+description: source/W vs source/E
+graph: ""
+factory: |
+  .. S< S> ..
+---
+description: source/W vs source/S
+graph: ""
+factory: |
+  .. S< Sv ..
+---
+description: source/W vs source/W
+graph: ""
+factory: |
+  .. S< S< ..
+---
+description: source/W vs sink/N
+graph: ""
+factory: |
+  .. S< K^ ..
+---
+description: source/W vs sink/E
+graph: ""
+factory: |
+  .. S< K> ..
+---
+description: source/W vs sink/S
+graph: ""
+factory: |
+  .. S< Kv ..
+---
+description: source/W vs sink/W
+graph: ""
+factory: |
+  .. S< K< ..
+---
+description: ug_up/N vs source/N
+graph: ""
+factory: |
+  .. u^ S^ ..
+---
+description: ug_up/N vs source/E
+graph: ""
+factory: |
+  .. u^ S> ..
+---
+description: ug_up/N vs source/S
+graph: ""
+factory: |
+  .. u^ Sv ..
+---
+description: ug_up/N vs source/W
+graph: "S@2,0 -> u@1,0"
+factory: |
+  .. u^ S< ..
+---
+description: ug_up/N vs sink/N
+graph: ""
+factory: |
+  .. u^ K^ ..
+---
+description: ug_up/N vs sink/E
+graph: ""
+factory: |
+  .. u^ K> ..
+---
+description: ug_up/N vs sink/S
+graph: ""
+factory: |
+  .. u^ Kv ..
+---
+description: ug_up/N vs sink/W
+graph: "K@2,0 -> u@1,0"
+factory: |
+  .. u^ K< ..
+---
+description: ug_up/E vs source/N
+graph: "u@1,0 -> S@2,0"
+factory: |
+  .. u> S^ ..
+---
+description: ug_up/E vs source/E
+graph: "u@1,0 -> S@2,0"
+factory: |
+  .. u> S> ..
+---
+description: ug_up/E vs source/S
+graph: "u@1,0 -> S@2,0"
+factory: |
+  .. u> Sv ..
+---
+description: ug_up/E vs source/W
+graph: ""
+factory: |
+  .. u> S< ..
+---
+description: ug_up/E vs sink/N
+graph: "u@1,0 -> K@2,0"
+factory: |
+  .. u> K^ ..
+---
+description: ug_up/E vs sink/E
+graph: "u@1,0 -> K@2,0"
+factory: |
+  .. u> K> ..
+---
+description: ug_up/E vs sink/S
+graph: "u@1,0 -> K@2,0"
+factory: |
+  .. u> Kv ..
+---
+description: ug_up/E vs sink/W
+graph: ""
+factory: |
+  .. u> K< ..
+---
+description: ug_up/S vs source/N
+graph: ""
+factory: |
+  .. uv S^ ..
+---
+description: ug_up/S vs source/E
+graph: ""
+factory: |
+  .. uv S> ..
+---
+description: ug_up/S vs source/S
+graph: ""
+factory: |
+  .. uv Sv ..
+---
+description: ug_up/S vs source/W
+graph: "S@2,0 -> u@1,0"
+factory: |
+  .. uv S< ..
+---
+description: ug_up/S vs sink/N
+graph: ""
+factory: |
+  .. uv K^ ..
+---
+description: ug_up/S vs sink/E
+graph: ""
+factory: |
+  .. uv K> ..
+---
+description: ug_up/S vs sink/S
+graph: ""
+factory: |
+  .. uv Kv ..
+---
+description: ug_up/S vs sink/W
+graph: "K@2,0 -> u@1,0"
+factory: |
+  .. uv K< ..
+---
+description: ug_up/W vs source/N
+graph: ""
+factory: |
+  .. u< S^ ..
+---
+description: ug_up/W vs source/E
+graph: ""
+factory: |
+  .. u< S> ..
+---
+description: ug_up/W vs source/S
+graph: ""
+factory: |
+  .. u< Sv ..
+---
+description: ug_up/W vs source/W
+graph: ""
+factory: |
+  .. u< S< ..
+---
+description: ug_up/W vs sink/N
+graph: ""
+factory: |
+  .. u< K^ ..
+---
+description: ug_up/W vs sink/E
+graph: ""
+factory: |
+  .. u< K> ..
+---
+description: ug_up/W vs sink/S
+graph: ""
+factory: |
+  .. u< Kv ..
+---
+description: ug_up/W vs sink/W
+graph: ""
+factory: |
+  .. u< K< ..
+---
+description: ug_down/N vs source/N
+graph: ""
+factory: |
+  .. d^ S^ ..
+---
+description: ug_down/N vs source/E
+graph: ""
+factory: |
+  .. d^ S> ..
+---
+description: ug_down/N vs source/S
+graph: ""
+factory: |
+  .. d^ Sv ..
+---
+description: ug_down/N vs source/W
+graph: "S@2,0 -> d@1,0"
+factory: |
+  .. d^ S< ..
+---
+description: ug_down/N vs sink/N
+graph: ""
+factory: |
+  .. d^ K^ ..
+---
+description: ug_down/N vs sink/E
+graph: ""
+factory: |
+  .. d^ K> ..
+---
+description: ug_down/N vs sink/S
+graph: ""
+factory: |
+  .. d^ Kv ..
+---
+description: ug_down/N vs sink/W
+graph: "K@2,0 -> d@1,0"
+factory: |
+  .. d^ K< ..
+---
+description: ug_down/E vs source/N
+graph: ""
+factory: |
+  .. d> S^ ..
+---
+description: ug_down/E vs source/E
+graph: ""
+factory: |
+  .. d> S> ..
+---
+description: ug_down/E vs source/S
+graph: ""
+factory: |
+  .. d> Sv ..
+---
+description: ug_down/E vs source/W
+graph: ""
+factory: |
+  .. d> S< ..
+---
+description: ug_down/E vs sink/N
+graph: ""
+factory: |
+  .. d> K^ ..
+---
+description: ug_down/E vs sink/E
+graph: ""
+factory: |
+  .. d> K> ..
+---
+description: ug_down/E vs sink/S
+graph: ""
+factory: |
+  .. d> Kv ..
+---
+description: ug_down/E vs sink/W
+graph: ""
+factory: |
+  .. d> K< ..
+---
+description: ug_down/S vs source/N
+graph: ""
+factory: |
+  .. dv S^ ..
+---
+description: ug_down/S vs source/E
+graph: ""
+factory: |
+  .. dv S> ..
+---
+description: ug_down/S vs source/S
+graph: ""
+factory: |
+  .. dv Sv ..
+---
+description: ug_down/S vs source/W
+graph: "S@2,0 -> d@1,0"
+factory: |
+  .. dv S< ..
+---
+description: ug_down/S vs sink/N
+graph: ""
+factory: |
+  .. dv K^ ..
+---
+description: ug_down/S vs sink/E
+graph: ""
+factory: |
+  .. dv K> ..
+---
+description: ug_down/S vs sink/S
+graph: ""
+factory: |
+  .. dv Kv ..
+---
+description: ug_down/S vs sink/W
+graph: "K@2,0 -> d@1,0"
+factory: |
+  .. dv K< ..
+---
+description: ug_down/W vs source/N
+graph: ""
+factory: |
+  .. d< S^ ..
+---
+description: ug_down/W vs source/E
+graph: ""
+factory: |
+  .. d< S> ..
+---
+description: ug_down/W vs source/S
+graph: ""
+factory: |
+  .. d< Sv ..
+---
+description: ug_down/W vs source/W
+graph: "S@2,0 -> d@1,0"
+factory: |
+  .. d< S< ..
+---
+description: ug_down/W vs sink/N
+graph: ""
+factory: |
+  .. d< K^ ..
+---
+description: ug_down/W vs sink/E
+graph: ""
+factory: |
+  .. d< K> ..
+---
+description: ug_down/W vs sink/S
+graph: ""
+factory: |
+  .. d< Kv ..
+---
+description: ug_down/W vs sink/W
+graph: "K@2,0 -> d@1,0"
+factory: |
+  .. d< K< ..
