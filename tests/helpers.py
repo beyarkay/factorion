@@ -98,6 +98,19 @@ def set_splitter(world, x, y, direction, item_name="empty"):
     set_multi_tile_entity(world, "splitter", x, y, direction, item_name)
 
 
+def build_factory_graph(world_WHC):
+    """Build a factory's connection graph as a networkx ``DiGraph``.
+
+    The single indirection point for graph construction across the test
+    suite. Nodes are named ``f"{entity_name}\\n@{x},{y}"`` and edges follow
+    the engine's entity-connection rules. Currently delegates to the Python
+    ``world2graph``; this is the one place that will be repointed at the
+    Rust engine when ``world2graph`` is removed (issue #178), so the
+    characterization tests below keep passing across the swap.
+    """
+    return world2graph(world_WHC)
+
+
 def rs_throughput(world):
     """Rust throughput via Python bindings."""
     return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
