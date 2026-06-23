@@ -22,6 +22,7 @@ from grpo import (  # noqa: E402
     collect_rollout,
     compute_advantages,
     compute_rewards,
+    greedy_eval,
     grpo_update,
     policy_step,
     select_grids,
@@ -384,3 +385,27 @@ class TestGRPOUpdate:
         opt = torch.optim.Adam(policy.parameters(), lr=1e-3)
         m = grpo_update(policy, opt, empty, torch.empty((0,)), args)
         assert m["grpo/n_transitions"] == 0
+
+
+class TestGreedyEval:
+    def test_metrics_well_formed(self, registered_env):
+        import random
+
+        size = 5
+        args = GRPOArgs(
+            size=size, num_grids=6, num_missing_max=2, eval_num_envs=3, start_from="x", **TINY
+        )
+        val_grids = select_grids(args, random.Random(999))
+        policy = _tiny_agent(size)
+        m = greedy_eval(policy, args, val_grids, torch.device("cpu"))
+        assert m["eval/n"] == len(val_grids)
+        assert 0.0 <= m["eval/throughput"] <= 1.0
+        assert 0.0 <= m["eval/success_rate"] <= 1.0
+        assert 0.0 <= m["eval/dir_acc_vs_ref"] <= 1.0
+
+    def test_empty_val_set_is_safe(self, registered_env):
+        args = GRPOArgs(size=5, start_from="x", **TINY)
+        policy = _tiny_agent(5)
+        m = greedy_eval(policy, args, [], torch.device("cpu"))
+        assert m["eval/n"] == 0
+        assert m["eval/throughput"] == 0.0

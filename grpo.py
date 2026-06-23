@@ -583,6 +583,105 @@ def broadcast_advantages(
     return A_B.to(lane_of_N.device)[lane_of_N]
 
 
+def greedy_eval(
+    policy: AgentCNN,
+    args: GRPOArgs,
+    val_grids: list[tuple[int, LessonKind, int]],
+    device,
+) -> dict:
+    """Batched greedy rollout on held-out grids (argmax every head), mirroring
+    sft.run_rollout_eval but self-contained and using the GRPO horizon.
+
+    Episodes end on connection (throughput>=1) or max_steps; EOT is honored
+    only when args.honor_eot, so the regime matches training. Reports:
+      - eval/throughput: mean final throughput (the real objective)
+      - eval/success_rate: fraction that fully connect source->sink
+      - eval/dir_acc_vs_ref: mean tile_match_direction (REPORTED, NOT a target
+        — under working GRPO this may fall while throughput rises, because the
+        actor produces valid OFF-reference paths)."""
+    was_training = policy.training
+    policy.eval()
+    max_steps = _max_steps(args)
+    K = max(1, args.eval_num_envs)
+    thps: list[float] = []
+    dir_accs: list[float] = []
+
+    with torch.no_grad():
+        for start in range(0, len(val_grids), K):
+            chunk = val_grids[start : start + K]
+            n = len(chunk)
+            envs = [_make_rollout_env(args) for _ in range(n)]
+            obs = [None] * n
+            last_thp = [0.0] * n
+            last_dir = [0.0] * n
+            for i, (seed, kind, num_missing) in enumerate(chunk):
+                o, info = envs[i].reset(
+                    seed=seed,
+                    options={"num_missing_entities": num_missing, "kind": kind},
+                )
+                obs[i] = o
+                last_thp[i] = float(info.get("throughput", 0.0))
+                last_dir[i] = float(info.get("tile_match_direction", 0.0))
+
+            active = [True] * n
+            for _t in range(max_steps + 4):
+                if not any(active):
+                    break
+                obs_b = torch.as_tensor(np.stack(obs), dtype=torch.float32, device=device)
+                encoded = policy.encoder(obs_b)
+                tile = policy.tile_logits(encoded).reshape(n, -1).argmax(dim=1)
+                x = tile // args.size
+                y = tile % args.size
+                bidx = torch.arange(n, device=device)
+                feats = encoded[bidx, :, x, y]
+                ent = policy.ent_head(feats).argmax(dim=1)
+                dir_ = policy.dir_head(feats).argmax(dim=1)
+                item = policy.item_head(feats).argmax(dim=1)
+                misc = policy.misc_head(feats).argmax(dim=1)
+                if args.honor_eot:
+                    eot = torch.sigmoid(policy.eot_head(encoded).squeeze(-1)) > args.eot_threshold
+                else:
+                    eot = torch.zeros(n, dtype=torch.bool)
+
+                for i in range(n):
+                    if not active[i]:
+                        continue
+                    if bool(eot[i]):
+                        active[i] = False
+                        continue
+                    action = {
+                        "xy": np.array([int(x[i]), int(y[i])], dtype=int),
+                        "entity": int(ent[i]),
+                        "direction": int(dir_[i]),
+                        "item": int(item[i]),
+                        "misc": int(misc[i]),
+                    }
+                    no, _r, term, trunc, info = envs[i].step(action)
+                    last_thp[i] = float(info.get("throughput", 0.0))
+                    last_dir[i] = float(info.get("tile_match_direction", 0.0))
+                    if term or trunc:
+                        active[i] = False
+                    else:
+                        obs[i] = no
+
+            thps.extend(last_thp)
+            dir_accs.extend(last_dir)
+            for e in envs:
+                e.close()
+
+    if was_training:
+        policy.train()
+
+    mean_thp = float(np.mean(thps)) if thps else 0.0
+    success = float(np.mean([1.0 if t >= 1.0 else 0.0 for t in thps])) if thps else 0.0
+    return {
+        "eval/throughput": mean_thp,
+        "eval/success_rate": success,
+        "eval/dir_acc_vs_ref": float(np.mean(dir_accs)) if dir_accs else 0.0,
+        "eval/n": len(thps),
+    }
+
+
 def grpo_update(
     policy: AgentCNN,
     optimizer: optim.Optimizer,
