@@ -21,7 +21,7 @@ from helpers import (
     rs_throughput,
     str2ent,
     str2item,
-    world2graph,
+    build_factory_graph,
     world2html,
 )
 
@@ -1305,7 +1305,7 @@ class TestAssemble1In1OutConnectivity:
         factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
-        G = world2graph(world.permute(1, 2, 0))
+        G = build_factory_graph(world.permute(1, 2, 0))
 
         # Find source / sink / assembler nodes by name substring
         source_nodes = [n for n in G.nodes if "stack_inserter" in n]
@@ -1332,7 +1332,7 @@ class TestAssemble1In1OutConnectivity:
         factory = build_factory(size=10, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=seed)
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
-        G = world2graph(world.permute(1, 2, 0))
+        G = build_factory_graph(world.permute(1, 2, 0))
         import networkx as nx
 
         source_nodes = [n for n in G.nodes if "stack_inserter" in n]
@@ -1389,8 +1389,8 @@ class TestAssemble1In1OutThroughputPerRecipe:
         # assembler input is unconstrained (recipe ratio caps at 1)
         # and only the output inserter caps the final throughput.
         # Detect via graph predecessors and pick the right expectation.
-        from helpers import world2graph
-        G = world2graph(world.permute(1, 2, 0))
+        from helpers import build_factory_graph
+        G = build_factory_graph(world.permute(1, 2, 0))
         asm = next(n for n in G.nodes if "assembling_machine" in n)
         preds = list(G.predecessors(asm))
         source_directly_adjacent = any("stack_inserter" in p for p in preds)
@@ -2294,7 +2294,7 @@ class TestAssemble2In1OutConnectivity:
         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
-        G = world2graph(world.permute(1, 2, 0))
+        G = build_factory_graph(world.permute(1, 2, 0))
         import networkx as nx
         sources = [n for n in G.nodes if "stack_inserter" in n]
         sink = [n for n in G.nodes if "bulk_inserter" in n]

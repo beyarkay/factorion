@@ -38,12 +38,12 @@ from factorion import (
     build_factory,
 )
 from helpers import (
-    build_factory_graph,  # currently world2graph; the legacy path under test
     make_world,
     rust_factory_graph,
     set_assembler,
     set_entity,
     set_splitter,
+    world2graph,  # the legacy Python path under test
 )
 
 
@@ -122,7 +122,7 @@ def _clean_worlds():
 @pytest.mark.parametrize("name", sorted(_clean_worlds()))
 def test_rust_matches_python_on_clean_worlds(name):
     w = _clean_worlds()[name]
-    py_nodes, py_edges = _sets(build_factory_graph(w))
+    py_nodes, py_edges = _sets(world2graph(w))
     rs_nodes, rs_edges = _sets(rust_factory_graph(w))
     assert rs_nodes == py_nodes
     assert rs_edges == py_edges
@@ -138,7 +138,7 @@ class TestNodeSetsAlwaysMatch:
         whc = _generated(kind, seed)
         if whc is None:
             pytest.skip(f"{kind.name} seed={seed}: layout search returned None")
-        py_nodes = set(build_factory_graph(whc).nodes)
+        py_nodes = set(world2graph(whc).nodes)
         rs_nodes = set(rust_factory_graph(whc).nodes)
         assert rs_nodes == py_nodes
 
@@ -153,7 +153,7 @@ class TestEdgeDivergenceIsExplained:
         whc = _generated(kind, seed)
         if whc is None:
             pytest.skip(f"{kind.name} seed={seed}: layout search returned None")
-        py_edges = set(build_factory_graph(whc).edges)
+        py_edges = set(world2graph(whc).edges)
         rs_edges = set(rust_factory_graph(whc).edges)
 
         # Python-only edges: spurious input edges into a source.

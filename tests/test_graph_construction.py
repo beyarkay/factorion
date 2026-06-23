@@ -3,12 +3,12 @@
 These pin down the behaviour the rest of the codebase relies on when it
 turns a world tensor into a connection graph: the exact node set, the
 exact edge set, and source→sink reachability. Every test goes through
-``helpers.build_factory_graph`` — the single indirection point that
-currently delegates to the Python ``world2graph`` and will later be
-repointed at the Rust engine's ``build_graph``. Freezing the behaviour
-here first means the migration is a no-op for these assertions: if the
-Rust path ever disagrees with the Python one, exactly one of these tests
-goes red and names the divergence.
+``helpers.build_factory_graph`` — the single indirection point for graph
+construction, now backed by the Rust engine (``factorion_rs.py_build_graph``).
+These snapshots were first frozen against the legacy Python ``world2graph``
+for the clean worlds where the two engines agree, so they doubled as the
+migration's safety net and remain the permanent characterization of the
+Rust graph builder.
 
 Two layers of coverage:
 
@@ -268,39 +268,14 @@ _CONNECTIVITY_KINDS = [
     LessonKind.FROM_BLUEPRINT,
 ]
 
-# Kinds whose generators place underground belts. The legacy Python
-# world2graph mis-wires undergrounds — the #173 underground rewrite only
-# landed in the Rust engine — so these known-correct worlds currently fail
-# source→sink reachability under world2graph even though the Rust engine
-# connects them (verified: build_factory only emits layouts that simulate to
-# positive Rust throughput with zero unreachable nodes). The xfail is the
-# forcing function: when build_factory_graph is repointed at the Rust engine
-# (issue #178) these turn green and the marker is removed.
-_PYTHON_STALE_KINDS = {LessonKind.MOVE_VIA_UG_BELT, LessonKind.FROM_BLUEPRINT}
-
-
-def _connectivity_params():
-    params = []
-    for kind in _CONNECTIVITY_KINDS:
-        marks = []
-        if kind in _PYTHON_STALE_KINDS:
-            marks = [
-                pytest.mark.xfail(
-                    reason="legacy Python world2graph mis-wires underground "
-                    "belts; Rust build_graph connects these — un-xfail after "
-                    "the #178 migration",
-                    strict=False,
-                )
-            ]
-        params.append(pytest.param(kind, marks=marks, id=kind.name))
-    return params
-
-
 class TestGeneratedWorldConnectivity:
     """For known-correct factories, every source reaches some sink and every
-    sink is reached by some source through the constructed graph."""
+    sink is reached by some source through the constructed graph. Holds for
+    *all* lesson kinds — including the underground lessons the legacy Python
+    world2graph mis-wired — now that build_factory_graph runs on the Rust
+    engine (issue #178)."""
 
-    @pytest.mark.parametrize("kind", _connectivity_params())
+    @pytest.mark.parametrize("kind", _CONNECTIVITY_KINDS, ids=lambda k: k.name)
     @pytest.mark.parametrize("seed", range(12))
     def test_every_source_reaches_a_sink(self, kind, seed):
         graph = _graph_of_generated(kind, seed)
