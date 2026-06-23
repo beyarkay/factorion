@@ -1237,6 +1237,27 @@ def funge_throughput(world, debug=False):
     return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
 
+def build_graph_nx(world_WHC):
+    """Build the factory connection graph as a networkx ``DiGraph``.
+
+    The Rust engine (``factorion_rs.py_build_graph``) is the single source of
+    truth for entity connectivity; this thin wrapper rebuilds its
+    ``(node_labels, edges)`` output into a ``networkx`` graph for connectivity
+    queries and drawing/layout. Nodes are labelled
+    ``f"{entity_name}\\n@{x},{y}"`` and edges follow the engine's
+    entity-connection rules.
+
+    Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
+    ``factorion_rs.simulate_throughput`` takes.
+    """
+    arr = world_WHC.numpy() if hasattr(world_WHC, "numpy") else np.asarray(world_WHC)
+    nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64))
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
+    G.add_edges_from((nodes[i], nodes[j]) for i, j in edges)
+    return G
+
+
 def world2graph(world_WHC, debug=False):
     assert torch.is_tensor(world_WHC), (
         f"world is {type(world_WHC)}, not a tensor"

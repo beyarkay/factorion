@@ -147,6 +147,42 @@ class TestBuildWorld:
             fb.Footprint.UNAVAILABLE.value
 
 
+# ── Graph rendering (Rust-backed) ───────────────────────────────────────────
+
+class TestRenderGraphPng:
+    """render_graph_png builds the flow graph via the Rust engine
+    (build_graph_nx) and draws it. These cover the migrated visualization
+    path end-to-end (issue #178)."""
+
+    def test_empty_grid_reports_nothing_placed(self):
+        out = fb.render_graph_png(_empty_grid(4))
+        assert out["png"] == ""
+        assert out["edges"] == []
+        assert "drop something" in out["info"].lower()
+
+    def test_belt_chain_renders_png_and_edges(self):
+        grid = _empty_grid(4)
+        grid[0][0] = {"entity": "stack_inserter", "direction": "EAST",
+                      "item": "copper_cable", "misc": "NONE",
+                      "footprint": "AVAILABLE"}
+        grid[0][1] = {"entity": "transport_belt", "direction": "EAST",
+                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+        grid[0][2] = {"entity": "transport_belt", "direction": "EAST",
+                      "item": "empty", "misc": "NONE", "footprint": "AVAILABLE"}
+        grid[0][3] = {"entity": "bulk_inserter", "direction": "EAST",
+                      "item": "copper_cable", "misc": "NONE",
+                      "footprint": "AVAILABLE"}
+        out = fb.render_graph_png(grid)
+        # A non-empty PNG was produced and throughput was computed.
+        assert len(out["png"]) > 0
+        assert "throughput" in out["info"]
+        # Edges are repr()'d (node names embed a literal newline). The
+        # source→belt→belt→sink chain must be present.
+        flat = " ".join(u + " " + v for u, v in out["edges"])
+        assert "stack_inserter" in flat and "bulk_inserter" in flat
+        assert flat.count("transport_belt") >= 3
+
+
 # ── Model loading + cache ───────────────────────────────────────────────────
 
 class TestCheckpointLoading:
