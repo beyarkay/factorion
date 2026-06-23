@@ -130,16 +130,16 @@ class GRPOArgs:
     [num_missing_min, cap] so groups straddle the success boundary."""
 
     # ── end-of-turn (EOT) ────────────────────────────────────────────────
-    # EOT is a real action (Discrete(2)) the env consumes: terminated when the
-    # agent emits eot=1, else truncated at max_steps. With the per-step penalty
-    # the env *can* now reward stopping early (once the factory can't improve),
-    # so EOT is genuinely learnable here — unlike the pre-rebase reward. v1
-    # keeps it OFF (honor_eot=False): eot is forced to 0, excluded from the
-    # objective, episodes run to max_steps and collect the terminal throughput
-    # reward on truncation. Flip --honor-eot to sample+train it. Tracking +
-    # rationale: https://github.com/beyarkay/factorion/issues/181
-    honor_eot: bool = False
+    # EOT is a real action (Discrete(2)) the env consumes: the episode
+    # terminates when the agent emits eot=1, else truncates at max_steps. We
+    # always obey it — eot is sampled as part of the action, its log-prob is
+    # part of the GRPO objective, and the env stops on it. Because the reward
+    # charges a per-step penalty and pays the terminal throughput reward, the
+    # policy is incentivised to emit eot as soon as the factory can't improve,
+    # so learning *when* to stop is part of the task.
     eot_threshold: float = 0.5
+    """greedy-eval only: stop when sigmoid(eot_logit) > threshold (argmax of
+    the Bernoulli). Training samples eot, so the threshold doesn't apply there."""
 
     # ── held-out eval ────────────────────────────────────────────────────
     eval_every: int = 10
@@ -222,7 +222,6 @@ def policy_step(
     temperature: float = 1.0,
     action_B7: Optional[torch.Tensor] = None,
     generator: Optional[torch.Generator] = None,
-    include_eot: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Temperature-aware replication of AgentCNN.get_action_and_value's action
     path. Sampling (action_B7=None) and scoring (action_B7 given) share ONE
@@ -231,16 +230,14 @@ def policy_step(
     new-logp and ref-logp describe the same temperature-T policy.
 
     We deliberately do NOT call agent.get_action_and_value: it has no
-    temperature knob and also computes the (unused) value head. At T=1.0 with
-    include_eot=True this is numerically identical to get_action_and_value's
-    logp/entropy.
+    temperature knob and also computes the (unused) value head. At T=1.0 this
+    is numerically identical to get_action_and_value's logp/entropy.
 
     Action layout (B, 7) int columns: [x, y, entity, direction, item, misc, eot]
     — the convention the env's step() and get_action_and_value's scoring path
-    use. logp/entropy sum the 5 categorical heads (tile, entity, dir, item,
-    misc) plus, iff include_eot, the EOT Bernoulli. With include_eot=False the
-    EOT column is forced to 0 and left out of the objective entirely (v1
-    behaviour: the agent never stops early and eot is never RL-trained).
+    use. logp/entropy sum all 6 heads: the 5 categorical heads (tile, entity,
+    dir, item, misc) plus the EOT Bernoulli — EOT is always part of the action
+    and the objective.
     """
     encoded_BCWH = agent.encoder(obs_BCWH)
     B = encoded_BCWH.shape[0]
@@ -277,10 +274,7 @@ def policy_step(
         dir_B = _sample_categorical(dir_logits, generator)
         item_B = _sample_categorical(item_logits, generator)
         misc_B = _sample_categorical(misc_logits, generator)
-        if include_eot:
-            eot_B = _sample_bernoulli(eot_logit_B, generator)
-        else:
-            eot_B = torch.zeros(B, device=encoded_BCWH.device)
+        eot_B = _sample_bernoulli(eot_logit_B, generator)
     else:
         ent_B = action_B7[:, 2]
         dir_B = action_B7[:, 3]
@@ -294,6 +288,7 @@ def policy_step(
         + dist_d.log_prob(dir_B)
         + dist_i.log_prob(item_B)
         + dist_m.log_prob(misc_B)
+        + dist_eot.log_prob(eot_B)
     )
     entropy_B = (
         dist_tile.entropy()
@@ -301,10 +296,8 @@ def policy_step(
         + dist_d.entropy()
         + dist_i.entropy()
         + dist_m.entropy()
+        + dist_eot.entropy()
     )
-    if include_eot:
-        logp_B = logp_B + dist_eot.log_prob(eot_B)
-        entropy_B = entropy_B + dist_eot.entropy()
 
     out_B7 = torch.stack(
         [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B.long()], dim=1
@@ -409,8 +402,8 @@ def collect_rollout(
     belongs to grid g, so the Dr. GRPO baseline is computed over completions of
     the *same* grid. Finished lanes are masked out — they keep getting fed
     through the batched forward (cheap; episodes are short) but store no further
-    transitions and are never stepped again. Episodes end on eot (only when
-    honor_eot) or max_steps; either way the env pays the terminal throughput
+    transitions and are never stepped again. Episodes end when the agent emits
+    eot=1 or at max_steps; either way the env pays the terminal throughput
     reward, so the summed reward R_i is a complete episode return."""
     G = args.group_size
     B = len(grids) * G
@@ -459,18 +452,10 @@ def collect_rollout(
                 break
             obs_batch = torch.as_tensor(obs_B, dtype=torch.float32, device=device)
             action_B7, logp_B, _ent = policy_step(
-                policy,
-                obs_batch,
-                temperature=T,
-                generator=generator,
-                include_eot=args.honor_eot,
+                policy, obs_batch, temperature=T, generator=generator
             )
             _a, ref_logp_B, _e = policy_step(
-                ref,
-                obs_batch,
-                temperature=T,
-                action_B7=action_B7,
-                include_eot=args.honor_eot,
+                ref, obs_batch, temperature=T, action_B7=action_B7
             )
 
             for lane in range(B):
@@ -644,9 +629,8 @@ def greedy_eval(
     """Batched greedy rollout on held-out grids (argmax every head), mirroring
     sft.run_rollout_eval but self-contained and using the GRPO horizon.
 
-    EOT is emitted (argmax → eot_prob>threshold) only when args.honor_eot, so
-    the regime matches training; otherwise the env truncates at max_steps.
-    Reports:
+    EOT is emitted greedily (eot_prob > eot_threshold), so the policy decides
+    when to stop just as in training (which samples it). Reports:
       - eval/throughput: mean final thput_normed (the real objective)
       - eval/success_rate: fraction that fully rebuild (thput_normed>=1)
       - eval/dir_acc_vs_ref: mean tile_match_direction (REPORTED, NOT a target
@@ -692,10 +676,7 @@ def greedy_eval(
                 dir_ = policy.dir_head(feats).argmax(dim=1)
                 item = policy.item_head(feats).argmax(dim=1)
                 misc = policy.misc_head(feats).argmax(dim=1)
-                if args.honor_eot:
-                    eot = torch.sigmoid(policy.eot_head(encoded).squeeze(-1)) > args.eot_threshold
-                else:
-                    eot = torch.zeros(n, dtype=torch.bool)
+                eot = torch.sigmoid(policy.eot_head(encoded).squeeze(-1)) > args.eot_threshold
 
                 for i in range(n):
                     if not active[i]:
@@ -750,10 +731,10 @@ def grpo_update(
 
         kl = exp(ref - new) - (ref - new) - 1   (>= 0, estimates KL(pi||ref))
 
-    where `new` carries gradient and the stored `ref` is constant. include_eot
-    matches the rollout (args.honor_eot) so logp is computed over exactly the
-    action components that were sampled. No critic, no minibatching — the batch
-    is small (sim-bound), so each epoch is a full-batch step."""
+    where `new` carries gradient and the stored `ref` is constant. logp covers
+    all 6 heads including EOT, exactly as sampled in the rollout. No critic, no
+    minibatching — the batch is small (sim-bound), so each epoch is a full-batch
+    step."""
     N = batch.obs_NCWH.shape[0]
     if N == 0:
         return {"loss/total": float("nan"), "grpo/n_transitions": 0}
@@ -769,7 +750,6 @@ def grpo_update(
             batch.obs_NCWH,
             temperature=args.temperature,
             action_B7=batch.actions_N7,
-            include_eot=args.honor_eot,
         )
         logratio_N = new_logp_N - old_logp_N
         ratio_N = logratio_N.exp()
@@ -941,7 +921,6 @@ def train_grpo(args: GRPOArgs) -> AgentCNN:
         "temperature": args.temperature,
         "beta_kl": args.beta_kl,
         "learning_rate": args.learning_rate,
-        "honor_eot": args.honor_eot,
         "samples_seen": samples_seen,
         "final_eval_throughput": final_eval.get("eval/throughput"),
         "final_eval_success_rate": final_eval.get("eval/success_rate"),

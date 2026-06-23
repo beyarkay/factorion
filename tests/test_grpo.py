@@ -128,8 +128,9 @@ class TestPolicyStep:
         return agent, obs
 
     def test_t1_matches_native_logp_and_entropy(self, registered_env):
-        """At T=1.0 with include_eot, scoring an action with policy_step yields
-        the same logp/entropy get_action_and_value reports for that action."""
+        """At T=1.0, scoring an action with policy_step yields the same
+        logp/entropy get_action_and_value reports for that action (both include
+        the EOT Bernoulli)."""
         agent, obs = self._agent_and_obs()
         agent.eval()
         with torch.no_grad():
@@ -149,7 +150,7 @@ class TestPolicyStep:
                 dim=1,
             )
             _out, logp_mine, ent_mine = policy_step(
-                agent, obs, temperature=1.0, action_B7=action_B7, include_eot=True
+                agent, obs, temperature=1.0, action_B7=action_B7
             )
         assert torch.allclose(logp_mine, logp_native, atol=1e-5), (logp_mine, logp_native)
         assert torch.allclose(ent_mine, ent_native, atol=1e-5)
@@ -161,38 +162,31 @@ class TestPolicyStep:
         gen = torch.Generator().manual_seed(7)
         with torch.no_grad():
             action_B7, logp_sampled, _e = policy_step(
-                agent, obs, temperature=1.3, generator=gen, include_eot=True
+                agent, obs, temperature=1.3, generator=gen
             )
             _out, logp_scored, _e2 = policy_step(
-                agent, obs, temperature=1.3, action_B7=action_B7, include_eot=True
+                agent, obs, temperature=1.3, action_B7=action_B7
             )
         assert torch.allclose(logp_sampled, logp_scored, atol=1e-6)
 
-    def test_action_is_7_wide(self, registered_env):
+    def test_action_is_7_wide_with_eot(self, registered_env):
         agent, obs = self._agent_and_obs(seed=4)
         with torch.no_grad():
-            action_B7, _lp, _e = policy_step(agent, obs, include_eot=True)
+            action_B7, _lp, _e = policy_step(agent, obs)
         assert action_B7.shape == (obs.shape[0], 7)
+        assert set(action_B7[:, 6].tolist()) <= {0, 1}  # eot column is binary
 
-    def test_include_eot_false_forces_eot_zero_and_excludes_it(self, registered_env):
-        """With include_eot=False the sampled eot column is 0 and the logp
-        excludes the EOT term (so it equals the 5-head sum)."""
+    def test_logp_depends_on_eot(self, registered_env):
+        """EOT is always part of the objective: flipping the scored eot bit
+        changes the logp (the EOT Bernoulli term is included)."""
         agent, obs = self._agent_and_obs(seed=5)
+        a0 = _dummy_action(obs)  # eot=0
+        a1 = a0.clone()
+        a1[:, 6] = 1  # eot=1
         with torch.no_grad():
-            action_B7, logp_no_eot, _e = policy_step(
-                agent, obs, include_eot=False, generator=torch.Generator().manual_seed(1)
-            )
-            # score the SAME action with and without the eot term
-            _o, logp_with_eot, _e2 = policy_step(
-                agent, obs, action_B7=action_B7, include_eot=True
-            )
-            _o, logp_excl_eot, _e3 = policy_step(
-                agent, obs, action_B7=action_B7, include_eot=False
-            )
-        assert (action_B7[:, 6] == 0).all()
-        assert torch.allclose(logp_no_eot, logp_excl_eot, atol=1e-6)
-        # the eot term is nonzero in general, so including it changes logp
-        assert not torch.allclose(logp_with_eot, logp_excl_eot)
+            _o, logp0, _e = policy_step(agent, obs, action_B7=a0)
+            _o, logp1, _e2 = policy_step(agent, obs, action_B7=a1)
+        assert not torch.allclose(logp0, logp1)
 
     def test_temperature_increases_entropy(self, registered_env):
         agent, obs = self._agent_and_obs(seed=2)
@@ -219,14 +213,13 @@ class TestSelectGrids:
 
 
 class TestCollectRollout:
-    def _rollout(self, size=5, num_grids=2, group_size=3, seed=0, honor_eot=False):
+    def _rollout(self, size=5, num_grids=2, group_size=3, seed=0):
         args = GRPOArgs(
             size=size,
             num_grids=num_grids,
             group_size=group_size,
             num_missing_max=2,
             temperature=1.2,
-            honor_eot=honor_eot,
             start_from="x",
             layers=TINY_LAYERS,
         )
@@ -260,10 +253,24 @@ class TestCollectRollout:
             assert 1 <= n <= max_transitions
         assert batch.obs_NCWH.shape[0] == int(batch.steps_B.sum())
 
-    def test_eot_off_runs_to_max_steps(self, registered_env):
-        """With honor_eot=False no lane terminates via eot."""
-        _args, batch = self._rollout(honor_eot=False)
-        assert float(batch.eot_terminated_B.sum()) == 0.0
+    def test_eot_is_always_obeyed(self, registered_env):
+        """Force the eot head to always fire -> every lane terminates via eot
+        on its first step (the env stops on eot=1)."""
+        size = 5
+        policy = _tiny_agent(size)
+        ref = _tiny_agent(size)
+        with torch.no_grad():
+            policy.eot_head[1].bias.fill_(50.0)  # sigmoid(50) ~ 1 -> eot=1
+        args = GRPOArgs(
+            size=size, num_grids=2, group_size=2, num_missing_max=2,
+            start_from="x", layers=TINY_LAYERS,
+        )
+        grids = select_grids(args, random.Random(0))
+        gen = torch.Generator().manual_seed(0)
+        batch = collect_rollout(policy, ref, args, grids, torch.device("cpu"), gen)
+        B = args.num_grids * args.group_size
+        assert float(batch.eot_terminated_B.sum()) == B  # all stopped via eot
+        assert int(batch.steps_B.max()) == 1  # eot fired on the first step
 
     def test_shapes_consistent(self, registered_env):
         args, batch = self._rollout()
