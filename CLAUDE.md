@@ -42,7 +42,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - `scripts/factory_builder.py` — Local HTTP UI to hand-build factories and query a checkpoint's predictions. Shares `_resolve_wandb_checkpoint` with `ppo.py`.
 - `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py`/`apply_sft_sweep_best.py` (W&B sweeps → PR), `runpod_create.py`/`runpod_destroy.py`.
 - `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
-- `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config (PPO; metric `curriculum/score`).
+- `sweep.yaml` — W&B Bayesian sweep config: PPO RL-finetuning from the SFT base, maximising `eval/throughput_eot`. Pins the SFT checkpoint/architecture/timesteps in `command`; sweeps the RL levers (step_penalty, ent_coef, lr, throughput_reward_scale, target_kl, gamma, gae_lambda).
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
 - `factorio-data/` — Git submodule with Factorio game data.
 - `factorio-icons/` — Entity icon PNGs.
