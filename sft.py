@@ -214,7 +214,7 @@ class SFTArgs:
     eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/throughput_eot)"""
+    """EOT-head prob above which we mark the model "would stop" (for val/thput_eot)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     # CNN encoder width per layer slot (see ppo.layers_from_args). A slot of 0
@@ -481,7 +481,7 @@ def run_rollout_eval(
     final throughput. The mean of those snapshots is `overall_eot`.
 
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
-    in `val/throughput` over training is directly comparable to the
+    in `val/thput` over training is directly comparable to the
     existing per-kind val accuracy curves.
 
     Returns a dict with:
@@ -1462,7 +1462,7 @@ def train_sft(args: SFTArgs):
 
         # Rollout eval: every N epochs greedy-play the held-out factories
         # and record final throughput. Same lessons as val accuracy, so
-        # val/throughput is directly comparable to val/acc curves.
+        # val/thput is directly comparable to val/acc curves.
         do_rollout = args.eval_rollouts_every_n_epochs > 0 and (
             epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs
         )
@@ -1480,18 +1480,18 @@ def train_sft(args: SFTArgs):
             rollout_seconds = time.time() - t_rollout
             overall_thp = roll["overall"]
             per_kind_thp_n = roll["per_kind_n"]
-            # val/throughput ignores the EOT head (true build skill, and the
-            # default checkpoint-selection metric); val/throughput_eot stops
+            # val/thput ignores the EOT head (true build skill, and the
+            # default checkpoint-selection metric); val/thput_eot stops
             # at the first EOT fire (what the model's own stop head produces).
-            per_kind_metrics["val/throughput"] = overall_thp
-            per_kind_metrics["val/throughput_eot"] = roll["overall_eot"]
+            per_kind_metrics["val/thput"] = overall_thp
+            per_kind_metrics["val/thput_eot"] = roll["overall_eot"]
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/throughput"] = thp
+                    per_kind_metrics[f"val/{kn}/thput"] = thp
             for kn, thp in roll["per_kind_eot"].items():
                 if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/throughput_eot"] = thp
+                    per_kind_metrics[f"val/{kn}/thput_eot"] = thp
         else:
             overall_thp = None
             rollout_seconds = None
@@ -1533,7 +1533,7 @@ def train_sft(args: SFTArgs):
             # across proportionally different x-ranges. Crucially, _step is
             # the axis EVERY default panel plots against — including ones
             # already pinned to "Step" in an existing workspace — so this
-            # fixes panels (e.g. val/<kind>/throughput) that define_metric's
+            # fixes panels (e.g. val/<kind>/thput) that define_metric's
             # step_metric alone could not retarget. samples_seen rather than
             # global_step because it stays comparable across batch_size
             # changes; both are still logged as metrics so either can be
@@ -1595,7 +1595,7 @@ def train_sft(args: SFTArgs):
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)
             ever_saved = True
-            print(f"  -> Saved best checkpoint (val/throughput {overall_thp:.3f})")
+            print(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
 
     if not ever_saved:
         # Rollouts disabled or no val factories — fall back to the final model
@@ -1603,7 +1603,7 @@ def train_sft(args: SFTArgs):
         torch.save(agent.state_dict(), args.checkpoint_path)
     total_time = time.time() - t0
     print(
-        f"\nBest val/throughput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
+        f"\nBest val/thput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
     )
     print(f"Checkpoint saved to: {args.checkpoint_path}")
 

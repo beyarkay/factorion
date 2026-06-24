@@ -3,7 +3,7 @@
 method: bayes
 run_cap: 30
 metric:
-  name: "eval/throughput_eot"
+  name: "eval/thput_eot"
   goal: maximize
 
 parameters:

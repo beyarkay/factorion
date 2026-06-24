@@ -147,7 +147,7 @@ class Args:
     critic_warmup: int = 0
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
     eval_every: int = 7
-    """Run the greedy held-out eval (eval/throughput, eval/throughput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
+    """Run the greedy held-out eval (eval/thput, eval/thput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
@@ -204,7 +204,7 @@ def _build_eval_set(args) -> dict:
 
 
 def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/throughput[_eot] so
+    """Greedy held-out throughput eval, mirroring SFT's val/thput[_eot] so
     the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
@@ -224,16 +224,55 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         num_envs=args.eval_num_envs,
     )
     metrics = {
-        "eval/throughput": roll["overall"],
-        "eval/throughput_eot": roll["overall_eot"],
+        "eval/thput": roll["overall"],
+        "eval/thput_eot": roll["overall_eot"],
     }
     for kn, thp in roll["per_kind"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
-            metrics[f"eval/{kn}/throughput"] = thp
+            metrics[f"eval/{kn}/thput"] = thp
     for kn, thp in roll["per_kind_eot"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
-            metrics[f"eval/{kn}/throughput_eot"] = thp
+            metrics[f"eval/{kn}/thput_eot"] = thp
     return metrics
+
+
+def _rollout_episode_metrics(
+    lesson: str,
+    *,
+    episode_return: float,
+    episode_len: float,
+    thput_normed: float,
+    thput_raw: float,
+    ended_by_eot: float,
+    invalid_frac: float,
+    num_entities: float,
+    min_entities_required: float,
+    frac_reachable: float,
+) -> dict:
+    """Build the rollout/* metrics for one finished episode (overall + per-lesson).
+
+    Pure (no wandb/torch) so it can be unit-tested. The per-lesson keys carry
+    the lesson name, so each averages over only that lesson's episodes. Both the
+    overall and per-lesson views log thput_raw (items/s) alongside the
+    normalized throughput, so lessons with very different ceilings (belts ~15/s
+    vs assemblers <1/s) stay comparable in raw terms.
+    """
+    return {
+        "rollout/thput": float(thput_normed),
+        "rollout/thput_raw": float(thput_raw),
+        "rollout/reward": float(episode_return),
+        "rollout/length": float(episode_len),
+        "rollout/eot_rate": float(ended_by_eot),
+        "rollout/invalid_frac": float(invalid_frac),
+        "rollout/num_entities": float(num_entities),
+        "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
+        "rollout/frac_reachable": float(frac_reachable),
+        # Per-lesson breakdown — each averages over only this lesson's episodes.
+        f"rollout/{lesson}/thput": float(thput_normed),
+        f"rollout/{lesson}/thput_raw": float(thput_raw),
+        f"rollout/{lesson}/reward": float(episode_return),
+        f"rollout/{lesson}/length": float(episode_len),
+    }
 
 
 def _resolve_wandb_checkpoint(
@@ -1236,18 +1275,18 @@ if __name__ == "__main__":
         # the headline progress signal, so it summarises to its max.
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
-        wandb.define_metric("eval/throughput", summary="max")
-        wandb.define_metric("eval/throughput_eot", summary="max")
+        wandb.define_metric("eval/thput", summary="max")
+        wandb.define_metric("eval/thput_eot", summary="max")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
-            wandb.define_metric(f"eval/{ln}/throughput", summary="max")
-            wandb.define_metric(f"eval/{ln}/throughput_eot", summary="max")
-        for m in ["throughput", "thput_raw", "reward", "length", "eot_rate",
+            wandb.define_metric(f"eval/{ln}/thput", summary="max")
+            wandb.define_metric(f"eval/{ln}/thput_eot", summary="max")
+        for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
-            for m in ["throughput", "reward", "length"]:
+            for m in ["thput", "thput_raw", "reward", "length"]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
             wandb.define_metric(f"policy/{m}", summary="last")
@@ -1399,7 +1438,7 @@ if __name__ == "__main__":
         return means
 
     # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
-    # eval/* — directly comparable to the SFT baseline's val/throughput[_eot].
+    # eval/* — directly comparable to the SFT baseline's val/thput[_eot].
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
@@ -1513,22 +1552,18 @@ if __name__ == "__main__":
 
                     end_of_episode_thputs.append(end_of_episode_thput)
 
-                    _record_episode({
-                        "rollout/throughput": float(end_of_episode_thput),
-                        "rollout/thput_raw": float(end_of_episode_thput_raw),
-                        "rollout/reward": float(episode_return),
-                        "rollout/length": float(episode_len),
-                        "rollout/eot_rate": ended_by_eot,
-                        "rollout/invalid_frac": float(infos['frac_invalid_actions'][i]),
-                        "rollout/num_entities": float(infos['num_entities'][i]),
-                        "rollout/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
-                        "rollout/frac_reachable": float(infos["frac_reachable"][i]),
-                        # Per-lesson breakdown — each averages over only this
-                        # lesson's episodes (the key is recorded just for them).
-                        f"rollout/{lesson}/throughput": float(end_of_episode_thput),
-                        f"rollout/{lesson}/reward": float(episode_return),
-                        f"rollout/{lesson}/length": float(episode_len),
-                    })
+                    _record_episode(_rollout_episode_metrics(
+                        lesson,
+                        episode_return=episode_return,
+                        episode_len=episode_len,
+                        thput_normed=end_of_episode_thput,
+                        thput_raw=end_of_episode_thput_raw,
+                        ended_by_eot=ended_by_eot,
+                        invalid_frac=infos['frac_invalid_actions'][i],
+                        num_entities=infos['num_entities'][i],
+                        min_entities_required=infos['min_entities_required'][i],
+                        frac_reachable=infos["frac_reachable"][i],
+                    ))
 
         rollout_seconds = time.time() - rollout_start
 
