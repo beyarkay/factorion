@@ -15,7 +15,7 @@
 method: bayes
 run_cap: 30
 metric:
-  name: "eval/throughput_eot"   # greedy held-out, EOT-respecting; beat ~0.11
+  name: "rollout/reward"
   goal: maximize
 
 parameters:
@@ -73,7 +73,7 @@ command:
   - --size
   - "11"
   - --total-timesteps
-  - "500000"          # plenty per the baseline run
+  - "2500000"          # plenty per the baseline run
   - --critic-warmup
   - "10"
   - --eval-every
