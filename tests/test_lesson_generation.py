@@ -2413,3 +2413,228 @@ class TestFullBlankActuallyEmptiesWorld:
         assert int(inf_world[Channel.ENTITIES.value].count_nonzero()) == int(
             fin_world[Channel.ENTITIES.value].count_nonzero()
         )
+
+
+# ── MOVE_ONE_ITEM_CHAOS ──────────────────────────────────────────────────────
+#
+# MOVE_ONE_ITEM_CHAOS is like MOVE_ONE_ITEM, but the belt run is routed
+# through a random intermediate waypoint (a deliberately suboptimal path),
+# and only the intermediate→sink belts are removable. The source→intermediate
+# stub is protected and survives even a full (`inf`) blank, so the model
+# always starts from a bad partial layout and must finish the route to the
+# sink.
+
+
+class TestMoveOneItemChaosBasic:
+    """Basic sanity checks for MOVE_ONE_ITEM_CHAOS lesson generation."""
+
+    def test_generates_without_error(self):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=42
+        )
+        assert factory is not None
+        world, min_ent = blank_entities(factory, num_missing_entities=0)
+        assert world is not None
+        assert min_ent is not None
+
+    def test_returns_cwh_tensor(self):
+        size = 11
+        factory = build_factory(
+            size=size, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=42
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        assert world.shape[0] == len(Channel)
+        assert world.shape[1] == size
+        assert world.shape[2] == size
+
+    def test_has_one_source_one_sink(self):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=42
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        ent_layer = world[Channel.ENTITIES.value]
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
+
+    def test_has_belts(self):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=42
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        ent_layer = world[Channel.ENTITIES.value]
+        belt_count = (ent_layer == str2ent("transport_belt").value).sum().item()
+        assert belt_count >= 2, f"Expected at least 2 belts, got {belt_count}"
+
+    def test_source_sink_items_match(self):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=42
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        ent_layer = world[Channel.ENTITIES.value]
+        item_layer = world[Channel.ITEMS.value]
+        src = (ent_layer == str2ent("source").value).nonzero(as_tuple=False)[0]
+        snk = (ent_layer == str2ent("sink").value).nonzero(as_tuple=False)[0]
+        src_item = item_layer[src[0], src[1]].item()
+        snk_item = item_layer[snk[0], snk[1]].item()
+        assert src_item != str2item("empty").value
+        assert src_item == snk_item
+
+
+class TestMoveOneItemChaosManySeeds:
+    """Generate many lessons with different seeds and verify all are valid."""
+
+    @pytest.mark.parametrize("seed", range(50))
+    def test_size_11_seed(self, seed):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+    @pytest.mark.parametrize("size", [8, 10, 12, 15])
+    def test_grid_sizes(self, size):
+        factory = build_factory(
+            size=size, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=7
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
+        assert tp > 0
+
+
+class TestMoveOneItemChaosEntityDirections:
+    """All placed entities must have a non-NONE direction."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_all_entities_have_directions(self, seed):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        ent_layer = world[Channel.ENTITIES.value]
+        dir_layer = world[Channel.DIRECTION.value]
+        for x in range(world.shape[1]):
+            for y in range(world.shape[2]):
+                ent_val = ent_layer[x, y].item()
+                if ent_val != str2ent("empty").value:
+                    assert dir_layer[x, y].item() != Direction.NONE.value, (
+                        f"seed={seed}: entity {entities[ent_val].name} at "
+                        f"({x},{y}) has NONE direction"
+                    )
+
+
+class TestMoveOneItemChaosNoOverlaps:
+    """Verify no entity overlaps in generated factories."""
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_no_double_placement(self, seed):
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=0)
+        ent_layer = world[Channel.ENTITIES.value]
+        occupied = []
+        for x in range(world.shape[1]):
+            for y in range(world.shape[2]):
+                if ent_layer[x, y].item() != str2ent("empty").value:
+                    occupied.append((x, y))
+        assert len(occupied) == len(set(occupied)), (
+            f"seed={seed}: duplicate positions"
+        )
+
+
+class TestMoveOneItemChaosDeterminism:
+    """Same seed produces identical results."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 42, 99])
+    def test_deterministic(self, seed):
+        f1 = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        f2 = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert f1 is not None and f2 is not None
+        w1, m1 = blank_entities(f1, num_missing_entities=0)
+        w2, m2 = blank_entities(f2, num_missing_entities=0)
+        assert torch.equal(w1, w2), f"seed={seed}: not deterministic"
+        assert m1 == m2
+
+
+class TestMoveOneItemChaosProtectedStub:
+    """The defining property of MOVE_ONE_ITEM_CHAOS: only the
+    intermediate→sink belts are removable. The source→intermediate stub is
+    protected and survives even a full (`inf`) blank, so the model always
+    starts from a suboptimal partial layout with real work left to do."""
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_protected_positions_nonempty(self, seed):
+        """A chaos lesson always has a protected source→intermediate stub."""
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        assert len(factory.protected_positions) > 0, (
+            f"seed={seed}: no protected stub — nothing distinguishes this "
+            f"from MOVE_ONE_ITEM"
+        )
+
+    @pytest.mark.parametrize("seed", range(20))
+    @pytest.mark.parametrize("num_missing", [1, 5, 100, float("inf")])
+    def test_protected_stub_never_blanked(self, seed, num_missing):
+        """The protected source→intermediate belts must remain at every
+        removal count, including a full blank."""
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        world, _ = blank_entities(factory, num_missing_entities=num_missing)
+        ent_layer = world[Channel.ENTITIES.value]
+        belt_val = str2ent("transport_belt").value
+        for (x, y) in factory.protected_positions:
+            assert ent_layer[x, y].item() == belt_val, (
+                f"seed={seed}, num_missing={num_missing}: protected stub "
+                f"belt at ({x},{y}) was blanked"
+            )
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_full_blank_leaves_only_protected_stub(self, seed):
+        """A full (`inf`) blank strips exactly the intermediate→sink belts,
+        leaving source, sink, and the protected stub. The remaining belts
+        must equal the protected set, and the partial must carry zero
+        throughput (the model has a route to finish)."""
+        factory = build_factory(
+            size=11, kind=LessonKind.MOVE_ONE_ITEM_CHAOS, seed=seed
+        )
+        assert factory is not None
+        solved_belts = (
+            factory.world_CWH[Channel.ENTITIES.value]
+            == str2ent("transport_belt").value
+        ).sum().item()
+
+        partial, removed = blank_entities(
+            factory, num_missing_entities=float("inf")
+        )
+        ent_layer = partial[Channel.ENTITIES.value]
+        belts_left = (ent_layer == str2ent("transport_belt").value).sum().item()
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
+        # Only the protected stub remains; the rest was removed.
+        assert belts_left == len(factory.protected_positions)
+        assert removed > 0
+        assert removed == solved_belts - belts_left
+        # The stub goes source→intermediate but stops short of the sink,
+        # so the partial cannot deliver anything.
+        tp, _ = rs_throughput(partial.permute(1, 2, 0))
+        assert tp == 0.0, (
+            f"seed={seed}: partial still carries throughput {tp} — the "
+            f"protected stub should not reach the sink"
+        )

@@ -154,6 +154,7 @@ class LessonKind(Enum):
     MOVE_VIA_UG_BELT = 6
     ASSEMBLE_2IN_1OUT = 7
     FROM_BLUEPRINT = 8
+    MOVE_ONE_ITEM_CHAOS = 9
 
 
 @dataclass(frozen=True)
@@ -1451,6 +1452,139 @@ def build_factory(
                 continue
 
             total_entities = len(chosen_path)
+            break
+        if count == 0:
+            return None
+    elif kind.value == LessonKind.MOVE_ONE_ITEM_CHAOS.value:
+        # Like MOVE_ONE_ITEM, but the belt run is deliberately routed
+        # through a random intermediate waypoint, so the source→sink
+        # route is suboptimal. Crucially, only the intermediate→sink
+        # belts are left removable (via ``protected_positions``); the
+        # source→intermediate belts (up to and including the
+        # intermediate tile) are protected and survive even a full
+        # (``inf``) blank. The model therefore always starts from this
+        # bad partial layout — a suboptimal stub already laid out from
+        # the source — and must still complete the route to the sink.
+        # This trains robustness to suboptimal upstream placement.
+        original_count = max(500, size * size * 4)
+        count = original_count
+        while count > 0:
+            count -= 1
+            world_CWH = torch.tensor(
+                new_world(width=size, height=size)
+            ).permute(2, 0, 1)
+            C, W, H = world_CWH.shape
+
+            pos1 = torch.randint(0, H * W, (1,))
+            pos2 = torch.randint(0, H * W, (1,))
+            if pos1 == pos2:
+                continue
+            source_WH = divmod(pos1.item(), W)
+            sink_WH = divmod(pos2.item(), W)
+
+            source_dir = random.choice(
+                [d for d in Direction if d != Direction.NONE]
+            )
+            sink_dir = random.choice(
+                [d for d in Direction if d != Direction.NONE]
+            )
+
+            if random_item:
+                item_value = random.choice(
+                    [v.value for k, v in items.items() if v.name != "empty"]
+                )
+            else:
+                item_value = str2item("electronic_circuit").value
+
+            # The belt run starts at the source's output cell and ends at
+            # the sink's input cell (one step ahead of / behind each,
+            # respectively, in its facing direction).
+            ds = DIR_TO_DELTA[source_dir]
+            dk = DIR_TO_DELTA[sink_dir]
+            start = (source_WH[0] + ds[0], source_WH[1] + ds[1])
+            end = (sink_WH[0] - dk[0], sink_WH[1] - dk[1])
+
+            fixed = {source_WH, sink_WH}
+            if not (0 <= start[0] < W and 0 <= start[1] < H):
+                continue
+            if not (0 <= end[0] < W and 0 <= end[1] < H):
+                continue
+            if start in fixed or end in fixed or start == end:
+                continue
+
+            # Pick a random intermediate waypoint distinct from the
+            # source/sink and from the belt-run endpoints.
+            reserved = fixed | {start, end}
+            mid_candidates = [
+                (x, y)
+                for x in range(W)
+                for y in range(H)
+                if (x, y) not in reserved
+            ]
+            if not mid_candidates:
+                continue
+            mid = random.choice(mid_candidates)
+
+            # Segment A: source output → intermediate (protected later).
+            # Block the source/sink and the sink-input cell so the two
+            # segments stay disjoint and the chain is single-threaded.
+            belts_a = find_belt_path(W, H, start, mid, source_dir, fixed | {end})
+            if belts_a is None:
+                continue
+            cells_a = [(x, y) for x, y, _ in belts_a]
+
+            # Segment B: intermediate → sink input (removable). Block all
+            # of segment A except the shared ``mid`` start so B can't
+            # double back through the protected stub.
+            blocked_b = fixed | (set(cells_a) - {mid})
+            belts_b = find_belt_path(W, H, mid, end, sink_dir, blocked_b)
+            if belts_b is None:
+                continue
+            cells_b = [(x, y) for x, y, _ in belts_b]
+
+            # Stitch the two cell runs (``mid`` is shared) and recompute
+            # belt directions over the whole chain so the junction belt at
+            # ``mid`` points along the flow into segment B.
+            full_cells = cells_a + cells_b[1:]
+            full_belts = _path_to_belts(full_cells, sink_dir)
+            if len(full_belts) > max_entities:
+                continue
+
+            world_CWH[Channel.ENTITIES.value, source_WH[0], source_WH[1]] = (
+                str2ent("source").value
+            )
+            world_CWH[Channel.ENTITIES.value, sink_WH[0], sink_WH[1]] = (
+                str2ent("sink").value
+            )
+            world_CWH[Channel.ITEMS.value, source_WH[0], source_WH[1]] = (
+                item_value
+            )
+            world_CWH[Channel.ITEMS.value, sink_WH[0], sink_WH[1]] = item_value
+            world_CWH[Channel.DIRECTION.value, source_WH[0], source_WH[1]] = (
+                source_dir.value
+            )
+            world_CWH[Channel.DIRECTION.value, sink_WH[0], sink_WH[1]] = (
+                sink_dir.value
+            )
+
+            for x, y, d in full_belts:
+                world_CWH[Channel.ENTITIES.value, x, y] = str2ent(
+                    "transport_belt"
+                ).value
+                world_CWH[Channel.DIRECTION.value, x, y] = d.value
+
+            tp, _ = factorion_rs.simulate_throughput(
+                world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
+            if tp <= 0:
+                continue
+
+            total_entities = len(full_belts)
+            # Protect the source→intermediate stub: every belt from the
+            # source output up to and including the intermediate tile is
+            # never blanked, so even a full blank only strips the
+            # intermediate→sink belts.
+            protected_positions = frozenset(cells_a)
             break
         if count == 0:
             return None
