@@ -15,7 +15,9 @@
 #   SWEEP_ID            - Full W&B sweep path (entity/project/sweep_id)
 #
 # Optional env vars:
-#   SWEEP_COUNT         - Number of iterations per agent process (default: 10)
+#   SWEEP_COUNT         - Max runs per agent process. Empty (default) = unbounded:
+#                         each agent keeps pulling runs until the sweep's run_cap
+#                         is reached or the job times out.
 #   AGENTS_PER_POD      - Number of parallel wandb agents on this pod (default: 1)
 #   WANDB_PROJECT       - W&B project name (default: factorion)
 #   PR_NUMBER           - PR number for tagging
@@ -27,7 +29,8 @@
 set -euo pipefail
 
 SWEEP_ID="${SWEEP_ID:?Must set SWEEP_ID (entity/project/sweep_id)}"
-SWEEP_COUNT="${SWEEP_COUNT:-10}"
+SWEEP_COUNT="${SWEEP_COUNT:-}"
+SWEEP_COUNT_DISPLAY="${SWEEP_COUNT:-unbounded (until run_cap)}"
 AGENTS_PER_POD="${AGENTS_PER_POD:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
@@ -40,7 +43,7 @@ echo "============================================"
 echo "  GPU:             $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  CUDA:            $(nvcc --version 2>/dev/null | tail -1 || echo 'unknown')"
 echo "  Sweep ID:        ${SWEEP_ID}"
-echo "  Iters/agent:     ${SWEEP_COUNT}"
+echo "  Runs/agent:      ${SWEEP_COUNT_DISPLAY}"
 echo "  Agents on pod:   ${AGENTS_PER_POD}"
 echo "  Pod ID:          ${AGENT_ID}"
 echo "  W&B project:     ${WANDB_PROJECT}"
@@ -48,11 +51,13 @@ echo "  PR:              ${PR_NUMBER}"
 echo "  Commit:          ${COMMIT_SHA}"
 echo "============================================"
 
-# ── Safety net: self-terminate after 4 hours if cleanup fails ─────
+# ── Safety net: self-terminate after 6.5 hours if cleanup fails ───
+# Backstop only — the GH job (timeout-minutes: 350) tears the pod down
+# first. This fires past the 6h GH hard limit only if that teardown fails.
 if [ -n "${RUNPOD_POD_ID:-}" ] && [ -n "${RUNPOD_API_KEY:-}" ]; then
-    echo ">>> Starting self-terminate watchdog (4h timeout)..."
+    echo ">>> Starting self-terminate watchdog (6.5h timeout)..."
     nohup bash -c "
-      sleep 14400
+      sleep 23400
       curl -s 'https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}' \
         -H 'Content-Type: application/json' \
         -d '{\"query\": \"mutation { podTerminate(input: {podId: \\\"${RUNPOD_POD_ID}\\\"}) }\"}'
@@ -91,20 +96,28 @@ chmod +x run_sweep.sh
 export WANDB_API_KEY
 
 echo ""
-echo ">>> Launching ${AGENTS_PER_POD} parallel W&B sweep agents (${SWEEP_COUNT} iterations each)..."
+echo ">>> Launching ${AGENTS_PER_POD} parallel W&B sweep agents (${SWEEP_COUNT_DISPLAY} runs each)..."
 echo ">>> Sweep: ${SWEEP_ID}"
 echo ""
 
 # ── Launch sweep agents in parallel ──────────────────────────────
 # Each agent process independently pulls work from the W&B sweep controller.
 # CUDA time-slices between processes, keeping GPU utilisation high.
+# Pass --count only when SWEEP_COUNT is set; empty = unbounded, so the agent
+# drains the sweep until run_cap is reached or the job times out.
+COUNT_ARGS=()
+if [ -n "$SWEEP_COUNT" ]; then
+    COUNT_ARGS=(--count "$SWEEP_COUNT")
+fi
+
 PIDS=()
 mkdir -p /workspace/agent_logs
 
 for i in $(seq 0 $((AGENTS_PER_POD - 1))); do
     LOG="/workspace/agent_logs/agent_${AGENT_ID}_${i}.log"
     echo ">>> Starting agent ${AGENT_ID}.${i} (log: ${LOG})"
-    wandb agent --count "$SWEEP_COUNT" "$SWEEP_ID" > "$LOG" 2>&1 &
+    # ${COUNT_ARGS[@]+...} guards empty-array expansion under `set -u`.
+    wandb agent ${COUNT_ARGS[@]+"${COUNT_ARGS[@]}"} "$SWEEP_ID" > "$LOG" 2>&1 &
     PIDS+=($!)
 done
 
@@ -127,7 +140,7 @@ done
 echo ""
 echo "============================================"
 echo "  Sweep pod ${AGENT_ID} completed"
-echo "  Agents: ${AGENTS_PER_POD}, Iters/agent: ${SWEEP_COUNT}"
+echo "  Agents: ${AGENTS_PER_POD}, Runs/agent: ${SWEEP_COUNT_DISPLAY}"
 echo "  Failed agents: ${FAILED}/${AGENTS_PER_POD}"
 echo "============================================"
 
