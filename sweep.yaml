@@ -19,17 +19,6 @@ metric:
   goal: maximize
 
 parameters:
-  # ── Stop the immediate-EOT collapse ──────────────────────────────────
-  # step_penalty rewards declaring "done" early; 0.01 drove length->5. Test
-  # all the way down to 0 (no early-stop pressure).
-  step_penalty:
-    values: [0.0, 0.002, 0.005, 0.01]
-
-  # Make the terminal throughput reward dominate any per-step cost, so there's
-  # a real incentive to keep building.
-  throughput_reward_scale:
-    values: [1.0, 3.0, 5.0]
-
   # ── Keep exploring instead of collapsing deterministically ───────────
   # ent_coef=0 let the SFT policy's build attempts collapse before earning
   # reward; give it some entropy (annealed start -> end).
