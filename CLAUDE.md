@@ -18,7 +18,7 @@ The training pipeline is moving toward an **LLM-style two-stage split**:
 
 1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, …) covers a different entity or layout pattern.
 2. **SFT pretraining** — `sft.py` runs supervised training on those pairs, giving the policy a strong prior over entity placement. It uploads the best checkpoint as a W&B artifact (type `model`, containing `sft_checkpoint.pt`) so RL can pull it by run id.
-3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start-from` (accepts **either** a local `.pt` path **or** a W&B run id like `j0s5y2mc` — the run's model artifact is downloaded automatically). Every episode builds from a **fully-blank** grid (no curriculum). The canonical SFT base is run **`j0s5y2mc`**; the bar PPO must clear is its `val/throughput_eot ≈ 0.11` (see "Throughput metrics" below).
+3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start-from` (accepts **either** a local `.pt` path **or** a W&B run id like `j0s5y2mc` — the run's model artifact is downloaded automatically). Every episode builds from a **fully-blank** grid (no curriculum). The canonical SFT base is run **`j0s5y2mc`**; the bar PPO must clear is its `val/thput_eot ≈ 0.11` (see "Throughput metrics" below).
 
 Historically the project did RL-from-scratch with heavy scaffolding (curriculum on `num_missing_entities`, reward shaping, action masking) to handle the sparse-reward problem. Most of that scaffolding still exists but its role changes under the new pipeline: the curriculum axis becomes a data-sampling knob during SFT, and RL starts from a much better policy so sparse rewards matter less.
 
@@ -52,25 +52,25 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - **State tensor** is `(C, W, H)` with `C = len(Channel) = 5` channels: `ENTITIES`, `DIRECTION`, `ITEMS` (recipe/filter), `MISC` (underground up/down), `FOOTPRINT` (1 = buildable).
 - **Lessons** (`LessonKind` in `factorion.py`): `MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE`, `ASSEMBLE_1IN_1OUT`, `MOVE_VIA_UG_BELT`, `ASSEMBLE_2IN_1OUT`, `FROM_BLUEPRINT`. Each `build_factory(size, kind, seed, ...)` returns `Optional[Factory]` (rejection sampling can fail → `None`); `blank_entities(factory, num_missing_entities, seed)` removes N entity *units* (multi-tile entities count as one).
 - **`ppo.py`**: `Args` (all PPO hyperparams + `start_from`, `critic_warmup`, `eval_every`), `FactorioEnv` (`reset`/`step`; reward = `-step_penalty` per step `+ throughput_reward_scale * thput_normed` on termination; `eot` is a real action that ends the episode; `info['kind']` carries the lesson for per-lesson logging), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`; stashes `_last_head_entropy`/`_last_eot_prob` for the policy/* metrics), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading), `_run_signature` (run name), `_build_eval_set`/`_run_greedy_eval` (the eval/ section).
-- **`sft.py`**: `run_rollout_eval` returns `RolloutEval` with `overall`/`overall_eot` and per-`LessonKind` breakdowns; checkpoint is selected on `val/throughput` (EOT ignored). PPO reuses this for its `eval/` metrics (lazy import to avoid the ppo↔sft cycle).
+- **`sft.py`**: `run_rollout_eval` returns `RolloutEval` with `overall`/`overall_eot` and per-`LessonKind` breakdowns; checkpoint is selected on `val/thput` (EOT ignored). PPO reuses this for its `eval/` metrics (lazy import to avoid the ppo↔sft cycle).
 
 ## W&B dashboards
 
 Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
 
-- **`eval/`** — periodic greedy held-out throughput (`eval/throughput`, `eval/throughput_eot`, `eval/{LESSON}/*`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`sweep.yaml`).
-- **`rollout/`** — on-policy sampled episode stats (`throughput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`) + per-lesson `rollout/{LESSON}/{throughput,thput_raw,reward,length}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
+- **`eval/`** — periodic greedy held-out throughput (`eval/thput`, `eval/thput_eot`, `eval/{LESSON}/*`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`sweep.yaml`).
+- **`rollout/`** — on-policy sampled episode stats (`thput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`) + per-lesson `rollout/{LESSON}/{thput,thput_raw,reward,length}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
 - **`policy/`** — acting-policy distribution: `entropy`, per-head `entropy_{tile,entity,direction,item,misc,eot}`, `eot_prob`.
 - **`losses/`** `policy,value,entropy,total,approx_kl,clipfrac,explained_variance`; **`optim/`** `lr,critic_lr,ent_coef,grad_norm,critic_warmup`; **`perf/`** `sps,rollout_seconds,update_seconds,eval_seconds`.
 
-## Throughput metrics (`throughput` vs `throughput_eot`)
+## Throughput metrics (`thput` vs `thput_eot`)
 
 Both come from a greedy rollout that blanks the **whole** grid and rebuilds from empty (the honest "can it build from scratch" test). Per-factory throughput is `info['thput_normed']` ∈ [0, 1] — raw items/sec ÷ that factory's max, so a perfectly-rebuilt factory scores 1.0 regardless of belt speed. Defined in `sft.py:run_rollout_eval`:
 
-- **`throughput`** (`overall`) — build skill *ignoring* the EOT head: step until the env finishes (throughput 1.0 or max_steps) and take the final throughput. "Can the model physically reconstruct the factory?"
-- **`throughput_eot`** (`overall_eot`) — build skill *respecting* the EOT head: snapshot the throughput the first time the EOT prob crosses `rollout_eot_threshold` (0.5); if it never fires, fall back to the final throughput. "How good is the factory at the moment the model decides it's done?"
+- **`thput`** (`overall`) — build skill *ignoring* the EOT head: step until the env finishes (throughput 1.0 or max_steps) and take the final throughput. "Can the model physically reconstruct the factory?"
+- **`thput_eot`** (`overall_eot`) — build skill *respecting* the EOT head: snapshot the throughput the first time the EOT prob crosses `rollout_eot_threshold` (0.5); if it never fires, fall back to the final throughput. "How good is the factory at the moment the model decides it's done?"
 
-`throughput_eot ≤ throughput` whenever the model stops early. **The RL goal is for PPO's achieved throughput to exceed the SFT base's `val/throughput_eot` (≈0.11 for `j0s5y2mc`).** Per-lesson the SFT base is uneven (MOVE_ONE_ITEM ~0.38, assembler lessons ~0).
+`thput_eot ≤ thput` whenever the model stops early. **The RL goal is for PPO's achieved throughput to exceed the SFT base's `val/thput_eot` (≈0.11 for `j0s5y2mc`).** Per-lesson the SFT base is uneven (MOVE_ONE_ITEM ~0.38, assembler lessons ~0).
 
 ## SFT → PPO handoff
 
