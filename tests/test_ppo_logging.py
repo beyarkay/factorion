@@ -150,14 +150,14 @@ class TestRolloutEpisodeMetrics:
 
     def test_overall_logs_raw_and_normed_throughput(self):
         m = self._metrics()
-        assert m["rollout/throughput"] == pytest.approx(0.6)
+        assert m["rollout/thput"] == pytest.approx(0.6)
         assert m["rollout/thput_raw"] == pytest.approx(9.0)
 
     def test_per_lesson_logs_raw_throughput(self):
         # The ASSERT: raw items/s must be logged per lesson, not just overall.
         m = self._metrics("SPLITTER_SPLIT")
         assert m["rollout/SPLITTER_SPLIT/thput_raw"] == pytest.approx(9.0)
-        assert m["rollout/SPLITTER_SPLIT/throughput"] == pytest.approx(0.6)
+        assert m["rollout/SPLITTER_SPLIT/thput"] == pytest.approx(0.6)
 
     def test_every_lesson_kind_gets_a_per_lesson_raw_key(self):
         for kind in LessonKind:
