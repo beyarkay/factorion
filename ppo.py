@@ -236,6 +236,45 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     return metrics
 
 
+def _rollout_episode_metrics(
+    lesson: str,
+    *,
+    episode_return: float,
+    episode_len: float,
+    thput_normed: float,
+    thput_raw: float,
+    ended_by_eot: float,
+    invalid_frac: float,
+    num_entities: float,
+    min_entities_required: float,
+    frac_reachable: float,
+) -> dict:
+    """Build the rollout/* metrics for one finished episode (overall + per-lesson).
+
+    Pure (no wandb/torch) so it can be unit-tested. The per-lesson keys carry
+    the lesson name, so each averages over only that lesson's episodes. Both the
+    overall and per-lesson views log thput_raw (items/s) alongside the
+    normalized throughput, so lessons with very different ceilings (belts ~15/s
+    vs assemblers <1/s) stay comparable in raw terms.
+    """
+    return {
+        "rollout/throughput": float(thput_normed),
+        "rollout/thput_raw": float(thput_raw),
+        "rollout/reward": float(episode_return),
+        "rollout/length": float(episode_len),
+        "rollout/eot_rate": float(ended_by_eot),
+        "rollout/invalid_frac": float(invalid_frac),
+        "rollout/num_entities": float(num_entities),
+        "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
+        "rollout/frac_reachable": float(frac_reachable),
+        # Per-lesson breakdown — each averages over only this lesson's episodes.
+        f"rollout/{lesson}/throughput": float(thput_normed),
+        f"rollout/{lesson}/thput_raw": float(thput_raw),
+        f"rollout/{lesson}/reward": float(episode_return),
+        f"rollout/{lesson}/length": float(episode_len),
+    }
+
+
 def _resolve_wandb_checkpoint(
     run_spec: str, project: str, entity: Optional[str]
 ) -> tuple[str, dict]:
@@ -1247,7 +1286,7 @@ if __name__ == "__main__":
                   "frac_reachable"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
-            for m in ["throughput", "reward", "length"]:
+            for m in ["throughput", "thput_raw", "reward", "length"]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
             wandb.define_metric(f"policy/{m}", summary="last")
@@ -1513,22 +1552,18 @@ if __name__ == "__main__":
 
                     end_of_episode_thputs.append(end_of_episode_thput)
 
-                    _record_episode({
-                        "rollout/throughput": float(end_of_episode_thput),
-                        "rollout/thput_raw": float(end_of_episode_thput_raw),
-                        "rollout/reward": float(episode_return),
-                        "rollout/length": float(episode_len),
-                        "rollout/eot_rate": ended_by_eot,
-                        "rollout/invalid_frac": float(infos['frac_invalid_actions'][i]),
-                        "rollout/num_entities": float(infos['num_entities'][i]),
-                        "rollout/entity_efficiency": float(infos['min_entities_required'][i]) / float(infos['num_entities'][i]),
-                        "rollout/frac_reachable": float(infos["frac_reachable"][i]),
-                        # Per-lesson breakdown — each averages over only this
-                        # lesson's episodes (the key is recorded just for them).
-                        f"rollout/{lesson}/throughput": float(end_of_episode_thput),
-                        f"rollout/{lesson}/reward": float(episode_return),
-                        f"rollout/{lesson}/length": float(episode_len),
-                    })
+                    _record_episode(_rollout_episode_metrics(
+                        lesson,
+                        episode_return=episode_return,
+                        episode_len=episode_len,
+                        thput_normed=end_of_episode_thput,
+                        thput_raw=end_of_episode_thput_raw,
+                        ended_by_eot=ended_by_eot,
+                        invalid_frac=infos['frac_invalid_actions'][i],
+                        num_entities=infos['num_entities'][i],
+                        min_entities_required=infos['min_entities_required'][i],
+                        frac_reachable=infos["frac_reachable"][i],
+                    ))
 
         rollout_seconds = time.time() - rollout_start
 

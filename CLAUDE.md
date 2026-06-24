@@ -59,7 +59,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
 
 - **`eval/`** — periodic greedy held-out throughput (`eval/throughput`, `eval/throughput_eot`, `eval/{LESSON}/*`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`sweep.yaml`).
-- **`rollout/`** — on-policy sampled episode stats (`throughput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`) + per-lesson `rollout/{LESSON}/{throughput,reward,length}`.
+- **`rollout/`** — on-policy sampled episode stats (`throughput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`) + per-lesson `rollout/{LESSON}/{throughput,thput_raw,reward,length}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
 - **`policy/`** — acting-policy distribution: `entropy`, per-head `entropy_{tile,entity,direction,item,misc,eot}`, `eot_prob`.
 - **`losses/`** `policy,value,entropy,total,approx_kl,clipfrac,explained_variance`; **`optim/`** `lr,critic_lr,ent_coef,grad_norm,critic_warmup`; **`perf/`** `sps,rollout_seconds,update_seconds,eval_seconds`.
 
