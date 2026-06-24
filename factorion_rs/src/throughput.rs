@@ -154,13 +154,19 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
             }
 
-            // For splitters, divide output evenly among successors
-            if entity_kind == Item::Splitter {
-                let num_successors = graph.successors[node_idx].len();
-                if num_successors > 1 {
-                    for rate in node_outputs[node_idx].values_mut() {
-                        *rate /= num_successors as f64;
-                    }
+            // A node hands its contents to its successors, so fanning out to
+            // k successors splits the flow k ways (each branch gets 1/k).
+            // Without this, every successor reads the node's *full* output and
+            // the same items are counted once per branch — the #87 fan-out
+            // double-count. Splitters are just the most visible case; a belt
+            // feeding two inserters splits exactly the same way. Sources are
+            // intentionally excluded: their output is pre-set to an infinite
+            // supply (so `is_empty()` skips this block) and feeds every branch
+            // fully, dividing INFINITY changes nothing downstream anyway.
+            let num_successors = graph.successors[node_idx].len();
+            if num_successors > 1 {
+                for rate in node_outputs[node_idx].values_mut() {
+                    *rate /= num_successors as f64;
                 }
             }
         }

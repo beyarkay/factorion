@@ -21,6 +21,7 @@ from ppo import (  # noqa: E402
     make_env,
     _run_signature,
     _build_eval_set,
+    _rollout_episode_metrics,
 )
 from factorion import LessonKind, build_factory  # noqa: E402
 from helpers import Channel  # noqa: E402
@@ -127,3 +128,53 @@ class TestPerHeadEntropyStash:
         # entropy_B is per-sample (summed over heads); its mean should match the
         # sum of the per-head means stashed for logging.
         assert entropy_B.mean().detach().item() == pytest.approx(head_sum, abs=1e-4)
+
+
+# ── per-episode rollout metrics (overall + per-lesson, raw + normalized) ──────
+
+
+class TestRolloutEpisodeMetrics:
+    def _metrics(self, lesson="MOVE_ONE_ITEM"):
+        return _rollout_episode_metrics(
+            lesson,
+            episode_return=2.5,
+            episode_len=42.0,
+            thput_normed=0.6,
+            thput_raw=9.0,
+            ended_by_eot=1.0,
+            invalid_frac=0.1,
+            num_entities=4.0,
+            min_entities_required=3.0,
+            frac_reachable=0.75,
+        )
+
+    def test_overall_logs_raw_and_normed_throughput(self):
+        m = self._metrics()
+        assert m["rollout/thput"] == pytest.approx(0.6)
+        assert m["rollout/thput_raw"] == pytest.approx(9.0)
+
+    def test_per_lesson_logs_raw_throughput(self):
+        # The ASSERT: raw items/s must be logged per lesson, not just overall.
+        m = self._metrics("SPLITTER_SPLIT")
+        assert m["rollout/SPLITTER_SPLIT/thput_raw"] == pytest.approx(9.0)
+        assert m["rollout/SPLITTER_SPLIT/thput"] == pytest.approx(0.6)
+
+    def test_every_lesson_kind_gets_a_per_lesson_raw_key(self):
+        for kind in LessonKind:
+            m = _rollout_episode_metrics(
+                kind.name,
+                episode_return=0.0,
+                episode_len=1.0,
+                thput_normed=0.0,
+                thput_raw=1.23,
+                ended_by_eot=0.0,
+                invalid_frac=0.0,
+                num_entities=1.0,
+                min_entities_required=1.0,
+                frac_reachable=0.0,
+            )
+            assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
+
+    def test_entity_efficiency_is_required_over_placed(self):
+        m = self._metrics()
+        assert m["rollout/entity_efficiency"] == pytest.approx(3.0 / 4.0)
