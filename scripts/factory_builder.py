@@ -107,6 +107,21 @@ DISPLAY_NAME = {
 DIRECTIONS = ["NONE", "NORTH", "EAST", "SOUTH", "WEST"]
 MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 
+# Keyboard + mouse cheatsheet shown by the [?] popover. Kept as data so
+# the markup is built once and the lines stay easy to edit.
+HELP_LINES = [
+    "Hotbar: 1–9, 0",
+    "Place: click / drag slot onto tile",
+    "Select / edit: click an empty tile (no ghost)",
+    "Apply a ghost prediction: click the ghosted tile",
+    "Rotate selected: r (cw), R (ccw)",
+    "Clear selected: Delete / Backspace / right-click",
+    "Deselect hotbar: Esc",
+    "Generate lesson: g",
+    "Apply prediction (top pick): a",
+    "Resize / clear grid: c",
+]
+
 
 @dataclass
 class Args:
@@ -653,6 +668,19 @@ def render_index(default_size: int) -> str:
         '</div>'
     )
 
+    # [?] help: a click-to-toggle popover. The previous version leaned on
+    # the native `title` tooltip, which many browsers render unreliably (or
+    # not at all) — so the shortcuts list is now real DOM that always shows.
+    help_html = (
+        '<span class="help-wrap">'
+        '<span class="kbd-help" id="help-toggle" tabindex="0" role="button" '
+        'aria-expanded="false" aria-label="Show keyboard and mouse shortcuts" '
+        'title="Keyboard &amp; mouse shortcuts (click)">[?]</span>'
+        '<div class="help-popover" id="help-popover" hidden>'
+        + "<br>".join(HELP_LINES)
+        + "</div></span>"
+    )
+
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Factory builder</title>
 <style>
@@ -765,13 +793,25 @@ def render_index(default_size: int) -> str:
     box-shadow: inset 0 0 0 2px #0d47a1;
     vertical-align: middle; margin-right: 0.25em;
   }}
+  .help-wrap {{ position: relative; display: inline-block; }}
   .kbd-help {{
     display: inline-block; font-size: 0.6em; font-weight: normal;
     color: #555; background: #eee; border: 1px solid #bbb;
     border-radius: 4px; padding: 0 0.4em; vertical-align: middle;
-    margin-left: 0.5em; cursor: help; user-select: none;
+    margin-left: 0.5em; cursor: pointer; user-select: none;
   }}
   .kbd-help:hover, .kbd-help:focus {{ background: #fff5cc; outline: none; }}
+  .help-popover {{
+    position: absolute; top: 1.9em; left: 0; z-index: 50;
+    width: max-content; max-width: 360px;
+    background: #fffbe6; border: 1px solid #d8c97a; border-radius: 6px;
+    padding: 0.5em 0.75em; font-size: 0.8rem; font-weight: normal;
+    color: #333; line-height: 1.65; text-align: left;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  }}
+  /* The UA stylesheet's [hidden] {{display:none}} loses to .help-popover
+     (equal specificity, author rule wins), so re-assert it explicitly. */
+  .help-popover[hidden] {{ display: none; }}
   .sel-coord {{ font-family: monospace; color: #888; font-weight: normal; }}
   .kbd {{
     display: inline-block; min-width: 1em; padding: 0 0.3em;
@@ -788,15 +828,7 @@ def render_index(default_size: int) -> str:
 </style></head><body>
 
 <h1>Factory builder
-  <span class="kbd-help" tabindex="0" title="Hotbar: 1–9, 0
-Place: click / drag slot onto tile
-Select / edit: click a tile
-Rotate selected: r (cw), R (ccw)
-Clear selected: Delete / Backspace / right-click
-Deselect hotbar: Esc
-Generate lesson: g
-Apply prediction: a
-Resize / clear grid: c">[?]</span>
+  {help_html}
 </h1>
 
 <div class="layout">
@@ -990,6 +1022,17 @@ function renderGrid() {{
             placeEntity(x, y, ent);
             return;
           }}
+        }}
+        // Clicking a tile that's showing a ghost prediction applies it,
+        // just like Apply but for *any* candidate — not only the blue
+        // argmax. Gated on the same condition that drew the ghost here
+        // (candidate present + cell empty) so the click does exactly
+        // what the user sees. An active hotbar still wins (handled
+        // above): an explicit palette pick overrides the suggestion.
+        const cand = candByXY[x + ',' + y];
+        if (cand && c.entity === 'empty') {{
+          applyCandidate(cand);
+          return;
         }}
         renderGrid(); syncEditor();
       }});
@@ -1221,9 +1264,13 @@ async function computePrediction() {{
   }}
 }}
 
-function applyPrediction() {{
-  if (!prediction) return;
-  const {{ x, y, entity, direction, item, misc }} = prediction;
+// Apply a single predicted placement to the grid, exactly as if the
+// user had placed it by hand. `cand` is either a ghost candidate or the
+// argmax `prediction` itself — both carry {{x, y, entity, direction,
+// item, misc}}, so the same code applies either. footprint is preserved
+// (the model never predicts it).
+function applyCandidate(cand) {{
+  const {{ x, y, entity, direction, item, misc }} = cand;
   grid[y][x] = {{
     entity, direction, item, misc, footprint: grid[y][x].footprint,
   }};
@@ -1231,6 +1278,11 @@ function applyPrediction() {{
   prediction = null;
   renderGrid(); syncEditor();
   scheduleCompute();
+}}
+
+function applyPrediction() {{
+  if (!prediction) return;
+  applyCandidate(prediction);
 }}
 
 async function computeGraph() {{
@@ -1413,15 +1465,52 @@ document.addEventListener('keydown', (ev) => {{
     document.getElementById('resize').click(); ev.preventDefault(); return;
   }}
   if (ev.key === 'Escape') {{
+    const pop = document.getElementById('help-popover');
+    if (pop && !pop.hidden) {{
+      pop.hidden = true;
+      const tgl = document.getElementById('help-toggle');
+      if (tgl) tgl.setAttribute('aria-expanded', 'false');
+      return;
+    }}
     if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
   }}
 }});
 
+// [?] help popover: click the badge to toggle the shortcuts list,
+// click anywhere outside (or Esc, handled in the global keydown) to
+// close. Replaces the old native `title` tooltip, which didn't render.
+function bindHelp() {{
+  const toggle = document.getElementById('help-toggle');
+  const pop = document.getElementById('help-popover');
+  if (!toggle || !pop) return;
+  function setOpen(open) {{
+    pop.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }}
+  toggle.addEventListener('click', (ev) => {{
+    ev.stopPropagation();
+    setOpen(pop.hidden);
+  }});
+  toggle.addEventListener('keydown', (ev) => {{
+    if (ev.key === 'Enter' || ev.key === ' ') {{
+      ev.preventDefault();
+      setOpen(pop.hidden);
+    }}
+  }});
+  // A click anywhere outside the badge/popover dismisses it.
+  document.addEventListener('click', (ev) => {{
+    if (!pop.hidden && ev.target !== toggle && !pop.contains(ev.target)) {{
+      setOpen(false);
+    }}
+  }});
+}}
+
 grid = newGrid(SIZE);
 renderGrid();
 bindHotbar();
 bindEditor();
+bindHelp();
 refreshModelInfo();
 </script>
 </body></html>"""

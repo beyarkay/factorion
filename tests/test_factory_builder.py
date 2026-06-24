@@ -355,6 +355,61 @@ class TestPredictSchema:
             path.unlink(missing_ok=True)
 
 
+class TestRenderIndexApplyWiring:
+    """The served HTML must wire clicking a ghosted tile to applying that
+    candidate. This is JS embedded in a Python string, so we assert on the
+    rendered markup rather than driving a browser — enough to catch the
+    wiring being dropped or the candidate field contract drifting."""
+
+    def test_click_applies_visible_candidate(self):
+        html = fb.render_index(default_size=11)
+        # The shared apply helper exists and the cell click handler calls
+        # it for a candidate that's actually drawn here (present + empty),
+        # mirroring the ghost-render guard.
+        assert "function applyCandidate(" in html
+        assert "applyCandidate(cand)" in html
+        assert "candByXY[x + ',' + y]" in html
+        assert "cand && c.entity === 'empty'" in html
+
+    def test_apply_helper_consumes_candidate_fields(self):
+        """applyCandidate destructures exactly the placement fields that
+        _predict emits per candidate — keep the two in lockstep."""
+        html = fb.render_index(default_size=11)
+        assert "const { x, y, entity, direction, item, misc } = cand;" in html
+        # The same fields _predict guarantees on each candidate (see
+        # TestPredictSchema.test_predict_returns_full_schema).
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            result = fb._predict(_empty_grid(4))
+        finally:
+            path.unlink(missing_ok=True)
+        for cand in result["candidates"]:
+            for key in ("x", "y", "entity", "direction", "item", "misc"):
+                assert key in cand
+
+
+class TestRenderIndexHelpPopover:
+    """The [?] help is a real click-to-toggle popover, not the old native
+    `title` tooltip (which browsers rendered unreliably / not at all)."""
+
+    def test_popover_markup_present(self):
+        html = fb.render_index(default_size=11)
+        assert 'id="help-toggle"' in html
+        assert 'id="help-popover"' in html
+        assert "function bindHelp(" in html
+        assert "bindHelp();" in html
+
+    def test_popover_contains_every_help_line(self):
+        html = fb.render_index(default_size=11)
+        # Every shortcut line must be reachable in the rendered DOM, joined
+        # by <br> inside the popover div.
+        for line in fb.HELP_LINES:
+            assert line in html
+        # The new click-to-apply shortcut is documented.
+        assert any("ghost" in line for line in fb.HELP_LINES)
+
+
 class TestModelInfo:
     def test_unloaded_state(self):
         info = fb._model_info()
