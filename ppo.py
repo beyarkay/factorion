@@ -480,6 +480,14 @@ class FactorioEnv(gym.Env):
         # _get_info() safe if it is ever called before the first reset.
         self._kind = LessonKind.MOVE_ONE_ITEM
 
+        # Training-only factory diversity. When the PPO loop sets _train_seed,
+        # reset() uses it and marches it forward by num_envs so every episode
+        # builds a fresh, never-before-seen factory and this env's seed stream
+        # stays disjoint from the other envs'. Left None for eval/render envs,
+        # which pass explicit seeds and rely on seed -> factory determinism.
+        self._train_seed: Optional[int] = None
+        self._num_envs: int = 1
+
     def _get_obs(self):
         return self._world_CWH
 
@@ -522,9 +530,19 @@ class FactorioEnv(gym.Env):
         return location_match, entity_match, direction_match
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        if seed is None:
-            seed = 0
-        self._seed = int(seed + self.idx)
+        if self._train_seed is not None:
+            # Training: use this env's running seed and march it forward by
+            # num_envs so every episode builds a fresh, never-before-seen
+            # factory (and this env's stream stays disjoint from the others').
+            # The passed seed is ignored on purpose: Gymnasium's NEXT_STEP
+            # autoreset always calls reset(seed=None), which previously pinned
+            # each env to a single factory (seed == idx) for the entire run.
+            self._seed = self._train_seed
+            self._train_seed += self._num_envs
+        else:
+            if seed is None:
+                seed = 0
+            self._seed = int(seed + self.idx)
         super().reset(seed=self._seed)
         if options is not None:
             self._reset_options = options
@@ -1328,6 +1346,17 @@ if __name__ == "__main__":
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)],
     )
+    # Train on a fresh factory every episode: give each env a running seed that
+    # marches forward by num_envs each reset (env i sweeps args.seed+i,
+    # +num_envs, +2*num_envs, …), so across all envs we cover args.seed, +1,
+    # +2, … and never replay a factory. Without this, Gymnasium's NEXT_STEP
+    # autoreset calls reset(seed=None) each episode, which pinned every env to a
+    # single factory (seed == idx) for the whole run. Eval/render envs keep
+    # their explicit-seed determinism.
+    for i, sub_env in enumerate(envs.envs):
+        fe = cast(FactorioEnv, sub_env.unwrapped)
+        fe._train_seed = args.seed + i
+        fe._num_envs = args.num_envs
 
     encoder_layers = layers_from_args(args)
     print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")
@@ -1520,14 +1549,11 @@ if __name__ == "__main__":
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
 
-            # Reset done envs back to a fully-blank (build-from-empty) factory.
-            done_indices = np.where(next_done)[0]
-            for idx in done_indices:
-                obs, _ = envs.envs[idx].reset(seed=args.seed + idx, options={
-                    'num_missing_entities': float('inf'),
-                })
-                next_obs_ECWH[idx] = obs
-
+            # Done envs are rebuilt by Gymnasium's NEXT_STEP autoreset, which
+            # calls FactorioEnv.reset(seed=None) -> the train_seed_base march
+            # above (a fresh, never-before-seen fully-blank factory). The old
+            # manual reset here passed a fixed per-idx seed and was silently
+            # clobbered by that autoreset, so every env replayed one factory.
             next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
             next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
 
