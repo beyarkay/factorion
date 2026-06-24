@@ -11,7 +11,7 @@
 #   - data-shape tradeoffs: batch_size, max_level, tile_head_std
 
 method: bayes
-run_cap: 60
+run_cap: 30
 metric:
   name: "val/acc"
   goal: maximize
