@@ -21,21 +21,26 @@ metric:
 parameters:
   # ── Keep exploring instead of collapsing deterministically ───────────
   # ent_coef=0 let the SFT policy's build attempts collapse before earning
-  # reward; give it some entropy (annealed start -> end).
+  # reward; give it some entropy (annealed start -> end). BUT the first sweep
+  # (n67gnq05) showed a hard cliff: every run with ent_coef_start >= 0.022
+  # failed (rollout/thput <= 0.1) — too much entropy melts the SFT prior —
+  # while the best runs clustered at 1e-3..7e-3. Upper bound kept well below
+  # the cliff. ent_coef_start is the single strongest predictor of success.
   ent_coef_start:
     distribution: log_uniform_values
-    min: 5e-4
-    max: 5e-2
+    min: 7e-4
+    max: 8e-3
   ent_coef_end:
     distribution: log_uniform_values
     min: 1e-5
-    max: 5e-3
+    max: 3e-3
 
   # ── Move the policy enough (updates were ~zero by the end) ───────────
+  # n67gnq05: no good run exceeded ~2.1e-4; the upper range was wasted.
   learning_rate:
     distribution: log_uniform_values
-    min: 2e-5
-    max: 5e-4
+    min: 3e-5
+    max: 2.2e-4
   target_kl:
     values: [0.02, 0.05, 0.15]   # bigger trust region = more movement/rollout
 
@@ -50,7 +55,7 @@ parameters:
   gae_lambda:
     distribution: uniform
     min: 0.9
-    max: 0.99
+    max: 0.96   # n67gnq05: no good run sampled above ~0.96
 
 program: ppo.py
 
