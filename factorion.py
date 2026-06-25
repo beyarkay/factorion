@@ -27,6 +27,38 @@ from torch.distributions import Categorical
 
 import factorion_rs
 
+# The Rust extension is built out-of-band (`maturin develop`) and is NOT
+# rebuilt automatically on import, so a stale wheel silently lacks functions
+# added after it was last built. factorion.py and its callers (ppo, sft, and
+# the web UI's auto-graph) reach into `factorion_rs` by name at call time, so a
+# stale build imports cleanly — `py_items` below still resolves — then crashes
+# much later with a cryptic `AttributeError: module 'factorion_rs' has no
+# attribute '...'` deep inside a request handler (e.g. `py_build_graph` when the
+# web UI builds the flow graph). Fail fast at import with an actionable message.
+_REQUIRED_FACTORION_RS = (
+    "simulate_throughput",
+    "py_build_graph",
+    "py_entity_tiles",
+    "py_items",
+    "py_recipes",
+)
+
+
+def _assert_factorion_rs_current(module) -> None:
+    """Raise an actionable ImportError if the installed factorion_rs is missing
+    any function this module needs — the tell-tale sign of a stale Rust build."""
+    missing = [name for name in _REQUIRED_FACTORION_RS if not hasattr(module, name)]
+    if missing:
+        raise ImportError(
+            "factorion_rs is out of date (missing: "
+            + ", ".join(missing)
+            + "). Rebuild the Rust extension:\n"
+            "  uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml"
+        )
+
+
+_assert_factorion_rs_current(factorion_rs)
+
 wandb.login()
 
 
