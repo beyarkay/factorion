@@ -311,3 +311,42 @@ class TestGeneratedWorldConnectivity:
             f"{kind.name} seed={seed}: {graph.number_of_nodes()} nodes vs "
             f"{non_empty} non-empty tiles"
         )
+
+
+# ── Stale-extension guard ────────────────────────────────────────────────────
+
+
+class TestFactorionRsCurrencyGuard:
+    """`build_graph_nx` reaches into `factorion_rs.py_build_graph` at call time,
+    so a Rust extension built before the graph migration (#178) imports cleanly
+    (it still has `py_items`) but then crashes deep in the web UI's auto-graph
+    with a cryptic `AttributeError: module 'factorion_rs' has no attribute
+    'py_build_graph'`. The import-time guard turns that into an actionable
+    error. See `factorion._assert_factorion_rs_current`."""
+
+    def test_stale_build_raises_actionable_error(self):
+        import types
+
+        import factorion
+
+        # A wheel built before #178: has py_items (so plain import succeeds) but
+        # not py_build_graph — exactly the state that produced the crash.
+        stale = types.SimpleNamespace(
+            simulate_throughput=lambda *a, **k: None,
+            py_entity_tiles=lambda *a, **k: None,
+            py_items=lambda *a, **k: {},
+            py_recipes=lambda *a, **k: {},
+        )
+        assert not hasattr(stale, "py_build_graph")
+        with pytest.raises(ImportError, match="py_build_graph"):
+            factorion._assert_factorion_rs_current(stale)
+        with pytest.raises(ImportError, match="maturin develop"):
+            factorion._assert_factorion_rs_current(stale)
+
+    def test_installed_build_passes_guard(self):
+        """The real, freshly-built extension satisfies the guard — also guards
+        against a typo'd name in the required-functions list."""
+        import factorion
+        import factorion_rs
+
+        factorion._assert_factorion_rs_current(factorion_rs)  # must not raise
