@@ -51,6 +51,24 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
     return Path(path)
 
 
+def _make_compiled_checkpoint(size: int = 4, chan: int = 8) -> Path:
+    """Like `_make_tiny_checkpoint`, but every key is prefixed with
+    ``_orig_mod.`` to mimic a checkpoint saved by ppo.py *after*
+    ``torch.compile`` (which wraps the module and renames params). SFT
+    checkpoints are saved uncompiled, PPO ones are not — the builder must
+    load both."""
+    plain = _make_tiny_checkpoint(size=size, chan=chan)
+    try:
+        state = torch.load(str(plain), map_location="cpu", weights_only=True)
+    finally:
+        plain.unlink(missing_ok=True)
+    compiled = {f"_orig_mod.{k}": v for k, v in state.items()}
+    fd, path = tempfile.mkstemp(suffix=".pt")
+    os.close(fd)
+    torch.save(compiled, path)
+    return Path(path)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fb_state():
     """factory_builder keeps the loaded checkpoint and per-size agents
@@ -192,6 +210,31 @@ class TestCheckpointLoading:
             fb._load_checkpoint(str(path))
             assert fb._CHECKPOINT_STATE is not None
             assert fb._CHECKPOINT_PATH == str(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_load_compiled_checkpoint(self):
+        """A PPO checkpoint is saved after torch.compile, so every key
+        carries an ``_orig_mod.`` prefix. The builder must strip it:
+        otherwise _encoder_arch finds zero conv keys and crashes with
+        IndexError (regression for switching to a PPO model in the UI)."""
+        path = _make_compiled_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            assert fb._CHECKPOINT_STATE is not None
+            # Keys must be normalised — nothing should retain the prefix.
+            assert all(
+                not k.startswith("_orig_mod.")
+                for k in fb._CHECKPOINT_STATE
+            )
+            info = fb._model_info()
+            assert info["loaded"] is True
+            assert info["layers"] == [8, 8, 8]
+            assert info["kernel_size"] == 3
+            # And the agent must build + load the weights without falling
+            # back to a fully random net (eot_head kept on size match).
+            agent = fb._get_agent(4)
+            assert agent is not None
         finally:
             path.unlink(missing_ok=True)
 
@@ -353,6 +396,61 @@ class TestPredictSchema:
             assert (tile_top0["x"], tile_top0["y"]) == (result["x"], result["y"])
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestRenderIndexApplyWiring:
+    """The served HTML must wire clicking a ghosted tile to applying that
+    candidate. This is JS embedded in a Python string, so we assert on the
+    rendered markup rather than driving a browser — enough to catch the
+    wiring being dropped or the candidate field contract drifting."""
+
+    def test_click_applies_visible_candidate(self):
+        html = fb.render_index(default_size=11)
+        # The shared apply helper exists and the cell click handler calls
+        # it for a candidate that's actually drawn here (present + empty),
+        # mirroring the ghost-render guard.
+        assert "function applyCandidate(" in html
+        assert "applyCandidate(cand)" in html
+        assert "candByXY[x + ',' + y]" in html
+        assert "cand && c.entity === 'empty'" in html
+
+    def test_apply_helper_consumes_candidate_fields(self):
+        """applyCandidate destructures exactly the placement fields that
+        _predict emits per candidate — keep the two in lockstep."""
+        html = fb.render_index(default_size=11)
+        assert "const { x, y, entity, direction, item, misc } = cand;" in html
+        # The same fields _predict guarantees on each candidate (see
+        # TestPredictSchema.test_predict_returns_full_schema).
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            result = fb._predict(_empty_grid(4))
+        finally:
+            path.unlink(missing_ok=True)
+        for cand in result["candidates"]:
+            for key in ("x", "y", "entity", "direction", "item", "misc"):
+                assert key in cand
+
+
+class TestRenderIndexHelpPopover:
+    """The [?] help is a real click-to-toggle popover, not the old native
+    `title` tooltip (which browsers rendered unreliably / not at all)."""
+
+    def test_popover_markup_present(self):
+        html = fb.render_index(default_size=11)
+        assert 'id="help-toggle"' in html
+        assert 'id="help-popover"' in html
+        assert "function bindHelp(" in html
+        assert "bindHelp();" in html
+
+    def test_popover_contains_every_help_line(self):
+        html = fb.render_index(default_size=11)
+        # Every shortcut line must be reachable in the rendered DOM, joined
+        # by <br> inside the popover div.
+        for line in fb.HELP_LINES:
+            assert line in html
+        # The new click-to-apply shortcut is documented.
+        assert any("ghost" in line for line in fb.HELP_LINES)
 
 
 class TestModelInfo:
