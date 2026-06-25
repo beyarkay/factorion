@@ -51,6 +51,24 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
     return Path(path)
 
 
+def _make_compiled_checkpoint(size: int = 4, chan: int = 8) -> Path:
+    """Like `_make_tiny_checkpoint`, but every key is prefixed with
+    ``_orig_mod.`` to mimic a checkpoint saved by ppo.py *after*
+    ``torch.compile`` (which wraps the module and renames params). SFT
+    checkpoints are saved uncompiled, PPO ones are not — the builder must
+    load both."""
+    plain = _make_tiny_checkpoint(size=size, chan=chan)
+    try:
+        state = torch.load(str(plain), map_location="cpu", weights_only=True)
+    finally:
+        plain.unlink(missing_ok=True)
+    compiled = {f"_orig_mod.{k}": v for k, v in state.items()}
+    fd, path = tempfile.mkstemp(suffix=".pt")
+    os.close(fd)
+    torch.save(compiled, path)
+    return Path(path)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fb_state():
     """factory_builder keeps the loaded checkpoint and per-size agents
@@ -192,6 +210,31 @@ class TestCheckpointLoading:
             fb._load_checkpoint(str(path))
             assert fb._CHECKPOINT_STATE is not None
             assert fb._CHECKPOINT_PATH == str(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_load_compiled_checkpoint(self):
+        """A PPO checkpoint is saved after torch.compile, so every key
+        carries an ``_orig_mod.`` prefix. The builder must strip it:
+        otherwise _encoder_arch finds zero conv keys and crashes with
+        IndexError (regression for switching to a PPO model in the UI)."""
+        path = _make_compiled_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            assert fb._CHECKPOINT_STATE is not None
+            # Keys must be normalised — nothing should retain the prefix.
+            assert all(
+                not k.startswith("_orig_mod.")
+                for k in fb._CHECKPOINT_STATE
+            )
+            info = fb._model_info()
+            assert info["loaded"] is True
+            assert info["layers"] == [8, 8, 8]
+            assert info["kernel_size"] == 3
+            # And the agent must build + load the weights without falling
+            # back to a fully random net (eot_head kept on size match).
+            agent = fb._get_agent(4)
+            assert agent is not None
         finally:
             path.unlink(missing_ok=True)
 
