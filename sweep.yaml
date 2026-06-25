@@ -67,7 +67,7 @@ command:
   - --size
   - "11"
   - --total-timesteps
-  - "2500000"          # plenty per the baseline run
+  - "5000000"          # 2x: n67gnq05 was still creeping up at 2.5M; reach the plateau
   - --critic-warmup
   - "10"
   - --eval-every
