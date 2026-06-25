@@ -336,6 +336,12 @@ def _load_checkpoint(path: str) -> None:
     provenance (local vs wandb) and sets it after this returns."""
     global _CHECKPOINT_STATE, _CHECKPOINT_PATH
     state = torch.load(path, map_location="cpu", weights_only=True)
+    # ppo.py saves its agent *after* torch.compile, which prepends
+    # "_orig_mod." to every parameter name; SFT checkpoints are saved
+    # uncompiled (clean names). Strip the prefix so both load identically
+    # — otherwise _encoder_arch finds zero conv keys and crashes, and the
+    # critic/eot-head filtering below silently misses every key.
+    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
     _AGENT_CACHE.clear()
