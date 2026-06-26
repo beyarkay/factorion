@@ -1473,6 +1473,17 @@ if __name__ == "__main__":
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
 
+    # Per-iteration rollout/optimise wall-times, accumulated so the final
+    # summary can report where the loop spends its time (for speed benchmarking).
+    rollout_seconds_hist: list[float] = []
+    update_seconds_hist: list[float] = []
+
+    # Iteration-1 computation signature (loss/kl/grad-norm). The run is
+    # deterministic (fixed seeds + use_deterministic_algorithms), so a pure
+    # *speed* change must reproduce these bit-for-bit. benchmark.sh diffs them
+    # against main's baseline to catch changes that silently alter the math.
+    iter1_signature: dict[str, float] = {}
+
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
     for iteration in pbar:
@@ -1693,6 +1704,8 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         update_seconds = time.time() - update_start
+        rollout_seconds_hist.append(rollout_seconds)
+        update_seconds_hist.append(update_seconds)
 
         # ── Greedy held-out eval (every eval_every iters + the final one) ──
         eval_metrics: dict = {}
@@ -1733,6 +1746,15 @@ if __name__ == "__main__":
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = s / n_steps
         iter_metrics.update(eval_metrics)
+
+        if iteration == 1:
+            iter1_signature = {
+                "policy_loss": round(pg_loss.item(), 8),
+                "value_loss": round(v_loss.item(), 8),
+                "entropy_loss": round(entropy_loss.item(), 8),
+                "approx_kl": round(float(approx_kl), 8),
+                "grad_norm": round(float(unclipped_grad_norm), 8),
+            }
 
         # Flush rollout episode means (empty if no episodes ended this iter)
         iter_metrics.update(_flush_episode_means())
@@ -1828,6 +1850,24 @@ if __name__ == "__main__":
         print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')
 
     # Write summary JSON (used by CI to post results to PR)
+    # Where did the loop spend its time? Totals over all iterations, plus a
+    # "steady" mean that drops iteration 1 (which absorbs the one-time
+    # torch.compile warmup) when there is more than one iteration to average.
+    def _mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+
+    rollout_total = sum(rollout_seconds_hist)
+    update_total = sum(update_seconds_hist)
+    steady_rollout = rollout_seconds_hist[1:] or rollout_seconds_hist
+    steady_update = update_seconds_hist[1:] or update_seconds_hist
+    print(
+        f"Loop time breakdown: rollout={rollout_total:.1f}s "
+        f"(steady mean {_mean(steady_rollout):.2f}s/iter), "
+        f"update={update_total:.1f}s "
+        f"(steady mean {_mean(steady_update):.2f}s/iter) "
+        f"over {len(rollout_seconds_hist)} iters"
+    )
+
     summary = {
         "global_step": global_step,
         "total_timesteps": args.total_timesteps,
@@ -1835,6 +1875,12 @@ if __name__ == "__main__":
         "runtime_seconds": round(runtime, 1),
         "runtime_human": format_duration(runtime),
         "sps": int(global_step / runtime) if runtime > 0 else 0,
+        "rollout_seconds_total": round(rollout_total, 2),
+        "update_seconds_total": round(update_total, 2),
+        "rollout_seconds_steady_mean": round(_mean(steady_rollout), 3),
+        "update_seconds_steady_mean": round(_mean(steady_update), 3),
+        "num_iterations": len(rollout_seconds_hist),
+        "iter1_signature": iter1_signature,
         "seed": args.seed,
         "num_envs": args.num_envs,
         "grid_size": args.size,
