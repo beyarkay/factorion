@@ -462,7 +462,11 @@ def collect_rollout(
                 if not active[lane]:
                     continue
 
-                obs_rows.append(obs_batch[lane].cpu())
+                # .clone() is load-bearing: on a CPU device obs_batch shares
+                # memory with the obs_B numpy buffer (when dtypes match), and
+                # obs_B[lane] is overwritten in place below — without the copy
+                # every stored row for a lane would collapse to its final obs.
+                obs_rows.append(obs_batch[lane].clone().cpu())
                 act_rows.append(action_B7[lane].cpu())
                 old_lp.append(logp_B[lane].cpu())
                 ref_lp.append(ref_logp_B[lane].cpu())
@@ -791,14 +795,19 @@ def grpo_update(
 
 
 def _select_eval_grids(args: GRPOArgs) -> list[tuple[int, LessonKind, int]]:
-    """Build the fixed held-out eval set once, from a seed stream independent
-    of the per-iteration training stream (collisions over the 2**31 seed space
-    are vanishingly unlikely for ~eval_max_seeds grids)."""
+    """Build the fixed held-out eval set once, from a seed stream disjoint from
+    the per-iteration training stream.
+
+    Training seeds each iteration with the integer `args.seed*1_000_003 +
+    iteration` (see train_grpo). We seed eval with a *string* so its RNG stream
+    can never coincide with any of those integers — an earlier integer offset
+    (e.g. + 7) collided with training iteration 7, leaking 25% of the held-out
+    grids into training."""
     if args.eval_every <= 0 or args.n_held_out_seeds <= 0:
         return []
     n = min(args.eval_max_seeds, args.n_held_out_seeds)
     eval_args = replace(args, num_grids=n)
-    return select_grids(eval_args, random.Random(args.seed * 1_000_003 + 7))
+    return select_grids(eval_args, random.Random(f"grpo-eval:{args.seed}"))
 
 
 def _rollout_metrics(batch: RolloutBatch, R_B: torch.Tensor, A_N: torch.Tensor) -> dict:

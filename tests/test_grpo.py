@@ -20,6 +20,7 @@ from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 from grpo import (  # noqa: E402
     GRPOArgs,
     RolloutBatch,
+    _select_eval_grids,
     broadcast_advantages,
     collect_rollout,
     compute_advantages,
@@ -211,6 +212,24 @@ class TestSelectGrids:
             assert build_factory(size=5, kind=kind, seed=seed) is not None
             assert 1 <= num_missing <= 3
 
+    def test_eval_grids_disjoint_from_training_seeds(self, registered_env):
+        """The held-out eval set must share no grid seed with ANY training
+        iteration — including iteration 7, where an earlier integer eval offset
+        collided exactly with the training stream."""
+        args = GRPOArgs(
+            size=5, num_grids=4, num_missing_max=2,
+            eval_max_seeds=6, n_held_out_seeds=6,
+            start_from="x", layers=TINY_LAYERS,
+        )
+        eval_seeds = {g[0] for g in _select_eval_grids(args)}
+        assert eval_seeds  # non-empty
+        for i in range(1, 12):  # spans the previously-colliding iteration 7
+            train_seeds = {
+                g[0]
+                for g in select_grids(args, random.Random(args.seed * 1_000_003 + i))
+            }
+            assert eval_seeds.isdisjoint(train_seeds), f"iteration {i} overlaps eval"
+
 
 class TestCollectRollout:
     def _rollout(self, size=5, num_grids=2, group_size=3, seed=0):
@@ -271,6 +290,33 @@ class TestCollectRollout:
         B = args.num_grids * args.group_size
         assert float(batch.eot_terminated_B.sum()) == B  # all stopped via eot
         assert int(batch.steps_B.max()) == 1  # eot fired on the first step
+
+    def test_stored_obs_are_per_step_snapshots(self, registered_env):
+        """A multi-step lane's stored observations must be independent per-step
+        snapshots, not all collapsed to the lane's final obs (the failure mode
+        if the stored row aliased the in-place-mutated obs buffer)."""
+        size = 5
+        policy = _tiny_agent(size)
+        ref = _tiny_agent(size)
+        with torch.no_grad():
+            policy.eot_head[1].bias.fill_(-100.0)  # eot never fires -> multi-step lanes
+        args = GRPOArgs(
+            size=size, num_grids=2, group_size=2, num_missing_max=2,
+            start_from="x", layers=TINY_LAYERS,
+        )
+        grids = select_grids(args, random.Random(0))
+        gen = torch.Generator().manual_seed(0)
+        batch = collect_rollout(policy, ref, args, grids, torch.device("cpu"), gen)
+        saw_multistep = False
+        for lane in range(args.num_grids * args.group_size):
+            idx = (batch.lane_of_N == lane).nonzero().flatten()
+            if len(idx) < 2:
+                continue
+            saw_multistep = True
+            rows = batch.obs_NCWH[idx]
+            all_eq_last = all(torch.equal(rows[k], rows[-1]) for k in range(len(rows)))
+            assert not all_eq_last, f"lane {lane}: obs rows collapsed to final obs"
+        assert saw_multistep, "test ineffective: no multi-step lanes produced"
 
     def test_shapes_consistent(self, registered_env):
         args, batch = self._rollout()
