@@ -1340,6 +1340,13 @@ if __name__ == "__main__":
     if device.type == "mps":
         # metal doesn't like anything but f32
         torch.set_default_dtype(torch.float32)
+    if device.type == "cpu":
+        # The net is tiny (batch 16, 11x11 grid), so torch's default intra-op
+        # thread count (~cores/2) heavily over-subscribes: per-conv thread
+        # launch/sync overhead swamps the actual compute. Capping at a small
+        # count is a ~3-4x speedup for both rollout and optimiser steps on CPU.
+        # (GPU runs are unaffected; this only touches CPU execution.)
+        torch.set_num_threads(min(6, os.cpu_count() or 6))
     print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
