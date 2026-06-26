@@ -7,10 +7,20 @@ fresh agent picking this up, read it top to bottom before touching anything.
 ## The measuring stick
 
 ```bash
-./run.sh        # one fixed-cost PPO run (2 iterations, ~34-37s on RTX 2000 Ada)
+./run.sh        # one fixed-cost PPO run (8 iterations, 32768 timesteps)
 ./benchmark.sh  # GATED official run: clean-tree + pytest + invariance check, then measure
 ./measure.sh    # bare core: run.sh under hyperfine (5 runs + 1 warmup) -> ../results.csv
 ```
+
+We run **8 iterations** deliberately: real training is 6+ hours over 100s of
+iterations, so the **steady-state per-iteration cost** is the thing to optimise.
+Startup (Python import + one-time `torch.compile` warmup, a few seconds) is
+negligible in production, so we run enough iterations that per-iter compute —
+not startup — dominates the measured wall time. `mean_s` in `results.csv` is
+still the headline, but `rollout_steady_s`/`update_steady_s` (which drop
+iteration 1) give the startup-free per-iter view. **Only compare `mean_s`
+between rows with the same `total_timesteps`** (older 8192-timestep rows are not
+comparable to current 32768 ones).
 
 Use **`./benchmark.sh "<note>"`** for any result you log — it refuses a dirty
 tree, runs the tests, and verifies the change didn't alter the computation
@@ -68,7 +78,8 @@ Keep the box otherwise idle (no other GPU jobs) while measuring.
 ## Correctness
 
 By decision, runs are **not** gated on a learning metric: RL loss is noisy and
-there is no metric that reliably moves in 2 iterations, and a time-to-X-loss
+there is no metric that reliably moves in a handful of iterations, and a
+time-to-X-loss
 gate would need a long rollout. So we run **ungated speed tests** — speed is the
 only headline number.
 

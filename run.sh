@@ -11,7 +11,7 @@
 #
 # Override the amount of work with TOTAL_TIMESTEPS (must be a multiple of
 # batch_size = num_envs * num_steps = 4096):
-#   TOTAL_TIMESTEPS=16384 ./run.sh     # 4 iterations instead of the default 2
+#   TOTAL_TIMESTEPS=16384 ./run.sh     # 4 iterations instead of the default 8
 #
 # Config mirrors a real training command (same net dims / num_envs / num_steps /
 # num_minibatches / update_epochs / grid size) so the compute profile matches
@@ -20,15 +20,21 @@
 # --layer{1,2,3}, so it doesn't affect speed and dropping it keeps this offline),
 # and WANDB disabled (no network/logging overhead).
 #
-# Note: each process pays a one-time torch.compile() warmup (~16s on RTX 2000
-# Ada) in iteration 1. Keep TOTAL_TIMESTEPS fixed across runs you compare.
+# Iteration count: real training runs go 6+ hours over 100s of iterations, so
+# the *steady-state per-iteration* cost is what matters — startup (Python import
+# + one-time torch.compile() warmup, a few seconds total) is negligible there.
+# We run 8 iterations so that per-iteration compute dominates the measured wall
+# time and we optimise the right thing, rather than fixating on the one-off
+# startup cost a 2-iteration benchmark over-weights. ppo.py also reports a
+# "steady" mean (dropping iteration 1) in the summary JSON for a startup-free
+# view. Keep TOTAL_TIMESTEPS fixed across runs you compare.
 
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# batch_size = num_envs (16) * num_steps (256) = 4096; default = 2 iterations.
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-8192}"
+# batch_size = num_envs (16) * num_steps (256) = 4096; default = 8 iterations.
+TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-32768}"
 
 WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
   --adam-epsilon 6.866e-6 \
