@@ -1037,6 +1037,20 @@ def layers_from_args(args) -> list[int]:
     return layers
 
 
+def assert_device_ok(device) -> None:
+    if device.type in ("cuda", "mps"):
+        return
+    # CI runs CPU-only smoke tests; everywhere else a CPU fallback is a bug.
+    if os.environ.get("CI"):
+        return
+    raise RuntimeError(
+        f"Refusing to train on '{device.type}': no CUDA GPU was found. This "
+        "usually means the host NVIDIA driver is too old for the installed torch "
+        "CUDA build (torch 2.12 ships CUDA 13, which needs driver >= 580). Fix the "
+        "host/driver, or pick a GPU+host that supports CUDA 13."
+    )
+
+
 class AgentCNN(nn.Module):
     def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0):
         super().__init__()
@@ -1341,6 +1355,7 @@ if __name__ == "__main__":
         # metal doesn't like anything but f32
         torch.set_default_dtype(torch.float32)
     print(f"running on {device}")
+    assert_device_ok(device)
 
     print(f"Setting up envs with {args}")
     envs = gym.vector.SyncVectorEnv(
