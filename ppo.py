@@ -48,6 +48,13 @@ _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
 _EMPTY_ITEM = str2item("empty")
 
+# Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
+# metrics read/reduce the world via these channels thousands of times per
+# iteration; enum `.value` attribute access is surprisingly costly at that
+# frequency (~256k enum lookups/iter in the profile).
+_CH_ENT = Channel.ENTITIES.value
+_CH_DIR = Channel.DIRECTION.value
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -532,23 +539,32 @@ class FactorioEnv(gym.Env):
         if n == 0:
             return 1.0, 1.0, 1.0
 
+        # numpy on a zero-copy view of the (torch) world: these tiny-grid
+        # reductions are pure dispatch overhead under torch; numpy is ~5-10x
+        # cheaper here. Values are identical (integer-count ratios).
+        wnp = self._world_CWH.numpy()
         mask = self._sol_mask
-        curr_ent_masked = self._world_CWH[Channel.ENTITIES.value][mask]
-        curr_dir_masked = self._world_CWH[Channel.DIRECTION.value][mask]
+        curr_ent_masked = wnp[_CH_ENT][mask]
+        curr_dir_masked = wnp[_CH_DIR][mask]
 
-        location_match = (curr_ent_masked != 0).float().sum().item() / n
-        entity_match = (curr_ent_masked == self._sol_orig_ent_masked).float().sum().item() / n
-        direction_match = (curr_dir_masked == self._sol_orig_dir_masked).float().sum().item() / n
+        location_match = float(np.count_nonzero(curr_ent_masked != 0)) / n
+        entity_match = float(np.count_nonzero(curr_ent_masked == self._sol_orig_ent_masked)) / n
+        direction_match = float(np.count_nonzero(curr_dir_masked == self._sol_orig_dir_masked)) / n
 
         return location_match, entity_match, direction_match
 
     def _cache_solution_match(self):
         """Precompute the episode-constant pieces of `_compute_solution_match`.
-        Called once per `reset`, after `_solved_world_CWH` is set."""
-        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
+        Called once per `reset`, after `_solved_world_CWH` is set. Cached as
+        numpy (the solved world is fixed for the episode), matching the numpy
+        reductions in `_compute_solution_match` / the per-step tile-match block."""
+        sw = self._solved_world_CWH.numpy()
+        orig_ent = sw[_CH_ENT]
+        orig_dir = sw[_CH_DIR]
+        self._sol_orig_ent = orig_ent
+        self._sol_orig_dir = orig_dir
         self._sol_mask = (orig_ent != 0)
-        self._sol_n = self._sol_mask.sum().item()
+        self._sol_n = int(np.count_nonzero(self._sol_mask))
         self._sol_orig_ent_masked = orig_ent[self._sol_mask]
         self._sol_orig_dir_masked = orig_dir[self._sol_mask]
 
@@ -784,9 +800,19 @@ class FactorioEnv(gym.Env):
             else 0.0
         )
 
+        # Single zero-copy numpy view of the (torch) world for the per-step
+        # diagnostics below. These are tiny-grid reductions whose torch cost is
+        # almost entirely per-op dispatch overhead (~31% of rollout time in the
+        # profile); numpy on the shared buffer computes the identical values far
+        # cheaper. Taken after the world is mutated above, so it is current.
+        wnp = self._world_CWH.numpy()
+        ent_np = wnp[_CH_ENT]
+        dir_np = wnp[_CH_DIR]
+        W, H = ent_np.shape
+
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
-        num_entities = self._world_CWH[Channel.ENTITIES.value].count_nonzero()
+        num_entities = int(np.count_nonzero(ent_np))
         # NOTE: weird bug with num_unreachable calculations, not planning on
         # fixing any time super soon. really the calculation should be to
         # calculate frac_reachable directly, not go via frac_unreachable
@@ -798,39 +824,29 @@ class FactorioEnv(gym.Env):
         # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT)
         # place multiple sinks or none, so this shaping term gets zeroed
         # instead of asserting.
-        sink_locs = torch.where(self._world_CWH[Channel.ENTITIES.value] == self._sink_id)
-        C, W, H = self._world_CWH.shape
-        if len(sink_locs[0]) == 1:
-            w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
-            w_belt = torch.clamp(w_sink, 1, W-2)
-            h_belt = torch.clamp(h_sink, 1, H-2)
-            final_belt_dir = self._world_CWH[Channel.DIRECTION.value, w_belt, h_belt]
-            sink_dir = self._world_CWH[Channel.DIRECTION.value, w_sink, h_sink]
-            final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
+        sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
+        if len(sink_w) == 1:
+            w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
+            w_belt = min(max(w_sink, 1), W - 2)
+            h_belt = min(max(h_sink, 1), H - 2)
+            final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
         else:
             final_dir_reward = 0.0
 
         material_cost = (
-            1.0 * (self._world_CWH[Channel.DIRECTION.value] == _TRANSPORT_BELT_ENT_ID).sum()
-            + 1.5 * (self._world_CWH[Channel.DIRECTION.value] == _UG_BELT_ENT_ID).sum()
-            + 2.0 * (self._world_CWH[Channel.DIRECTION.value] == _ASM_MACHINE_ENT_ID).sum()
+            1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
+            + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
+            + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
         )
 
         # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
-        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[Channel.DIRECTION.value]
-
-        solution_nonempty = (orig_ent != 0)
-        current_nonempty = (curr_ent != 0)
-        num_solution_nonempty = solution_nonempty.sum().item()
-        if num_solution_nonempty > 0:
-            tile_match_location = (solution_nonempty & current_nonempty).sum().item() / num_solution_nonempty
+        # Reuse the episode-constant solution arrays cached at reset.
+        if self._sol_n > 0:
+            tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
         else:
             tile_match_location = 1.0
-        tile_match_entity = (curr_ent == orig_ent).float().mean().item()
-        tile_match_direction = (curr_dir == orig_dir).float().mean().item()
+        tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
+        tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
 
         # ── Delta-based shaping diagnostics (logged in info, NOT in reward) ──
         # Computed over solution-nonempty tiles only.
