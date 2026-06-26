@@ -1,0 +1,6 @@
+timestamp_utc,branch,commit,dirty,mean_s,stddev_s,median_s,min_s,max_s,runs,rollout_total_s,update_total_s,rollout_steady_s,update_steady_s,total_timesteps,note
+2026-06-26T09:52:19Z,main,c305f5c,clean,36.393,0.745,36.543,35.198,37.238,5,22.47,9.59,11.006,4.895,8192,baseline on main
+2026-06-26T10:15:03Z,speedup/cpu-thread-count,14419d7,clean,12.846,0.059,12.834,12.773,12.909,5,5.57,2.82,2.576,1.419,8192,cap CPU intra-op threads at 6
+2026-06-26T10:25:10Z,main,897809f,clean,37.091,0.627,36.656,36.618,37.865,5,21.47,11.71,2.636,1.451,32768,re-baseline on main at 8 iterations
+2026-06-26T10:36:24Z,speedup/env-step-overhead,b6f8442,clean,35.688,0.362,35.571,35.348,36.268,5,19.54,11.43,2.401,1.432,32768,trim per-step env overhead (const hoist + solution-match cache)
+2026-06-26T11:06:13Z,speedup/numpy-diagnostics,9625ba1,clean,30.363,0.405,30.491,29.734,30.829,5,14.58,11.51,1.777,1.44,32768,numpy per-step diagnostics (recover ~87% of monitorability tax)

@@ -104,11 +104,13 @@ Cheap guards that *don't* depend on learning, in order of value:
 ## Where things live
 
 - `../results.csv` — append-only machine log (branch, mean, min, max, stddev, …).
-  Outside the repo so it survives branch switches.
+  `measure.sh` writes here (one dir above the repo) so it survives branch
+  switches. A **committed snapshot** lives at `results.csv` in the repo root.
 - `../EXPERIMENTS.md` — human narrative: ideas, hypotheses, outcomes, learnings.
-  Also outside the repo.
-- `run.sh`, `measure.sh`, `scripts/_log_result.py` — the harness, in the repo so
-  every branch inherits the identical measuring stick.
+  Live copy is outside the repo; a **committed snapshot** lives at
+  `EXPERIMENTS.md` in the repo root (so the log travels with `git push`).
+- `run.sh`, `measure.sh`, `benchmark.sh`, `scripts/_log_result.py` — the harness,
+  in the repo so every branch inherits the identical measuring stick.
 
 ## Stop criterion
 
