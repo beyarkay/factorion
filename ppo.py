@@ -38,6 +38,16 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
+# Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
+# str2item linear-scan the entity/item tables on every call, and step() calls
+# them ~10x per step with constant literals (~118k redundant scans per benchmark
+# iteration). Resolve them once at import; the values never change.
+_EMPTY_ENT_ID = str2ent("empty").value
+_ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
+_UG_BELT_ENT_ID = str2ent("underground_belt").value
+_TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
+_EMPTY_ITEM = str2item("empty")
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -512,22 +522,35 @@ class FactorioEnv(gym.Env):
 
     def _compute_solution_match(self):
         """Compute similarity to solved factory over solution-nonempty tiles only.
-        Returns (location_match, entity_match, direction_match) each in [0, 1]."""
-        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[Channel.DIRECTION.value]
+        Returns (location_match, entity_match, direction_match) each in [0, 1].
 
-        mask = (orig_ent != 0)
-        n = mask.sum().item()
+        The solution mask and the masked original ent/dir are constant for the
+        whole episode (they derive from `_solved_world_CWH`, fixed at reset), so
+        they're cached by `_cache_solution_match` instead of being recomputed on
+        every step. Only the current-world side is read here."""
+        n = self._sol_n
         if n == 0:
             return 1.0, 1.0, 1.0
 
-        location_match = (curr_ent[mask] != 0).float().sum().item() / n
-        entity_match = (curr_ent[mask] == orig_ent[mask]).float().sum().item() / n
-        direction_match = (curr_dir[mask] == orig_dir[mask]).float().sum().item() / n
+        mask = self._sol_mask
+        curr_ent_masked = self._world_CWH[Channel.ENTITIES.value][mask]
+        curr_dir_masked = self._world_CWH[Channel.DIRECTION.value][mask]
+
+        location_match = (curr_ent_masked != 0).float().sum().item() / n
+        entity_match = (curr_ent_masked == self._sol_orig_ent_masked).float().sum().item() / n
+        direction_match = (curr_dir_masked == self._sol_orig_dir_masked).float().sum().item() / n
 
         return location_match, entity_match, direction_match
+
+    def _cache_solution_match(self):
+        """Precompute the episode-constant pieces of `_compute_solution_match`.
+        Called once per `reset`, after `_solved_world_CWH` is set."""
+        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
+        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
+        self._sol_mask = (orig_ent != 0)
+        self._sol_n = self._sol_mask.sum().item()
+        self._sol_orig_ent_masked = orig_ent[self._sol_mask]
+        self._sol_orig_dir_masked = orig_dir[self._sol_mask]
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if self._train_seed is not None:
@@ -602,6 +625,9 @@ class FactorioEnv(gym.Env):
                 )
         self._kind = kind
         self._solved_world_CWH = factory.world_CWH
+        # Cache the episode-constant pieces of the per-step solution-match
+        # diagnostic now that the solved world is known.
+        self._cache_solution_match()
         # Per-factory maximum throughput: the raw items/second the complete,
         # correct factory carries. We normalize the agent's raw throughput by
         # this so a perfectly-rebuilt factory scores 1.0 regardless of its
@@ -637,9 +663,6 @@ class FactorioEnv(gym.Env):
         source_id = self._source_id
         sink_id = self._sink_id
 
-        # Mutate the world with the agent's actions
-        entity_to_be_replaced = self._world_CWH[Channel.ENTITIES.value, x, y]
-
         self.actions.append(None)
         action_is_invalid = False
         invalid_reason = {
@@ -664,27 +687,27 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason['placed_source_or_sink'] = True
             action_is_invalid = True
-        elif entity_id == str2ent('assembling_machine_1').value and item_id == str2item('empty'):
+        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM:
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
             action_is_invalid = True
             pass
-        elif entity_id not in (str2ent('empty').value, str2ent('assembling_machine_1').value) and direc == Direction.NONE.value:
+        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['placement_wo_direction'] = True
             action_is_invalid = True
             pass
-        elif entity_id == str2ent('empty').value and direc != Direction.NONE.value:
+        elif entity_id == _EMPTY_ENT_ID and direc != Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['direction_wo_entity'] = True
             action_is_invalid = True
             pass
-        elif (misc == Misc.NONE.value) and (entity_id == str2ent('underground_belt').value):
+        elif (misc == Misc.NONE.value) and (entity_id == _UG_BELT_ENT_ID):
             # model is trying to place an underground belt without giving a down/up
             invalid_reason['ug_belt_wo_up_or_down'] = True
             action_is_invalid = True
             pass
-        elif (misc != Misc.NONE.value) and (entity_id != str2ent('underground_belt').value):
+        elif (misc != Misc.NONE.value) and (entity_id != _UG_BELT_ENT_ID):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
             invalid_reason['placement_with_unneeded_misc'] = True
@@ -788,9 +811,9 @@ class FactorioEnv(gym.Env):
             final_dir_reward = 0.0
 
         material_cost = (
-            1.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('transport_belt').value).sum()
-            + 1.5 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('underground_belt').value).sum()
-            + 2.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('assembling_machine_1').value).sum()
+            1.0 * (self._world_CWH[Channel.DIRECTION.value] == _TRANSPORT_BELT_ENT_ID).sum()
+            + 1.5 * (self._world_CWH[Channel.DIRECTION.value] == _UG_BELT_ENT_ID).sum()
+            + 2.0 * (self._world_CWH[Channel.DIRECTION.value] == _ASM_MACHINE_ENT_ID).sum()
         )
 
         # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
