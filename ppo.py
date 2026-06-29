@@ -1176,8 +1176,11 @@ class AgentCNN(nn.Module):
         self.dir_head = layer_init(nn.Linear(last_chan, self.num_directions))
         self.item_head = layer_init(nn.Linear(last_chan, self.num_items))
         self.misc_head = layer_init(nn.Linear(last_chan, self.num_misc))
-        self.time_for_get_value = None
-        self.time_for_get_action_and_value = None
+        # Per-batch arange index cache for the per-tile feature gather in
+        # get_action_and_value (B is constant within a call-site: 16 in the
+        # rollout, minibatch_size in the update). Avoids reallocating an index
+        # tensor on every forward. Same values, so no effect on the signature.
+        self._arange_cache: dict = {}
 
         # Bias every head toward its "empty / NONE" slot (value 0) so a
         # freshly-initialised policy mostly proposes no-ops, matching the
@@ -1188,10 +1191,8 @@ class AgentCNN(nn.Module):
                 head.bias.data[0] = 1.0
 
     def get_value(self, x_BCWH):
-        t0 = time.time()
         encoded = self.encoder(x_BCWH)
         value_B = self.critic_head(encoded).squeeze(-1)
-        self.time_for_get_value = time.time() - t0
         return value_B
 
     def eot_prob(self, x_BCWH):
@@ -1211,8 +1212,6 @@ class AgentCNN(nn.Module):
         return self.eot_prob(x_BCWH) > threshold
 
     def get_action_and_value(self, x_BCWH, action=None):
-        t0 = time.time()
-
         # Encode input once and reuse for both action and value heads
         encoded_BCWH = self.encoder(x_BCWH)  # (B, chan3, W, H)
         value_B = self.critic_head(encoded_BCWH).squeeze(-1)
@@ -1235,7 +1234,10 @@ class AgentCNN(nn.Module):
         y_B = tile_idx_B % self.height
 
         # --- Extract per-tile features at selected (x, y) ---
-        batch_idx = torch.arange(B, device=encoded_BCWH.device)
+        batch_idx = self._arange_cache.get(B)
+        if batch_idx is None or batch_idx.device != encoded_BCWH.device:
+            batch_idx = torch.arange(B, device=encoded_BCWH.device)
+            self._arange_cache[B] = batch_idx
         tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
@@ -1305,7 +1307,6 @@ class AgentCNN(nn.Module):
             "misc": misc_B,
             "eot": eot_B,
         }
-        self.time_for_get_action_and_value = time.time() - t0
         return action_out, logp_B, entropy_B, value_B
 
 if __name__ == "__main__":
@@ -1645,15 +1646,15 @@ if __name__ == "__main__":
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
-            rewards_SE[step] = torch.as_tensor(np.array(reward), dtype=torch.float32, device=device)
+            rewards_SE[step] = torch.as_tensor(reward, dtype=torch.float32, device=device)
 
             # Done envs are rebuilt by Gymnasium's NEXT_STEP autoreset, which
             # calls FactorioEnv.reset(seed=None) -> the train_seed_base march
             # above (a fresh, never-before-seen fully-blank factory). The old
             # manual reset here passed a fixed per-idx seed and was silently
             # clobbered by that autoreset, so every env replayed one factory.
-            next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
-            next_done = torch.as_tensor(np.array(next_done), dtype=torch.float32, device=device)
+            next_obs_ECWH = torch.as_tensor(next_obs_ECWH, dtype=torch.float32, device=device)
+            next_done = torch.as_tensor(next_done, dtype=torch.float32, device=device)
 
             if "episode" in infos:
                 # The "_episode" mask indicates which environments finished this step
@@ -1737,9 +1738,11 @@ if __name__ == "__main__":
 
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio_B).mean()
                     approx_kl = ((ratio_B - 1) - logratio_B).mean()
-                    clipfracs += [((ratio_B - 1.0).abs() > args.clip_coef).float().mean().item()]
+                    # Keep the per-minibatch clipfrac on-device and convert once
+                    # after the loop (was `.item()` per minibatch = a CUDA sync
+                    # that stalled the optimiser pipeline). Logging-only.
+                    clipfracs.append(((ratio_B - 1.0).abs() > args.clip_coef).float().mean())
 
                 assert not torch.isnan(advantages_B).any(), f"Some advantages are NaN: {advantages_B=}"
                 advantages_mB = advantages_B[idxs]
@@ -1814,7 +1817,7 @@ if __name__ == "__main__":
             "losses/entropy": entropy_loss.item(),
             "losses/total": loss.item(),
             "losses/approx_kl": float(approx_kl),
-            "losses/clipfrac": float(np.mean(clipfracs)),
+            "losses/clipfrac": float(torch.stack(clipfracs).mean()) if clipfracs else 0.0,
             "losses/explained_variance": explained_var,
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.

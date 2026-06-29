@@ -165,6 +165,20 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/rollout-update-microopts — dead-code + sync-defer bundle
+- **Hypothesis**: a bundle of signature-safe rollout/update micro-opts (verified
+  iter-1 signature identical to baseline):
+  (a) **remove dead `old_approx_kl`** — `(-logratio_B).mean()` computed every
+  minibatch, never read; (b) **remove dead `time_for_get_value` /
+  `time_for_get_action_and_value`** timing (set, never read) → drops `time.time()`
+  syscalls every forward; (c) **defer `clipfracs.item()`** — was a CUDA sync per
+  minibatch, now accumulated on-GPU and converted once (mirror of attack #4);
+  (d) **cache `torch.arange(B)`** for the per-tile gather (B constant per
+  call-site); (e) **drop redundant `np.array()`** around already-numpy
+  reward/obs/done before `as_tensor`.
+- **Result**: iter-1 signature **identical** to baseline. Benchmark: TBD.
+- **Verdict**: TBD.
+
 ### speedup/blank-world-clone — clone cached blank in rejection loop — DROPPED
 - **Hypothesis**: the MOVE_ONE_ITEM rejection loop rebuilds the empty grid via
   `torch.tensor(new_world()).permute()` on each failed/degenerate trial. Cache a
