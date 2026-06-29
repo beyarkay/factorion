@@ -165,6 +165,21 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/blank-world-clone — clone cached blank in rejection loop — DROPPED
+- **Hypothesis**: the MOVE_ONE_ITEM rejection loop rebuilds the empty grid via
+  `torch.tensor(new_world()).permute()` on each failed/degenerate trial. Cache a
+  blank template once and `.clone()` it instead. `new_world()` consumes no RNG →
+  build-hash identical.
+- **Result**: build-hash identical; MOVE_ONE_ITEM microbench **12.255 vs
+  12.281 s = flat**. Resets only fire on rejection *failures* (rare — most random
+  source/sink placements connect), and `new_world()` is cheap, so there's nothing
+  to save.
+- **Verdict**: **DROP (branch discarded).** Together with #2/#8, this conclusively
+  shows **build-path micro-opts can't move the benchmark** — the whole build is
+  ~11% of rollout and these touch a sub-slice of it. Stop optimizing the builder
+  for speed; future effort goes to the per-step rollout, the update loop, and the
+  monitorability diagnostics.
+
 ### speedup/build-hoist-constants — hoist build_factory loop-invariants — DROPPED
 - **Hypothesis**: the build microbench (under cProfile) showed `str2ent` 0.162 s +
   `str2item` genexpr ~0.16 s self-time, and the rejection loops rebuild
