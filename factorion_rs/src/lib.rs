@@ -215,6 +215,7 @@ fn build_factory(
         LessonKind::MoveOneItem,
         LessonKind::MoveOneItemChaos,
         LessonKind::SplitterSplit,
+        LessonKind::SplitterMerge,
     ];
     if !PORTED.contains(&lesson) {
         return Err(PyNotImplementedError::new_err(format!(

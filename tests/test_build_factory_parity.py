@@ -27,6 +27,7 @@ PORTED_KINDS = [
     LessonKind.MOVE_ONE_ITEM,
     LessonKind.MOVE_ONE_ITEM_CHAOS,
     LessonKind.SPLITTER_SPLIT,
+    LessonKind.SPLITTER_MERGE,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -181,6 +182,32 @@ def test_splitter_split_fixed_recipe_and_caps():
         assert_parity(10, LessonKind.SPLITTER_SPLIT, seed, random_item=False)
     for seed in range(500):
         assert_parity(10, LessonKind.SPLITTER_SPLIT, seed, max_entities=8.0)
+
+
+# ── SPLITTER_MERGE ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_splitter_merge_fuzz_sizes(size):
+    """2 sources → splitter → 1 sink. Same splitter machinery as SPLIT but a
+    different path topology (two inbound, one outbound with its own fallback)."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.SPLITTER_MERGE, seed) == "built":
+            built += 1
+    assert built > 150, f"size={size}: only {built}/400 seeds built"
+
+
+def test_splitter_merge_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.SPLITTER_MERGE, seed)
+
+
+def test_splitter_merge_fixed_recipe_and_caps():
+    for seed in range(500):
+        assert_parity(10, LessonKind.SPLITTER_MERGE, seed, random_item=False)
+    for seed in range(500):
+        assert_parity(10, LessonKind.SPLITTER_MERGE, seed, max_entities=8.0)
 
 
 # ── progress guard ───────────────────────────────────────────────────────────
