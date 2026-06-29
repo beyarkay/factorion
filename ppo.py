@@ -68,6 +68,8 @@ _INVALID_REASON_KEYS = (
 # frequency (~256k enum lookups/iter in the profile).
 _CH_ENT = Channel.ENTITIES.value
 _CH_DIR = Channel.DIRECTION.value
+_CH_ITEMS = Channel.ITEMS.value
+_CH_MISC = Channel.MISC.value
 _CH_FOOTPRINT = Channel.FOOTPRINT.value
 
 moving_average_length = 500
@@ -825,11 +827,15 @@ class FactorioEnv(gym.Env):
                 # footprint, matching how lessons and place_multi_tile
                 # represent multi-tile entities. Items + misc go on the
                 # anchor only (those channels are anchor-scoped).
+                # Write through the numpy view (world_np aliases the same CPU
+                # buffer): torch scalar indexed assignment carries ~7us of
+                # per-op dispatch each, so these 4 writes were ~half the step
+                # body; numpy scalar writes are ~40x cheaper and identical.
                 for tx, ty in tiles_list:
-                    self._world_CWH[Channel.ENTITIES.value, tx, ty] = entity_id
-                    self._world_CWH[Channel.DIRECTION.value, tx, ty] = direc
-                self._world_CWH[Channel.ITEMS.value, x, y] = item_id
-                self._world_CWH[Channel.MISC.value, x, y] = misc
+                    world_np[_CH_ENT, tx, ty] = entity_id
+                    world_np[_CH_DIR, tx, ty] = direc
+                world_np[_CH_ITEMS, x, y] = item_id
+                world_np[_CH_MISC, x, y] = misc
                 placed_name = entities[entity_id].name
                 self.actions[-1] = {
                     'entity': placed_name,
