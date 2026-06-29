@@ -22,6 +22,10 @@ extern crate alloc;
 
 mod entities;
 mod graph;
+// Consumed by the `factory_gen` port (next commit); until then the methods
+// have no in-crate caller, so suppress dead-code in the standalone build.
+#[allow(dead_code)]
+mod pyrandom;
 #[cfg(test)]
 mod textual;
 mod throughput;
