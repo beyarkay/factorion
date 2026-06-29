@@ -175,8 +175,12 @@ Newest first. One entry per branch.
   400 steps vs the old scan); signature unaffected (logged-only field).
 - **Change**: `self._num_placed_entities` init at reset, `+= 1` at the valid
   placement site when the entity isn't 'empty'; `info` reads the counter.
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **28.870 s ± 0.145 s** vs 28.964 → **flat** (−0.3%, noise; the
+  benchmark's random policy gives short episodes so O(steps²) barely bites).
+  Signature **MATCHED ✓**. Commit `4352fc0`.
+- **Verdict**: **KEEP — merged (benchmark-flat, production-positive).** The
+  asymptotic win shows up only when episodes are long, i.e. in real training as
+  the policy improves — invisible to the short-episode benchmark.
 
 ### speedup/defer-entropy-syncs — accumulate policy/* entropy on-GPU
 - **Hypothesis**: the rollout accumulated the per-head entropy + eot-prob for the
