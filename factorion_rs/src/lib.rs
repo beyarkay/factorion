@@ -211,7 +211,11 @@ fn build_factory(
 ) -> PyResult<Option<PyFactory>> {
     let lesson = LessonKind::from_i64(kind)
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
-    const PORTED: &[LessonKind] = &[LessonKind::MoveOneItem, LessonKind::MoveOneItemChaos];
+    const PORTED: &[LessonKind] = &[
+        LessonKind::MoveOneItem,
+        LessonKind::MoveOneItemChaos,
+        LessonKind::SplitterSplit,
+    ];
     if !PORTED.contains(&lesson) {
         return Err(PyNotImplementedError::new_err(format!(
             "lesson kind {kind} is not yet ported to Rust"

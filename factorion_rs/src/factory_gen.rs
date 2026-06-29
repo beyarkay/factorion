@@ -15,6 +15,7 @@
 //! the Rust must build the *same list in the same order* so the draws index
 //! the same elements.
 
+use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::pyrandom::PyRandom;
 use crate::throughput::{calc_throughput, factory_score};
@@ -308,9 +309,24 @@ pub fn build_factory(
         LessonKind::MoveOneItemChaos => {
             build_move_one_item_chaos(size, &mut rng, random_item, max_entities)
         }
+        LessonKind::SplitterSplit => {
+            build_splitter_split(size, &mut rng, random_item, max_entities)
+        }
         // Remaining kinds are ported in subsequent commits.
         _ => None,
     }
+}
+
+/// `(x, y)` is within a `size x size` grid.
+fn in_grid(c: Cell, size: i64) -> bool {
+    0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size
+}
+
+/// Splitter tiles for `(sx, sy, dir)`, as `Cell`s, or `None` for an invalid
+/// direction. Mirrors `factorion_rs.py_entity_tiles(sx, sy, dir, 2, 1)`.
+fn splitter_tiles(sx: i64, sy: i64, dir: Direction) -> Option<Vec<Cell>> {
+    entity_tiles(sx as usize, sy as usize, dir, 2, 1)
+        .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect())
 }
 
 /// Place a source or sink marker (entity + facing + carried item).
@@ -490,6 +506,248 @@ fn build_move_one_item_chaos(
         let total_entities = full_belts.len();
         // Protect the source→intermediate stub.
         let protected: Vec<(usize, usize)> = cells_a
+            .iter()
+            .map(|&(x, y)| (x as usize, y as usize))
+            .collect();
+        return finish(world, total_entities, protected, count);
+    }
+    None
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_splitter_split(
+    size: usize,
+    rng: &mut PyRandom,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let pool = item_pool();
+    let mut count = (500).max(size * size * 10);
+
+    // NOTE: unlike MOVE_ONE_ITEM, the item is drawn ONCE before the loop.
+    let item_value = if random_item {
+        pool[rng.choice_index(pool.len())]
+    } else {
+        Item::ElectronicCircuit as i64
+    };
+
+    while count > 0 {
+        count -= 1;
+        let splitter_dir = DIRS[rng.choice_index(4)];
+
+        // Pick splitter anchor; both tiles must fit (up to 20 tries).
+        let mut tiles: Option<Vec<Cell>> = None;
+        for _ in 0..20 {
+            let sx = rng.randint(0, s - 1);
+            let sy = rng.randint(0, s - 1);
+            let t = splitter_tiles(sx, sy, splitter_dir);
+            if let Some(ref tt) = t {
+                if tt.iter().all(|&c| in_grid(c, s)) {
+                    tiles = t;
+                    break;
+                }
+            }
+        }
+        let tiles = match tiles {
+            Some(t) => t,
+            None => continue,
+        };
+        let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
+        let dd = splitter_dir.delta();
+
+        let input_cells: Vec<Cell> = tiles
+            .iter()
+            .map(|&(tx, ty)| (tx - dd.0, ty - dd.1))
+            .collect();
+        let output_cells: Vec<Cell> = tiles
+            .iter()
+            .map(|&(tx, ty)| (tx + dd.0, ty + dd.1))
+            .collect();
+        let all_io: Vec<Cell> = input_cells
+            .iter()
+            .chain(output_cells.iter())
+            .copied()
+            .collect();
+        if all_io.iter().any(|&c| !in_grid(c, s)) {
+            continue;
+        }
+        if all_io.iter().any(|c| tile_set.contains(c)) {
+            continue;
+        }
+
+        let reserved: HashSet<Cell> = tile_set
+            .iter()
+            .copied()
+            .chain(all_io.iter().copied())
+            .collect();
+        let mut available: Vec<Cell> = Vec::new();
+        for x in 0..s {
+            for y in 0..s {
+                if !reserved.contains(&(x, y)) {
+                    available.push((x, y));
+                }
+            }
+        }
+        if available.len() < 3 {
+            continue;
+        }
+
+        let chosen = rng.sample(&available, 3);
+        let source_pos = chosen[0];
+        let sink1_pos = chosen[1];
+        let sink2_pos = chosen[2];
+
+        let source_dir = DIRS[rng.choice_index(4)];
+        let sink1_dir = DIRS[rng.choice_index(4)];
+        let sink2_dir = DIRS[rng.choice_index(4)];
+
+        let ds = source_dir.delta();
+        let dk1 = sink1_dir.delta();
+        let dk2 = sink2_dir.delta();
+        let source_output = (source_pos.0 + ds.0, source_pos.1 + ds.1);
+        let sink1_input = (sink1_pos.0 - dk1.0, sink1_pos.1 - dk1.1);
+        let sink2_input = (sink2_pos.0 - dk2.0, sink2_pos.1 - dk2.1);
+
+        let conn_cells = [source_output, sink1_input, sink2_input];
+        if conn_cells.iter().any(|&c| !in_grid(c, s)) {
+            continue;
+        }
+        let all_fixed: HashSet<Cell> = tile_set
+            .iter()
+            .copied()
+            .chain([source_pos, sink1_pos, sink2_pos])
+            .collect();
+        let conn_set: HashSet<Cell> = conn_cells.iter().copied().collect();
+        if conn_set.len() != conn_cells.len() {
+            continue;
+        }
+        if conn_set.iter().any(|c| all_fixed.contains(c)) {
+            continue;
+        }
+
+        // Path 1: source output → one of the splitter inputs.
+        let blocked_base = &all_fixed;
+        let unused_input_buffer_0 = (input_cells[0].0 - dd.0, input_cells[0].1 - dd.1);
+        let unused_input_buffer_1 = (input_cells[1].0 - dd.0, input_cells[1].1 - dd.1);
+
+        let mut blocked1: HashSet<Cell> = blocked_base.clone();
+        blocked1.extend(output_cells.iter().copied());
+        blocked1.extend([
+            sink1_input,
+            sink2_input,
+            input_cells[1],
+            unused_input_buffer_1,
+        ]);
+        let mut path1 = find_belt_path(s, source_output, input_cells[0], splitter_dir, &blocked1);
+        if path1.is_none() {
+            let mut b1: HashSet<Cell> = blocked_base.clone();
+            b1.extend(output_cells.iter().copied());
+            b1.extend([
+                sink1_input,
+                sink2_input,
+                input_cells[0],
+                unused_input_buffer_0,
+            ]);
+            path1 = find_belt_path(s, source_output, input_cells[1], splitter_dir, &b1);
+            if path1.is_none() {
+                continue;
+            }
+        }
+        let path1 = path1?;
+        let path1_end = (path1[path1.len() - 1].0, path1[path1.len() - 1].1);
+        let (unused_input, unused_buffer) = if path1_end == input_cells[0] {
+            (input_cells[1], unused_input_buffer_1)
+        } else {
+            (input_cells[0], unused_input_buffer_0)
+        };
+        let path1_cells = belt_cell_set(&path1);
+
+        let unused_block = [unused_input, unused_buffer];
+        let sink1_output = (sink1_pos.0 + dk1.0, sink1_pos.1 + dk1.1);
+        let sink2_output = (sink2_pos.0 + dk2.0, sink2_pos.1 + dk2.1);
+        let sink_buffers = [sink1_output, sink2_output];
+
+        // Path 2 + 3: try both sink assignments.
+        let mut found: Option<(Vec<Belt>, Vec<Belt>)> = None;
+        for (out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir) in [
+            (
+                output_cells[0],
+                output_cells[1],
+                sink1_input,
+                sink1_dir,
+                sink2_input,
+                sink2_dir,
+            ),
+            (
+                output_cells[0],
+                output_cells[1],
+                sink2_input,
+                sink2_dir,
+                sink1_input,
+                sink1_dir,
+            ),
+        ] {
+            let mut blocked2: HashSet<Cell> = blocked_base.clone();
+            blocked2.extend(path1_cells.iter().copied());
+            blocked2.extend([sk_b, out_b]);
+            blocked2.extend(input_cells.iter().copied());
+            blocked2.extend(unused_block);
+            blocked2.extend(sink_buffers);
+            let p2 = match find_belt_path(s, out_a, sk_a, sk_a_dir, &blocked2) {
+                Some(p) => p,
+                None => continue,
+            };
+            let p2_cells = belt_cell_set(&p2);
+            let mut blocked3: HashSet<Cell> = blocked_base.clone();
+            blocked3.extend(path1_cells.iter().copied());
+            blocked3.extend(p2_cells.iter().copied());
+            blocked3.insert(out_a);
+            blocked3.extend(input_cells.iter().copied());
+            blocked3.extend(unused_block);
+            blocked3.extend(sink_buffers);
+            if let Some(p3) = find_belt_path(s, out_b, sk_b, sk_b_dir, &blocked3) {
+                found = Some((p2, p3));
+                break;
+            }
+        }
+        let (path2, path3) = match found {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let total_entities = path1.len() + path2.len() + path3.len() + 1;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_marker(&mut world, source_pos, Item::Source, source_dir, item_value);
+        place_marker(&mut world, sink1_pos, Item::Sink, sink1_dir, item_value);
+        place_marker(&mut world, sink2_pos, Item::Sink, sink2_dir, item_value);
+        for &(tx, ty) in &tiles {
+            world.set(
+                tx as usize,
+                ty as usize,
+                Channel::Entities,
+                Item::Splitter as i64,
+            );
+            world.set(
+                tx as usize,
+                ty as usize,
+                Channel::Direction,
+                splitter_dir as i64,
+            );
+        }
+        place_belts(&mut world, &path1);
+        place_belts(&mut world, &path2);
+        place_belts(&mut world, &path3);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        let protected: Vec<(usize, usize)> = tiles
             .iter()
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();

@@ -26,6 +26,7 @@ from factorion import LessonKind, build_factory
 PORTED_KINDS = [
     LessonKind.MOVE_ONE_ITEM,
     LessonKind.MOVE_ONE_ITEM_CHAOS,
+    LessonKind.SPLITTER_SPLIT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -152,6 +153,34 @@ def test_move_one_item_chaos_fixed_recipe_and_caps():
         assert_parity(
             10, LessonKind.MOVE_ONE_ITEM_CHAOS, seed, max_entities=6.0
         )
+
+
+# ── SPLITTER_SPLIT ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_splitter_split_fuzz_sizes(size):
+    """1 source → splitter → 2 sinks. Exercises the splitter geometry,
+    random.sample over the free cells (both pool and set strategies across
+    sizes), the dual sink-assignment search, and the protected splitter
+    tiles."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.SPLITTER_SPLIT, seed) == "built":
+            built += 1
+    assert built > 150, f"size={size}: only {built}/400 seeds built"
+
+
+def test_splitter_split_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.SPLITTER_SPLIT, seed)
+
+
+def test_splitter_split_fixed_recipe_and_caps():
+    for seed in range(500):
+        assert_parity(10, LessonKind.SPLITTER_SPLIT, seed, random_item=False)
+    for seed in range(500):
+        assert_parity(10, LessonKind.SPLITTER_SPLIT, seed, max_entities=8.0)
 
 
 # ── progress guard ───────────────────────────────────────────────────────────
