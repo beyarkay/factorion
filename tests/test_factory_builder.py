@@ -201,6 +201,76 @@ class TestRenderGraphPng:
         assert flat.count("transport_belt") >= 3
 
 
+# ── Lesson generation + entity clearing ─────────────────────────────────────
+
+class TestLoadLesson:
+    """_load_lesson builds a factory of the chosen lesson kind and,
+    when asked, blanks N entity units via the same blank_entities path
+    SFT uses to make (partial, completion) training pairs."""
+
+    @staticmethod
+    def _placed_count(grid: list[list[dict]]) -> int:
+        """Count cells holding any entity (source/sink included)."""
+        return sum(c["entity"] != "empty" for row in grid for c in row)
+
+    def test_full_factory_when_zero(self):
+        """num_missing_entities=0 (the default) leaves the factory fully
+        generated: nothing removed, grid is square at the requested size."""
+        out = fb._load_lesson("MOVE_ONE_ITEM", seed=0, size=11)
+        assert out["num_removed"] == 0
+        assert out["size"] == 11
+        assert len(out["grid"]) == 11 and len(out["grid"][0]) == 11
+        assert out["next_seed"] == out["used_seed"] + 1
+        assert self._placed_count(out["grid"]) > 0
+
+    def test_blanking_removes_requested_units(self):
+        """Asking to clear N units removes exactly N (when the factory
+        has at least N removable units) — N fewer entities on the grid
+        than the fully-generated version at the same seed."""
+        full = fb._load_lesson("MOVE_ONE_ITEM", seed=0, size=11)
+        partial = fb._load_lesson(
+            "MOVE_ONE_ITEM", seed=0, size=11, num_missing_entities=2
+        )
+        assert partial["num_removed"] == 2
+        assert (
+            self._placed_count(partial["grid"])
+            == self._placed_count(full["grid"]) - 2
+        )
+
+    def test_blanking_is_deterministic(self):
+        """Same (kind, seed, N) → identical partial grid, so the UI is
+        reproducible across repeated clicks."""
+        a = fb._load_lesson("MOVE_ONE_ITEM", seed=3, size=11, num_missing_entities=2)
+        b = fb._load_lesson("MOVE_ONE_ITEM", seed=3, size=11, num_missing_entities=2)
+        assert a["used_seed"] == b["used_seed"]
+        assert a["grid"] == b["grid"]
+
+    def test_over_removal_caps_at_removable(self):
+        """Requesting more than the factory has removable clears every
+        removable unit (capped at total_entities) but keeps the protected
+        source/sink, so some entities always survive."""
+        full = fb._load_lesson("MOVE_ONE_ITEM", seed=0, size=11)
+        out = fb._load_lesson(
+            "MOVE_ONE_ITEM", seed=0, size=11, num_missing_entities=999
+        )
+        assert out["num_removed"] == out["total_entities"]
+        # Only the protected (source/sink) entities remain.
+        assert (
+            self._placed_count(out["grid"])
+            == self._placed_count(full["grid"]) - out["total_entities"]
+        )
+        assert self._placed_count(out["grid"]) > 0
+
+    def test_negative_clamps_to_zero(self):
+        """A negative request is clamped to 0 (fully generated) rather
+        than raising — the frontend already guards, but the server is
+        defensive too."""
+        out = fb._load_lesson(
+            "MOVE_ONE_ITEM", seed=0, size=11, num_missing_entities=-5
+        )
+        assert out["num_removed"] == 0
+
+
 # ── Model loading + cache ───────────────────────────────────────────────────
 
 class TestCheckpointLoading:
