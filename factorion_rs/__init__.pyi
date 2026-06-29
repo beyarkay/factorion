@@ -51,3 +51,22 @@ def py_items() -> dict[int, ItemProps]:
 def py_recipes() -> dict[str, RecipeData]:
     """Every recipe keyed by item name -> {consumes, produces, crafting_time}."""
     ...
+
+def build_factory(
+    size: int,
+    kind: int,
+    seed: int,
+    random_item: bool = True,
+    max_entities: float = float("inf"),
+) -> tuple[NDArray[np.int64], int, list[tuple[int, int]]] | None:
+    """Rust port of ``factorion.build_factory``.
+
+    Builds a complete, valid factory of the given lesson ``kind`` (an int
+    ``LessonKind`` value), drawing from the same CPython MT19937 stream as
+    Python so the result is byte-identical for the same ``(size, kind,
+    seed)``. Returns ``(world, total_entities, protected_positions)`` where
+    ``world`` is a ``(W, H, C)`` int64 array, or ``None`` when rejection
+    sampling is exhausted. Raises ``NotImplementedError`` for a lesson kind
+    not yet ported, ``ValueError`` for an unknown kind.
+    """
+    ...

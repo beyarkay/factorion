@@ -129,6 +129,8 @@ impl PyRandom {
     }
 
     /// `random.random()` — 53-bit float in [0, 1) via `genrand_res53`.
+    /// (Consumed by the FROM_BLUEPRINT lesson port.)
+    #[allow(dead_code)]
     pub fn random(&mut self) -> f64 {
         let a = (self.genrand_uint32() >> 5) as f64; // 27 bits
         let b = (self.genrand_uint32() >> 6) as f64; // 26 bits
@@ -173,6 +175,8 @@ impl PyRandom {
     }
 
     /// `random.randint(a, b)` — inclusive on both ends, `a <= b`.
+    /// (Consumed by the assembler/underground lesson ports.)
+    #[allow(dead_code)]
     pub fn randint(&mut self, a: i64, b: i64) -> i64 {
         debug_assert!(a <= b);
         let width = (b - a + 1) as u64;
@@ -199,6 +203,8 @@ impl PyRandom {
 
     /// `random.sample(population, k)` — returns `k` distinct elements in
     /// selection order, reproducing CPython's pool/set dual strategy.
+    /// (Consumed by the splitter/assembler lesson ports.)
+    #[allow(dead_code)]
     pub fn sample<T: Clone>(&mut self, population: &[T], k: usize) -> Vec<T> {
         let n = population.len();
         debug_assert!(k <= n);

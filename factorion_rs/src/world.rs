@@ -210,6 +210,13 @@ impl World {
     pub fn height(&self) -> usize {
         self.height
     }
+
+    /// Consume the world, returning its flat `(W, H, C)` C-contiguous data
+    /// buffer along with the dimensions — ready to hand to numpy.
+    #[allow(dead_code)]
+    pub fn into_whc(self) -> (Vec<i64>, usize, usize, usize) {
+        (self.data, self.width, self.height, self.channels)
+    }
 }
 
 #[cfg(test)]

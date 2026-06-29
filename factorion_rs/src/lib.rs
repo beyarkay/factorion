@@ -21,10 +21,8 @@
 extern crate alloc;
 
 mod entities;
+mod factory_gen;
 mod graph;
-// Consumed by the `factory_gen` port (next commit); until then the methods
-// have no in-crate caller, so suppress dead-code in the standalone build.
-#[allow(dead_code)]
 mod pyrandom;
 #[cfg(test)]
 mod textual;
@@ -33,7 +31,9 @@ mod types;
 mod world;
 
 #[cfg(feature = "pyo3-bindings")]
-use numpy::PyReadonlyArray3;
+use numpy::{IntoPyArray, PyReadonlyArray3};
+#[cfg(feature = "pyo3-bindings")]
+use pyo3::exceptions::PyNotImplementedError;
 #[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
 #[cfg(feature = "pyo3-bindings")]
@@ -41,6 +41,8 @@ use pyo3::types::PyDict;
 
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
+#[cfg(feature = "pyo3-bindings")]
+use factory_gen::{build_factory as rs_build_factory, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
@@ -182,6 +184,52 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(outer.into())
 }
 
+/// Python-facing shape of a built factory: the world tensor, the count of
+/// removable entity units, and the protected (never-blanked) positions.
+#[cfg(feature = "pyo3-bindings")]
+type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>);
+
+/// Build a complete, valid factory of the given lesson `kind` — the Rust
+/// port of `factorion.py::build_factory`, drawing from the same CPython
+/// MT19937 stream so the result is byte-identical for the same
+/// `(size, kind, seed)`.
+///
+/// Returns `(world, total_entities, protected_positions)` where `world` is
+/// a `(W, H, C)` int64 array (the same shape `simulate_throughput` takes),
+/// or `None` when rejection sampling is exhausted. Raises
+/// `NotImplementedError` for a lesson kind not yet ported to Rust.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+#[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
+fn build_factory(
+    py: Python<'_>,
+    size: usize,
+    kind: i64,
+    seed: i64,
+    random_item: bool,
+    max_entities: f64,
+) -> PyResult<Option<PyFactory>> {
+    let lesson = LessonKind::from_i64(kind)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
+    const PORTED: &[LessonKind] = &[LessonKind::MoveOneItem];
+    if !PORTED.contains(&lesson) {
+        return Err(PyNotImplementedError::new_err(format!(
+            "lesson kind {kind} is not yet ported to Rust"
+        )));
+    }
+    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item, max_entities)
+    {
+        Some(b) => b,
+        None => return Ok(None),
+    };
+    let total = built.total_entities;
+    let protected = built.protected_positions.clone();
+    let (data, w, h, c) = built.world.into_whc();
+    let arr = numpy::ndarray::Array3::from_shape_vec((w, h, c), data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(Some((arr.into_pyarray(py).unbind(), total, protected)))
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -190,5 +238,6 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
+    m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     Ok(())
 }
