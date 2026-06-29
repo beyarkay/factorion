@@ -1615,7 +1615,22 @@ if __name__ == "__main__":
             # eot ("declare done") is part of the env action now: the env
             # terminates on it, so RecordEpisodeStatistics counts eot-ended
             # episodes and next_done picks them up via `terminations`.
-            action_ED_numpy = {k: v.cpu().numpy() for k, v in action_ED.items()}
+            #
+            # Move the whole action to host in ONE device->host copy via the
+            # already-stacked action_EA (B, 7) instead of six separate
+            # `.cpu().numpy()` calls (each forces its own CUDA sync). Then slice
+            # the columns on the host. Values are identical to the per-head dict;
+            # eot becomes int64 here (it was a Bernoulli float) but the env reads
+            # it as `int(action["eot"])`, so the env sees the same value.
+            action_EA_np = action_EA.cpu().numpy()  # (B, 7), single transfer
+            action_ED_numpy = {
+                "xy": action_EA_np[:, 0:2],
+                "entity": action_EA_np[:, 2],
+                "direction": action_EA_np[:, 3],
+                "item": action_EA_np[:, 4],
+                "misc": action_EA_np[:, 5],
+                "eot": action_EA_np[:, 6],
+            }
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)

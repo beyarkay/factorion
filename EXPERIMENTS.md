@@ -165,6 +165,20 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/batch-action-transfer — one device→host copy for the action
+- **Hypothesis**: on GPU the rollout's `get_action_and_value` (1.7 s cum) and the
+  per-step transfer of the sampled action are the per-step costs. The action was
+  moved host-side via `{k: v.cpu().numpy() for k, v in action_ED.items()}` — six
+  separate `.cpu()` calls, each forcing its own CUDA sync (~6 syncs/step × 256
+  steps). The rollout already builds the stacked `action_EA` (B, 7) on GPU; copy
+  *that* once and slice the columns on the host → 1 sync/step instead of 6.
+  Action values handed to the env are identical (eot goes float→int64 but the env
+  reads `int(action["eot"])`), so the signature must MATCH.
+- **Change**: replace the six-way dict-comprehension transfer with a single
+  `action_EA.cpu().numpy()` + column slicing into the same 6-key dict.
+- **Result**: TBD.
+- **Verdict**: TBD.
+
 ### speedup/path-to-belts-revmap — O(1) reverse-map in _path_to_belts
 - **Hypothesis**: a focused (non-cProfile-distorted by relative ranking)
   microbench of `build_factory` shows the cost is NOT the torch ops in
