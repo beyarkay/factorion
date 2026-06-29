@@ -3,3 +3,7 @@ timestamp_utc,branch,commit,dirty,seeds,reached,ttq_mean_s,ttq_std_s,ttq_min_s,t
 2026-06-29T14:54:18Z,main,43ed1d4,dirty,5,5/5,63.1,9.81,51.86,75.75,25.0,4.34,--critic-warmup 5 --learning-rate 7e-4,warmup5 + lr7e-4
 2026-06-29T15:19:21Z,main,43ed1d4,dirty,5,5/5,83.01,13.98,66.76,99.33,30.0,5.83,--critic-warmup 5 --learning-rate 7e-4 --amp,warmup5 + lr7e-4 + AMP bf16
 2026-06-29T15:37:33Z,main,9a65c48,clean,5,5/5,62.72,9.83,51.16,75.01,25.0,4.34,--critic-warmup 5 --learning-rate 7e-4,"warmup5 + lr7e-4 (FINAL, clean tree, +step-simplify)"
+2026-06-29T16:28:05Z,speed/rollout-batched-envstep,6325cfa,dirty,5,5/5,62.9,9.62,51.74,75.28,25.0,4.34,,NEW DEFAULT baked-in w5+lr7e-4 (sanity baseline)
+2026-06-29T16:42:09Z,speed/rollout-batched-envstep,6325cfa,dirty,5,5/5,67.43,14.5,53.8,91.26,31.4,6.89,,fused categorical/bernoulli sampling (no torch.distributions)
+2026-06-29T17:10:36Z,speed/rollout-batched-envstep,1badc7a,dirty,5,5/5,45.36,5.19,40.52,55.24,26.2,3.54,,fused + compiled inference (reduce-overhead CUDA graphs)
+2026-06-29T17:20:09Z,speed/rollout-batched-envstep,584e157,dirty,5,5/5,41.37,4.95,35.44,49.64,27.6,4.92,,fused + compiled inference + compiled update (Phase B)
