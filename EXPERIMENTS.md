@@ -176,8 +176,13 @@ Newest first. One entry per branch.
   (d) **cache `torch.arange(B)`** for the per-tile gather (B constant per
   call-site); (e) **drop redundant `np.array()`** around already-numpy
   reward/obs/done before `as_tensor`.
-- **Result**: iter-1 signature **identical** to baseline. Benchmark: TBD.
-- **Verdict**: TBD.
+- **Result**: **28.785 s ± 0.175 vs 28.870 → flat** (−0.3%, noise; rollout_steady
+  2.002, update_steady 0.617 — both noise). Signature **MATCHED ✓**. Commit
+  `89bf745`.
+- **Verdict**: **KEEP — merged (benchmark-flat, cleaner + production-positive).**
+  Removes genuinely dead compute (`old_approx_kl`, `time_for_*`) and a per-minibatch
+  CUDA sync (clipfrac). Flat on this tiny-net GPU benchmark (same story as the
+  other sync-reduction attacks) but strictly less work; worth keeping.
 
 ### speedup/blank-world-clone — clone cached blank in rejection loop — DROPPED
 - **Hypothesis**: the MOVE_ONE_ITEM rejection loop rebuilds the empty grid via
