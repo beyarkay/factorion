@@ -28,6 +28,7 @@ PORTED_KINDS = [
     LessonKind.MOVE_ONE_ITEM_CHAOS,
     LessonKind.SPLITTER_SPLIT,
     LessonKind.SPLITTER_MERGE,
+    LessonKind.ASSEMBLE_1IN_1OUT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -208,6 +209,32 @@ def test_splitter_merge_fixed_recipe_and_caps():
         assert_parity(10, LessonKind.SPLITTER_MERGE, seed, random_item=False)
     for seed in range(500):
         assert_parity(10, LessonKind.SPLITTER_MERGE, seed, max_entities=8.0)
+
+
+# ── ASSEMBLE_1IN_1OUT ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_assemble_1in1out_fuzz_sizes(size):
+    """source → inserter → 3×3 assembler (recipe) → inserter → sink. Exercises
+    the recipe choice, assembler anchoring, perimeter-slot sampling, and the
+    inserter/belt routing. The recipe item lands in the ITEMS channel of the
+    assembler tiles — a path that pure-belt lessons never touch."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.ASSEMBLE_1IN_1OUT, seed) == "built":
+            built += 1
+    assert built > 150, f"size={size}: only {built}/400 seeds built"
+
+
+def test_assemble_1in1out_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.ASSEMBLE_1IN_1OUT, seed)
+
+
+def test_assemble_1in1out_caps():
+    for seed in range(500):
+        assert_parity(10, LessonKind.ASSEMBLE_1IN_1OUT, seed, max_entities=10.0)
 
 
 # ── progress guard ───────────────────────────────────────────────────────────

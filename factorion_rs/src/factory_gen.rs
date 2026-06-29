@@ -19,7 +19,7 @@ use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::pyrandom::PyRandom;
 use crate::throughput::{calc_throughput, factory_score};
-use crate::types::{all_items, Channel, Direction, Item};
+use crate::types::{all_items, all_recipes, Channel, Direction, Item, Recipe};
 use crate::world::World;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -87,6 +87,46 @@ fn delta_to_dir(dx: i64, dy: i64) -> Option<Direction> {
 fn item_pool() -> Vec<i64> {
     all_items().iter().map(|&i| i as i64).collect()
 }
+
+/// `[(name, r) for name, r in recipes.items() if len(consumes)==1 and len(produces)==1]`
+/// in `all_recipes()` order — the `random.choice` pool for 1-in-1-out lessons.
+fn one_in_one_out() -> Vec<(Item, Recipe)> {
+    all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
+        .collect()
+}
+
+/// `[(name, r) for ... if len(consumes)==2 and len(produces)==1]`.
+#[allow(dead_code)] // consumed by the ASSEMBLE_2IN_1OUT port
+fn two_in_one_out() -> Vec<(Item, Recipe)> {
+    all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.consumes.len() == 2 && r.produces.len() == 1)
+        .collect()
+}
+
+/// The 12 non-corner perimeter slots around a 3×3 assembler anchored at
+/// `(ax, ay)`, as `(offset_x, offset_y, input_inserter_dir, output_inserter_dir)`.
+/// Same order as Python's `perim_slots` so `random.sample` indexes match.
+const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
+    // North side (ddy = -1)
+    (0, -1, Direction::South, Direction::North),
+    (1, -1, Direction::South, Direction::North),
+    (2, -1, Direction::South, Direction::North),
+    // South side (ddy = 3)
+    (0, 3, Direction::North, Direction::South),
+    (1, 3, Direction::North, Direction::South),
+    (2, 3, Direction::North, Direction::South),
+    // West side (ddx = -1)
+    (-1, 0, Direction::East, Direction::West),
+    (-1, 1, Direction::East, Direction::West),
+    (-1, 2, Direction::East, Direction::West),
+    // East side (ddx = 3)
+    (3, 0, Direction::West, Direction::East),
+    (3, 1, Direction::West, Direction::East),
+    (3, 2, Direction::West, Direction::East),
+];
 
 /// Throughput score of a fully-placed world — the Rust-native equivalent of
 /// `factorion_rs.simulate_throughput(world)[0]` that Python calls.
@@ -315,6 +355,7 @@ pub fn build_factory(
         LessonKind::SplitterMerge => {
             build_splitter_merge(size, &mut rng, random_item, max_entities)
         }
+        LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
         // Remaining kinds are ported in subsequent commits.
         _ => None,
     }
@@ -977,6 +1018,188 @@ fn build_splitter_merge(
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();
         return finish(world, total_entities, protected, count);
+    }
+    None
+}
+
+/// Place a 3×3 assembler anchored at `(ax, ay)`, every tile facing North and
+/// tagged with the recipe item — matching Python's assembler placement.
+fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) {
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let (x, y) = ((ax + dx) as usize, (ay + dy) as usize);
+            world.set(x, y, Channel::Entities, Item::AssemblingMachine1 as i64);
+            world.set(x, y, Channel::Direction, Direction::North as i64);
+            world.set(x, y, Channel::Items, recipe_item_value);
+        }
+    }
+}
+
+/// Place an inserter at `pos` facing `dir`.
+fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
+    let (x, y) = (pos.0 as usize, pos.1 as usize);
+    world.set(x, y, Channel::Entities, Item::Inserter as i64);
+    world.set(x, y, Channel::Direction, dir as i64);
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_assemble_1in1out(
+    size: usize,
+    rng: &mut PyRandom,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let recipes = one_in_one_out();
+    // Python raises if the list is empty; the recipe table guarantees it isn't.
+    let mut count = (500).max(size * size * 12);
+
+    while count > 0 {
+        count -= 1;
+
+        // Pick recipe + items.
+        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        let input_item_value = recipe.consumes.first().0 as i64;
+        let output_item_value = recipe.produces.first().0 as i64;
+        let recipe_item_value = recipe_key as i64;
+
+        let ax = rng.randint(0, s - 3);
+        let ay = rng.randint(0, s - 3);
+        let asm_tiles: HashSet<Cell> = (0..3)
+            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+            .collect();
+
+        // Distinct input + output perimeter slots.
+        let chosen = rng.sample(&PERIM_SLOTS, 2);
+        let in_slot = chosen[0];
+        let out_slot = chosen[1];
+        let in_inserter_dir = in_slot.2;
+        let out_inserter_dir = out_slot.3;
+
+        let in_inserter_pos = (ax + in_slot.0, ay + in_slot.1);
+        let out_inserter_pos = (ax + out_slot.0, ay + out_slot.1);
+        let in_dd = in_inserter_dir.delta();
+        let out_dd = out_inserter_dir.delta();
+        let in_pickup = (in_inserter_pos.0 - in_dd.0, in_inserter_pos.1 - in_dd.1);
+        let out_drop = (out_inserter_pos.0 + out_dd.0, out_inserter_pos.1 + out_dd.1);
+
+        let key_cells = [in_inserter_pos, out_inserter_pos, in_pickup, out_drop];
+        if key_cells.iter().any(|&c| !in_grid(c, s)) {
+            continue;
+        }
+        if key_cells.iter().collect::<HashSet<_>>().len() != key_cells.len() {
+            continue;
+        }
+        if key_cells.iter().any(|c| asm_tiles.contains(c)) {
+            continue;
+        }
+
+        let all_perim: HashSet<Cell> = PERIM_SLOTS
+            .iter()
+            .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
+            .filter(|&c| in_grid(c, s))
+            .collect();
+        let reserved: HashSet<Cell> = asm_tiles
+            .iter()
+            .copied()
+            .chain(key_cells.iter().copied())
+            .chain(all_perim.iter().copied())
+            .collect();
+        let mut available: Vec<Cell> = Vec::new();
+        for x in 0..s {
+            for y in 0..s {
+                if !reserved.contains(&(x, y)) {
+                    available.push((x, y));
+                }
+            }
+        }
+        if available.len() < 2 {
+            continue;
+        }
+
+        let chosen = rng.sample(&available, 2);
+        let source_pos = chosen[0];
+        let sink_pos = chosen[1];
+        let source_dir = DIRS[rng.choice_index(4)];
+        let sink_dir = DIRS[rng.choice_index(4)];
+
+        let ds = source_dir.delta();
+        let dk = sink_dir.delta();
+        let source_output = (source_pos.0 + ds.0, source_pos.1 + ds.1);
+        let sink_input = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
+
+        if !in_grid(source_output, s) || !in_grid(sink_input, s) {
+            continue;
+        }
+        if reserved.contains(&source_output) || reserved.contains(&sink_input) {
+            continue;
+        }
+        if source_output == sink_input {
+            continue;
+        }
+
+        // Path 1: source_output → in_pickup.
+        let mut blocked1: HashSet<Cell> = asm_tiles.clone();
+        blocked1.extend([
+            in_inserter_pos,
+            out_inserter_pos,
+            source_pos,
+            sink_pos,
+            sink_input,
+            out_drop,
+        ]);
+        let path1 = match find_belt_path(s, source_output, in_pickup, in_inserter_dir, &blocked1) {
+            Some(p) => p,
+            None => continue,
+        };
+        let path1_cells = belt_cell_set(&path1);
+
+        // Path 2: out_drop → sink_input.
+        let mut blocked2: HashSet<Cell> = asm_tiles.clone();
+        blocked2.extend([
+            in_inserter_pos,
+            out_inserter_pos,
+            source_pos,
+            sink_pos,
+            in_pickup,
+            source_output,
+        ]);
+        blocked2.extend(path1_cells.iter().copied());
+        let path2 = match find_belt_path(s, out_drop, sink_input, sink_dir, &blocked2) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let total_entities = path1.len() + path2.len() + 3;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_marker(
+            &mut world,
+            source_pos,
+            Item::Source,
+            source_dir,
+            input_item_value,
+        );
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            output_item_value,
+        );
+        place_assembler(&mut world, ax, ay, recipe_item_value);
+        place_inserter(&mut world, in_inserter_pos, in_inserter_dir);
+        place_inserter(&mut world, out_inserter_pos, out_inserter_dir);
+        place_belts(&mut world, &path1);
+        place_belts(&mut world, &path2);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
