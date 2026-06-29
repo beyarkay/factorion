@@ -39,9 +39,12 @@ if [ ! -f "$CKPT" ]; then
   exit 1
 fi
 
-# Canonical SFT->PPO finetune recipe (the j0s5y2mc reference run) + the
-# time-to-quality target. Everything here is a DEFAULT: append flags on the
-# command line to override any of them.
+# SFT->PPO finetune recipe (from the j0s5y2mc reference run) + the
+# time-to-quality target. NOTE: learning-rate 7e-4 and critic-warmup 5 are the
+# confirmed time-to-quality win (62.7 s vs 113 s for the original lr1.6e-4 /
+# warmup10 recipe; see QUALITY_BENCHMARK.md Findings) and are now baked in as
+# the baseline. Everything here is a DEFAULT: append flags on the command line
+# to override any of them.
 WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
   --seed 1 \
   --size 11 \
@@ -50,11 +53,11 @@ WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
   --num-steps 256 \
   --num-minibatches 32 \
   --update-epochs 8 \
-  --learning-rate 1.619489860053545e-4 \
+  --learning-rate 7e-4 \
   --ent-coef-start 7.05347e-4 --ent-coef-end 7.92625e-4 \
   --gae-lambda 0.9021936994100002 --gamma 0.9957335539938416 \
   --max-grad-norm 1.979 --clip-coef 0.2746 --target-kl 0.02 \
-  --critic-warmup 10 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
+  --critic-warmup 5 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
   --layer1 93 --layer2 69 --layer3 96 \
   --eval-every 0 \
   --target-metric rollout/reward \
