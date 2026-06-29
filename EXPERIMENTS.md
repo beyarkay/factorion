@@ -175,8 +175,11 @@ Newest first. One entry per branch.
   #1). Identical values (world unmutated at that point) → signature safe.
 - **Change**: `world_np = self._world_CWH.numpy()`; read
   `world_np[_CH_FOOTPRINT/_CH_ENT, tx, ty]`; add `_CH_FOOTPRINT` constant.
-- **Result**: signature **MATCHED ✓**; tests pass. Benchmark: TBD.
-- **Verdict**: TBD.
+- **Result**: **23.889 s ± 0.228 vs 24.427 → −2.2%** (ranges separated).
+  **rollout_steady 1.432 → 1.362 s/iter (−4.9%)**. Signature **MATCHED ✓**; tests
+  pass. Commit `f2be109`.
+- **Verdict**: **KEEP — merged.** Same numpy-view lesson as attack #1, now on the
+  validity hot path that surfaced once the diagnostics were gone.
 
 ### speedup/skip-info-nonterminal — skip the per-step info dict in training
 - **Hypothesis**: follow-on to gate-diagnostics. `step()` still built the full
