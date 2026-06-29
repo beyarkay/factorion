@@ -165,6 +165,18 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/defer-entropy-syncs — accumulate policy/* entropy on-GPU
+- **Hypothesis**: the rollout accumulated the per-head entropy + eot-prob for the
+  `policy/*` logs via `float(e)` every step — 7 device→host CUDA syncs/step ×
+  256 steps, purely for logging (these never feed the loss). Sum the GPU scalars
+  on-device and convert to float once at log time → 8 syncs/iter, not 1792.
+  Logging-only, so signature must MATCH; the logged value is identical up to
+  float32-vs-float64 accumulation order (irrelevant to the gate).
+- **Change**: `_head_ent_sum[h] = _head_ent_sum[h] + e` (no per-step `float`);
+  `float(...)` only where `policy/entropy*` are emitted.
+- **Result**: TBD.
+- **Verdict**: TBD.
+
 ### speedup/batch-action-transfer — one device→host copy for the action
 - **Hypothesis**: on GPU the rollout's `get_action_and_value` (1.7 s cum) and the
   per-step transfer of the sampled action are the per-step costs. The action was

@@ -1594,9 +1594,13 @@ if __name__ == "__main__":
                 values_SE[step] = value_E
                 # Accumulate the acting policy's per-head entropy + eot prob
                 # (stashed by get_action_and_value) for the policy/* metrics.
+                # Keep the running sums on-device (each `e` is a GPU scalar) so we
+                # do NOT force a CUDA sync per step — float()-ing them every step
+                # was 7 device->host syncs × num_steps purely for logging. Sum on
+                # GPU and convert once at log time (these never feed the loss).
                 for h, e in agent._last_head_entropy.items():
-                    _head_ent_sum[h] += float(e)
-                _eot_prob_sum += float(agent._last_eot_prob)
+                    _head_ent_sum[h] = _head_ent_sum[h] + e
+                _eot_prob_sum = _eot_prob_sum + agent._last_eot_prob
 
                 x_B, y_B = action_ED["xy"].unbind(dim=1)
                 ent_B = action_ED["entity"]
@@ -1807,8 +1811,8 @@ if __name__ == "__main__":
             "losses/explained_variance": explained_var,
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.
-            "policy/entropy": sum(_head_ent_sum.values()) / n_steps,
-            "policy/eot_prob": _eot_prob_sum / n_steps,
+            "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,
+            "policy/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
@@ -1820,7 +1824,7 @@ if __name__ == "__main__":
             "perf/eval_seconds": eval_seconds,
         }
         for h, s in _head_ent_sum.items():
-            iter_metrics[f"policy/entropy_{h}"] = s / n_steps
+            iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
         iter_metrics.update(eval_metrics)
 
         if iteration == 1:
