@@ -156,8 +156,20 @@ Newest first. One entry per branch.
   reordering would change the chosen path → the factory → the signature).
 - **Change**: add module-level `DELTA_TO_DIR = {delta: d}`; rewrite the
   `_path_to_belts` inner loop to `DELTA_TO_DIR.get((dr, dc))`.
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **29.090 s ± 0.260 s** vs 29.096 baseline → **flat** (−0.02%, deep
+  inside noise). Signature **MATCHED ✓** (first real invariance check against the
+  GPU baseline — confirms pure-speed). rollout_steady 2.028 → 2.035 (noise).
+  Commit `e60e6de`.
+- **Verdict**: **KEEP — merged to `main` (benchmark-flat, production-positive).**
+  Per the human's steer: a correct, signature-identical precalc that's strictly
+  faster per call is worth keeping even when invisible to the 5-min benchmark,
+  because the rollout runs millions of times in real training. **Key learning:
+  the build/reset path is NOT a big share of the honest benchmark's rollout —
+  cProfile badly overstated it** (per-call instrumentation tax inflates
+  Python-heavy fns like `_path_to_belts`/`_bfs_shortest`). So further builder
+  micro-opts won't move the *benchmark* much (they still help production).
+  **For benchmark-visible wins, pivot to the per-step rollout loop (256 steps ×
+  16 envs: NN forward + SyncVectorEnv stepping + host↔device transfers).**
 
 ### speedup/remove-entities-numpy — vectorize per-cell reads in _remove_entities
 - **Hypothesis**: `_remove_entities` (2.32 s self-time, biggest self-time in our
