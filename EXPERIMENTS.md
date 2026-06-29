@@ -165,6 +165,27 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/async-vector-env — AsyncVectorEnv (multiprocess rollout) — DROPPED
+- **Hypothesis**: the rollout is single-core-bound (1–2 of 48 cores). Run each of
+  the 16 envs in its own worker process (`AsyncVectorEnv`) so env stepping fans
+  out across cores. Gated behind `FACTORION_ASYNC_ENVS=1` (default off → CI /
+  benchmark untouched). Open risk: per-step IPC overhead, and subprocess
+  RNG/autoreset divergence breaking the signature.
+- **Change** (branch only, not merged): env-var switch Sync↔Async; set the
+  seed-march via `set_attr`; `AgentCNN` reads grid size from
+  `single_observation_space` (works for both backends).
+- **Result**: **BOTH worse.** (1) **Speed: 33.76 s ± 0.12 vs 28.59 s Sync →
+  +18% SLOWER** (3-run hyperfine). User-time ballooned 27.7 s → 54.3 s: the
+  workers do *more* total CPU work pickling 16 obs arrays + actions across the
+  process boundary every one of 256 steps, and that IPC dwarfs the tiny per-env
+  step (~0.5 ms). (2) **Signature DIFFERS** (policy_loss 0.332 vs 0.160 baseline)
+  — Async autoreset/seeding diverges from Sync, so it isn't even a drop-in.
+- **Verdict**: **DROP (branch discarded).** Confirms the hardware analysis:
+  parallelizing across cores can't help when per-step work is far smaller than
+  the IPC cost. Multiprocess env stepping would only pay off with much heavier
+  per-step env compute (e.g. a real Factorio sim), not this fast Rust throughput
+  call. Filed so nobody re-tries it without remembering the IPC wall.
+
 ### speedup/step-cpu-microopts — incremental num_placed_entities counter
 - **Hypothesis**: a CPU-side (not GPU-sync) rollout win, since the rollout is
   CPU-bound. `FactorioEnv.step` recomputed `num_placed_entities` via
