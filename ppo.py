@@ -1,5 +1,6 @@
 import json
 import os
+import contextlib
 import typing
 import random
 import time
@@ -170,6 +171,16 @@ class Args:
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
+    amp: bool = False
+    """Run the policy/value forward passes under bf16 autocast (mixed precision).
+    Speeds up the GPU matmuls; helps most when the GPU is the bottleneck (less so
+    here, where the rollout is CPU-bound). Changes numerics, so the trajectory
+    (and time-to-quality) can shift."""
+    async_envs: bool = False
+    """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
+    serially (SyncVectorEnv). At high --num-envs the serial CPU env-stepping is
+    the rollout bottleneck; AsyncVectorEnv fans it across cores. (At 16 envs the
+    IPC overhead makes it slower — only worth it with many envs.)"""
 
     # ── Time-to-quality benchmarking (offline; see quality_run.sh) ──────────
     target_metric: Optional[str] = None
@@ -1151,9 +1162,12 @@ def assert_device_ok(device) -> None:
 class AgentCNN(nn.Module):
     def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0):
         super().__init__()
-        base_env = envs.envs[0].unwrapped
-        self.width = base_env.size
-        self.height = base_env.size
+        # Grid size from the vector env's single observation space (shape
+        # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
+        # (the latter holds its sub-envs in worker processes, no `.envs`).
+        _obs_shape = envs.single_observation_space.shape
+        self.width = _obs_shape[1]
+        self.height = _obs_shape[2]
         self.channels = len(Channel)
         # Source/sink (bulk_inserter, stack_inserter) live as the last two
         # catalog entries; they are env-spawned, never agent-placeable. Sizing
@@ -1462,27 +1476,37 @@ if __name__ == "__main__":
     print(f"running on {device}")
     assert_device_ok(device)
 
+    # bf16 autocast context for the policy/value forward passes when --amp is on
+    # (CUDA only). nullcontext otherwise, so the non-amp path is unchanged.
+    _amp_on = args.amp and device.type == "cuda"
+    def amp_ctx():
+        return torch.autocast("cuda", dtype=torch.bfloat16) if _amp_on else contextlib.nullcontext()
+    if _amp_on:
+        print("AMP: bf16 autocast enabled for forward passes")
+
     print(f"Setting up envs with {args}")
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)],
-    )
-    # Train on a fresh factory every episode: give each env a running seed that
-    # marches forward by num_envs each reset (env i sweeps args.seed+i,
-    # +num_envs, +2*num_envs, …), so across all envs we cover args.seed, +1,
-    # +2, … and never replay a factory. Without this, Gymnasium's NEXT_STEP
-    # autoreset calls reset(seed=None) each episode, which pinned every env to a
-    # single factory (seed == idx) for the whole run. Eval/render envs keep
-    # their explicit-seed determinism.
-    for i, sub_env in enumerate(envs.envs):
-        fe = cast(FactorioEnv, sub_env.unwrapped)
-        fe._train_seed = args.seed + i
-        fe._num_envs = args.num_envs
-        # The PPO rollout only reads thput/frac_reachable/num_entities for
-        # *finished* envs and never reads the shaping/tile-match diagnostics, so
-        # skip that per-step work on non-terminal steps (computed at episode end
-        # regardless). Reward + signature unchanged; ~31% of the rollout is this
-        # block. Eval/render envs keep full diagnostics (default).
-        fe._full_diagnostics = False
+    env_thunks = [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)]
+    # Per-env attributes (see comments below). Set in-process for SyncVectorEnv,
+    # via set_attr (which marshals to the workers) for AsyncVectorEnv.
+    # _train_seed: fresh factory every episode — env i sweeps args.seed+i,
+    #   +num_envs, … so we never replay a factory (else Gymnasium's NEXT_STEP
+    #   autoreset reset(seed=None) pins each env to one factory all run).
+    # _full_diagnostics=False: the rollout reads thput/frac_reachable/num_entities
+    #   only for *finished* envs and never the shaping/tile-match diagnostics, so
+    #   skip that per-step block on non-terminal steps.
+    train_seeds = [args.seed + i for i in range(args.num_envs)]
+    if args.async_envs:
+        envs = gym.vector.AsyncVectorEnv(env_thunks)
+        envs.set_attr("_train_seed", train_seeds)
+        envs.set_attr("_num_envs", [args.num_envs] * args.num_envs)
+        envs.set_attr("_full_diagnostics", [False] * args.num_envs)
+    else:
+        envs = gym.vector.SyncVectorEnv(env_thunks)
+        for i, sub_env in enumerate(envs.envs):
+            fe = cast(FactorioEnv, sub_env.unwrapped)
+            fe._train_seed = train_seeds[i]
+            fe._num_envs = args.num_envs
+            fe._full_diagnostics = False
 
     encoder_layers = layers_from_args(args)
     print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")
@@ -1659,7 +1683,8 @@ if __name__ == "__main__":
             with torch.no_grad():
                 # TODO update for new action logic
                 # D for dictionary
-                action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
+                with amp_ctx():
+                    action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
                 values_SE[step] = value_E
                 # Accumulate the acting policy's per-head entropy + eot prob
                 # (stashed by get_action_and_value) for the policy/* metrics.
@@ -1755,7 +1780,8 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agent.get_value(next_obs_ECWH).reshape(1, -1)
+            with amp_ctx():
+                next_value = agent.get_value(next_obs_ECWH).reshape(1, -1)
             advantages_SE = torch.zeros_like(rewards_SE).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
@@ -1789,10 +1815,11 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 idxs = idxs_B[start:end]
 
-                _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
-                    obs_B[idxs],
-                    actions_B.long()[idxs]
-                )
+                with amp_ctx():
+                    _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
+                        obs_B[idxs],
+                        actions_B.long()[idxs]
+                    )
                 newlogprobs_B = newlogprobs_B.reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
                 ratio_B = logratio_B.exp()
