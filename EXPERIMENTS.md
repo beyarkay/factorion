@@ -157,8 +157,15 @@ Newest first. One entry per branch.
   to module constants (kill the per-cell `str2ent`/`str2item` linear scans); read
   ENT/DIR as int numpy arrays at the top of `_remove_entities`; index numpy in
   both passes; pass Python ints to `py_entity_tiles` (its stub wants `int`).
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **29.096 s ± 0.144 s** vs GPU baseline 30.070 s ± 0.239 → **−3.2%**
+  (ranges fully non-overlapping: 28.90–29.28 vs 29.84–30.34, so real not noise,
+  though under the 5% heuristic). rollout_steady 2.095 → 2.028 s/iter (−3.2%);
+  update_steady flat (0.611 → 0.613, rollout-only change as expected). Invariance
+  signature established here (file was absent); blank-output hash verified
+  byte-identical vs main across all lessons/seeds → pure-speed. Commit `fd9f8b0`.
+- **Verdict**: **KEEP — merged to `main`.** Modest but clean; cProfile overstated
+  the self-time (instrumentation tax on a Python-heavy fn), so the real win is
+  smaller than the 2.32 s profile figure suggested. Compounds over 100s of iters.
 
 <!--
 ### speedup/<name> — <one line>
