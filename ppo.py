@@ -1595,6 +1595,15 @@ if __name__ == "__main__":
     print("Compiling inference paths with torch.compile(reduce-overhead)")
     rollout_act = torch.compile(agent.get_action_and_value, mode="reduce-overhead")
     rollout_value = torch.compile(agent.get_value, mode="reduce-overhead")
+    # Separate handle for the grad update path (B=minibatch, action given). The
+    # CUDA graph spans the forward AND its backward (autograd reuses the captured
+    # activations, valid because backward runs before the next mark_step_begin);
+    # the optimizer step stays eager. ~2.3x over eager on the fwd+bwd. A distinct
+    # handle from rollout_act keeps the no_grad-inference and grad-train graph
+    # pools from interleaving. The warm-up requires_grad flip and the v_loss-only
+    # vs joint-loss change just trigger a one-time recompile of the affected
+    # graph.
+    update_act = torch.compile(agent.get_action_and_value, mode="reduce-overhead")
 
     # Two param groups so the critic warm-up + LR annealing can address actor
     # and critic LRs independently; group[0]=actor keeps the existing
@@ -1872,8 +1881,13 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 idxs = idxs_B[start:end]
 
+                # New CUDA-graph step before the compiled fwd+bwd (reduce-overhead
+                # reuses static buffers across replays). backward() below runs
+                # before the next mark_step_begin, so the captured activations are
+                # still valid when autograd reads them.
+                torch.compiler.cudagraph_mark_step_begin()
                 with amp_ctx():
-                    _action_BA, newlogprobs_B, entropy_B, newvalue_B = agent.get_action_and_value(
+                    _action_BA, newlogprobs_B, entropy_B, newvalue_B = update_act(
                         obs_B[idxs],
                         actions_B.long()[idxs]
                     )
