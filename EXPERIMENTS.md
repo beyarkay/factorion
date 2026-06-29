@@ -165,6 +165,19 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/validity-numpy — numpy-view reads in step()'s validity checks
+- **Hypothesis**: after gate-diagnostics + info-skip, `step()`'s own validity
+  checks are a top rollout self-time. They read FOOTPRINT/ENTITIES per footprint
+  tile via torch scalar indexing (`self._world_CWH[ch, tx, ty]`) inside `any()`
+  generators (genexprs at 0.15 s self in the profile). The validity result feeds
+  the world mutation → obs → signature, so it must run every step, but the
+  *reads* can use a zero-copy numpy view of the CPU world (same trick as attack
+  #1). Identical values (world unmutated at that point) → signature safe.
+- **Change**: `world_np = self._world_CWH.numpy()`; read
+  `world_np[_CH_FOOTPRINT/_CH_ENT, tx, ty]`; add `_CH_FOOTPRINT` constant.
+- **Result**: signature **MATCHED ✓**; tests pass. Benchmark: TBD.
+- **Verdict**: TBD.
+
 ### speedup/skip-info-nonterminal — skip the per-step info dict in training
 - **Hypothesis**: follow-on to gate-diagnostics. `step()` still built the full
   ~25-key `info` dict every step, and `SyncVectorEnv` deep-aggregates it across

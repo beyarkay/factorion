@@ -54,6 +54,7 @@ _EMPTY_ITEM = str2item("empty")
 # frequency (~256k enum lookups/iter in the profile).
 _CH_ENT = Channel.ENTITIES.value
 _CH_DIR = Channel.DIRECTION.value
+_CH_FOOTPRINT = Channel.FOOTPRINT.value
 
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
@@ -758,6 +759,12 @@ class FactorioEnv(gym.Env):
             # were previously only validated at the anchor, so a splitter
             # could overlap an existing belt at its secondary tile or
             # extend off-grid undetected.
+            # Read the FOOTPRINT/ENTITIES channels through a zero-copy numpy view
+            # of the (CPU) world: per-tile torch scalar indexing carries heavy
+            # per-op dispatch overhead in this hot validity path; numpy scalar
+            # reads are far cheaper and give identical values (the world is not
+            # mutated until below, so the view is the pre-placement state).
+            world_np = self._world_CWH.numpy()
             out_of_bounds = any(
                 not (0 <= tx < self.size and 0 <= ty < self.size)
                 for tx, ty in tiles_list
@@ -766,14 +773,13 @@ class FactorioEnv(gym.Env):
                 invalid_reason['too_wide'] = True
                 action_is_invalid = True
             elif any(
-                self._world_CWH[Channel.FOOTPRINT.value, tx, ty]
-                    == Footprint.UNAVAILABLE.value
+                world_np[_CH_FOOTPRINT, tx, ty] == Footprint.UNAVAILABLE.value
                 for tx, ty in tiles_list
             ):
                 invalid_reason['placed_on_masked_tile'] = True
                 action_is_invalid = True
             elif any(
-                int(self._world_CWH[Channel.ENTITIES.value, tx, ty]) in (source_id, sink_id)
+                int(world_np[_CH_ENT, tx, ty]) in (source_id, sink_id)
                 for tx, ty in tiles_list
             ):
                 invalid_reason['replaced_source_or_sink'] = True
