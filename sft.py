@@ -38,7 +38,13 @@ from factorion import (  # noqa: E402
     str2ent,
 )
 
-from ppo import AgentCNN, FactorioEnv, make_env, layers_from_args  # noqa: E402
+from ppo import (  # noqa: E402
+    AgentCNN,
+    FactorioEnv,
+    make_env,
+    layers_from_args,
+    assert_device_ok,
+)
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -942,6 +948,7 @@ def train_sft(args: SFTArgs):
         if torch.backends.mps.is_available()
         else "cpu"
     )
+    assert_device_ok(device)
     agent.to(device)
 
     optimizer = optim.AdamW(
