@@ -2011,4 +2011,52 @@ mod tests {
         }
         assert_eq!(delta_to_dir(2, 0), None);
     }
+
+    /// Per-lesson (kind, display name, grid size). Kept in sync with the
+    /// Python benchmark (`tests/bench_build_factory.py`) so the native and
+    /// PyO3 numbers are measured on identical workloads.
+    pub const BENCH_LESSONS: &[(LessonKind, &str, usize)] = &[
+        (LessonKind::MoveOneItem, "MOVE_ONE_ITEM", 12),
+        (LessonKind::MoveOneItemChaos, "MOVE_ONE_ITEM_CHAOS", 12),
+        (LessonKind::SplitterSplit, "SPLITTER_SPLIT", 12),
+        (LessonKind::SplitterMerge, "SPLITTER_MERGE", 12),
+        (LessonKind::Assemble1In1Out, "ASSEMBLE_1IN_1OUT", 12),
+        (LessonKind::MoveViaUgBelt, "MOVE_VIA_UG_BELT", 12),
+        (LessonKind::Assemble2In1Out, "ASSEMBLE_2IN_1OUT", 12),
+        (LessonKind::FromBlueprint, "FROM_BLUEPRINT", 16),
+    ];
+
+    /// Native-Rust build_factory benchmark — the no-Python-boundary baseline
+    /// for the PyO3 comparison. Run with:
+    ///   cargo test --release -p factorion_rs bench_native_build_factory \
+    ///       -- --ignored --nocapture
+    #[test]
+    #[ignore = "benchmark; run explicitly with --ignored --nocapture"]
+    fn bench_native_build_factory() {
+        use std::time::Instant;
+        const N: u64 = 1000;
+        println!(
+            "\nnative build_factory ({N} seeds/lesson, microseconds per call)\n{:<22} {:>9} {:>9} {:>9} {:>9}",
+            "lesson", "mean", "min", "max", "std"
+        );
+        for &(kind, name, size) in BENCH_LESSONS {
+            let mut us: Vec<f64> = Vec::with_capacity(N as usize);
+            for seed in 0..N {
+                let t = Instant::now();
+                let _ = build_factory(size, kind, seed, true, f64::INFINITY);
+                us.push(t.elapsed().as_secs_f64() * 1e6);
+            }
+            let (mean, min, max, std) = summarize(&us);
+            println!("{name:<22} {mean:>9.1} {min:>9.1} {max:>9.1} {std:>9.1}");
+        }
+    }
+
+    fn summarize(xs: &[f64]) -> (f64, f64, f64, f64) {
+        let n = xs.len() as f64;
+        let mean = xs.iter().sum::<f64>() / n;
+        let min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        (mean, min, max, var.sqrt())
+    }
 }
