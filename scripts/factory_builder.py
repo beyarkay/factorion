@@ -48,6 +48,7 @@ from factorion import (  # noqa: E402
     Footprint,
     LessonKind,
     Misc,
+    blank_entities,
     build_factory,
     build_graph_nx,
     ent_str2b64img,
@@ -117,7 +118,7 @@ HELP_LINES = [
     "Rotate selected: r (cw), R (ccw)",
     "Clear selected: Delete / Backspace / right-click",
     "Deselect hotbar: Esc",
-    "Generate lesson: g",
+    "Generate lesson: g (set 'entities to clear' to blank N first)",
     "Apply prediction (top pick): a",
     "Resize / clear grid: c",
 ]
@@ -206,9 +207,20 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
 _LESSON_RETRY_BUDGET = 200
 
 
-def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
+def _load_lesson(
+    kind_name: str, seed: int, size: int, num_missing_entities: int = 0
+) -> dict:
     """Build a complete factory of the given lesson kind + seed and
     return its grid in the JSON format the frontend expects.
+
+    When ``num_missing_entities > 0`` the factory is handed to
+    :func:`blank_entities` — the *same* removal path SFT uses to turn a
+    solved factory into a (partial, completion) training pair. It applies
+    each lesson's own ``protected_positions`` rules and removes whole
+    multi-tile entities (splitters, assemblers) as single units, so the
+    UI gets a partially-completed factory in exactly the shape the model
+    was trained to complete. ``num_missing_entities=0`` (the default)
+    leaves the factory fully generated.
 
     `build_factory` returns None when its random layout search doesn't
     find a valid configuration. We follow the docstring's recommended
@@ -220,16 +232,26 @@ def _load_lesson(kind_name: str, seed: int, size: int) -> dict:
         kind = LessonKind[kind_name]
     except KeyError as e:
         raise ValueError(f"unknown lesson kind: {kind_name!r}") from e
+    num_missing_entities = max(0, int(num_missing_entities))
     attempt_seed = int(seed)
     for _ in range(_LESSON_RETRY_BUDGET):
         factory = build_factory(size=size, kind=kind, seed=attempt_seed)
         if factory is not None:
+            # Blank entities with the factory's own seed so repeated
+            # clicks at the same (kind, seed, N) are reproducible. N=0
+            # removes nothing → the partial world is the full factory.
+            partial_CWH, num_removed = blank_entities(
+                factory,
+                num_missing_entities=num_missing_entities,
+                seed=attempt_seed,
+            )
             return {
                 "size": size,
-                "grid": world_CWH_to_grid(factory.world_CWH),
+                "grid": world_CWH_to_grid(partial_CWH),
                 "used_seed": attempt_seed,
                 "next_seed": attempt_seed + 1,
                 "total_entities": int(factory.total_entities),
+                "num_removed": int(num_removed),
             }
         attempt_seed += 1
     raise RuntimeError(
@@ -851,7 +873,11 @@ def render_index(default_size: int) -> str:
         <select id="lesson-kind">{lesson_options}</select>
       </label>
       <label>seed <input id="lesson-seed" type="number" value="0" step="1"></label>
-      <button id="lesson-generate" title="Build a fully-formed factory of the chosen lesson kind at the given seed, then bump the seed for the next click">
+      <label title="Remove this many entity units from the generated factory using the lesson's own removal rules (0 = fully generated)">
+        entities to clear
+        <input id="lesson-clear" type="number" min="0" value="0" step="1">
+      </label>
+      <button id="lesson-generate" title="Build a factory of the chosen lesson kind at the given seed (optionally clearing N entities), then bump the seed for the next click">
         Generate lesson <span class="kbd">g</span>
       </button>
       <span id="lesson-status" class="help"></span>
@@ -1400,6 +1426,10 @@ async function loadModel() {{
 async function generateLesson() {{
   const kind = document.getElementById('lesson-kind').value;
   const seed = parseInt(document.getElementById('lesson-seed').value, 10);
+  // `entities to clear` is optional — a blank / non-numeric / negative
+  // value means "fully generated" (clear nothing).
+  const clearRaw = parseInt(document.getElementById('lesson-clear').value, 10);
+  const numMissing = Number.isFinite(clearRaw) && clearRaw > 0 ? clearRaw : 0;
   const status = document.getElementById('lesson-status');
   const btn = document.getElementById('lesson-generate');
   if (!Number.isFinite(seed)) {{ status.textContent = 'invalid seed'; return; }}
@@ -1409,7 +1439,7 @@ async function generateLesson() {{
     const resp = await fetch('/load_lesson', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ kind, seed, size: SIZE }}),
+      body: JSON.stringify({{ kind, seed, size: SIZE, num_missing_entities: numMissing }}),
     }});
     const data = await resp.json();
     if (data.error) {{ status.textContent = 'error: ' + data.error; return; }}
@@ -1419,9 +1449,14 @@ async function generateLesson() {{
     prediction = null;
     document.getElementById('size').value = SIZE;
     document.getElementById('lesson-seed').value = data.next_seed;
+    // `num_removed` is what blank_entities actually cleared, which can be
+    // less than requested when the lesson protects most of its entities.
+    const cleared = data.num_removed
+      ? ', cleared ' + data.num_removed + '/' + numMissing
+      : '';
     status.textContent =
       'built ' + kind + ' (seed=' + data.used_seed +
-      ', ' + data.total_entities + ' entities)';
+      ', ' + data.total_entities + ' entities' + cleared + ')';
     renderGrid(); syncEditor();
     scheduleCompute();
   }} catch (e) {{
@@ -1576,6 +1611,7 @@ class Handler(BaseHTTPRequestHandler):
                     kind_name=payload["kind"],
                     seed=int(payload["seed"]),
                     size=int(payload["size"]),
+                    num_missing_entities=int(payload.get("num_missing_entities", 0)),
                 )
             else:
                 result = _swap_model(
