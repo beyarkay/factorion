@@ -912,8 +912,8 @@ class FactorioEnv(gym.Env):
         # base info and skip the ~25-key build + its vector-env aggregation. The
         # placeholder diagnostics computed above feed this block, so there's
         # nothing meaningful to report on those steps anyway.
-        info = self._get_info()
         if terminated or truncated or self._full_diagnostics:
+            info = self._get_info()
             if terminated or truncated:
                 info.update({ 'steps_taken': self.steps })
 
@@ -943,6 +943,10 @@ class FactorioEnv(gym.Env):
                 'shaping_entity_delta': ent_delta,
                 'shaping_direction_delta': dir_delta,
             })
+        else:
+            # Non-terminal training step: nothing reads info, so skip building
+            # (and vector-env aggregating) even the base _get_info() dict.
+            info = {}
 
         self._cum_reward += reward
         self.steps += 1

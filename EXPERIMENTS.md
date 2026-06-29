@@ -471,3 +471,12 @@ Newest first. One entry per branch.
 - **Verdict**: **KEEP — merged to `main`.** Baseline signature refreshed to the
   threads=6 config (grad_norm 49.61). Biggest single lever; the rest of the
   ~12.8s is now dominated by the fixed torch.compile warmup + Python import.
+
+### speedup/skip-baseinfo — also skip base _get_info() on non-terminal training
+- **Hypothesis**: follow-on to skip-info-nonterminal — the base `_get_info()`
+  (10-key dict) was still built + vector-aggregated every step. Nothing reads it
+  on non-terminal training steps, so return `{}` there too.
+- **Change**: move `info = self._get_info()` inside the
+  `terminated or truncated or _full_diagnostics` branch; `else: info = {}`.
+- **Result**: signature **MATCHED ✓**; reward-shaping tests pass. Benchmark: TBD.
+- **Verdict**: TBD.
