@@ -171,6 +171,22 @@ class Args:
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
 
+    # ── Time-to-quality benchmarking (offline; see quality_run.sh) ──────────
+    target_metric: Optional[str] = None
+    """If set, stop training the first time an EMA of this iter-metric key
+    (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput_eot') reaches
+    --target-value, and record the wall-clock time-to-quality. None disables
+    (normal fixed-iteration training)."""
+    target_value: Optional[float] = None
+    """Quality threshold for --target-metric (EMA-smoothed)."""
+    quality_ema_alpha: float = 0.4
+    """EMA weight on the newest sample when smoothing --target-metric (higher =
+    less smoothing). Smoothing tames the per-iteration metric noise so the
+    time-to-quality crossing is repeatable."""
+    max_seconds: Optional[float] = None
+    """Safety cap for --target-metric runs: stop (quality not reached) after this
+    many wall-clock seconds so a stuck/regressing run can't hang the benchmark."""
+
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (num_envs * num_steps)"""
@@ -1548,6 +1564,10 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
+    # Time-to-quality benchmarking state (see Args.target_metric).
+    quality_ema: Optional[float] = None
+    time_to_quality: Optional[float] = None
+    reached_quality = False
     next_obs_ECWH, _ = envs.reset(
         seed=args.seed,
         options={
@@ -1894,6 +1914,44 @@ if __name__ == "__main__":
         if len(end_of_episode_thputs) > 0:
             final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
 
+        # ── Time-to-quality early stop (offline benchmark) ──────────────────
+        # EMA-smooth the target metric and stop the first time it crosses the
+        # threshold; record the wall-clock time-to-quality. Metric keys absent
+        # this iteration (e.g. rollout/* with no finished episode, or eval/* off
+        # an eval iter) simply don't update the EMA.
+        if args.target_metric is not None and args.target_value is not None:
+            mval = iter_metrics.get(args.target_metric)
+            if mval is not None:
+                a = args.quality_ema_alpha
+                quality_ema = float(mval) if quality_ema is None else a * float(mval) + (1 - a) * quality_ema
+                iter_metrics["quality/ema"] = quality_ema
+                tqdm.tqdm.write(
+                    f"[Q] t={time.time()-start_time:6.1f}s iter={iteration:4d} "
+                    f"{args.target_metric}={float(mval):+.4f} ema={quality_ema:+.4f} "
+                    f"thput100ma={final_thputs_100ma:.4f}"
+                )
+                if not reached_quality and quality_ema >= args.target_value:
+                    reached_quality = True
+                    time_to_quality = time.time() - start_time
+                    print(
+                        f"\nQUALITY REACHED: EMA({args.target_metric})={quality_ema:.4f} "
+                        f">= {args.target_value} at t={time_to_quality:.2f}s "
+                        f"iter={iteration} gstep={global_step}"
+                    )
+            if reached_quality:
+                if args.track:
+                    wandb.log(iter_metrics, step=global_step)
+                break
+            if args.max_seconds is not None and (time.time() - start_time) > args.max_seconds:
+                time_to_quality = None
+                print(
+                    f"\nMAX_SECONDS ({args.max_seconds}s) reached without quality "
+                    f"(best EMA {quality_ema}); stopping at iter={iteration}."
+                )
+                if args.track:
+                    wandb.log(iter_metrics, step=global_step)
+                break
+
         # Single wandb.log() call per iteration
         if args.track:
             wandb.log(iter_metrics, step=global_step)
@@ -2016,6 +2074,12 @@ if __name__ == "__main__":
         "num_envs": args.num_envs,
         "grid_size": args.size,
         "wandb_url": run.url if args.track and run else None,
+        # Time-to-quality benchmark outputs (None when --target-metric unused).
+        "target_metric": args.target_metric,
+        "target_value": args.target_value,
+        "reached_quality": reached_quality,
+        "time_to_quality_seconds": round(time_to_quality, 2) if time_to_quality is not None else None,
+        "quality_ema_final": round(quality_ema, 4) if quality_ema is not None else None,
     }
     summary_path = args.summary_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "summary.json")
     os.makedirs(os.path.dirname(os.path.abspath(summary_path)), exist_ok=True)
