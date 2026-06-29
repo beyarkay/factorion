@@ -478,5 +478,17 @@ Newest first. One entry per branch.
   on non-terminal training steps, so return `{}` there too.
 - **Change**: move `info = self._get_info()` inside the
   `terminated or truncated or _full_diagnostics` branch; `else: info = {}`.
-- **Result**: signature **MATCHED ✓**; reward-shaping tests pass. Benchmark: TBD.
-- **Verdict**: TBD.
+- **Result**: **23.436 s ± 0.202 vs 23.889 → −1.9%**. rollout_steady 1.362 →
+  1.321 (−3.0%). Signature **MATCHED ✓**; tests pass. Commit `c4c3234`.
+- **Verdict**: **KEEP — merged.** Last drop of the per-step info-dict tax.
+
+---
+
+**Running tally (GPU box):** CPU-era 37.09 s → GPU baseline 30.07 s (driver fix)
+→ **23.44 s** after the pure-speed sweep below = **−22% on GPU / −36.8% vs CPU
+era**, all signature-identical (no numerics touched). Biggest levers:
+gate-diagnostics (−12%), info-skip (−3.5%), validity-numpy (−2.2%),
+_remove_entities-numpy (−3.2%), skip-baseinfo (−1.9%), defer-entropy-syncs
+(−0.5%). Dropped: AsyncVectorEnv (+18%, IPC-bound), build-path micro-opts
+(flat — build is ~11% of rollout). Remaining lever is the NN forward (numerics /
+AMP) — but GPU is ~9% utilized, so it won't help; not pursued.
