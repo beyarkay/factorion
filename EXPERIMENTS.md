@@ -165,6 +165,20 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/bfs-inline — inline in_bounds + cache dist in _bfs_shortest
+- **Hypothesis**: `_bfs_shortest` (1.54 s self) + its nested `in_bounds` (0.56 s
+  over 1.47M calls) are the #2/#3 build-microbench hotspots. Inline the bounds
+  check (kill the per-neighbour function call), cache `dist[(r,c)]` once per
+  expansion (was looked up 4×), and build each neighbour tuple once. Visit order
+  and `parents` append order unchanged → identical paths (and identical
+  `random.shuffle` consumption) → byte-identical factories.
+- **Change**: rewrite the BFS expansion loop in `_bfs_shortest` (factorion.py).
+- **Result**: build-hash **identical** to main across all lessons/seeds. Build
+  microbench (2500 builds): **5.74 s vs 6.14 s = −6.5%** — real interior win.
+  Full benchmark: TBD (expected flat — build is a small share of the honest
+  rollout).
+- **Verdict**: TBD.
+
 ### speedup/async-vector-env — AsyncVectorEnv (multiprocess rollout) — DROPPED
 - **Hypothesis**: the rollout is single-core-bound (1–2 of 48 cores). Run each of
   the 16 envs in its own worker process (`AsyncVectorEnv`) so env stepping fans

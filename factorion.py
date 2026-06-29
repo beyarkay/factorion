@@ -2915,22 +2915,31 @@ def _bfs_shortest(grid_h, grid_w, start, end, blocked):
     parents = defaultdict(list)
     q = deque([start])
 
+    # Hot loop: ~1.5M iterations across a build. Inline the bounds check, cache
+    # the current cell's distance (was re-looked-up 4×/expansion), and build each
+    # neighbour tuple once. Neighbours are still visited in `deltas` order and
+    # appended to `parents` in the same order, so dist/parents — and therefore
+    # the enumerated paths and the random.shuffle that consumes them — stay
+    # byte-identical to the original.
     while q:
         r, c = q.popleft()
         if (r, c) == end:
             break
+        nd = dist[(r, c)] + 1
         for dr, dc in deltas:
             nr, nc = r + dr, c + dc
-            if not in_bounds((nr, nc)):
+            if not (0 <= nr < grid_h and 0 <= nc < grid_w):
                 continue
-            if (nr, nc) in blocked:
+            ncell = (nr, nc)
+            if ncell in blocked:
                 continue
-            if (nr, nc) not in dist:
-                dist[(nr, nc)] = dist[(r, c)] + 1
-                parents[(nr, nc)].append((r, c))
-                q.append((nr, nc))
-            elif dist[(nr, nc)] == dist[(r, c)] + 1:
-                parents[(nr, nc)].append((r, c))
+            cur = dist.get(ncell)
+            if cur is None:
+                dist[ncell] = nd
+                parents[ncell].append((r, c))
+                q.append(ncell)
+            elif cur == nd:
+                parents[ncell].append((r, c))
 
     if end not in dist:
         return None, None
