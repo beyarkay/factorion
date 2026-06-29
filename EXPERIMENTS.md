@@ -175,9 +175,13 @@ Newest first. One entry per branch.
   referenced inside the skipped block).
 - **Change**: wrap the `info.update({...})` (and `steps_taken`) in
   `if terminated or truncated or self._full_diagnostics`.
-- **Result**: iter-1 signature **MATCHED ✓**; reward-shaping tests pass.
-  Benchmark: TBD.
-- **Verdict**: TBD.
+- **Result**: **24.427 s ± 0.263 vs 25.325 → −3.5%** (ranges separated).
+  **rollout_steady 1.535 → 1.432 s/iter (−6.7%)**. Signature **MATCHED ✓**;
+  reward-shaping tests pass. Commit `8f6efde`.
+- **Verdict**: **KEEP — merged.** The per-step info dict build + `SyncVectorEnv`
+  deep-aggregation across 16 envs was a real cost; skipping it on non-terminal
+  training steps compounds the gate-diagnostics win. Same monitorability tradeoff
+  (reversible via `_full_diagnostics`).
 
 ### speedup/gate-diagnostics — skip dead per-step diagnostics in training
 - **Hypothesis (the big lever)**: `step()` runs `simulate_throughput` + a block of
