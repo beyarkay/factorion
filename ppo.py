@@ -504,6 +504,16 @@ class FactorioEnv(gym.Env):
         # which pass explicit seeds and rely on seed -> factory determinism.
         self._train_seed: Optional[int] = None
         self._num_envs: int = 1
+        # When True (default), step() computes the full per-step throughput sim +
+        # logged-only diagnostics every step — required by tests and any caller
+        # that inspects mid-episode info. PPO training sets this False on its
+        # rollout envs: those diagnostics feed neither the reward (mid-episode
+        # reward is just -step_penalty) nor any metric the rollout reads (it only
+        # reads thput/frac_reachable/num_entities for *finished* envs), so on
+        # non-terminal steps the whole block is skipped. The terminal reward and
+        # every episode-end-consumed value are still computed, so the PPO
+        # signature is unchanged — this only drops dead per-step work.
+        self._full_diagnostics: bool = True
 
     def _get_obs(self):
         return self._world_CWH
@@ -792,80 +802,87 @@ class FactorioEnv(gym.Env):
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
-        # thput_raw is items/second — the reference-free signal arbitrary RL
-        # should ultimately optimize. thput_normed in [0, 1] is raw / per-factory
-        # max, so a perfectly-rebuilt factory scores 1.0 no matter its absolute
-        # speed (the old fixed /15.0 scored a perfect sub-15 factory as e.g. 0.33).
-        # FIXME(#161): thput_normed, the termination check, and the reward below
-        # all depend on self._max_throughput, which we only know because the
-        # lesson is scripted and we have the full solution. Arbitrary RL rollouts
-        # won't have that reference; this must move to a reference-free signal.
-        thput_normed = (
-            min(1.0, thput_raw / self._max_throughput)
-            if self._max_throughput > 0
-            else 0.0
-        )
-
-        # Single zero-copy numpy view of the (torch) world for the per-step
-        # diagnostics below. These are tiny-grid reductions whose torch cost is
-        # almost entirely per-op dispatch overhead (~31% of rollout time in the
-        # profile); numpy on the shared buffer computes the identical values far
-        # cheaper. Taken after the world is mutated above, so it is current.
-        wnp = self._world_CWH.numpy()
-        ent_np = wnp[_CH_ENT]
-        dir_np = wnp[_CH_DIR]
-        W, H = ent_np.shape
-
-        # Calculate a "reachable" fraction that penalises the model for leaving
-        # entities disconnected from the graph (almost certainly useless)
-        num_entities = int(np.count_nonzero(ent_np))
-        # NOTE: weird bug with num_unreachable calculations, not planning on
-        # fixing any time super soon. really the calculation should be to
-        # calculate frac_reachable directly, not go via frac_unreachable
-        frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
-        frac_hallucin = 0
-
-        # Give some small reward for having the belt be the right direction.
-        # Only meaningful when the layout has exactly one sink (the
-        # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT)
-        # place multiple sinks or none, so this shaping term gets zeroed
-        # instead of asserting.
-        sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
-        if len(sink_w) == 1:
-            w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
-            w_belt = min(max(w_sink, 1), W - 2)
-            h_belt = min(max(h_sink, 1), H - 2)
-            final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
-        else:
-            final_dir_reward = 0.0
-
-        material_cost = (
-            1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
-            + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
-            + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
-        )
-
-        # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
-        # Reuse the episode-constant solution arrays cached at reset.
-        if self._sol_n > 0:
-            tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
-        else:
-            tile_match_location = 1.0
-        tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
-        tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
-
-        # ── Delta-based shaping diagnostics (logged in info, NOT in reward) ──
-        # Computed over solution-nonempty tiles only.
-        curr_match = self._compute_solution_match()
-        loc_delta = curr_match[0] - self._prev_match[0]
-        ent_delta = curr_match[1] - self._prev_match[1]
-        dir_delta = curr_match[2] - self._prev_match[2]
-        self._prev_match = curr_match
-
         eot_declared = int(action.get("eot", 0)) == 1
         terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
+
+        # The throughput sim + per-step diagnostics below are only *consumed* at
+        # episode end (the terminal reward uses thput_normed; the rollout reads
+        # thput/frac_reachable/num_entities for finished envs) or by callers that
+        # inspect every step (tests, monitoring). Mid-episode they feed neither
+        # the reward (just -step_penalty until termination) nor any metric the
+        # PPO rollout reads, so when `_full_diagnostics` is off (training rollout
+        # envs) we skip the whole block on non-terminal steps — that's the
+        # ~31%-of-rollout simulate_throughput + numpy diagnostics. The terminal
+        # reward and all episode-end-consumed values are still computed, so the
+        # signature is unchanged.
+        frac_hallucin = 0
+        if terminated or truncated or self._full_diagnostics:
+            # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
+            # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
+            # FIXME(#161): thput_normed/termination/reward depend on
+            # self._max_throughput, which needs the scripted solution.
+            thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+            thput_normed = (
+                min(1.0, thput_raw / self._max_throughput)
+                if self._max_throughput > 0
+                else 0.0
+            )
+            # Single zero-copy numpy view of the (torch) world for the per-step
+            # diagnostics. Tiny-grid reductions; numpy on the shared buffer is far
+            # cheaper than the per-op torch dispatch. Current (world just mutated).
+            wnp = self._world_CWH.numpy()
+            ent_np = wnp[_CH_ENT]
+            dir_np = wnp[_CH_DIR]
+            W, H = ent_np.shape
+
+            # "reachable" fraction: penalise entities disconnected from the graph.
+            num_entities = int(np.count_nonzero(ent_np))
+            frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
+
+            # Small shaping for a correctly-oriented final belt. Only meaningful
+            # with exactly one sink (MOVE_ONE_ITEM); zeroed otherwise.
+            sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
+            if len(sink_w) == 1:
+                w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
+                w_belt = min(max(w_sink, 1), W - 2)
+                h_belt = min(max(h_sink, 1), H - 2)
+                final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
+            else:
+                final_dir_reward = 0.0
+
+            material_cost = (
+                1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
+                + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
+                + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
+            )
+
+            # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
+            if self._sol_n > 0:
+                tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
+            else:
+                tile_match_location = 1.0
+            tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
+            tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
+
+            # ── Delta-based shaping diagnostics (logged, NOT in reward) ──
+            curr_match = self._compute_solution_match()
+            loc_delta = curr_match[0] - self._prev_match[0]
+            ent_delta = curr_match[1] - self._prev_match[1]
+            dir_delta = curr_match[2] - self._prev_match[2]
+            self._prev_match = curr_match
+        else:
+            # Non-terminal training step: emit placeholders for the logged-only
+            # diagnostics (the rollout never reads these mid-episode).
+            thput_raw = 0.0
+            thput_normed = 0.0
+            num_entities = 0
+            frac_reachable = 0
+            final_dir_reward = 0.0
+            material_cost = 0.0
+            tile_match_location = tile_match_entity = tile_match_direction = 0.0
+            curr_match = self._prev_match
+            loc_delta = ent_delta = dir_delta = 0.0
 
         reward = -self.step_penalty
         if terminated or truncated:
@@ -1426,6 +1443,12 @@ if __name__ == "__main__":
         fe = cast(FactorioEnv, sub_env.unwrapped)
         fe._train_seed = args.seed + i
         fe._num_envs = args.num_envs
+        # The PPO rollout only reads thput/frac_reachable/num_entities for
+        # *finished* envs and never reads the shaping/tile-match diagnostics, so
+        # skip that per-step work on non-terminal steps (computed at episode end
+        # regardless). Reward + signature unchanged; ~31% of the rollout is this
+        # block. Eval/render envs keep full diagnostics (default).
+        fe._full_diagnostics = False
 
     encoder_layers = layers_from_args(args)
     print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")

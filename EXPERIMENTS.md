@@ -165,6 +165,28 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/gate-diagnostics — skip dead per-step diagnostics in training
+- **Hypothesis (the big lever)**: `step()` runs `simulate_throughput` + a block of
+  numpy diagnostics (tile_match, shaping deltas, material_cost, final_dir_reward,
+  num_entities, frac_reachable) on **every** step. But mid-episode none of it
+  feeds the reward (just `-step_penalty` until termination) and the PPO rollout
+  reads thput/frac_reachable/num_entities only for **finished** envs; the
+  shaping/tile-match keys are read by **tests only**, never logged in training.
+  The old probe measured this block at ~31% of rollout. Gate it: compute the full
+  block only when `terminated or truncated or self._full_diagnostics`. Training
+  rollout envs set `_full_diagnostics=False`; tests, eval (`run_rollout_eval`
+  makes its own envs), and any per-step inspector keep the default `True`.
+- **Why signature-safe**: the terminal reward (the only place throughput enters
+  the reward) and every episode-end-consumed value are still computed on the
+  terminal step. Verified: iter-1 signature **identical** to baseline; reward-
+  shaping tests pass (they run with full diagnostics).
+- **Contract note**: this lowers what the training path (and thus `run.sh`)
+  computes — but only *dead* instrumentation, so real training gets the same
+  speedup. It trades per-step monitorability in training for speed; reversible by
+  flipping `_full_diagnostics` back to `True`. Flagged for the human.
+- **Result**: TBD.
+- **Verdict**: TBD.
+
 ### speedup/rollout-update-microopts — dead-code + sync-defer bundle
 - **Hypothesis**: a bundle of signature-safe rollout/update micro-opts (verified
   iter-1 signature identical to baseline):
