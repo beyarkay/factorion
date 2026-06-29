@@ -165,6 +165,23 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/build-hoist-constants — hoist build_factory loop-invariants — DROPPED
+- **Hypothesis**: the build microbench (under cProfile) showed `str2ent` 0.162 s +
+  `str2item` genexpr ~0.16 s self-time, and the rejection loops rebuild
+  `[d for d in Direction…]` / `[v.value … items…]` every iteration. Hoist all to
+  module constants (`DIRECTION_CHOICES`, `_ITEM_VALS_NONEMPTY`, `_TRANSPORT_BELT_VAL`,
+  `_ELECTRONIC_CIRCUIT_VAL`, reuse `_SOURCE/_SINK_ENT_VAL`) → fewer linear scans /
+  allocations. List order preserved → identical `random.choice` draws.
+- **Change** (branch only): add constants; replace ~30 call sites across all
+  lesson branches. Build-hash **identical**, lint/type clean.
+- **Result**: build microbench **5.699 s vs 5.705 s = flat** (no measurable gain,
+  not even on the build-only microbench). The cProfile self-times were inflated
+  by per-call instrumentation — `str2ent` over a ~12-entry dict is a handful of
+  comparisons and a few calls/build; hoisting saves nothing real.
+- **Verdict**: **DROP (branch discarded).** ~30 changed call sites + 8 constants
+  for zero measurable benefit = pure churn. Confirms (again) cProfile self-times
+  mislead for tiny Python helpers. Not worth a full benchmark run.
+
 ### speedup/bfs-inline — inline in_bounds + cache dist in _bfs_shortest
 - **Hypothesis**: `_bfs_shortest` (1.54 s self) + its nested `in_bounds` (0.56 s
   over 1.47M calls) are the #2/#3 build-microbench hotspots. Inline the bounds
