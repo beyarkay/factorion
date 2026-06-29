@@ -62,6 +62,16 @@ Candidate directions (not yet tried — move to the log below as you take them):
 - Reduce `torch.compile` recompiles / warmup cost.
 - Larger minibatches / fewer Python-side optimiser iterations.
 - Profile the rollout step to find the actual hot line before guessing.
+- **Overlap factory-building with GPU compute** (signature-preserving version of
+  "pre-build factories"): each reset rebuilds a factory from scratch on the CPU
+  (`build_factory` 4.2 s + blank 2.8 s of the 2-iter profile) inline in the
+  rollout, while the GPU sits idle during that Python. Prebuild each env's *next*
+  factory for its exact upcoming seed (so identical factories, identical order →
+  signature preserved) on a CPU thread pool, overlapped with the NN forward/
+  backward. Bigger refactor (SyncVectorEnv autoresets inline), but pure-speed.
+  NB: a *fixed pool* / cache of factories would change which factories each env
+  sees (seeds never repeat within a run) → changes the iter-1 signature → that's
+  a numerics change, not pure speed.
 - **Per-step shaping diagnostics** (`_compute_solution_match`, `tile_match_*` in
   `FactorioEnv.step`) are logged in `info` but NOT used in reward, and the
   rollout loop never reads them. The solution mask they use is constant within
@@ -106,9 +116,49 @@ Candidate directions (not yet tried — move to the log below as you take them):
   most of this while keeping full monitorability (see speedup/numpy-match-…).
   Not merged (knob is off-by-default infra; can't drop metrics IRL).
 
+## GPU re-baseline (this box, after driver fix)
+
+GPU is now usable: driver 580.159.04 / CUDA 13.0, torch 2.12.1+cu130,
+`torch.cuda.is_available()` True on an RTX 2000 Ada. (The old session's blocker —
+driver too old for the torch build — is gone.) Bootstrapped from scratch: no `uv`
+and no `.venv` on the box, so `uv` install + `uv sync` + `maturin develop`.
+
+- **GPU baseline** (`./measure.sh`, `main` @ `e2694fb`): **30.070 s ± 0.239 s**
+  (vs the CPU session's 37.091 s). Steady per-iter: **rollout 2.10 s + update
+  0.61 s**. The NN/optimiser path dropped to GPU (update 1.45 → 0.61 s/iter);
+  **rollout is now ~3.4× the update and is the bottleneck** — it's CPU-bound env
+  stepping (peak GPU util ~26%).
+- The CPU thread-cap win is a **no-op on GPU** (guarded by `device=="cpu"`).
+- `baseline_signature.json` is absent, so the first `./benchmark.sh` run writes a
+  fresh **GPU** invariance signature (correct for re-baselining).
+
+### GPU rollout profile (cProfile, 2 iters)
+`reset()` dominates the rollout: **7.2 s cumulative** — `build_factory` 4.2 s +
+`blank_entities`/`_remove_entities` 2.8 s, with **2.32 s pure self-time in
+`_remove_entities`** (the single biggest self-time chunk in our code). The env
+`step()` is only ~1.6 s. So the GPU rollout bottleneck is per-reset Python, not
+the NN. Attacks below target that.
+
 ## Log
 
 Newest first. One entry per branch.
+
+### speedup/remove-entities-numpy — vectorize per-cell reads in _remove_entities
+- **Hypothesis**: `_remove_entities` (2.32 s self-time, biggest self-time in our
+  code) does two full W×H Python loops reading `world_CWH[ch, x, y].item()` per
+  cell — ~250+ torch scalar reads/reset × 965 resets/2-iter run. torch `.item()`
+  carries heavy per-op dispatch overhead vs a numpy scalar read. Reading the ENT
+  and DIR channels as plain int numpy arrays once per call (the world tensor is
+  CPU) and indexing those should erase most of the self-time. Iteration order
+  (x outer, y inner) and the single `random.sample(entity_groups, k)` draw are
+  kept byte-identical, so the sampled groups — and the built factory — are
+  unchanged → invariance signature must MATCH (pure speed).
+- **Change**: hoist empty/source/sink entity-ids + empty-item-id + NONE dir/misc
+  to module constants (kill the per-cell `str2ent`/`str2item` linear scans); read
+  ENT/DIR as int numpy arrays at the top of `_remove_entities`; index numpy in
+  both passes; pass Python ints to `py_entity_tiles` (its stub wants `int`).
+- **Result**: TBD.
+- **Verdict**: TBD.
 
 <!--
 ### speedup/<name> — <one line>

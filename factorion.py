@@ -273,6 +273,15 @@ def str2ent(s):
     return None
 
 
+# Hot-path entity/item ids, resolved once at import. `str2ent`/`str2item` do a
+# linear scan over the items dict on every call; `_remove_entities` would
+# otherwise re-resolve these per cell (965 resets × 121 cells in a 2-iter run).
+_EMPTY_ENT_VAL = str2ent("empty").value
+_SOURCE_ENT_VAL = str2ent("source").value
+_SINK_ENT_VAL = str2ent("sink").value
+_EMPTY_ITEM_VAL = str2item("empty").value
+
+
 def _str2b64img(path, base_path="factorio-icons"):
     try:
         with open(f"{base_path}/{path}.png", "rb") as image_file:
@@ -1286,7 +1295,15 @@ def _remove_entities(
     protected_positions = protected_positions or set()
 
     C, W, H = world_CWH.shape
-    skip = {str2ent("source").value, str2ent("sink").value, str2ent("empty").value}
+    skip = {_SOURCE_ENT_VAL, _SINK_ENT_VAL, _EMPTY_ENT_VAL}
+
+    # Read the entity/direction channels once as plain int numpy arrays. The
+    # world tensor is on the CPU, so reading per cell via torch `.item()` (the
+    # old hot path) paid per-op dispatch overhead ~250×/reset; numpy scalar
+    # indexing is far cheaper. Values, iteration order and the `random.sample`
+    # draw below are unchanged, so the blanked factory is byte-identical.
+    ent_chan = world_CWH[Channel.ENTITIES.value].to(torch.int64).numpy()
+    dir_chan = world_CWH[Channel.DIRECTION.value].to(torch.int64).numpy()
 
     # Pass 1: identify which cells are secondary tiles of multi-tile entities.
     # Map secondary → anchor so we skip them in pass 2.
@@ -1295,13 +1312,13 @@ def _remove_entities(
         for y in range(H):
             if (x, y) in secondary_tiles:
                 continue
-            ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
+            ent_val = int(ent_chan[x, y])
             if ent_val in skip:
                 continue
             ent = entities[ent_val]
             if ent.width == 1 and ent.height == 1:
                 continue
-            d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
+            d_val = int(dir_chan[x, y])
             tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
             if tiles_list is not None:
                 for tx, ty in tiles_list:
@@ -1314,14 +1331,14 @@ def _remove_entities(
         for y in range(H):
             if (x, y) in secondary_tiles:
                 continue
-            ent_val = world_CWH[Channel.ENTITIES.value, x, y].item()
+            ent_val = int(ent_chan[x, y])
             if ent_val in skip:
                 continue
             ent = entities[ent_val]
             if ent.width == 1 and ent.height == 1:
                 group = {(x, y)}
             else:
-                d_val = world_CWH[Channel.DIRECTION.value, x, y].item()
+                d_val = int(dir_chan[x, y])
                 tiles_list = factorion_rs.py_entity_tiles(x, y, d_val, ent.width, ent.height)
                 group = set(map(tuple, tiles_list)) if tiles_list is not None else {(x, y)}
             if group & protected_positions:
@@ -1335,9 +1352,9 @@ def _remove_entities(
     sampled_groups = random.sample(entity_groups, num_samples)
     for group in sampled_groups:
         for x, y in group:
-            world_CWH[Channel.ENTITIES.value, x, y] = str2ent("empty").value
+            world_CWH[Channel.ENTITIES.value, x, y] = _EMPTY_ENT_VAL
             world_CWH[Channel.DIRECTION.value, x, y] = Direction.NONE.value
-            world_CWH[Channel.ITEMS.value, x, y] = str2item("empty").value
+            world_CWH[Channel.ITEMS.value, x, y] = _EMPTY_ITEM_VAL
             world_CWH[Channel.MISC.value, x, y] = Misc.NONE.value
 
     return num_samples
