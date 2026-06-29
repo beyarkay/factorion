@@ -1,0 +1,5 @@
+timestamp_utc,branch,commit,dirty,seeds,reached,ttq_mean_s,ttq_std_s,ttq_min_s,ttq_max_s,crossing_iter_mean,crossing_iter_std,overrides,note
+2026-06-29T13:36:43Z,main,43ed1d4,clean,5,5/5,113.16,3.06,107.18,115.31,32.6,0.8,,baseline: canonical SFT->PPO finetune recipe
+2026-06-29T14:54:18Z,main,43ed1d4,dirty,5,5/5,63.1,9.81,51.86,75.75,25.0,4.34,--critic-warmup 5 --learning-rate 7e-4,warmup5 + lr7e-4
+2026-06-29T15:19:21Z,main,43ed1d4,dirty,5,5/5,83.01,13.98,66.76,99.33,30.0,5.83,--critic-warmup 5 --learning-rate 7e-4 --amp,warmup5 + lr7e-4 + AMP bf16
+2026-06-29T15:37:33Z,main,9a65c48,clean,5,5/5,62.72,9.83,51.16,75.01,25.0,4.34,--critic-warmup 5 --learning-rate 7e-4,"warmup5 + lr7e-4 (FINAL, clean tree, +step-simplify)"

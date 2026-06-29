@@ -128,3 +128,33 @@ iters to converge" and "faster iters".
 
 Takeaway: on this CPU-rollout-bound box the win is **train smarter (higher LR +
 shorter warmup), not bigger** — the GPU/batch levers and numerics don't pay off.
+
+### Full sweep log (so nobody re-runs these)
+
+Single-seed (seed 1) screens unless marked "5-seed". Baseline seed-1 = 115.6 s /
+iter 33; baseline 5-seed = 113.2 s ± 3.1. Lower is better. "DNF" = did not reach
+−0.15 within `--max-seconds 300`.
+
+LR (warmup 10): 1.6e-4→115.6 · 3e-4→92.7 · 5e-4→81.4 · 6e-4→71.1 · **7e-4→72.0** ·
+8e-4→73.9 · 1e-3→93.5(iter38, overshoots).
+Warmup (lr 1.6e-4): 10→115.6 · 5→104.5 · 3→106.3 · 0→117.6(worse, bad critic).
+Combos: w5+lr5e-4→82.4 · **w5+lr7e-4→53.8 (seed1) / 62.7±9.8 (5-seed) ← BEST** ·
+w7+lr7e-4→72.7 · w5+lr1e-3→74.5 · w3+lr1e-3→78.1.
+On w5+lr7e-4: ent0→57.8 · no-anneal→63.4 · ent0+no-anneal→69.9 (none beat it).
+critic-lr-mult (lr7e-4): w2,mult5→53.5 · w3,mult5→59.9 · w3,mult3→63.1 ·
+w5,mult3→93.0 (wash — none beat w5+lr7e-4).
+num-envs: sync32→147(iter25) · async32→124(iter25) · sync64→DNF · async64→DNF ·
+async128→DNF(GPU 87%). num_steps: 128→63.9(iter48, no gain) · 64→INVALID(iter1,
+reward-scale break) · 32envs×64steps→INVALID. AMP bf16 (5-seed): 83.0±14.
+
+Confirmed (5-seed, in `quality_results.csv`): baseline 113.2±3.1 · w5+lr7e-4
+62.7±9.8 · w5+lr7e-4+AMP 83.0±14.
+
+### Untried / next ideas (for a future session)
+The recipe-tuning space is mapped; further gains need a different angle, e.g.:
+faster per-iter rollout (the CPU bottleneck — a vectorised/batched env-step in
+Rust would attack what env-scaling couldn't); a stronger SFT base (raises the
+start point); a non-PPO update or a value-function init that removes warmup; or a
+2-stage LR schedule. The metric itself could also be made sustained-crossing
+(require K consecutive evals above threshold) to harden against any future config
+that crosses via a transient spike.
