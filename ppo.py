@@ -179,6 +179,8 @@ class Args:
     """Tags to apply to the wandb run."""
     critic_warmup: int = 0
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
+    critic_lr_mult: float = 1.0
+    """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
     eval_every: int = 7
     """Run the greedy held-out eval (eval/thput, eval/thput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12
@@ -1660,8 +1662,10 @@ if __name__ == "__main__":
         if args.anneal_lr:
             frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
             lrnow = frac * args.learning_rate
-            for group in optimizer.param_groups:
-                group["lr"] = lrnow
+            # param_groups[0]=actor, [1]=critic. The critic can run at a higher LR
+            # (critic_lr_mult) to warm the value head faster; 1.0 = unchanged.
+            optimizer.param_groups[0]["lr"] = lrnow
+            optimizer.param_groups[1]["lr"] = lrnow * args.critic_lr_mult
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
         ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
