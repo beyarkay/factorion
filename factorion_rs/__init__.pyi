@@ -66,7 +66,6 @@ def build_factory(
     Python so the result is byte-identical for the same ``(size, kind,
     seed)``. Returns ``(world, total_entities, protected_positions)`` where
     ``world`` is a ``(W, H, C)`` int64 array, or ``None`` when rejection
-    sampling is exhausted. Raises ``NotImplementedError`` for a lesson kind
-    not yet ported, ``ValueError`` for an unknown kind.
+    sampling is exhausted. Raises ``ValueError`` for an unknown kind.
     """
     ...

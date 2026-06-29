@@ -31,6 +31,7 @@ PORTED_KINDS = [
     LessonKind.ASSEMBLE_1IN_1OUT,
     LessonKind.MOVE_VIA_UG_BELT,
     LessonKind.ASSEMBLE_2IN_1OUT,
+    LessonKind.FROM_BLUEPRINT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -292,17 +293,51 @@ def test_assemble_2in1out_caps():
         assert_parity(10, LessonKind.ASSEMBLE_2IN_1OUT, seed, max_entities=12.0)
 
 
+# ── FROM_BLUEPRINT ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 16])
+def test_from_blueprint_fuzz_sizes(size):
+    """Sample a hand-authored blueprint, decode it, optionally substitute the
+    gears recipe, flip H/V, translate, and extend belt chains. Exercises the
+    most augmentation machinery of any lesson: the embedded decoded
+    blueprints, random.random() flips, the recipe substitution, and
+    _extend_belt_chains' shuffled per-marker extension. Small sizes also cover
+    the 'blueprint too big → skip' path."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.FROM_BLUEPRINT, seed) == "built":
+            built += 1
+    assert built > 100, f"size={size}: only {built}/400 seeds built"
+
+
+def test_from_blueprint_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(12, LessonKind.FROM_BLUEPRINT, seed)
+
+
+def test_from_blueprint_caps():
+    for seed in range(500):
+        assert_parity(12, LessonKind.FROM_BLUEPRINT, seed, max_entities=8.0)
+
+
 # ── progress guard ───────────────────────────────────────────────────────────
 
 
-def test_unported_kinds_raise():
-    """Every not-yet-ported kind raises ``NotImplementedError`` from Rust, so
-    the suite can never silently pass on an unimplemented lesson."""
+def test_all_kinds_are_ported():
+    """Every LessonKind is covered by the Rust port (and by PORTED_KINDS)."""
+    assert set(PORTED_KINDS) == set(ALL_KINDS)
+
+
+def test_every_kind_builds_via_rust():
+    """Smoke: each kind builds at least one factory through the Rust path."""
     for kind in ALL_KINDS:
-        if kind in PORTED_KINDS:
-            continue
-        with pytest.raises(NotImplementedError):
-            factorion_rs.build_factory(10, kind.value, 0, True, float("inf"))
+        built = any(
+            factorion_rs.build_factory(12, kind.value, seed, True, float("inf"))
+            is not None
+            for seed in range(40)
+        )
+        assert built, f"{kind.name}: Rust built nothing in 40 seeds"
 
 
 def test_unknown_kind_raises():

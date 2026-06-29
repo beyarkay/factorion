@@ -20,6 +20,7 @@
 // requires `alloc` to be visible at the crate root.
 extern crate alloc;
 
+mod blueprints;
 mod entities;
 mod factory_gen;
 mod graph;
@@ -32,8 +33,6 @@ mod world;
 
 #[cfg(feature = "pyo3-bindings")]
 use numpy::{IntoPyArray, PyReadonlyArray3};
-#[cfg(feature = "pyo3-bindings")]
-use pyo3::exceptions::PyNotImplementedError;
 #[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
 #[cfg(feature = "pyo3-bindings")]
@@ -196,8 +195,8 @@ type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>);
 ///
 /// Returns `(world, total_entities, protected_positions)` where `world` is
 /// a `(W, H, C)` int64 array (the same shape `simulate_throughput` takes),
-/// or `None` when rejection sampling is exhausted. Raises
-/// `NotImplementedError` for a lesson kind not yet ported to Rust.
+/// or `None` when rejection sampling is exhausted. Raises `ValueError` for an
+/// unknown lesson kind.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 #[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
@@ -211,20 +210,6 @@ fn build_factory(
 ) -> PyResult<Option<PyFactory>> {
     let lesson = LessonKind::from_i64(kind)
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
-    const PORTED: &[LessonKind] = &[
-        LessonKind::MoveOneItem,
-        LessonKind::MoveOneItemChaos,
-        LessonKind::SplitterSplit,
-        LessonKind::SplitterMerge,
-        LessonKind::Assemble1In1Out,
-        LessonKind::MoveViaUgBelt,
-        LessonKind::Assemble2In1Out,
-    ];
-    if !PORTED.contains(&lesson) {
-        return Err(PyNotImplementedError::new_err(format!(
-            "lesson kind {kind} is not yet ported to Rust"
-        )));
-    }
     let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item, max_entities)
     {
         Some(b) => b,
