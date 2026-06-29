@@ -132,6 +132,28 @@ and no `.venv` on the box, so `uv` install + `uv sync` + `maturin develop`.
 - `baseline_signature.json` is absent, so the first `./benchmark.sh` run writes a
   fresh **GPU** invariance signature (correct for re-baselining).
 
+### Hardware utilization (measured on this box — for picking a machine)
+Measured during a real `run.sh` (lightweight `nvidia-smi dmon`, negligible
+perturbation; absolute timing matched the 29 s benchmark):
+- **GPU: ~9–12% util (max ~28%), 220 MiB / 16 GB VRAM (1.3%), ~20 W / 70 W.**
+  The NN (conv 93/69/96, batch ≤4096, 11×11 grid) is tiny → the RTX 2000 Ada is
+  **massively over-provisioned**. A bigger / higher-VRAM GPU will NOT help at this
+  model size. Only worth more GPU if the network is scaled up substantially.
+- **CPU: single-core-bound** — only ~1–2 of 48 cores active. The rollout is serial
+  Python (`SyncVectorEnv` steps 16 envs in a Python loop × 256 steps). **More
+  cores won't help as-is**; the two levers are (a) **faster single-core clock**
+  (direct win, no code change) or (b) **parallelize env stepping**
+  (AsyncVectorEnv/multiprocessing) so many cores finally pay off — but IPC/pickle
+  overhead at this small per-step cost may eat the gains; must be tested.
+- **Loop split**: rollout 2.05 s/iter (77%) vs update 0.62 s/iter (23%). Rollout
+  is the place to optimize. **Measurement caveat learned the hard way:** any
+  manual run MUST use the exact `run.sh` args (esp. `--target-kl 0.02`, which
+  early-stops update epochs) or update time balloons ~8×; and a CPU sampler steals
+  the rollout's single core. Use `run.sh` + its summary JSON
+  (`rollout_seconds_steady_mean`/`update_seconds_steady_mean`) for interior
+  metrics — those resolve per-call wins the noisy `mean_s` can't (lower
+  statistical significance, so repeat for borderline changes).
+
 ### GPU rollout profile (cProfile, 2 iters)
 `reset()` dominates the rollout: **7.2 s cumulative** — `build_factory` 4.2 s +
 `blank_entities`/`_remove_entities` 2.8 s, with **2.32 s pure self-time in
