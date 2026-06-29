@@ -184,8 +184,14 @@ Newest first. One entry per branch.
   computes — but only *dead* instrumentation, so real training gets the same
   speedup. It trades per-step monitorability in training for speed; reversible by
   flipping `_full_diagnostics` back to `True`. Flagged for the human.
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **25.325 s ± 0.484 vs 28.785 → −12.0%** (ranges fully separated).
+  **rollout_steady 2.002 → 1.535 s/iter (−23%)**; update_steady 0.617 → 0.52.
+  Signature **MATCHED ✓**; full suite **3548 passed**. Commit `89d5535`.
+- **Verdict**: **KEEP — merged.** Biggest win since the GPU unlock, and the only
+  one that confirms the probe's "monitorability tax" (~23% of rollout here). The
+  diagnostics block was genuinely dead in training; gating it is a real training
+  speedup, not metric-hacking (signature identical, eval/tests unaffected). If
+  per-step training monitoring is ever wanted, flip `_full_diagnostics=True`.
 
 ### speedup/rollout-update-microopts — dead-code + sync-defer bundle
 - **Hypothesis**: a bundle of signature-safe rollout/update micro-opts (verified
