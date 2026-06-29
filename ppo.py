@@ -1270,11 +1270,6 @@ class AgentCNN(nn.Module):
         self.dir_head = layer_init(nn.Linear(last_chan, self.num_directions))
         self.item_head = layer_init(nn.Linear(last_chan, self.num_items))
         self.misc_head = layer_init(nn.Linear(last_chan, self.num_misc))
-        # Per-batch arange index cache for the per-tile feature gather in
-        # get_action_and_value (B is constant within a call-site: 16 in the
-        # rollout, minibatch_size in the update). Avoids reallocating an index
-        # tensor on every forward. Same values, so no effect on the signature.
-        self._arange_cache: dict = {}
 
         # Bias every head toward its "empty / NONE" slot (value 0) so a
         # freshly-initialised policy mostly proposes no-ops, matching the
@@ -1328,10 +1323,11 @@ class AgentCNN(nn.Module):
         y_B = tile_idx_B % self.height
 
         # --- Extract per-tile features at selected (x, y) ---
-        batch_idx = self._arange_cache.get(B)
-        if batch_idx is None or batch_idx.device != encoded_BCWH.device:
-            batch_idx = torch.arange(B, device=encoded_BCWH.device)
-            self._arange_cache[B] = batch_idx
+        # Build the batch index fresh each call. A cached arange would be
+        # captured into the CUDA-graph memory pool under reduce-overhead and get
+        # overwritten on the next replay; recreating it is trivially cheap and
+        # torch.compile folds it into the graph.
+        batch_idx = torch.arange(B, device=encoded_BCWH.device)
         tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
@@ -1576,10 +1572,29 @@ if __name__ == "__main__":
     critic_param_ids = {id(p) for p in critic_params}
     actor_params = [p for p in agent.parameters() if id(p) not in critic_param_ids]
 
-    print("Compiling agent with torch.compile()")
-    # torch.compile returns an OptimizedModule that proxies attribute access to
-    # the wrapped AgentCNN; cast back so the policy's methods stay typed.
-    agent = cast(AgentCNN, torch.compile(agent))
+    # `torch.compile(agent)` used to be a no-op: AgentCNN has no forward(), and
+    # every callsite uses .get_action_and_value / .get_value, which an
+    # OptimizedModule proxies straight to the *eager* original — so nothing was
+    # ever compiled. Instead, compile the INFERENCE paths explicitly.
+    #
+    # The policy forward is kernel-launch-overhead bound, not compute bound: on
+    # the tiny net a B=16 and a B=128 forward cost the same (~2 ms), i.e. the
+    # time is CPU dispatch of many small kernels. `reduce-overhead` (CUDA-graph
+    # trees) replays a captured kernel sequence with ~zero CPU launch overhead,
+    # which cuts the rollout forward ~7x (B=16). We compile only the no_grad
+    # rollout + bootstrap calls; the PPO update stays eager because CUDA-graph
+    # capture of the backward + optimizer step + the warm-up requires_grad flip
+    # is fragile, and the rollout is the larger share of NN time anyway. The
+    # rollout/update log-probs then differ by ~5e-4 (graph fusion FP order), far
+    # inside the PPO clip ratio, so the update is unaffected.
+    #
+    # reduce-overhead reuses static output buffers between replays, so the
+    # caller must cudagraph_mark_step_begin() before each call and not retain a
+    # raw output past the next call — the rollout copies every output into
+    # storage immediately, so that holds.
+    print("Compiling inference paths with torch.compile(reduce-overhead)")
+    rollout_act = torch.compile(agent.get_action_and_value, mode="reduce-overhead")
+    rollout_value = torch.compile(agent.get_value, mode="reduce-overhead")
 
     # Two param groups so the critic warm-up + LR annealing can address actor
     # and critic LRs independently; group[0]=actor keeps the existing
@@ -1718,8 +1733,12 @@ if __name__ == "__main__":
             with torch.no_grad():
                 # TODO update for new action logic
                 # D for dictionary
+                # New CUDA-graph step: lets reduce-overhead reuse its static
+                # output buffers (see the compile block above). Every output is
+                # copied into storage below before the next iteration's call.
+                torch.compiler.cudagraph_mark_step_begin()
                 with amp_ctx():
-                    action_ED, logprobs_E, _entropy_E, value_E = agent.get_action_and_value(next_obs_ECWH)
+                    action_ED, logprobs_E, _entropy_E, value_E = rollout_act(next_obs_ECWH)
                 values_SE[step] = value_E
                 # Accumulate the acting policy's per-head entropy + eot prob
                 # (stashed by get_action_and_value) for the policy/* metrics.
@@ -1815,8 +1834,11 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
+            torch.compiler.cudagraph_mark_step_begin()
             with amp_ctx():
-                next_value = agent.get_value(next_obs_ECWH).reshape(1, -1)
+                # .reshape(...) returns a fresh tensor, so the CUDA-graph output
+                # buffer isn't retained past the next step.
+                next_value = rollout_value(next_obs_ECWH).reshape(1, -1)
             advantages_SE = torch.zeros_like(rewards_SE).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
