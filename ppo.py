@@ -899,36 +899,44 @@ class FactorioEnv(gym.Env):
         self._truncated = truncated
 
         observation = self._get_obs()
+        # The full info dict (and SyncVectorEnv's per-step aggregation of it) is
+        # only consumed at episode end (the rollout reads it for finished envs) or
+        # by per-step inspectors (tests/eval, which keep _full_diagnostics=True).
+        # On a non-terminal training step nothing reads it, so emit only the cheap
+        # base info and skip the ~25-key build + its vector-env aggregation. The
+        # placeholder diagnostics computed above feed this block, so there's
+        # nothing meaningful to report on those steps anyway.
         info = self._get_info()
-        if terminated or truncated:
-            info.update({ 'steps_taken': self.steps })
+        if terminated or truncated or self._full_diagnostics:
+            if terminated or truncated:
+                info.update({ 'steps_taken': self.steps })
 
-        num_placed_entities = self._num_placed_entities
+            num_placed_entities = self._num_placed_entities
 
-        info.update({
-            'thput_raw': thput_raw,
-            'thput_normed': thput_normed,
-            'frac_reachable': frac_reachable,
-            'frac_hallucin': frac_hallucin,
-            'final_dir_reward': final_dir_reward,
-            'material_cost': material_cost,
-            'completion_bonus': self.max_steps - self.steps,
-            'min_entities_required': self.min_entities_required,
-            'num_entities': num_entities,
-            'num_placed_entities': num_placed_entities,
-            'frac_invalid_actions': self.invalid_actions / self.max_steps,
-            'max_entities': self.max_entities,
-            'invalid_reason': invalid_reason,
-            'tile_match_location': tile_match_location,
-            'tile_match_entity': tile_match_entity,
-            'tile_match_direction': tile_match_direction,
-            'shaping_location_match': curr_match[0],
-            'shaping_entity_match': curr_match[1],
-            'shaping_direction_match': curr_match[2],
-            'shaping_location_delta': loc_delta,
-            'shaping_entity_delta': ent_delta,
-            'shaping_direction_delta': dir_delta,
-        })
+            info.update({
+                'thput_raw': thput_raw,
+                'thput_normed': thput_normed,
+                'frac_reachable': frac_reachable,
+                'frac_hallucin': frac_hallucin,
+                'final_dir_reward': final_dir_reward,
+                'material_cost': material_cost,
+                'completion_bonus': self.max_steps - self.steps,
+                'min_entities_required': self.min_entities_required,
+                'num_entities': num_entities,
+                'num_placed_entities': num_placed_entities,
+                'frac_invalid_actions': self.invalid_actions / self.max_steps,
+                'max_entities': self.max_entities,
+                'invalid_reason': invalid_reason,
+                'tile_match_location': tile_match_location,
+                'tile_match_entity': tile_match_entity,
+                'tile_match_direction': tile_match_direction,
+                'shaping_location_match': curr_match[0],
+                'shaping_entity_match': curr_match[1],
+                'shaping_direction_match': curr_match[2],
+                'shaping_location_delta': loc_delta,
+                'shaping_entity_delta': ent_delta,
+                'shaping_direction_delta': dir_delta,
+            })
 
         self._cum_reward += reward
         self.steps += 1

@@ -165,6 +165,20 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/skip-info-nonterminal — skip the per-step info dict in training
+- **Hypothesis**: follow-on to gate-diagnostics. `step()` still built the full
+  ~25-key `info` dict every step, and `SyncVectorEnv` deep-aggregates it across
+  16 envs every step. But the rollout reads `info` only for *finished* envs, and
+  tests/eval keep `_full_diagnostics=True`. So on a non-terminal training step,
+  emit only the cheap base `_get_info()` and skip the 25-key build + its vector
+  aggregation. Subsumes the "lazy invalid_reason" idea (invalid_reason is only
+  referenced inside the skipped block).
+- **Change**: wrap the `info.update({...})` (and `steps_taken`) in
+  `if terminated or truncated or self._full_diagnostics`.
+- **Result**: iter-1 signature **MATCHED ✓**; reward-shaping tests pass.
+  Benchmark: TBD.
+- **Verdict**: TBD.
+
 ### speedup/gate-diagnostics — skip dead per-step diagnostics in training
 - **Hypothesis (the big lever)**: `step()` runs `simulate_throughput` + a block of
   numpy diagnostics (tile_match, shaping deltas, material_cost, final_dir_reward,
