@@ -143,6 +143,22 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/path-to-belts-revmap — O(1) reverse-map in _path_to_belts
+- **Hypothesis**: a focused (non-cProfile-distorted by relative ranking)
+  microbench of `build_factory` shows the cost is NOT the torch ops in
+  `find_belt_paths_*` (0.018 s self) but the pure-Python path enumeration:
+  **`_path_to_belts` is the #1 self-time (2.17 s over 93k calls)**, then
+  `_bfs_shortest` (1.54 s) and `in_bounds` (0.56 s, 1.47M calls). `_path_to_belts`
+  scans `DIR_TO_DELTA.items()` (O(4) + tuple compare) per path step to find the
+  matching direction. A precomputed `DELTA_TO_DIR` reverse map makes it an O(1)
+  dict lookup. Every delta is unique so the result is identical; path *order* is
+  preserved (critical — `find_belt_paths` output is fed to `random.shuffle`, so a
+  reordering would change the chosen path → the factory → the signature).
+- **Change**: add module-level `DELTA_TO_DIR = {delta: d}`; rewrite the
+  `_path_to_belts` inner loop to `DELTA_TO_DIR.get((dr, dc))`.
+- **Result**: TBD.
+- **Verdict**: TBD.
+
 ### speedup/remove-entities-numpy — vectorize per-cell reads in _remove_entities
 - **Hypothesis**: `_remove_entities` (2.32 s self-time, biggest self-time in our
   code) does two full W×H Python loops reading `world_CWH[ch, x, y].item()` per

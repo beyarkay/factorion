@@ -223,6 +223,10 @@ DIR_TO_DELTA = {
     Direction.SOUTH: (0, 1),
     Direction.WEST: (-1, 0),
 }
+# Reverse map for O(1) (dr, dc) → Direction lookups on the path-building hot
+# path. Every delta is unique, so this is exactly the first-match the old
+# linear scan over DIR_TO_DELTA.items() returned.
+DELTA_TO_DIR = {delta: d for d, delta in DIR_TO_DELTA.items()}
 
 
 def b64_to_dict(blueprint_string):
@@ -2936,11 +2940,9 @@ def _path_to_belts(path, end_dir):
     """Convert a list of (x, y) cells into belt placements with directions."""
     belts: List[Tuple[int, int, Direction]] = []
     for (r1, c1), (r2, c2) in zip(path, path[1:]):
-        dr, dc = (r2 - r1, c2 - c1)
-        for d, delta in DIR_TO_DELTA.items():
-            if delta == (dr, dc):
-                belts.append((r1, c1, d))
-                break
+        d = DELTA_TO_DIR.get((r2 - r1, c2 - c1))
+        if d is not None:
+            belts.append((r1, c1, d))
     belts.append((path[-1][0], path[-1][1], end_dir))
     return belts
 
