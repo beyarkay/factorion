@@ -38,6 +38,23 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
+# Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
+# str2item linear-scan the entity/item tables on every call, and step() calls
+# them ~10x per step with constant literals (~118k redundant scans per benchmark
+# iteration). Resolve them once at import; the values never change.
+_EMPTY_ENT_ID = str2ent("empty").value
+_ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
+_UG_BELT_ENT_ID = str2ent("underground_belt").value
+_TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
+_EMPTY_ITEM = str2item("empty")
+
+# Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
+# metrics read/reduce the world via these channels thousands of times per
+# iteration; enum `.value` attribute access is surprisingly costly at that
+# frequency (~256k enum lookups/iter in the profile).
+_CH_ENT = Channel.ENTITIES.value
+_CH_DIR = Channel.DIRECTION.value
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -512,22 +529,44 @@ class FactorioEnv(gym.Env):
 
     def _compute_solution_match(self):
         """Compute similarity to solved factory over solution-nonempty tiles only.
-        Returns (location_match, entity_match, direction_match) each in [0, 1]."""
-        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[Channel.DIRECTION.value]
+        Returns (location_match, entity_match, direction_match) each in [0, 1].
 
-        mask = (orig_ent != 0)
-        n = mask.sum().item()
+        The solution mask and the masked original ent/dir are constant for the
+        whole episode (they derive from `_solved_world_CWH`, fixed at reset), so
+        they're cached by `_cache_solution_match` instead of being recomputed on
+        every step. Only the current-world side is read here."""
+        n = self._sol_n
         if n == 0:
             return 1.0, 1.0, 1.0
 
-        location_match = (curr_ent[mask] != 0).float().sum().item() / n
-        entity_match = (curr_ent[mask] == orig_ent[mask]).float().sum().item() / n
-        direction_match = (curr_dir[mask] == orig_dir[mask]).float().sum().item() / n
+        # numpy on a zero-copy view of the (torch) world: these tiny-grid
+        # reductions are pure dispatch overhead under torch; numpy is ~5-10x
+        # cheaper here. Values are identical (integer-count ratios).
+        wnp = self._world_CWH.numpy()
+        mask = self._sol_mask
+        curr_ent_masked = wnp[_CH_ENT][mask]
+        curr_dir_masked = wnp[_CH_DIR][mask]
+
+        location_match = float(np.count_nonzero(curr_ent_masked != 0)) / n
+        entity_match = float(np.count_nonzero(curr_ent_masked == self._sol_orig_ent_masked)) / n
+        direction_match = float(np.count_nonzero(curr_dir_masked == self._sol_orig_dir_masked)) / n
 
         return location_match, entity_match, direction_match
+
+    def _cache_solution_match(self):
+        """Precompute the episode-constant pieces of `_compute_solution_match`.
+        Called once per `reset`, after `_solved_world_CWH` is set. Cached as
+        numpy (the solved world is fixed for the episode), matching the numpy
+        reductions in `_compute_solution_match` / the per-step tile-match block."""
+        sw = self._solved_world_CWH.numpy()
+        orig_ent = sw[_CH_ENT]
+        orig_dir = sw[_CH_DIR]
+        self._sol_orig_ent = orig_ent
+        self._sol_orig_dir = orig_dir
+        self._sol_mask = (orig_ent != 0)
+        self._sol_n = int(np.count_nonzero(self._sol_mask))
+        self._sol_orig_ent_masked = orig_ent[self._sol_mask]
+        self._sol_orig_dir_masked = orig_dir[self._sol_mask]
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if self._train_seed is not None:
@@ -602,6 +641,9 @@ class FactorioEnv(gym.Env):
                 )
         self._kind = kind
         self._solved_world_CWH = factory.world_CWH
+        # Cache the episode-constant pieces of the per-step solution-match
+        # diagnostic now that the solved world is known.
+        self._cache_solution_match()
         # Per-factory maximum throughput: the raw items/second the complete,
         # correct factory carries. We normalize the agent's raw throughput by
         # this so a perfectly-rebuilt factory scores 1.0 regardless of its
@@ -637,9 +679,6 @@ class FactorioEnv(gym.Env):
         source_id = self._source_id
         sink_id = self._sink_id
 
-        # Mutate the world with the agent's actions
-        entity_to_be_replaced = self._world_CWH[Channel.ENTITIES.value, x, y]
-
         self.actions.append(None)
         action_is_invalid = False
         invalid_reason = {
@@ -664,27 +703,27 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason['placed_source_or_sink'] = True
             action_is_invalid = True
-        elif entity_id == str2ent('assembling_machine_1').value and item_id == str2item('empty'):
+        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM:
             # Model is trying to place an assembling machine without a recipe
             invalid_reason['place_asm_mach_wo_recipe'] = True
             action_is_invalid = True
             pass
-        elif entity_id not in (str2ent('empty').value, str2ent('assembling_machine_1').value) and direc == Direction.NONE.value:
+        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['placement_wo_direction'] = True
             action_is_invalid = True
             pass
-        elif entity_id == str2ent('empty').value and direc != Direction.NONE.value:
+        elif entity_id == _EMPTY_ENT_ID and direc != Direction.NONE.value:
             # Model is trying to put a thing without giving a direction
             invalid_reason['direction_wo_entity'] = True
             action_is_invalid = True
             pass
-        elif (misc == Misc.NONE.value) and (entity_id == str2ent('underground_belt').value):
+        elif (misc == Misc.NONE.value) and (entity_id == _UG_BELT_ENT_ID):
             # model is trying to place an underground belt without giving a down/up
             invalid_reason['ug_belt_wo_up_or_down'] = True
             action_is_invalid = True
             pass
-        elif (misc != Misc.NONE.value) and (entity_id != str2ent('underground_belt').value):
+        elif (misc != Misc.NONE.value) and (entity_id != _UG_BELT_ENT_ID):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
             invalid_reason['placement_with_unneeded_misc'] = True
@@ -761,9 +800,19 @@ class FactorioEnv(gym.Env):
             else 0.0
         )
 
+        # Single zero-copy numpy view of the (torch) world for the per-step
+        # diagnostics below. These are tiny-grid reductions whose torch cost is
+        # almost entirely per-op dispatch overhead (~31% of rollout time in the
+        # profile); numpy on the shared buffer computes the identical values far
+        # cheaper. Taken after the world is mutated above, so it is current.
+        wnp = self._world_CWH.numpy()
+        ent_np = wnp[_CH_ENT]
+        dir_np = wnp[_CH_DIR]
+        W, H = ent_np.shape
+
         # Calculate a "reachable" fraction that penalises the model for leaving
         # entities disconnected from the graph (almost certainly useless)
-        num_entities = self._world_CWH[Channel.ENTITIES.value].count_nonzero()
+        num_entities = int(np.count_nonzero(ent_np))
         # NOTE: weird bug with num_unreachable calculations, not planning on
         # fixing any time super soon. really the calculation should be to
         # calculate frac_reachable directly, not go via frac_unreachable
@@ -775,39 +824,29 @@ class FactorioEnv(gym.Env):
         # MOVE_ONE_ITEM case). Other lesson kinds (e.g. SPLITTER_SPLIT)
         # place multiple sinks or none, so this shaping term gets zeroed
         # instead of asserting.
-        sink_locs = torch.where(self._world_CWH[Channel.ENTITIES.value] == self._sink_id)
-        C, W, H = self._world_CWH.shape
-        if len(sink_locs[0]) == 1:
-            w_sink, h_sink = sink_locs[0][0], sink_locs[1][0]
-            w_belt = torch.clamp(w_sink, 1, W-2)
-            h_belt = torch.clamp(h_sink, 1, H-2)
-            final_belt_dir = self._world_CWH[Channel.DIRECTION.value, w_belt, h_belt]
-            sink_dir = self._world_CWH[Channel.DIRECTION.value, w_sink, h_sink]
-            final_dir_reward = 1.0 if final_belt_dir == sink_dir else 0.0
+        sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
+        if len(sink_w) == 1:
+            w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
+            w_belt = min(max(w_sink, 1), W - 2)
+            h_belt = min(max(h_sink, 1), H - 2)
+            final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
         else:
             final_dir_reward = 0.0
 
         material_cost = (
-            1.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('transport_belt').value).sum()
-            + 1.5 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('underground_belt').value).sum()
-            + 2.0 * (self._world_CWH[Channel.DIRECTION.value] == str2ent('assembling_machine_1').value).sum()
+            1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
+            + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
+            + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
         )
 
         # ── Diagnostic tile-match metrics (for logging, NOT used in reward) ──
-        orig_ent = self._solved_world_CWH[Channel.ENTITIES.value]
-        curr_ent = self._world_CWH[Channel.ENTITIES.value]
-        orig_dir = self._solved_world_CWH[Channel.DIRECTION.value]
-        curr_dir = self._world_CWH[Channel.DIRECTION.value]
-
-        solution_nonempty = (orig_ent != 0)
-        current_nonempty = (curr_ent != 0)
-        num_solution_nonempty = solution_nonempty.sum().item()
-        if num_solution_nonempty > 0:
-            tile_match_location = (solution_nonempty & current_nonempty).sum().item() / num_solution_nonempty
+        # Reuse the episode-constant solution arrays cached at reset.
+        if self._sol_n > 0:
+            tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
         else:
             tile_match_location = 1.0
-        tile_match_entity = (curr_ent == orig_ent).float().mean().item()
-        tile_match_direction = (curr_dir == orig_dir).float().mean().item()
+        tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
+        tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
 
         # ── Delta-based shaping diagnostics (logged in info, NOT in reward) ──
         # Computed over solution-nonempty tiles only.
@@ -1340,6 +1379,13 @@ if __name__ == "__main__":
     if device.type == "mps":
         # metal doesn't like anything but f32
         torch.set_default_dtype(torch.float32)
+    if device.type == "cpu":
+        # The net is tiny (batch 16, 11x11 grid), so torch's default intra-op
+        # thread count (~cores/2) heavily over-subscribes: per-conv thread
+        # launch/sync overhead swamps the actual compute. Capping at a small
+        # count is a ~3-4x speedup for both rollout and optimiser steps on CPU.
+        # (GPU runs are unaffected; this only touches CPU execution.)
+        torch.set_num_threads(min(6, os.cpu_count() or 6))
     print(f"running on {device}")
 
     print(f"Setting up envs with {args}")
@@ -1472,6 +1518,17 @@ if __name__ == "__main__":
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
+
+    # Per-iteration rollout/optimise wall-times, accumulated so the final
+    # summary can report where the loop spends its time (for speed benchmarking).
+    rollout_seconds_hist: list[float] = []
+    update_seconds_hist: list[float] = []
+
+    # Iteration-1 computation signature (loss/kl/grad-norm). The run is
+    # deterministic (fixed seeds + use_deterministic_algorithms), so a pure
+    # *speed* change must reproduce these bit-for-bit. benchmark.sh diffs them
+    # against main's baseline to catch changes that silently alter the math.
+    iter1_signature: dict[str, float] = {}
 
     print(f"Starting {args.num_iterations} iterations")
     pbar = tqdm.trange(1, args.num_iterations + 1)
@@ -1693,6 +1750,8 @@ if __name__ == "__main__":
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         update_seconds = time.time() - update_start
+        rollout_seconds_hist.append(rollout_seconds)
+        update_seconds_hist.append(update_seconds)
 
         # ── Greedy held-out eval (every eval_every iters + the final one) ──
         eval_metrics: dict = {}
@@ -1733,6 +1792,15 @@ if __name__ == "__main__":
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = s / n_steps
         iter_metrics.update(eval_metrics)
+
+        if iteration == 1:
+            iter1_signature = {
+                "policy_loss": round(pg_loss.item(), 8),
+                "value_loss": round(v_loss.item(), 8),
+                "entropy_loss": round(entropy_loss.item(), 8),
+                "approx_kl": round(float(approx_kl), 8),
+                "grad_norm": round(float(unclipped_grad_norm), 8),
+            }
 
         # Flush rollout episode means (empty if no episodes ended this iter)
         iter_metrics.update(_flush_episode_means())
@@ -1828,6 +1896,24 @@ if __name__ == "__main__":
         print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')
 
     # Write summary JSON (used by CI to post results to PR)
+    # Where did the loop spend its time? Totals over all iterations, plus a
+    # "steady" mean that drops iteration 1 (which absorbs the one-time
+    # torch.compile warmup) when there is more than one iteration to average.
+    def _mean(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+
+    rollout_total = sum(rollout_seconds_hist)
+    update_total = sum(update_seconds_hist)
+    steady_rollout = rollout_seconds_hist[1:] or rollout_seconds_hist
+    steady_update = update_seconds_hist[1:] or update_seconds_hist
+    print(
+        f"Loop time breakdown: rollout={rollout_total:.1f}s "
+        f"(steady mean {_mean(steady_rollout):.2f}s/iter), "
+        f"update={update_total:.1f}s "
+        f"(steady mean {_mean(steady_update):.2f}s/iter) "
+        f"over {len(rollout_seconds_hist)} iters"
+    )
+
     summary = {
         "global_step": global_step,
         "total_timesteps": args.total_timesteps,
@@ -1835,6 +1921,12 @@ if __name__ == "__main__":
         "runtime_seconds": round(runtime, 1),
         "runtime_human": format_duration(runtime),
         "sps": int(global_step / runtime) if runtime > 0 else 0,
+        "rollout_seconds_total": round(rollout_total, 2),
+        "update_seconds_total": round(update_total, 2),
+        "rollout_seconds_steady_mean": round(_mean(steady_rollout), 3),
+        "update_seconds_steady_mean": round(_mean(steady_update), 3),
+        "num_iterations": len(rollout_seconds_hist),
+        "iter1_signature": iter1_signature,
         "seed": args.seed,
         "num_envs": args.num_envs,
         "grid_size": args.size,
