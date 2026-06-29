@@ -601,6 +601,10 @@ class FactorioEnv(gym.Env):
         self._num_missing_entities = self._reset_options.get('num_missing_entities', float('inf'))
 
         self.actions = []
+        # Running count of valid non-empty placements, kept incrementally instead
+        # of re-scanning self.actions every step (that was O(steps) per step =
+        # O(steps^2) per episode, and grows as episodes lengthen during training).
+        self._num_placed_entities = 0
         # Lesson kind is settable per-reset. Default (omitted or None) is
         # uniform random sampling across LessonKind on every reset —
         # matches the project direction where lessons are data generators
@@ -775,13 +779,16 @@ class FactorioEnv(gym.Env):
                     self._world_CWH[Channel.DIRECTION.value, tx, ty] = direc
                 self._world_CWH[Channel.ITEMS.value, x, y] = item_id
                 self._world_CWH[Channel.MISC.value, x, y] = misc
+                placed_name = entities[entity_id].name
                 self.actions[-1] = {
-                    'entity': entities[entity_id].name,
+                    'entity': placed_name,
                     'xy': (x, y),
                     'direction': Direction(direc),
                     'item': items[item_id].name,
                     'misc': Misc(misc),
                 }
+                if placed_name != 'empty':
+                    self._num_placed_entities += 1
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
@@ -879,7 +886,7 @@ class FactorioEnv(gym.Env):
         if terminated or truncated:
             info.update({ 'steps_taken': self.steps })
 
-        num_placed_entities = len([a for a in self.actions if a is not None and a['entity'] != 'empty'])
+        num_placed_entities = self._num_placed_entities
 
         info.update({
             'thput_raw': thput_raw,

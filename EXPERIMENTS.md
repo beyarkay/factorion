@@ -165,6 +165,19 @@ the NN. Attacks below target that.
 
 Newest first. One entry per branch.
 
+### speedup/step-cpu-microopts — incremental num_placed_entities counter
+- **Hypothesis**: a CPU-side (not GPU-sync) rollout win, since the rollout is
+  CPU-bound. `FactorioEnv.step` recomputed `num_placed_entities` via
+  `len([a for a in self.actions if ...])` — an O(steps) scan of the whole action
+  history *every step* → O(steps²) per episode, and it grows as episodes lengthen
+  during real training. Track it as an incremental counter (bump on each valid
+  non-empty placement) → O(1)/step. Identical value (verified 0 mismatches over
+  400 steps vs the old scan); signature unaffected (logged-only field).
+- **Change**: `self._num_placed_entities` init at reset, `+= 1` at the valid
+  placement site when the entity isn't 'empty'; `info` reads the counter.
+- **Result**: TBD.
+- **Verdict**: TBD.
+
 ### speedup/defer-entropy-syncs — accumulate policy/* entropy on-GPU
 - **Hypothesis**: the rollout accumulated the per-head entropy + eot-prob for the
   `policy/*` logs via `float(e)` every step — 7 device→host CUDA syncs/step ×
