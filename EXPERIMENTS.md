@@ -176,8 +176,15 @@ Newest first. One entry per branch.
   reads `int(action["eot"])`), so the signature must MATCH.
 - **Change**: replace the six-way dict-comprehension transfer with a single
   `action_EA.cpu().numpy()` + column slicing into the same 6-key dict.
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **29.107 s ± 0.079 s** vs 29.09 → **flat**. Signature **MATCHED ✓**.
+  rollout_steady 2.035 → 2.025 (noise). Commit `a9df8ae`.
+- **Verdict**: **KEEP — merged (benchmark-flat, production-positive).** Fewer
+  syncs + cheaper code; matters more on a bigger net / more-utilized GPU. **Key
+  learning: the rollout bottleneck is CPU-side Python (env stepping), NOT GPU
+  syncs/transfers.** With the GPU at ~9% util, the CPU env-step work dominates and
+  runs concurrently with GPU idle, so cutting CUDA syncs is invisible to the
+  benchmark. Benchmark-visible wins must cut **CPU Python in the rollout** (the
+  `SyncVectorEnv` 16-env loop / `FactorioEnv.step`) or parallelize it.
 
 ### speedup/path-to-belts-revmap — O(1) reverse-map in _path_to_belts
 - **Hypothesis**: a focused (non-cProfile-distorted by relative ranking)
