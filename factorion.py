@@ -6,6 +6,7 @@ wrappers have been stripped and identifiers are exported directly.
 """
 
 import base64
+import functools
 import glob
 import json
 import os
@@ -251,7 +252,12 @@ def str2item(s):
     )
 
 
+@functools.cache
 def str2ent(s):
+    # Memoized: `entities` is built once at import and never mutated, so this is
+    # a pure function of `s`. It was a linear scan over entities.values() (with a
+    # str.replace per iteration) and is one of the hottest calls in build_factory
+    # (~28k calls per rollout iteration of resets); caching makes repeats O(1).
     if s is None:
         print(f"WARN: given string  is None")
         return None
