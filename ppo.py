@@ -48,6 +48,20 @@ _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
 _EMPTY_ITEM = str2item("empty")
+# Counts / sentinels read in FactorioEnv.step's per-step validity chain; hoisted
+# so the chain doesn't re-evaluate len()/enum .value every step.
+_N_ENTITIES = len(entities)
+_N_DIRECTIONS = len(Direction)
+_DIR_NONE_VAL = Direction.NONE.value
+_MISC_NONE_VAL = Misc.NONE.value
+# Fixed key set for the (logged-only) invalid_reason dict. step() tracks just the
+# one key that fired and materialises the full all-False+one-True dict lazily,
+# only when the info dict is actually built (terminal / full-diagnostics step).
+_INVALID_REASON_KEYS = (
+    'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
+    'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
+    'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
+)
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
 # metrics read/reduce the world via these channels thousands of times per
@@ -723,54 +737,41 @@ class FactorioEnv(gym.Env):
 
         self.actions.append(None)
         action_is_invalid = False
-        invalid_reason = {
-            'placed_on_masked_tile': False,
-            'replaced_source_or_sink': False,
-            'placed_source_or_sink': False,
-            'place_asm_mach_wo_recipe': False,
-            'placement_wo_direction': False,
-            'direction_wo_entity': False,
-            'ug_belt_wo_up_or_down': False,
-            'placement_with_unneeded_misc': False,
-            'too_wide': False,
-            'too_tall': False,
-        }
+        # Track only which invalid_reason fired (None = valid). The full 10-key
+        # dict is built lazily at info time — it's logged-only and read just for
+        # finished envs, so building it every step was wasted work.
+        invalid_reason_key = None
 
         # Check that the action is actually valid
-        if not (0 <= entity_id < len(entities)):
+        if not (0 <= entity_id < _N_ENTITIES):
             action_is_invalid = True
-        elif not (0 <= direc < len(Direction)):
+        elif not (0 <= direc < _N_DIRECTIONS):
             action_is_invalid = True
         elif entity_id in (source_id, sink_id):
             # agent tried to place a source or sink
-            invalid_reason['placed_source_or_sink'] = True
+            invalid_reason_key = 'placed_source_or_sink'
             action_is_invalid = True
         elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM:
             # Model is trying to place an assembling machine without a recipe
-            invalid_reason['place_asm_mach_wo_recipe'] = True
+            invalid_reason_key = 'place_asm_mach_wo_recipe'
             action_is_invalid = True
-            pass
-        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == Direction.NONE.value:
+        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == _DIR_NONE_VAL:
             # Model is trying to put a thing without giving a direction
-            invalid_reason['placement_wo_direction'] = True
+            invalid_reason_key = 'placement_wo_direction'
             action_is_invalid = True
-            pass
-        elif entity_id == _EMPTY_ENT_ID and direc != Direction.NONE.value:
+        elif entity_id == _EMPTY_ENT_ID and direc != _DIR_NONE_VAL:
             # Model is trying to put a thing without giving a direction
-            invalid_reason['direction_wo_entity'] = True
+            invalid_reason_key = 'direction_wo_entity'
             action_is_invalid = True
-            pass
-        elif (misc == Misc.NONE.value) and (entity_id == _UG_BELT_ENT_ID):
+        elif (misc == _MISC_NONE_VAL) and (entity_id == _UG_BELT_ENT_ID):
             # model is trying to place an underground belt without giving a down/up
-            invalid_reason['ug_belt_wo_up_or_down'] = True
+            invalid_reason_key = 'ug_belt_wo_up_or_down'
             action_is_invalid = True
-            pass
-        elif (misc != Misc.NONE.value) and (entity_id != _UG_BELT_ENT_ID):
+        elif (misc != _MISC_NONE_VAL) and (entity_id != _UG_BELT_ENT_ID):
             # model is trying to place a thing that doesn't need a Misc but
             # still giving it a Misc
-            invalid_reason['placement_with_unneeded_misc'] = True
+            invalid_reason_key = 'placement_with_unneeded_misc'
             action_is_invalid = True
-            pass
         else:
             # Compute the entity's full footprint (anchor for 1x1, all
             # occupied tiles for multi-tile). py_entity_tiles handles
@@ -797,19 +798,19 @@ class FactorioEnv(gym.Env):
                 for tx, ty in tiles_list
             )
             if out_of_bounds:
-                invalid_reason['too_wide'] = True
+                invalid_reason_key = 'too_wide'
                 action_is_invalid = True
             elif any(
                 world_np[_CH_FOOTPRINT, tx, ty] == Footprint.UNAVAILABLE.value
                 for tx, ty in tiles_list
             ):
-                invalid_reason['placed_on_masked_tile'] = True
+                invalid_reason_key = 'placed_on_masked_tile'
                 action_is_invalid = True
             elif any(
                 int(world_np[_CH_ENT, tx, ty]) in (source_id, sink_id)
                 for tx, ty in tiles_list
             ):
-                invalid_reason['replaced_source_or_sink'] = True
+                invalid_reason_key = 'replaced_source_or_sink'
                 action_is_invalid = True
             else:
                 action_is_invalid = False
@@ -959,7 +960,7 @@ class FactorioEnv(gym.Env):
                 'num_placed_entities': num_placed_entities,
                 'frac_invalid_actions': self.invalid_actions / self.max_steps,
                 'max_entities': self.max_entities,
-                'invalid_reason': invalid_reason,
+                'invalid_reason': {k: (k == invalid_reason_key) for k in _INVALID_REASON_KEYS},
                 'tile_match_location': tile_match_location,
                 'tile_match_entity': tile_match_entity,
                 'tile_match_direction': tile_match_direction,
