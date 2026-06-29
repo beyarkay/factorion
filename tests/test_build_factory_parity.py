@@ -29,6 +29,7 @@ PORTED_KINDS = [
     LessonKind.SPLITTER_SPLIT,
     LessonKind.SPLITTER_MERGE,
     LessonKind.ASSEMBLE_1IN_1OUT,
+    LessonKind.MOVE_VIA_UG_BELT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -235,6 +236,34 @@ def test_assemble_1in1out_fuzz_many_seeds():
 def test_assemble_1in1out_caps():
     for seed in range(500):
         assert_parity(10, LessonKind.ASSEMBLE_1IN_1OUT, seed, max_entities=10.0)
+
+
+# ── MOVE_VIA_UG_BELT ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_move_via_ug_belt_fuzz_sizes(size):
+    """A wall (1..4 thick) spans the grid; an underground-belt pair tunnels
+    through it. Exercises the MISC channel (UG up/down), the FOOTPRINT wall
+    barrier, and side-restricted belt routing — none of which the other
+    lessons touch."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.MOVE_VIA_UG_BELT, seed) == "built":
+            built += 1
+    assert built > 150, f"size={size}: only {built}/400 seeds built"
+
+
+def test_move_via_ug_belt_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.MOVE_VIA_UG_BELT, seed)
+
+
+def test_move_via_ug_belt_fixed_recipe_and_caps():
+    for seed in range(500):
+        assert_parity(10, LessonKind.MOVE_VIA_UG_BELT, seed, random_item=False)
+    for seed in range(500):
+        assert_parity(10, LessonKind.MOVE_VIA_UG_BELT, seed, max_entities=8.0)
 
 
 # ── progress guard ───────────────────────────────────────────────────────────

@@ -217,6 +217,7 @@ fn build_factory(
         LessonKind::SplitterSplit,
         LessonKind::SplitterMerge,
         LessonKind::Assemble1In1Out,
+        LessonKind::MoveViaUgBelt,
     ];
     if !PORTED.contains(&lesson) {
         return Err(PyNotImplementedError::new_err(format!(

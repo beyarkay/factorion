@@ -19,7 +19,7 @@ use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::pyrandom::PyRandom;
 use crate::throughput::{calc_throughput, factory_score};
-use crate::types::{all_items, all_recipes, Channel, Direction, Item, Recipe};
+use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -356,6 +356,9 @@ pub fn build_factory(
             build_splitter_merge(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
+        LessonKind::MoveViaUgBelt => {
+            build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
+        }
         // Remaining kinds are ported in subsequent commits.
         _ => None,
     }
@@ -1197,6 +1200,225 @@ fn build_assemble_1in1out(
 
         if world_throughput(&world) <= 0.0 {
             continue;
+        }
+
+        return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_move_via_ug_belt(
+    size: usize,
+    rng: &mut PyRandom,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let pool = item_pool();
+    let mut count = (500).max(size * size * 8);
+
+    let item_value = if random_item {
+        pool[rng.choice_index(pool.len())]
+    } else {
+        Item::ElectronicCircuit as i64
+    };
+
+    while count > 0 {
+        count -= 1;
+        let flow_dir = DIRS[rng.choice_index(4)];
+        let is_horizontal = matches!(flow_dir, Direction::East | Direction::West);
+        let flow_span = s; // W if horizontal else H — square grid
+        let perp_span = s;
+
+        // `fp_to_xy`: flow/perp coords → (x, y).
+        let fp_to_xy = |fc: i64, pc: i64| -> Cell {
+            if is_horizontal {
+                (fc, pc)
+            } else {
+                (pc, fc)
+            }
+        };
+
+        let max_wall = 4.min(flow_span - 2);
+        let wall_thickness = rng.randint(1, max_wall);
+        let wall_lo = rng.randint(1, flow_span - 1 - wall_thickness);
+        let wall_hi = wall_lo + wall_thickness - 1;
+
+        let forward = matches!(flow_dir, Direction::East | Direction::South);
+        let (ug_down_flow, ug_up_flow, src_lo, src_hi, snk_lo, snk_hi) = if forward {
+            (
+                wall_lo - 1,
+                wall_hi + 1,
+                0,
+                wall_lo - 1,
+                wall_hi + 1,
+                flow_span - 1,
+            )
+        } else {
+            (
+                wall_hi + 1,
+                wall_lo - 1,
+                wall_hi + 1,
+                flow_span - 1,
+                0,
+                wall_lo - 1,
+            )
+        };
+
+        let ug_perp = rng.randint(0, perp_span - 1);
+        let ug_down_pos = fp_to_xy(ug_down_flow, ug_perp);
+        let ug_up_pos = fp_to_xy(ug_up_flow, ug_perp);
+
+        let mut wall_tiles: HashSet<Cell> = HashSet::new();
+        for fc in wall_lo..=wall_hi {
+            for pc in 0..perp_span {
+                wall_tiles.insert(fp_to_xy(fc, pc));
+            }
+        }
+
+        let mut source_cells: Vec<Cell> = Vec::new();
+        for fc in src_lo..=src_hi {
+            for pc in 0..perp_span {
+                let cell = fp_to_xy(fc, pc);
+                if cell != ug_down_pos {
+                    source_cells.push(cell);
+                }
+            }
+        }
+        let mut sink_cells: Vec<Cell> = Vec::new();
+        for fc in snk_lo..=snk_hi {
+            for pc in 0..perp_span {
+                let cell = fp_to_xy(fc, pc);
+                if cell != ug_up_pos {
+                    sink_cells.push(cell);
+                }
+            }
+        }
+        if source_cells.is_empty() || sink_cells.is_empty() {
+            continue;
+        }
+
+        let source_pos = source_cells[rng.choice_index(source_cells.len())];
+        let sink_pos = sink_cells[rng.choice_index(sink_cells.len())];
+        let source_dir = DIRS[rng.choice_index(4)];
+        let sink_dir = DIRS[rng.choice_index(4)];
+
+        let ds = source_dir.delta();
+        let dk = sink_dir.delta();
+        let source_drop = (source_pos.0 + ds.0, source_pos.1 + ds.1);
+        let sink_input = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
+
+        if !in_grid(source_drop, s) || !in_grid(sink_input, s) {
+            continue;
+        }
+
+        if wall_tiles.contains(&source_drop) {
+            continue;
+        }
+        if source_drop == ug_up_pos || source_drop == sink_pos {
+            continue;
+        }
+        let sd_flow = if is_horizontal {
+            source_drop.0
+        } else {
+            source_drop.1
+        };
+        if !((src_lo..=src_hi).contains(&sd_flow) || source_drop == ug_down_pos) {
+            continue;
+        }
+
+        if wall_tiles.contains(&sink_input) {
+            continue;
+        }
+        if sink_input == ug_down_pos || sink_input == source_pos {
+            continue;
+        }
+        let si_flow = if is_horizontal {
+            sink_input.0
+        } else {
+            sink_input.1
+        };
+        if !((snk_lo..=snk_hi).contains(&si_flow) || sink_input == ug_up_pos) {
+            continue;
+        }
+
+        let flow_delta = flow_dir.delta();
+
+        // Path 1: source_drop → UG_DOWN input (on the source side).
+        let path1: Vec<Belt> = if source_drop == ug_down_pos {
+            vec![]
+        } else {
+            let ug_down_input = (ug_down_pos.0 - flow_delta.0, ug_down_pos.1 - flow_delta.1);
+            let mut blocked1: HashSet<Cell> = wall_tiles.clone();
+            blocked1.extend([source_pos, sink_pos, ug_down_pos, ug_up_pos, sink_input]);
+            for fc in snk_lo..=snk_hi {
+                for pc in 0..perp_span {
+                    blocked1.insert(fp_to_xy(fc, pc));
+                }
+            }
+            if blocked1.contains(&source_drop) || blocked1.contains(&ug_down_input) {
+                continue;
+            }
+            match find_belt_path(s, source_drop, ug_down_input, flow_dir, &blocked1) {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+
+        // Path 2: UG_UP drop → sink_input (on the sink side).
+        let path2: Vec<Belt> = if sink_input == ug_up_pos {
+            vec![]
+        } else {
+            let ug_up_drop = (ug_up_pos.0 + flow_delta.0, ug_up_pos.1 + flow_delta.1);
+            let path1_cells = belt_cell_set(&path1);
+            let mut blocked2: HashSet<Cell> = wall_tiles.clone();
+            blocked2.extend([source_pos, sink_pos, ug_down_pos, ug_up_pos, source_drop]);
+            blocked2.extend(path1_cells.iter().copied());
+            for fc in src_lo..=src_hi {
+                for pc in 0..perp_span {
+                    blocked2.insert(fp_to_xy(fc, pc));
+                }
+            }
+            if blocked2.contains(&ug_up_drop) || blocked2.contains(&sink_input) {
+                continue;
+            }
+            match find_belt_path(s, ug_up_drop, sink_input, sink_dir, &blocked2) {
+                Some(p) => p,
+                None => continue,
+            }
+        };
+
+        let mut world = World::empty(size, size);
+        place_marker(&mut world, source_pos, Item::Source, source_dir, item_value);
+        place_marker(&mut world, sink_pos, Item::Sink, sink_dir, item_value);
+        world.place_underground(
+            ug_down_pos.0 as usize,
+            ug_down_pos.1 as usize,
+            flow_dir,
+            Misc::UndergroundDown,
+        );
+        world.place_underground(
+            ug_up_pos.0 as usize,
+            ug_up_pos.1 as usize,
+            flow_dir,
+            Misc::UndergroundUp,
+        );
+        place_belts(&mut world, &path1);
+        place_belts(&mut world, &path2);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        let total_entities = 2 + path1.len() + path2.len();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        // Mark only the wall as UNAVAILABLE; every other tile is buildable.
+        for &(wx, wy) in &wall_tiles {
+            world.set(wx as usize, wy as usize, Channel::Footprint, 0);
         }
 
         return finish(world, total_entities, vec![], count);
