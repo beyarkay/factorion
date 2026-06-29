@@ -1396,6 +1396,14 @@ def build_factory(
     layout search on return (so a subsequent :func:`blank_entities`
     call without a ``seed`` continues from the same stream and is
     likewise deterministic).
+
+    All layout randomness is drawn **solely** from the ``random`` module
+    (CPython's MT19937): every position, direction, item, recipe, path
+    shuffle and sample comes from ``random.*``. ``numpy``/``torch`` are
+    seeded for incidental determinism but never sampled here. This
+    single-RNG contract is what lets the Rust port
+    (``factorion_rs.build_factory``) reproduce a byte-identical factory
+    for the same ``(size, kind, seed)`` — see ``tests/test_build_factory_parity.py``.
     """
     if seed is not None:
         random.seed(seed)
@@ -1414,14 +1422,14 @@ def build_factory(
         count = original_count
         while count > 0:
             count -= 1
-            pos1 = torch.randint(0, H * W, (1,))
-            pos2 = torch.randint(0, H * W, (1,))
+            pos1 = random.randrange(H * W)
+            pos2 = random.randrange(H * W)
             if pos1 == pos2:
                 # restart the loop until we find non-equal source/sink
                 continue
 
-            source_WH = divmod(pos1.item(), W)
-            sink_WH = divmod(pos2.item(), W)
+            source_WH = divmod(pos1, W)
+            sink_WH = divmod(pos2, W)
             source_dir = random.choice(
                 [d for d in Direction if d != Direction.NONE]
             )
@@ -1528,12 +1536,12 @@ def build_factory(
             ).permute(2, 0, 1)
             C, W, H = world_CWH.shape
 
-            pos1 = torch.randint(0, H * W, (1,))
-            pos2 = torch.randint(0, H * W, (1,))
+            pos1 = random.randrange(H * W)
+            pos2 = random.randrange(H * W)
             if pos1 == pos2:
                 continue
-            source_WH = divmod(pos1.item(), W)
-            sink_WH = divmod(pos2.item(), W)
+            source_WH = divmod(pos1, W)
+            sink_WH = divmod(pos2, W)
 
             source_dir = random.choice(
                 [d for d in Direction if d != Direction.NONE]
