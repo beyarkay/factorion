@@ -150,11 +150,67 @@ reward-scale break) · 32envs×64steps→INVALID. AMP bf16 (5-seed): 83.0±14.
 Confirmed (5-seed, in `quality_results.csv`): baseline 113.2±3.1 · w5+lr7e-4
 62.7±9.8 · w5+lr7e-4+AMP 83.0±14.
 
+## Findings: per-iter compute campaign (62.9 → 36.0 s, the w5+lr7e-4 recipe now baked into Args)
+
+Once the recipe was fixed, the lever became **faster iters** (per-iter wall), not
+fewer. Per-iter wall is measured *deterministically* (same seed, fixed 15-30 iter
+slice → `Loop time breakdown` steady means): it is low-noise, unlike
+time-to-quality whose ±15-23% crossing-iter variance swamps a single per-iter
+win. crossing-iter is unbiased by a pure-speed change, so
+`E[time_to_quality] ∝ per_iter_wall` — drive per-iter, validate with 5 seeds.
+
+Profiling the (compiled) rollout: NN forward, env-step body, and the
+reset/`build_factory` path each matter; the policy forward was **kernel-launch
+bound** (a B=16 and a B=128 forward cost the same ~2 ms — pure CPU dispatch).
+
+**WON (each confirmed 5-seed, cumulative; all on `main`):**
+- **Fused categorical/bernoulli** (drop `torch.distributions`; `log_softmax`+
+  `multinomial`+`gather`/`BCE` directly): −21 % per-iter. Also the *enabler* for
+  compile — the Distribution objects graph-broke `torch.compile`.
+- **CUDA-graph compile of the rollout** (`torch.compile(reduce-overhead)` on the
+  no_grad `get_action_and_value`/`get_value`): 62.9 → **45.4 s**. The old
+  `torch.compile(agent)` was a silent no-op (AgentCNN has no `forward()`).
+  Needs `cudagraph_mark_step_begin()` per call + no retained outputs; dropped
+  `_arange_cache` (a cached arange aliases graph memory).
+- **CUDA-graph compile of the PPO update** (fwd+bwd, separate handle): 45.4 →
+  **41.4 s** (update −47 % per-iter). reduce-overhead spans the autograd backward;
+  the warm-up requires_grad flip recompiles once.
+- **numpy world-writes in `step()`** (write the world through the existing
+  `world_np` view, not torch scalar indexing — ~40× cheaper, bit-identical):
+  41.4 → **36.0 s**, trajectory-identical.
+
+Net: **113 → 62.9 → 36.0 s** (−68 % overall, −43 % vs the recipe baseline).
+
+**LOST / dead ends (measured this campaign):**
+- **Pre-build a factory pool** (parallel `build_factory` at startup, draw on
+  reset): pool-draw resets are 4× cheaper, but the parallel build doesn't scale
+  (main process serially un-pickles the factory tensors; even build-and-discard
+  peaks at ~2×, COW/memory-bound), so ~3.5 s build ≈ ~3.7 s saved over ~26 iters
+  → break-even for the benchmark. (A real win for *long* training.)
+- **Async-prefetch factory generation** (background `mp.Pool` workers pre-build
+  full reset bundles, env draws by seed; 96 % cache-hit, deterministic & correct):
+  a **wash** — 36.2 s vs 36.0 s. The ~316 ms/iter reset saving is cancelled by
+  ~400 ms/iter of multiprocessing overhead, because the box is
+  single-core-rollout-bound and the Pool's result-handler thread contends for the
+  GIL with the rollout loop. Confirms the env-scaling/async dead-end above.
+- **Rust port of the BFS belt-routing** in `build_factory`: honest wall-clock
+  shows `_bfs_shortest`+`_path_to_belts` are only ~25 % of build (cProfile's
+  per-call tax overstated them), so ~25 ms/iter — not worth it. The other ~75 %
+  is distributed generation work with no fat target.
+- **str2ent memoization** (`functools.cache`): negligible (~0.04 ms/reset; cProfile
+  overstated it). Kept — correct and removes an O(n) scan.
+
+Takeaway: the win was **make the GPU work disappear** (CUDA graphs on a
+launch-bound forward) + **kill per-op dispatch in the hot CPU path** (numpy
+writes). The remaining wall is the reset/`build_factory` Python generation, which
+the box's single-core nature makes hard to parallelize away.
+
 ### Untried / next ideas (for a future session)
-The recipe-tuning space is mapped; further gains need a different angle, e.g.:
-faster per-iter rollout (the CPU bottleneck — a vectorised/batched env-step in
-Rust would attack what env-scaling couldn't); a stronger SFT base (raises the
-start point); a non-PPO update or a value-function init that removes warmup; or a
-2-stage LR schedule. The metric itself could also be made sustained-crossing
-(require K consecutive evals above threshold) to harden against any future config
-that crosses via a transient spike.
+The clean per-iter levers are spent. Remaining angles, all harder:
+a **full** `build_factory` Rust port (the whole generation core, not just BFS —
+big, but the only clean attack on the ~316 ms/iter reset wall); a lower-overhead
+async prefetch (raw `Pipe`/`SimpleQueue`, no `Pool` helper threads — might beat
+the wash, low confidence given the box); a stronger SFT base (raises the start
+point); or chasing crossing-iter by re-tuning lr/warmup/minibatches on the
+now-compiled code (noisy to validate). The metric could also be made
+sustained-crossing (K consecutive evals above threshold) to harden it.
