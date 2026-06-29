@@ -25,6 +25,7 @@ from factorion import LessonKind, build_factory
 # asserts everything else still reports as not-yet-ported.
 PORTED_KINDS = [
     LessonKind.MOVE_ONE_ITEM,
+    LessonKind.MOVE_ONE_ITEM_CHAOS,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -119,6 +120,37 @@ def test_move_one_item_max_entities(max_entities):
     for seed in range(500):
         assert_parity(
             10, LessonKind.MOVE_ONE_ITEM, seed, max_entities=max_entities
+        )
+
+
+# ── MOVE_ONE_ITEM_CHAOS ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_move_one_item_chaos_fuzz_sizes(size):
+    """The chaos variant routes through a random waypoint and protects the
+    source→waypoint stub; parity must hold on the world, the count, and the
+    protected positions."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.MOVE_ONE_ITEM_CHAOS, seed) == "built":
+            built += 1
+    assert built > 250, f"size={size}: only {built}/400 seeds built"
+
+
+def test_move_one_item_chaos_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.MOVE_ONE_ITEM_CHAOS, seed)
+
+
+def test_move_one_item_chaos_fixed_recipe_and_caps():
+    for seed in range(500):
+        assert_parity(
+            10, LessonKind.MOVE_ONE_ITEM_CHAOS, seed, random_item=False
+        )
+    for seed in range(500):
+        assert_parity(
+            10, LessonKind.MOVE_ONE_ITEM_CHAOS, seed, max_entities=6.0
         )
 
 

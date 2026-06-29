@@ -172,6 +172,38 @@ fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
     belts
 }
 
+/// A single shortest belt path from `start` to `end`, or `None`.
+/// Port of `factorion.py::find_belt_path`.
+fn find_belt_path(
+    size: i64,
+    start: Cell,
+    end: Cell,
+    end_dir: Direction,
+    blocked: &HashSet<Cell>,
+) -> Option<Vec<Belt>> {
+    let (_dist, parents) = bfs_shortest(size, start, end, blocked)?;
+    let mut path: Vec<Cell> = Vec::new();
+    let mut cell = end;
+    while cell != start {
+        path.push(cell);
+        cell = parents[&cell][0];
+    }
+    path.push(start);
+    path.reverse();
+    Some(path_to_belts(&path, end_dir))
+}
+
+/// The `(x, y)` cells of a belt run (dropping directions).
+fn belt_cells(belts: &[Belt]) -> Vec<Cell> {
+    belts.iter().map(|&(x, y, _)| (x, y)).collect()
+}
+
+/// The `(x, y)` cells of a belt run as a set.
+#[allow(dead_code)] // consumed by the splitter/assembler lesson ports
+fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
+    belts.iter().map(|&(x, y, _)| (x, y)).collect()
+}
+
 /// All shortest belt paths from a source's output cell to a sink's input
 /// cell, given their positions and facings. Port of
 /// `factorion.py::find_belt_paths_with_source_sink_orient`.
@@ -273,9 +305,20 @@ pub fn build_factory(
     let mut rng = PyRandom::seeded(seed);
     match kind {
         LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item, max_entities),
+        LessonKind::MoveOneItemChaos => {
+            build_move_one_item_chaos(size, &mut rng, random_item, max_entities)
+        }
         // Remaining kinds are ported in subsequent commits.
         _ => None,
     }
+}
+
+/// Place a source or sink marker (entity + facing + carried item).
+fn place_marker(world: &mut World, pos: Cell, ent: Item, dir: Direction, item_value: i64) {
+    let (x, y) = (pos.0 as usize, pos.1 as usize);
+    world.set(x, y, Channel::Entities, ent as i64);
+    world.set(x, y, Channel::Direction, dir as i64);
+    world.set(x, y, Channel::Items, item_value);
 }
 
 fn build_move_one_item(
@@ -342,6 +385,115 @@ fn build_move_one_item(
 
         let total_entities = chosen.len();
         return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
+fn build_move_one_item_chaos(
+    size: usize,
+    rng: &mut PyRandom,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let pool = item_pool();
+    let mut count = (500).max(size * size * 4);
+    while count > 0 {
+        count -= 1;
+        let pos1 = rng.randrange((size * size) as u64) as i64;
+        let pos2 = rng.randrange((size * size) as u64) as i64;
+        if pos1 == pos2 {
+            continue;
+        }
+        let source_wh = (pos1 / s, pos1 % s);
+        let sink_wh = (pos2 / s, pos2 % s);
+        let source_dir = DIRS[rng.choice_index(4)];
+        let sink_dir = DIRS[rng.choice_index(4)];
+        let item_value = if random_item {
+            pool[rng.choice_index(pool.len())]
+        } else {
+            Item::ElectronicCircuit as i64
+        };
+
+        let ds = source_dir.delta();
+        let dk = sink_dir.delta();
+        let start = (source_wh.0 + ds.0, source_wh.1 + ds.1);
+        let end = (sink_wh.0 - dk.0, sink_wh.1 - dk.1);
+
+        let fixed: HashSet<Cell> = [source_wh, sink_wh].into_iter().collect();
+        if !(0 <= start.0 && start.0 < s && 0 <= start.1 && start.1 < s) {
+            continue;
+        }
+        if !(0 <= end.0 && end.0 < s && 0 <= end.1 && end.1 < s) {
+            continue;
+        }
+        if fixed.contains(&start) || fixed.contains(&end) || start == end {
+            continue;
+        }
+
+        // mid candidates in `for x in range(W) for y in range(H)` order.
+        let mut reserved = fixed.clone();
+        reserved.insert(start);
+        reserved.insert(end);
+        let mut mid_candidates: Vec<Cell> = Vec::new();
+        for x in 0..s {
+            for y in 0..s {
+                if !reserved.contains(&(x, y)) {
+                    mid_candidates.push((x, y));
+                }
+            }
+        }
+        if mid_candidates.is_empty() {
+            continue;
+        }
+        let mid = mid_candidates[rng.choice_index(mid_candidates.len())];
+
+        // Segment A: source output → intermediate (protected later).
+        let mut blocked_a = fixed.clone();
+        blocked_a.insert(end);
+        let belts_a = match find_belt_path(s, start, mid, source_dir, &blocked_a) {
+            Some(b) => b,
+            None => continue,
+        };
+        let cells_a = belt_cells(&belts_a);
+
+        // Segment B: intermediate → sink input (removable).
+        let mut blocked_b = fixed.clone();
+        for &c in &cells_a {
+            if c != mid {
+                blocked_b.insert(c);
+            }
+        }
+        let belts_b = match find_belt_path(s, mid, end, sink_dir, &blocked_b) {
+            Some(b) => b,
+            None => continue,
+        };
+        let cells_b = belt_cells(&belts_b);
+
+        // Stitch (mid shared) and recompute directions over the whole chain.
+        let mut full_cells = cells_a.clone();
+        full_cells.extend_from_slice(&cells_b[1..]);
+        let full_belts = path_to_belts(&full_cells, sink_dir);
+        if (full_belts.len() as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
+        place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
+        place_belts(&mut world, &full_belts);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        let total_entities = full_belts.len();
+        // Protect the source→intermediate stub.
+        let protected: Vec<(usize, usize)> = cells_a
+            .iter()
+            .map(|&(x, y)| (x as usize, y as usize))
+            .collect();
+        return finish(world, total_entities, protected, count);
     }
     None
 }
