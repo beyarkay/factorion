@@ -11,23 +11,23 @@
 #
 # Fully OFFLINE: WANDB disabled, eval disabled (eval/* needs an extra forward
 # pass and is noisy); the quality signal is the on-policy rollout reward, which
-# is logged every iteration at no extra cost and — crucially — is comparable
-# across env/batch/LR/precision changes (those don't change the reward scale;
-# only step_penalty / throughput_reward_scale would, and we hold those fixed).
+# is logged every iteration at no extra cost and is comparable across
+# env/batch/LR/precision changes (those don't change the reward scale; only
+# step_penalty / throughput_reward_scale would, and we hold those fixed). Starts
+# from the on-disk SFT checkpoint so no network is needed.
 #
-# Determinism: fixed seed + torch_deterministic => the training trajectory (and
-# therefore the *iteration* at which quality is reached) is reproducible; only
-# per-iteration wall-time jitter varies between runs. That is what makes the
-# time-to-quality number repeatable enough for hyperfine --runs 5.
+# Determinism / noise: for a FIXED seed the trajectory (hence the crossing
+# iteration) is reproducible, so repeated runs of the SAME config differ only by
+# wall-time jitter. But changing batch size / precision resamples the trajectory
+# (FP reduction order, gradients), so a single seed is one draw from a noisy
+# distribution — compare CONFIGS across several seeds (quality_measure.sh sweeps
+# the seed) and look at the mean, not a single run.
 #
-# Starts from the SFT checkpoint cached on disk (checkpoints/sft_j0s5y2mc.pt;
-# re-create with: scripts-free, see EXPERIMENTS / _resolve_wandb_checkpoint) so
-# no network access is needed.
-#
-# Override any sweepable knob via env vars, e.g.:
-#   LR=3e-4 NUM_ENVS=32 ./quality_run.sh
-#   TARGET_VALUE=-0.10 ./quality_run.sh
-#   EXTRA_ARGS="--amp" ./quality_run.sh        # once an AMP flag exists
+# Any flag is forwarded to ppo.py and OVERRIDES the defaults below (tyro takes
+# the last value), so sweeping a knob is just:
+#   ./quality_run.sh --learning-rate 3e-4 --num-envs 32
+#   ./quality_run.sh --seed 3
+#   ./quality_run.sh --target-value -0.10
 #
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -39,39 +39,28 @@ if [ ! -f "$CKPT" ]; then
   exit 1
 fi
 
-# Quality target (EMA of --target-metric). -0.15 is reached ~iter 31 (~110s on
-# the current box) — deep in the learning phase, monotonic crossing.
-TARGET_METRIC="${TARGET_METRIC:-rollout/reward}"
-TARGET_VALUE="${TARGET_VALUE:--0.15}"
-QUALITY_EMA_ALPHA="${QUALITY_EMA_ALPHA:-0.4}"
-MAX_SECONDS="${MAX_SECONDS:-300}"
-
-# Canonical SFT->PPO finetune recipe (the j0s5y2mc reference run). Sweepable
-# knobs are env-overridable; everything else is fixed so comparisons are clean.
-NUM_ENVS="${NUM_ENVS:-16}"
-NUM_STEPS="${NUM_STEPS:-256}"
-NUM_MINIBATCHES="${NUM_MINIBATCHES:-32}"
-UPDATE_EPOCHS="${UPDATE_EPOCHS:-8}"
-LR="${LR:-1.619489860053545e-4}"
-
+# Canonical SFT->PPO finetune recipe (the j0s5y2mc reference run) + the
+# time-to-quality target. Everything here is a DEFAULT: append flags on the
+# command line to override any of them.
 WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
   --seed 1 \
   --size 11 \
   --start-from "$CKPT" \
-  --num-envs "$NUM_ENVS" \
-  --num-steps "$NUM_STEPS" \
-  --num-minibatches "$NUM_MINIBATCHES" \
-  --update-epochs "$UPDATE_EPOCHS" \
-  --learning-rate "$LR" \
+  --num-envs 16 \
+  --num-steps 256 \
+  --num-minibatches 32 \
+  --update-epochs 8 \
+  --learning-rate 1.619489860053545e-4 \
   --ent-coef-start 7.05347e-4 --ent-coef-end 7.92625e-4 \
   --gae-lambda 0.9021936994100002 --gamma 0.9957335539938416 \
   --max-grad-norm 1.979 --clip-coef 0.2746 --target-kl 0.02 \
   --critic-warmup 10 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
   --layer1 93 --layer2 69 --layer3 96 \
   --eval-every 0 \
-  --target-metric "$TARGET_METRIC" \
-  --target-value "$TARGET_VALUE" \
-  --quality-ema-alpha "$QUALITY_EMA_ALPHA" \
-  --max-seconds "$MAX_SECONDS" \
+  --target-metric rollout/reward \
+  --target-value -0.15 \
+  --quality-ema-alpha 0.4 \
+  --max-seconds 300 \
   --total-timesteps 100000000 \
-  --summary-path "${SUMMARY_PATH:-/tmp/quality_ppo_summary.json}"
+  --summary-path "${SUMMARY_PATH:-/tmp/quality_ppo_summary.json}" \
+  "$@"

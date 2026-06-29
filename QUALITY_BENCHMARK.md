@@ -10,9 +10,14 @@ numeric changes.
 ## The measuring stick
 
 ```bash
-./quality_run.sh                 # one finetune run; stops at the quality threshold
-./quality_measure.sh "<note>"    # hyperfine --runs 5 (no warmup) -> ../quality_results.csv
+./quality_run.sh                              # one finetune run; stops at the threshold
+./quality_run.sh --learning-rate 3e-4 --num-envs 32   # any flag overrides the recipe
+NOTE="lr 3e-4" ./quality_measure.sh --learning-rate 3e-4   # sweep seeds, log a row
 ```
+
+`quality_run.sh` forwards every flag to `ppo.py` (tyro takes the last value, so
+the script's defaults are overridden) — no env-var plumbing. `quality_measure.sh`
+forwards its flags to `quality_run.sh` and annotates the row via `NOTE=`.
 
 - **Quality metric:** EMA of `rollout/reward` (`--target-metric`,
   `--quality-ema-alpha`). Reward is logged every iteration (no eval cost) and is
@@ -31,11 +36,21 @@ numeric changes.
   records `time_to_quality_seconds` in the summary JSON. `--max-seconds` caps a
   stuck/regressing run so the benchmark can't hang (it then reports
   `reached_quality=false`).
-- **Why it's repeatable despite noisy RL:** fixed `seed=1` + `torch_deterministic`
-  make the training trajectory deterministic, so the **crossing iteration is
-  identical** run-to-run; only per-iteration wall-time jitters. Measured
-  back-to-back: iter 33 / EMA −0.1319 both times, wall 114.55 s vs 114.46 s
-  (0.08%). That is why `hyperfine --runs 5 --warmup 0` gives a tight number.
+- **Repeatability vs the RL noise — two layers:**
+  1. *Same config, repeated:* fixed seed + `torch_deterministic` ⇒ the trajectory
+     (hence the crossing iteration) is **identical** run-to-run; only wall-jitter
+     varies (iter 33 / EMA −0.1319 both repeats; wall 114.55 vs 114.46 s, 0.08%).
+     So repeating an *identical* command measures nothing useful.
+  2. *Across configs:* changing batch size / precision resamples the trajectory
+     (FP reduction order, gradients), so a single seed is one draw from a noisy
+     distribution. Therefore **sweep the seed**, not identical reruns.
+     `quality_measure.sh` uses `hyperfine --parameter-list seed 1,2,3,4,5`.
+     Measured baseline across 5 seeds: crossing iter `[33,32,32,32,34]`
+     (32.6 ± 0.8), time-to-quality **113.4 s ± 3.5 s (3.1%)**. The threshold sits
+     on the steep part of the reward climb, so trajectory noise maps to
+     sub-iteration time noise — tight. Rule of thumb: an improvement bigger than
+     ~7 s (≈2σ) is real; smaller is in the seed noise (one seed alone can be ~8%
+     off — seed 4 read 106 s vs ~115 s for the rest).
 
 ## Offline
 
@@ -46,13 +61,13 @@ logging or network in the timed path.
 
 ## Sweeping a knob
 
-`quality_run.sh` reads overrides from the environment, so experiments don't edit
-the script:
+Pass `ppo.py` flags straight through (they override the recipe defaults):
 
 ```bash
-LR=3e-4 ./quality_measure.sh "lr 3e-4"
-NUM_ENVS=32 NUM_MINIBATCHES=64 ./quality_measure.sh "envs 32"
-EXTRA_ARGS=... # add a flag (e.g. --amp) once it exists, then thread it through quality_run.sh
+NOTE="lr 3e-4"        ./quality_measure.sh --learning-rate 3e-4
+NOTE="envs 32"        ./quality_measure.sh --num-envs 32 --num-minibatches 64
+NOTE="bf16"           ./quality_measure.sh --amp        # once an AMP flag exists
+SEEDS=1,2,3           ./quality_measure.sh              # fewer seeds = faster, noisier
 ```
 
 ## Results log
