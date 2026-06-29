@@ -192,7 +192,24 @@ Net: **113 → 62.9 → 36.0 s** (−68 % overall, −43 % vs the recipe baselin
   a **wash** — 36.2 s vs 36.0 s. The ~316 ms/iter reset saving is cancelled by
   ~400 ms/iter of multiprocessing overhead, because the box is
   single-core-rollout-bound and the Pool's result-handler thread contends for the
-  GIL with the rollout loop. Confirms the env-scaling/async dead-end above.
+  GIL with the rollout loop. Confirms the env-scaling/async dead-end below.
+- **AsyncVectorEnv vs Sync, re-swept on the CURRENT compiled code** (single-seed
+  time-to-quality, minibatch held at 128 i.e. num_minibatches=2·envs):
+
+  | envs | 4 | 8 | 16 | 32 | 48 | 64 | 128 |
+  |------|---|---|----|----|----|----|-----|
+  | sync | 42.6 | 40.5 | **41.3** | 59.7 | 73.2 | 203 | 313 |
+  | async| 56.0 | 51.4 | 49.1 | 75.0 | 85.4 | 264 | DNF |
+
+  **Async loses to sync at every env count — no crossover** — and best-overall is
+  16-env sync (the default). More envs cuts crossing-iter (36→24→17) but per-iter
+  grows faster, so time-to-quality rises; >48 envs falls off a cliff. Note this
+  is the *opposite ranking* to the old pre-compile finding (async32 124 < sync32
+  147): AsyncVectorEnv pays a per-step IPC barrier (gather all N obs before each
+  batched forward, ×256 steps/iter); on the old NN-dominated rollout that barrier
+  hid behind the ~990 ms eager forward, but the CUDA-graph compile cut the forward
+  to ~0, **exposing** the barrier so async is now strictly worse. The
+  256-sequential-step structure is the real limit.
 - **Rust port of the BFS belt-routing** in `build_factory`: honest wall-clock
   shows `_bfs_shortest`+`_path_to_belts` are only ~25 % of build (cProfile's
   per-call tax overstated them), so ~25 ms/iter — not worth it. The other ~75 %
