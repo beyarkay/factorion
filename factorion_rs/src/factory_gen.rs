@@ -98,7 +98,6 @@ fn one_in_one_out() -> Vec<(Item, Recipe)> {
 }
 
 /// `[(name, r) for ... if len(consumes)==2 and len(produces)==1]`.
-#[allow(dead_code)] // consumed by the ASSEMBLE_2IN_1OUT port
 fn two_in_one_out() -> Vec<(Item, Recipe)> {
     all_recipes()
         .into_iter()
@@ -359,6 +358,7 @@ pub fn build_factory(
         LessonKind::MoveViaUgBelt => {
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
+        LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
         // Remaining kinds are ported in subsequent commits.
         _ => None,
     }
@@ -1419,6 +1419,203 @@ fn build_move_via_ug_belt(
         // Mark only the wall as UNAVAILABLE; every other tile is buildable.
         for &(wx, wy) in &wall_tiles {
             world.set(wx as usize, wy as usize, Channel::Footprint, 0);
+        }
+
+        return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_assemble_2in1out(
+    size: usize,
+    rng: &mut PyRandom,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let recipes = two_in_one_out();
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        // Randomize which ingredient is "A" vs "B".
+        let mut input_items: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut input_items);
+        let input_a_value = input_items[0] as i64;
+        let input_b_value = input_items[1] as i64;
+        let output_item_value = recipe.produces.first().0 as i64;
+        let recipe_item_value = recipe_key as i64;
+
+        let ax = rng.randint(0, s - 3);
+        let ay = rng.randint(0, s - 3);
+        let asm_tiles: HashSet<Cell> = (0..3)
+            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+            .collect();
+
+        // Three distinct perimeter slots: 2 inputs + 1 output.
+        let chosen = rng.sample(&PERIM_SLOTS, 3);
+        let in_a_slot = chosen[0];
+        let in_b_slot = chosen[1];
+        let out_slot = chosen[2];
+        let in_a_pos = (ax + in_a_slot.0, ay + in_a_slot.1);
+        let in_a_dir = in_a_slot.2;
+        let in_b_pos = (ax + in_b_slot.0, ay + in_b_slot.1);
+        let in_b_dir = in_b_slot.2;
+        let out_pos = (ax + out_slot.0, ay + out_slot.1);
+        let out_dir = out_slot.3;
+
+        let in_a_dd = in_a_dir.delta();
+        let in_b_dd = in_b_dir.delta();
+        let out_dd = out_dir.delta();
+        let in_a_pickup = (in_a_pos.0 - in_a_dd.0, in_a_pos.1 - in_a_dd.1);
+        let in_b_pickup = (in_b_pos.0 - in_b_dd.0, in_b_pos.1 - in_b_dd.1);
+        let out_drop = (out_pos.0 + out_dd.0, out_pos.1 + out_dd.1);
+
+        let key_cells = [
+            in_a_pos,
+            in_b_pos,
+            out_pos,
+            in_a_pickup,
+            in_b_pickup,
+            out_drop,
+        ];
+        if key_cells.iter().any(|&c| !in_grid(c, s)) {
+            continue;
+        }
+        if key_cells.iter().collect::<HashSet<_>>().len() != key_cells.len() {
+            continue;
+        }
+        if key_cells.iter().any(|c| asm_tiles.contains(c)) {
+            continue;
+        }
+
+        let all_perim: HashSet<Cell> = PERIM_SLOTS
+            .iter()
+            .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
+            .filter(|&c| in_grid(c, s))
+            .collect();
+        let reserved: HashSet<Cell> = asm_tiles
+            .iter()
+            .copied()
+            .chain(key_cells.iter().copied())
+            .chain(all_perim.iter().copied())
+            .collect();
+        let mut available: Vec<Cell> = Vec::new();
+        for x in 0..s {
+            for y in 0..s {
+                if !reserved.contains(&(x, y)) {
+                    available.push((x, y));
+                }
+            }
+        }
+        if available.len() < 3 {
+            continue;
+        }
+
+        let chosen = rng.sample(&available, 3);
+        let src_a_pos = chosen[0];
+        let src_b_pos = chosen[1];
+        let sink_pos = chosen[2];
+        let src_a_dir = DIRS[rng.choice_index(4)];
+        let src_b_dir = DIRS[rng.choice_index(4)];
+        let sink_dir = DIRS[rng.choice_index(4)];
+
+        let ds_a = src_a_dir.delta();
+        let ds_b = src_b_dir.delta();
+        let dk = sink_dir.delta();
+        let src_a_out = (src_a_pos.0 + ds_a.0, src_a_pos.1 + ds_a.1);
+        let src_b_out = (src_b_pos.0 + ds_b.0, src_b_pos.1 + ds_b.1);
+        let sink_in = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
+
+        let conn = [src_a_out, src_b_out, sink_in];
+        if conn.iter().any(|&c| !in_grid(c, s)) {
+            continue;
+        }
+        if conn.iter().collect::<HashSet<_>>().len() != conn.len() {
+            continue;
+        }
+        if conn.iter().any(|c| reserved.contains(c)) {
+            continue;
+        }
+        let endpoints: HashSet<Cell> = [src_a_pos, src_b_pos, sink_pos].into_iter().collect();
+        if conn.iter().any(|c| endpoints.contains(c)) {
+            continue;
+        }
+
+        let fixed_cells: HashSet<Cell> = asm_tiles
+            .iter()
+            .copied()
+            .chain([in_a_pos, in_b_pos, out_pos, src_a_pos, src_b_pos, sink_pos])
+            .collect();
+
+        // Path A: source A → input-A pickup.
+        let mut blocked_a = fixed_cells.clone();
+        blocked_a.extend([in_b_pickup, out_drop, src_b_out, sink_in]);
+        let path_a = match find_belt_path(s, src_a_out, in_a_pickup, in_a_dir, &blocked_a) {
+            Some(p) => p,
+            None => continue,
+        };
+        let path_a_cells = belt_cell_set(&path_a);
+
+        // Path B: source B → input-B pickup.
+        let mut blocked_b = fixed_cells.clone();
+        blocked_b.extend([in_a_pickup, out_drop, src_a_out, sink_in]);
+        blocked_b.extend(path_a_cells.iter().copied());
+        let path_b = match find_belt_path(s, src_b_out, in_b_pickup, in_b_dir, &blocked_b) {
+            Some(p) => p,
+            None => continue,
+        };
+        let path_b_cells = belt_cell_set(&path_b);
+
+        // Path C: output drop → sink input.
+        let mut blocked_c = fixed_cells.clone();
+        blocked_c.extend([in_a_pickup, in_b_pickup, src_a_out, src_b_out]);
+        blocked_c.extend(path_a_cells.iter().copied());
+        blocked_c.extend(path_b_cells.iter().copied());
+        let path_c = match find_belt_path(s, out_drop, sink_in, sink_dir, &blocked_c) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let total_entities = path_a.len() + path_b.len() + path_c.len() + 4;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_marker(
+            &mut world,
+            src_a_pos,
+            Item::Source,
+            src_a_dir,
+            input_a_value,
+        );
+        place_marker(
+            &mut world,
+            src_b_pos,
+            Item::Source,
+            src_b_dir,
+            input_b_value,
+        );
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            output_item_value,
+        );
+        place_assembler(&mut world, ax, ay, recipe_item_value);
+        place_inserter(&mut world, in_a_pos, in_a_dir);
+        place_inserter(&mut world, in_b_pos, in_b_dir);
+        place_inserter(&mut world, out_pos, out_dir);
+        place_belts(&mut world, &path_a);
+        place_belts(&mut world, &path_b);
+        place_belts(&mut world, &path_c);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
         }
 
         return finish(world, total_entities, vec![], count);

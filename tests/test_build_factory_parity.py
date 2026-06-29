@@ -30,6 +30,7 @@ PORTED_KINDS = [
     LessonKind.SPLITTER_MERGE,
     LessonKind.ASSEMBLE_1IN_1OUT,
     LessonKind.MOVE_VIA_UG_BELT,
+    LessonKind.ASSEMBLE_2IN_1OUT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -264,6 +265,31 @@ def test_move_via_ug_belt_fixed_recipe_and_caps():
         assert_parity(10, LessonKind.MOVE_VIA_UG_BELT, seed, random_item=False)
     for seed in range(500):
         assert_parity(10, LessonKind.MOVE_VIA_UG_BELT, seed, max_entities=8.0)
+
+
+# ── ASSEMBLE_2IN_1OUT ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+def test_assemble_2in1out_fuzz_sizes(size):
+    """2 sources → 2 input inserters → 3×3 assembler → output inserter → sink.
+    Exercises the 2-in-1-out recipe pool, the ingredient shuffle (which source
+    gets which item), the 3-slot perimeter sample, and three belt paths."""
+    built = 0
+    for seed in range(400):
+        if assert_parity(size, LessonKind.ASSEMBLE_2IN_1OUT, seed) == "built":
+            built += 1
+    assert built > 100, f"size={size}: only {built}/400 seeds built"
+
+
+def test_assemble_2in1out_fuzz_many_seeds():
+    for seed in range(3000):
+        assert_parity(10, LessonKind.ASSEMBLE_2IN_1OUT, seed)
+
+
+def test_assemble_2in1out_caps():
+    for seed in range(500):
+        assert_parity(10, LessonKind.ASSEMBLE_2IN_1OUT, seed, max_entities=12.0)
 
 
 # ── progress guard ───────────────────────────────────────────────────────────
