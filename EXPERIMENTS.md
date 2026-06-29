@@ -174,8 +174,14 @@ Newest first. One entry per branch.
   float32-vs-float64 accumulation order (irrelevant to the gate).
 - **Change**: `_head_ent_sum[h] = _head_ent_sum[h] + e` (no per-step `float`);
   `float(...)` only where `policy/entropy*` are emitted.
-- **Result**: TBD.
-- **Verdict**: TBD.
+- **Result**: **28.964 s ± 0.235 s** vs 29.107 → **−0.5% headline** (borderline),
+  but **interior `rollout_steady` 2.025 → 1.991 s/iter (−1.7%)** — a real per-call
+  rollout win, the best interior signal of the sync-reduction attacks. Signature
+  **MATCHED ✓**. Commit `c2919ae`.
+- **Verdict**: **KEEP — merged.** First sync-reduction attack to nudge even the
+  headline; the interior rollout metric confirms removing 1792 syncs/iter helped.
+  Consistent with "rollout is CPU-bound" — this is the rare GPU-sync win that's
+  partly visible because it removes 1792 CPU-side `float()` stalls/iter.
 
 ### speedup/batch-action-transfer — one device→host copy for the action
 - **Hypothesis**: on GPU the rollout's `get_action_and_value` (1.7 s cum) and the
