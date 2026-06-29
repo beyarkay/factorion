@@ -271,7 +271,11 @@ def test_move_via_ug_belt_fixed_recipe_and_caps():
 # ── ASSEMBLE_2IN_1OUT ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
+# 2-in-1-out is the largest lesson (3×3 assembler + 2 sources + sink + 3
+# inserters + belts), so a 5×5 grid never fits it — both impls return None for
+# every seed (parity still holds, but the success path isn't exercised). Use
+# sizes that actually build so the "built > N" guard is meaningful.
+@pytest.mark.parametrize("size", [8, 10, 12, 14, 16])
 def test_assemble_2in1out_fuzz_sizes(size):
     """2 sources → 2 input inserters → 3×3 assembler → output inserter → sink.
     Exercises the 2-in-1-out recipe pool, the ingredient shuffle (which source
@@ -281,6 +285,13 @@ def test_assemble_2in1out_fuzz_sizes(size):
         if assert_parity(size, LessonKind.ASSEMBLE_2IN_1OUT, seed) == "built":
             built += 1
     assert built > 100, f"size={size}: only {built}/400 seeds built"
+
+
+def test_assemble_2in1out_tight_grid_parity():
+    """On a 5×5 grid the lesson never fits — assert that's a *parity* fact
+    (both impls return None) rather than a silent gap."""
+    for seed in range(200):
+        assert assert_parity(5, LessonKind.ASSEMBLE_2IN_1OUT, seed) == "none"
 
 
 def test_assemble_2in1out_fuzz_many_seeds():
