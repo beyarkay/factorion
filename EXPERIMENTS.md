@@ -175,9 +175,10 @@ Newest first. One entry per branch.
 - **Change**: rewrite the BFS expansion loop in `_bfs_shortest` (factorion.py).
 - **Result**: build-hash **identical** to main across all lessons/seeds. Build
   microbench (2500 builds): **5.74 s vs 6.14 s = −6.5%** — real interior win.
-  Full benchmark: TBD (expected flat — build is a small share of the honest
-  rollout).
-- **Verdict**: TBD.
+  Full benchmark: **28.828 s ± 0.192 vs 28.870 → flat** (as expected). Signature
+  **MATCHED ✓**. Commit `ab74d0b`.
+- **Verdict**: **KEEP — merged (benchmark-flat, production-positive).** −6.5% on
+  the build microbench is real and compounds over every reset in real training.
 
 ### speedup/async-vector-env — AsyncVectorEnv (multiprocess rollout) — DROPPED
 - **Hypothesis**: the rollout is single-core-bound (1–2 of 48 cores). Run each of
