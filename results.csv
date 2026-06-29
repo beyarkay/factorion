@@ -1,6 +1,13 @@
 timestamp_utc,branch,commit,dirty,mean_s,stddev_s,median_s,min_s,max_s,runs,rollout_total_s,update_total_s,rollout_steady_s,update_steady_s,total_timesteps,note
-2026-06-26T09:52:19Z,main,c305f5c,clean,36.393,0.745,36.543,35.198,37.238,5,22.47,9.59,11.006,4.895,8192,baseline on main
-2026-06-26T10:15:03Z,speedup/cpu-thread-count,14419d7,clean,12.846,0.059,12.834,12.773,12.909,5,5.57,2.82,2.576,1.419,8192,cap CPU intra-op threads at 6
-2026-06-26T10:25:10Z,main,897809f,clean,37.091,0.627,36.656,36.618,37.865,5,21.47,11.71,2.636,1.451,32768,re-baseline on main at 8 iterations
-2026-06-26T10:36:24Z,speedup/env-step-overhead,b6f8442,clean,35.688,0.362,35.571,35.348,36.268,5,19.54,11.43,2.401,1.432,32768,trim per-step env overhead (const hoist + solution-match cache)
-2026-06-26T11:06:13Z,speedup/numpy-diagnostics,9625ba1,clean,30.363,0.405,30.491,29.734,30.829,5,14.58,11.51,1.777,1.44,32768,numpy per-step diagnostics (recover ~87% of monitorability tax)
+2026-06-29T08:57:08Z,main,e2694fb,clean,30.07,0.239,29.963,29.842,30.344,5,18.05,5.26,2.095,0.611,32768,"GPU baseline (RTX 2000 Ada, cu130, driver 580) — re-baseline after CPU session"
+2026-06-29T09:21:42Z,speedup/remove-entities-numpy,fd9f8b0,clean,29.096,0.144,29.137,28.898,29.277,5,17.28,5.29,2.028,0.613,32768,attack#1: numpy reads in _remove_entities (pure-speed)
+2026-06-29T09:35:01Z,speedup/path-to-belts-revmap,e60e6de,clean,29.09,0.26,29.078,28.745,29.413,5,17.34,5.21,2.035,0.603,32768,attack#2: O(1) DELTA_TO_DIR revmap in _path_to_belts
+2026-06-29T09:57:29Z,speedup/batch-action-transfer,a9df8ae,clean,29.107,0.079,29.097,29.022,29.209,5,17.24,5.4,2.025,0.629,32768,attack#3: single device->host action transfer (batch 6->1)
+2026-06-29T10:09:31Z,speedup/defer-entropy-syncs,c2919ae,clean,28.964,0.235,28.861,28.762,29.338,5,17.0,5.22,1.991,0.605,32768,attack#4: defer per-step entropy float() syncs to log time
+2026-06-29T10:19:58Z,speedup/step-cpu-microopts,4352fc0,clean,28.87,0.145,28.842,28.688,29.082,5,17.23,5.24,2.013,0.607,32768,attack#5: incremental num_placed_entities counter (CPU-side)
+2026-06-29T10:47:34Z,speedup/bfs-inline,ab74d0b,clean,28.828,0.192,28.88,28.506,29.014,5,17.02,5.29,2.001,0.614,32768,bfs-inline: inline in_bounds + cache dist (build path)
+2026-06-29T11:08:17Z,speedup/rollout-update-microopts,89bf745,clean,28.785,0.175,28.84,28.485,28.936,5,17.06,5.31,2.002,0.617,32768,rollout-update-microopts: dead-code + sync-defer bundle
+2026-06-29T11:21:00Z,speedup/gate-diagnostics,89d5535,clean,25.325,0.484,25.355,24.568,25.904,5,13.38,4.63,1.535,0.52,32768,gate-diagnostics: skip dead per-step diagnostics in training
+2026-06-29T11:33:18Z,speedup/skip-info-nonterminal,8f6efde,clean,24.427,0.263,24.409,24.1,24.833,5,12.54,5.31,1.432,0.614,32768,skip-info-nonterminal: skip per-step info dict build+aggregation in training
+2026-06-29T11:43:35Z,speedup/validity-numpy,f2be109,clean,23.889,0.228,23.737,23.703,24.165,5,11.98,5.19,1.362,0.602,32768,validity-numpy: numpy-view reads in step validity checks
+2026-06-29T11:53:26Z,speedup/skip-baseinfo,c4c3234,clean,23.436,0.202,23.426,23.231,23.687,5,11.79,5.22,1.321,0.603,32768,skip-baseinfo: skip base _get_info() on non-terminal training
