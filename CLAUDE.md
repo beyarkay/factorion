@@ -112,20 +112,19 @@ bash run_sweep.sh
 
 ## Benchmarks
 
-Two complementary speed benchmarks, each with its own playbook + append-only CSV:
+All speed benchmarks live in **`tests/benchmarks/`** — read
+`tests/benchmarks/CLAUDE.md` for the playbook and
+`tests/benchmarks/EXPERIMENT_LOG.md` for what's been tried (read it before
+re-testing an idea). Two scripts cover everything: `bench_run.sh <kind>` (one
+run) and `bench_measure.sh <kind>` (repeat/aggregate → CSV + correctness gate),
+with `<kind>` ∈ `ppo-speed` (pure-speed fixed-iteration loop → `results.csv`),
+`ppo-quality` (time-to-quality finetune → `quality_results.csv`), `sft` (SFT
+training loop → `sft_bench_results.csv`).
 
-- **`BENCHMARK.md`** (`run.sh`/`measure.sh` → `results.csv`) — times a **fixed
-  iteration count** of the from-scratch PPO loop. For **pure-speed** changes that
-  must not alter the computation (gated by an iter-1 invariance signature). The
-  GPU-era sweep cut it 30.1 s → 23.4 s; see `EXPERIMENTS.md`.
-- **`QUALITY_BENCHMARK.md`** (`quality_run.sh`/`quality_measure.sh` →
-  `quality_results.csv`) — times **wall-clock to reach a fixed policy quality**
-  (EMA `rollout/reward` ≥ −0.15) finetuning the cached SFT checkpoint
-  (`checkpoints/sft_j0s5y2mc.pt`, offline). For changes that **may alter the
-  computation** (LR, batch, env count, AMP). Best recipe found:
-  `--critic-warmup 5 --learning-rate 7e-4` → 62.7 s vs 113 s baseline (−44%).
-  The Findings + full sweep log there record what's already been tried (LR/warmup
-  win; env-scaling, async, AMP, num_steps all dead ends) — read before re-testing.
+Headlines so far: PPO time-to-quality **113 → 36 s (−68%)** — recipe (now the
+`Args` defaults) + fused sampling + `torch.compile(reduce-overhead)` CUDA graphs
++ numpy world-writes. SFT training **88.4 → 22.6 s (−74%)** — GPU-resident data
+(both loops) + lazy imports; the conv fwd/backward is then the floor.
 
 ## Linting
 

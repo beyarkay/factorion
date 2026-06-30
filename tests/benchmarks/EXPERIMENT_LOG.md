@@ -1,13 +1,24 @@
-# PPO speedup experiments
+# Benchmark experiment log
 
-Human narrative for the PPO speed-benchmarking effort. The playbook (rules, how
-to measure) lives in `factorion/BENCHMARK.md`. The machine-readable results are
-in `results.csv` (next to this file). This file is the *why* and *what I
-learned*; the CSV is the *numbers*.
+The *why* and *what we learned* across all of the speed benchmarks; the
+machine-readable numbers live in the `*.csv` files next to this one, and the
+how-to-run playbook is `tests/benchmarks/CLAUDE.md`. Three benchmarks:
 
-Workflow per idea: pick idea → log it here → branch off `main` (or fastest
-branch so far) (`speedup/<name>`) → implement → commit → `./benchmark.sh
-"<note>"` → record outcome here.
+1. **PPO pure-speed** (`bench_* ppo-speed` → `results.csv`) — fixed-iteration
+   loop, gated by an iter-1 invariance signature. (The bulk of this file;
+   historical entries below were run with the old `run.sh`/`benchmark.sh`, now
+   `bench_run.sh ppo-speed` / `bench_measure.sh ppo-speed`.)
+2. **PPO time-to-quality** (`bench_* ppo-quality` → `quality_results.csv`) — wall
+   time to reach a fixed reward finetuning the SFT checkpoint (numerics-allowed).
+3. **SFT training speed** (`bench_* sft` → `sft_bench_results.csv`) — the training
+   loop to a fixed `val_loss` (pure-speed, bit-identical gate).
+
+This file also holds the **rationale that used to live as code comments** (why a
+given line is fast) so the source stays terse — grep here when a change looks
+surprising.
+
+Workflow per PPO pure-speed idea: log it here → branch → implement → commit →
+`tests/benchmarks/bench_measure.sh ppo-speed "<note>"` → record the outcome.
 
 ## ⚠️ Handoff note (read first — these numbers are from a CPU box)
 
@@ -492,3 +503,127 @@ _remove_entities-numpy (−3.2%), skip-baseinfo (−1.9%), defer-entropy-syncs
 (−0.5%). Dropped: AsyncVectorEnv (+18%, IPC-bound), build-path micro-opts
 (flat — build is ~11% of rollout). Remaining lever is the NN forward (numerics /
 AMP) — but GPU is ~9% utilized, so it won't help; not pursued.
+
+---
+
+# PPO time-to-quality campaign (113 → 36 s, `bench_* ppo-quality` → `quality_results.csv`)
+
+A second PPO benchmark: wall-clock to finetune the cached SFT checkpoint
+(`checkpoints/sft_j0s5y2mc.pt`, offline) up to EMA(`rollout/reward`) ≥ −0.15.
+**Numerics-allowed** (LR/batch/precision may change the trajectory), so compare
+across the 5 seeds, not a single run. `time_to_quality = crossing_iter ×
+wall_per_iter`; the deterministic per-iter wall is the low-noise signal, and
+crossing-iter is an unbiased ~25±4 draw, so `E[time_to_quality] ∝ per_iter`.
+
+## WON (cumulative; all confirmed 5-seed, all on `main`)
+
+- **Recipe: `--critic-warmup 5 --learning-rate 7e-4` → 62.9 s (−44%)**, now the
+  `Args` defaults (lr, critic_warmup, target_kl).
+  - *lr 7e-4 rationale (moved from the `Args.learning_rate` docstring):* the
+    confirmed SFT→PPO finetune optimum — bigger policy steps converge in fewer
+    iters AND hit the `--target-kl 0.02` ceiling sooner, so the update
+    early-stops its epochs (cheaper per-iter too). lr 1e-3 overshoots.
+  - *critic_warmup 5 (moved from `Args.critic_warmup`):* sweet spot — 0 is worse
+    (a random critic's advantages wreck the SFT policy), 10 wastes dead iters;
+    set 0 to disable for from-scratch runs.
+  - *target_kl 0.02 (moved from `Args.target_kl`):* early-stops the update's
+    epochs once the policy has moved enough — this is what makes the higher LR
+    cheap per-iter as well as fast-converging. None = always run all epochs.
+  - Deliberately did NOT bake gamma/gae_lambda/ent_coef into defaults — those are
+    inherited j0s5y2mc values, never independently validated.
+- **Fused categorical/bernoulli sampling** (drop `torch.distributions`): −21%
+  per-iter, and the *enabler* for compile (the Distribution objects graph-broke
+  `torch.compile`).
+- **`torch.compile(reduce-overhead)` CUDA graphs on the rollout** (62.9→45.4 s):
+  the policy forward is kernel-launch bound (B=16≈B=128 cost), and CUDA graphs
+  replay the captured sequence with ~0 CPU launch overhead. The old
+  `torch.compile(agent)` was a silent no-op (AgentCNN has no `forward()`).
+- **CUDA graphs on the PPO update** fwd+bwd (45.4→41.4 s).
+- **numpy world-writes in `FactorioEnv.step`** (41.4→36.0 s, bit-identical):
+  *rationale (moved from the code comment):* write entity/direction/item/misc
+  through the existing `world_np` view (it aliases the same CPU buffer), not via
+  `self._world_CWH[ch,x,y]=v` — torch scalar indexed assignment carries ~7 µs of
+  per-op dispatch each, so those 4 writes were ~half the step body; numpy scalar
+  writes are ~40× cheaper and identical.
+- **`functools.cache` on `str2ent`** (factorion): *rationale (moved from the code
+  comment):* `entities` is built once at import and never mutated, so it's a pure
+  function of `s`; it was a linear scan over `entities.values()` (with a
+  `str.replace` per iteration) and one of the hottest calls in `build_factory`
+  (~28k calls per rollout iter of resets). Honest note: cProfile overstated it
+  (per-call tax); real wall-clock impact was ~0 — kept as clean hygiene.
+
+## LOST / dead ends (measured, don't re-test)
+
+- **More envs / bigger batch** (sync+async 32/64/128): GPU util rises to 87% and
+  iters-to-converge drops, but rollout is 256 *sequential* env-steps and per-step
+  cost grows with envs → net slower.
+- **AsyncVectorEnv re-swept on the compiled code** (4→128 envs, single-seed):
+  async loses to sync at *every* env count; best is 16-env sync (the default).
+  Opposite of the pre-compile finding (async32 beat sync32) — once the forward is
+  CUDA-graphed to ~0, AsyncVectorEnv's per-step IPC barrier is *exposed*.
+- **AMP/bf16, `num_steps`<256, ent-coef 0, constant LR, `--critic-lr-mult`**: no
+  win (see prior rows + the per-iter campaign).
+- **Factory pre-build pool**: break-even (the parallel build won't scale — the
+  main process un-pickles factory tensors serially).
+- **Async-prefetch factory generation** (mp.Pool background workers, 96% hit):
+  a wash (36.2 vs 36.0 s) — the `Pool` result-handler thread contends for the
+  GIL with the single-core rollout, cancelling the reset saving.
+- **Rust port of the BFS belt-routing**: BFS is only ~25% of `build_factory`
+  (cProfile overstated it) — not worth it.
+
+Box is single-core-rollout-bound: the wins were "make the GPU work disappear"
+(CUDA graphs) + "kill per-op dispatch on the CPU path" (numpy writes), not
+parallelism. The remaining wall is the Python `build_factory` reset path.
+
+---
+
+# SFT training speed (88.4 → 22.6 s, `bench_* sft` → `sft_bench_results.csv`)
+
+Times the `sft.py` training loop to a fixed deterministic `val_loss = 1.6888`
+(size 11, real 93-69-96 encoder, 60k samples × 10 epochs, rollout eval off).
+**Pure-speed**, gated bit-identically on `val_loss` — every win below keeps it
+exactly. `sft.py --dataset-cache` caches the generated `(state,action)` tensors
+so the timed run skips the ~26 s `build_factory` data generation (a separate
+axis) and measures training; it re-seeds after load/generate so a cached run is
+bit-identical to a fresh one.
+
+## WON (each bit-identical, cumulative)
+
+- **GPU-resident training data (train AND val loops)** → the big win. The loops
+  were data-path bound (8-9 host→device transfers per batch per epoch), NOT
+  compute or sync bound (B=512 keeps the GPU busy). The dataset is tiny (~200 MB),
+  so move it on-device ONCE and iterate a `DataLoader` over **indices**
+  (`torch.arange`), not the data. *(Why indices, not a hand-rolled `randperm`:
+  the index DataLoader reuses the real `RandomSampler` — same length + config →
+  the same shuffle order AND the same per-epoch global-RNG draws — so the batch
+  order, and thus val_loss, is identical. A manual `randperm` does NOT reproduce
+  the DataLoader's 3 global-RNG draws/epoch and shifts val_loss; even the
+  shuffle=False val loader still draws 2/epoch that the train shuffle depends on.)*
+  train 7.4→1.5, val 0.8→0.2 s/epoch.
+- **Sync-free epoch stats**: the loop did ~10 `.item()` GPU→CPU syncs per batch
+  (7 losses + grad-norm + 2 accuracy counts); accumulate them on-GPU and convert
+  ONCE per epoch. Neutral on its own (B=512 isn't sync-bound — the syncs overlap)
+  but clean, and it matters once the data path no longer dominates.
+- **int64 → GPU → float transfer**: obs is stored int64 (276 MB); `.to(device)`
+  then `.float()` copies the smaller int tensor and casts on the GPU (5× faster,
+  no 480 MB CPU float intermediate). Bit-identical (int→float of small ids exact).
+- **Lazy-import matplotlib + networkx** in `factorion.py` (visualization-only) —
+  ~0.5 s off every `import factorion`, helping all entry points' startup.
+
+Net: 88.4 → 22.6 s (−74 %, 3.9×); the per-epoch cost (what matters for real
+multi-hour runs) is 4.8× faster.
+
+## LOST / dead ends (the conv fwd/backward is FLOORED)
+
+The remaining ~15 s is the conv forward+backward (profiled: ~65% backward, ~23%
+encoder forward). It can't be sped bit-identically, and tensor cores barely help:
+- **`.item()`-sync removal alone**: neutral (B=512 isn't sync-bound). Kept anyway.
+- **torch.compile** (42 s), **cudnn.benchmark** (32 s), **AMP/bf16** (net ~0),
+  **TF32** (8% gross), **fused AdamW** (~0): every one either breaks the
+  bit-identical invariant (different FP) or doesn't help end-to-end. At B=512 the
+  11×11 conv is GPU-underutilized and partly **memory-bandwidth-bound** (bf16 > TF32
+  at equal FLOPs proves it), so there's no FLOP headroom for tensor cores to take.
+  An isolated encoder micro-bench shows "bf16 2.6×" but that's a
+  per-step-`cuda.synchronize()` artifact — trust end-to-end, which says ~0.
+  This is the OPPOSITE of PPO, where the launch-bound B=16 forward loved CUDA
+  graphs. Don't re-try these here.

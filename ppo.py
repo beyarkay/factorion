@@ -68,6 +68,8 @@ _INVALID_REASON_KEYS = (
 # frequency (~256k enum lookups/iter in the profile).
 _CH_ENT = Channel.ENTITIES.value
 _CH_DIR = Channel.DIRECTION.value
+_CH_ITEMS = Channel.ITEMS.value
+_CH_MISC = Channel.MISC.value
 _CH_FOOTPRINT = Channel.FOOTPRINT.value
 
 moving_average_length = 500
@@ -108,8 +110,9 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 5.86e-4
-    """the learning rate of the optimizer"""
+    learning_rate: float = 7e-4
+    """the learning rate of the optimizer (default = the confirmed SFT->PPO
+    finetune optimum; see tests/benchmarks/EXPERIMENT_LOG.md)"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
     num_steps: int = 256
@@ -143,8 +146,9 @@ class Args:
     """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
-    target_kl: Optional[float] = None
-    """the target KL divergence threshold"""
+    target_kl: Optional[float] = 0.02
+    """the target KL divergence threshold; early-stops the update's epochs. None
+    = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
     adam_epsilon: float = 6.866e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
@@ -176,8 +180,8 @@ class Args:
     """W&B run group name (groups parallel seeds together in the dashboard)"""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
-    critic_warmup: int = 0
-    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 0 disables (default, preserves from-scratch behaviour). LR + entropy annealing start at unfreeze."""
+    critic_warmup: int = 5
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. Set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze. (Why the default of 5: tests/benchmarks/EXPERIMENT_LOG.md.)"""
     critic_lr_mult: float = 1.0
     """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
     eval_every: int = 7
@@ -197,7 +201,7 @@ class Args:
     the rollout bottleneck; AsyncVectorEnv fans it across cores. (At 16 envs the
     IPC overhead makes it slower — only worth it with many envs.)"""
 
-    # ── Time-to-quality benchmarking (offline; see quality_run.sh) ──────────
+    # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
     """If set, stop training the first time an EMA of this iter-metric key
     (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput_eot') reaches
@@ -815,15 +819,13 @@ class FactorioEnv(gym.Env):
                 action_is_invalid = True
             else:
                 action_is_invalid = False
-                # Write entity_id and direction at every tile of the
-                # footprint, matching how lessons and place_multi_tile
-                # represent multi-tile entities. Items + misc go on the
-                # anchor only (those channels are anchor-scoped).
+                # entity/direction at every footprint tile; items/misc at the
+                # anchor only. Written through world_np (aliases _world_CWH).
                 for tx, ty in tiles_list:
-                    self._world_CWH[Channel.ENTITIES.value, tx, ty] = entity_id
-                    self._world_CWH[Channel.DIRECTION.value, tx, ty] = direc
-                self._world_CWH[Channel.ITEMS.value, x, y] = item_id
-                self._world_CWH[Channel.MISC.value, x, y] = misc
+                    world_np[_CH_ENT, tx, ty] = entity_id
+                    world_np[_CH_DIR, tx, ty] = direc
+                world_np[_CH_ITEMS, x, y] = item_id
+                world_np[_CH_MISC, x, y] = misc
                 placed_name = entities[entity_id].name
                 self.actions[-1] = {
                     'entity': placed_name,
@@ -1691,7 +1693,7 @@ if __name__ == "__main__":
 
     # Iteration-1 computation signature (loss/kl/grad-norm). The run is
     # deterministic (fixed seeds + use_deterministic_algorithms), so a pure
-    # *speed* change must reproduce these bit-for-bit. benchmark.sh diffs them
+    # *speed* change must reproduce these bit-for-bit. tests/benchmarks/bench_measure.sh ppo-speed diffs them
     # against main's baseline to catch changes that silently alter the math.
     iter1_signature: dict[str, float] = {}
 
