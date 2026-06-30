@@ -43,8 +43,6 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py`/`apply_sft_sweep_best.py` (W&B sweeps → PR), `runpod_create.py`/`runpod_destroy.py`.
 - `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
 - `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config (PPO; metric `curriculum/score`).
-- `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
-- `factorio-data/` — Git submodule with Factorio game data.
 - `factorio-icons/` — Entity icon PNGs.
 
 ### Codebase map (grep these symbols)
