@@ -1,8 +1,7 @@
 """Decoder tests for `factorion.blueprint2world`.
 
 Blueprint fixtures live as one-string-per-file under `lesson_blueprints/`
-at the repo root. The same directory doubles as the seed corpus for
-the `FROM_BLUEPRINT` lesson kind. Every `*.txt` in that directory is
+at the repo root. Every `*.txt` in that directory is
 auto-discovered by `test_blueprint_fixture_decodes` and must decode
 without error into a non-empty world tensor. To add a new blueprint,
 paste the b64 string into a new file there; pytest picks it up on the

@@ -265,7 +265,6 @@ _CONNECTIVITY_KINDS = [
     LessonKind.SPLITTER_MERGE,
     LessonKind.ASSEMBLE_1IN_1OUT,
     LessonKind.ASSEMBLE_2IN_1OUT,
-    LessonKind.FROM_BLUEPRINT,
 ]
 
 class TestGeneratedWorldConnectivity:

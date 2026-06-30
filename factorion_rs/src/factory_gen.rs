@@ -15,12 +15,11 @@
 //! the Rust must build the *same list in the same order* so the draws index
 //! the same elements.
 
-use crate::blueprints::lesson_blueprints;
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::pyrandom::PyRandom;
 use crate::throughput::{calc_throughput, factory_score};
-use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe, NUM_CHANNELS};
+use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -33,7 +32,6 @@ pub enum LessonKind {
     Assemble1In1Out = 5,
     MoveViaUgBelt = 6,
     Assemble2In1Out = 7,
-    FromBlueprint = 8,
     MoveOneItemChaos = 9,
 }
 
@@ -46,7 +44,6 @@ impl LessonKind {
             5 => Some(LessonKind::Assemble1In1Out),
             6 => Some(LessonKind::MoveViaUgBelt),
             7 => Some(LessonKind::Assemble2In1Out),
-            8 => Some(LessonKind::FromBlueprint),
             9 => Some(LessonKind::MoveOneItemChaos),
             _ => None,
         }
@@ -359,349 +356,6 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
-        LessonKind::FromBlueprint => build_from_blueprint(size, &mut rng, max_entities),
-    }
-}
-
-// ── FROM_BLUEPRINT helpers ───────────────────────────────────────────────────
-
-/// A decoded blueprint as a mutable `(W, H, C)` buffer, used for the
-/// pre-translation augmentations (recipe substitution, flips).
-#[derive(Clone)]
-struct Bp {
-    w: usize,
-    h: usize,
-    data: Vec<i64>,
-}
-
-impl Bp {
-    fn idx(&self, x: usize, y: usize, c: usize) -> usize {
-        (x * self.h + y) * (NUM_CHANNELS) + c
-    }
-    fn get(&self, x: usize, y: usize, c: Channel) -> i64 {
-        self.data[self.idx(x, y, c.index())]
-    }
-    fn set(&mut self, x: usize, y: usize, c: Channel, v: i64) {
-        let i = self.idx(x, y, c.index());
-        self.data[i] = v;
-    }
-}
-
-/// `factorion.py::_is_gears_factory`: every source carries iron_plate, every
-/// sink iron_gear_wheel, every assembler tile iron_gear_wheel (and at least
-/// one of each exists).
-fn is_gears_factory(bp: &Bp) -> bool {
-    let plate = Item::IronPlate as i64;
-    let gear = Item::IronGearWheel as i64;
-    let (mut any_src, mut any_snk, mut any_asm) = (false, false, false);
-    let mut ok = true;
-    for x in 0..bp.w {
-        for y in 0..bp.h {
-            let ent = bp.get(x, y, Channel::Entities);
-            let itm = bp.get(x, y, Channel::Items);
-            if ent == Item::Source as i64 {
-                any_src = true;
-                ok &= itm == plate;
-            } else if ent == Item::Sink as i64 {
-                any_snk = true;
-                ok &= itm == gear;
-            } else if ent == Item::AssemblingMachine1 as i64 {
-                any_asm = true;
-                ok &= itm == gear;
-            }
-        }
-    }
-    any_src && any_snk && any_asm && ok
-}
-
-/// `factorion.py::_substitute_gears_recipe`: swap the iron_plate → gear ITEMS
-/// triple for a randomly chosen 1-in-1-out recipe.
-fn substitute_gears_recipe(bp: &Bp, rng: &mut PyRandom) -> Bp {
-    let recipes = one_in_one_out();
-    if recipes.is_empty() {
-        return bp.clone();
-    }
-    let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
-    let new_input_id = recipe.consumes.first().0 as i64;
-    let new_output_id = recipe_key as i64; // produces == key for 1-in-1-out
-    let plate = Item::IronPlate as i64;
-    let gear = Item::IronGearWheel as i64;
-    let mut out = bp.clone();
-    for x in 0..out.w {
-        for y in 0..out.h {
-            let itm = out.get(x, y, Channel::Items);
-            if itm == plate {
-                out.set(x, y, Channel::Items, new_input_id);
-            } else if itm == gear {
-                out.set(x, y, Channel::Items, new_output_id);
-            }
-        }
-    }
-    out
-}
-
-/// `factorion.py::_flip_world`: mirror along the W axis (`horizontal`) or H
-/// axis, remapping flow directions so flow is preserved.
-fn flip_world(bp: &Bp, horizontal: bool) -> Bp {
-    let mut out = Bp {
-        w: bp.w,
-        h: bp.h,
-        data: vec![0; bp.data.len()],
-    };
-    for x in 0..bp.w {
-        for y in 0..bp.h {
-            let (sx, sy) = if horizontal {
-                (bp.w - 1 - x, y)
-            } else {
-                (x, bp.h - 1 - y)
-            };
-            for c in 0..NUM_CHANNELS {
-                let v = bp.data[bp.idx(sx, sy, c)];
-                let i = out.idx(x, y, c);
-                out.data[i] = v;
-            }
-            // Remap direction for the flow that was mirrored.
-            let d = out.get(x, y, Channel::Direction);
-            let nd = if horizontal {
-                match Direction::from_i64(d) {
-                    Direction::East => Direction::West as i64,
-                    Direction::West => Direction::East as i64,
-                    _ => d,
-                }
-            } else {
-                match Direction::from_i64(d) {
-                    Direction::North => Direction::South as i64,
-                    Direction::South => Direction::North as i64,
-                    _ => d,
-                }
-            };
-            out.set(x, y, Channel::Direction, nd);
-        }
-    }
-    out
-}
-
-/// `factorion.py::_extend_belt_chains`: push each source/sink marker backward
-/// into the empty run behind it, filling the vacated tiles with belts. The
-/// marker order is shuffled and each extension draws `randint(0, K)`.
-fn extend_belt_chains(world: &mut World, rng: &mut PyRandom) {
-    let w = world.width() as i64;
-    let h = world.height() as i64;
-    let src_id = Item::Source as i64;
-    let snk_id = Item::Sink as i64;
-    let tb_id = Item::TransportBelt as i64;
-
-    let mut markers: Vec<Cell> = Vec::new();
-    for x in 0..w {
-        for y in 0..h {
-            let e = world.get(x as usize, y as usize, Channel::Entities);
-            if e == src_id || e == snk_id {
-                markers.push((x, y));
-            }
-        }
-    }
-    rng.shuffle(&mut markers);
-
-    for (mx, my) in markers {
-        let marker_id_val = world.get(mx as usize, my as usize, Channel::Entities);
-        if marker_id_val != src_id && marker_id_val != snk_id {
-            continue; // cleared by a prior extension
-        }
-        let marker_dir =
-            Direction::from_i64(world.get(mx as usize, my as usize, Channel::Direction));
-        if marker_dir == Direction::None {
-            continue;
-        }
-        let marker_dir_val = marker_dir as i64;
-        let scan_dir = if marker_id_val == src_id {
-            marker_dir
-        } else {
-            marker_dir.opposite()
-        };
-        let (dx, dy) = scan_dir.delta();
-
-        let (belt_x, belt_y) = (mx + dx, my + dy);
-        if !(0 <= belt_x && belt_x < w && 0 <= belt_y && belt_y < h) {
-            continue;
-        }
-        if world.get(belt_x as usize, belt_y as usize, Channel::Entities) != tb_id {
-            continue;
-        }
-        if world.get(belt_x as usize, belt_y as usize, Channel::Direction) != marker_dir_val {
-            continue;
-        }
-
-        let mut k = 0i64;
-        let (mut ex, mut ey) = (mx - dx, my - dy);
-        while 0 <= ex && ex < w && 0 <= ey && ey < h {
-            if world.get(ex as usize, ey as usize, Channel::Entities) != 0 {
-                break;
-            }
-            k += 1;
-            ex -= dx;
-            ey -= dy;
-        }
-        if k == 0 {
-            continue;
-        }
-
-        let j = rng.randint(0, k);
-        if j == 0 {
-            continue;
-        }
-
-        let marker_item = world.get(mx as usize, my as usize, Channel::Items);
-        let new_mx = mx - dx * j;
-        let new_my = my - dy * j;
-
-        world.set(mx as usize, my as usize, Channel::Entities, 0);
-        world.set(
-            mx as usize,
-            my as usize,
-            Channel::Direction,
-            Direction::None as i64,
-        );
-        world.set(mx as usize, my as usize, Channel::Items, 0);
-
-        world.set(
-            new_mx as usize,
-            new_my as usize,
-            Channel::Entities,
-            marker_id_val,
-        );
-        world.set(
-            new_mx as usize,
-            new_my as usize,
-            Channel::Direction,
-            marker_dir_val,
-        );
-        world.set(
-            new_mx as usize,
-            new_my as usize,
-            Channel::Items,
-            marker_item,
-        );
-
-        for jj in 1..=j {
-            let bx = new_mx + dx * jj;
-            let by = new_my + dy * jj;
-            world.set(bx as usize, by as usize, Channel::Entities, tb_id);
-            world.set(bx as usize, by as usize, Channel::Direction, marker_dir_val);
-        }
-    }
-}
-
-/// `factorion.py::_count_removable_entity_units`: count non-source/sink/empty
-/// entity units (multi-tile counted once at the anchor), x-outer/y-inner.
-fn count_removable_entity_units(world: &World) -> usize {
-    let w = world.width();
-    let h = world.height();
-    let mut secondary: HashSet<Cell> = HashSet::new();
-    let mut count = 0usize;
-    for x in 0..w {
-        for y in 0..h {
-            if secondary.contains(&(x as i64, y as i64)) {
-                continue;
-            }
-            let ev = world.get(x, y, Channel::Entities);
-            if ev == 0 || ev == Item::Source as i64 || ev == Item::Sink as i64 {
-                continue;
-            }
-            let ent = match Item::from_i64(ev) {
-                Some(e) => e,
-                None => continue,
-            };
-            count += 1;
-            let (ew, eh) = ent.size();
-            if ew > 1 || eh > 1 {
-                let d = world.direction_at(x, y);
-                if let Some(tiles) = entity_tiles(x, y, d, ew, eh) {
-                    for t in tiles {
-                        if (t.x, t.y) != (x as i64, y as i64) {
-                            secondary.insert((t.x, t.y));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    count
-}
-
-fn build_from_blueprint(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
-    let blueprints = lesson_blueprints();
-    // Python raises if there are no blueprints; the embedded table is non-empty.
-    let mut count = (500).max(size * size * 2);
-
-    while count > 0 {
-        count -= 1;
-        let bp_src = &blueprints[rng.choice_index(blueprints.len())];
-        let w_bp = bp_src.w;
-        let h_bp = bp_src.h;
-        if w_bp > size || h_bp > size {
-            continue;
-        }
-
-        let mut decoded = Bp {
-            w: w_bp,
-            h: h_bp,
-            data: bp_src.data.to_vec(),
-        };
-
-        if is_gears_factory(&decoded) {
-            decoded = substitute_gears_recipe(&decoded, rng);
-        }
-        if rng.random() < 0.5 {
-            decoded = flip_world(&decoded, true); // horizontal (W axis)
-        }
-        if rng.random() < 0.5 {
-            decoded = flip_world(&decoded, false); // vertical (H axis)
-        }
-
-        let ox = rng.randint(0, (size - w_bp) as i64) as usize;
-        let oy = rng.randint(0, (size - h_bp) as i64) as usize;
-
-        let mut world = World::empty(size, size);
-        for x in 0..w_bp {
-            for y in 0..h_bp {
-                for c in 0..NUM_CHANNELS {
-                    let v = decoded.data[decoded.idx(x, y, c)];
-                    world.set(ox + x, oy + y, channel_of(c), v);
-                }
-            }
-        }
-
-        extend_belt_chains(&mut world, rng);
-
-        if world_throughput(&world) <= 0.0 {
-            continue;
-        }
-
-        let total_entities = count_removable_entity_units(&world);
-        if total_entities == 0 {
-            continue;
-        }
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
-
-        return finish(world, total_entities, vec![], count);
-    }
-    None
-}
-
-/// Channel for a raw channel index (the inverse of `Channel::index`).
-fn channel_of(c: usize) -> Channel {
-    match c {
-        0 => Channel::Entities,
-        1 => Channel::Direction,
-        2 => Channel::Items,
-        3 => Channel::Misc,
-        _ => Channel::Footprint,
     }
 }
 
@@ -1992,7 +1646,6 @@ mod tests {
         (LessonKind::Assemble1In1Out, "ASSEMBLE_1IN_1OUT", 12),
         (LessonKind::MoveViaUgBelt, "MOVE_VIA_UG_BELT", 12),
         (LessonKind::Assemble2In1Out, "ASSEMBLE_2IN_1OUT", 12),
-        (LessonKind::FromBlueprint, "FROM_BLUEPRINT", 16),
     ];
 
     /// Native-Rust build_factory benchmark — the no-Python-boundary baseline

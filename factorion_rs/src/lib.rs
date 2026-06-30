@@ -20,7 +20,6 @@
 // requires `alloc` to be visible at the crate root.
 extern crate alloc;
 
-mod blueprints;
 mod entities;
 mod factory_gen;
 mod graph;

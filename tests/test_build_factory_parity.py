@@ -31,7 +31,6 @@ PORTED_KINDS = [
     LessonKind.ASSEMBLE_1IN_1OUT,
     LessonKind.MOVE_VIA_UG_BELT,
     LessonKind.ASSEMBLE_2IN_1OUT,
-    LessonKind.FROM_BLUEPRINT,
 ]
 
 ALL_KINDS = list(LessonKind)
@@ -304,34 +303,6 @@ def test_assemble_2in1out_caps():
         assert_parity(10, LessonKind.ASSEMBLE_2IN_1OUT, seed, max_entities=12.0)
 
 
-# ── FROM_BLUEPRINT ───────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("size", [5, 8, 10, 12, 16])
-def test_from_blueprint_fuzz_sizes(size):
-    """Sample a hand-authored blueprint, decode it, optionally substitute the
-    gears recipe, flip H/V, translate, and extend belt chains. Exercises the
-    most augmentation machinery of any lesson: the embedded decoded
-    blueprints, random.random() flips, the recipe substitution, and
-    _extend_belt_chains' shuffled per-marker extension. Small sizes also cover
-    the 'blueprint too big → skip' path."""
-    built = 0
-    for seed in range(400):
-        if assert_parity(size, LessonKind.FROM_BLUEPRINT, seed) == "built":
-            built += 1
-    assert built > 100, f"size={size}: only {built}/400 seeds built"
-
-
-def test_from_blueprint_fuzz_many_seeds():
-    for seed in range(3000):
-        assert_parity(12, LessonKind.FROM_BLUEPRINT, seed)
-
-
-def test_from_blueprint_caps():
-    for seed in range(500):
-        assert_parity(12, LessonKind.FROM_BLUEPRINT, seed, max_entities=8.0)
-
-
 # ── progress guard ───────────────────────────────────────────────────────────
 
 
@@ -354,3 +325,12 @@ def test_every_kind_builds_via_rust():
 def test_unknown_kind_raises():
     with pytest.raises(ValueError):
         factorion_rs.build_factory(10, 999, 0, True, float("inf"))
+
+
+def test_from_blueprint_kind_is_removed():
+    """FROM_BLUEPRINT (the old kind 8) is no longer a LessonKind and the Rust
+    engine rejects its value — the lesson was removed rather than ported (it
+    would have required shipping a Factorio blueprint decoder)."""
+    assert not hasattr(LessonKind, "FROM_BLUEPRINT")
+    with pytest.raises(ValueError):
+        factorion_rs.build_factory(10, 8, 0, True, float("inf"))

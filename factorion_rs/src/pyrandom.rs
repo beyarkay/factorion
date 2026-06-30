@@ -1,7 +1,7 @@
 //! A byte-exact reimplementation of (the parts we use of) CPython's
 //! `random` module — the Mersenne Twister core plus the higher-level
-//! `getrandbits` / `random` / `_randbelow` / `randrange` / `randint` /
-//! `choice` / `shuffle` / `sample` methods.
+//! `getrandbits` / `_randbelow` / `randrange` / `randint` / `choice` /
+//! `shuffle` / `sample` methods.
 //!
 //! This exists so the Rust port of `build_factory` can reproduce a
 //! **byte-identical** factory for the same `(size, kind, seed)` as the
@@ -126,13 +126,6 @@ impl PyRandom {
         y ^= (y << 15) & 0xefc6_0000;
         y ^= y >> 18;
         y
-    }
-
-    /// `random.random()` — 53-bit float in [0, 1) via `genrand_res53`.
-    pub fn random(&mut self) -> f64 {
-        let a = (self.genrand_uint32() >> 5) as f64; // 27 bits
-        let b = (self.genrand_uint32() >> 6) as f64; // 26 bits
-        (a * 67_108_864.0 + b) * (1.0 / 9_007_199_254_740_992.0)
     }
 
     /// `random.getrandbits(k)` for `1 <= k <= 64`.
@@ -266,47 +259,6 @@ mod tests {
             let mut r = PyRandom::seeded(*seed);
             for (idx, &k) in ks.iter().enumerate() {
                 assert_eq!(r.getrandbits(k), expected[idx], "seed={seed} k={k}");
-            }
-        }
-    }
-
-    #[test]
-    // Reference values are CPython's shortest round-tripping reprs, so each
-    // literal is exactly the f64 our `random()` produces.
-    fn test_random() {
-        let cases: &[(u64, [f64; 4])] = &[
-            (
-                0,
-                [
-                    0.8444218515250481,
-                    0.7579544029403025,
-                    0.420571580830845,
-                    0.25891675029296335,
-                ],
-            ),
-            (
-                1,
-                [
-                    0.13436424411240122,
-                    0.8474337369372327,
-                    0.763774618976614,
-                    0.2550690257394217,
-                ],
-            ),
-            (
-                42,
-                [
-                    0.6394267984578837,
-                    0.025010755222666936,
-                    0.27502931836911926,
-                    0.22321073814882275,
-                ],
-            ),
-        ];
-        for (seed, expected) in cases {
-            let mut r = PyRandom::seeded(*seed);
-            for &e in expected {
-                assert_eq!(r.random(), e, "seed={seed}");
             }
         }
     }

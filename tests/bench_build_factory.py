@@ -42,7 +42,6 @@ BENCH_LESSONS = [
     (LessonKind.ASSEMBLE_1IN_1OUT, 12),
     (LessonKind.MOVE_VIA_UG_BELT, 12),
     (LessonKind.ASSEMBLE_2IN_1OUT, 12),
-    (LessonKind.FROM_BLUEPRINT, 16),
 ]
 
 N = 1000
