@@ -30,7 +30,7 @@ from factorion import (
     LessonKind,
     Misc,
     blank_entities,
-    build_factory_rs,
+    build_factory,
     entities,
     items,
     str2ent,
@@ -260,7 +260,7 @@ def _build_eval_set(args) -> dict:
         base = 9_000_000 + args.seed + ki * 100_000
         found, s = 0, base
         while found < args.eval_seeds_per_kind and s < base + 5000:
-            if build_factory_rs(size=args.size, kind=kind, seed=s) is not None:
+            if build_factory(size=args.size, kind=kind, seed=s) is not None:
                 out[s] = kind.value
                 found += 1
             s += 1
@@ -680,7 +680,7 @@ class FactorioEnv(gym.Env):
             kinds_list = list(LessonKind)
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
-                factory = build_factory_rs(
+                factory = build_factory(
                     size=self.size, kind=kind, seed=self._seed,
                 )
                 if factory is not None:
@@ -692,12 +692,12 @@ class FactorioEnv(gym.Env):
                 )
         else:
             kind = kind_opt
-            factory = build_factory_rs(
+            factory = build_factory(
                 size=self.size, kind=kind, seed=self._seed,
             )
             if factory is None:
                 raise RuntimeError(
-                    f"build_factory_rs returned None for kind={kind} "
+                    f"build_factory returned None for kind={kind} "
                     f"seed={self._seed}"
                 )
         self._kind = kind

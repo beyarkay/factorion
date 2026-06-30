@@ -905,12 +905,13 @@ class TestAssemble1In1OutGridSizes:
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
-    def test_too_small_grid_raises(self):
-        """A grid smaller than 3×3 cannot fit the assembler."""
-        with pytest.raises(Exception):
-            build_factory(
-                size=2, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0
-            )
+    def test_too_small_grid_returns_none(self):
+        """A grid smaller than 3×3 can't fit the assembler, so rejection
+        sampling is exhausted and build_factory returns None."""
+        assert (
+            build_factory(size=2, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0)
+            is None
+        )
 
 
 class TestAssemble1In1OutEntityDirections:
@@ -1482,11 +1483,11 @@ class TestAssemble1In1OutEdgeCases:
     """Edge cases: tiny grids, large grids."""
 
     @pytest.mark.parametrize("size", [1, 2])
-    def test_grid_too_small_raises(self, size):
-        with pytest.raises(Exception):
-            build_factory(
-                size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0,
-            )
+    def test_grid_too_small_returns_none(self, size):
+        assert (
+            build_factory(size=size, kind=LessonKind.ASSEMBLE_1IN_1OUT, seed=0)
+            is None
+        )
 
     @pytest.mark.parametrize("seed", range(5))
     def test_large_grid_works(self, seed):
@@ -2309,9 +2310,11 @@ class TestAssemble2In1OutConnectivity:
 
 class TestAssemble2In1OutEdgeCases:
     @pytest.mark.parametrize("size", [1, 2])
-    def test_grid_too_small_raises(self, size):
-        with pytest.raises(Exception):
+    def test_grid_too_small_returns_none(self, size):
+        assert (
             build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=0)
+            is None
+        )
 
     @pytest.mark.parametrize("seed", range(5))
     def test_large_grid_works(self, seed):
