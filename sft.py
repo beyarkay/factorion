@@ -33,7 +33,7 @@ from factorion import (  # noqa: E402
     Direction,
     LessonKind,
     blank_entities,
-    build_factory,
+    build_factory_rs,
     entities,
     str2ent,
 )
@@ -350,7 +350,7 @@ def generate_dataset(args: SFTArgs):
         level = max_level
         seed += 1
 
-        factory = build_factory(size=args.size, kind=kind, seed=seed)
+        factory = build_factory_rs(size=args.size, kind=kind, seed=seed)
         if factory is None:
             continue
         solved = factory.world_CWH

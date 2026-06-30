@@ -21,7 +21,9 @@
 extern crate alloc;
 
 mod entities;
+mod factory_gen;
 mod graph;
+mod pyrandom;
 #[cfg(test)]
 mod textual;
 mod throughput;
@@ -29,7 +31,7 @@ mod types;
 mod world;
 
 #[cfg(feature = "pyo3-bindings")]
-use numpy::PyReadonlyArray3;
+use numpy::{IntoPyArray, PyReadonlyArray3};
 #[cfg(feature = "pyo3-bindings")]
 use pyo3::prelude::*;
 #[cfg(feature = "pyo3-bindings")]
@@ -37,6 +39,8 @@ use pyo3::types::PyDict;
 
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
+#[cfg(feature = "pyo3-bindings")]
+use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
@@ -178,6 +182,57 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(outer.into())
 }
 
+/// Python-facing shape of a built factory: the world tensor, the count of
+/// removable entity units, and the protected (never-blanked) positions.
+#[cfg(feature = "pyo3-bindings")]
+type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>);
+
+/// Build a complete, valid factory of the given lesson `kind` (an integer
+/// `LessonKind` value) on a `size × size` grid, seeded from `seed`.
+///
+/// Returns `(world, total_entities, protected_positions)` where `world` is
+/// a `(W, H, C)` int64 array (the same shape `simulate_throughput` takes),
+/// or `None` when rejection sampling is exhausted. Raises `ValueError` for an
+/// unknown lesson kind.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+#[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
+fn build_factory(
+    py: Python<'_>,
+    size: usize,
+    kind: i64,
+    seed: i64,
+    random_item: bool,
+    max_entities: f64,
+) -> PyResult<Option<PyFactory>> {
+    let lesson = LessonKind::from_i64(kind)
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown kind {kind}")))?;
+    let built = match rs_build_factory(size, lesson, seed.unsigned_abs(), random_item, max_entities)
+    {
+        Some(b) => b,
+        None => return Ok(None),
+    };
+    let total = built.total_entities;
+    let protected = built.protected_positions.clone();
+    let (data, w, h, c) = built.world.into_whc();
+    let arr = numpy::ndarray::Array3::from_shape_vec((w, h, c), data)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(Some((arr.into_pyarray(py).unbind(), total, protected)))
+}
+
+/// Return the lesson kinds as an ordered `{NAME: int_value}` dict — the single
+/// source of truth Python builds its `LessonKind` enum from. Insertion order
+/// matches `all_lesson_kinds()` so `list(LessonKind)` iterates the same way.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    for &kind in all_lesson_kinds() {
+        d.set_item(kind.name(), kind as i64)?;
+    }
+    Ok(d.into())
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -186,5 +241,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
+    m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     Ok(())
 }

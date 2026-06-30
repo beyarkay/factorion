@@ -27,7 +27,7 @@ import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     LessonKind,
     blank_entities,
-    build_factory,
+    build_factory_rs,
     world2html,
 )
 
@@ -74,7 +74,7 @@ def run_scenario(kind: LessonKind, name: str, args: Args) -> dict:
     for i in range(args.count):
         seed = args.seed_start + i
         try:
-            factory = build_factory(size=args.size, kind=kind, seed=seed)
+            factory = build_factory_rs(size=args.size, kind=kind, seed=seed)
             assert factory is not None
             world_cwh, min_ent = blank_entities(factory, num_missing_entities=0)
             world_whc = world_cwh.permute(1, 2, 0)
