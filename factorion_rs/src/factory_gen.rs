@@ -35,6 +35,7 @@ pub enum LessonKind {
     Assemble1In1Out = 5,
     MoveViaUgBelt = 6,
     Assemble2In1Out = 7,
+    MemoriseRecipes = 8,
     MoveOneItemChaos = 9,
     CrossUnderBelt = 10,
 }
@@ -48,6 +49,7 @@ impl LessonKind {
             5 => Some(LessonKind::Assemble1In1Out),
             6 => Some(LessonKind::MoveViaUgBelt),
             7 => Some(LessonKind::Assemble2In1Out),
+            8 => Some(LessonKind::MemoriseRecipes),
             9 => Some(LessonKind::MoveOneItemChaos),
             10 => Some(LessonKind::CrossUnderBelt),
             _ => None,
@@ -64,6 +66,7 @@ impl LessonKind {
             LessonKind::Assemble1In1Out => "ASSEMBLE_1IN_1OUT",
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
+            LessonKind::MemoriseRecipes => "MEMORISE_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
         }
@@ -80,6 +83,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
         LessonKind::Assemble2In1Out,
+        LessonKind::MemoriseRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
     ]
@@ -371,6 +375,7 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
+        LessonKind::MemoriseRecipes => build_memorise_recipes(size, &mut rng, max_entities),
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
@@ -1637,6 +1642,180 @@ fn build_assemble_2in1out(
     None
 }
 
+/// Build a MEMORISE_RECIPES factory: a single assembler fed and drained by the
+/// most compact possible arms — every ingredient and product travels
+/// `source → belt → inserter → assembler → inserter → belt → sink` with
+/// **exactly one** belt between a source/sink and its inserter. The recipe is
+/// drawn at random from [`all_recipes`], so the number of input arms equals the
+/// recipe's ingredient count (one source per input) and there is one output arm
+/// per product. Each arm's inserter sits on a randomly-chosen, non-corner
+/// assembler perimeter slot, and the source/sink hangs off a randomly-chosen
+/// free neighbour of that arm's belt. The assembler anchor itself is random.
+///
+/// The lesson teaches the policy to *memorise* which items a recipe consumes
+/// and produces (and the assembler's recipe tag), stripped of any long-belt
+/// routing — the routing is fixed at one tile, so only the recipe identity and
+/// the immediate inserter/belt geometry vary.
+fn build_memorise_recipes(
+    size: usize,
+    rng: &mut PyRandom,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Any recipe is fair game — the lesson is about memorising recipe
+    // identity, so we don't filter by ingredient count. The recipe table
+    // guarantees the list is non-empty, so the choice below can't underflow.
+    let recipes = all_recipes();
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        let recipe_item_value = recipe_key as i64;
+        // One arm per ingredient (inputs) and one per product (outputs).
+        // Shuffle the ingredients so a recipe's items aren't always bound to
+        // the same perimeter slots across seeds.
+        let mut input_items: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut input_items);
+        let output_items: Vec<Item> = recipe.produces.iter().map(|&(i, _)| i).collect();
+        let n_in = input_items.len();
+        let n_arms = n_in + output_items.len();
+
+        // Need one distinct perimeter slot per arm. With at most 5 ingredients
+        // + 1 product this is always <= 12 = PERIM_SLOTS.len(), but guard
+        // anyway so a future many-input recipe rejects cleanly.
+        if n_arms > PERIM_SLOTS.len() {
+            continue;
+        }
+
+        let ax = rng.randint(0, s - 3);
+        let ay = rng.randint(0, s - 3);
+        let asm_tiles: HashSet<Cell> = (0..3)
+            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+            .collect();
+        // Source/sink markers must never sit on the assembler perimeter: a
+        // source/sink there would be read as an inserter feeding/draining the
+        // assembler directly, bypassing this arm's belt+inserter.
+        let perim = all_perim_set(ax, ay, s);
+
+        let slots = rng.sample(&PERIM_SLOTS, n_arms);
+
+        // Plan every arm, reserving cells as we go so arms can't overlap. Any
+        // arm that can't be placed rejects the whole candidate.
+        let mut occupied: HashSet<Cell> = asm_tiles.clone();
+        let mut inserters: Vec<(Cell, Direction)> = Vec::with_capacity(n_arms);
+        let mut belts: Vec<Belt> = Vec::with_capacity(n_arms);
+        // (position, direction, carried-item, is_source)
+        let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
+
+        let mut ok = true;
+        for (idx, &(off_x, off_y, in_dir, out_dir)) in slots.iter().enumerate() {
+            let is_input = idx < n_in;
+            let inserter_pos = (ax + off_x, ay + off_y);
+            // Inserter faces INTO the assembler for inputs, OUT for outputs.
+            let inserter_dir = if is_input { in_dir } else { out_dir };
+            if !in_grid(inserter_pos, s) || occupied.contains(&inserter_pos) {
+                ok = false;
+                break;
+            }
+
+            // The single belt sits on the inserter's pickup cell (inputs) or
+            // drop cell (outputs) — one step away along the inserter's facing.
+            let dd = inserter_dir.delta();
+            let belt_pos = if is_input {
+                (inserter_pos.0 - dd.0, inserter_pos.1 - dd.1)
+            } else {
+                (inserter_pos.0 + dd.0, inserter_pos.1 + dd.1)
+            };
+            if !in_grid(belt_pos, s) || occupied.contains(&belt_pos) {
+                ok = false;
+                break;
+            }
+
+            // The source/sink hangs off any free neighbour of the belt other
+            // than the inserter. Enumerate in BFS_DELTAS order for determinism.
+            let mut candidates: Vec<Cell> = Vec::new();
+            for &(ndx, ndy) in &BFS_DELTAS {
+                let c = (belt_pos.0 + ndx, belt_pos.1 + ndy);
+                if c == inserter_pos || !in_grid(c, s) {
+                    continue;
+                }
+                if occupied.contains(&c) || perim.contains(&c) {
+                    continue;
+                }
+                candidates.push(c);
+            }
+            if candidates.is_empty() {
+                ok = false;
+                break;
+            }
+            let marker_pos = candidates[rng.choice_index(candidates.len())];
+
+            let (belt_dir, marker_dir, item_value, is_source) = if is_input {
+                // Belt carries toward the inserter; source faces the belt so it
+                // drops its item onto it.
+                let src_dir =
+                    match delta_to_dir(belt_pos.0 - marker_pos.0, belt_pos.1 - marker_pos.1) {
+                        Some(d) => d,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                (inserter_dir, src_dir, input_items[idx] as i64, true)
+            } else {
+                // Belt carries toward the sink; the sink faces away from the
+                // belt so it pulls the item off it.
+                let snk_dir =
+                    match delta_to_dir(marker_pos.0 - belt_pos.0, marker_pos.1 - belt_pos.1) {
+                        Some(d) => d,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                (snk_dir, snk_dir, output_items[idx - n_in] as i64, false)
+            };
+
+            inserters.push((inserter_pos, inserter_dir));
+            belts.push((belt_pos.0, belt_pos.1, belt_dir));
+            markers.push((marker_pos, marker_dir, item_value, is_source));
+            occupied.insert(inserter_pos);
+            occupied.insert(belt_pos);
+            occupied.insert(marker_pos);
+        }
+        if !ok {
+            continue;
+        }
+
+        // Removable units: belts + inserters + the assembler (sources/sinks
+        // are env-spawned and never blanked, so they don't count).
+        let total_entities = inserters.len() + belts.len() + 1;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_assembler(&mut world, ax, ay, recipe_item_value);
+        for &(pos, dir) in &inserters {
+            place_inserter(&mut world, pos, dir);
+        }
+        place_belts(&mut world, &belts);
+        for &(pos, dir, item_value, is_source) in &markers {
+            let ent = if is_source { Item::Source } else { Item::Sink };
+            place_marker(&mut world, pos, ent, dir, item_value);
+        }
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
 // ── CROSS_UNDER_BELT: an obstruction belt-line cut + a crossing that tunnels
 // under it ──────────────────────────────────────────────────────────────────
 
@@ -2072,6 +2251,53 @@ mod tests {
             if let Some(f) = build_factory(10, LessonKind::MoveOneItem, seed, true, f64::INFINITY) {
                 assert!(world_throughput(&f.world) > 0.0, "seed={seed}");
                 assert!(f.total_entities >= 1);
+                built += 1;
+            }
+        }
+        assert!(built > 40, "most seeds should build, got {built}");
+    }
+
+    #[test]
+    fn test_memorise_recipes_smoke() {
+        // A handful of seeds should all produce positive-throughput factories
+        // with one belt per arm: belts == inserters (one belt per inserter),
+        // exactly one assembler unit, and at least one source + one sink.
+        let mut built = 0;
+        for seed in 0..50u64 {
+            if let Some(f) =
+                build_factory(11, LessonKind::MemoriseRecipes, seed, true, f64::INFINITY)
+            {
+                assert!(world_throughput(&f.world) > 0.0, "seed={seed}");
+
+                let mut n_belt = 0;
+                let mut n_inserter = 0;
+                let mut n_assembler = 0;
+                let mut n_source = 0;
+                let mut n_sink = 0;
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        match f.world.entity_at(x, y) {
+                            Some(Item::TransportBelt) => n_belt += 1,
+                            Some(Item::Inserter) => n_inserter += 1,
+                            Some(Item::AssemblingMachine1) => n_assembler += 1,
+                            Some(Item::Source) => n_source += 1,
+                            Some(Item::Sink) => n_sink += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                // One belt per arm == one belt per inserter.
+                assert_eq!(n_belt, n_inserter, "seed={seed}: belts != inserters");
+                // The assembler is 3x3 → 9 tiles.
+                assert_eq!(n_assembler, 9, "seed={seed}: assembler not 3x3");
+                assert!(n_source >= 1, "seed={seed}: no source");
+                assert_eq!(n_sink, 1, "seed={seed}: expected exactly one sink");
+                // Inserters = sources + sinks (one inserter per arm).
+                assert_eq!(
+                    n_inserter,
+                    n_source + n_sink,
+                    "seed={seed}: inserter count != arm count"
+                );
                 built += 1;
             }
         }
