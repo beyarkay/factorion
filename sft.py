@@ -1057,6 +1057,13 @@ def train_sft(args: SFTArgs):
             group=args.wandb_group,
             tags=sft_tags,
         )
+        # The SFT sweep optimises val/thput_eot (see sft_sweep.yaml). Greedy
+        # throughput plateaus early then wobbles, so judge a run by its BEST
+        # epoch, not the noisy final one: pin both throughput metrics'
+        # run-summary to the max over training. (No effect on the per-epoch
+        # history panels, only on the single value the sweep controller reads.)
+        run.define_metric("val/thput", summary="max")
+        run.define_metric("val/thput_eot", summary="max")
         # Dataset composition is a one-shot constant for the run — write it
         # to summary (which keeps the value visible in the run sidebar)
         # rather than wandb.log (which would create a flat plottable line).
