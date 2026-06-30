@@ -183,8 +183,8 @@ pub enum Item {
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 66,   // bulk_inserter in Python
-    Source = 67, // stack_inserter in Python
+    Sink = 66,   // named "bulk_inserter"
+    Source = 67, // named "stack_inserter"
 }
 
 impl Item {

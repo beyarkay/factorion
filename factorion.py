@@ -179,12 +179,8 @@ recipes = {
 }
 
 
-# LessonKind is defined in Rust (factorion_rs/src/factory_gen.rs) and exposed
-# via PyO3 (`py_lesson_kinds`) so the kind set / values can never drift between
-# the two implementations — the same single-source-of-truth pattern the `items`
-# and `recipes` dicts above use. The members (in Rust order) are
-# MOVE_ONE_ITEM=0, SPLITTER_SPLIT=3, SPLITTER_MERGE=4, ASSEMBLE_1IN_1OUT=5,
-# MOVE_VIA_UG_BELT=6, ASSEMBLE_2IN_1OUT=7, MOVE_ONE_ITEM_CHAOS=9.
+# LessonKind is owned by Rust (see py_lesson_kinds) and built here, so the kind
+# set can't drift — the single-source-of-truth pattern `items`/`recipes` use.
 LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 
 
@@ -2527,23 +2523,10 @@ def build_factory_rs(
     random_item: bool = True,
     max_entities: float = float("inf"),
 ) -> Optional[Factory]:
-    """Rust-backed drop-in replacement for :func:`build_factory`.
-
-    Delegates the (expensive) layout construction to
-    ``factorion_rs.build_factory`` — a byte-for-byte port of :func:`build_factory`
-    that draws from the same CPython MT19937 stream, so it returns an
-    *identical* ``Factory`` for the same ``(size, kind, seed)`` (verified over
-    thousands of seeds in ``tests/test_build_factory_parity.py``) while running
-    7-34× faster per lesson. This is what the training/runtime paths (PPO
-    rollouts, SFT data generation, the scripts) call; :func:`build_factory`
-    (the pure-Python reference) stays the parity baseline the tests pin against.
-
-    Determinism contract matches :func:`build_factory`: when ``seed`` is given,
-    the global ``random``/``numpy``/``torch`` RNGs are seeded so a chained
-    :func:`blank_entities` (``seed=None``) is deterministic in ``seed``. When
-    ``seed`` is ``None``, a seed is drawn from the current ``random`` stream so
-    the result still depends on global RNG state.
-    """
+    """Fast drop-in for :func:`build_factory` backed by ``factorion_rs``."""
+    # Seed the global RNGs (as build_factory does) so a chained
+    # blank_entities(seed=None) stays deterministic in `seed`; with no seed,
+    # draw one from the current stream so the result still tracks RNG state.
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)

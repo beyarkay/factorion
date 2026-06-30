@@ -96,8 +96,8 @@ const DIRS: [Direction; 4] = [
 /// them).
 const BFS_DELTAS: [(i64, i64); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
-/// Inverse of `BFS_DELTAS`: a one-step (dx, dy) → belt direction, matching
-/// Python's `DELTA_TO_DIR`. Returns `None` for non-unit deltas.
+/// Inverse of `BFS_DELTAS`: a one-step (dx, dy) → belt direction. Returns
+/// `None` for non-unit deltas.
 fn delta_to_dir(dx: i64, dy: i64) -> Option<Direction> {
     match (dx, dy) {
         (0, -1) => Some(Direction::North),
@@ -108,17 +108,16 @@ fn delta_to_dir(dx: i64, dy: i64) -> Option<Direction> {
     }
 }
 
-/// The `random.choice` pool for a factory's transported item:
-/// `[v.value for k, v in items.items() if v.name != "empty"]`, i.e. every
-/// `Item` in `all_items()` order (the synthetic "empty" sentinel is value 0
-/// and excluded). Returned as raw channel values.
+/// The pool a factory's transported item is chosen from: every `Item` in
+/// `all_items()` order, as raw channel values.
 fn item_pool() -> Vec<i64> {
     all_items().iter().map(|&i| i as i64).collect()
 }
 
 /// The 12 non-corner perimeter slots around a 3×3 assembler anchored at
 /// `(ax, ay)`, as `(offset_x, offset_y, input_inserter_dir, output_inserter_dir)`.
-/// Same order as Python's `perim_slots` so `random.sample` indexes match.
+/// The slot order is load-bearing: the inserter/source/sink sampling indexes
+/// into it, so reordering changes which factory a seed produces.
 const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
     // North side (ddy = -1)
     (0, -1, Direction::South, Direction::North),
@@ -138,8 +137,8 @@ const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
     (3, 2, Direction::West, Direction::East),
 ];
 
-/// Throughput score of a fully-placed world — the Rust-native equivalent of
-/// `factorion_rs.simulate_throughput(world)[0]` that Python calls.
+/// Throughput score of a fully-placed world: build its flow graph and return
+/// the achieved-throughput score across its sinks.
 fn world_throughput(world: &World) -> f64 {
     let graph = build_graph(world);
     let (deliveries, _) = calc_throughput(&graph);
@@ -155,7 +154,6 @@ type BfsResult = (HashMap<Cell, usize>, HashMap<Cell, Vec<Cell>>);
 /// BFS from `start` to `end` avoiding `blocked`, returning `(dist, parents)`
 /// where `parents[cell]` holds *all* equal-distance predecessors (so all
 /// shortest paths can be enumerated). `None` if `end` is unreachable.
-/// A faithful port of `factorion.py::_bfs_shortest`.
 fn bfs_shortest(size: i64, start: Cell, end: Cell, blocked: &HashSet<Cell>) -> Option<BfsResult> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) {
@@ -207,7 +205,6 @@ fn bfs_shortest(size: i64, start: Cell, end: Cell, blocked: &HashSet<Cell>) -> O
 }
 
 /// Convert a cell run into belt placements, last belt taking `end_dir`.
-/// Port of `factorion.py::_path_to_belts`.
 fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
     let mut belts: Vec<Belt> = Vec::new();
     for w in path.windows(2) {
@@ -224,7 +221,6 @@ fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
 }
 
 /// A single shortest belt path from `start` to `end`, or `None`.
-/// Port of `factorion.py::find_belt_path`.
 fn find_belt_path(
     size: i64,
     start: Cell,
@@ -255,8 +251,7 @@ fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
 }
 
 /// All shortest belt paths from a source's output cell to a sink's input
-/// cell, given their positions and facings. Port of
-/// `factorion.py::find_belt_paths_with_source_sink_orient`.
+/// cell, given their positions and facings.
 fn find_belt_paths_with_source_sink_orient(
     size: i64,
     src: Cell,
@@ -285,8 +280,8 @@ fn find_belt_paths_with_source_sink_orient(
     };
 
     let mut all_paths: Vec<Vec<Belt>> = Vec::new();
-    // Recursive backtrack over `parents`, in the same order Python's nested
-    // function visits them.
+    // Recursively walk every parent chain; the visit order fixes the path
+    // order (which a later shuffle then consumes), so keep it deterministic.
     fn backtrack(
         cell: Cell,
         start: Cell,
@@ -322,7 +317,8 @@ fn find_belt_paths_with_source_sink_orient(
 }
 
 /// The result of a successful `build_factory`: a complete world plus the
-/// blanking bookkeeping Python's `Factory` carries.
+/// bookkeeping a training lesson needs to blank it — the removable-entity
+/// count and the positions that must never be blanked.
 pub struct BuiltFactory {
     pub world: World,
     pub total_entities: usize,
@@ -342,9 +338,10 @@ fn place_belts(world: &mut World, belts: &[Belt]) {
     }
 }
 
-/// Port of `build_factory(size, kind, seed=..., random_item, max_entities)`.
-/// Always seeds from `seed` (the `seed is not None` path). Returns `None`
-/// when rejection sampling is exhausted, matching Python.
+/// Build a complete, valid factory of the given lesson `kind` on a
+/// `size × size` grid, seeding the RNG from `seed`. `random_item` picks a
+/// random transported item (vs a fixed default); `max_entities` caps the
+/// entity count. Returns `None` when rejection sampling is exhausted.
 pub fn build_factory(
     size: usize,
     kind: LessonKind,
@@ -377,10 +374,9 @@ fn in_grid(c: Cell, size: i64) -> bool {
     0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size
 }
 
-/// `[(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]` —
-/// the free-cell pool that every lesson samples its source/sink positions
-/// from, built in Python's x-outer/y-inner order so `random.sample` indices
-/// match.
+/// The free cells (those not in `reserved`) that a lesson samples its
+/// source/sink positions from, in x-outer/y-inner order. The order is
+/// load-bearing — sampling indexes into it.
 fn available_cells(s: i64, reserved: &HashSet<Cell>) -> Vec<Cell> {
     let mut available = Vec::new();
     for x in 0..s {
@@ -412,7 +408,7 @@ fn splitter_layout(rng: &mut PyRandom, s: i64) -> Option<SplitterLayout> {
     let splitter_dir = DIRS[rng.choice_index(4)];
 
     // Pick splitter anchor; both tiles must fit (up to 20 tries). The
-    // splitter is 2×1, so `entity_tiles` mirrors py_entity_tiles(.., 2, 1).
+    // splitter occupies a 2×1 footprint.
     let mut tiles: Option<Vec<Cell>> = None;
     for _ in 0..20 {
         let sx = rng.randint(0, s - 1);
@@ -504,7 +500,7 @@ fn place_marker(world: &mut World, pos: Cell, ent: Item, dir: Direction, item_va
 }
 
 /// Place a 3×3 assembler anchored at `(ax, ay)`, every tile facing North and
-/// tagged with the recipe item — matching Python's assembler placement.
+/// tagged with the recipe item.
 fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) {
     for dx in 0..3 {
         for dy in 0..3 {
@@ -525,8 +521,7 @@ fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
 
 /// The source/sink draw shared by MOVE_ONE_ITEM and its CHAOS variant: two
 /// distinct random tiles (`pos1 == pos2` is rejected as `None`), each with a
-/// random facing, plus the transported item. The draw order is identical in
-/// both lessons so they stay seed-for-seed faithful to Python.
+/// random facing, plus the transported item.
 struct SourceSink {
     source_wh: Cell,
     sink_wh: Cell,
@@ -1079,8 +1074,8 @@ fn build_assemble_1in1out(
     max_entities: f64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
-    // The `random.choice` pool: 1-in-1-out recipes in all_recipes() order.
-    // (Python raises if empty; the recipe table guarantees it isn't.)
+    // The choice pool: 1-in-1-out recipes in all_recipes() order. The recipe
+    // table guarantees it is non-empty, so the choice below can't underflow.
     let recipes: Vec<(Item, Recipe)> = all_recipes()
         .into_iter()
         .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
@@ -1634,8 +1629,9 @@ fn build_assemble_2in1out(
     None
 }
 
-/// Mirror Python's post-loop `if count == 0: return None`: a factory found
-/// on the iteration that drove `count` to 0 is still discarded.
+/// Wrap a finished factory, but honor the rejection-sampling budget: a
+/// factory found on the very attempt that drove `count` to 0 is discarded
+/// (returns `None`), so an exhausted budget always means "no factory".
 fn finish(
     world: World,
     total_entities: usize,

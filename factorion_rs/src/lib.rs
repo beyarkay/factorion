@@ -187,10 +187,8 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[cfg(feature = "pyo3-bindings")]
 type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>);
 
-/// Build a complete, valid factory of the given lesson `kind` — the Rust
-/// port of `factorion.py::build_factory`, drawing from the same CPython
-/// MT19937 stream so the result is byte-identical for the same
-/// `(size, kind, seed)`.
+/// Build a complete, valid factory of the given lesson `kind` (an integer
+/// `LessonKind` value) on a `size × size` grid, seeded from `seed`.
 ///
 /// Returns `(world, total_entities, protected_positions)` where `world` is
 /// a `(W, H, C)` int64 array (the same shape `simulate_throughput` takes),
