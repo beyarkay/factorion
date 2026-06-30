@@ -39,6 +39,7 @@ pub trait FactoryEntity {
 pub enum EntityEnum {
     TransportBelt(TransportBelt),
     Inserter(Inserter),
+    LongHandedInserter(LongHandedInserter),
     AssemblingMachine(AssemblingMachine),
     UndergroundBelt(UndergroundBelt),
     Sink(Sink),
@@ -54,6 +55,7 @@ impl EntityEnum {
         Some(match kind {
             Item::TransportBelt => Self::TransportBelt(TransportBelt),
             Item::Inserter => Self::Inserter(Inserter),
+            Item::LongHandedInserter => Self::LongHandedInserter(LongHandedInserter),
             Item::AssemblingMachine1 => {
                 Self::AssemblingMachine(AssemblingMachine { recipe_item: item })
             }
@@ -71,6 +73,7 @@ impl FactoryEntity for EntityEnum {
         match self {
             Self::TransportBelt(e) => e.kind(),
             Self::Inserter(e) => e.kind(),
+            Self::LongHandedInserter(e) => e.kind(),
             Self::AssemblingMachine(e) => e.kind(),
             Self::UndergroundBelt(e) => e.kind(),
             Self::Sink(e) => e.kind(),
@@ -83,6 +86,7 @@ impl FactoryEntity for EntityEnum {
         match self {
             Self::TransportBelt(e) => e.connections(pos, dir, world),
             Self::Inserter(e) => e.connections(pos, dir, world),
+            Self::LongHandedInserter(e) => e.connections(pos, dir, world),
             Self::AssemblingMachine(e) => e.connections(pos, dir, world),
             Self::UndergroundBelt(e) => e.connections(pos, dir, world),
             Self::Sink(e) => e.connections(pos, dir, world),
@@ -95,6 +99,7 @@ impl FactoryEntity for EntityEnum {
         match self {
             Self::TransportBelt(e) => e.transform_flow(input),
             Self::Inserter(e) => e.transform_flow(input),
+            Self::LongHandedInserter(e) => e.transform_flow(input),
             Self::AssemblingMachine(e) => e.transform_flow(input),
             Self::UndergroundBelt(e) => e.transform_flow(input),
             Self::Sink(e) => e.transform_flow(input),
@@ -135,7 +140,34 @@ impl FactoryEntity for Inserter {
     }
 
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
-        inserter_connections(Item::Inserter, pos, dir, world)
+        inserter_connections(Item::Inserter, pos, dir, world, 1)
+    }
+
+    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        input
+            .iter()
+            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
+            .collect()
+    }
+}
+
+// ── Long-Handed Inserter ────────────────────────────────────────────────────
+//
+// A long-handed inserter is a plain inserter that reaches *two* tiles instead
+// of one: it picks up from the tile two cells behind it and drops onto the tile
+// two cells ahead, skipping the cell in between entirely. Everything else —
+// throughput, the set of entities it can pull from / push to, the flow
+// transform — is identical to the plain inserter (it just passes `reach = 2`).
+
+pub struct LongHandedInserter;
+
+impl FactoryEntity for LongHandedInserter {
+    fn kind(&self) -> Item {
+        Item::LongHandedInserter
+    }
+
+    fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
+        inserter_connections(Item::LongHandedInserter, pos, dir, world, 2)
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
@@ -443,32 +475,36 @@ fn belt_connections(
 }
 
 /// Inserter connection logic: pick up from the belt-like / underground /
-/// assembler behind, and drop onto the belt-like / underground / assembler
-/// ahead. Source/sink count as belt-like entities here (they connect like belts).
+/// assembler `reach` tiles behind, and drop onto the belt-like / underground /
+/// assembler `reach` tiles ahead. Source/sink count as belt-like entities here
+/// (they connect like belts).
+///
+/// `reach` is the distance, in tiles, that the inserter's hand spans: `1` for
+/// a plain inserter (it touches the cells immediately behind/ahead) and `2` for
+/// a long-handed inserter (it skips the adjacent cell and reaches the one
+/// beyond). The intermediate cell is never touched — a long-handed inserter
+/// only ever interacts with the tile exactly `reach` away. If that tile belongs
+/// to a multi-tile entity (e.g. one of an assembler's nine tiles), the edge is
+/// canonicalised to the entity's anchor node in `build_graph`.
 fn inserter_connections(
     self_kind: Item,
     pos: (usize, usize),
     dir: Direction,
     world: &World,
+    reach: i64,
 ) -> Vec<Edge> {
     let mut edges = Vec::new();
     let (x, y) = pos;
     let (dx, dy) = dir.delta();
     let self_id = NodeId::new(self_kind, x, y);
 
-    // Pick up from behind (opposite of facing direction). A real inserter can
-    // only pick up from an entity that carries or produces items: a source,
-    // belt, underground belt, or assembler. Notably NOT another inserter (see
-    // #122) or a sink. (Splitters are excluded too, mirroring the drop side —
-    // not quite true to Factorio, may revisit.)
-    //
-    // The source/sink markers share this function but keep the permissive
-    // pickup: a sink legitimately receives from the inserter/belt/assembler
-    // behind it — an inserter can't *drop* onto a sink (see the drop filter
-    // below), so delivery is modelled as the sink pulling — and a source's
-    // input is ignored anyway (its output is infinite).
-    let src_x = x as i64 - dx;
-    let src_y = y as i64 - dy;
+    // Pick up from `reach` tiles behind (opposite of facing direction). A real
+    // inserter can only pick up from an entity that carries or produces items:
+    // a source, belt, underground belt, or assembler. Notably NOT another
+    // inserter (see #122) or a sink. (Splitters are excluded too, mirroring the
+    // drop side — not quite true to Factorio, may revisit.)
+    let src_x = x as i64 - dx * reach;
+    let src_y = y as i64 - dy * reach;
     if world.in_bounds(src_x, src_y) {
         let sx = src_x as usize;
         let sy = src_y as usize;
@@ -487,9 +523,9 @@ fn inserter_connections(
         }
     }
 
-    // Drop onto the cell ahead (in facing direction)
-    let dst_x = x as i64 + dx;
-    let dst_y = y as i64 + dy;
+    // Drop onto the cell `reach` tiles ahead (in facing direction)
+    let dst_x = x as i64 + dx * reach;
+    let dst_y = y as i64 + dy * reach;
     if world.in_bounds(dst_x, dst_y) {
         let dx_u = dst_x as usize;
         let dy_u = dst_y as usize;
@@ -858,6 +894,110 @@ mod tests {
         );
         // Nothing insertable ahead either, so there should be no edges at all.
         assert!(edges.is_empty(), "expected no edges, got: {edges:?}");
+    }
+
+    #[test]
+    fn test_long_handed_inserter_connections() {
+        // Long inserter at (2,0) facing east reaches TWO tiles: it picks up
+        // from the source at (0,0) and drops onto the belt at (4,0). The tiles
+        // immediately behind/ahead — (1,0) and (3,0) — are skipped.
+        let mut w = World::empty(5, 1);
+        w.place(0, 0, Item::Source, Direction::East, None);
+        w.place(2, 0, Item::LongHandedInserter, Direction::East, None);
+        w.place(4, 0, Item::TransportBelt, Direction::East, None);
+
+        let lhi = LongHandedInserter;
+        let edges = lhi.connections((2, 0), Direction::East, &w);
+
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        // Source(0,0) → LongHandedInserter(2,0)
+        assert!(edges.contains(&(
+            NodeId::new(Item::Source, 0, 0),
+            NodeId::new(Item::LongHandedInserter, 2, 0),
+        )));
+        // LongHandedInserter(2,0) → Belt(4,0)
+        assert!(edges.contains(&(
+            NodeId::new(Item::LongHandedInserter, 2, 0),
+            NodeId::new(Item::TransportBelt, 4, 0),
+        )));
+    }
+
+    #[test]
+    fn test_long_handed_inserter_skips_adjacent_tiles() {
+        // Belts sit directly behind/ahead of the long inserter (distance 1).
+        // A long inserter only touches tiles at distance 2, so neither belt
+        // connects and there are no edges at all.
+        let mut w = World::empty(3, 1);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::LongHandedInserter, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+
+        let lhi = LongHandedInserter;
+        let edges = lhi.connections((1, 0), Direction::East, &w);
+
+        assert!(
+            edges.is_empty(),
+            "a long inserter must not touch its immediately adjacent tiles; \
+             got: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn test_long_handed_inserter_reaches_multitile_anchor() {
+        // The multi-tile case the long inserter has to get right: reaching a
+        // NON-anchor tile of an assembler must still produce a single edge to
+        // the assembler's *anchor* node (build_graph canonicalises secondary
+        // tiles → anchor). The assembler is anchored at (3,0) and spans cols
+        // 3..=5, rows 0..=2. The long inserter at (1,1) faces east and drops
+        // two tiles ahead onto (3,1) — a secondary assembler tile, not the
+        // anchor — yet the graph edge points at the anchor (3,0).
+        use crate::graph::build_graph;
+        let mut w = World::empty(6, 3);
+        w.place_multi_tile(
+            3,
+            0,
+            Item::AssemblingMachine1,
+            Direction::None,
+            Some(Item::ElectronicCircuit),
+            3,
+            3,
+        );
+        w.place(1, 1, Item::LongHandedInserter, Direction::East, None);
+
+        let g = build_graph(&w);
+        let lhi = g
+            .get_index(&NodeId::new(Item::LongHandedInserter, 1, 1))
+            .expect("long inserter node");
+        let asm = g
+            .get_index(&NodeId::new(Item::AssemblingMachine1, 3, 0))
+            .expect("assembler anchor node");
+        assert!(
+            g.successors[lhi].contains(&asm),
+            "long inserter should drop onto the assembler anchor node; \
+             successors: {:?}",
+            g.successors[lhi]
+        );
+    }
+
+    #[test]
+    fn test_long_handed_inserter_wont_pick_up_from_inserter_or_splitter() {
+        // Mirrors the plain inserter's exclusions (#122): a long inserter
+        // reaching an inserter or a splitter tile creates no edge.
+        let mut w = World::empty(5, 2);
+        // Inserter two tiles behind the long inserter.
+        w.place(0, 0, Item::Inserter, Direction::East, None);
+        w.place(2, 0, Item::LongHandedInserter, Direction::East, None);
+        // Splitter two tiles ahead (anchored at (4,0), 2x1 facing east).
+        w.place_splitter(4, 0, Direction::East, None);
+
+        let lhi = LongHandedInserter;
+        let edges = lhi.connections((2, 0), Direction::East, &w);
+
+        assert!(
+            edges.is_empty(),
+            "a long inserter must not connect to inserters or splitters; \
+             got: {edges:?}"
+        );
     }
 
     #[test]
