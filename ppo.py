@@ -46,7 +46,7 @@ _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
-_EMPTY_ITEM = str2item("empty")
+_EMPTY_ITEM_VAL = str2item("empty").value
 # Counts / sentinels read in FactorioEnv.step's per-step validity chain; hoisted
 # so the chain doesn't re-evaluate len()/enum .value every step.
 _N_ENTITIES = len(entities)
@@ -60,6 +60,7 @@ _INVALID_REASON_KEYS = (
     'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
     'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
     'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
+    'placed_on_existing_entity',
 )
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
@@ -756,7 +757,7 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason_key = 'placed_source_or_sink'
             action_is_invalid = True
-        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM:
+        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
             # Model is trying to place an assembling machine without a recipe
             invalid_reason_key = 'place_asm_mach_wo_recipe'
             action_is_invalid = True
@@ -817,15 +818,28 @@ class FactorioEnv(gym.Env):
             ):
                 invalid_reason_key = 'replaced_source_or_sink'
                 action_is_invalid = True
+            elif entity_id != _EMPTY_ENT_ID and any(
+                int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
+                for tx, ty in tiles_list
+            ):
+                # A real (non-empty) placement may not clobber an existing
+                # entity on any of its footprint tiles. Placing `empty` is
+                # exempt — that is the delete operation. Source/sink overlaps
+                # are caught above with their own, more specific reason.
+                invalid_reason_key = 'placed_on_existing_entity'
+                action_is_invalid = True
             else:
                 action_is_invalid = False
-                # entity/direction at every footprint tile; items/misc at the
-                # anchor only. Written through world_np (aliases _world_CWH).
+                # entity/direction/items/misc at every footprint tile. For a
+                # multi-tile entity (asm, splitter) the recipe/filter and misc
+                # are mirrored across the whole footprint, not just the anchor,
+                # so every tile of the entity carries identical channels.
+                # Written through world_np (aliases _world_CWH).
                 for tx, ty in tiles_list:
                     world_np[_CH_ENT, tx, ty] = entity_id
                     world_np[_CH_DIR, tx, ty] = direc
-                world_np[_CH_ITEMS, x, y] = item_id
-                world_np[_CH_MISC, x, y] = misc
+                    world_np[_CH_ITEMS, tx, ty] = item_id
+                    world_np[_CH_MISC, tx, ty] = misc
                 placed_name = entities[entity_id].name
                 self.actions[-1] = {
                     'entity': placed_name,
