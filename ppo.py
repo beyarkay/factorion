@@ -46,7 +46,7 @@ _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
-_EMPTY_ITEM = str2item("empty")
+_EMPTY_ITEM_VAL = str2item("empty").value
 # Counts / sentinels read in FactorioEnv.step's per-step validity chain; hoisted
 # so the chain doesn't re-evaluate len()/enum .value every step.
 _N_ENTITIES = len(entities)
@@ -756,7 +756,7 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason_key = 'placed_source_or_sink'
             action_is_invalid = True
-        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM:
+        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
             # Model is trying to place an assembling machine without a recipe
             invalid_reason_key = 'place_asm_mach_wo_recipe'
             action_is_invalid = True
