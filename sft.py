@@ -1057,6 +1057,8 @@ def train_sft(args: SFTArgs):
             group=args.wandb_group,
             tags=sft_tags,
         )
+        run.define_metric("val/thput", summary="max")
+        run.define_metric("val/thput_eot", summary="max")
         # Dataset composition is a one-shot constant for the run — write it
         # to summary (which keeps the value visible in the run sidebar)
         # rather than wandb.log (which would create a flat plottable line).
