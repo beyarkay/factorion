@@ -1,0 +1,44 @@
+# A long-handed inserter only ever touches the tile exactly TWO cells away. The
+# immediately-adjacent cell (distance 1) is always skipped, whatever sits there.
+# In each case below the only candidate neighbour is at distance 1, so the graph
+# is empty — and the long inserter's reach-2 cell is an in-bounds empty tile, so
+# "no edge" is genuinely the skip, not an out-of-bounds accident.
+
+description: belt directly behind a long inserter is skipped (reach-2 cell empty)
+graph: ""
+factory: |
+  .. b> l> ..
+---
+description: belt directly ahead of a long inserter is skipped (reach-2 cell empty)
+graph: ""
+factory: |
+  .. l> b> ..
+---
+description: source directly behind a long inserter is skipped
+graph: ""
+factory: |
+  .. S> l> ..
+---
+description: sink directly ahead of a long inserter is skipped
+graph: ""
+factory: |
+  .. l> K> ..
+---
+description: an inserter directly ahead of a long inserter is skipped
+graph: ""
+factory: |
+  .. l> i> ..
+---
+description: belts flanking both adjacent sides connect to neither
+graph: ""
+factory: |
+  b> l> b>
+---
+description: |
+  Vertical skip: a north-facing long inserter reaches over the belt directly
+  below it to the empty cell two down, so the adjacent belt never connects.
+graph: ""
+factory: |
+  .. l^ ..
+  .. b^ ..
+  .. .. ..

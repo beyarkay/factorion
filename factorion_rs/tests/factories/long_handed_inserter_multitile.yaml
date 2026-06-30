@@ -1,0 +1,61 @@
+# Long inserter vs multi-tile entities. When the reach-2 cell lands on any tile
+# of a 3x3 assembler, build_graph canonicalises the edge to the assembler's
+# anchor (top-left). A splitter, like for a plain inserter, never connects.
+# Each assembler sits TWO tiles from the long inserter, with an empty gap, so
+# the edge is the long hand reaching in — not the assembler's own perimeter
+# scan (which only sees plain inserters at distance 1).
+
+description: west side — long inserter two tiles left, facing east, feeds the assembler
+graph: |
+  l@0,1 -> a@2,0
+factory: |
+  .. .. aaaaaaaa
+  l> .. aa    aa
+  .. .. aaaaaaaa
+---
+description: east side — long inserter two tiles right, facing east, is fed by the assembler
+graph: |
+  a@0,0 -> l@4,1
+factory: |
+  aaaaaaaa .. ..
+  aa    aa .. l>
+  aaaaaaaa .. ..
+---
+description: north side — long inserter two tiles above, facing south, feeds the assembler
+graph: |
+  l@1,0 -> a@0,2
+factory: |
+  .. lv ..
+  .. .. ..
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+---
+description: south side — long inserter two tiles below, facing south, is fed by the assembler
+graph: |
+  a@0,0 -> l@1,4
+factory: |
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+  .. .. ..
+  .. lv ..
+---
+description: |
+  Reaching a NON-anchor assembler tile still resolves to the anchor: the long
+  inserter at (0,2) faces east and drops two tiles ahead onto (2,2), the
+  assembler's bottom-left tile, yet the edge points at the anchor (2,0).
+graph: |
+  l@0,2 -> a@2,0
+factory: |
+  .. .. aaaaaaaa
+  .. .. aa    aa
+  l> .. aaaaaaaa
+---
+description: |
+  A long inserter does not connect to a splitter (same exclusion as a plain
+  inserter), even when its reach-2 cell lands on a splitter tile.
+graph: ""
+factory: |
+  l> .. Y> ..
+  .. .. Y> ..

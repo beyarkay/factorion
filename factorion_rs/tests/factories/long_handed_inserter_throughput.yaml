@@ -1,0 +1,132 @@
+# End-to-end throughput through long-handed inserters. A long inserter caps a
+# line at 0.86 i/s, exactly like a plain inserter — only its reach differs — so
+# every chain below delivers 0.86 to its sink.
+
+description: source -> long inserter -> sink, facing EAST (reach 2 each side)
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 4, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,0 -> l@2,0
+  l@2,0 -> K@4,0
+factory: |
+  S> .. l> .. K>
+---
+description: source -> long inserter -> sink, facing WEST
+items:
+- { x: 4, y: 0, item: copper_cable }
+- { x: 0, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@4,0 -> l@2,0
+  l@2,0 -> K@0,0
+factory: |
+  K< .. l< .. S<
+---
+description: source -> long inserter -> sink, facing NORTH
+items:
+- { x: 0, y: 4, item: copper_cable }
+- { x: 0, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,4 -> l@0,2
+  l@0,2 -> K@0,0
+factory: |
+  K^
+  ..
+  l^
+  ..
+  S^
+---
+description: source -> long inserter -> sink, facing SOUTH
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 0, y: 4, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,0 -> l@0,2
+  l@0,2 -> K@0,4
+factory: |
+  Sv
+  ..
+  lv
+  ..
+  Kv
+---
+description: |
+  A long inserter caps a full-speed belt line: the source feeds a 15 i/s belt,
+  the long inserter reaches two tiles past the belt's end and throttles the
+  whole line to 0.86.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+graph: |
+  S@0,0 -> b@1,0
+  b@1,0 -> l@3,0
+  l@3,0 -> K@5,0
+factory: |
+  S> b> .. l> .. K>
+---
+description: |
+  Two long inserters in series, bridged by a belt (a long inserter cannot drop
+  directly onto another inserter, so a belt sits between them). Still 0.86.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 8, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,0 -> l@2,0
+  l@2,0 -> b@4,0
+  b@4,0 -> l@6,0
+  l@6,0 -> K@8,0
+factory: |
+  S> .. l> .. b> .. l> .. K>
+---
+description: |
+  Long inserter into an underground belt: it drops onto the entrance two tiles
+  ahead, the item tunnels to the exit, and the exit feeds the sink. 0.86.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 7, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,0 -> l@2,0
+  l@2,0 -> d@4,0
+  d@4,0 -> u@6,0
+  u@6,0 -> K@7,0
+factory: |
+  S> .. l> .. d> .. u> K>
+---
+description: |
+  A 3x3 assembler crafting copper_cable, fed and drained by LONG inserters that
+  reach two tiles into the body each side:
+
+      source -> long inserter -> assembler -> long inserter -> sink
+
+  The input inserter caps intake at 0.86 copper_plate; the recipe yields 2
+  cables per plate, so the body emits 1.72 cable/s, and the output long
+  inserter throttles delivery back to 0.86.
+items:
+- { x: 0, y: 1, item: copper_plate }       # source emits copper_plate
+- { x: 4, y: 0, item: copper_cable }       # assembler recipe (anchor = top-left)
+- { x: 10, y: 1, item: copper_cable }      # sink counts cable
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,1 -> l@2,1
+  l@2,1 -> a@4,0
+  a@4,0 -> l@8,1
+  l@8,1 -> K@10,1
+factory: |
+  .. .. .. .. aaaaaaaa .. .. .. ..
+  S> .. l> .. aa    aa .. l> .. K>
+  .. .. .. .. aaaaaaaa .. .. .. ..
