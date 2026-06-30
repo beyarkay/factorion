@@ -10,7 +10,7 @@ inputs:
     required: true
   gpu_type:
     description: "RunPod GPU type"
-    default: "NVIDIA A100 80GB PCIe"
+    default: "NVIDIA RTX 2000 Ada Generation"
   name_prefix:
     description: "Pod name prefix"
     required: true

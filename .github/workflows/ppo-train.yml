@@ -55,7 +55,7 @@ on:
       gpu_type:
         description: "RunPod GPU type"
         required: false
-        default: "NVIDIA A100 80GB PCIe"
+        default: "NVIDIA RTX 2000 Ada Generation"
         type: string
 
 permissions:
@@ -83,9 +83,10 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import os
           t = int(os.environ["TOTAL_TIMESTEPS"])
-          # Conservative A100 PPO rate (~200 env-steps/sec incl. the Rust
-          # throughput sim + curriculum eval), with a 2x safety margin so the
-          # watchdog never kills a legitimate run early. Calibratable.
+          # Conservative PPO rate (~200 env-steps/sec incl. the Rust throughput
+          # sim + curriculum eval). The rollout is single-core-CPU-bound, so this
+          # holds across GPUs (incl. the default RTX 2000 Ada). 2x safety margin
+          # so the watchdog never kills a legitimate run early. Calibratable.
           base_seconds = t / 200
           watchdog = int(base_seconds * 2 + 900)
           watchdog = max(watchdog, 1800)          # floor: 30 min

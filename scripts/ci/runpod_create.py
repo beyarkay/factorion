@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create a RunPod GPU pod for CI.
 
-Provisions an RTX 4090 (or specified GPU) pod, waits for it to reach a running
-state, and writes connection info to an output JSON file.
+Provisions an RTX 2000 Ada (or specified GPU) pod on a host new enough for our
+torch build (see ALLOWED_CUDA_VERSIONS), waits for it to reach a running state,
+and writes connection info to an output JSON file.
 
 Required env vars:
     RUNPOD_API_KEY  - RunPod API key
@@ -19,12 +20,23 @@ import time
 
 import runpod
 
+# Preferred first, then availability fallbacks (each pricier/bigger). The default
+# is the RTX 2000 Ada — the GPU the speed benchmarks were tuned on; these models
+# are tiny (122k params) and the workload is single-core-CPU-bound, so a bigger
+# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
 GPU_FALLBACKS = [
+    "NVIDIA RTX 2000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A6000",
     "NVIDIA A100 80GB PCIe",
     "NVIDIA A100-SXM4-80GB",
 ]
+
+# Only schedule on hosts whose driver supports a CUDA version new enough for our
+# torch build. uv.lock pins torch 2.12.x+cu130, which needs a CUDA 13.0 runtime
+# (host driver >= 580); an older host (e.g. CUDA 12.x) leaves torch.cuda
+# unavailable. Keep in sync with the torch cuXXX build in pyproject/uv.lock.
+ALLOWED_CUDA_VERSIONS = ["13.0"]
 
 DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
@@ -56,6 +68,7 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
                 container_disk_in_gb=CONTAINER_DISK_GB,
                 ports="22/tcp",
                 support_public_ip=True,
+                allowed_cuda_versions=ALLOWED_CUDA_VERSIONS,
                 env={
                     "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
                 },

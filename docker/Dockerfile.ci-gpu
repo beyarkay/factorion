@@ -1,12 +1,16 @@
+# Build + push by hand when deps change (no CI job):
+#   docker build -f docker/Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:latest . && docker push beyarkay/factorion-ci-gpu:latest
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-# Rust toolchain (needed to build factorion_rs via maturin)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+        --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Python deps (pinned from requirements.txt)
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+RUN pip install --no-cache-dir uv
+COPY pyproject.toml uv.lock .python-version /tmp/lock/
+RUN cd /tmp/lock && \
+    uv export --frozen --no-emit-project --no-hashes -o requirements.txt && \
+    uv pip install --system --break-system-packages -r requirements.txt && \
+    cd / && rm -rf /tmp/lock
 
-# maturin for building the Rust extension
-RUN pip install --no-cache-dir maturin
+RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__"

@@ -14,7 +14,7 @@ on:
       gpu_type:
         description: "RunPod GPU type ID"
         required: false
-        default: "NVIDIA GeForce RTX 4090"
+        default: "NVIDIA RTX 2000 Ada Generation"
         type: string
       total_timesteps:
         description: "Total timesteps for smoke test"
@@ -59,7 +59,7 @@ permissions:
 env:
   WANDB_CI_PROJECT: factorion
   PYTHON_VERSION: "3.11"
-  DEFAULT_GPU_TYPE: "NVIDIA GeForce RTX 4090"
+  DEFAULT_GPU_TYPE: "NVIDIA RTX 2000 Ada Generation"
 
 jobs:
   # ──────────────────────────────────────────────
@@ -647,7 +647,7 @@ jobs:
         with:
           runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
           ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
-          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA RTX 2000 Ada Generation' }}
           name_prefix: ci-sft-smoke
 
       - name: Run SFT smoke test on GPU
@@ -700,7 +700,7 @@ jobs:
         with:
           runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
           ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
-          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA RTX 2000 Ada Generation' }}
           name_prefix: ci-sft-bench
           include_git: "true"
 
@@ -853,7 +853,7 @@ jobs:
         with:
           runpod_api_key: ${{ secrets.RUNPOD_API_KEY }}
           ssh_private_key: ${{ secrets.RUNPOD_SSH_PRIVATE_KEY }}
-          gpu_type: ${{ inputs.gpu_type || 'NVIDIA A100 80GB PCIe' }}
+          gpu_type: ${{ inputs.gpu_type || 'NVIDIA RTX 2000 Ada Generation' }}
           name_prefix: ci-sft-sweep-${{ matrix.agent_id }}
 
       - name: Run SFT sweep agent on GPU
