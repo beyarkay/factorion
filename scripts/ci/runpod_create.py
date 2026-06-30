@@ -26,6 +26,8 @@ import runpod
 # GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
 GPU_FALLBACKS = [
     "NVIDIA RTX 2000 Ada Generation",
+    "NVIDIA RTX 4000 Ada Generation",
+    "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A6000",
     "NVIDIA A100 80GB PCIe",
