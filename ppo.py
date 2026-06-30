@@ -29,6 +29,7 @@ from factorion import (
     Footprint,
     LessonKind,
     Misc,
+    SELECTABLE_LESSON_KINDS,
     blank_entities,
     build_factory,
     entities,
@@ -678,7 +679,7 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
+            kinds_list = SELECTABLE_LESSON_KINDS
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
                 factory = build_factory(

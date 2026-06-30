@@ -183,6 +183,19 @@ recipes = {
 # set can't drift — the single-source-of-truth pattern `items`/`recipes` use.
 LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 
+# Lesson kinds the trainers (PPO/SFT) sample from. The ASSEMBLE_1IN_1OUT and
+# ASSEMBLE_2IN_1OUT lessons are commented out below so they're never selected;
+# their generators/tests remain intact, so re-enable by un-commenting.
+SELECTABLE_LESSON_KINDS = [
+    k
+    for k in LessonKind
+    if k.name
+    not in (
+        "ASSEMBLE_1IN_1OUT",
+        "ASSEMBLE_2IN_1OUT",
+    )
+]
+
 
 @dataclass(frozen=True)
 class Factory:

@@ -32,6 +32,7 @@ from factorion import (  # noqa: E402
     Channel,
     Direction,
     LessonKind,
+    SELECTABLE_LESSON_KINDS,
     blank_entities,
     build_factory,
     entities,
@@ -322,7 +323,7 @@ def generate_dataset(args: SFTArgs):
     factories across the split).
     """
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
-    kinds = list(LessonKind)
+    kinds = SELECTABLE_LESSON_KINDS
 
     all_obs = []
     all_tile_idx = []

@@ -21,6 +21,7 @@ from factorion import (  # noqa: E402
     Footprint,
     LessonKind,
     Misc,
+    SELECTABLE_LESSON_KINDS,
     blank_entities,
     build_factory,
     build_graph_nx,

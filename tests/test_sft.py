@@ -18,6 +18,7 @@ from helpers import (
     Channel,
     Direction,
     LessonKind,
+    SELECTABLE_LESSON_KINDS,
     blank_entities,
     build_factory,
     str2ent,
@@ -397,8 +398,8 @@ class TestGenerateDataset:
         assert len(productive) >= 2, (
             f"Expected >=2 productive kinds in breakdown, got:\n{out}"
         )
-        # Auto-discovery: every enum value appears in the breakdown.
-        for kind in LessonKind:
+        # Auto-discovery: every selectable kind appears in the breakdown.
+        for kind in SELECTABLE_LESSON_KINDS:
             assert kind.name in out, f"{kind.name} missing from breakdown:\n{out}"
 
 
