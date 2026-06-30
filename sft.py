@@ -250,6 +250,12 @@ class SFTArgs:
     """Tags to apply to the wandb run"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: sft_summary.json next to sft.py)"""
+    dataset_cache: Optional[str] = None
+    """if set, torch.load the generated (state,action) tensors from this path
+    when it exists, else generate them and torch.save there. Lets repeated runs
+    (e.g. the speed benchmark, or dev iteration) skip the expensive build_factory
+    data generation — the dataset is a pure function of (size, num_samples,
+    max_level, seed), so the cache is only reused for a matching config."""
 
 
 def _humanize_count(n: int) -> str:
@@ -852,8 +858,31 @@ def train_sft(args: SFTArgs):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
+    cache = args.dataset_cache
+    if cache is not None and os.path.exists(cache):
+        print(f"Loading cached dataset from {cache} ...")
+        # weights_only=False: our own locally-produced, trusted cache.
+        tensors = torch.load(cache, weights_only=False)
+        print(f"Loaded {len(tensors[0])} samples in {time.time() - t0:.1f}s")
+    else:
+        print(f"Generating {args.num_samples} expert demonstrations...")
+        tensors = generate_dataset(args)
+        print(f"Generated {len(tensors[0])} samples in {time.time() - t0:.1f}s")
+        if cache is not None:
+            torch.save(tensors, cache)
+            print(f"Cached dataset to {cache}")
+    if cache is not None:
+        # generate_dataset consumes RNG, so a cached (load) run and a fresh
+        # (generate) run would otherwise reach the train/val split + weight init
+        # + training with different RNG state and produce a different val_loss.
+        # Re-seed here so everything downstream is independent of whether the
+        # dataset was generated or loaded — the cache then changes nothing but
+        # speed. (Only active when --dataset-cache is set, so no-cache runs that
+        # reproduce reference checkpoints are unaffected.)
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     (
         obs,
         tiles,
@@ -865,8 +894,7 @@ def train_sft(args: SFTArgs):
         eot_labels,
         lesson_seeds,
         lesson_kinds,
-    ) = generate_dataset(args)
-    print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
+    ) = tensors
 
     # Train/val split at the LESSON SEED level. A pair-level random split
     # would leak factories: a lesson at level=L produces ~L pairs that all
