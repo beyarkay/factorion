@@ -112,24 +112,18 @@ bash run_sweep.sh
 
 ## Benchmarks
 
-Two complementary speed benchmarks, each with its own playbook + append-only CSV:
+All speed benchmarks live in **`tests/benchmarks/`** — read
+`tests/benchmarks/CLAUDE.md` for the playbook and
+`tests/benchmarks/EXPERIMENT_LOG.md` for what's been tried (read it before
+re-testing an idea). Two scripts cover everything: `bench_run.sh <kind>` (one
+run) and `bench_measure.sh <kind>` (repeat/aggregate → CSV + correctness gate),
+with `<kind>` ∈ `ppo-speed` (pure-speed fixed-iteration loop → `results.csv`),
+`ppo-quality` (time-to-quality finetune → `quality_results.csv`), `sft` (SFT
+training loop → `sft_bench_results.csv`).
 
-- **`BENCHMARK.md`** (`run.sh`/`measure.sh` → `results.csv`) — times a **fixed
-  iteration count** of the from-scratch PPO loop. For **pure-speed** changes that
-  must not alter the computation (gated by an iter-1 invariance signature). The
-  GPU-era sweep cut it 30.1 s → 23.4 s; see `EXPERIMENTS.md`.
-- **`QUALITY_BENCHMARK.md`** (`quality_run.sh`/`quality_measure.sh` →
-  `quality_results.csv`) — times **wall-clock to reach a fixed policy quality**
-  (EMA `rollout/reward` ≥ −0.15) finetuning the cached SFT checkpoint
-  (`checkpoints/sft_j0s5y2mc.pt`, offline). For changes that **may alter the
-  computation** (LR, batch, env count, AMP). Current best: **36.0 s vs 113 s**
-  (−68%). Two campaigns: the recipe (`--critic-warmup 5 --learning-rate 7e-4`,
-  now the `Args` defaults) cut 113→62.9 s; then a per-iter compute campaign
-  (fused categorical/bernoulli sampling + `torch.compile(reduce-overhead)` CUDA
-  graphs on the launch-bound rollout *and* update + numpy world-writes) cut
-  62.9→36.0 s. The Findings + full sweep log there record what's tried (incl.
-  dead ends: env-scaling, async/prefetch, AMP, num_steps, factory pool, BFS Rust
-  port) — read before re-testing.
+Headline so far: PPO time-to-quality **113 → 36 s (−68%)** — recipe (now the
+`Args` defaults) + fused sampling + `torch.compile(reduce-overhead)` CUDA graphs
++ numpy world-writes.
 
 ## Linting
 

@@ -111,10 +111,8 @@ class Args:
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
     learning_rate: float = 7e-4
-    """the learning rate of the optimizer. 7e-4 is the confirmed SFT->PPO
-    finetune optimum (paired with critic_warmup=5 + target_kl=0.02): bigger
-    policy steps converge in fewer iters AND hit the KL ceiling sooner so the
-    update early-stops its epochs. See QUALITY_BENCHMARK.md Findings."""
+    """the learning rate of the optimizer (default = the confirmed SFT->PPO
+    finetune optimum; see tests/benchmarks/EXPERIMENT_LOG.md)"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
     num_steps: int = 256
@@ -149,10 +147,8 @@ class Args:
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
-    """the target KL divergence threshold. 0.02 early-stops the update's epochs
-    once the policy has moved enough, which is what makes the higher
-    learning_rate (7e-4) cheap per-iter as well as fast-converging. Set to None
-    to always run all update_epochs."""
+    """the target KL divergence threshold; early-stops the update's epochs. None
+    = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
     adam_epsilon: float = 6.866e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
@@ -185,7 +181,7 @@ class Args:
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
     critic_warmup: int = 5
-    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. 5 is the confirmed time-to-quality optimum (0 is worse — bad critic; 10 wastes dead iters); set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze."""
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. Set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze. (Why the default of 5: tests/benchmarks/EXPERIMENT_LOG.md.)"""
     critic_lr_mult: float = 1.0
     """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
     eval_every: int = 7
@@ -205,7 +201,7 @@ class Args:
     the rollout bottleneck; AsyncVectorEnv fans it across cores. (At 16 envs the
     IPC overhead makes it slower — only worth it with many envs.)"""
 
-    # ── Time-to-quality benchmarking (offline; see quality_run.sh) ──────────
+    # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
     """If set, stop training the first time an EMA of this iter-metric key
     (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput_eot') reaches
@@ -823,14 +819,8 @@ class FactorioEnv(gym.Env):
                 action_is_invalid = True
             else:
                 action_is_invalid = False
-                # Write entity_id and direction at every tile of the
-                # footprint, matching how lessons and place_multi_tile
-                # represent multi-tile entities. Items + misc go on the
-                # anchor only (those channels are anchor-scoped).
-                # Write through the numpy view (world_np aliases the same CPU
-                # buffer): torch scalar indexed assignment carries ~7us of
-                # per-op dispatch each, so these 4 writes were ~half the step
-                # body; numpy scalar writes are ~40x cheaper and identical.
+                # entity/direction at every footprint tile; items/misc at the
+                # anchor only. Written through world_np (aliases _world_CWH).
                 for tx, ty in tiles_list:
                     world_np[_CH_ENT, tx, ty] = entity_id
                     world_np[_CH_DIR, tx, ty] = direc
@@ -1703,7 +1693,7 @@ if __name__ == "__main__":
 
     # Iteration-1 computation signature (loss/kl/grad-norm). The run is
     # deterministic (fixed seeds + use_deterministic_algorithms), so a pure
-    # *speed* change must reproduce these bit-for-bit. benchmark.sh diffs them
+    # *speed* change must reproduce these bit-for-bit. tests/benchmarks/bench_measure.sh ppo-speed diffs them
     # against main's baseline to catch changes that silently alter the math.
     iter1_signature: dict[str, float] = {}
 

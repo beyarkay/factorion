@@ -316,5 +316,7 @@ work and how Factorion simplifies them.
 
 ## Experiments
 
-See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for a detailed log of GPU
-benchmark results, architectural changes, and training curriculum experiments.
+See [tests/benchmarks/EXPERIMENT_LOG.md](tests/benchmarks/EXPERIMENT_LOG.md) for a
+detailed log of benchmark results and speed experiments, and
+[tests/benchmarks/CLAUDE.md](tests/benchmarks/CLAUDE.md) for how to run the
+benchmarks.
