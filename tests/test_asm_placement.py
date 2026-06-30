@@ -133,17 +133,30 @@ class TestAsmFootprintWrite:
         for tx, ty in ASM_FOOTPRINT:
             assert d[tx, ty] == Direction.EAST.value
 
-    def test_recipe_written_only_at_anchor(self, env):
-        """The recipe (ITEMS channel) lives on the anchor tile alone, not the
-        whole footprint."""
+    def test_recipe_written_to_all_nine_tiles(self, env):
+        """The recipe (ITEMS channel) is mirrored across the whole 3x3
+        footprint, so every tile of the entity carries the same recipe — not
+        just the anchor."""
         _place_asm(env, 0, 3)
         it = env._world_CWH[ITEMS].numpy().astype(int)
-        assert it[0, 3] == RECIPE
         for tx, ty in ASM_FOOTPRINT:
-            if (tx, ty) != (0, 3):
-                assert it[tx, ty] == EMPTY, (
-                    f"recipe leaked to non-anchor tile ({tx},{ty})"
-                )
+            assert it[tx, ty] == RECIPE, (
+                f"recipe missing at footprint tile ({tx},{ty})"
+            )
+        # And nowhere outside the footprint.
+        assert int((it != EMPTY).sum()) == len(ASM_FOOTPRINT)
+
+    def test_items_and_misc_uniform_across_footprint(self, env):
+        """The ITEMS and MISC channels must be identical on every tile of a
+        multi-tile entity — no tile of the same entity carries a different
+        recipe/filter or misc value than its neighbours."""
+        _place_asm(env, 0, 3)
+        it = env._world_CWH[ITEMS].numpy().astype(int)
+        ms = env._world_CWH[MISC].numpy().astype(int)
+        item_vals = {it[tx, ty] for tx, ty in ASM_FOOTPRINT}
+        misc_vals = {ms[tx, ty] for tx, ty in ASM_FOOTPRINT}
+        assert len(item_vals) == 1, f"ITEMS not uniform across footprint: {item_vals}"
+        assert len(misc_vals) == 1, f"MISC not uniform across footprint: {misc_vals}"
 
     def test_next_observation_reflects_placement(self, env):
         """The observation handed back is the mutated world the agent sees next

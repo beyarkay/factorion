@@ -819,13 +819,16 @@ class FactorioEnv(gym.Env):
                 action_is_invalid = True
             else:
                 action_is_invalid = False
-                # entity/direction at every footprint tile; items/misc at the
-                # anchor only. Written through world_np (aliases _world_CWH).
+                # entity/direction/items/misc at every footprint tile. For a
+                # multi-tile entity (asm, splitter) the recipe/filter and misc
+                # are mirrored across the whole footprint, not just the anchor,
+                # so every tile of the entity carries identical channels.
+                # Written through world_np (aliases _world_CWH).
                 for tx, ty in tiles_list:
                     world_np[_CH_ENT, tx, ty] = entity_id
                     world_np[_CH_DIR, tx, ty] = direc
-                world_np[_CH_ITEMS, x, y] = item_id
-                world_np[_CH_MISC, x, y] = misc
+                    world_np[_CH_ITEMS, tx, ty] = item_id
+                    world_np[_CH_MISC, tx, ty] = misc
                 placed_name = entities[entity_id].name
                 self.actions[-1] = {
                     'entity': placed_name,
