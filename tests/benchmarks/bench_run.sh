@@ -53,6 +53,20 @@ case "$KIND" in
       --quality-ema-alpha 0.4 --max-seconds 300 --total-timesteps 100000000 \
       --summary-path "${SUMMARY_PATH:-/tmp/bench_ppo_quality.json}" "$@"
     ;;
+  sft)
+    # Times the SFT training loop (real 93-69-96 net, 60k samples x 10 epochs) to
+    # a fixed deterministic val_loss. --dataset-cache skips the ~26s build_factory
+    # data gen (a separate axis) so the timed run measures training; rollout eval
+    # off (it's a noisy diagnostic, not a loss).
+    CACHE="${CACHE:-checkpoints/sft_bench_ds_60k.pt}"
+    WANDB_MODE=disabled WANDB_DISABLED=true uv run python sft.py \
+      --seed 1 --size 11 --num-samples 60000 --epochs 10 --batch-size 512 \
+      --layer1 93 --layer2 69 --layer3 96 \
+      --eval-rollouts-every-n-epochs 0 \
+      --dataset-cache "$CACHE" \
+      --checkpoint-path "${CKPT:-/tmp/bench_sft_ckpt.pt}" \
+      --summary-path "${SUMMARY_PATH:-/tmp/bench_sft.json}" "$@"
+    ;;
   *)
     echo "unknown kind: $KIND (expected ppo-speed|ppo-quality|sft)" >&2
     exit 1

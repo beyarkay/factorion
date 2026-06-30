@@ -121,9 +121,10 @@ with `<kind>` ∈ `ppo-speed` (pure-speed fixed-iteration loop → `results.csv`
 `ppo-quality` (time-to-quality finetune → `quality_results.csv`), `sft` (SFT
 training loop → `sft_bench_results.csv`).
 
-Headline so far: PPO time-to-quality **113 → 36 s (−68%)** — recipe (now the
+Headlines so far: PPO time-to-quality **113 → 36 s (−68%)** — recipe (now the
 `Args` defaults) + fused sampling + `torch.compile(reduce-overhead)` CUDA graphs
-+ numpy world-writes.
++ numpy world-writes. SFT training **88.4 → 22.6 s (−74%)** — GPU-resident data
+(both loops) + lazy imports; the conv fwd/backward is then the floor.
 
 ## Linting
 

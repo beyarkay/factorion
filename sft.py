@@ -873,13 +873,9 @@ def train_sft(args: SFTArgs):
             torch.save(tensors, cache)
             print(f"Cached dataset to {cache}")
     if cache is not None:
-        # generate_dataset consumes RNG, so a cached (load) run and a fresh
-        # (generate) run would otherwise reach the train/val split + weight init
-        # + training with different RNG state and produce a different val_loss.
-        # Re-seed here so everything downstream is independent of whether the
-        # dataset was generated or loaded — the cache then changes nothing but
-        # speed. (Only active when --dataset-cache is set, so no-cache runs that
-        # reproduce reference checkpoints are unaffected.)
+        # Re-seed so a cached (load) run and a fresh (generate) run reach the
+        # split/init/training with identical RNG -> identical val_loss (generate
+        # consumes RNG, load doesn't). Only when --dataset-cache is set.
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -929,12 +925,8 @@ def train_sft(args: SFTArgs):
         if s in val_seeds:
             val_seeds_to_kind[s] = k
 
-    # Training data is moved GPU-resident below (once `device` exists) and
-    # batched manually: the SFT dataset is tiny (~200 MB), so paying the
-    # host->device copy ONCE at startup instead of 8 transfers per batch per
-    # epoch takes the data path out of the training loop (it was ~1/3 of train
-    # time). Validation stays on a CPU DataLoader — it's a small slice and the
-    # batched per-kind aggregation reads the loader's batch_kind.
+    # Train/val tensors are moved GPU-resident below (once `device` exists) and
+    # iterated via an index DataLoader; see tests/benchmarks/EXPERIMENT_LOG.md.
     train_tensors_cpu = (
         obs[train_idx],
         tiles[train_idx],
@@ -982,9 +974,8 @@ def train_sft(args: SFTArgs):
     assert_device_ok(device)
     agent.to(device)
 
-    # Move the training set onto the device once (obs pre-cast to float so the
-    # per-batch .float() is gone too). Manual shuffled slicing replaces the train
-    # DataLoader below.
+    # Move the training set onto the device once. obs (int64) is transferred then
+    # cast to float on-device (cheaper than .float().to()); see EXPERIMENT_LOG.md.
     (
         tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
     ) = (
@@ -992,21 +983,17 @@ def train_sft(args: SFTArgs):
         *(t.to(device) for t in train_tensors_cpu[1:]),
     )
     n_train = tr_obs.shape[0]
-    # Shuffle via a DataLoader over INDICES (not the data): this reuses the exact
-    # RandomSampler RNG of the old DataLoader(train_ds, shuffle=True) — same n,
-    # same config — so the batch order, and thus val_loss, is bit-identical,
-    # while the per-batch payload is just a tensor of indices into the
-    # GPU-resident set (no host->device copy of obs/labels every batch).
+    # Shuffle via a DataLoader over INDICES (not the data) so it reuses the real
+    # RandomSampler RNG → identical batch order (bit-identical val_loss) with no
+    # per-batch host->device copy. (Rationale: tests/benchmarks/EXPERIMENT_LOG.md.)
     train_index_loader = DataLoader(
         TensorDataset(torch.arange(n_train)),
         batch_size=args.batch_size,
         shuffle=True,
     )
-    # Validation set, same treatment (GPU-resident + index DataLoader). shuffle
-    # is off so the order doesn't matter, but the index DataLoader still draws
-    # the same 2 global-RNG ints/epoch as the old val DataLoader (shared+base
-    # seed), which the train shuffle's RNG stream depends on — so val_loss stays
-    # bit-identical.
+    # Val, same treatment. NB: shuffle=False but the index DataLoader still draws
+    # the same 2 global-RNG ints/epoch as the old val loader, which the train
+    # shuffle's RNG stream depends on — so val_loss stays bit-identical.
     (
         va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
     ) = (
@@ -1106,12 +1093,8 @@ def train_sft(args: SFTArgs):
     for epoch in range(1, args.epochs + 1):
         t_train = time.time()
         agent.train()
-        # GPU-side accumulators: sum the per-batch losses / accuracy counts /
-        # grad norms on-device and convert to Python ONCE at epoch end. The eager
-        # loop used to .item() ~10 scalars every batch (7 losses + grad norm + 2
-        # accuracy counts), each a GPU->CPU sync that stalls the launch pipeline.
-        # Summing on-device removes them; the per-epoch averages (and val_loss /
-        # the optimisation itself) are unchanged — this is logging-only.
+        # On-GPU accumulators converted ONCE at epoch end (logging-only), instead
+        # of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
         acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
         acc_correct = torch.zeros((), device=device)
         acc_eot_correct = torch.zeros((), device=device)
