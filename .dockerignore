@@ -1,0 +1,10 @@
+# Keep the docker build context small — the image only needs the lockfile.
+.git
+.venv
+**/__pycache__
+**/target
+factorio-data
+factorio-icons
+checkpoints
+*.pt
+*.tar.gz
