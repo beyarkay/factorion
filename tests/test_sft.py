@@ -670,21 +670,31 @@ class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
     def _build_val_seeds_to_kind(self, size, num_kinds=4, start_seed=10_000):
-        """Iterate seeds until we have `num_kinds` (seed -> kind) pairs each
-        of which produces a valid lesson at max_level. Mirrors the
-        try/except-continue pattern that generate_dataset uses for malformed
-        seeds, so this fixture doesn't get flaky when an enum value lands a
-        bad seed."""
-        kinds = list(LessonKind)
+        """Collect up to `num_kinds` (seed -> kind) pairs, one per distinct
+        lesson kind, each producing a valid lesson at the given size. Mirrors
+        the try/except-continue pattern that generate_dataset uses for
+        malformed seeds, so this fixture doesn't get flaky when an enum value
+        lands a bad seed.
+
+        Some kinds can never be generated on a tiny grid (e.g.
+        ASSEMBLE_2IN_1OUT does not fit at size 5). Rather than burn the whole
+        seed budget retrying an unbuildable kind, skip a kind after
+        `max_fails_per_kind` consecutive rejections and move to the next one."""
+        max_fails_per_kind = 40
         out: dict[int, int] = {}
         seed = start_seed
-        while len(out) < num_kinds and seed < start_seed + 1000:
-            kind = kinds[len(out) % len(kinds)]
-            if build_factory(size=size, kind=kind, seed=seed) is None:
+        for kind in LessonKind:
+            if len(out) >= num_kinds:
+                break
+            fails = 0
+            while fails < max_fails_per_kind:
+                if build_factory(size=size, kind=kind, seed=seed) is None:
+                    seed += 1
+                    fails += 1
+                    continue
+                out[seed] = kind.value
                 seed += 1
-                continue
-            out[seed] = kind.value
-            seed += 1
+                break
         return out
 
     def test_returns_throughput_in_unit_range(self, registered_env):
