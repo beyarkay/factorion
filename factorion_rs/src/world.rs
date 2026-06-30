@@ -212,8 +212,8 @@ impl World {
     }
 
     /// Consume the world, returning its flat `(W, H, C)` C-contiguous data
-    /// buffer along with the dimensions — ready to hand to numpy.
-    #[allow(dead_code)]
+    /// buffer along with the dimensions — ready to hand to numpy. Used by the
+    /// PyO3 `build_factory` binding to return the world to Python.
     pub fn into_whc(self) -> (Vec<i64>, usize, usize, usize) {
         (self.data, self.width, self.height, self.channels)
     }

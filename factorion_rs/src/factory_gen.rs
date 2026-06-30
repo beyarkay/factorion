@@ -1,19 +1,18 @@
-//! A byte-for-byte port of Python's `build_factory` (factorion.py).
+//! Procedural generation of complete, valid training factories.
 //!
-//! After the single-RNG refactor, the Python generator draws every bit of
-//! layout randomness from CPython's `random` module. This module pairs the
-//! faithful [`crate::pyrandom`] generator with a line-for-line port of the
-//! placement logic so that, for the same `(size, kind, seed)`, the Rust
-//! factory is identical to Python's — the same entities, directions, items
-//! and footprint in every tile. The parity is fuzz-tested over thousands of
-//! seeds in `tests/test_build_factory_parity.py`.
+//! [`build_factory`] builds a known-correct factory of a given [`LessonKind`]
+//! — laying sources, sinks, transport/underground belts, splitters and
+//! assemblers onto a grid so items flow from every source to every sink — by
+//! randomized rejection sampling: it places a candidate layout, checks it
+//! carries positive throughput (via the [`crate::throughput`] engine), and on
+//! failure retries until one succeeds or the per-kind attempt budget is
+//! exhausted, returning `None` in that case.
 //!
-//! The port mirrors Python's control flow exactly, including its quirks
-//! (e.g. the rejection-sampling `count` that returns `None` even when the
-//! *last* attempt succeeded). Where Python iterates a list built by a
-//! comprehension and then draws `random.choice`/`shuffle`/`sample` over it,
-//! the Rust must build the *same list in the same order* so the draws index
-//! the same elements.
+//! All layout randomness is drawn from [`crate::pyrandom`], a deterministic
+//! generator seeded once per call, so the same `(size, kind, seed)` always
+//! produces the same factory. Each [`LessonKind`] is a different entity/layout
+//! pattern; the result is a [`BuiltFactory`] (the world tensor plus the
+//! blanking bookkeeping a training lesson needs).
 
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
@@ -84,23 +83,6 @@ fn delta_to_dir(dx: i64, dy: i64) -> Option<Direction> {
 /// and excluded). Returned as raw channel values.
 fn item_pool() -> Vec<i64> {
     all_items().iter().map(|&i| i as i64).collect()
-}
-
-/// `[(name, r) for name, r in recipes.items() if len(consumes)==1 and len(produces)==1]`
-/// in `all_recipes()` order — the `random.choice` pool for 1-in-1-out lessons.
-fn one_in_one_out() -> Vec<(Item, Recipe)> {
-    all_recipes()
-        .into_iter()
-        .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
-        .collect()
-}
-
-/// `[(name, r) for ... if len(consumes)==2 and len(produces)==1]`.
-fn two_in_one_out() -> Vec<(Item, Recipe)> {
-    all_recipes()
-        .into_iter()
-        .filter(|(_, r)| r.consumes.len() == 2 && r.produces.len() == 1)
-        .collect()
 }
 
 /// The 12 non-corner perimeter slots around a 3×3 assembler anchored at
@@ -364,13 +346,6 @@ fn in_grid(c: Cell, size: i64) -> bool {
     0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size
 }
 
-/// Splitter tiles for `(sx, sy, dir)`, as `Cell`s, or `None` for an invalid
-/// direction. Mirrors `factorion_rs.py_entity_tiles(sx, sy, dir, 2, 1)`.
-fn splitter_tiles(sx: i64, sy: i64, dir: Direction) -> Option<Vec<Cell>> {
-    entity_tiles(sx as usize, sy as usize, dir, 2, 1)
-        .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect())
-}
-
 /// `[(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]` —
 /// the free-cell pool that every lesson samples its source/sink positions
 /// from, built in Python's x-outer/y-inner order so `random.sample` indices
@@ -405,12 +380,14 @@ struct SplitterLayout {
 fn splitter_layout(rng: &mut PyRandom, s: i64) -> Option<SplitterLayout> {
     let splitter_dir = DIRS[rng.choice_index(4)];
 
-    // Pick splitter anchor; both tiles must fit (up to 20 tries).
+    // Pick splitter anchor; both tiles must fit (up to 20 tries). The
+    // splitter is 2×1, so `entity_tiles` mirrors py_entity_tiles(.., 2, 1).
     let mut tiles: Option<Vec<Cell>> = None;
     for _ in 0..20 {
         let sx = rng.randint(0, s - 1);
         let sy = rng.randint(0, s - 1);
-        let t = splitter_tiles(sx, sy, splitter_dir);
+        let t: Option<Vec<Cell>> = entity_tiles(sx as usize, sy as usize, splitter_dir, 2, 1)
+            .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect());
         if let Some(ref tt) = t {
             if tt.iter().all(|&c| in_grid(c, s)) {
                 tiles = t;
@@ -495,6 +472,69 @@ fn place_marker(world: &mut World, pos: Cell, ent: Item, dir: Direction, item_va
     world.set(x, y, Channel::Items, item_value);
 }
 
+/// Place a 3×3 assembler anchored at `(ax, ay)`, every tile facing North and
+/// tagged with the recipe item — matching Python's assembler placement.
+fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) {
+    for dx in 0..3 {
+        for dy in 0..3 {
+            let (x, y) = ((ax + dx) as usize, (ay + dy) as usize);
+            world.set(x, y, Channel::Entities, Item::AssemblingMachine1 as i64);
+            world.set(x, y, Channel::Direction, Direction::North as i64);
+            world.set(x, y, Channel::Items, recipe_item_value);
+        }
+    }
+}
+
+/// Place an inserter at `pos` facing `dir`.
+fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
+    let (x, y) = (pos.0 as usize, pos.1 as usize);
+    world.set(x, y, Channel::Entities, Item::Inserter as i64);
+    world.set(x, y, Channel::Direction, dir as i64);
+}
+
+/// The source/sink draw shared by MOVE_ONE_ITEM and its CHAOS variant: two
+/// distinct random tiles (`pos1 == pos2` is rejected as `None`), each with a
+/// random facing, plus the transported item. The draw order is identical in
+/// both lessons so they stay seed-for-seed faithful to Python.
+struct SourceSink {
+    source_wh: Cell,
+    sink_wh: Cell,
+    source_dir: Direction,
+    sink_dir: Direction,
+    item_value: i64,
+}
+
+fn draw_source_sink(
+    rng: &mut PyRandom,
+    size: usize,
+    pool: &[i64],
+    random_item: bool,
+) -> Option<SourceSink> {
+    let s = size as i64;
+    let pos1 = rng.randrange((size * size) as u64) as i64;
+    let pos2 = rng.randrange((size * size) as u64) as i64;
+    if pos1 == pos2 {
+        return None;
+    }
+    // divmod(pos, W) with W = size
+    let source_wh = (pos1 / s, pos1 % s);
+    let sink_wh = (pos2 / s, pos2 % s);
+    let source_dir = DIRS[rng.choice_index(4)];
+    let sink_dir = DIRS[rng.choice_index(4)];
+    let item_value = if random_item {
+        pool[rng.choice_index(pool.len())]
+    } else {
+        Item::ElectronicCircuit as i64
+    };
+    Some(SourceSink {
+        source_wh,
+        sink_wh,
+        source_dir,
+        sink_dir,
+        item_value,
+    })
+}
+
 fn build_move_one_item(
     size: usize,
     rng: &mut PyRandom,
@@ -506,31 +546,20 @@ fn build_move_one_item(
     let mut count = (500).max(size * size * 4);
     while count > 0 {
         count -= 1;
-        let pos1 = rng.randrange((size * size) as u64) as i64;
-        let pos2 = rng.randrange((size * size) as u64) as i64;
-        if pos1 == pos2 {
-            continue;
-        }
-        // divmod(pos, W) with W = size
-        let source_wh = (pos1 / s, pos1 % s);
-        let sink_wh = (pos2 / s, pos2 % s);
-        let source_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-        let item_value = if random_item {
-            pool[rng.choice_index(pool.len())]
-        } else {
-            Item::ElectronicCircuit as i64
+        let SourceSink {
+            source_wh,
+            sink_wh,
+            source_dir,
+            sink_dir,
+            item_value,
+        } = match draw_source_sink(rng, size, &pool, random_item) {
+            Some(ss) => ss,
+            None => continue,
         };
 
         let mut world = World::empty(size, size);
-        let (sx, sy) = (source_wh.0 as usize, source_wh.1 as usize);
-        let (kx, ky) = (sink_wh.0 as usize, sink_wh.1 as usize);
-        world.set(sx, sy, Channel::Entities, Item::Source as i64);
-        world.set(kx, ky, Channel::Entities, Item::Sink as i64);
-        world.set(sx, sy, Channel::Items, item_value);
-        world.set(kx, ky, Channel::Items, item_value);
-        world.set(sx, sy, Channel::Direction, source_dir as i64);
-        world.set(kx, ky, Channel::Direction, sink_dir as i64);
+        place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
+        place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
 
         let mut paths =
             find_belt_paths_with_source_sink_orient(s, source_wh, source_dir, sink_wh, sink_dir);
@@ -574,19 +603,15 @@ fn build_move_one_item_chaos(
     let mut count = (500).max(size * size * 4);
     while count > 0 {
         count -= 1;
-        let pos1 = rng.randrange((size * size) as u64) as i64;
-        let pos2 = rng.randrange((size * size) as u64) as i64;
-        if pos1 == pos2 {
-            continue;
-        }
-        let source_wh = (pos1 / s, pos1 % s);
-        let sink_wh = (pos2 / s, pos2 % s);
-        let source_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-        let item_value = if random_item {
-            pool[rng.choice_index(pool.len())]
-        } else {
-            Item::ElectronicCircuit as i64
+        let SourceSink {
+            source_wh,
+            sink_wh,
+            source_dir,
+            sink_dir,
+            item_value,
+        } = match draw_source_sink(rng, size, &pool, random_item) {
+            Some(ss) => ss,
+            None => continue,
         };
 
         let ds = source_dir.delta();
@@ -1017,34 +1042,18 @@ fn build_splitter_merge(
     None
 }
 
-/// Place a 3×3 assembler anchored at `(ax, ay)`, every tile facing North and
-/// tagged with the recipe item — matching Python's assembler placement.
-fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) {
-    for dx in 0..3 {
-        for dy in 0..3 {
-            let (x, y) = ((ax + dx) as usize, (ay + dy) as usize);
-            world.set(x, y, Channel::Entities, Item::AssemblingMachine1 as i64);
-            world.set(x, y, Channel::Direction, Direction::North as i64);
-            world.set(x, y, Channel::Items, recipe_item_value);
-        }
-    }
-}
-
-/// Place an inserter at `pos` facing `dir`.
-fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
-    let (x, y) = (pos.0 as usize, pos.1 as usize);
-    world.set(x, y, Channel::Entities, Item::Inserter as i64);
-    world.set(x, y, Channel::Direction, dir as i64);
-}
-
 fn build_assemble_1in1out(
     size: usize,
     rng: &mut PyRandom,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
-    let recipes = one_in_one_out();
-    // Python raises if the list is empty; the recipe table guarantees it isn't.
+    // The `random.choice` pool: 1-in-1-out recipes in all_recipes() order.
+    // (Python raises if empty; the recipe table guarantees it isn't.)
+    let recipes: Vec<(Item, Recipe)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
+        .collect();
     let mut count = (500).max(size * size * 12);
 
     while count > 0 {
@@ -1411,7 +1420,11 @@ fn build_assemble_2in1out(
     max_entities: f64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
-    let recipes = two_in_one_out();
+    // The `random.choice` pool: 2-in-1-out recipes in all_recipes() order.
+    let recipes: Vec<(Item, Recipe)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.consumes.len() == 2 && r.produces.len() == 1)
+        .collect();
     let mut count = (500).max(size * size * 16);
 
     while count > 0 {
@@ -1633,52 +1646,5 @@ mod tests {
             assert_eq!(delta_to_dir(dx, dy), Some(d));
         }
         assert_eq!(delta_to_dir(2, 0), None);
-    }
-
-    /// Per-lesson (kind, display name, grid size). Kept in sync with the
-    /// Python benchmark (`tests/bench_build_factory.py`) so the native and
-    /// PyO3 numbers are measured on identical workloads.
-    pub const BENCH_LESSONS: &[(LessonKind, &str, usize)] = &[
-        (LessonKind::MoveOneItem, "MOVE_ONE_ITEM", 12),
-        (LessonKind::MoveOneItemChaos, "MOVE_ONE_ITEM_CHAOS", 12),
-        (LessonKind::SplitterSplit, "SPLITTER_SPLIT", 12),
-        (LessonKind::SplitterMerge, "SPLITTER_MERGE", 12),
-        (LessonKind::Assemble1In1Out, "ASSEMBLE_1IN_1OUT", 12),
-        (LessonKind::MoveViaUgBelt, "MOVE_VIA_UG_BELT", 12),
-        (LessonKind::Assemble2In1Out, "ASSEMBLE_2IN_1OUT", 12),
-    ];
-
-    /// Native-Rust build_factory benchmark — the no-Python-boundary baseline
-    /// for the PyO3 comparison. Run with:
-    ///   cargo test --release -p factorion_rs bench_native_build_factory \
-    ///       -- --ignored --nocapture
-    #[test]
-    #[ignore = "benchmark; run explicitly with --ignored --nocapture"]
-    fn bench_native_build_factory() {
-        use std::time::Instant;
-        const N: u64 = 1000;
-        println!(
-            "\nnative build_factory ({N} seeds/lesson, microseconds per call)\n{:<22} {:>9} {:>9} {:>9} {:>9}",
-            "lesson", "mean", "min", "max", "std"
-        );
-        for &(kind, name, size) in BENCH_LESSONS {
-            let mut us: Vec<f64> = Vec::with_capacity(N as usize);
-            for seed in 0..N {
-                let t = Instant::now();
-                let _ = build_factory(size, kind, seed, true, f64::INFINITY);
-                us.push(t.elapsed().as_secs_f64() * 1e6);
-            }
-            let (mean, min, max, std) = summarize(&us);
-            println!("{name:<22} {mean:>9.1} {min:>9.1} {max:>9.1} {std:>9.1}");
-        }
-    }
-
-    fn summarize(xs: &[f64]) -> (f64, f64, f64, f64) {
-        let n = xs.len() as f64;
-        let mean = xs.iter().sum::<f64>() / n;
-        let min = xs.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
-        (mean, min, max, var.sqrt())
     }
 }
