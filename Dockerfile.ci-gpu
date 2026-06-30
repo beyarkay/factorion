@@ -1,5 +1,5 @@
 # Build + push by hand when deps change (no CI job):
-#   docker build -f docker/Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:latest . && docker push beyarkay/factorion-ci-gpu:latest
+#   docker build -f Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:latest . && docker push beyarkay/factorion-ci-gpu:latest
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
