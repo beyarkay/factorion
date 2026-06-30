@@ -3,8 +3,8 @@
 
 Reads a hyperfine --export-json file (timing stats) and the ppo.py summary JSON
 (rollout/update breakdown), and appends a single row to RESULTS_CSV, writing the
-header first if the file does not yet exist. Invoked by measure.sh; not meant to
-be run by hand. All inputs come from environment variables so measure.sh does
+header first if the file does not yet exist. Invoked by bench_measure.sh (ppo-speed); not meant to
+be run by hand. All inputs come from environment variables so the caller does
 not have to quote paths.
 """
 

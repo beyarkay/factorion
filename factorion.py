@@ -6,6 +6,7 @@ wrappers have been stripped and identifiers are exported directly.
 """
 
 import base64
+import functools
 import glob
 import json
 import os
@@ -251,6 +252,7 @@ def str2item(s):
     )
 
 
+@functools.cache  # pure fn of `s` (entities is import-time constant); see EXPERIMENT_LOG.md
 def str2ent(s):
     if s is None:
         print(f"WARN: given string  is None")
