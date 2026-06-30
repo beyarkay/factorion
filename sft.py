@@ -929,7 +929,13 @@ def train_sft(args: SFTArgs):
         if s in val_seeds:
             val_seeds_to_kind[s] = k
 
-    train_ds = TensorDataset(
+    # Training data is moved GPU-resident below (once `device` exists) and
+    # batched manually: the SFT dataset is tiny (~200 MB), so paying the
+    # host->device copy ONCE at startup instead of 8 transfers per batch per
+    # epoch takes the data path out of the training loop (it was ~1/3 of train
+    # time). Validation stays on a CPU DataLoader — it's a small slice and the
+    # batched per-kind aggregation reads the loader's batch_kind.
+    train_tensors_cpu = (
         obs[train_idx],
         tiles[train_idx],
         ents[train_idx],
@@ -938,7 +944,6 @@ def train_sft(args: SFTArgs):
         miscs_t[train_idx],
         valid_masks[train_idx],
         eot_labels[train_idx],
-        lesson_kinds[train_idx],
     )
     val_ds = TensorDataset(
         obs[val_idx],
@@ -951,7 +956,6 @@ def train_sft(args: SFTArgs):
         eot_labels[val_idx],
         lesson_kinds[val_idx],
     )
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
     # Create agent via a temporary env (AgentCNN needs envs for init)
@@ -979,13 +983,36 @@ def train_sft(args: SFTArgs):
     assert_device_ok(device)
     agent.to(device)
 
+    # Move the training set onto the device once (obs pre-cast to float so the
+    # per-batch .float() is gone too). Manual shuffled slicing replaces the train
+    # DataLoader below.
+    (
+        tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
+    ) = (
+        train_tensors_cpu[0].float().to(device),
+        *(t.to(device) for t in train_tensors_cpu[1:]),
+    )
+    n_train = tr_obs.shape[0]
+    # Shuffle via a DataLoader over INDICES (not the data): this reuses the exact
+    # RandomSampler RNG of the old DataLoader(train_ds, shuffle=True) — same n,
+    # same config — so the batch order, and thus val_loss, is bit-identical,
+    # while the per-batch payload is just a tensor of indices into the
+    # GPU-resident set (no host->device copy of obs/labels every batch).
+    train_index_loader = DataLoader(
+        TensorDataset(torch.arange(n_train)),
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
+
     optimizer = optim.AdamW(
         agent.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
     # Scheduler spans every optimizer step (not every epoch) so warmup_frac
     # is a fraction of the *whole* run regardless of dataset size.
-    steps_per_epoch = max(1, len(train_loader))
+    # ceil(n_train / batch_size) == the old len(train_loader) (drop_last=False),
+    # so total_steps — and thus the LR schedule — is unchanged.
+    steps_per_epoch = max(1, (n_train + args.batch_size - 1) // args.batch_size)
     total_steps = args.epochs * steps_per_epoch
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
@@ -1063,50 +1090,35 @@ def train_sft(args: SFTArgs):
     for epoch in range(1, args.epochs + 1):
         t_train = time.time()
         agent.train()
-        train_loss = 0.0
-        train_loss_tile = 0.0
-        train_loss_ent = 0.0
-        train_loss_dir = 0.0
-        train_loss_item = 0.0
-        train_loss_misc = 0.0
-        train_loss_eot = 0.0
-        train_correct = 0
+        # GPU-side accumulators: sum the per-batch losses / accuracy counts /
+        # grad norms on-device and convert to Python ONCE at epoch end. The eager
+        # loop used to .item() ~10 scalars every batch (7 losses + grad norm + 2
+        # accuracy counts), each a GPU->CPU sync that stalls the launch pipeline.
+        # Summing on-device removes them; the per-epoch averages (and val_loss /
+        # the optimisation itself) are unchanged — this is logging-only.
+        acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
+        acc_correct = torch.zeros((), device=device)
+        acc_eot_correct = torch.zeros((), device=device)
+        acc_grad_norm = torch.zeros((), device=device)
         train_total = 0
-        train_eot_correct = 0
-        grad_norm_sum = 0.0
         grad_norm_count = 0
-        # Wall-clock attribution for the train pass, with NO added syncs: the
-        # loop already .item()s every batch, so each batch's wall time splits
-        # into "waiting for the DataLoader" vs "computing it" — exposing whether
-        # the loop is data-loading-bound or compute-bound.
+        # DataLoader-wait attribution (CPU side; needs no GPU sync). The compute
+        # share is derived at epoch end as train_seconds - train_data_s.
         train_data_s = 0.0
-        train_compute_s = 0.0
 
-        # batch_kind is carried through the loader so val can aggregate
-        # per-kind metrics; we ignore it in the train pass.
         t_batch = time.time()
-        for batch in train_loader:
+        for (idx_cpu,) in train_index_loader:
             t_ready = time.time()
             train_data_s += t_ready - t_batch
-            (
-                batch_obs,
-                batch_tile,
-                batch_ent,
-                batch_dir,
-                batch_item,
-                batch_misc,
-                batch_mask,
-                batch_eot,
-                _batch_kind,
-            ) = batch
-            batch_obs = batch_obs.float().to(device)
-            batch_tile = batch_tile.to(device)
-            batch_ent = batch_ent.to(device)
-            batch_dir = batch_dir.to(device)
-            batch_item = batch_item.to(device)
-            batch_misc = batch_misc.to(device)
-            batch_mask = batch_mask.to(device)
-            batch_eot = batch_eot.to(device)
+            idx = idx_cpu.to(device)
+            batch_obs = tr_obs[idx]
+            batch_tile = tr_tile[idx]
+            batch_ent = tr_ent[idx]
+            batch_dir = tr_dir[idx]
+            batch_item = tr_item[idx]
+            batch_misc = tr_misc[idx]
+            batch_mask = tr_mask[idx]
+            batch_eot = tr_eot[idx]
 
             encoded = agent.encoder(batch_obs)
             B = encoded.shape[0]
@@ -1162,20 +1174,16 @@ def train_sft(args: SFTArgs):
                 grad_norm = nn.utils.clip_grad_norm_(
                     agent.parameters(), args.max_grad_norm
                 )
-                grad_norm_sum += float(grad_norm)
+                acc_grad_norm += grad_norm
                 grad_norm_count += 1
             optimizer.step()
             scheduler.step()
             global_step += 1
             samples_seen += B
 
-            train_loss += loss.item() * B
-            train_loss_tile += loss_tile.item() * B
-            train_loss_ent += loss_ent.item() * B
-            train_loss_dir += loss_dir.item() * B
-            train_loss_item += loss_item.item() * B
-            train_loss_misc += loss_misc.item() * B
-            train_loss_eot += loss_eot.item() * B
+            acc_loss += torch.stack([
+                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
+            ]).detach() * B
             # Whole-action accuracy: the model agrees with the demo on
             # every output for this sample. For placement samples (eot=0)
             # that means all 5 placement heads correct AND EOT predicted
@@ -1203,23 +1211,27 @@ def train_sft(args: SFTArgs):
                 place_heads_correct & eot_correct_t,
                 eot_correct_t,
             )
-            train_correct += int(correct.sum().item())
+            acc_correct += correct.sum()
             train_total += B
-            train_eot_correct += int(eot_correct_t.sum().item())
-            # .item() reads above synced this batch's GPU work; real "done".
+            acc_eot_correct += eot_correct_t.sum()
+            # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
-            train_compute_s += t_batch - t_ready
 
-        train_loss /= train_total
-        train_loss_tile /= train_total
-        train_loss_ent /= train_total
-        train_loss_dir /= train_total
-        train_loss_item /= train_total
-        train_loss_misc /= train_total
-        train_loss_eot /= train_total
-        train_acc = train_correct / train_total
-        train_eot_acc = train_eot_correct / train_total
+        # Single GPU->CPU sync for the whole epoch's accumulated stats.
+        (
+            train_loss,
+            train_loss_tile,
+            train_loss_ent,
+            train_loss_dir,
+            train_loss_item,
+            train_loss_misc,
+            train_loss_eot,
+        ) = (acc_loss / train_total).tolist()
+        train_acc = (acc_correct / train_total).item()
+        train_eot_acc = (acc_eot_correct / train_total).item()
+        grad_norm_sum = acc_grad_norm.item()
         train_seconds = time.time() - t_train
+        train_compute_s = max(0.0, train_seconds - train_data_s)
 
         # Validation
         t_val = time.time()
