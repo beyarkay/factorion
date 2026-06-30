@@ -2859,6 +2859,56 @@ def build_factory(
     )
 
 
+def build_factory_rs(
+    size: int = 12,
+    kind: LessonKind = LessonKind.MOVE_ONE_ITEM,
+    *,
+    seed: Optional[int] = None,
+    random_item: bool = True,
+    max_entities: float = float("inf"),
+) -> Optional[Factory]:
+    """Rust-backed drop-in replacement for :func:`build_factory`.
+
+    Delegates the (expensive) layout construction to
+    ``factorion_rs.build_factory`` — a byte-for-byte port of :func:`build_factory`
+    that draws from the same CPython MT19937 stream, so it returns an
+    *identical* ``Factory`` for the same ``(size, kind, seed)`` (verified over
+    thousands of seeds in ``tests/test_build_factory_parity.py``) while running
+    7-34× faster per lesson. This is what the training/runtime paths (PPO
+    rollouts, SFT data generation, the scripts) call; :func:`build_factory`
+    (the pure-Python reference) stays the parity baseline the tests pin against.
+
+    Determinism contract matches :func:`build_factory`: when ``seed`` is given,
+    the global ``random``/``numpy``/``torch`` RNGs are seeded so a chained
+    :func:`blank_entities` (``seed=None``) is deterministic in ``seed``. When
+    ``seed`` is ``None``, a seed is drawn from the current ``random`` stream so
+    the result still depends on global RNG state.
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        rs_seed = seed
+    else:
+        rs_seed = random.randrange(2**63)
+
+    result = factorion_rs.build_factory(
+        size, kind.value, rs_seed, random_item, max_entities
+    )
+    if result is None:
+        return None
+    world_WHC, total_entities, protected = result
+    # Rust returns (W, H, C); the Factory carries (C, W, H).
+    world_CWH = torch.from_numpy(
+        np.ascontiguousarray(np.transpose(world_WHC, (2, 0, 1)))
+    )
+    return Factory(
+        world_CWH=world_CWH,
+        total_entities=total_entities,
+        protected_positions=frozenset(map(tuple, protected)),
+    )
+
+
 def blank_entities(
     factory: Factory,
     num_missing_entities: float = float("inf"),
