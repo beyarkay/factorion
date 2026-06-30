@@ -49,7 +49,7 @@ from factorion import (  # noqa: E402
     LessonKind,
     Misc,
     blank_entities,
-    build_factory_rs,
+    build_factory,
     build_graph_nx,
     ent_str2b64img,
     entities,
@@ -235,7 +235,7 @@ def _load_lesson(
     num_missing_entities = max(0, int(num_missing_entities))
     attempt_seed = int(seed)
     for _ in range(_LESSON_RETRY_BUDGET):
-        factory = build_factory_rs(size=size, kind=kind, seed=attempt_seed)
+        factory = build_factory(size=size, kind=kind, seed=attempt_seed)
         if factory is not None:
             # Blank entities with the factory's own seed so repeated
             # clicks at the same (kind, seed, N) are reproducible. N=0

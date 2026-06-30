@@ -31,7 +31,7 @@ from factorion import (  # noqa: E402
     Channel,
     LessonKind,
     blank_entities,
-    build_factory_rs,
+    build_factory,
     world2html,
 )
 from sft import extract_expert_actions  # noqa: E402
@@ -81,11 +81,11 @@ def main(args: VizArgs) -> None:
         seed += 1
 
         try:
-            factory = build_factory_rs(size=args.size, kind=kind, seed=seed)
+            factory = build_factory(size=args.size, kind=kind, seed=seed)
             assert factory is not None
             solved, _ = blank_entities(factory, num_missing_entities=0)
             if not args.final_only:
-                factory = build_factory_rs(size=args.size, kind=kind, seed=seed)
+                factory = build_factory(size=args.size, kind=kind, seed=seed)
                 assert factory is not None
                 task, _ = blank_entities(factory, num_missing_entities=level)
         except Exception:
