@@ -240,7 +240,6 @@ fn belt_cells(belts: &[Belt]) -> Vec<Cell> {
 }
 
 /// The `(x, y)` cells of a belt run as a set.
-#[allow(dead_code)] // consumed by the splitter/assembler lesson ports
 fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
     belts.iter().map(|&(x, y, _)| (x, y)).collect()
 }
@@ -629,7 +628,6 @@ fn count_removable_entity_units(world: &World) -> usize {
     count
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_from_blueprint(
     size: usize,
     rng: &mut PyRandom,
@@ -717,6 +715,122 @@ fn in_grid(c: Cell, size: i64) -> bool {
 fn splitter_tiles(sx: i64, sy: i64, dir: Direction) -> Option<Vec<Cell>> {
     entity_tiles(sx as usize, sy as usize, dir, 2, 1)
         .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect())
+}
+
+/// `[(x, y) for x in range(W) for y in range(H) if (x, y) not in reserved]` —
+/// the free-cell pool that every lesson samples its source/sink positions
+/// from, built in Python's x-outer/y-inner order so `random.sample` indices
+/// match.
+fn available_cells(s: i64, reserved: &HashSet<Cell>) -> Vec<Cell> {
+    let mut available = Vec::new();
+    for x in 0..s {
+        for y in 0..s {
+            if !reserved.contains(&(x, y)) {
+                available.push((x, y));
+            }
+        }
+    }
+    available
+}
+
+/// The shared per-iteration splitter placement: facing, anchor (20-try),
+/// tiles, input/output cells and the free-cell pool. Returns `None` for the
+/// reject cases (no fitting anchor, I/O out of bounds or overlapping, fewer
+/// than 3 free cells) — the caller treats that as `continue`. Drawn in the
+/// exact order SPLITTER_SPLIT and SPLITTER_MERGE share.
+struct SplitterLayout {
+    splitter_dir: Direction,
+    tiles: Vec<Cell>,
+    tile_set: HashSet<Cell>,
+    dd: (i64, i64),
+    input_cells: Vec<Cell>,
+    output_cells: Vec<Cell>,
+    available: Vec<Cell>,
+}
+
+fn splitter_layout(rng: &mut PyRandom, s: i64) -> Option<SplitterLayout> {
+    let splitter_dir = DIRS[rng.choice_index(4)];
+
+    // Pick splitter anchor; both tiles must fit (up to 20 tries).
+    let mut tiles: Option<Vec<Cell>> = None;
+    for _ in 0..20 {
+        let sx = rng.randint(0, s - 1);
+        let sy = rng.randint(0, s - 1);
+        let t = splitter_tiles(sx, sy, splitter_dir);
+        if let Some(ref tt) = t {
+            if tt.iter().all(|&c| in_grid(c, s)) {
+                tiles = t;
+                break;
+            }
+        }
+    }
+    let tiles = tiles?;
+    let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
+    let dd = splitter_dir.delta();
+
+    let input_cells: Vec<Cell> = tiles
+        .iter()
+        .map(|&(tx, ty)| (tx - dd.0, ty - dd.1))
+        .collect();
+    let output_cells: Vec<Cell> = tiles
+        .iter()
+        .map(|&(tx, ty)| (tx + dd.0, ty + dd.1))
+        .collect();
+    let all_io: Vec<Cell> = input_cells
+        .iter()
+        .chain(output_cells.iter())
+        .copied()
+        .collect();
+    if all_io.iter().any(|&c| !in_grid(c, s)) {
+        return None;
+    }
+    if all_io.iter().any(|c| tile_set.contains(c)) {
+        return None;
+    }
+
+    let reserved: HashSet<Cell> = tile_set
+        .iter()
+        .copied()
+        .chain(all_io.iter().copied())
+        .collect();
+    let available = available_cells(s, &reserved);
+    if available.len() < 3 {
+        return None;
+    }
+
+    Some(SplitterLayout {
+        splitter_dir,
+        tiles,
+        tile_set,
+        dd,
+        input_cells,
+        output_cells,
+        available,
+    })
+}
+
+/// Place a splitter's tiles (entity + facing) into the world.
+fn place_splitter(world: &mut World, tiles: &[Cell], dir: Direction) {
+    for &(tx, ty) in tiles {
+        world.set(
+            tx as usize,
+            ty as usize,
+            Channel::Entities,
+            Item::Splitter as i64,
+        );
+        world.set(tx as usize, ty as usize, Channel::Direction, dir as i64);
+    }
+}
+
+/// The in-bounds tiles of all 12 assembler perimeter slots for anchor
+/// `(ax, ay)` — the cells a source/sink must avoid so it isn't treated as an
+/// inserter feeding the assembler.
+fn all_perim_set(ax: i64, ay: i64, s: i64) -> HashSet<Cell> {
+    PERIM_SLOTS
+        .iter()
+        .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
+        .filter(|&c| in_grid(c, s))
+        .collect()
 }
 
 /// Place a source or sink marker (entity + facing + carried item).
@@ -904,7 +1018,6 @@ fn build_move_one_item_chaos(
     None
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_splitter_split(
     size: usize,
     rng: &mut PyRandom,
@@ -924,64 +1037,18 @@ fn build_splitter_split(
 
     while count > 0 {
         count -= 1;
-        let splitter_dir = DIRS[rng.choice_index(4)];
-
-        // Pick splitter anchor; both tiles must fit (up to 20 tries).
-        let mut tiles: Option<Vec<Cell>> = None;
-        for _ in 0..20 {
-            let sx = rng.randint(0, s - 1);
-            let sy = rng.randint(0, s - 1);
-            let t = splitter_tiles(sx, sy, splitter_dir);
-            if let Some(ref tt) = t {
-                if tt.iter().all(|&c| in_grid(c, s)) {
-                    tiles = t;
-                    break;
-                }
-            }
-        }
-        let tiles = match tiles {
-            Some(t) => t,
+        let SplitterLayout {
+            splitter_dir,
+            tiles,
+            tile_set,
+            dd,
+            input_cells,
+            output_cells,
+            available,
+        } = match splitter_layout(rng, s) {
+            Some(l) => l,
             None => continue,
         };
-        let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
-        let dd = splitter_dir.delta();
-
-        let input_cells: Vec<Cell> = tiles
-            .iter()
-            .map(|&(tx, ty)| (tx - dd.0, ty - dd.1))
-            .collect();
-        let output_cells: Vec<Cell> = tiles
-            .iter()
-            .map(|&(tx, ty)| (tx + dd.0, ty + dd.1))
-            .collect();
-        let all_io: Vec<Cell> = input_cells
-            .iter()
-            .chain(output_cells.iter())
-            .copied()
-            .collect();
-        if all_io.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        if all_io.iter().any(|c| tile_set.contains(c)) {
-            continue;
-        }
-
-        let reserved: HashSet<Cell> = tile_set
-            .iter()
-            .copied()
-            .chain(all_io.iter().copied())
-            .collect();
-        let mut available: Vec<Cell> = Vec::new();
-        for x in 0..s {
-            for y in 0..s {
-                if !reserved.contains(&(x, y)) {
-                    available.push((x, y));
-                }
-            }
-        }
-        if available.len() < 3 {
-            continue;
-        }
 
         let chosen = rng.sample(&available, 3);
         let source_pos = chosen[0];
@@ -1115,20 +1182,7 @@ fn build_splitter_split(
         place_marker(&mut world, source_pos, Item::Source, source_dir, item_value);
         place_marker(&mut world, sink1_pos, Item::Sink, sink1_dir, item_value);
         place_marker(&mut world, sink2_pos, Item::Sink, sink2_dir, item_value);
-        for &(tx, ty) in &tiles {
-            world.set(
-                tx as usize,
-                ty as usize,
-                Channel::Entities,
-                Item::Splitter as i64,
-            );
-            world.set(
-                tx as usize,
-                ty as usize,
-                Channel::Direction,
-                splitter_dir as i64,
-            );
-        }
+        place_splitter(&mut world, &tiles, splitter_dir);
         place_belts(&mut world, &path1);
         place_belts(&mut world, &path2);
         place_belts(&mut world, &path3);
@@ -1146,7 +1200,6 @@ fn build_splitter_split(
     None
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_splitter_merge(
     size: usize,
     rng: &mut PyRandom,
@@ -1165,63 +1218,18 @@ fn build_splitter_merge(
 
     while count > 0 {
         count -= 1;
-        let splitter_dir = DIRS[rng.choice_index(4)];
-
-        let mut tiles: Option<Vec<Cell>> = None;
-        for _ in 0..20 {
-            let sx = rng.randint(0, s - 1);
-            let sy = rng.randint(0, s - 1);
-            let t = splitter_tiles(sx, sy, splitter_dir);
-            if let Some(ref tt) = t {
-                if tt.iter().all(|&c| in_grid(c, s)) {
-                    tiles = t;
-                    break;
-                }
-            }
-        }
-        let tiles = match tiles {
-            Some(t) => t,
+        let SplitterLayout {
+            splitter_dir,
+            tiles,
+            tile_set,
+            dd,
+            input_cells,
+            output_cells,
+            available,
+        } = match splitter_layout(rng, s) {
+            Some(l) => l,
             None => continue,
         };
-        let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
-        let dd = splitter_dir.delta();
-
-        let input_cells: Vec<Cell> = tiles
-            .iter()
-            .map(|&(tx, ty)| (tx - dd.0, ty - dd.1))
-            .collect();
-        let output_cells: Vec<Cell> = tiles
-            .iter()
-            .map(|&(tx, ty)| (tx + dd.0, ty + dd.1))
-            .collect();
-        let all_io: Vec<Cell> = input_cells
-            .iter()
-            .chain(output_cells.iter())
-            .copied()
-            .collect();
-        if all_io.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        if all_io.iter().any(|c| tile_set.contains(c)) {
-            continue;
-        }
-
-        let reserved: HashSet<Cell> = tile_set
-            .iter()
-            .copied()
-            .chain(all_io.iter().copied())
-            .collect();
-        let mut available: Vec<Cell> = Vec::new();
-        for x in 0..s {
-            for y in 0..s {
-                if !reserved.contains(&(x, y)) {
-                    available.push((x, y));
-                }
-            }
-        }
-        if available.len() < 3 {
-            continue;
-        }
 
         let chosen = rng.sample(&available, 3);
         let source1_pos = chosen[0];
@@ -1337,20 +1345,7 @@ fn build_splitter_merge(
             item_value,
         );
         place_marker(&mut world, sink_pos, Item::Sink, sink_dir, item_value);
-        for &(tx, ty) in &tiles {
-            world.set(
-                tx as usize,
-                ty as usize,
-                Channel::Entities,
-                Item::Splitter as i64,
-            );
-            world.set(
-                tx as usize,
-                ty as usize,
-                Channel::Direction,
-                splitter_dir as i64,
-            );
-        }
+        place_splitter(&mut world, &tiles, splitter_dir);
         place_belts(&mut world, &path1);
         place_belts(&mut world, &path2);
         place_belts(&mut world, &path3);
@@ -1388,7 +1383,6 @@ fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
     world.set(x, y, Channel::Direction, dir as i64);
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_assemble_1in1out(
     size: usize,
     rng: &mut PyRandom,
@@ -1439,25 +1433,14 @@ fn build_assemble_1in1out(
             continue;
         }
 
-        let all_perim: HashSet<Cell> = PERIM_SLOTS
-            .iter()
-            .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
-            .filter(|&c| in_grid(c, s))
-            .collect();
+        let all_perim = all_perim_set(ax, ay, s);
         let reserved: HashSet<Cell> = asm_tiles
             .iter()
             .copied()
             .chain(key_cells.iter().copied())
             .chain(all_perim.iter().copied())
             .collect();
-        let mut available: Vec<Cell> = Vec::new();
-        for x in 0..s {
-            for y in 0..s {
-                if !reserved.contains(&(x, y)) {
-                    available.push((x, y));
-                }
-            }
-        }
+        let available = available_cells(s, &reserved);
         if available.len() < 2 {
             continue;
         }
@@ -1550,7 +1533,6 @@ fn build_assemble_1in1out(
     None
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_move_via_ug_belt(
     size: usize,
     rng: &mut PyRandom,
@@ -1769,7 +1751,6 @@ fn build_move_via_ug_belt(
     None
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_assemble_2in1out(
     size: usize,
     rng: &mut PyRandom,
@@ -1834,25 +1815,14 @@ fn build_assemble_2in1out(
             continue;
         }
 
-        let all_perim: HashSet<Cell> = PERIM_SLOTS
-            .iter()
-            .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
-            .filter(|&c| in_grid(c, s))
-            .collect();
+        let all_perim = all_perim_set(ax, ay, s);
         let reserved: HashSet<Cell> = asm_tiles
             .iter()
             .copied()
             .chain(key_cells.iter().copied())
             .chain(all_perim.iter().copied())
             .collect();
-        let mut available: Vec<Cell> = Vec::new();
-        for x in 0..s {
-            for y in 0..s {
-                if !reserved.contains(&(x, y)) {
-                    available.push((x, y));
-                }
-            }
-        }
+        let available = available_cells(s, &reserved);
         if available.len() < 3 {
             continue;
         }
@@ -1985,7 +1955,6 @@ fn finish(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
