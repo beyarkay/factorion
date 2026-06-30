@@ -11,10 +11,10 @@
 # otherwise-good run.
 #
 # Compute-budget knobs (num_samples, epochs, max_level, size) are PINNED
-# so every run is directly comparable on a fixed budget and the canonical
+# so every run is directly comparable on a fixed budget; the canonical
 # base is then retrained at full scale (sft.py defaults: 1M samples /
-# 45 epochs) — that's why apply_sft_sweep_best.py no longer writes these
-# back. Everything with a genuine interior optimum is swept WIDE:
+# 45 epochs). Read the winner off the W&B sweep report and apply it to
+# SFTArgs by hand. Everything with a genuine interior optimum is swept WIDE:
 #   - cosine LR schedule: lr, warmup_frac, min_lr_ratio
 #   - regularisation: weight_decay, dropout, max_grad_norm
 #   - encoder shape: layer1..4 width/depth, kernel_size (receptive field)

@@ -40,7 +40,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`, `LessonKind`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
 - `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`) and the lesson generator (`build_factory` in `src/factory_gen.rs`, with a CPython-compatible RNG in `src/pyrandom.rs`; exposed to Python as `factorion.build_factory`, which is what training calls). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
 - `scripts/factory_builder.py` — Local HTTP UI to hand-build factories and query a checkpoint's predictions. Shares `_resolve_wandb_checkpoint` with `ppo.py`.
-- `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py`/`apply_sft_sweep_best.py` (W&B sweeps → PR), `runpod_create.py`/`runpod_destroy.py`.
+- `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py` (W&B sweeps → PR; SFT sweep winners are applied to `SFTArgs` by hand), `runpod_create.py`/`runpod_destroy.py`.
 - `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
 - `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config (PPO; metric `curriculum/score`).
 - `b64-to-json.py` / `json-to-b64.py` — Blueprint encoding/decoding utilities.
