@@ -511,7 +511,6 @@ class FactorioEnv(gym.Env):
             idx = 0
         self.idx = idx
 
-        print(f"FactorioEnv({size=}, {max_steps=}, {render_mode=}, {idx=})")
         self.max_steps = max_steps
 
         self._world_CWH = torch.zeros((len(Channel), self.size, self.size))
