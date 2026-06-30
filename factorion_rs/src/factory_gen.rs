@@ -22,7 +22,10 @@ use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recip
 use crate::world::World;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// The lesson kinds, matching `factorion.py::LessonKind`.
+/// The lesson kinds. This is the single source of truth for the kind set:
+/// Python's `LessonKind` enum is built from [`all_lesson_kinds`] via the PyO3
+/// `py_lesson_kinds` binding, so the two can't drift. The integer values are
+/// non-contiguous for historical reasons (removed kinds left gaps).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LessonKind {
     MoveOneItem = 0,
@@ -47,6 +50,34 @@ impl LessonKind {
             _ => None,
         }
     }
+
+    /// The canonical SCREAMING_SNAKE_CASE name — the identifier the Python
+    /// `LessonKind` enum member takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            LessonKind::MoveOneItem => "MOVE_ONE_ITEM",
+            LessonKind::SplitterSplit => "SPLITTER_SPLIT",
+            LessonKind::SplitterMerge => "SPLITTER_MERGE",
+            LessonKind::Assemble1In1Out => "ASSEMBLE_1IN_1OUT",
+            LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
+            LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
+            LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
+        }
+    }
+}
+
+/// Every [`LessonKind`], in the order the Python enum lists them (which fixes
+/// `list(LessonKind)` iteration — the lesson sampler relies on it).
+pub fn all_lesson_kinds() -> &'static [LessonKind] {
+    &[
+        LessonKind::MoveOneItem,
+        LessonKind::SplitterSplit,
+        LessonKind::SplitterMerge,
+        LessonKind::Assemble1In1Out,
+        LessonKind::MoveViaUgBelt,
+        LessonKind::Assemble2In1Out,
+        LessonKind::MoveOneItemChaos,
+    ]
 }
 
 /// The non-NONE directions in `Direction` enum order — the exact list

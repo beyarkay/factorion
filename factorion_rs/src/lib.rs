@@ -40,7 +40,7 @@ use pyo3::types::PyDict;
 #[cfg(feature = "pyo3-bindings")]
 use entities::entity_tiles;
 #[cfg(feature = "pyo3-bindings")]
-use factory_gen::{build_factory as rs_build_factory, LessonKind};
+use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
@@ -222,6 +222,19 @@ fn build_factory(
     Ok(Some((arr.into_pyarray(py).unbind(), total, protected)))
 }
 
+/// Return the lesson kinds as an ordered `{NAME: int_value}` dict — the single
+/// source of truth Python builds its `LessonKind` enum from. Insertion order
+/// matches `all_lesson_kinds()` so `list(LessonKind)` iterates the same way.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    for &kind in all_lesson_kinds() {
+        d.set_item(kind.name(), kind as i64)?;
+    }
+    Ok(d.into())
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -230,6 +243,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     Ok(())
 }

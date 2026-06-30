@@ -41,6 +41,7 @@ _REQUIRED_FACTORION_RS = (
     "py_entity_tiles",
     "py_items",
     "py_recipes",
+    "py_lesson_kinds",
 )
 
 
@@ -178,14 +179,13 @@ recipes = {
 }
 
 
-class LessonKind(Enum):
-    MOVE_ONE_ITEM = 0
-    SPLITTER_SPLIT = 3
-    SPLITTER_MERGE = 4
-    ASSEMBLE_1IN_1OUT = 5
-    MOVE_VIA_UG_BELT = 6
-    ASSEMBLE_2IN_1OUT = 7
-    MOVE_ONE_ITEM_CHAOS = 9
+# LessonKind is defined in Rust (factorion_rs/src/factory_gen.rs) and exposed
+# via PyO3 (`py_lesson_kinds`) so the kind set / values can never drift between
+# the two implementations — the same single-source-of-truth pattern the `items`
+# and `recipes` dicts above use. The members (in Rust order) are
+# MOVE_ONE_ITEM=0, SPLITTER_SPLIT=3, SPLITTER_MERGE=4, ASSEMBLE_1IN_1OUT=5,
+# MOVE_VIA_UG_BELT=6, ASSEMBLE_2IN_1OUT=7, MOVE_ONE_ITEM_CHAOS=9.
+LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 
 
 @dataclass(frozen=True)

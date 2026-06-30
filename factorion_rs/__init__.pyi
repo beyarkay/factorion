@@ -52,6 +52,11 @@ def py_recipes() -> dict[str, RecipeData]:
     """Every recipe keyed by item name -> {consumes, produces, crafting_time}."""
     ...
 
+def py_lesson_kinds() -> dict[str, int]:
+    """Lesson kinds as an ordered ``{NAME: int_value}`` dict — the single
+    source of truth Python's ``LessonKind`` enum is built from."""
+    ...
+
 def build_factory(
     size: int,
     kind: int,
