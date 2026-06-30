@@ -26,6 +26,8 @@ import runpod
 # GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
 GPU_FALLBACKS = [
     "NVIDIA RTX 2000 Ada Generation",
+    "NVIDIA RTX 4000 Ada Generation",
+    "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A6000",
     "NVIDIA A100 80GB PCIe",
@@ -42,9 +44,26 @@ DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
 POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull)
 
+# GPU availability is transient — RunPod often replies "no longer any instances
+# available, please refresh and try again" when a machine was just snapped up.
+# Retrying the same GPU a few seconds later usually succeeds, so we exhaust
+# ``max_retries`` attempts on each GPU before falling back to the next one.
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_RETRY_DELAY = 5.0  # seconds between attempts on the same GPU
 
-def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_TIMEOUT) -> dict:
+
+def create_pod(
+    gpu_type: str,
+    name_prefix: str = "ci",
+    timeout: int = POD_START_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
+) -> dict:
     """Create a RunPod pod and wait for it to be ready.
+
+    Tries each GPU in the fallback chain, retrying the same GPU up to
+    ``max_retries`` times (waiting ``retry_delay`` seconds between attempts)
+    before falling back to the next GPU in the lineup.
 
     Returns dict with pod_id, ssh_host, ssh_port, gpu_type, status.
     """
@@ -57,32 +76,43 @@ def create_pod(gpu_type: str, name_prefix: str = "ci", timeout: int = POD_START_
 
     pod = None
     for gpu in gpu_types_to_try:
-        print(f"Trying GPU: {gpu}", flush=True)
-        try:
-            pod = runpod.create_pod(
-                name=f"{name_prefix}-{int(time.time())}",
-                image_name=DOCKER_IMAGE,
-                gpu_type_id=gpu,
-                gpu_count=1,
-                volume_in_gb=0,
-                container_disk_in_gb=CONTAINER_DISK_GB,
-                ports="22/tcp",
-                support_public_ip=True,
-                allowed_cuda_versions=ALLOWED_CUDA_VERSIONS,
-                env={
-                    "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
-                },
-            )
-            if pod and pod.get("id"):
-                print(f"Pod created: {pod['id']} ({gpu})", flush=True)
-                break
-        except Exception as e:
-            print(f"  Failed: {e}", flush=True)
-            pod = None
-            continue
+        for attempt in range(1, max_retries + 1):
+            print(f"Trying GPU: {gpu} (attempt {attempt}/{max_retries})", flush=True)
+            try:
+                pod = runpod.create_pod(
+                    name=f"{name_prefix}-{int(time.time())}",
+                    image_name=DOCKER_IMAGE,
+                    gpu_type_id=gpu,
+                    gpu_count=1,
+                    volume_in_gb=0,
+                    container_disk_in_gb=CONTAINER_DISK_GB,
+                    ports="22/tcp",
+                    support_public_ip=True,
+                    allowed_cuda_versions=ALLOWED_CUDA_VERSIONS,
+                    env={
+                        "RUNPOD_API_KEY": os.environ["RUNPOD_API_KEY"],
+                    },
+                )
+                if pod and pod.get("id"):
+                    print(f"Pod created: {pod['id']} ({gpu})", flush=True)
+                    break
+            except Exception as e:
+                print(f"  Failed: {e}", flush=True)
+                pod = None
+
+            if attempt < max_retries:
+                print(f"  Retrying {gpu} in {retry_delay:.0f}s...", flush=True)
+                time.sleep(retry_delay)
+
+        if pod and pod.get("id"):
+            break
 
     if not pod or not pod.get("id"):
-        print("ERROR: Could not create pod with any available GPU type", flush=True)
+        print(
+            f"ERROR: Could not create pod with any available GPU type "
+            f"({max_retries} attempts each)",
+            flush=True,
+        )
         sys.exit(1)
 
     pod_id = pod["id"]
@@ -151,9 +181,27 @@ def main():
         default="/tmp/pod_info.json",
         help="Path to write pod info JSON",
     )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help="Attempts per GPU before falling back to the next GPU in the lineup",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=DEFAULT_RETRY_DELAY,
+        help="Seconds to wait between attempts on the same GPU",
+    )
     args = parser.parse_args()
 
-    pod_info = create_pod(gpu_type=args.gpu_type, name_prefix=args.name_prefix, timeout=args.timeout)
+    pod_info = create_pod(
+        gpu_type=args.gpu_type,
+        name_prefix=args.name_prefix,
+        timeout=args.timeout,
+        max_retries=args.max_retries,
+        retry_delay=args.retry_delay,
+    )
 
     with open(args.output_file, "w") as f:
         json.dump(pod_info, f, indent=2)
