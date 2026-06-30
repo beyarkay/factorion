@@ -1,27 +1,38 @@
 # sft_sweep.yaml — SFT pre-training hyperparameter sweep
 #
-# Compute-budget knobs that are monotonic-ish in val/acc (num_samples,
-# epochs, chan{1,2,3}) are pinned to the smoketest production config so
-# Bayes can't trivially saturate them and every run is directly
-# comparable to the prod checkpoint. The sweep instead optimises knobs
-# with a genuine interior optimum:
-#   - cosine LR schedule (issue #101): lr, warmup_frac, min_lr_ratio
-#   - regularisation: weight_decay, max_grad_norm
+# Goal: find a strong SFT base for the SFT→PPO handoff. The metric is
+# `val/thput_eot` (greedy rebuild throughput at the moment the EOT head
+# fires) — the exact bar PPO must clear (≈0.11 for the j0s5y2mc base, see
+# CLAUDE.md "Throughput metrics"). It is the EOT-respecting throughput of
+# the checkpoint RL will actually load, so optimising it directly searches
+# for "the best SFT base", not a per-step accuracy proxy. sft.py marks
+# `val/thput_eot`'s run-summary as the max over epochs (see the
+# define_metric call in train_sft), so a noisy final epoch can't sink an
+# otherwise-good run.
+#
+# Compute-budget knobs (num_samples, epochs, max_level, size) are PINNED
+# so every run is directly comparable on a fixed budget and the canonical
+# base is then retrained at full scale (sft.py defaults: 1M samples /
+# 45 epochs) — that's why apply_sft_sweep_best.py no longer writes these
+# back. Everything with a genuine interior optimum is swept WIDE:
+#   - cosine LR schedule: lr, warmup_frac, min_lr_ratio
+#   - regularisation: weight_decay, dropout, max_grad_norm
+#   - encoder shape: layer1..4 width/depth, kernel_size (receptive field)
+#   - data-shape: batch_size, tile_head_std
 #   - per-head loss weights (5 placement heads + EOT): lw_*
-#   - data-shape tradeoffs: batch_size, max_level, tile_head_std
 
 method: bayes
-run_cap: 30
+run_cap: 100
 metric:
-  name: "val/acc"
+  name: "val/thput_eot"
   goal: maximize
 
 parameters:
-  # Pinned because val/acc is monotonic in these: more data, more epochs,
-  # and a lower max_level all make the val task trivially easier and
-  # Bayes would just saturate them. Channels are NOT pinned — bigger
-  # encoders can overfit a fixed dataset (no dropout in AgentCNN), so
-  # there's a real interior optimum.
+  # ── Pinned compute budget (comparability; NOT applied to defaults) ──
+  # val/thput plateaus early (~epoch 3, see CLAUDE.md), so a fixed,
+  # generous-enough budget keeps every run on equal footing while Bayes
+  # spends its 100 runs on the knobs below. max_level 0 = auto (size*size)
+  # = the whole grid blanked, the honest build-from-scratch task.
   size:
     value: 11
   num_samples:
@@ -29,54 +40,65 @@ parameters:
   epochs:
     value: 30
   max_level:
-    value: 0  # auto = 2*size = 22 entities blanked
+    value: 0
 
-  # ── LR schedule (issue #101) ─────────────────────────────────────
+  # ── LR schedule (cosine + warmup, issue #101) ─────────────────────
   lr:
     distribution: log_uniform_values
     min: 1e-4
-    max: 3e-3
+    max: 5e-3
   warmup_frac:
-    values: [0.0, 0.02, 0.05, 0.1]
+    values: [0.0, 0.01, 0.02, 0.05, 0.1]
   min_lr_ratio:
     distribution: log_uniform_values
     min: 1e-3
-    max: 1e-1
+    max: 3e-1
 
   # ── Regularisation ────────────────────────────────────────────────
+  # dropout is a real Dropout2d after each encoder conv (ppo.AgentCNN);
+  # inert in eval() and at p=0.0, so 0 is included as the no-reg control.
   weight_decay:
     distribution: log_uniform_values
-    min: 1e-6
+    min: 1e-7
     max: 1e-2
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.35
   max_grad_norm:
     distribution: uniform
     min: 0.5
-    max: 3.0
+    max: 5.0
 
   # ── Data-shape tradeoffs ──────────────────────────────────────────
   batch_size:
-    values: [256, 512, 1024]
+    values: [128, 256, 512, 1024]
   tile_head_std:
     distribution: log_uniform_values
     min: 0.001
     max: 0.1
 
-  # ── Encoder capacity ──────────────────────────────────────────────
-  # AgentCNN has no dropout, so bigger encoders can overfit the (fixed)
-  # 300k-sample SFT dataset. Genuine interior optimum.
-  chan1:
-    values: [32, 48, 64]
-  chan2:
-    values: [48, 64]
-  chan3:
-    values: [48, 64]
+  # ── Encoder capacity & depth ──────────────────────────────────────
+  # One conv layer per positive-width slot, in order; a 0 slot is dropped
+  # (ppo.layers_from_args), so layer4=0 recovers the 3-conv baseline while
+  # layer4>0 explores a deeper encoder. kernel_size sets the receptive
+  # field (RF = 1 + n_layers*(kernel_size-1)); 5 doubles per-layer RF.
+  layer1:
+    values: [32, 48, 64, 96]
+  layer2:
+    values: [32, 48, 64, 96]
+  layer3:
+    values: [48, 64, 96, 128]
+  layer4:
+    values: [0, 48, 64]
+  kernel_size:
+    values: [3, 5]
 
   # ── Per-head loss weights ─────────────────────────────────────────
-  # With 6 losses summed, equal weighting (= 1.0 each) implicitly
-  # assumes each head's gradient signal is equally informative — almost
-  # certainly wrong now that recipe/item and EOT heads exist alongside
-  # entity/direction. Log-uniform around 1.0 lets Bayes search find a
-  # useful re-balancing without blowing up scale.
+  # With 6 summed losses, equal weighting assumes each head's gradient is
+  # equally informative — unlikely now that recipe/item and EOT heads sit
+  # alongside entity/direction. Log-uniform around 1.0 lets Bayes
+  # rebalance without blowing up the overall loss scale.
   lw_tile:
     distribution: log_uniform_values
     min: 0.3
