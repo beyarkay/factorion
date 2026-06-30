@@ -23,7 +23,10 @@ import runpod
 # Preferred first, then availability fallbacks (each pricier/bigger). The default
 # is the RTX 2000 Ada — the GPU the speed benchmarks were tuned on; these models
 # are tiny (122k params) and the workload is single-core-CPU-bound, so a bigger
-# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
+# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md). RTX 2000 Ada
+# availability is bursty (RunPod's "no longer any instances available, please
+# refresh and try again"), so the per-GPU retry below gives it several shots
+# before falling back.
 GPU_FALLBACKS = [
     "NVIDIA RTX 2000 Ada Generation",
     "NVIDIA GeForce RTX 4090",
