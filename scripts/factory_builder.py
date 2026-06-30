@@ -71,6 +71,7 @@ PLACEABLE_ENTITIES = [
     "underground_belt",
     "splitter",
     "inserter",
+    "long_handed_inserter",
     "stack_inserter",
     "bulk_inserter",
     "assembling_machine_1",
@@ -93,7 +94,7 @@ HOTBAR = [
     "stack_inserter",
     "bulk_inserter",
     "assembling_machine_1",
-    None,
+    "long_handed_inserter",
     None,
     "empty",
 ]

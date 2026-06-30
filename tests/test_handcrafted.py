@@ -197,6 +197,21 @@ class TestInserterPatterns:
         t, u = rs_throughput(world)
         assert t == pytest.approx(0.86, abs=1e-6)
 
+    def test_long_handed_inserter_reaches_two_tiles(self):
+        """Source ... long-handed inserter ... sink, two-tile gaps each side.
+
+        The long-handed inserter picks up from the source two tiles behind it
+        and drops onto the sink two tiles ahead, skipping the empty cells in
+        between. Throughput is inserter-limited (0.86), same as a plain
+        inserter — only the reach differs.
+        """
+        world = make_world(7)
+        set_entity(world, 0, 0, "stack_inserter", Direction.EAST, "copper_cable")
+        set_entity(world, 2, 0, "long_handed_inserter", Direction.EAST)
+        set_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "copper_cable")
+        t, u = rs_throughput(world)
+        assert t == pytest.approx(0.86, abs=1e-6)
+
     def test_inserter_all_directions(self):
         """Inserters in all four cardinal directions."""
         cases: list[
