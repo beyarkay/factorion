@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
-import matplotlib.pyplot as plt
-import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
 import torch
@@ -965,6 +963,13 @@ def _extend_belt_chains(world_CWH):
 
 
 def plot_flow_network(G):
+    # Lazy imports: matplotlib + networkx are visualization-only (this function
+    # and build_graph_nx). Importing them at module scope cost ~0.44s on every
+    # `import factorion` — paid by ppo/sft training that never plots. Deferring
+    # them here keeps those import-bound entry points (and the benchmarks) fast.
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
     # Extract x, y coordinates from node names
     pos = {
         node: (int(x), -int(y))
@@ -1265,6 +1270,8 @@ def build_graph_nx(world_WHC):
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
     ``factorion_rs.simulate_throughput`` takes.
     """
+    import networkx as nx  # lazy: networkx is visualization-only (see top imports)
+
     arr = world_WHC.numpy() if hasattr(world_WHC, "numpy") else np.asarray(world_WHC)
     nodes, edges = factorion_rs.py_build_graph(arr.astype(np.int64))
     G = nx.DiGraph()
