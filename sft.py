@@ -988,7 +988,7 @@ def train_sft(args: SFTArgs):
     (
         tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
     ) = (
-        train_tensors_cpu[0].float().to(device),
+        train_tensors_cpu[0].to(device).float(),
         *(t.to(device) for t in train_tensors_cpu[1:]),
     )
     n_train = tr_obs.shape[0]
@@ -1010,7 +1010,7 @@ def train_sft(args: SFTArgs):
     (
         va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
     ) = (
-        val_tensors_cpu[0].float().to(device),
+        val_tensors_cpu[0].to(device).float(),
         *(t.to(device) for t in val_tensors_cpu[1:]),
     )
     n_val = va_obs.shape[0]
