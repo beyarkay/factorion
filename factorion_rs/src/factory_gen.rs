@@ -20,7 +20,8 @@ use crate::pyrandom::PyRandom;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 /// The lesson kinds. This is the single source of truth for the kind set:
 /// Python's `LessonKind` enum is built from [`all_lesson_kinds`] via the PyO3
@@ -35,6 +36,7 @@ pub enum LessonKind {
     MoveViaUgBelt = 6,
     Assemble2In1Out = 7,
     MoveOneItemChaos = 9,
+    CrossUnderBelt = 10,
 }
 
 impl LessonKind {
@@ -47,6 +49,7 @@ impl LessonKind {
             6 => Some(LessonKind::MoveViaUgBelt),
             7 => Some(LessonKind::Assemble2In1Out),
             9 => Some(LessonKind::MoveOneItemChaos),
+            10 => Some(LessonKind::CrossUnderBelt),
             _ => None,
         }
     }
@@ -62,6 +65,7 @@ impl LessonKind {
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
+            LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
         }
     }
 }
@@ -77,6 +81,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveViaUgBelt,
         LessonKind::Assemble2In1Out,
         LessonKind::MoveOneItemChaos,
+        LessonKind::CrossUnderBelt,
     ]
 }
 
@@ -366,6 +371,9 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
+        LessonKind::CrossUnderBelt => {
+            build_cross_under_belt(size, &mut rng, random_item, max_entities)
+        }
     }
 }
 
@@ -1629,6 +1637,409 @@ fn build_assemble_2in1out(
     None
 }
 
+// ── CROSS_UNDER_BELT: an obstruction belt-line cut + a crossing that tunnels
+// under it ──────────────────────────────────────────────────────────────────
+
+/// Max tiles spanned by an underground tunnel (engine reach is 6, `entities.rs`).
+const UNDERGROUND_MAX_OFFSET: i64 = 5;
+
+/// A belt/underground placement `(x, y, facing, misc)`: `Misc::None` for a plain
+/// belt, `UndergroundDown`/`UndergroundUp` for the tunnel ends.
+type UgPlacement = (i64, i64, Direction, Misc);
+
+/// 4-connected components of the free cells (in-grid, not in `obstruction`),
+/// returned largest-first (stable on ties).
+fn free_components(obstruction: &HashSet<Cell>, s: i64) -> Vec<Vec<Cell>> {
+    let mut seen: HashSet<Cell> = HashSet::new();
+    let mut comps: Vec<Vec<Cell>> = Vec::new();
+    for x in 0..s {
+        for y in 0..s {
+            let cell = (x, y);
+            if obstruction.contains(&cell) || seen.contains(&cell) {
+                continue;
+            }
+            let mut stack = vec![cell];
+            seen.insert(cell);
+            let mut comp = vec![cell];
+            while let Some((cx, cy)) = stack.pop() {
+                for (dx, dy) in BFS_DELTAS {
+                    let nb = (cx + dx, cy + dy);
+                    if in_grid(nb, s) && !obstruction.contains(&nb) && !seen.contains(&nb) {
+                        seen.insert(nb);
+                        stack.push(nb);
+                        comp.push(nb);
+                    }
+                }
+            }
+            comps.push(comp);
+        }
+    }
+    comps.sort_by_key(|c| Reverse(c.len()));
+    comps
+}
+
+/// A source/sink pair on the two opposite edges of one axis, with a random
+/// flow direction. `span_x` spans the left/right edges (flows E or W);
+/// otherwise the top/bottom edges (flows N or S).
+fn edge_endpoints(rng: &mut PyRandom, span_x: bool, s: i64) -> (Cell, Cell, Direction) {
+    let (a, b, fwd, bwd) = if span_x {
+        let ay = rng.randint(0, s - 1);
+        let by = rng.randint(0, s - 1);
+        ((0, ay), (s - 1, by), Direction::East, Direction::West)
+    } else {
+        let ax = rng.randint(0, s - 1);
+        let bx = rng.randint(0, s - 1);
+        ((ax, 0), (bx, s - 1), Direction::South, Direction::North)
+    };
+    if rng.choice_index(2) == 0 {
+        (a, b, fwd)
+    } else {
+        (b, a, bwd)
+    }
+}
+
+/// Pick a random crossing endpoint inside `comp` (avoiding cells `near` the
+/// obstruction) plus a facing whose belt cell — the source's drop, or the cell
+/// feeding the sink — is also free in the same component. Returns
+/// `(tile, facing, belt_cell)` or `None`.
+fn pick_endpoint(
+    rng: &mut PyRandom,
+    comp: &[Cell],
+    near: &HashSet<Cell>,
+    is_source: bool,
+) -> Option<(Cell, Direction, Cell)> {
+    let comp_set: HashSet<Cell> = comp.iter().copied().collect();
+    let mut cands: Vec<Cell> = comp.iter().copied().filter(|c| !near.contains(c)).collect();
+    rng.shuffle(&mut cands);
+    let mut dirs: Vec<Direction> = DIRS.to_vec();
+    for &cell in &cands {
+        rng.shuffle(&mut dirs);
+        for &d in &dirs {
+            let (dx, dy) = d.delta();
+            let nb = if is_source {
+                (cell.0 + dx, cell.1 + dy)
+            } else {
+                (cell.0 - dx, cell.1 - dy)
+            };
+            if comp_set.contains(&nb) {
+                return Some((cell, d, nb));
+            }
+        }
+    }
+    None
+}
+
+/// Shortest belt path from `start` to `end` that may dip UNDER blocked cells via
+/// an underground entrance/exit pair (Misc tags distinguish belts from tunnels).
+///
+/// Costs scale by 4 so the 1.25×-per-spanned-tile penalty is integral (walk = 4,
+/// a `span`-tile tunnel = `5 * (span + 1)`): tunnels are used only to clear
+/// blocked cells, with minimal span, never under open belt. Tunnels run straight;
+/// 180° reversals and tile reuse are rejected. `start_dir` lets the path open
+/// with a tunnel (source → UG_DOWN); a tunnel may surface onto `end` (UG_UP →
+/// sink).
+fn ug_aware_belt_path(
+    size: i64,
+    start: Cell,
+    end: Cell,
+    end_dir: Direction,
+    blocked: &HashSet<Cell>,
+    start_dir: Option<Direction>,
+) -> Option<Vec<UgPlacement>> {
+    let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
+    if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
+        return None;
+    }
+
+    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
+    type State = (i64, i64, i64);
+    let start_state: State = (start.0, start.1, start_dir.map_or(0, |d| d as i64));
+
+    let mut dist: HashMap<State, u64> = HashMap::new();
+    let mut prev: HashMap<State, (State, Vec<UgPlacement>)> = HashMap::new();
+    dist.insert(start_state, 0);
+    let mut counter: u64 = 0;
+    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
+    pq.push(Reverse((0, counter, start_state)));
+    counter += 1;
+
+    // The goal cell's own entity is emitted on the edge that reaches it: a
+    // belt facing end_dir (normal arrival) or a UG_UP (a tunnel surfacing onto
+    // `end`). Track the cheapest such arrival.
+    let mut goal_cost: u64 = u64::MAX;
+    let mut goal_prev: Option<State> = None;
+    let mut goal_emit: Vec<UgPlacement> = Vec::new();
+
+    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
+        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
+            continue;
+        }
+        if d_so_far >= goal_cost {
+            break;
+        }
+        let (cx, cy, adir) = state;
+        if (cx, cy) == end {
+            goal_cost = d_so_far;
+            goal_prev = Some(state);
+            goal_emit = vec![(end.0, end.1, end_dir, Misc::None)];
+            continue;
+        }
+
+        let back: Option<(i64, i64)> = if adir != 0 {
+            let (dx, dy) = Direction::from_i64(adir).delta();
+            Some((-dx, -dy))
+        } else {
+            None
+        };
+
+        // Normal belt step (no 180° reversal): this cell becomes a belt.
+        for d in DIRS {
+            let (dx, dy) = d.delta();
+            if back == Some((dx, dy)) {
+                continue;
+            }
+            let n = (cx + dx, cy + dy);
+            if !in_bounds(n) || blocked.contains(&n) {
+                continue;
+            }
+            let ns: State = (n.0, n.1, d as i64);
+            let nd = d_so_far + 4;
+            if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
+                dist.insert(ns, nd);
+                prev.insert(ns, (state, vec![(cx, cy, d, Misc::None)]));
+                pq.push(Reverse((nd, counter, ns)));
+                counter += 1;
+            }
+        }
+
+        // Underground tunnel, continuing straight in the arrival direction.
+        if adir != 0 {
+            let d = Direction::from_i64(adir);
+            let (dx, dy) = d.delta();
+            for span in 2..=UNDERGROUND_MAX_OFFSET {
+                let exit_cell = (cx + dx * span, cy + dy * span);
+                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
+                    continue;
+                }
+                // Surface the exit straight onto the sink's feeder cell:
+                // UG_UP → sink, no trailing belt. Charged like a normal tunnel
+                // (5 per spanned tile, counting the exit), so it is used only
+                // when the obstruction reaches the sink.
+                if exit_cell == end && d == end_dir {
+                    let cost = d_so_far + 5 * (span as u64 + 1);
+                    if cost < goal_cost {
+                        goal_cost = cost;
+                        goal_prev = Some(state);
+                        goal_emit = vec![
+                            (cx, cy, d, Misc::UndergroundDown),
+                            (end.0, end.1, d, Misc::UndergroundUp),
+                        ];
+                    }
+                    continue;
+                }
+                let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
+                if !in_bounds(surface) || blocked.contains(&surface) {
+                    continue;
+                }
+                let ns: State = (surface.0, surface.1, d as i64);
+                let nd = d_so_far + 5 * (span as u64 + 1);
+                if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
+                    dist.insert(ns, nd);
+                    prev.insert(
+                        ns,
+                        (
+                            state,
+                            vec![
+                                (cx, cy, d, Misc::UndergroundDown),
+                                (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
+                            ],
+                        ),
+                    );
+                    pq.push(Reverse((nd, counter, ns)));
+                    counter += 1;
+                }
+            }
+        }
+    }
+
+    let goal_prev = goal_prev?;
+
+    // Walk back from the goal, collecting per-edge placements, then append the
+    // goal cell's own entity.
+    let mut placements: Vec<UgPlacement> = Vec::new();
+    let mut state = goal_prev;
+    while state != start_state {
+        let (pstate, emitted) = prev.get(&state)?;
+        for &p in emitted.iter().rev() {
+            placements.push(p);
+        }
+        state = *pstate;
+    }
+    placements.reverse();
+    placements.extend(goal_emit);
+
+    // One entity per tile: reject any self-overlapping (reorienting) detour.
+    let mut seen: HashSet<Cell> = HashSet::new();
+    for &(x, y, _, _) in &placements {
+        if !seen.insert((x, y)) {
+            return None;
+        }
+    }
+    Some(placements)
+}
+
+/// CROSS_UNDER_BELT: an obstruction belt line (source → belts → sink) runs
+/// between two opposite edges, forming a winding CUT that separates the grid into
+/// two halves. A second source/sink pair sits one per side; the crossing that
+/// joins them is routed with [`ug_aware_belt_path`], so the only way across is to
+/// tunnel UNDER the cut. The two lines carry distinct items, so gating on
+/// `tp >= belt_flow` (both delivered) and no orphan tiles rejects a crossing that
+/// fails to connect.
+fn build_cross_under_belt(
+    size: usize,
+    rng: &mut PyRandom,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    if s < 5 {
+        return None;
+    }
+    let belt_flow = Item::TransportBelt.flow_rate();
+    let pool = item_pool();
+    let (cross_item, obs_item) = if random_item {
+        let two = rng.sample(&pool, 2);
+        (two[0], two[1])
+    } else {
+        (Item::ElectronicCircuit as i64, Item::CopperCable as i64)
+    };
+
+    let mut count = (500).max(size * size * 16);
+    while count > 0 {
+        count -= 1;
+
+        // The obstruction runs between two opposite edges, forming a cut.
+        let obs_span_x = rng.choice_index(2) == 0;
+        let (obs_source, obs_sink, obs_dir) = edge_endpoints(rng, obs_span_x, s);
+        let od = obs_dir.delta();
+        let obs_start = (obs_source.0 + od.0, obs_source.1 + od.1);
+        let obs_end = (obs_sink.0 - od.0, obs_sink.1 - od.1);
+
+        // Route the obstruction (plain belts) between its two edges.
+        let mut obs_blocked: HashSet<Cell> = HashSet::new();
+        obs_blocked.insert(obs_source);
+        obs_blocked.insert(obs_sink);
+        let obs_path = match find_belt_path(s, obs_start, obs_end, obs_dir, &obs_blocked) {
+            Some(p) => p,
+            None => continue,
+        };
+        let mut obstruction_tiles: HashSet<Cell> = belt_cell_set(&obs_path);
+        obstruction_tiles.insert(obs_source);
+        obstruction_tiles.insert(obs_sink);
+
+        // The cut splits the remaining cells into two sides; the crossing's
+        // source and sink go one on each side, so the only route between them
+        // is under the cut.
+        let comps = free_components(&obstruction_tiles, s);
+        if comps.len() < 2 {
+            continue;
+        }
+        let (mut comp_a, mut comp_b) = (comps[0].clone(), comps[1].clone());
+        if rng.choice_index(2) == 0 {
+            std::mem::swap(&mut comp_a, &mut comp_b);
+        }
+
+        // Keep at least one clear tile between each endpoint and the
+        // obstruction (the source/sink have room; the belts/UG may hug it).
+        let mut near: HashSet<Cell> = HashSet::new();
+        for &(ox, oy) in &obstruction_tiles {
+            near.insert((ox, oy));
+            for (dx, dy) in BFS_DELTAS {
+                near.insert((ox + dx, oy + dy));
+            }
+        }
+
+        let (cross_source, source_dir, cross_start) = match pick_endpoint(rng, &comp_a, &near, true)
+        {
+            Some(v) => v,
+            None => continue,
+        };
+        let (cross_sink, sink_dir, cross_end) = match pick_endpoint(rng, &comp_b, &near, false) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Route the crossing UNDER the obstruction, allowing tunnels. The
+        // endpoints are in different components, so the path must cross the
+        // cut.
+        let mut cross_blocked = obstruction_tiles.clone();
+        cross_blocked.insert(cross_source);
+        cross_blocked.insert(cross_sink);
+        let cross_path = match ug_aware_belt_path(
+            s,
+            cross_start,
+            cross_end,
+            sink_dir,
+            &cross_blocked,
+            Some(source_dir),
+        ) {
+            Some(p) => p,
+            None => continue,
+        };
+        if !cross_path.iter().any(|&(_, _, _, m)| m != Misc::None) {
+            continue;
+        }
+
+        // Build the world.
+        let mut world = World::empty(size, size);
+        place_marker(&mut world, obs_source, Item::Source, obs_dir, obs_item);
+        place_marker(&mut world, obs_sink, Item::Sink, obs_dir, obs_item);
+        place_belts(&mut world, &obs_path);
+        place_marker(
+            &mut world,
+            cross_source,
+            Item::Source,
+            source_dir,
+            cross_item,
+        );
+        place_marker(&mut world, cross_sink, Item::Sink, sink_dir, cross_item);
+        for &(x, y, d, m) in &cross_path {
+            if m == Misc::None {
+                world.set(
+                    x as usize,
+                    y as usize,
+                    Channel::Entities,
+                    Item::TransportBelt as i64,
+                );
+                world.set(x as usize, y as usize, Channel::Direction, d as i64);
+            } else {
+                world.place_underground(x as usize, y as usize, d, m);
+            }
+        }
+
+        // Both lines must deliver at full belt speed, and no entity may be an
+        // orphan (off every source→sink path).
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) < belt_flow - 1e-6 || unreachable != 0 {
+            continue;
+        }
+
+        let total_entities = cross_path.len();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        // Protect the obstruction cut so blank_entities never removes it.
+        let mut protected_positions: Vec<(usize, usize)> = obstruction_tiles
+            .iter()
+            .map(|&(x, y)| (x as usize, y as usize))
+            .collect();
+        protected_positions.sort_unstable();
+        return finish(world, total_entities, protected_positions, count);
+    }
+    None
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -1649,6 +2060,7 @@ fn finish(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1673,5 +2085,418 @@ mod tests {
             assert_eq!(delta_to_dir(dx, dy), Some(d));
         }
         assert_eq!(delta_to_dir(2, 0), None);
+    }
+
+    fn count_entity(world: &World, item: Item) -> usize {
+        let mut n = 0;
+        for x in 0..world.width() {
+            for y in 0..world.height() {
+                if world.get(x, y, Channel::Entities) == item as i64 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    fn wall(col: i64, size: i64) -> HashSet<Cell> {
+        (0..size).map(|y| (col, y)).collect()
+    }
+
+    /// Build a CROSS_UNDER_BELT factory, panicking on the rare reject.
+    fn build_cub(size: usize, seed: u64) -> BuiltFactory {
+        build_factory(size, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY)
+            .unwrap_or_else(|| panic!("seed={seed} failed to build"))
+    }
+
+    /// Throughput score and orphan-tile count of a placed world.
+    fn tp_unreachable(world: &World) -> (f64, usize) {
+        let (deliveries, unreachable) = calc_throughput(&build_graph(world));
+        (factory_score(&deliveries), unreachable)
+    }
+
+    /// The obstruction (its source/sink + belt cut) is `protected_positions`;
+    /// the crossing's source/sink are everything else.
+    struct Layout {
+        ug_downs: Vec<Cell>,
+        ug_ups: Vec<Cell>,
+        flow_dir: Option<Direction>,
+        obstruction: HashSet<Cell>,
+        obs_source: Cell,
+        obs_sink: Cell,
+        cross_source: Cell,
+        cross_sink: Cell,
+    }
+
+    fn layout(f: &BuiltFactory) -> Layout {
+        let w = &f.world;
+        let obstruction: HashSet<Cell> = f
+            .protected_positions
+            .iter()
+            .map(|&(x, y)| (x as i64, y as i64))
+            .collect();
+        let (mut sources, mut sinks) = (Vec::new(), Vec::new());
+        let (mut ug_downs, mut ug_ups) = (Vec::new(), Vec::new());
+        for x in 0..w.width() {
+            for y in 0..w.height() {
+                let cell = (x as i64, y as i64);
+                match w.get(x, y, Channel::Entities) {
+                    e if e == Item::Source as i64 => sources.push(cell),
+                    e if e == Item::Sink as i64 => sinks.push(cell),
+                    e if e == Item::UndergroundBelt as i64 => {
+                        match Misc::from_i64(w.get(x, y, Channel::Misc)) {
+                            Misc::UndergroundDown => ug_downs.push(cell),
+                            Misc::UndergroundUp => ug_ups.push(cell),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let flow_dir = ug_downs
+            .first()
+            .map(|&(x, y)| Direction::from_i64(w.get(x as usize, y as usize, Channel::Direction)));
+        let find = |v: &[Cell], inside: bool| {
+            *v.iter()
+                .find(|c| obstruction.contains(c) == inside)
+                .expect("expected one obstruction and one crossing endpoint")
+        };
+        Layout {
+            obs_source: find(&sources, true),
+            cross_source: find(&sources, false),
+            obs_sink: find(&sinks, true),
+            cross_sink: find(&sinks, false),
+            ug_downs,
+            ug_ups,
+            flow_dir,
+            obstruction,
+        }
+    }
+
+    #[test]
+    fn test_cross_under_belt_smoke() {
+        let belt_flow = Item::TransportBelt.flow_rate();
+        let mut built = 0;
+        for seed in 0..60u64 {
+            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY) {
+                Some(f) => f,
+                None => continue,
+            };
+            built += 1;
+            let (tp, unreachable) = tp_unreachable(&f.world);
+            // Both lines deliver at full belt speed; nothing is orphaned.
+            assert!(tp >= belt_flow - 1e-6, "seed={seed} tp={tp}");
+            assert_eq!(unreachable, 0, "seed={seed} has orphan tiles");
+            // One source/sink pair for the obstruction, one for the crossing.
+            assert_eq!(count_entity(&f.world, Item::Source), 2, "seed={seed}");
+            assert_eq!(count_entity(&f.world, Item::Sink), 2, "seed={seed}");
+            // The crossing tunnels under the cut, so a UG pair is present.
+            let ug = count_entity(&f.world, Item::UndergroundBelt);
+            assert!(ug >= 2 && ug.is_multiple_of(2), "seed={seed} ug={ug}");
+        }
+        assert!(built > 50, "most seeds should build, got {built}");
+    }
+
+    #[test]
+    fn test_cross_under_belt_two_distinct_items() {
+        // The obstruction and crossing carry different items (independent flows).
+        for seed in 0..30u64 {
+            let f = match build_factory(12, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY) {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut src_items = Vec::new();
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    if f.world.get(x, y, Channel::Entities) == Item::Source as i64 {
+                        src_items.push(f.world.get(x, y, Channel::Items));
+                    }
+                }
+            }
+            assert_eq!(src_items.len(), 2);
+            assert_ne!(src_items[0], src_items[1], "seed={seed}");
+        }
+    }
+
+    #[test]
+    fn test_ug_router_open_space_stays_on_surface() {
+        // Nothing blocked → a tunnel is never cheaper than walking.
+        let path =
+            ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &HashSet::new(), None).unwrap();
+        assert!(path.iter().all(|&(_, _, _, m)| m == Misc::None));
+    }
+
+    #[test]
+    fn test_ug_router_tunnels_under_a_wall() {
+        let w = wall(4, 9);
+        // Plain BFS can't cross a full-height wall.
+        assert!(find_belt_path(9, (1, 4), (7, 4), Direction::East, &w).is_none());
+        // The UG-aware router tunnels under it with one entrance/exit pair.
+        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let downs: Vec<_> = path
+            .iter()
+            .filter(|&&(_, _, _, m)| m == Misc::UndergroundDown)
+            .collect();
+        let ups: Vec<_> = path
+            .iter()
+            .filter(|&&(_, _, _, m)| m == Misc::UndergroundUp)
+            .collect();
+        assert_eq!(downs.len(), 1);
+        assert_eq!(ups.len(), 1);
+    }
+
+    #[test]
+    fn test_ug_router_minimal_span_hugs_the_wall() {
+        let w = wall(4, 9);
+        let path = ug_aware_belt_path(9, (1, 4), (8, 4), Direction::East, &w, None).unwrap();
+        let down = path
+            .iter()
+            .find(|&&(_, _, _, m)| m == Misc::UndergroundDown)
+            .unwrap();
+        let up = path
+            .iter()
+            .find(|&&(_, _, _, m)| m == Misc::UndergroundUp)
+            .unwrap();
+        // Entrance just before the wall, exit just after; both face the flow.
+        assert_eq!((down.0, down.1, down.2), (3, 4, Direction::East));
+        assert_eq!((up.0, up.1, up.2), (5, 4, Direction::East));
+    }
+
+    #[test]
+    fn test_ug_router_start_can_be_entrance() {
+        // start_dir given (source feeds `start` head-on) + a wall right after
+        // start → the entrance sits on `start` itself (source → UG_DOWN).
+        let w = wall(2, 9);
+        let path = ug_aware_belt_path(
+            9,
+            (1, 4),
+            (5, 4),
+            Direction::East,
+            &w,
+            Some(Direction::East),
+        )
+        .unwrap();
+        assert_eq!(path[0], (1, 4, Direction::East, Misc::UndergroundDown));
+    }
+
+    #[test]
+    fn test_ug_router_surfaces_into_sink() {
+        // Wall right before `end` → the exit lands on `end` (UG_UP → sink).
+        let w = wall(6, 9);
+        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        assert_eq!(
+            *path.last().unwrap(),
+            (7, 4, Direction::East, Misc::UndergroundUp)
+        );
+    }
+
+    #[test]
+    fn test_ug_router_never_reuses_a_tile() {
+        // A wall with a gap at y==0 (a go-around exists) across several start
+        // facings: whatever the router returns, every tile is distinct.
+        let w: HashSet<Cell> = (1..9).map(|y| (4, y)).collect();
+        for sd in [None, Some(Direction::North), Some(Direction::East)] {
+            if let Some(path) = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, sd) {
+                let mut seen = HashSet::new();
+                for &(x, y, _, _) in &path {
+                    assert!(seen.insert((x, y)), "tile reused with start_dir={sd:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_deterministic() {
+        // Same seed → byte-identical world.
+        for seed in 0..5u64 {
+            let (a, b) = (build_cub(12, seed), build_cub(12, seed));
+            for x in 0..a.world.width() {
+                for y in 0..a.world.height() {
+                    for ch in [
+                        Channel::Entities,
+                        Channel::Direction,
+                        Channel::Items,
+                        Channel::Misc,
+                    ] {
+                        assert_eq!(a.world.get(x, y, ch), b.world.get(x, y, ch), "seed={seed}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_obstruction_is_connected_cut_between_opposite_edges() {
+        for seed in 0..40u64 {
+            let info = layout(&build_cub(8, seed));
+            assert!(info.obstruction.contains(&info.obs_source));
+            assert!(info.obstruction.contains(&info.obs_sink));
+            // Spans one axis edge-to-edge.
+            let span_x = {
+                let xs: HashSet<i64> = [info.obs_source.0, info.obs_sink.0].into();
+                xs == HashSet::from([0, 7])
+            };
+            let span_y = {
+                let ys: HashSet<i64> = [info.obs_source.1, info.obs_sink.1].into();
+                ys == HashSet::from([0, 7])
+            };
+            assert!(span_x || span_y, "seed={seed}: not edge-to-edge");
+            let coord = |c: &Cell| if span_x { c.0 } else { c.1 };
+            assert_eq!(info.obstruction.iter().map(coord).min(), Some(0));
+            assert_eq!(info.obstruction.iter().map(coord).max(), Some(7));
+            // 4-connected.
+            let start = *info.obstruction.iter().next().unwrap();
+            let mut seen = HashSet::from([start]);
+            let mut stack = vec![start];
+            while let Some((x, y)) = stack.pop() {
+                for (dx, dy) in BFS_DELTAS {
+                    let n = (x + dx, y + dy);
+                    if info.obstruction.contains(&n) && seen.insert(n) {
+                        stack.push(n);
+                    }
+                }
+            }
+            assert_eq!(seen, info.obstruction, "seed={seed}: cut not 4-connected");
+        }
+    }
+
+    #[test]
+    fn test_cross_obstruction_endpoints_are_random_and_winding() {
+        let mut endpoints: HashSet<Cell> = HashSet::new();
+        let mut winding = 0;
+        for seed in 0..60u64 {
+            let info = layout(&build_cub(10, seed));
+            endpoints.insert(info.obs_source);
+            endpoints.insert(info.obs_sink);
+            let xs: HashSet<i64> = info.obstruction.iter().map(|c| c.0).collect();
+            let ys: HashSet<i64> = info.obstruction.iter().map(|c| c.1).collect();
+            if xs.len() > 1 && ys.len() > 1 {
+                winding += 1;
+            }
+        }
+        assert!(endpoints.len() > 6, "obstruction endpoints look fixed");
+        assert!(winding > 0, "no winding obstruction across 60 seeds");
+    }
+
+    #[test]
+    fn test_cross_no_source_adjacent_to_sink() {
+        for seed in 0..40u64 {
+            let info = layout(&build_cub(8, seed));
+            for s in [info.obs_source, info.cross_source] {
+                for k in [info.obs_sink, info.cross_sink] {
+                    assert_ne!((s.0 - k.0).abs() + (s.1 - k.1).abs(), 1, "seed={seed}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_underground_straddles_obstruction() {
+        for seed in 0..40u64 {
+            let info = layout(&build_cub(8, seed));
+            let (ddx, ddy) = info.flow_dir.unwrap().delta();
+            for &(dx, dy) in &info.ug_downs {
+                let mut between = Vec::new();
+                for step in 1..6 {
+                    let cell = (dx + ddx * step, dy + ddy * step);
+                    if info.ug_ups.contains(&cell) {
+                        assert!(
+                            between.iter().any(|c| info.obstruction.contains(c)),
+                            "seed={seed}: tunnel skips the obstruction"
+                        );
+                        break;
+                    }
+                    between.push(cell);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_endpoints_clear_of_obstruction() {
+        for seed in 0..40u64 {
+            let info = layout(&build_cub(8, seed));
+            for c in [info.cross_source, info.cross_sink] {
+                let gap = info
+                    .obstruction
+                    .iter()
+                    .map(|o| (c.0 - o.0).abs() + (c.1 - o.1).abs())
+                    .min()
+                    .unwrap();
+                assert!(
+                    gap >= 2,
+                    "seed={seed}: endpoint {c:?} hugs the cut (gap {gap})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_endpoints_can_be_interior() {
+        let mut interior = 0;
+        for seed in 0..60u64 {
+            let info = layout(&build_cub(12, seed));
+            let on_edge = |c: &Cell| c.0 == 0 || c.0 == 11 || c.1 == 0 || c.1 == 11;
+            interior += [info.cross_source, info.cross_sink]
+                .iter()
+                .filter(|c| !on_edge(c))
+                .count();
+        }
+        assert!(interior > 0, "crossing endpoints are always on the edge");
+    }
+
+    #[test]
+    fn test_cross_all_flow_directions_appear() {
+        let mut seen: HashSet<Direction> = HashSet::new();
+        for seed in 0..200u64 {
+            if let Some(d) = layout(&build_cub(8, seed)).flow_dir {
+                seen.insert(d);
+            }
+            if seen.len() == 4 {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 4, "only saw {seen:?}");
+    }
+
+    #[test]
+    fn test_cross_delivers_with_obstruction_removed() {
+        // The crossing is self-sufficient: clear the protected obstruction and
+        // it still delivers.
+        for seed in 0..30u64 {
+            let f = build_cub(8, seed);
+            let mut world = f.world.clone();
+            for &(x, y) in &f.protected_positions {
+                // Empty == channel value 0 (no `Item::Empty` variant exists).
+                world.set(x, y, Channel::Entities, 0);
+                world.set(x, y, Channel::Direction, Direction::None as i64);
+                world.set(x, y, Channel::Items, 0);
+                world.set(x, y, Channel::Misc, Misc::None as i64);
+            }
+            assert!(tp_unreachable(&world).0 > 0.0, "seed={seed}");
+        }
+    }
+
+    #[test]
+    fn test_no_orphan_tiles_every_lesson() {
+        // No lesson's solved factory may contain orphan tiles (unreachable == 0).
+        for &kind in all_lesson_kinds() {
+            let mut checked = 0;
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                checked += 1;
+                let (_, unreachable) = tp_unreachable(&f.world);
+                assert_eq!(
+                    unreachable,
+                    0,
+                    "{} seed={seed}: {unreachable} orphans",
+                    kind.name()
+                );
+            }
+            assert!(checked > 0, "no {} factories built", kind.name());
+        }
     }
 }
