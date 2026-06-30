@@ -44,10 +44,10 @@ POD_START_TIMEOUT = 600  # seconds (large Docker image needs time for first pull
 
 # GPU availability is transient — RunPod often replies "no longer any instances
 # available, please refresh and try again" when a machine was just snapped up.
-# Re-running the whole fallback chain a few seconds later usually succeeds, so we
-# retry the entire chain (preferred GPU first each round) before giving up.
+# Retrying the same GPU a few seconds later usually succeeds, so we exhaust
+# ``max_retries`` attempts on each GPU before falling back to the next one.
 DEFAULT_MAX_RETRIES = 5
-DEFAULT_RETRY_DELAY = 5.0  # seconds between retry rounds
+DEFAULT_RETRY_DELAY = 5.0  # seconds between attempts on the same GPU
 
 
 def create_pod(
@@ -59,8 +59,9 @@ def create_pod(
 ) -> dict:
     """Create a RunPod pod and wait for it to be ready.
 
-    Tries each GPU in the fallback chain; if the whole chain is unavailable it
-    waits ``retry_delay`` seconds and retries, up to ``max_retries`` rounds.
+    Tries each GPU in the fallback chain, retrying the same GPU up to
+    ``max_retries`` times (waiting ``retry_delay`` seconds between attempts)
+    before falling back to the next GPU in the lineup.
 
     Returns dict with pod_id, ssh_host, ssh_port, gpu_type, status.
     """
@@ -72,9 +73,9 @@ def create_pod(
     )
 
     pod = None
-    for attempt in range(1, max_retries + 1):
-        for gpu in gpu_types_to_try:
-            print(f"Trying GPU: {gpu}", flush=True)
+    for gpu in gpu_types_to_try:
+        for attempt in range(1, max_retries + 1):
+            print(f"Trying GPU: {gpu} (attempt {attempt}/{max_retries})", flush=True)
             try:
                 pod = runpod.create_pod(
                     name=f"{name_prefix}-{int(time.time())}",
@@ -96,23 +97,18 @@ def create_pod(
             except Exception as e:
                 print(f"  Failed: {e}", flush=True)
                 pod = None
-                continue
+
+            if attempt < max_retries:
+                print(f"  Retrying {gpu} in {retry_delay:.0f}s...", flush=True)
+                time.sleep(retry_delay)
 
         if pod and pod.get("id"):
             break
 
-        if attempt < max_retries:
-            print(
-                f"  No GPUs available (attempt {attempt}/{max_retries}); "
-                f"retrying in {retry_delay:.0f}s...",
-                flush=True,
-            )
-            time.sleep(retry_delay)
-
     if not pod or not pod.get("id"):
         print(
             f"ERROR: Could not create pod with any available GPU type "
-            f"after {max_retries} attempts",
+            f"({max_retries} attempts each)",
             flush=True,
         )
         sys.exit(1)
@@ -187,13 +183,13 @@ def main():
         "--max-retries",
         type=int,
         default=DEFAULT_MAX_RETRIES,
-        help="Number of times to retry the whole GPU fallback chain when no GPU is available",
+        help="Attempts per GPU before falling back to the next GPU in the lineup",
     )
     parser.add_argument(
         "--retry-delay",
         type=float,
         default=DEFAULT_RETRY_DELAY,
-        help="Seconds to wait between retry rounds",
+        help="Seconds to wait between attempts on the same GPU",
     )
     args = parser.parse_args()
 

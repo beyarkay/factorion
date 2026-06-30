@@ -25,10 +25,9 @@ RUNNING_POD = {
 class TestCreatePodRetry:
     @patch("runpod_create.time.sleep")
     @patch("runpod_create.runpod")
-    def test_retries_until_available(self, mock_runpod, mock_sleep):
-        """Retries the whole chain when GPUs are transiently unavailable."""
+    def test_retries_same_gpu_until_available(self, mock_runpod, mock_sleep):
+        """Retries the same GPU when it is transiently unavailable."""
         os.environ["RUNPOD_API_KEY"] = "test-key"
-        # Single GPU (not in the fallback chain) so one attempt per round.
         mock_runpod.create_pod.side_effect = [
             Exception("no longer any instances available"),
             Exception("no longer any instances available"),
@@ -44,8 +43,40 @@ class TestCreatePodRetry:
         assert result["ssh_host"] == "1.2.3.4"
         assert result["ssh_port"] == 12345
         assert mock_runpod.create_pod.call_count == 3
-        # Slept once after each of the two failed rounds.
+        # Slept once after each of the two failed attempts.
         assert mock_sleep.call_args_list == [((5.0,),), ((5.0,),)]
+        # All three attempts targeted the same GPU.
+        gpus = [c.kwargs["gpu_type_id"] for c in mock_runpod.create_pod.call_args_list]
+        assert gpus == ["some-custom-gpu"] * 3
+
+    @patch("runpod_create.time.sleep")
+    @patch("runpod_create.runpod")
+    def test_falls_back_to_next_gpu_after_exhausting_retries(self, mock_runpod, mock_sleep):
+        """Falls back to the next GPU only after exhausting retries on the first."""
+        os.environ["RUNPOD_API_KEY"] = "test-key"
+        # First GPU fails both attempts; second GPU succeeds on its first.
+        mock_runpod.create_pod.side_effect = [
+            Exception("no longer any instances available"),
+            Exception("no longer any instances available"),
+            {"id": "pod-2"},
+        ]
+        mock_runpod.get_pod.return_value = RUNNING_POD
+
+        result = runpod_create.create_pod(
+            gpu_type=runpod_create.GPU_FALLBACKS[0], max_retries=2, retry_delay=5.0
+        )
+
+        assert result["pod_id"] == "pod-2"
+        assert mock_runpod.create_pod.call_count == 3
+        gpus = [c.kwargs["gpu_type_id"] for c in mock_runpod.create_pod.call_args_list]
+        assert gpus == [
+            runpod_create.GPU_FALLBACKS[0],
+            runpod_create.GPU_FALLBACKS[0],
+            runpod_create.GPU_FALLBACKS[1],
+        ]
+        # One sleep between the two attempts on the first GPU; none before the
+        # immediate fallback to the second GPU.
+        assert mock_sleep.call_count == 1
 
     @patch("runpod_create.time.sleep")
     @patch("runpod_create.runpod")
