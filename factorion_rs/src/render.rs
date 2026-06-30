@@ -82,7 +82,6 @@ pub(crate) fn on_perimeter(p: Pos, (min_x, min_y, max_x, max_y): (i64, i64, i64,
 /// Render a [`World`] back into the grid format (geometry only — item bindings
 /// live in the header, not the grid). The inverse of `parse_grid` for the
 /// shapes the format supports, so `parse_grid(render(w))` round-trips geometry.
-#[allow(clippy::needless_range_loop)]
 pub(crate) fn render(world: &World) -> String {
     let w = world.width();
     let h = world.height();
@@ -90,10 +89,10 @@ pub(crate) fn render(world: &World) -> String {
 
     // Start every tile as empty (`..`); fillers default to spaces.
     let mut buf = vec![vec![' '; cols]; h];
-    for y in 0..h {
+    for row in buf.iter_mut() {
         for x in 0..w {
-            buf[y][3 * x] = '.';
-            buf[y][3 * x + 1] = '.';
+            row[3 * x] = '.';
+            row[3 * x + 1] = '.';
         }
     }
 
@@ -238,5 +237,66 @@ mod tests {
             Some(Item::ElectronicCircuit),
         );
         assert_eq!(render(&w), "aaaaaaaa\naa    aa\naaaaaaaa");
+    }
+
+    /// The on-disk grid a fixture author wrote, canonicalized the same way the
+    /// parser consumes it: trim each line, drop blank lines and `#` comments.
+    /// `render` emits exactly this shape (no leading indent, trailing trimmed),
+    /// so a faithful round-trip is byte-for-byte equality against it.
+    fn canonical_grid(grid_src: &str) -> String {
+        grid_src
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Full round-trip over every fixture on disk: parse each YAML factory into
+    /// a `World` (disk → factory), render it back to a grid string (factory →
+    /// string), and assert the string is byte-for-byte the grid that was on
+    /// disk. Geometry survives the trip unchanged for every shape the format
+    /// supports — this is the render⇄parse inverse, exercised against the whole
+    /// fixture corpus rather than a handful of hand-built worlds.
+    #[test]
+    fn test_render_roundtrips_every_fixture_on_disk() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/factories");
+        let read = std::fs::read_dir(dir);
+        assert!(
+            read.is_ok(),
+            "cannot read factories dir {dir}: {:?}",
+            read.err()
+        );
+        let mut files: Vec<std::path::PathBuf> = read
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no .yaml factory files found in {dir}");
+
+        let mut checked = 0usize;
+        for path in &files {
+            let display = path.display();
+            let text = std::fs::read_to_string(path);
+            assert!(text.is_ok(), "cannot read {display}: {:?}", text.err());
+            // The (test-only) textual parser is the inverse under test.
+            let specs = crate::textual::parse_many(&text.unwrap());
+            assert!(specs.is_ok(), "cannot parse {display}: {:?}", specs.err());
+            for (i, spec) in specs.unwrap().iter().enumerate() {
+                let want = canonical_grid(&spec.grid_src);
+                let got = render(&spec.world);
+                assert_eq!(
+                    got,
+                    want,
+                    "\n===== render round-trip changed the grid in {display} (factory #{}) =====\
+                     \n--- on disk ---\n{want}\n--- render(parse(disk)) ---\n{got}\n",
+                    i + 1
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no factory documents were checked");
     }
 }

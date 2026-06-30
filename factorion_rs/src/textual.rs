@@ -381,6 +381,10 @@ struct ThroughputEntry {
 #[derive(Debug)]
 pub(crate) struct FactorySpec {
     pub world: World,
+    /// The raw `factory:` grid block as written on disk (before per-line
+    /// trimming). The render round-trip test in `crate::render` canonicalizes
+    /// this and asserts `render(world)` reproduces it byte-for-byte.
+    pub grid_src: String,
     pub expected_throughput: Vec<DeliverySpec>,
     /// Free-text description from the header, if any.
     pub description: Option<String>,
@@ -442,6 +446,7 @@ fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
 
     Ok(FactorySpec {
         world: parsed.world,
+        grid_src: header.factory,
         expected_throughput,
         description: header.description,
         ignored: header.ignored,
