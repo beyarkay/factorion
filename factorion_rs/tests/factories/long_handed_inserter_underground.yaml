@@ -1,0 +1,15 @@
+# Long inserter spanning an underground-belt entrance and exit. It picks up from
+# the entrance (d) two tiles behind and drops onto the exit (u) two tiles ahead.
+#
+# Note the THIRD edge: the entrance and exit also pair with each other
+# (d -> u). That tunnel link is the undergrounds' own doing — it forms whenever
+# a matching entrance/exit are in range and same-facing, and the tunnel passes
+# straight beneath the long inserter on the surface — so all three edges are
+# real and the graph asserts every one.
+description: long inserter bridges an underground entrance and exit at reach 2
+graph: |
+  d@0,0 -> l@2,0
+  l@2,0 -> u@4,0
+  d@0,0 -> u@4,0
+factory: |
+  d> .. l> .. u>

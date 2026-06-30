@@ -1,0 +1,51 @@
+# The reach boundary, vertically. A long inserter touches the cell EXACTLY two
+# away — never one (too near), never three (too far). These pin the boundary on
+# both sides of the sweet spot with a north-facing inserter between a source and
+# a sink.
+
+description: |
+  Distance 3 — too far. The source and sink sit three cells from the inserter,
+  one past its reach, so nothing connects.
+graph: ""
+factory: |
+  .. K^ ..
+  .. .. ..
+  .. .. ..
+  .. l^ ..
+  .. .. ..
+  .. .. ..
+  .. S^ ..
+---
+description: |
+  Distance 1 — too near. The source and sink are directly adjacent (one cell
+  away); the long hand reaches over both to the empty cells beyond, so nothing
+  connects.
+graph: ""
+factory: |
+  .. .. ..
+  .. K^ ..
+  .. l^ ..
+  .. S^ ..
+  .. .. ..
+---
+description: |
+  Drop at distance 2: the sink is two cells ahead (connects) while the source
+  one cell behind is skipped — so only the drop edge forms.
+graph: "l@1,2 -> K@1,0"
+factory: |
+  .. K^ ..
+  .. .. ..
+  .. l^ ..
+  .. S^ ..
+  .. .. ..
+---
+description: |
+  Pickup at distance 2: the source is two cells behind (connects) while the sink
+  one cell ahead is skipped — so only the pickup edge forms.
+graph: "S@1,4 -> l@1,2"
+factory: |
+  .. .. ..
+  .. K^ ..
+  .. l^ ..
+  .. .. ..
+  .. S^ ..
