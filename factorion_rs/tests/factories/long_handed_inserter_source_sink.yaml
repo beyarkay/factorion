@@ -1,0 +1,27 @@
+# Long inserter vs the env-spawned source (S) / sink (K) markers, at reach 2.
+# A long inserter legitimately pulls from a source two tiles behind it and
+# drops onto a sink two tiles ahead — the building blocks of every throughput
+# fixture. The "drops into a source" case mirrors inserter_into_source.yaml:
+# the engine currently produces a spurious edge there, so it is parked with
+# `ignored: true` until the engine stops connecting inserters to sources.
+
+description: long inserter pulls from a source two tiles behind it
+graph: |
+  S@0,0 -> l@2,0
+factory: |
+  S> .. l> ..
+---
+description: long inserter drops onto a sink two tiles ahead of it
+graph: |
+  l@1,0 -> K@3,0
+factory: |
+  .. l> .. K>
+---
+description: |
+  A long inserter must not insert *into* a source (an infinite producer, not a
+  container). The engine is currently WRONG here, producing a spurious
+  l -> S edge, so this is parked like the plain-inserter case.
+ignored: true
+graph: ""
+factory: |
+  .. l> .. S>

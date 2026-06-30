@@ -1,0 +1,129 @@
+# A 3x3 block of long inserters pressed against a 3x3 assembler, on each of the
+# four sides, both feeding it (inserters -> assembler) and draining it
+# (assembler -> inserters). Demonstrates two things at once:
+#   * A long inserter connects to the assembler from any tile its reach-2 cell
+#     lands on (including the assembler's interior tile), and every such edge
+#     canonicalises to the assembler anchor (top-left).
+#   * Reach is exactly 2: the far column/row of the block sits three tiles from
+#     the body and never connects, so each side yields exactly six edges.
+
+# ── Feeding the assembler (inserters -> assembler) ───────────────────────────
+
+description: input from the WEST — block of east-facing long inserters feeds the assembler
+graph: |
+  l@1,0 -> a@3,0
+  l@2,0 -> a@3,0
+  l@1,1 -> a@3,0
+  l@2,1 -> a@3,0
+  l@1,2 -> a@3,0
+  l@2,2 -> a@3,0
+factory: |
+  l> l> l> aaaaaaaa
+  l> l> l> aa    aa
+  l> l> l> aaaaaaaa
+---
+description: input from the EAST — block of west-facing long inserters feeds the assembler
+graph: |
+  l@3,0 -> a@0,0
+  l@4,0 -> a@0,0
+  l@3,1 -> a@0,0
+  l@4,1 -> a@0,0
+  l@3,2 -> a@0,0
+  l@4,2 -> a@0,0
+factory: |
+  aaaaaaaa l< l< l<
+  aa    aa l< l< l<
+  aaaaaaaa l< l< l<
+---
+description: input from the NORTH — block of south-facing long inserters feeds the assembler
+graph: |
+  l@0,1 -> a@0,3
+  l@1,1 -> a@0,3
+  l@2,1 -> a@0,3
+  l@0,2 -> a@0,3
+  l@1,2 -> a@0,3
+  l@2,2 -> a@0,3
+factory: |
+  lv lv lv
+  lv lv lv
+  lv lv lv
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+---
+description: input from the SOUTH — block of north-facing long inserters feeds the assembler
+graph: |
+  l@0,3 -> a@0,0
+  l@1,3 -> a@0,0
+  l@2,3 -> a@0,0
+  l@0,4 -> a@0,0
+  l@1,4 -> a@0,0
+  l@2,4 -> a@0,0
+factory: |
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+  l^ l^ l^
+  l^ l^ l^
+  l^ l^ l^
+---
+
+# ── Draining the assembler (assembler -> inserters) ──────────────────────────
+
+description: output to the EAST — assembler feeds a block of east-facing long inserters
+graph: |
+  a@0,0 -> l@3,0
+  a@0,0 -> l@4,0
+  a@0,0 -> l@3,1
+  a@0,0 -> l@4,1
+  a@0,0 -> l@3,2
+  a@0,0 -> l@4,2
+factory: |
+  aaaaaaaa l> l> l>
+  aa    aa l> l> l>
+  aaaaaaaa l> l> l>
+---
+description: output to the WEST — assembler feeds a block of west-facing long inserters
+graph: |
+  a@3,0 -> l@1,0
+  a@3,0 -> l@2,0
+  a@3,0 -> l@1,1
+  a@3,0 -> l@2,1
+  a@3,0 -> l@1,2
+  a@3,0 -> l@2,2
+factory: |
+  l< l< l< aaaaaaaa
+  l< l< l< aa    aa
+  l< l< l< aaaaaaaa
+---
+description: output to the NORTH — assembler feeds a block of north-facing long inserters
+graph: |
+  a@0,3 -> l@0,1
+  a@0,3 -> l@1,1
+  a@0,3 -> l@2,1
+  a@0,3 -> l@0,2
+  a@0,3 -> l@1,2
+  a@0,3 -> l@2,2
+factory: |
+  l^ l^ l^
+  l^ l^ l^
+  l^ l^ l^
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+---
+description: output to the SOUTH — assembler feeds a block of south-facing long inserters
+graph: |
+  a@0,0 -> l@0,3
+  a@0,0 -> l@1,3
+  a@0,0 -> l@2,3
+  a@0,0 -> l@0,4
+  a@0,0 -> l@1,4
+  a@0,0 -> l@2,4
+factory: |
+  aaaaaaaa
+  aa    aa
+  aaaaaaaa
+  lv lv lv
+  lv lv lv
+  lv lv lv

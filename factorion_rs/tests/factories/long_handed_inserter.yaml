@@ -1,0 +1,51 @@
+# Long-handed inserter (`l`): an inserter variant that reaches TWO tiles
+# instead of one. It picks up from the tile two cells behind it and drops onto
+# the tile two cells ahead, skipping the cell in between. Throughput and the
+# set of entities it interacts with are identical to a plain inserter (`i`);
+# only the reach differs. Facing markers: ^>v<.
+description: |
+  The canonical vertical layout. A north-facing long inserter at (1,2) picks
+  up from the source two tiles below it at (1,4) and drops onto the sink two
+  tiles above it at (1,0). The cells immediately above/below it stay empty —
+  the long hand reaches right over them. Inserter-limited to 0.86 i/s.
+items:
+- { x: 1, y: 4, item: copper_cable }
+- { x: 1, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@1,4 -> l@1,2
+  l@1,2 -> K@1,0
+factory: |
+  .. K^ ..
+  .. .. ..
+  .. l^ ..
+  .. .. ..
+  .. S^ ..
+---
+description: |
+  The same reach horizontally, with empty gaps making the two-tile span
+  explicit: source at (0,0) -> long inserter at (2,0) -> sink at (4,0). The
+  inserter never touches the gap cells (1,0) and (3,0).
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 4, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 0.86 }
+graph: |
+  S@0,0 -> l@2,0
+  l@2,0 -> K@4,0
+factory: |
+  S> .. l> .. K>
+---
+description: |
+  Reach-2 over a populated gap: belts sit in the skipped cells (1,0) and (3,0)
+  but the long inserter still bridges the belts two tiles out, at (0,0) and
+  (4,0). The belt chain and the long-hand edges coexist.
+graph: |
+  b@0,0 -> b@1,0
+  b@0,0 -> l@2,0
+  b@3,0 -> b@4,0
+  l@2,0 -> b@4,0
+factory: |
+  b> b> l> b> b>

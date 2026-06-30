@@ -99,6 +99,41 @@ class TestHandcraftedGraphSnapshots:
             (_n("inserter", 3, 0), _n("bulk_inserter", 4, 0)),
         }
 
+    def test_long_handed_inserter_reaches_two_tiles(self):
+        # A long-handed inserter reaches TWO tiles: it picks up from the source
+        # two cells behind it (0,0) and drops onto the sink two cells ahead
+        # (4,0), skipping the empty cells (1,0) and (3,0) in between.
+        w = make_world(6)
+        set_entity(w, 0, 0, "source", Direction.EAST, "copper_cable")
+        set_entity(w, 2, 0, "long_handed_inserter", Direction.EAST)
+        set_entity(w, 4, 0, "sink", Direction.EAST, "copper_cable")
+        nodes, edges = _summary(build_factory_graph(w))
+        assert nodes == {
+            _n("stack_inserter", 0, 0),
+            _n("long_handed_inserter", 2, 0),
+            _n("bulk_inserter", 4, 0),
+        }
+        assert edges == {
+            (_n("stack_inserter", 0, 0), _n("long_handed_inserter", 2, 0)),
+            (_n("long_handed_inserter", 2, 0), _n("bulk_inserter", 4, 0)),
+        }
+
+    def test_long_handed_inserter_skips_adjacent_tiles(self):
+        # Belts sit directly behind/ahead of the long inserter (distance 1). A
+        # long inserter only ever touches tiles at distance 2, so neither belt
+        # connects and the graph has no edges.
+        w = make_world(6)
+        set_entity(w, 0, 0, "transport_belt", Direction.EAST)
+        set_entity(w, 1, 0, "long_handed_inserter", Direction.EAST)
+        set_entity(w, 2, 0, "transport_belt", Direction.EAST)
+        nodes, edges = _summary(build_factory_graph(w))
+        assert nodes == {
+            _n("transport_belt", 0, 0),
+            _n("long_handed_inserter", 1, 0),
+            _n("transport_belt", 2, 0),
+        }
+        assert edges == set()
+
     def test_underground_belt_run(self):
         # belt → underground(down) … underground(up) → belt.
         w = make_world(6)

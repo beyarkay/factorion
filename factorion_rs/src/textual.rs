@@ -80,6 +80,7 @@ const TOL: f64 = 1e-9;
 const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('b', Item::TransportBelt, Misc::None),
     ('i', Item::Inserter, Misc::None),
+    ('l', Item::LongHandedInserter, Misc::None),
     ('a', Item::AssemblingMachine1, Misc::None),
     ('Y', Item::Splitter, Misc::None),
     ('d', Item::UndergroundBelt, Misc::UndergroundDown),

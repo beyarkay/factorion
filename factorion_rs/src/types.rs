@@ -98,8 +98,14 @@ impl Misc {
 ///
 /// Integer-id layout:
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
-///   6..=65  — non-placeable items (recipe ingredients / products / raw
-///             materials / non-modeled buildings exposed only as items)
+///   6..=65  — mostly non-placeable items (recipe ingredients / products /
+///             raw materials / non-modeled buildings exposed only as items).
+///             The one exception is `LongHandedInserter` (34): it carries a
+///             recipe like the others but is *also* a placeable entity (an
+///             inserter variant that reaches two tiles instead of one), so it
+///             returns `true` from `is_placeable`. Placeability is decided by
+///             `is_placeable`, not by id range — the head excludes only the
+///             last two ids, so a placeable id in the middle is fine.
 ///   66..=67 — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
@@ -354,6 +360,7 @@ impl Item {
             self,
             Item::TransportBelt
                 | Item::Inserter
+                | Item::LongHandedInserter
                 | Item::AssemblingMachine1
                 | Item::UndergroundBelt
                 | Item::Sink
@@ -369,6 +376,10 @@ impl Item {
         match self {
             Item::TransportBelt => 15.0,
             Item::Inserter => 0.86,
+            // A long-handed inserter is functionally identical to a plain
+            // inserter — same throughput — it only reaches two tiles instead
+            // of one. See `LongHandedInserter` in entities.rs.
+            Item::LongHandedInserter => 0.86,
             Item::AssemblingMachine1 => 0.5,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
@@ -403,7 +414,6 @@ impl Item {
             | Item::FastUndergroundBelt
             | Item::FastSplitter
             | Item::BurnerInserter
-            | Item::LongHandedInserter
             | Item::FastInserter
             | Item::SmallElectricPole
             | Item::MediumElectricPole
@@ -1247,6 +1257,8 @@ mod tests {
     fn test_item_flow_rates() {
         assert_eq!(Item::TransportBelt.flow_rate(), 15.0);
         assert_eq!(Item::Inserter.flow_rate(), 0.86);
+        // A long-handed inserter has the same throughput as a plain inserter.
+        assert_eq!(Item::LongHandedInserter.flow_rate(), 0.86);
         assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
         assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
         assert!(Item::Sink.flow_rate().is_infinite());
@@ -1260,6 +1272,7 @@ mod tests {
         for placeable in [
             Item::TransportBelt,
             Item::Inserter,
+            Item::LongHandedInserter,
             Item::AssemblingMachine1,
             Item::UndergroundBelt,
             Item::Sink,

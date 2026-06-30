@@ -1,0 +1,329 @@
+# Connectivity oracle: every case where the FIRST entity (A) is a
+# long-handed inserter (l). B is placed TWO tiles East of A, with an empty
+# gap between them, because a long inserter reaches distance 2 — it skips
+# the adjacent cell entirely. `graph:` is build_graph's exact edge set.
+# A faces East -> B is the drop target (l -> B); A faces West -> B is the
+# pickup source (B -> l); A faces N/S -> B is off-axis, no edge. The target's
+# own facing never matters (an inserter grabs/places regardless), so every
+# B direction is enumerated to pin that invariant down.
+# Glyphs: b belt, i inserter, u ug_up(exit), d ug_down(entrance); facing ^>v<.
+
+description: long_handed_inserter/N vs belt/N
+graph: ""
+factory: |
+  .. l^ .. b^ ..
+---
+description: long_handed_inserter/N vs belt/E
+graph: ""
+factory: |
+  .. l^ .. b> ..
+---
+description: long_handed_inserter/N vs belt/S
+graph: ""
+factory: |
+  .. l^ .. bv ..
+---
+description: long_handed_inserter/N vs belt/W
+graph: ""
+factory: |
+  .. l^ .. b< ..
+---
+description: long_handed_inserter/N vs inserter/N
+graph: ""
+factory: |
+  .. l^ .. i^ ..
+---
+description: long_handed_inserter/N vs inserter/E
+graph: ""
+factory: |
+  .. l^ .. i> ..
+---
+description: long_handed_inserter/N vs inserter/S
+graph: ""
+factory: |
+  .. l^ .. iv ..
+---
+description: long_handed_inserter/N vs inserter/W
+graph: ""
+factory: |
+  .. l^ .. i< ..
+---
+description: long_handed_inserter/N vs ug_up/N
+graph: ""
+factory: |
+  .. l^ .. u^ ..
+---
+description: long_handed_inserter/N vs ug_up/E
+graph: ""
+factory: |
+  .. l^ .. u> ..
+---
+description: long_handed_inserter/N vs ug_up/S
+graph: ""
+factory: |
+  .. l^ .. uv ..
+---
+description: long_handed_inserter/N vs ug_up/W
+graph: ""
+factory: |
+  .. l^ .. u< ..
+---
+description: long_handed_inserter/N vs ug_down/N
+graph: ""
+factory: |
+  .. l^ .. d^ ..
+---
+description: long_handed_inserter/N vs ug_down/E
+graph: ""
+factory: |
+  .. l^ .. d> ..
+---
+description: long_handed_inserter/N vs ug_down/S
+graph: ""
+factory: |
+  .. l^ .. dv ..
+---
+description: long_handed_inserter/N vs ug_down/W
+graph: ""
+factory: |
+  .. l^ .. d< ..
+---
+description: long_handed_inserter/E vs belt/N
+graph: "l@1,0 -> b@3,0"
+factory: |
+  .. l> .. b^ ..
+---
+description: long_handed_inserter/E vs belt/E
+graph: "l@1,0 -> b@3,0"
+factory: |
+  .. l> .. b> ..
+---
+description: long_handed_inserter/E vs belt/S
+graph: "l@1,0 -> b@3,0"
+factory: |
+  .. l> .. bv ..
+---
+description: long_handed_inserter/E vs belt/W
+graph: "l@1,0 -> b@3,0"
+factory: |
+  .. l> .. b< ..
+---
+description: long_handed_inserter/E vs inserter/N
+graph: ""
+factory: |
+  .. l> .. i^ ..
+---
+description: long_handed_inserter/E vs inserter/E
+graph: ""
+factory: |
+  .. l> .. i> ..
+---
+description: long_handed_inserter/E vs inserter/S
+graph: ""
+factory: |
+  .. l> .. iv ..
+---
+description: long_handed_inserter/E vs inserter/W
+graph: ""
+factory: |
+  .. l> .. i< ..
+---
+description: long_handed_inserter/E vs ug_up/N
+graph: "l@1,0 -> u@3,0"
+factory: |
+  .. l> .. u^ ..
+---
+description: long_handed_inserter/E vs ug_up/E
+graph: "l@1,0 -> u@3,0"
+factory: |
+  .. l> .. u> ..
+---
+description: long_handed_inserter/E vs ug_up/S
+graph: "l@1,0 -> u@3,0"
+factory: |
+  .. l> .. uv ..
+---
+description: long_handed_inserter/E vs ug_up/W
+graph: "l@1,0 -> u@3,0"
+factory: |
+  .. l> .. u< ..
+---
+description: long_handed_inserter/E vs ug_down/N
+graph: "l@1,0 -> d@3,0"
+factory: |
+  .. l> .. d^ ..
+---
+description: long_handed_inserter/E vs ug_down/E
+graph: "l@1,0 -> d@3,0"
+factory: |
+  .. l> .. d> ..
+---
+description: long_handed_inserter/E vs ug_down/S
+graph: "l@1,0 -> d@3,0"
+factory: |
+  .. l> .. dv ..
+---
+description: long_handed_inserter/E vs ug_down/W
+graph: "l@1,0 -> d@3,0"
+factory: |
+  .. l> .. d< ..
+---
+description: long_handed_inserter/S vs belt/N
+graph: ""
+factory: |
+  .. lv .. b^ ..
+---
+description: long_handed_inserter/S vs belt/E
+graph: ""
+factory: |
+  .. lv .. b> ..
+---
+description: long_handed_inserter/S vs belt/S
+graph: ""
+factory: |
+  .. lv .. bv ..
+---
+description: long_handed_inserter/S vs belt/W
+graph: ""
+factory: |
+  .. lv .. b< ..
+---
+description: long_handed_inserter/S vs inserter/N
+graph: ""
+factory: |
+  .. lv .. i^ ..
+---
+description: long_handed_inserter/S vs inserter/E
+graph: ""
+factory: |
+  .. lv .. i> ..
+---
+description: long_handed_inserter/S vs inserter/S
+graph: ""
+factory: |
+  .. lv .. iv ..
+---
+description: long_handed_inserter/S vs inserter/W
+graph: ""
+factory: |
+  .. lv .. i< ..
+---
+description: long_handed_inserter/S vs ug_up/N
+graph: ""
+factory: |
+  .. lv .. u^ ..
+---
+description: long_handed_inserter/S vs ug_up/E
+graph: ""
+factory: |
+  .. lv .. u> ..
+---
+description: long_handed_inserter/S vs ug_up/S
+graph: ""
+factory: |
+  .. lv .. uv ..
+---
+description: long_handed_inserter/S vs ug_up/W
+graph: ""
+factory: |
+  .. lv .. u< ..
+---
+description: long_handed_inserter/S vs ug_down/N
+graph: ""
+factory: |
+  .. lv .. d^ ..
+---
+description: long_handed_inserter/S vs ug_down/E
+graph: ""
+factory: |
+  .. lv .. d> ..
+---
+description: long_handed_inserter/S vs ug_down/S
+graph: ""
+factory: |
+  .. lv .. dv ..
+---
+description: long_handed_inserter/S vs ug_down/W
+graph: ""
+factory: |
+  .. lv .. d< ..
+---
+description: long_handed_inserter/W vs belt/N
+graph: "b@3,0 -> l@1,0"
+factory: |
+  .. l< .. b^ ..
+---
+description: long_handed_inserter/W vs belt/E
+graph: "b@3,0 -> l@1,0"
+factory: |
+  .. l< .. b> ..
+---
+description: long_handed_inserter/W vs belt/S
+graph: "b@3,0 -> l@1,0"
+factory: |
+  .. l< .. bv ..
+---
+description: long_handed_inserter/W vs belt/W
+graph: "b@3,0 -> l@1,0"
+factory: |
+  .. l< .. b< ..
+---
+description: long_handed_inserter/W vs inserter/N
+graph: ""
+factory: |
+  .. l< .. i^ ..
+---
+description: long_handed_inserter/W vs inserter/E
+graph: ""
+factory: |
+  .. l< .. i> ..
+---
+description: long_handed_inserter/W vs inserter/S
+graph: ""
+factory: |
+  .. l< .. iv ..
+---
+description: long_handed_inserter/W vs inserter/W
+graph: ""
+factory: |
+  .. l< .. i< ..
+---
+description: long_handed_inserter/W vs ug_up/N
+graph: "u@3,0 -> l@1,0"
+factory: |
+  .. l< .. u^ ..
+---
+description: long_handed_inserter/W vs ug_up/E
+graph: "u@3,0 -> l@1,0"
+factory: |
+  .. l< .. u> ..
+---
+description: long_handed_inserter/W vs ug_up/S
+graph: "u@3,0 -> l@1,0"
+factory: |
+  .. l< .. uv ..
+---
+description: long_handed_inserter/W vs ug_up/W
+graph: "u@3,0 -> l@1,0"
+factory: |
+  .. l< .. u< ..
+---
+description: long_handed_inserter/W vs ug_down/N
+graph: "d@3,0 -> l@1,0"
+factory: |
+  .. l< .. d^ ..
+---
+description: long_handed_inserter/W vs ug_down/E
+graph: "d@3,0 -> l@1,0"
+factory: |
+  .. l< .. d> ..
+---
+description: long_handed_inserter/W vs ug_down/S
+graph: "d@3,0 -> l@1,0"
+factory: |
+  .. l< .. dv ..
+---
+description: long_handed_inserter/W vs ug_down/W
+graph: "d@3,0 -> l@1,0"
+factory: |
+  .. l< .. d< ..
