@@ -1152,8 +1152,10 @@ def layers_from_args(args) -> list[int]:
 def assert_device_ok(device) -> None:
     if device.type in ("cuda", "mps"):
         return
-    # CI runs CPU-only smoke tests; everywhere else a CPU fallback is a bug.
-    if os.environ.get("CI"):
+    # CI and the local test suite run CPU-only smoke tests; everywhere else a
+    # CPU fallback is a bug. pytest sets PYTEST_CURRENT_TEST for every test, so
+    # `uv run pytest` trains on CPU without needing CI=true in the environment.
+    if os.environ.get("CI") or os.environ.get("PYTEST_CURRENT_TEST"):
         return
     raise RuntimeError(
         f"Refusing to train on '{device.type}': no CUDA GPU was found. This "
