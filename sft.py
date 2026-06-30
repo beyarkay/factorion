@@ -945,7 +945,7 @@ def train_sft(args: SFTArgs):
         valid_masks[train_idx],
         eot_labels[train_idx],
     )
-    val_ds = TensorDataset(
+    val_tensors_cpu = (
         obs[val_idx],
         tiles[val_idx],
         ents[val_idx],
@@ -956,7 +956,6 @@ def train_sft(args: SFTArgs):
         eot_labels[val_idx],
         lesson_kinds[val_idx],
     )
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
@@ -1002,6 +1001,23 @@ def train_sft(args: SFTArgs):
         TensorDataset(torch.arange(n_train)),
         batch_size=args.batch_size,
         shuffle=True,
+    )
+    # Validation set, same treatment (GPU-resident + index DataLoader). shuffle
+    # is off so the order doesn't matter, but the index DataLoader still draws
+    # the same 2 global-RNG ints/epoch as the old val DataLoader (shared+base
+    # seed), which the train shuffle's RNG stream depends on — so val_loss stays
+    # bit-identical.
+    (
+        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
+    ) = (
+        val_tensors_cpu[0].float().to(device),
+        *(t.to(device) for t in val_tensors_cpu[1:]),
+    )
+    n_val = va_obs.shape[0]
+    val_index_loader = DataLoader(
+        TensorDataset(torch.arange(n_val)),
+        batch_size=args.batch_size,
+        shuffle=False,
     )
 
     optimizer = optim.AdamW(
@@ -1283,27 +1299,17 @@ def train_sft(args: SFTArgs):
         per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
 
         with torch.no_grad():
-            for batch in val_loader:
-                (
-                    batch_obs,
-                    batch_tile,
-                    batch_ent,
-                    batch_dir,
-                    batch_item,
-                    batch_misc,
-                    batch_mask,
-                    batch_eot,
-                    batch_kind,
-                ) = batch
-                batch_obs = batch_obs.float().to(device)
-                batch_tile = batch_tile.to(device)
-                batch_ent = batch_ent.to(device)
-                batch_dir = batch_dir.to(device)
-                batch_item = batch_item.to(device)
-                batch_misc = batch_misc.to(device)
-                batch_mask = batch_mask.to(device)
-                batch_eot = batch_eot.to(device)
-                batch_kind = batch_kind.to(device)
+            for (idx_cpu,) in val_index_loader:
+                idx = idx_cpu.to(device)
+                batch_obs = va_obs[idx]
+                batch_tile = va_tile[idx]
+                batch_ent = va_ent[idx]
+                batch_dir = va_dir[idx]
+                batch_item = va_item[idx]
+                batch_misc = va_misc[idx]
+                batch_mask = va_mask[idx]
+                batch_eot = va_eot[idx]
+                batch_kind = va_kind[idx]
 
                 encoded = agent.encoder(batch_obs)
                 B = encoded.shape[0]
