@@ -109,6 +109,35 @@ with open(p,"a",newline="") as f:
 print(f"\ntime-to-quality: {tm}s +/- {ts} ({reached}/{n} reached) crossing {im}+/-{is_} -> {p}")
 PY
     ;;
+
+  sft)
+    RUNS="${RUNS:-3}"; WARMUP="${WARMUP:-1}"; BASELINE_VAL_LOSS="${BASELINE_VAL_LOSS:-1.6888}"
+    HF_JSON="$(mktemp -t sft_hf.XXXXXX.json)"; SUMMARY_JSON="$(mktemp -t sft_sum.XXXXXX.json)"
+    trap 'rm -f "$HF_JSON" "$SUMMARY_JSON"' EXIT
+    echo "sft on '$BRANCH' ($COMMIT, $DIRTY): $WARMUP warmup + $RUNS runs"
+    [ -n "$NOTE" ] && echo "note: $NOTE"
+    export SUMMARY_PATH="$SUMMARY_JSON"
+    hyperfine --warmup "$WARMUP" --runs "$RUNS" --command-name "$BRANCH-sft" \
+      --export-json "$HF_JSON" "$RUN sft"
+    HF_JSON="$HF_JSON" SUMMARY_JSON="$SUMMARY_JSON" RESULTS_CSV="$B/sft_bench_results.csv" \
+      BRANCH="$BRANCH" COMMIT="$COMMIT" DIRTY="$DIRTY" NOTE="$NOTE" \
+      BASELINE_VAL_LOSS="$BASELINE_VAL_LOSS" python3 - <<'PY'
+import json,os,csv,datetime,pathlib
+hf=json.load(open(os.environ["HF_JSON"]))["results"][0]; summ=json.load(open(os.environ["SUMMARY_JSON"]))
+vl=summ["val_loss"]; base=float(os.environ["BASELINE_VAL_LOSS"]); ok=abs(vl-base)<1e-4
+row={"timestamp_utc":datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),"branch":os.environ["BRANCH"],
+ "commit":os.environ["COMMIT"],"dirty":os.environ["DIRTY"],"wall_mean_s":round(hf["mean"],2),"wall_std_s":round(hf["stddev"],2),
+ "wall_min_s":round(hf["min"],2),"wall_max_s":round(hf["max"],2),"val_loss":vl,
+ "invariant":"OK" if ok else f"VIOLATED(base {base})","note":os.environ.get("NOTE","")}
+p=pathlib.Path(os.environ["RESULTS_CSV"]);new=not p.exists()
+with open(p,"a",newline="") as f:
+    w=csv.DictWriter(f,fieldnames=list(row))
+    if new: w.writeheader()
+    w.writerow(row)
+print(f"\nwall: {row['wall_mean_s']}s +/- {row['wall_std_s']}  val_loss: {vl} [{row['invariant']}] -> {p}")
+if not ok: print("!! val_loss changed — NOT a pure-speed change.")
+PY
+    ;;
   *)
     echo "unknown kind: $KIND (expected ppo-speed|ppo-quality|sft)" >&2; exit 1 ;;
 esac

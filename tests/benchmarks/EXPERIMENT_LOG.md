@@ -574,3 +574,56 @@ crossing-iter is an unbiased ~25±4 draw, so `E[time_to_quality] ∝ per_iter`.
 Box is single-core-rollout-bound: the wins were "make the GPU work disappear"
 (CUDA graphs) + "kill per-op dispatch on the CPU path" (numpy writes), not
 parallelism. The remaining wall is the Python `build_factory` reset path.
+
+---
+
+# SFT training speed (88.4 → 22.6 s, `bench_* sft` → `sft_bench_results.csv`)
+
+Times the `sft.py` training loop to a fixed deterministic `val_loss = 1.6888`
+(size 11, real 93-69-96 encoder, 60k samples × 10 epochs, rollout eval off).
+**Pure-speed**, gated bit-identically on `val_loss` — every win below keeps it
+exactly. `sft.py --dataset-cache` caches the generated `(state,action)` tensors
+so the timed run skips the ~26 s `build_factory` data generation (a separate
+axis) and measures training; it re-seeds after load/generate so a cached run is
+bit-identical to a fresh one.
+
+## WON (each bit-identical, cumulative)
+
+- **GPU-resident training data (train AND val loops)** → the big win. The loops
+  were data-path bound (8-9 host→device transfers per batch per epoch), NOT
+  compute or sync bound (B=512 keeps the GPU busy). The dataset is tiny (~200 MB),
+  so move it on-device ONCE and iterate a `DataLoader` over **indices**
+  (`torch.arange`), not the data. *(Why indices, not a hand-rolled `randperm`:
+  the index DataLoader reuses the real `RandomSampler` — same length + config →
+  the same shuffle order AND the same per-epoch global-RNG draws — so the batch
+  order, and thus val_loss, is identical. A manual `randperm` does NOT reproduce
+  the DataLoader's 3 global-RNG draws/epoch and shifts val_loss; even the
+  shuffle=False val loader still draws 2/epoch that the train shuffle depends on.)*
+  train 7.4→1.5, val 0.8→0.2 s/epoch.
+- **Sync-free epoch stats**: the loop did ~10 `.item()` GPU→CPU syncs per batch
+  (7 losses + grad-norm + 2 accuracy counts); accumulate them on-GPU and convert
+  ONCE per epoch. Neutral on its own (B=512 isn't sync-bound — the syncs overlap)
+  but clean, and it matters once the data path no longer dominates.
+- **int64 → GPU → float transfer**: obs is stored int64 (276 MB); `.to(device)`
+  then `.float()` copies the smaller int tensor and casts on the GPU (5× faster,
+  no 480 MB CPU float intermediate). Bit-identical (int→float of small ids exact).
+- **Lazy-import matplotlib + networkx** in `factorion.py` (visualization-only) —
+  ~0.5 s off every `import factorion`, helping all entry points' startup.
+
+Net: 88.4 → 22.6 s (−74 %, 3.9×); the per-epoch cost (what matters for real
+multi-hour runs) is 4.8× faster.
+
+## LOST / dead ends (the conv fwd/backward is FLOORED)
+
+The remaining ~15 s is the conv forward+backward (profiled: ~65% backward, ~23%
+encoder forward). It can't be sped bit-identically, and tensor cores barely help:
+- **`.item()`-sync removal alone**: neutral (B=512 isn't sync-bound). Kept anyway.
+- **torch.compile** (42 s), **cudnn.benchmark** (32 s), **AMP/bf16** (net ~0),
+  **TF32** (8% gross), **fused AdamW** (~0): every one either breaks the
+  bit-identical invariant (different FP) or doesn't help end-to-end. At B=512 the
+  11×11 conv is GPU-underutilized and partly **memory-bandwidth-bound** (bf16 > TF32
+  at equal FLOPs proves it), so there's no FLOP headroom for tensor cores to take.
+  An isolated encoder micro-bench shows "bf16 2.6×" but that's a
+  per-step-`cuda.synchronize()` artifact — trust end-to-end, which says ~0.
+  This is the OPPOSITE of PPO, where the launch-bound B=16 forward loved CUDA
+  graphs. Don't re-try these here.

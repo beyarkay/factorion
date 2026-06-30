@@ -250,6 +250,12 @@ class SFTArgs:
     """Tags to apply to the wandb run"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: sft_summary.json next to sft.py)"""
+    dataset_cache: Optional[str] = None
+    """if set, torch.load the generated (state,action) tensors from this path
+    when it exists, else generate them and torch.save there. Lets repeated runs
+    (e.g. the speed benchmark, or dev iteration) skip the expensive build_factory
+    data generation — the dataset is a pure function of (size, num_samples,
+    max_level, seed), so the cache is only reused for a matching config."""
 
 
 def _humanize_count(n: int) -> str:
@@ -852,8 +858,27 @@ def train_sft(args: SFTArgs):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    print(f"Generating {args.num_samples} expert demonstrations...")
     t0 = time.time()
+    cache = args.dataset_cache
+    if cache is not None and os.path.exists(cache):
+        print(f"Loading cached dataset from {cache} ...")
+        # weights_only=False: our own locally-produced, trusted cache.
+        tensors = torch.load(cache, weights_only=False)
+        print(f"Loaded {len(tensors[0])} samples in {time.time() - t0:.1f}s")
+    else:
+        print(f"Generating {args.num_samples} expert demonstrations...")
+        tensors = generate_dataset(args)
+        print(f"Generated {len(tensors[0])} samples in {time.time() - t0:.1f}s")
+        if cache is not None:
+            torch.save(tensors, cache)
+            print(f"Cached dataset to {cache}")
+    if cache is not None:
+        # Re-seed so a cached (load) run and a fresh (generate) run reach the
+        # split/init/training with identical RNG -> identical val_loss (generate
+        # consumes RNG, load doesn't). Only when --dataset-cache is set.
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     (
         obs,
         tiles,
@@ -865,8 +890,7 @@ def train_sft(args: SFTArgs):
         eot_labels,
         lesson_seeds,
         lesson_kinds,
-    ) = generate_dataset(args)
-    print(f"Generated {len(obs)} samples in {time.time() - t0:.1f}s")
+    ) = tensors
 
     # Train/val split at the LESSON SEED level. A pair-level random split
     # would leak factories: a lesson at level=L produces ~L pairs that all
@@ -901,7 +925,9 @@ def train_sft(args: SFTArgs):
         if s in val_seeds:
             val_seeds_to_kind[s] = k
 
-    train_ds = TensorDataset(
+    # Train/val tensors are moved GPU-resident below (once `device` exists) and
+    # iterated via an index DataLoader; see tests/benchmarks/EXPERIMENT_LOG.md.
+    train_tensors_cpu = (
         obs[train_idx],
         tiles[train_idx],
         ents[train_idx],
@@ -910,9 +936,8 @@ def train_sft(args: SFTArgs):
         miscs_t[train_idx],
         valid_masks[train_idx],
         eot_labels[train_idx],
-        lesson_kinds[train_idx],
     )
-    val_ds = TensorDataset(
+    val_tensors_cpu = (
         obs[val_idx],
         tiles[val_idx],
         ents[val_idx],
@@ -923,8 +948,6 @@ def train_sft(args: SFTArgs):
         eot_labels[val_idx],
         lesson_kinds[val_idx],
     )
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
@@ -951,13 +974,48 @@ def train_sft(args: SFTArgs):
     assert_device_ok(device)
     agent.to(device)
 
+    # Move the training set onto the device once. obs (int64) is transferred then
+    # cast to float on-device (cheaper than .float().to()); see EXPERIMENT_LOG.md.
+    (
+        tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
+    ) = (
+        train_tensors_cpu[0].to(device).float(),
+        *(t.to(device) for t in train_tensors_cpu[1:]),
+    )
+    n_train = tr_obs.shape[0]
+    # Shuffle via a DataLoader over INDICES (not the data) so it reuses the real
+    # RandomSampler RNG → identical batch order (bit-identical val_loss) with no
+    # per-batch host->device copy. (Rationale: tests/benchmarks/EXPERIMENT_LOG.md.)
+    train_index_loader = DataLoader(
+        TensorDataset(torch.arange(n_train)),
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
+    # Val, same treatment. NB: shuffle=False but the index DataLoader still draws
+    # the same 2 global-RNG ints/epoch as the old val loader, which the train
+    # shuffle's RNG stream depends on — so val_loss stays bit-identical.
+    (
+        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
+    ) = (
+        val_tensors_cpu[0].to(device).float(),
+        *(t.to(device) for t in val_tensors_cpu[1:]),
+    )
+    n_val = va_obs.shape[0]
+    val_index_loader = DataLoader(
+        TensorDataset(torch.arange(n_val)),
+        batch_size=args.batch_size,
+        shuffle=False,
+    )
+
     optimizer = optim.AdamW(
         agent.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
     # Scheduler spans every optimizer step (not every epoch) so warmup_frac
     # is a fraction of the *whole* run regardless of dataset size.
-    steps_per_epoch = max(1, len(train_loader))
+    # ceil(n_train / batch_size) == the old len(train_loader) (drop_last=False),
+    # so total_steps — and thus the LR schedule — is unchanged.
+    steps_per_epoch = max(1, (n_train + args.batch_size - 1) // args.batch_size)
     total_steps = args.epochs * steps_per_epoch
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
@@ -1035,50 +1093,31 @@ def train_sft(args: SFTArgs):
     for epoch in range(1, args.epochs + 1):
         t_train = time.time()
         agent.train()
-        train_loss = 0.0
-        train_loss_tile = 0.0
-        train_loss_ent = 0.0
-        train_loss_dir = 0.0
-        train_loss_item = 0.0
-        train_loss_misc = 0.0
-        train_loss_eot = 0.0
-        train_correct = 0
+        # On-GPU accumulators converted ONCE at epoch end (logging-only), instead
+        # of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
+        acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
+        acc_correct = torch.zeros((), device=device)
+        acc_eot_correct = torch.zeros((), device=device)
+        acc_grad_norm = torch.zeros((), device=device)
         train_total = 0
-        train_eot_correct = 0
-        grad_norm_sum = 0.0
         grad_norm_count = 0
-        # Wall-clock attribution for the train pass, with NO added syncs: the
-        # loop already .item()s every batch, so each batch's wall time splits
-        # into "waiting for the DataLoader" vs "computing it" — exposing whether
-        # the loop is data-loading-bound or compute-bound.
+        # DataLoader-wait attribution (CPU side; needs no GPU sync). The compute
+        # share is derived at epoch end as train_seconds - train_data_s.
         train_data_s = 0.0
-        train_compute_s = 0.0
 
-        # batch_kind is carried through the loader so val can aggregate
-        # per-kind metrics; we ignore it in the train pass.
         t_batch = time.time()
-        for batch in train_loader:
+        for (idx_cpu,) in train_index_loader:
             t_ready = time.time()
             train_data_s += t_ready - t_batch
-            (
-                batch_obs,
-                batch_tile,
-                batch_ent,
-                batch_dir,
-                batch_item,
-                batch_misc,
-                batch_mask,
-                batch_eot,
-                _batch_kind,
-            ) = batch
-            batch_obs = batch_obs.float().to(device)
-            batch_tile = batch_tile.to(device)
-            batch_ent = batch_ent.to(device)
-            batch_dir = batch_dir.to(device)
-            batch_item = batch_item.to(device)
-            batch_misc = batch_misc.to(device)
-            batch_mask = batch_mask.to(device)
-            batch_eot = batch_eot.to(device)
+            idx = idx_cpu.to(device)
+            batch_obs = tr_obs[idx]
+            batch_tile = tr_tile[idx]
+            batch_ent = tr_ent[idx]
+            batch_dir = tr_dir[idx]
+            batch_item = tr_item[idx]
+            batch_misc = tr_misc[idx]
+            batch_mask = tr_mask[idx]
+            batch_eot = tr_eot[idx]
 
             encoded = agent.encoder(batch_obs)
             B = encoded.shape[0]
@@ -1134,20 +1173,16 @@ def train_sft(args: SFTArgs):
                 grad_norm = nn.utils.clip_grad_norm_(
                     agent.parameters(), args.max_grad_norm
                 )
-                grad_norm_sum += float(grad_norm)
+                acc_grad_norm += grad_norm
                 grad_norm_count += 1
             optimizer.step()
             scheduler.step()
             global_step += 1
             samples_seen += B
 
-            train_loss += loss.item() * B
-            train_loss_tile += loss_tile.item() * B
-            train_loss_ent += loss_ent.item() * B
-            train_loss_dir += loss_dir.item() * B
-            train_loss_item += loss_item.item() * B
-            train_loss_misc += loss_misc.item() * B
-            train_loss_eot += loss_eot.item() * B
+            acc_loss += torch.stack([
+                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
+            ]).detach() * B
             # Whole-action accuracy: the model agrees with the demo on
             # every output for this sample. For placement samples (eot=0)
             # that means all 5 placement heads correct AND EOT predicted
@@ -1175,23 +1210,27 @@ def train_sft(args: SFTArgs):
                 place_heads_correct & eot_correct_t,
                 eot_correct_t,
             )
-            train_correct += int(correct.sum().item())
+            acc_correct += correct.sum()
             train_total += B
-            train_eot_correct += int(eot_correct_t.sum().item())
-            # .item() reads above synced this batch's GPU work; real "done".
+            acc_eot_correct += eot_correct_t.sum()
+            # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
-            train_compute_s += t_batch - t_ready
 
-        train_loss /= train_total
-        train_loss_tile /= train_total
-        train_loss_ent /= train_total
-        train_loss_dir /= train_total
-        train_loss_item /= train_total
-        train_loss_misc /= train_total
-        train_loss_eot /= train_total
-        train_acc = train_correct / train_total
-        train_eot_acc = train_eot_correct / train_total
+        # Single GPU->CPU sync for the whole epoch's accumulated stats.
+        (
+            train_loss,
+            train_loss_tile,
+            train_loss_ent,
+            train_loss_dir,
+            train_loss_item,
+            train_loss_misc,
+            train_loss_eot,
+        ) = (acc_loss / train_total).tolist()
+        train_acc = (acc_correct / train_total).item()
+        train_eot_acc = (acc_eot_correct / train_total).item()
+        grad_norm_sum = acc_grad_norm.item()
         train_seconds = time.time() - t_train
+        train_compute_s = max(0.0, train_seconds - train_data_s)
 
         # Validation
         t_val = time.time()
@@ -1243,27 +1282,17 @@ def train_sft(args: SFTArgs):
         per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
 
         with torch.no_grad():
-            for batch in val_loader:
-                (
-                    batch_obs,
-                    batch_tile,
-                    batch_ent,
-                    batch_dir,
-                    batch_item,
-                    batch_misc,
-                    batch_mask,
-                    batch_eot,
-                    batch_kind,
-                ) = batch
-                batch_obs = batch_obs.float().to(device)
-                batch_tile = batch_tile.to(device)
-                batch_ent = batch_ent.to(device)
-                batch_dir = batch_dir.to(device)
-                batch_item = batch_item.to(device)
-                batch_misc = batch_misc.to(device)
-                batch_mask = batch_mask.to(device)
-                batch_eot = batch_eot.to(device)
-                batch_kind = batch_kind.to(device)
+            for (idx_cpu,) in val_index_loader:
+                idx = idx_cpu.to(device)
+                batch_obs = va_obs[idx]
+                batch_tile = va_tile[idx]
+                batch_ent = va_ent[idx]
+                batch_dir = va_dir[idx]
+                batch_item = va_item[idx]
+                batch_misc = va_misc[idx]
+                batch_mask = va_mask[idx]
+                batch_eot = va_eot[idx]
+                batch_kind = va_kind[idx]
 
                 encoded = agent.encoder(batch_obs)
                 B = encoded.shape[0]
