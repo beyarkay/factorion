@@ -60,6 +60,7 @@ _INVALID_REASON_KEYS = (
     'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
     'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
     'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
+    'placed_on_existing_entity',
 )
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
@@ -816,6 +817,16 @@ class FactorioEnv(gym.Env):
                 for tx, ty in tiles_list
             ):
                 invalid_reason_key = 'replaced_source_or_sink'
+                action_is_invalid = True
+            elif entity_id != _EMPTY_ENT_ID and any(
+                int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
+                for tx, ty in tiles_list
+            ):
+                # A real (non-empty) placement may not clobber an existing
+                # entity on any of its footprint tiles. Placing `empty` is
+                # exempt — that is the delete operation. Source/sink overlaps
+                # are caught above with their own, more specific reason.
+                invalid_reason_key = 'placed_on_existing_entity'
                 action_is_invalid = True
             else:
                 action_is_invalid = False

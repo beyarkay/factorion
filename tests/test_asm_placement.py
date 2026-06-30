@@ -185,15 +185,17 @@ class TestAsmPlacementValidity:
             env._world_CWH[ENT].numpy().astype(int), before
         )
 
-    def test_asm_over_plain_entity_overwrites(self, env):
-        """The only occupancy the env protects is source/sink and masked/
-        out-of-bounds tiles — a footprint tile holding a plain belt/inserter is
-        simply overwritten. Anchor (0,1) covers the belt at (0,1) and the
-        inserter at (0,2); both become asm."""
+    def test_asm_over_plain_entity_is_rejected(self, env):
+        """A placement whose footprint covers an existing (non-empty) entity is
+        rejected — the world is left untouched. Anchor (0,1) would cover the
+        belt at (0,1) and the inserter at (0,2)."""
+        before = env._world_CWH[ENT].numpy().astype(int).copy()
         _, _, _, _, info = _place_asm(env, 0, 1)
-        assert not any(info["invalid_reason"].values())
-        ent = env._world_CWH[ENT].numpy().astype(int)
-        assert ent[0, 1] == ASM and ent[0, 2] == ASM
+        assert info["invalid_reason"]["placed_on_existing_entity"]
+        np.testing.assert_array_equal(
+            env._world_CWH[ENT].numpy().astype(int), before
+        )
+        assert ASM not in env._world_CWH[ENT].numpy().astype(int)
 
     def test_asm_over_source_tile_is_rejected(self, env):
         """A footprint that would replace the source (or sink) is rejected and
@@ -216,3 +218,18 @@ class TestAsmPlacementValidity:
         np.testing.assert_array_equal(
             env._world_CWH[ENT].numpy().astype(int), before
         )
+
+    def test_placing_empty_over_entity_is_still_allowed(self, env):
+        """The no-clobber rule exempts `empty`: placing it is the delete
+        operation, so it may land on an occupied tile and clear it."""
+        action = {
+            "xy": np.array([0, 1]),  # the belt tile
+            "entity": EMPTY,
+            "direction": Direction.NONE.value,
+            "item": EMPTY,
+            "misc": 0,
+            "eot": 0,
+        }
+        _, _, _, _, info = env.step(action)
+        assert not any(info["invalid_reason"].values())
+        assert env._world_CWH[ENT].numpy().astype(int)[0, 1] == EMPTY
