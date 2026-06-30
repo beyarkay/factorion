@@ -26,7 +26,7 @@ on:
       gpu_type:
         description: "RunPod GPU type"
         required: false
-        default: "NVIDIA A100 80GB PCIe"
+        default: "NVIDIA RTX 2000 Ada Generation"
         type: string
 
 permissions:
@@ -57,8 +57,9 @@ jobs:
           n = int(os.environ["NUM_SAMPLES"])
           e = int(os.environ["EPOCHS"])
           # Calibration: the existing 4h (14400s) watchdog for the 300k × 30
-          # default implies ~1000 sample-epochs/sec on A100 once you back out
-          # a 1.5× safety margin. Reuse that rate so 300k × 30 lines up with
+          # default implies ~1000 sample-epochs/sec once you back out a 1.5×
+          # safety margin. SFT is data/CPU-bound, so the rate holds across GPUs
+          # (incl. the default RTX 2000 Ada). Reuse it so 300k × 30 lines up with
           # the historical default; longer runs scale linearly.
           base_seconds = (n * e) / 1000
           watchdog = int(base_seconds * 1.5 + 600)
