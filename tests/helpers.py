@@ -29,6 +29,7 @@ from factorion import (  # noqa: E402
     find_belt_paths_with_source_sink_orient,
     items,
     recipes,
+    render_factory,
     str2ent,
     str2item,
     world2html,

@@ -41,6 +41,7 @@ _REQUIRED_FACTORION_RS = (
     "py_items",
     "py_recipes",
     "py_lesson_kinds",
+    "render_factory",
 )
 
 
@@ -1156,6 +1157,26 @@ def build_factory(
         total_entities=total_entities,
         protected_positions=frozenset(map(tuple, protected)),
     )
+
+
+def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
+    """Render a factory into the two-character ASCII grid format (the same
+    format the textual test fixtures use).
+
+    Accepts a :class:`Factory` or a ``(C, W, H)`` world tensor/array (the layout
+    :attr:`Factory.world_CWH` carries). Returns the multi-line grid string,
+    where each tile is two characters — an entity char (``b`` belt, ``i``
+    inserter, ``a`` assembler, ``Y`` splitter, ``d``/``u`` underground down/up,
+    ``S`` source, ``K`` sink) plus a direction marker (``^>v<``), or ``..`` for
+    an empty tile. Item/recipe bindings are not shown (they live in the tensor,
+    not the grid)."""
+    world_CWH = world.world_CWH if isinstance(world, Factory) else world
+    world_CWH = np.asarray(world_CWH)
+    # Rust expects (W, H, C); the Factory carries (C, W, H).
+    world_WHC = np.ascontiguousarray(
+        np.transpose(world_CWH, (1, 2, 0)).astype(np.int64)
+    )
+    return factorion_rs.render_factory(world_WHC)
 
 
 def blank_entities(

@@ -24,6 +24,7 @@ mod entities;
 mod factory_gen;
 mod graph;
 mod pyrandom;
+mod render;
 #[cfg(test)]
 mod textual;
 mod throughput;
@@ -43,6 +44,8 @@ use entities::entity_tiles;
 use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
 use graph::build_graph;
+#[cfg(feature = "pyo3-bindings")]
+use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
 use throughput::{calc_throughput, factory_score};
 #[cfg(feature = "pyo3-bindings")]
@@ -220,6 +223,22 @@ fn build_factory(
     Ok(Some((arr.into_pyarray(py).unbind(), total, protected)))
 }
 
+/// Render a factory world tensor into the two-character ASCII grid format.
+///
+/// Input: numpy array of shape (W, H, C), dtype i64 — the same world tensor
+/// `simulate_throughput` takes. Returns the multi-line grid string (geometry
+/// only; item/recipe bindings live in the tensor, not the grid), where each
+/// tile is two characters — an entity char (`b`=belt, `i`=inserter, `a`=
+/// assembler, `Y`=splitter, `d`/`u`=underground down/up, `S`=source, `K`=sink)
+/// plus a direction marker (`^>v<`), or `..` for an empty tile. Multi-tile
+/// entities draw their body across the footprint with a blank interior.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn render_factory(world: PyReadonlyArray3<i64>) -> PyResult<String> {
+    let world = World::from_numpy(&world);
+    Ok(render_world(&world))
+}
+
 /// Return the lesson kinds as an ordered `{NAME: int_value}` dict — the single
 /// source of truth Python builds its `LessonKind` enum from. Insertion order
 /// matches `all_lesson_kinds()` so `list(LessonKind)` iterates the same way.
@@ -243,5 +262,6 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
+    m.add_function(wrap_pyfunction!(render_factory, m)?)?;
     Ok(())
 }

@@ -65,36 +65,13 @@ use serde::Deserialize;
 
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
+use crate::render::{bbox, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS};
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Misc, NodeId, Pos};
+use crate::types::{Channel, Direction, Item, Misc, NodeId};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
 const TOL: f64 = 1e-9;
-
-/// Registry of grid characters → (entity, underground state).
-///
-/// This is the single place to extend the format with a new entity. The
-/// footprint is *not* listed here — it is read from [`Item::size`] so the two
-/// can never disagree.
-const ENTITY_CHARS: &[(char, Item, Misc)] = &[
-    ('b', Item::TransportBelt, Misc::None),
-    ('i', Item::Inserter, Misc::None),
-    ('a', Item::AssemblingMachine1, Misc::None),
-    ('Y', Item::Splitter, Misc::None),
-    ('d', Item::UndergroundBelt, Misc::UndergroundDown),
-    ('u', Item::UndergroundBelt, Misc::UndergroundUp),
-    ('S', Item::Source, Misc::None),
-    ('K', Item::Sink, Misc::None),
-];
-
-/// Direction markers. Deliberately disjoint from every [`ENTITY_CHARS`] entry.
-const DIR_CHARS: &[(char, Direction)] = &[
-    ('^', Direction::North),
-    ('>', Direction::East),
-    ('v', Direction::South),
-    ('<', Direction::West),
-];
 
 fn entity_for_char(c: char) -> Option<(Item, Misc)> {
     ENTITY_CHARS
@@ -105,44 +82,6 @@ fn entity_for_char(c: char) -> Option<(Item, Misc)> {
 
 fn dir_for_char(c: char) -> Option<Direction> {
     DIR_CHARS.iter().find(|(ch, _)| *ch == c).map(|(_, d)| *d)
-}
-
-/// Grid character for rendering an entity, honouring its underground state
-/// (so `UndergroundBelt` + `UndergroundUp` renders as `u`, not `d`).
-fn render_char(item: Item, misc: Misc) -> char {
-    ENTITY_CHARS
-        .iter()
-        .find(|(_, i, m)| *i == item && *m == misc)
-        .or_else(|| ENTITY_CHARS.iter().find(|(_, i, _)| *i == item))
-        .map(|(c, _, _)| *c)
-        .unwrap_or('?')
-}
-
-/// Direction character for rendering; [`Direction::None`] renders as `.`.
-fn char_for_dir(dir: Direction) -> char {
-    DIR_CHARS
-        .iter()
-        .find(|(_, d)| *d == dir)
-        .map(|(c, _)| *c)
-        .unwrap_or('.')
-}
-
-/// Axis-aligned bounding box `(min_x, min_y, max_x, max_y)` of a tile set.
-/// `tiles` is always non-empty (an entity occupies at least its anchor).
-fn bbox(tiles: &[Pos]) -> (i64, i64, i64, i64) {
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-    for p in tiles {
-        min_x = min_x.min(p.x);
-        min_y = min_y.min(p.y);
-        max_x = max_x.max(p.x);
-        max_y = max_y.max(p.y);
-    }
-    (min_x, min_y, max_x, max_y)
-}
-
-/// Whether `p` lies on the perimeter of the bounding box (vs. its interior).
-fn on_perimeter(p: Pos, (min_x, min_y, max_x, max_y): (i64, i64, i64, i64)) -> bool {
-    p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y
 }
 
 /// A classified grid tile, before multi-tile entities are resolved.
@@ -693,118 +632,6 @@ pub(crate) fn assert_graph(spec: &FactorySpec) {
     assert!(outcome.is_ok(), "{}", outcome.err().unwrap_or_default());
 }
 
-/// Render a [`World`] back into the grid format (geometry only — item bindings
-/// live in the header, not the grid). The inverse of [`parse_grid`] for the
-/// shapes the format supports, so `parse_grid(render(w))` round-trips geometry.
-#[allow(clippy::needless_range_loop)]
-pub(crate) fn render(world: &World) -> String {
-    let w = world.width();
-    let h = world.height();
-    let cols = if w == 0 { 0 } else { 3 * w - 1 };
-
-    // Start every tile as empty (`..`); fillers default to spaces.
-    let mut buf = vec![vec![' '; cols]; h];
-    for y in 0..h {
-        for x in 0..w {
-            buf[y][3 * x] = '.';
-            buf[y][3 * x + 1] = '.';
-        }
-    }
-
-    let mut done = vec![vec![false; w]; h];
-    for y in 0..h {
-        for x in 0..w {
-            if done[y][x] {
-                continue;
-            }
-            let item = match world.entity_at(x, y) {
-                Some(i) => i,
-                None => continue,
-            };
-            let (ew, eh) = item.size();
-            if ew == 1 && eh == 1 {
-                buf[y][3 * x] = render_char(item, world.misc_at(x, y));
-                buf[y][3 * x + 1] = char_for_dir(world.direction_at(x, y));
-                done[y][x] = true;
-            } else {
-                render_multi(&mut buf, &mut done, world, (x, y), item);
-            }
-        }
-    }
-
-    buf.iter()
-        .map(|row| row.iter().collect::<String>().trim_end().to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Render one multi-tile entity into the character buffer: a bordered box for
-/// square entities (blank interior) and a bracket/stack for linear ones.
-fn render_multi(
-    buf: &mut [Vec<char>],
-    done: &mut [Vec<bool>],
-    world: &World,
-    (ax, ay): (usize, usize),
-    item: Item,
-) {
-    let (ew, eh) = item.size();
-    let dir = world.direction_at(ax, ay);
-    let tiles = match entity_tiles(ax, ay, dir, ew, eh) {
-        Some(t) => t,
-        None => {
-            // Degenerate; fall back to a single tile so render never panics.
-            buf[ay][3 * ax] = render_char(item, world.misc_at(ax, ay));
-            buf[ay][3 * ax + 1] = char_for_dir(dir);
-            done[ay][ax] = true;
-            return;
-        }
-    };
-
-    let bb = bbox(&tiles);
-    let (min_x, min_y, max_x, max_y) = bb;
-    let multi_row = max_y > min_y;
-    let multi_col = max_x > min_x;
-    let ech = render_char(item, world.misc_at(ax, ay));
-    let dch = char_for_dir(dir);
-
-    for p in &tiles {
-        let (tx, ty) = (p.x as usize, p.y as usize);
-        done[ty][tx] = true;
-        let (c0, c1) = if !on_perimeter(*p, bb) {
-            (' ', ' ') // blank interior
-        } else if multi_row && multi_col {
-            (ech, ech) // square box border
-        } else if multi_col {
-            // horizontal bracket: caps on the ends, direction fill between
-            if p.x == min_x {
-                (ech, dch)
-            } else if p.x == max_x {
-                (dch, ech)
-            } else {
-                (dch, dch)
-            }
-        } else {
-            (ech, dch) // vertical stack
-        };
-        buf[ty][3 * tx] = c0;
-        buf[ty][3 * tx + 1] = c1;
-    }
-
-    // Fill the filler between horizontally-adjacent tiles of this entity when
-    // both touching characters are non-blank and equal (gives `aaaaaaaa` and
-    // `YvvvY` their solid look).
-    for p in &tiles {
-        let (tx, ty) = (p.x as usize, p.y as usize);
-        if tiles.iter().any(|q| q.x == p.x + 1 && q.y == p.y) {
-            let right = buf[ty][3 * tx + 1];
-            let next_left = buf[ty][3 * (tx + 1)];
-            if right != ' ' && right == next_left {
-                buf[ty][3 * tx + 2] = right;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -862,29 +689,6 @@ mod tests {
         assert!(classify('>', '<').is_err()); // two directions
         assert!(classify('x', 'y').is_err()); // no entity
         assert!(classify('S', 'b').is_err()); // two different entities
-    }
-
-    /// Guard: adding a placeable entity to the `Item` enum without wiring it
-    /// into the textual format must fail loudly here, rather than silently
-    /// rendering as `?` and being unparseable. Keeps `ENTITY_CHARS` exhaustive
-    /// and free of stray non-placeable entries.
-    #[test]
-    fn test_entity_registry_matches_placeable_items() {
-        for &item in crate::types::all_items() {
-            if item.is_placeable() {
-                assert!(
-                    ENTITY_CHARS.iter().any(|(_, i, _)| *i == item),
-                    "placeable {item:?} has no ENTITY_CHARS entry — add one (and a \
-                     fixture) so the textual format supports it"
-                );
-            }
-        }
-        for (ch, item, _) in ENTITY_CHARS {
-            assert!(
-                item.is_placeable(),
-                "ENTITY_CHARS entry '{ch}' maps to non-placeable {item:?}"
-            );
-        }
     }
 
     #[test]
