@@ -24,14 +24,23 @@ import wandb
 
 from wandb_metric import read_metric
 
-# Hyperparameters in SFTArgs that sweeps can tune.
-# Maps sweep param name -> python type formatter.
+# Hyperparameters in SFTArgs that sweeps can tune. Maps sweep param name ->
+# python type formatter. Must stay in sync with the swept dims in
+# sft_sweep.yaml: anything the sweep optimises and we want baked into the
+# defaults belongs here. Deliberately EXCLUDED: size / num_samples / epochs /
+# max_level — the sweep pins those to a small, fixed budget for run-to-run
+# comparability, so writing them back would downgrade the full-scale
+# production defaults (1M samples / 45 epochs) that the canonical base trains
+# at. They are tuned by hand, not by the sweep.
 TUNABLE_PARAMS = {
     "lr": "float",
+    "warmup_frac": "float",
+    "min_lr_ratio": "float",
     "batch_size": "int",
-    "num_samples": "int",
-    "epochs": "int",
-    "max_level": "int",
+    "weight_decay": "float",
+    "dropout": "float",
+    "max_grad_norm": "float",
+    "tile_head_std": "float",
     "layer1": "int",
     "layer2": "int",
     "layer3": "int",
@@ -41,7 +50,12 @@ TUNABLE_PARAMS = {
     "layer7": "int",
     "layer8": "int",
     "kernel_size": "int",
-    "tile_head_std": "float",
+    "lw_tile": "float",
+    "lw_ent": "float",
+    "lw_dir": "float",
+    "lw_item": "float",
+    "lw_misc": "float",
+    "lw_eot": "float",
 }
 
 
