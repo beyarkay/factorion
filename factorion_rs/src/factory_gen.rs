@@ -32,8 +32,10 @@ pub enum LessonKind {
     MoveOneItem = 0,
     SplitterSplit = 3,
     SplitterMerge = 4,
+    #[deprecated]
     Assemble1In1Out = 5,
     MoveViaUgBelt = 6,
+    #[deprecated]
     Assemble2In1Out = 7,
     MemoriseRecipes = 8,
     MoveOneItemChaos = 9,
@@ -46,8 +48,10 @@ impl LessonKind {
             0 => Some(LessonKind::MoveOneItem),
             3 => Some(LessonKind::SplitterSplit),
             4 => Some(LessonKind::SplitterMerge),
+            #[allow(deprecated)]
             5 => Some(LessonKind::Assemble1In1Out),
             6 => Some(LessonKind::MoveViaUgBelt),
+            #[allow(deprecated)]
             7 => Some(LessonKind::Assemble2In1Out),
             8 => Some(LessonKind::MemoriseRecipes),
             9 => Some(LessonKind::MoveOneItemChaos),
@@ -63,8 +67,10 @@ impl LessonKind {
             LessonKind::MoveOneItem => "MOVE_ONE_ITEM",
             LessonKind::SplitterSplit => "SPLITTER_SPLIT",
             LessonKind::SplitterMerge => "SPLITTER_MERGE",
+            #[allow(deprecated)]
             LessonKind::Assemble1In1Out => "ASSEMBLE_1IN_1OUT",
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
+            #[allow(deprecated)]
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
             LessonKind::MemoriseRecipes => "MEMORISE_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
@@ -80,9 +86,9 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItem,
         LessonKind::SplitterSplit,
         LessonKind::SplitterMerge,
-        LessonKind::Assemble1In1Out,
+        // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
-        LessonKind::Assemble2In1Out,
+        // LessonKind::Assemble2In1Out,
         LessonKind::MemoriseRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
@@ -370,15 +376,16 @@ pub fn build_factory(
         LessonKind::SplitterMerge => {
             build_splitter_merge(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
+        // LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
         LessonKind::MoveViaUgBelt => {
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
+        // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
         LessonKind::MemoriseRecipes => build_memorise_recipes(size, &mut rng, max_entities),
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
+        _ => None,
     }
 }
 
@@ -1081,6 +1088,7 @@ fn build_splitter_merge(
     None
 }
 
+#[allow(unused)]
 fn build_assemble_1in1out(
     size: usize,
     rng: &mut PyRandom,
@@ -1453,6 +1461,7 @@ fn build_move_via_ug_belt(
     None
 }
 
+#[allow(unused)]
 fn build_assemble_2in1out(
     size: usize,
     rng: &mut PyRandom,

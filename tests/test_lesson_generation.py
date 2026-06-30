@@ -766,6 +766,7 @@ def _one_in_one_out_pairs():
 ONE_IN_ONE_OUT_RECIPES = _one_in_one_out_pairs()
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutBasic:
     """Basic sanity checks for ASSEMBLE_1IN_1OUT lesson generation."""
 
@@ -833,6 +834,7 @@ class TestAssemble1In1OutBasic:
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutManySeeds:
     """Generate many lessons with different seeds and verify all are valid."""
 
@@ -873,6 +875,7 @@ class TestAssemble1In1OutManySeeds:
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutThroughput:
     """Rust throughput must be positive on generated factories."""
 
@@ -888,6 +891,7 @@ class TestAssemble1In1OutThroughput:
         assert ur >= 0
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutGridSizes:
     """Test across a range of grid sizes."""
 
@@ -914,6 +918,7 @@ class TestAssemble1In1OutGridSizes:
         )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutEntityDirections:
     """All placed entities must have a non-NONE direction."""
 
@@ -937,6 +942,7 @@ class TestAssemble1In1OutEntityDirections:
                     )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutNoOverlaps:
     """Verify no entity overlaps in generated factories."""
 
@@ -957,6 +963,7 @@ class TestAssemble1In1OutNoOverlaps:
         )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutItems:
     """Item channels: source carries the ingredient, sink the product, assembler the recipe."""
 
@@ -1020,6 +1027,7 @@ class TestAssemble1In1OutItems:
             )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutMissingEntities:
     """Test entity removal."""
 
@@ -1100,6 +1108,7 @@ class TestAssemble1In1OutMissingEntities:
             )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutDeterminism:
     """Same seed → identical world."""
 
@@ -1117,6 +1126,7 @@ class TestAssemble1In1OutDeterminism:
         assert m1 == m2
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutThroughputRange:
     """Throughput should be positive and bounded by the assembler / inserter caps."""
 
@@ -1136,6 +1146,7 @@ class TestAssemble1In1OutThroughputRange:
         assert tp <= 1.72 + 1e-6, f"seed={seed}: tp={tp} exceeds inserter+recipe cap"
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutRecipeSelection:
     """Recipe is randomly picked across seeds — multiple distinct recipes
     should appear across many seeds (uniform selection over all 1-in 1-out
@@ -1191,6 +1202,7 @@ def _dir_from_value(d_val):
     return None
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutInserterGeometry:
     """Each lesson must have exactly one input inserter (drop into the
     assembler body) and one output inserter (pickup from the assembler
@@ -1296,6 +1308,7 @@ class TestAssemble1In1OutInserterGeometry:
                 )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutConnectivity:
     """The graph must form a continuous source → … → sink path that passes
     through the assembler. No orphaned belts."""
@@ -1347,6 +1360,7 @@ class TestAssemble1In1OutConnectivity:
             )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutThroughputPerRecipe:
     """Each recipe has a known closed-form throughput given a
     1 input inserter + 1 output inserter cap of 0.86 i/s.
@@ -1412,6 +1426,7 @@ class TestAssemble1In1OutThroughputPerRecipe:
         )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutSourceSinkOrientation:
     """Source / sink must face into the belt chain — the cell they output
     to / take from must contain a belt (or directly the inserter pickup)."""
@@ -1457,6 +1472,7 @@ class TestAssemble1In1OutSourceSinkOrientation:
         )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutBeltItems:
     """Belt tiles should not have items set in the ITEMS channel — items
     only travel through belts at runtime; the channel is for source/sink/
@@ -1479,6 +1495,7 @@ class TestAssemble1In1OutBeltItems:
             )
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutEdgeCases:
     """Edge cases: tiny grids, large grids."""
 
@@ -1498,6 +1515,7 @@ class TestAssemble1In1OutEdgeCases:
         assert tp > 0
 
 
+@pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
 class TestAssemble1In1OutMaxEntities:
     """The `max_entities` cap on belt-path length should be respected by
     the generator (it retries until it finds a layout under the cap)."""
@@ -1888,483 +1906,483 @@ def _two_in_one_out_recipes():
 TWO_IN_ONE_OUT_RECIPES = _two_in_one_out_recipes()
 
 
-class TestAssemble2In1OutBasic:
-    def test_generates_without_error(self):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, min_ent = blank_entities(f, num_missing_entities=0)
-        assert world is not None
-        assert min_ent is not None
-
-    def test_returns_cwh_tensor(self):
-        size = 10
-        f = build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        assert world.shape[0] == len(Channel)
-        assert world.shape[1] == size
-        assert world.shape[2] == size
-
-    def test_has_two_sources_one_sink(self):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent_layer = world[Channel.ENTITIES.value]
-        assert (ent_layer == str2ent("source").value).sum().item() == 2
-        assert (ent_layer == str2ent("sink").value).sum().item() == 1
-
-    def test_has_one_assembler(self):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent_layer = world[Channel.ENTITIES.value]
-        asm = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
-        assert asm == 9, f"Expected 9 assembler tiles, got {asm}"
-
-    def test_has_three_inserters(self):
-        """2 input + 1 output."""
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent_layer = world[Channel.ENTITIES.value]
-        ins = (ent_layer == str2ent("inserter").value).sum().item()
-        assert ins == 3, f"Expected 3 inserters, got {ins}"
-
-    def test_has_belts(self):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent_layer = world[Channel.ENTITIES.value]
-        belts = (ent_layer == str2ent("transport_belt").value).sum().item()
-        assert belts >= 3, f"Expected at least 3 belts, got {belts}"
-
-    def test_nonzero_throughput(self):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0, f"Expected positive throughput, got {tp}"
-
-
-class TestAssemble2In1OutManySeeds:
-    @pytest.mark.parametrize("seed", range(50))
-    def test_size_10_seed(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0, f"seed={seed}: throughput is {tp}"
-
-    @pytest.mark.parametrize("seed", range(30))
-    def test_size_8_seed(self, seed):
-        f = build_factory(size=8, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0
-
-    @pytest.mark.parametrize("seed", range(20))
-    def test_size_12_seed(self, seed):
-        f = build_factory(size=12, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0
-
-    @pytest.mark.parametrize("seed", range(20))
-    def test_size_15_seed(self, seed):
-        f = build_factory(size=15, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0
-
-
-class TestAssemble2In1OutGridSizes:
-    @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
-    def test_valid_factory_per_size(self, size):
-        f = build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=7)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        assert (ent == str2ent("source").value).sum().item() == 2
-        assert (ent == str2ent("sink").value).sum().item() == 1
-        assert (ent == str2ent("assembling_machine_1").value).sum().item() == 9
-        assert (ent == str2ent("inserter").value).sum().item() == 3
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0
-
-
-class TestAssemble2In1OutEntityDirections:
-    @pytest.mark.parametrize("seed", range(20))
-    def test_all_entities_have_directions(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        dirs = world[Channel.DIRECTION.value]
-        for x in range(world.shape[1]):
-            for y in range(world.shape[2]):
-                v = ent[x, y].item()
-                if v != str2ent("empty").value:
-                    assert dirs[x, y].item() != Direction.NONE.value, (
-                        f"seed={seed}: entity {entities[v].name} at ({x},{y}) has NONE dir"
-                    )
-
-
-class TestAssemble2In1OutNoOverlaps:
-    @pytest.mark.parametrize("seed", range(30))
-    def test_no_double_placement(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        occ = []
-        for x in range(world.shape[1]):
-            for y in range(world.shape[2]):
-                if ent[x, y].item() != str2ent("empty").value:
-                    occ.append((x, y))
-        assert len(occ) == len(set(occ))
-
-
-class TestAssemble2In1OutItems:
-    """Both sources carry the recipe's two ingredient items; sink carries
-    the recipe's product. The two sources must NOT carry the same item."""
-
-    @pytest.mark.parametrize("seed", range(30))
-    def test_sources_match_recipe_inputs(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        item = world[Channel.ITEMS.value]
-        src_positions = (ent == str2ent("source").value).nonzero(as_tuple=False)
-        snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
-
-        src_items = {item[p[0], p[1]].item() for p in src_positions}
-        sink_item = item[snk_pos[0], snk_pos[1]].item()
-
-        assert str2item("empty").value not in src_items
-        assert sink_item != str2item("empty").value
-        assert len(src_items) == 2, (
-            f"seed={seed}: 2 sources carry the same item ({src_items})"
-        )
-        assert sink_item not in src_items
-
-        src_names = frozenset(items[v].name for v in src_items)
-        sink_name = items[sink_item].name
-        assert (src_names, sink_name) in {
-            (inputs, out) for (inputs, out) in TWO_IN_ONE_OUT_RECIPES.values()
-        }, (
-            f"seed={seed}: pair ({src_names}, {sink_name}) does not match any "
-            f"2-in-1-out recipe in the live recipe table"
-        )
-
-    @pytest.mark.parametrize("seed", range(30))
-    def test_assembler_recipe_matches_output(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        item = world[Channel.ITEMS.value]
-        asm_positions = (ent == str2ent("assembling_machine_1").value).nonzero(as_tuple=False)
-        snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
-        sink_item = item[snk_pos[0], snk_pos[1]].item()
-        for p in asm_positions:
-            assert item[p[0], p[1]].item() == sink_item
-
-
-class TestAssemble2In1OutMissingEntities:
-    @pytest.mark.parametrize("num_missing", [1, 2, 3])
-    def test_removes_correct_count(self, num_missing):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
-        assert f is not None
-        world, min_ent = blank_entities(f, num_missing_entities=num_missing)
-        assert min_ent == num_missing
-        ent = world[Channel.ENTITIES.value]
-        assert (ent == str2ent("source").value).sum().item() == 2
-        assert (ent == str2ent("sink").value).sum().item() == 1
-
-    @pytest.mark.parametrize("seed", range(10))
-    def test_missing_inf_returns_positive_count(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, min_ent = blank_entities(f, num_missing_entities=float("inf"))
-        assert world is not None
-        assert min_ent is not None and min_ent > 0
-
-    @pytest.mark.parametrize("seed", range(10))
-    @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
-    def test_assembler_kept_or_fully_removed(self, seed, num_missing):
-        """The 3×3 assembler is removed atomically — either all 9 tiles
-        remain or all 9 are blanked. Partial removal corrupts the lesson."""
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=num_missing)
-        ent_layer = world[Channel.ENTITIES.value]
-        asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
-        assert asm_count in (0, 9), (
-            f"seed={seed}, num_missing={num_missing}: assembler partially "
-            f"removed ({asm_count} tiles, expected 0 or 9)"
-        )
-
-    def test_assembler_can_be_removed(self):
-        """The assembler must occasionally be blanked, mirroring the
-        1-in-1-out behaviour (#108). With the assembler removed, the
-        2-in-1-out lesson degenerates to just 2 sources + 1 sink — the
-        agent must learn to place the assembler with its recipe."""
-        removed_count = 0
-        for seed in range(60):
-            f = build_factory(
-                size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed,
-            )
-            assert f is not None
-            world, _ = blank_entities(f, num_missing_entities=20)
-            ent_layer = world[Channel.ENTITIES.value]
-            asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
-            if asm_count == 0:
-                removed_count += 1
-        assert removed_count >= 5, (
-            f"Assembler was blanked in only {removed_count}/60 lessons; "
-            f"the item head won't see enough recipe targets"
-        )
-
-    def test_fully_blanked_keeps_only_sources_and_sink(self):
-        """With the assembler removed at high num_missing, the only entities
-        remaining should be the 2 sources, the 1 sink, and (sometimes, when
-        the random blanking doesn't catch every belt/inserter) some leftover
-        belt/inserter tiles. The sources and sink are always preserved."""
-        for seed in range(20):
-            f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-            assert f is not None
-            world, _ = blank_entities(f, num_missing_entities=float("inf"))
-            ent_layer = world[Channel.ENTITIES.value]
-            assert (ent_layer == str2ent("source").value).sum().item() == 2
-            assert (ent_layer == str2ent("sink").value).sum().item() == 1
-
-    @pytest.mark.parametrize("seed", range(10))
-    @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
-    def test_assembler_recipe_preserved_when_kept(self, seed, num_missing):
-        """When the assembler is kept (asm_count == 9), every tile must
-        still carry the recipe. When fully blanked (asm_count == 0), there
-        are no tiles to check."""
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=num_missing)
-        ent_layer = world[Channel.ENTITIES.value]
-        item_layer = world[Channel.ITEMS.value]
-        asm_positions = (
-            ent_layer == str2ent("assembling_machine_1").value
-        ).nonzero(as_tuple=False)
-        for pos in asm_positions:
-            assert item_layer[pos[0], pos[1]].item() != str2item("empty").value
-
-
-class TestAssemble2In1OutDeterminism:
-    @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
-    def test_same_seed_same_world(self, seed):
-        f1 = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        f2 = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f1 is not None and f2 is not None
-        w1, m1 = blank_entities(f1, num_missing_entities=0, seed=seed)
-        w2, m2 = blank_entities(f2, num_missing_entities=0, seed=seed)
-        assert torch.equal(w1, w2)
-        assert m1 == m2
-
-
-class TestAssemble2In1OutThroughputPerRecipe:
-    """Closed-form throughput, computed from the live recipe table so the
-    test stays correct as new recipes land.
-
-    With 2 input inserters and 1 output inserter, each capped at
-    INSERTER_CAP = 0.86 i/s:
-
-      input ratio per ingredient i = INSERTER_CAP / consumes[i]
-      min_ratio                    = min(1.0, min over i of input ratios)
-      output rate                  = produces[product] × min_ratio
-      final throughput             = min(INSERTER_CAP, output rate)
-    """
-
-    INSERTER_CAP = 0.86
-
-    @pytest.mark.parametrize("seed", range(40))
-    def test_throughput_matches_recipe_closed_form(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        item = world[Channel.ITEMS.value]
-        snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
-        recipe_name = items[item[snk[0], snk[1]].item()].name
-        recipe = recipes[recipe_name]
-        assert len(recipe.consumes) == 2 and len(recipe.produces) == 1
-        min_ratio = min(
-            1.0,
-            *(self.INSERTER_CAP / c for c in recipe.consumes.values()),
-        )
-        prod_count = next(iter(recipe.produces.values()))
-        expected = min(self.INSERTER_CAP, prod_count * min_ratio)
-
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert abs(tp - expected) < 1e-3, (
-            f"seed={seed}, recipe={recipe_name}: expected ≈ {expected}, got {tp}"
-        )
-
-
-class TestAssemble2In1OutInserterGeometry:
-    """Two inserters' drop tiles must be inside the assembler body
-    (input inserters); one inserter's pickup tile must be inside (output).
-    All on valid 12 non-corner perimeter slots."""
-
-    @pytest.mark.parametrize("seed", range(30))
-    def test_two_input_one_output(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        asm = _asm_tiles(world)
-        input_count = 0
-        output_count = 0
-        for (x, y), d_val in _inserters(world):
-            d = _dir_from_value(d_val)
-            assert d is not None
-            dx, dy = DIR_TO_DELTA[d]
-            drop = (x + dx, y + dy)
-            pickup = (x - dx, y - dy)
-            if drop in asm and pickup not in asm:
-                input_count += 1
-            elif pickup in asm and drop not in asm:
-                output_count += 1
-            else:
-                raise AssertionError(
-                    f"seed={seed}: inserter at ({x},{y}) has invalid geometry"
-                )
-        assert input_count == 2, f"seed={seed}: expected 2 input inserters, got {input_count}"
-        assert output_count == 1, f"seed={seed}: expected 1 output inserter, got {output_count}"
-
-    @pytest.mark.parametrize("seed", range(30))
-    def test_inserters_on_non_corner_perimeter(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        asm = _asm_tiles(world)
-        ax = min(x for x, _ in asm)
-        ay = min(y for _, y in asm)
-        valid = set()
-        for d in range(3):
-            valid.add((ax + d, ay - 1))
-            valid.add((ax + d, ay + 3))
-            valid.add((ax - 1, ay + d))
-            valid.add((ax + 3, ay + d))
-        for (x, y), _ in _inserters(world):
-            assert (x, y) in valid, (
-                f"seed={seed}: inserter at ({x},{y}) not on a valid perimeter slot"
-            )
-
-    @pytest.mark.parametrize("seed", range(50))
-    def test_source_and_sink_not_on_assembler_perimeter(self, seed):
-        """REGRESSION: same bug as TestAssemble1In1OutInserterGeometry —
-        Source/Sink on the assembler's perimeter ring create phantom
-        infinite-rate edges. With 2 sources here the chance of one
-        landing on a perimeter slot is roughly double."""
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        asm = _asm_tiles(world)
-        ax = min(x for x, _ in asm)
-        ay = min(y for _, y in asm)
-        bad_slots = set()
-        for d in range(3):
-            bad_slots.add((ax + d, ay - 1))
-            bad_slots.add((ax + d, ay + 3))
-            bad_slots.add((ax - 1, ay + d))
-            bad_slots.add((ax + 3, ay + d))
-
-        ent = world[Channel.ENTITIES.value]
-        for v in [str2ent("source").value, str2ent("sink").value]:
-            for p in (ent == v).nonzero(as_tuple=False):
-                pos = (p[0].item(), p[1].item())
-                assert pos not in bad_slots, (
-                    f"seed={seed}: {entities[v].name} at {pos} is on a "
-                    f"non-corner perimeter slot of the assembler at "
-                    f"({ax},{ay}) — would create a phantom infinite-rate "
-                    f"edge"
-                )
-
-
-class TestAssemble2In1OutConnectivity:
-    @pytest.mark.parametrize("seed", range(20))
-    def test_both_sources_reach_assembler(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        G = build_factory_graph(world.permute(1, 2, 0))
-        import networkx as nx
-        sources = [n for n in G.nodes if "stack_inserter" in n]
-        sink = [n for n in G.nodes if "bulk_inserter" in n]
-        asm = [n for n in G.nodes if "assembling_machine" in n]
-        assert len(sources) == 2 and len(sink) == 1 and len(asm) == 1
-        for s in sources:
-            assert nx.has_path(G, s, asm[0])
-        assert nx.has_path(G, asm[0], sink[0])
-
-
-class TestAssemble2In1OutEdgeCases:
-    @pytest.mark.parametrize("size", [1, 2])
-    def test_grid_too_small_returns_none(self, size):
-        assert (
-            build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=0)
-            is None
-        )
-
-    @pytest.mark.parametrize("seed", range(5))
-    def test_large_grid_works(self, seed):
-        f = build_factory(size=20, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        tp, _ = rs_throughput(world.permute(1, 2, 0))
-        assert tp > 0
-
-
-class TestAssemble2In1OutBeltItems:
-    """Belt tiles should not have items set."""
-
-    @pytest.mark.parametrize("seed", range(20))
-    def test_belt_items_channel_is_empty(self, seed):
-        f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-        assert f is not None
-        world, _ = blank_entities(f, num_missing_entities=0)
-        ent = world[Channel.ENTITIES.value]
-        item = world[Channel.ITEMS.value]
-        empty = str2item("empty").value
-        for p in (ent == str2ent("transport_belt").value).nonzero(as_tuple=False):
-            x, y = p[0].item(), p[1].item()
-            assert item[x, y].item() == empty
-
-
-class TestAssemble2In1OutRecipeSelection:
-    """Multiple distinct 2-in-1-out recipes should appear across seeds."""
-
-    def test_multiple_recipes_appear(self):
-        seen = set()
-        for seed in range(200):
-            f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
-            assert f is not None
-            world, _ = blank_entities(f, num_missing_entities=0)
-            ent = world[Channel.ENTITIES.value]
-            item = world[Channel.ITEMS.value]
-            snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
-            seen.add(item[snk[0], snk[1]].item())
-
-        seen_names = {items[v].name for v in seen}
-        assert seen_names <= set(TWO_IN_ONE_OUT_RECIPES.keys()), (
-            f"Saw items that are not 2-in-1-out recipes: "
-            f"{seen_names - set(TWO_IN_ONE_OUT_RECIPES.keys())}"
-        )
-        expected_distinct = min(len(TWO_IN_ONE_OUT_RECIPES), 5)
-        assert len(seen_names) >= expected_distinct, (
-            f"Expected ≥ {expected_distinct} distinct recipes across 200 "
-            f"seeds, only saw {len(seen_names)}: {seen_names}"
-        )
+# class TestAssemble2In1OutBasic:
+#     def test_generates_without_error(self):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, min_ent = blank_entities(f, num_missing_entities=0)
+#         assert world is not None
+#         assert min_ent is not None
+#
+#     def test_returns_cwh_tensor(self):
+#         size = 10
+#         f = build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         assert world.shape[0] == len(Channel)
+#         assert world.shape[1] == size
+#         assert world.shape[2] == size
+#
+#     def test_has_two_sources_one_sink(self):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         assert (ent_layer == str2ent("source").value).sum().item() == 2
+#         assert (ent_layer == str2ent("sink").value).sum().item() == 1
+#
+#     def test_has_one_assembler(self):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         asm = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+#         assert asm == 9, f"Expected 9 assembler tiles, got {asm}"
+#
+#     def test_has_three_inserters(self):
+#         """2 input + 1 output."""
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         ins = (ent_layer == str2ent("inserter").value).sum().item()
+#         assert ins == 3, f"Expected 3 inserters, got {ins}"
+#
+#     def test_has_belts(self):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         belts = (ent_layer == str2ent("transport_belt").value).sum().item()
+#         assert belts >= 3, f"Expected at least 3 belts, got {belts}"
+#
+#     def test_nonzero_throughput(self):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0, f"Expected positive throughput, got {tp}"
+#
+#
+# class TestAssemble2In1OutManySeeds:
+#     @pytest.mark.parametrize("seed", range(50))
+#     def test_size_10_seed(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0, f"seed={seed}: throughput is {tp}"
+#
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_size_8_seed(self, seed):
+#         f = build_factory(size=8, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0
+#
+#     @pytest.mark.parametrize("seed", range(20))
+#     def test_size_12_seed(self, seed):
+#         f = build_factory(size=12, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0
+#
+#     @pytest.mark.parametrize("seed", range(20))
+#     def test_size_15_seed(self, seed):
+#         f = build_factory(size=15, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0
+#
+#
+# class TestAssemble2In1OutGridSizes:
+#     @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
+#     def test_valid_factory_per_size(self, size):
+#         f = build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=7)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         assert (ent == str2ent("source").value).sum().item() == 2
+#         assert (ent == str2ent("sink").value).sum().item() == 1
+#         assert (ent == str2ent("assembling_machine_1").value).sum().item() == 9
+#         assert (ent == str2ent("inserter").value).sum().item() == 3
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0
+#
+#
+# class TestAssemble2In1OutEntityDirections:
+#     @pytest.mark.parametrize("seed", range(20))
+#     def test_all_entities_have_directions(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         dirs = world[Channel.DIRECTION.value]
+#         for x in range(world.shape[1]):
+#             for y in range(world.shape[2]):
+#                 v = ent[x, y].item()
+#                 if v != str2ent("empty").value:
+#                     assert dirs[x, y].item() != Direction.NONE.value, (
+#                         f"seed={seed}: entity {entities[v].name} at ({x},{y}) has NONE dir"
+#                     )
+#
+#
+# class TestAssemble2In1OutNoOverlaps:
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_no_double_placement(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         occ = []
+#         for x in range(world.shape[1]):
+#             for y in range(world.shape[2]):
+#                 if ent[x, y].item() != str2ent("empty").value:
+#                     occ.append((x, y))
+#         assert len(occ) == len(set(occ))
+#
+#
+# class TestAssemble2In1OutItems:
+#     """Both sources carry the recipe's two ingredient items; sink carries
+#     the recipe's product. The two sources must NOT carry the same item."""
+#
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_sources_match_recipe_inputs(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         item = world[Channel.ITEMS.value]
+#         src_positions = (ent == str2ent("source").value).nonzero(as_tuple=False)
+#         snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+#
+#         src_items = {item[p[0], p[1]].item() for p in src_positions}
+#         sink_item = item[snk_pos[0], snk_pos[1]].item()
+#
+#         assert str2item("empty").value not in src_items
+#         assert sink_item != str2item("empty").value
+#         assert len(src_items) == 2, (
+#             f"seed={seed}: 2 sources carry the same item ({src_items})"
+#         )
+#         assert sink_item not in src_items
+#
+#         src_names = frozenset(items[v].name for v in src_items)
+#         sink_name = items[sink_item].name
+#         assert (src_names, sink_name) in {
+#             (inputs, out) for (inputs, out) in TWO_IN_ONE_OUT_RECIPES.values()
+#         }, (
+#             f"seed={seed}: pair ({src_names}, {sink_name}) does not match any "
+#             f"2-in-1-out recipe in the live recipe table"
+#         )
+#
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_assembler_recipe_matches_output(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         item = world[Channel.ITEMS.value]
+#         asm_positions = (ent == str2ent("assembling_machine_1").value).nonzero(as_tuple=False)
+#         snk_pos = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+#         sink_item = item[snk_pos[0], snk_pos[1]].item()
+#         for p in asm_positions:
+#             assert item[p[0], p[1]].item() == sink_item
+#
+#
+# class TestAssemble2In1OutMissingEntities:
+#     @pytest.mark.parametrize("num_missing", [1, 2, 3])
+#     def test_removes_correct_count(self, num_missing):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=42)
+#         assert f is not None
+#         world, min_ent = blank_entities(f, num_missing_entities=num_missing)
+#         assert min_ent == num_missing
+#         ent = world[Channel.ENTITIES.value]
+#         assert (ent == str2ent("source").value).sum().item() == 2
+#         assert (ent == str2ent("sink").value).sum().item() == 1
+#
+#     @pytest.mark.parametrize("seed", range(10))
+#     def test_missing_inf_returns_positive_count(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, min_ent = blank_entities(f, num_missing_entities=float("inf"))
+#         assert world is not None
+#         assert min_ent is not None and min_ent > 0
+#
+#     @pytest.mark.parametrize("seed", range(10))
+#     @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
+#     def test_assembler_kept_or_fully_removed(self, seed, num_missing):
+#         """The 3×3 assembler is removed atomically — either all 9 tiles
+#         remain or all 9 are blanked. Partial removal corrupts the lesson."""
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=num_missing)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+#         assert asm_count in (0, 9), (
+#             f"seed={seed}, num_missing={num_missing}: assembler partially "
+#             f"removed ({asm_count} tiles, expected 0 or 9)"
+#         )
+#
+#     def test_assembler_can_be_removed(self):
+#         """The assembler must occasionally be blanked, mirroring the
+#         1-in-1-out behaviour (#108). With the assembler removed, the
+#         2-in-1-out lesson degenerates to just 2 sources + 1 sink — the
+#         agent must learn to place the assembler with its recipe."""
+#         removed_count = 0
+#         for seed in range(60):
+#             f = build_factory(
+#                 size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed,
+#             )
+#             assert f is not None
+#             world, _ = blank_entities(f, num_missing_entities=20)
+#             ent_layer = world[Channel.ENTITIES.value]
+#             asm_count = (ent_layer == str2ent("assembling_machine_1").value).sum().item()
+#             if asm_count == 0:
+#                 removed_count += 1
+#         assert removed_count >= 5, (
+#             f"Assembler was blanked in only {removed_count}/60 lessons; "
+#             f"the item head won't see enough recipe targets"
+#         )
+#
+#     def test_fully_blanked_keeps_only_sources_and_sink(self):
+#         """With the assembler removed at high num_missing, the only entities
+#         remaining should be the 2 sources, the 1 sink, and (sometimes, when
+#         the random blanking doesn't catch every belt/inserter) some leftover
+#         belt/inserter tiles. The sources and sink are always preserved."""
+#         for seed in range(20):
+#             f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#             assert f is not None
+#             world, _ = blank_entities(f, num_missing_entities=float("inf"))
+#             ent_layer = world[Channel.ENTITIES.value]
+#             assert (ent_layer == str2ent("source").value).sum().item() == 2
+#             assert (ent_layer == str2ent("sink").value).sum().item() == 1
+#
+#     @pytest.mark.parametrize("seed", range(10))
+#     @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
+#     def test_assembler_recipe_preserved_when_kept(self, seed, num_missing):
+#         """When the assembler is kept (asm_count == 9), every tile must
+#         still carry the recipe. When fully blanked (asm_count == 0), there
+#         are no tiles to check."""
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=num_missing)
+#         ent_layer = world[Channel.ENTITIES.value]
+#         item_layer = world[Channel.ITEMS.value]
+#         asm_positions = (
+#             ent_layer == str2ent("assembling_machine_1").value
+#         ).nonzero(as_tuple=False)
+#         for pos in asm_positions:
+#             assert item_layer[pos[0], pos[1]].item() != str2item("empty").value
+#
+#
+# class TestAssemble2In1OutDeterminism:
+#     @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
+#     def test_same_seed_same_world(self, seed):
+#         f1 = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         f2 = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f1 is not None and f2 is not None
+#         w1, m1 = blank_entities(f1, num_missing_entities=0, seed=seed)
+#         w2, m2 = blank_entities(f2, num_missing_entities=0, seed=seed)
+#         assert torch.equal(w1, w2)
+#         assert m1 == m2
+#
+#
+# class TestAssemble2In1OutThroughputPerRecipe:
+#     """Closed-form throughput, computed from the live recipe table so the
+#     test stays correct as new recipes land.
+#
+#     With 2 input inserters and 1 output inserter, each capped at
+#     INSERTER_CAP = 0.86 i/s:
+#
+#       input ratio per ingredient i = INSERTER_CAP / consumes[i]
+#       min_ratio                    = min(1.0, min over i of input ratios)
+#       output rate                  = produces[product] × min_ratio
+#       final throughput             = min(INSERTER_CAP, output rate)
+#     """
+#
+#     INSERTER_CAP = 0.86
+#
+#     @pytest.mark.parametrize("seed", range(40))
+#     def test_throughput_matches_recipe_closed_form(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         item = world[Channel.ITEMS.value]
+#         snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+#         recipe_name = items[item[snk[0], snk[1]].item()].name
+#         recipe = recipes[recipe_name]
+#         assert len(recipe.consumes) == 2 and len(recipe.produces) == 1
+#         min_ratio = min(
+#             1.0,
+#             *(self.INSERTER_CAP / c for c in recipe.consumes.values()),
+#         )
+#         prod_count = next(iter(recipe.produces.values()))
+#         expected = min(self.INSERTER_CAP, prod_count * min_ratio)
+#
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert abs(tp - expected) < 1e-3, (
+#             f"seed={seed}, recipe={recipe_name}: expected ≈ {expected}, got {tp}"
+#         )
+#
+#
+# class TestAssemble2In1OutInserterGeometry:
+#     """Two inserters' drop tiles must be inside the assembler body
+#     (input inserters); one inserter's pickup tile must be inside (output).
+#     All on valid 12 non-corner perimeter slots."""
+#
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_two_input_one_output(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         asm = _asm_tiles(world)
+#         input_count = 0
+#         output_count = 0
+#         for (x, y), d_val in _inserters(world):
+#             d = _dir_from_value(d_val)
+#             assert d is not None
+#             dx, dy = DIR_TO_DELTA[d]
+#             drop = (x + dx, y + dy)
+#             pickup = (x - dx, y - dy)
+#             if drop in asm and pickup not in asm:
+#                 input_count += 1
+#             elif pickup in asm and drop not in asm:
+#                 output_count += 1
+#             else:
+#                 raise AssertionError(
+#                     f"seed={seed}: inserter at ({x},{y}) has invalid geometry"
+#                 )
+#         assert input_count == 2, f"seed={seed}: expected 2 input inserters, got {input_count}"
+#         assert output_count == 1, f"seed={seed}: expected 1 output inserter, got {output_count}"
+#
+#     @pytest.mark.parametrize("seed", range(30))
+#     def test_inserters_on_non_corner_perimeter(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         asm = _asm_tiles(world)
+#         ax = min(x for x, _ in asm)
+#         ay = min(y for _, y in asm)
+#         valid = set()
+#         for d in range(3):
+#             valid.add((ax + d, ay - 1))
+#             valid.add((ax + d, ay + 3))
+#             valid.add((ax - 1, ay + d))
+#             valid.add((ax + 3, ay + d))
+#         for (x, y), _ in _inserters(world):
+#             assert (x, y) in valid, (
+#                 f"seed={seed}: inserter at ({x},{y}) not on a valid perimeter slot"
+#             )
+#
+#     @pytest.mark.parametrize("seed", range(50))
+#     def test_source_and_sink_not_on_assembler_perimeter(self, seed):
+#         """REGRESSION: same bug as TestAssemble1In1OutInserterGeometry —
+#         Source/Sink on the assembler's perimeter ring create phantom
+#         infinite-rate edges. With 2 sources here the chance of one
+#         landing on a perimeter slot is roughly double."""
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         asm = _asm_tiles(world)
+#         ax = min(x for x, _ in asm)
+#         ay = min(y for _, y in asm)
+#         bad_slots = set()
+#         for d in range(3):
+#             bad_slots.add((ax + d, ay - 1))
+#             bad_slots.add((ax + d, ay + 3))
+#             bad_slots.add((ax - 1, ay + d))
+#             bad_slots.add((ax + 3, ay + d))
+#
+#         ent = world[Channel.ENTITIES.value]
+#         for v in [str2ent("source").value, str2ent("sink").value]:
+#             for p in (ent == v).nonzero(as_tuple=False):
+#                 pos = (p[0].item(), p[1].item())
+#                 assert pos not in bad_slots, (
+#                     f"seed={seed}: {entities[v].name} at {pos} is on a "
+#                     f"non-corner perimeter slot of the assembler at "
+#                     f"({ax},{ay}) — would create a phantom infinite-rate "
+#                     f"edge"
+#                 )
+#
+#
+# class TestAssemble2In1OutConnectivity:
+#     @pytest.mark.parametrize("seed", range(20))
+#     def test_both_sources_reach_assembler(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         G = build_factory_graph(world.permute(1, 2, 0))
+#         import networkx as nx
+#         sources = [n for n in G.nodes if "stack_inserter" in n]
+#         sink = [n for n in G.nodes if "bulk_inserter" in n]
+#         asm = [n for n in G.nodes if "assembling_machine" in n]
+#         assert len(sources) == 2 and len(sink) == 1 and len(asm) == 1
+#         for s in sources:
+#             assert nx.has_path(G, s, asm[0])
+#         assert nx.has_path(G, asm[0], sink[0])
+#
+#
+# class TestAssemble2In1OutEdgeCases:
+#     @pytest.mark.parametrize("size", [1, 2])
+#     def test_grid_too_small_returns_none(self, size):
+#         assert (
+#             build_factory(size=size, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=0)
+#             is None
+#         )
+#
+#     @pytest.mark.parametrize("seed", range(5))
+#     def test_large_grid_works(self, seed):
+#         f = build_factory(size=20, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         tp, _ = rs_throughput(world.permute(1, 2, 0))
+#         assert tp > 0
+#
+#
+# class TestAssemble2In1OutBeltItems:
+#     """Belt tiles should not have items set."""
+#
+#     @pytest.mark.parametrize("seed", range(20))
+#     def test_belt_items_channel_is_empty(self, seed):
+#         f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#         assert f is not None
+#         world, _ = blank_entities(f, num_missing_entities=0)
+#         ent = world[Channel.ENTITIES.value]
+#         item = world[Channel.ITEMS.value]
+#         empty = str2item("empty").value
+#         for p in (ent == str2ent("transport_belt").value).nonzero(as_tuple=False):
+#             x, y = p[0].item(), p[1].item()
+#             assert item[x, y].item() == empty
+#
+#
+# class TestAssemble2In1OutRecipeSelection:
+#     """Multiple distinct 2-in-1-out recipes should appear across seeds."""
+#
+#     def test_multiple_recipes_appear(self):
+#         seen = set()
+#         for seed in range(200):
+#             f = build_factory(size=10, kind=LessonKind.ASSEMBLE_2IN_1OUT, seed=seed)
+#             assert f is not None
+#             world, _ = blank_entities(f, num_missing_entities=0)
+#             ent = world[Channel.ENTITIES.value]
+#             item = world[Channel.ITEMS.value]
+#             snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+#             seen.add(item[snk[0], snk[1]].item())
+#
+#         seen_names = {items[v].name for v in seen}
+#         assert seen_names <= set(TWO_IN_ONE_OUT_RECIPES.keys()), (
+#             f"Saw items that are not 2-in-1-out recipes: "
+#             f"{seen_names - set(TWO_IN_ONE_OUT_RECIPES.keys())}"
+#         )
+#         expected_distinct = min(len(TWO_IN_ONE_OUT_RECIPES), 5)
+#         assert len(seen_names) >= expected_distinct, (
+#             f"Expected ≥ {expected_distinct} distinct recipes across 200 "
+#             f"seeds, only saw {len(seen_names)}: {seen_names}"
+#         )
 
 
 class TestFullBlankActuallyEmptiesWorld:
