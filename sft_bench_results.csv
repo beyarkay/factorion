@@ -1,3 +1,4 @@
 timestamp_utc,branch,commit,dirty,wall_mean_s,wall_std_s,wall_min_s,wall_max_s,val_loss,invariant,note
 2026-06-30T06:52:43Z,speed/sft-benchmark,7bf566a,clean,88.39,1.33,87.51,89.92,1.6888,OK,"baseline (eager, per-batch .item syncs + 8 H2D transfers)"
 2026-06-30T07:09:52Z,speed/sft-benchmark,767cb82,clean,30.39,0.3,30.18,30.74,1.6888,OK,GPU-resident train data (index DataLoader) + sync-free epoch stats
+2026-06-30T07:51:57Z,speed/sft-benchmark,dae48b1,clean,23.28,0.08,23.19,23.35,1.6888,OK,+ val loop GPU-resident (both train+val on-device)
