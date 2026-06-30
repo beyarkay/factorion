@@ -24,6 +24,26 @@ progressed significantly): https://api.wandb.ai/links/beyarkay/wmccb7fq
 
 What's landed on `main` in the last week, newest first.
 
+**2026-06-30**
+
+- Added a new training task that makes the model memorise recipes by rebuilding a randomly-chosen assembler fed and drained by source/belt/inserter arms, plus a shared `render_factory` helper for drawing factories as ASCII ([#213](https://github.com/beyarkay/factorion/pull/213))
+- Added a "cross under a protected belt line" training task with a native-Rust generator and an underground-aware router that tunnels beneath obstacles ([#199](https://github.com/beyarkay/factorion/pull/199))
+- Added the long-handed inserter as a placeable entity, with reach-2 connectivity ([#212](https://github.com/beyarkay/factorion/pull/212))
+- Fixed multi-tile entity placement so state is written uniformly across the whole footprint ([#214](https://github.com/beyarkay/factorion/pull/214))
+- Ported the factory generator (`build_factory`) to Rust with byte-identical parity and removed the old Python implementation, so all training now goes through the faster Rust path ([#202](https://github.com/beyarkay/factorion/pull/202), [#210](https://github.com/beyarkay/factorion/pull/210))
+- Sped up SFT training (88.4 → 22.6 s, −74%) with a training-loop benchmark and GPU-resident data ([#206](https://github.com/beyarkay/factorion/pull/206))
+- Sped up PPO with numpy world-writes, recipe `Args` defaults, and an entity-string cache ([#205](https://github.com/beyarkay/factorion/pull/205))
+- Allowed CPU training under pytest so the PPO/SFT tests run locally without a GPU ([#211](https://github.com/beyarkay/factorion/pull/211))
+- Defaulted CI to RTX 2000 Ada + CUDA-13-capable hosts and fixed the CI Docker image ([#208](https://github.com/beyarkay/factorion/pull/208))
+- Sped up the python-tests CI install with `uv` and dropped unused dependencies ([#209](https://github.com/beyarkay/factorion/pull/209))
+- Fixed a stuck loop in the SFT rollout-eval test fixture ([#207](https://github.com/beyarkay/factorion/pull/207))
+
+**2026-06-29**
+
+- Cut PPO time-to-quality from ~63 s to ~41 s by replacing `torch.distributions` with fused sampling ops and compiling the rollout, bootstrap, and update passes with CUDA graphs
+- Added a time-to-quality finetuning benchmark with durable, discoverable history alongside the existing pure-speed benchmark
+- Added `--critic-lr-mult` for a separate critic learning rate, and `--amp` (bf16 autocast) plus `--async-envs` flags (off by default)
+
 **2026-05-13**
 
 - Made the "build one assembler" training task actually hide the assembler so the model has to learn to place it ([#108](https://github.com/beyarkay/factorion/pull/108))
