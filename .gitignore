@@ -1,4 +1,7 @@
 modernbert-ft-factorio/
+# Removed as a submodule in #217, but remote (web) session containers may
+# still materialize the wube/factorio-data clone at session start.
+factorio-data/
 artifacts/
 blueprints/autogen
 wandb
