@@ -5,6 +5,7 @@ greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
 import os
 import sys
 
+import numpy as np
 import pytest
 import torch
 import gymnasium as gym
@@ -22,6 +23,9 @@ from ppo import (  # noqa: E402
     _run_signature,
     _build_eval_set,
     _rollout_episode_metrics,
+    _explained_variance,
+    _pearson_corr,
+    _critic_diagnostics,
 )
 from factorion import LessonKind, build_factory  # noqa: E402
 from helpers import Channel  # noqa: E402
@@ -178,3 +182,86 @@ class TestRolloutEpisodeMetrics:
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()
         assert m["rollout/entity_efficiency"] == pytest.approx(3.0 / 4.0)
+
+
+# ── critic (value-head) diagnostics (global + per-lesson) ────────────────────
+
+
+class TestExplainedVariance:
+    def test_perfect_prediction_is_one(self):
+        y = np.array([0.1, 0.5, 0.9, -0.3])
+        assert _explained_variance(y, y.copy()) == pytest.approx(1.0)
+
+    def test_predicting_the_mean_is_zero(self):
+        y = np.array([0.1, 0.5, 0.9, -0.3])
+        assert _explained_variance(y, np.full_like(y, y.mean())) == pytest.approx(0.0)
+
+    def test_anti_correlated_prediction_is_negative(self):
+        y = np.array([0.1, 0.5, 0.9, -0.3])
+        assert _explained_variance(y, -y) < 0.0
+
+    def test_zero_variance_returns_nan(self):
+        y = np.array([0.4, 0.4, 0.4])
+        assert np.isnan(_explained_variance(y, np.array([0.1, 0.2, 0.3])))
+
+
+class TestPearsonCorr:
+    def test_monotone_biased_predictor_is_one(self):
+        # A critic off by a constant scale+offset still orders perfectly.
+        r = np.array([0.0, 1.0, 2.0, 3.0])
+        assert _pearson_corr(2 * r + 5, r) == pytest.approx(1.0)
+
+    def test_constant_side_is_nan(self):
+        r = np.array([0.0, 1.0, 2.0])
+        assert np.isnan(_pearson_corr(np.array([1.0, 1.0, 1.0]), r))
+
+
+class TestCriticDiagnostics:
+    def _kinds(self, *names):
+        return np.array([LessonKind[n].value for n in names], dtype=np.int64)
+
+    def test_global_keys_present_and_bias_signed(self):
+        values = np.array([0.5, 0.5, 0.5, 0.5])
+        returns = np.array([0.0, 0.0, 0.0, 0.0])
+        advantages = np.array([-0.5, -0.5, -0.5, -0.5])
+        kinds = self._kinds(*(["MOVE_ONE_ITEM"] * 4))
+        m = _critic_diagnostics(values, returns, advantages, kinds)
+        # Over-estimating critic → positive bias, rmse = |error|.
+        assert m["critic/value_bias"] == pytest.approx(0.5)
+        assert m["critic/value_rmse"] == pytest.approx(0.5)
+        assert m["critic/adv_abs_mean"] == pytest.approx(0.5)
+        assert m["critic/value_mean"] == pytest.approx(0.5)
+        assert m["critic/return_mean"] == pytest.approx(0.0)
+        for k in ["explained_variance", "value_std", "return_std",
+                  "value_return_corr"]:
+            assert f"critic/{k}" in m
+
+    def test_per_lesson_slices_are_independent(self):
+        # Two lessons: MOVE_ONE_ITEM predicted perfectly, SPLITTER_SPLIT off by 1.
+        values = np.array([0.0, 1.0, 2.0, 5.0, 6.0, 7.0])
+        returns = np.array([0.0, 1.0, 2.0, 4.0, 5.0, 6.0])
+        advantages = np.zeros(6)
+        kinds = self._kinds(
+            "MOVE_ONE_ITEM", "MOVE_ONE_ITEM", "MOVE_ONE_ITEM",
+            "SPLITTER_SPLIT", "SPLITTER_SPLIT", "SPLITTER_SPLIT",
+        )
+        m = _critic_diagnostics(values, returns, advantages, kinds)
+        assert m["critic/MOVE_ONE_ITEM/explained_variance"] == pytest.approx(1.0)
+        assert m["critic/MOVE_ONE_ITEM/value_bias"] == pytest.approx(0.0)
+        assert m["critic/MOVE_ONE_ITEM/n"] == 3.0
+        # Constant +1 offset: perfect ordering but biased.
+        assert m["critic/SPLITTER_SPLIT/value_bias"] == pytest.approx(1.0)
+        assert m["critic/SPLITTER_SPLIT/value_return_corr"] == pytest.approx(1.0)
+        assert m["critic/SPLITTER_SPLIT/n"] == 3.0
+        # A lesson with no transitions this iter emits no keys.
+        assert "critic/ASSEMBLE_1IN_1OUT/explained_variance" not in m
+
+    def test_single_sample_lesson_has_nan_variance_metrics_but_finite_bias(self):
+        values = np.array([0.7])
+        returns = np.array([0.2])
+        m = _critic_diagnostics(values, returns, np.array([0.5]),
+                                self._kinds("MOVE_ONE_ITEM"))
+        assert np.isnan(m["critic/MOVE_ONE_ITEM/explained_variance"])
+        assert np.isnan(m["critic/MOVE_ONE_ITEM/value_return_corr"])
+        assert m["critic/MOVE_ONE_ITEM/value_bias"] == pytest.approx(0.5)
+        assert m["critic/MOVE_ONE_ITEM/n"] == 1.0
