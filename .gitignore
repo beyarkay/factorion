@@ -20,3 +20,5 @@ claude-resume.sh
 *.pt
 .claude/settings.local.json
 tests/benchmarks/baseline_signature.json
+# Removed as a submodule in #217; stale clones may linger in cached remote envs.
+factorio-data/
