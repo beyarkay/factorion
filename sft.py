@@ -44,6 +44,10 @@ from ppo import (  # noqa: E402
     make_env,
     layers_from_args,
     assert_device_ok,
+    _CH_ENT,
+    _CH_FOOTPRINT,
+    _EMPTY_ENT_ID,
+    _FOOTPRINT_UNAVAILABLE,
 )
 
 
@@ -459,6 +463,16 @@ class RolloutEval(TypedDict):
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
 
 
+def _apply_legal_tile_mask(tile_logits, obs_batch):
+    """Mask illegal placement tiles to -inf so an argmax skips them."""
+    K = tile_logits.shape[0]
+    ent_ch = obs_batch[:, _CH_ENT]
+    foot_ch = obs_batch[:, _CH_FOOTPRINT]
+    # legal iff no entity & tile is placeable
+    legal = (ent_ch == _EMPTY_ENT_ID) & (foot_ch != _FOOTPRINT_UNAVAILABLE)
+    return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
+
+
 def run_rollout_eval(
     agent,
     args: SFTArgs,
@@ -495,6 +509,10 @@ def run_rollout_eval(
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
     in `val/thput` over training is directly comparable to the
     existing per-kind val accuracy curves.
+
+    The greedy tile argmax is restricted to legal (empty + buildable)
+    tiles, so it can't livelock re-proposing an occupied tile the env
+    keeps rejecting. Eval-only; training is untouched.
 
     Returns a dict with:
         overall, overall_eot — mean throughput ignoring / respecting EOT;
@@ -585,7 +603,9 @@ def run_rollout_eval(
             encoded = agent.encoder(obs_batch)
             eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
 
-            tile_logits = agent.tile_logits(encoded).reshape(K, -1)
+            tile_logits = _apply_legal_tile_mask(
+                agent.tile_logits(encoded).reshape(K, -1), obs_batch
+            )
             tile_idx_K = tile_logits.argmax(dim=1)
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size

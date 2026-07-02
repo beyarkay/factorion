@@ -72,6 +72,9 @@ _CH_DIR = Channel.DIRECTION.value
 _CH_ITEMS = Channel.ITEMS.value
 _CH_MISC = Channel.MISC.value
 _CH_FOOTPRINT = Channel.FOOTPRINT.value
+# Footprint is two-valued (UNAVAILABLE / AVAILABLE) and exhaustive, so
+# "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
+_FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
@@ -806,7 +809,7 @@ class FactorioEnv(gym.Env):
                 invalid_reason_key = 'too_wide'
                 action_is_invalid = True
             elif any(
-                world_np[_CH_FOOTPRINT, tx, ty] == Footprint.UNAVAILABLE.value
+                world_np[_CH_FOOTPRINT, tx, ty] == _FOOTPRINT_UNAVAILABLE
                 for tx, ty in tiles_list
             ):
                 invalid_reason_key = 'placed_on_masked_tile'
