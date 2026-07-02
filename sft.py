@@ -1024,21 +1024,16 @@ def train_sft(args: SFTArgs):
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
     bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
-    # pos_weight balances the eot head against the placement-step
-    # imbalance. Each lesson emits ~max_level placement pairs (eot=0) and
-    # exactly 1 terminal pair (eot=1); without pos_weight the head
-    # collapses to always-predict-not-finished.
-    train_eot = eot_labels[train_idx]
-    n_pos = float(train_eot.sum().item())
-    n_neg = float(len(train_eot) - n_pos)
-    pos_weight = torch.tensor([n_neg / max(1.0, n_pos)])
-    bce_eot = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
-    bce_eot_none = nn.BCEWithLogitsLoss(
-        pos_weight=pos_weight.to(device), reduction="none"
-    )
-    print(
-        f"EOT head pos_weight={pos_weight.item():.2f} (n_pos={int(n_pos)}, n_neg={int(n_neg)})"
-    )
+    # The EOT BCE is deliberately UNWEIGHTED despite the ~15:1 placement/
+    # terminal imbalance (each lesson emits ~max_level eot=0 pairs and one
+    # eot=1 pair). A pos_weight=n_neg/n_pos head is miscalibrated by
+    # construction: its sigmoid crosses the 0.5 rollout_eot_threshold when
+    # the unweighted P(done|state) is only ~1/(1+w) ≈ 6%, so it fires
+    # "done" on any near-complete state it finds remotely ambiguous —
+    # which tanked thput_eot far below thput. The labels are deterministic
+    # given the state, so an unweighted head can still separate the
+    # classes; imbalance is handled by thresholding, not by re-weighting.
+    bce_eot = nn.BCEWithLogitsLoss()
 
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
@@ -1128,7 +1123,8 @@ def train_sft(args: SFTArgs):
             placement_mask = (batch_eot < 0.5).float()
             n_place = placement_mask.sum().clamp(min=1.0)
 
-            # EOT head — BCE on every sample, balanced by pos_weight.
+            # EOT head — unweighted BCE on every sample (see the bce_eot
+            # comment above for why the class imbalance is NOT re-weighted).
             eot_logits = agent.eot_head(encoded).squeeze(-1)
             loss_eot = bce_eot(eot_logits, batch_eot)
 
@@ -1300,7 +1296,7 @@ def train_sft(args: SFTArgs):
                 is_place = placement_mask.bool()
 
                 eot_logits = agent.eot_head(encoded).squeeze(-1)
-                loss_eot_per = bce_eot_none(eot_logits, batch_eot)
+                loss_eot_per = bce_loss_none(eot_logits, batch_eot)
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
                 # Per-sample losses: needed so we can sum them within each
