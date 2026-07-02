@@ -20,3 +20,4 @@ claude-resume.sh
 *.pt
 .claude/settings.local.json
 tests/benchmarks/baseline_signature.json
+factorio-data/
