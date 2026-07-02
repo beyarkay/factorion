@@ -916,11 +916,13 @@ fn build_splitter_split(
             continue;
         }
 
-        let protected: Vec<(usize, usize)> = tiles
-            .iter()
-            .map(|&(x, y)| (x as usize, y as usize))
-            .collect();
-        return finish(world, total_entities, protected, count);
+        // Leave the splitter unprotected so blank_entities can remove it.
+        // If its tiles were protected, the splitter would survive every blank
+        // (including the full-blank used by SFT/PPO eval), the expert
+        // completion would be belts-only, and the policy could never learn to
+        // place a splitter. Source/sink stay protected unconditionally on the
+        // Python side.
+        return finish(world, total_entities, Vec::new(), count);
     }
     None
 }
@@ -1079,11 +1081,13 @@ fn build_splitter_merge(
             continue;
         }
 
-        let protected: Vec<(usize, usize)> = tiles
-            .iter()
-            .map(|&(x, y)| (x as usize, y as usize))
-            .collect();
-        return finish(world, total_entities, protected, count);
+        // Leave the splitter unprotected so blank_entities can remove it.
+        // If its tiles were protected, the splitter would survive every blank
+        // (including the full-blank used by SFT/PPO eval), the expert
+        // completion would be belts-only, and the policy could never learn to
+        // place a splitter. Source/sink stay protected unconditionally on the
+        // Python side.
+        return finish(world, total_entities, Vec::new(), count);
     }
     None
 }
@@ -2728,6 +2732,45 @@ mod tests {
                     unreachable,
                     0,
                     "{} seed={seed}: {unreachable} orphans",
+                    kind.name()
+                );
+            }
+            assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_splitter_lessons_leave_splitter_removable() {
+        // The splitter must NOT be protected in the splitter lessons: if it
+        // were, blank_entities would keep it in every training pair and the
+        // policy would never learn to place a splitter. A built factory still
+        // contains the splitter (protection only affects blanking downstream),
+        // so we assert protected_positions is empty and the splitter is present.
+        for &kind in &[LessonKind::SplitterSplit, LessonKind::SplitterMerge] {
+            let mut checked = 0;
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    f.protected_positions.is_empty(),
+                    "{} seed={seed}: splitter must be removable, got protected {:?}",
+                    kind.name(),
+                    f.protected_positions
+                );
+                let mut splitter_tiles = 0;
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) == Some(Item::Splitter) {
+                            splitter_tiles += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    splitter_tiles,
+                    2,
+                    "{} seed={seed}: expected splitter",
                     kind.name()
                 );
             }
