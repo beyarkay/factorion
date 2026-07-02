@@ -31,6 +31,7 @@ import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     Channel,
     Direction,
+    Footprint,
     LessonKind,
     blank_entities,
     build_factory,
@@ -459,6 +460,34 @@ class RolloutEval(TypedDict):
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
 
 
+# Channel indices + sentinels for the eval-time legal-tile mask (see the
+# `mask_illegal_tiles` block in run_rollout_eval). A tile is a legal placement
+# target iff it is empty (ENTITIES == empty) and buildable (FOOTPRINT ==
+# AVAILABLE) — exactly the pre-checks FactorioEnv.step runs before rejecting a
+# placement, so masking these off is equivalent to never proposing them.
+_CH_ENTITIES = Channel.ENTITIES.value
+_CH_FOOTPRINT = Channel.FOOTPRINT.value
+_EMPTY_ENTITY_ID = str2ent("empty").value
+_FOOTPRINT_AVAILABLE = Footprint.AVAILABLE.value
+
+
+def _apply_legal_tile_mask(tile_logits, obs_batch):
+    """Set illegal tiles' logits to -inf so a downstream argmax can't pick them.
+
+    A tile is a legal placement target iff it is empty (ENTITIES == empty) and
+    buildable (FOOTPRINT == AVAILABLE) — the same pre-checks FactorioEnv.step
+    runs before rejecting a placement. `tile_logits` is (K, W*H) flattened
+    x-major (tile index = x * size + y, matching the rollout's argmax → x,y
+    decode); `obs_batch` is (K, C, W, H). Illegal rows get -inf rather than a
+    softmax reweighting, so an all-illegal row (a full grid) still argmaxes to
+    tile 0 with no NaN. Returns a new tensor; `tile_logits` is untouched."""
+    K = tile_logits.shape[0]
+    ent_ch = obs_batch[:, _CH_ENTITIES]
+    foot_ch = obs_batch[:, _CH_FOOTPRINT]
+    legal = (ent_ch == _EMPTY_ENTITY_ID) & (foot_ch == _FOOTPRINT_AVAILABLE)
+    return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
+
+
 def run_rollout_eval(
     agent,
     args: SFTArgs,
@@ -467,6 +496,7 @@ def run_rollout_eval(
     max_seeds: int = 100,
     eot_threshold: float = 0.5,
     num_envs: int = 8,
+    mask_illegal_tiles: bool = True,
 ) -> RolloutEval:
     """Greedy rollout eval on the held-out val factories.
 
@@ -495,6 +525,16 @@ def run_rollout_eval(
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
     in `val/thput` over training is directly comparable to the
     existing per-kind val accuracy curves.
+
+    When `mask_illegal_tiles` (the default), the greedy tile argmax is
+    restricted to legal placement targets — tiles that are empty
+    (ENTITIES == empty) and buildable (FOOTPRINT == AVAILABLE). Without
+    this, the argmax livelocks the moment its top tile is occupied: it
+    keeps re-proposing the same illegal tile, the env rejects it, and the
+    rollout burns every step to no effect. The mask is computable straight
+    from the observation, so a deployed policy can apply the identical
+    mask — the masked throughput is the honest estimate of deployable
+    skill. Masking is eval-only; training is untouched.
 
     Returns a dict with:
         overall, overall_eot — mean throughput ignoring / respecting EOT;
@@ -586,6 +626,8 @@ def run_rollout_eval(
             eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
 
             tile_logits = agent.tile_logits(encoded).reshape(K, -1)
+            if mask_illegal_tiles:
+                tile_logits = _apply_legal_tile_mask(tile_logits, obs_batch)
             tile_idx_K = tile_logits.argmax(dim=1)
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size

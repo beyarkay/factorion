@@ -22,8 +22,11 @@ from helpers import (
     build_factory,
     str2ent,
 )
+from factorion import Footprint
+import sft
 from sft import (
     SFTArgs,
+    _apply_legal_tile_mask,
     _artifact_name,
     _dir_distance_diagnostics,
     _dir_mismatch_by_distance,
@@ -888,6 +891,124 @@ class TestRunRolloutEval:
             "EOT firing before the first step must snapshot reset throughput (0)"
         )
         assert 0.0 <= always["overall"] <= 1.5
+
+    def _run_with_recorded_proposals(self, monkeypatch, mask_illegal_tiles):
+        """Run a greedy rollout eval with a FactorioEnv that records, for every
+        step, the (entity, footprint) the *proposed anchor tile* held in the
+        world just before the placement was applied. Returns that list."""
+        size = 5
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, layers=(16, 16, 16))
+        envs.close()
+
+        recorded: list[tuple[int, int]] = []
+
+        class RecordingEnv(FactorioEnv):
+            def step(self, action):
+                x, y = action["xy"]
+                ent = int(self._world_CWH[Channel.ENTITIES.value, x, y])
+                foot = int(self._world_CWH[Channel.FOOTPRINT.value, x, y])
+                recorded.append((ent, foot))
+                return super().step(action)
+
+        monkeypatch.setattr(sft, "FactorioEnv", RecordingEnv)
+
+        args = SFTArgs(
+            seed=1,
+            size=size,
+            num_samples=50,
+            max_level=2 * size,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+        )
+        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
+        assert len(val_seeds_to_kind) >= 1
+
+        run_rollout_eval(
+            agent,
+            args,
+            val_seeds_to_kind,
+            device=torch.device("cpu"),
+            max_seeds=len(val_seeds_to_kind),
+            mask_illegal_tiles=mask_illegal_tiles,
+        )
+        return recorded
+
+    def test_masking_only_proposes_legal_tiles(self, registered_env, monkeypatch):
+        """With masking on, the greedy tile argmax must only ever propose legal
+        placement targets: the anchor tile is empty (ENTITIES == empty) and
+        buildable (FOOTPRINT == AVAILABLE) at the moment of every step."""
+        empty_id = str2ent("empty").value
+        recorded = self._run_with_recorded_proposals(
+            monkeypatch, mask_illegal_tiles=True
+        )
+        assert recorded, "rollout should have proposed at least one tile"
+        illegal = [
+            (ent, foot)
+            for ent, foot in recorded
+            if ent != empty_id or foot != Footprint.AVAILABLE.value
+        ]
+        assert not illegal, (
+            f"masking must never propose an occupied/unbuildable tile; got {illegal}"
+        )
+
+
+class TestLegalTileMask:
+    """Deterministic unit coverage of the eval-time legal-tile mask helper."""
+
+    def _obs(self, size):
+        """A single all-empty, all-buildable observation of shape (1, C, W, H)."""
+        C = len(Channel)
+        obs = torch.zeros(1, C, size, size)
+        obs[0, Channel.ENTITIES.value] = str2ent("empty").value
+        obs[0, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
+        return obs
+
+    def test_argmax_skips_occupied_tile(self):
+        """When the top-logit tile is occupied, the masked argmax must fall to
+        the next-best *legal* tile instead of livelocking on the occupied one."""
+        size = 3
+        obs = self._obs(size)
+        # Occupy tile (0, 0) -> flat index 0, x-major (idx = x * size + y).
+        obs[0, Channel.ENTITIES.value, 0, 0] = str2ent("transport_belt").value
+        # Logits favour the occupied tile 0, then tile 5 as runner-up.
+        logits = torch.full((1, size * size), -1.0)
+        logits[0, 0] = 10.0
+        logits[0, 5] = 5.0
+
+        assert logits.argmax(dim=1).item() == 0, "sanity: unmasked picks occupied"
+        masked = _apply_legal_tile_mask(logits, obs)
+        assert masked.argmax(dim=1).item() == 5, "masked must skip to legal runner-up"
+        assert masked[0, 0] == float("-inf"), "occupied tile must be -inf"
+
+    def test_argmax_skips_unbuildable_tile(self):
+        """UNAVAILABLE (unbuildable) tiles are masked out just like occupied
+        ones, even when the tile is otherwise empty."""
+        size = 3
+        obs = self._obs(size)
+        # Tile (1, 1) -> flat index 4 is empty but not buildable.
+        obs[0, Channel.FOOTPRINT.value, 1, 1] = Footprint.UNAVAILABLE.value
+        logits = torch.full((1, size * size), -1.0)
+        logits[0, 4] = 10.0
+        logits[0, 2] = 5.0
+
+        masked = _apply_legal_tile_mask(logits, obs)
+        assert masked.argmax(dim=1).item() == 2
+        assert masked[0, 4] == float("-inf")
+
+    def test_all_illegal_row_is_nan_free(self):
+        """A fully occupied grid leaves every tile illegal; the masked argmax
+        must still return a finite index (tile 0) rather than NaN-ing out."""
+        size = 3
+        obs = self._obs(size)
+        obs[0, Channel.ENTITIES.value] = str2ent("transport_belt").value  # occupy everything
+        logits = torch.randn(1, size * size)
+
+        masked = _apply_legal_tile_mask(logits, obs)
+        assert torch.isinf(masked).all(), "every tile should be masked to -inf"
+        idx = masked.argmax(dim=1).item()
+        assert idx == 0, "all-illegal row falls back to tile 0"
 
 
 class TestEotHead:
