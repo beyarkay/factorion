@@ -994,13 +994,14 @@ def train_sft(args: SFTArgs):
         # so memory is bounded by the prefetch buffer. pin_memory + non_blocking
         # (in the batch source) hide the per-batch host->device copy behind the
         # GPU step.
-        stream_workers = os.cpu_count() or 1
+        stream_workers = min(16, os.cpu_count() or 1)
         train_stream_loader = DataLoader(
             StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
             batch_size=args.batch_size,
             num_workers=stream_workers,
             pin_memory=(device.type == "cuda"),
             persistent_workers=stream_workers > 0,
+            multiprocessing_context="forkserver",
         )
         n_train = args.num_samples
         steps_per_epoch = _steps_per_epoch(
