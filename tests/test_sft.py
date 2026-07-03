@@ -405,6 +405,28 @@ class TestGenerateDataset:
         for kind in LessonKind:
             assert kind.name in out, f"{kind.name} missing from breakdown:\n{out}"
 
+    def test_obs_uint8_masks_bool(self):
+        """obs stored uint8 and masks bool (the memory cut); eot stays float."""
+        args = SFTArgs(seed=1, size=8, num_samples=300, max_level=4)
+        obs, *_, masks, eots, _seeds, _kinds = generate_dataset(args)
+        assert obs.dtype == torch.uint8
+        assert masks.dtype == torch.bool
+        assert int(obs.max()) < 256  # nothing overflowed the uint8 range
+        assert eots.dtype == torch.float
+
+    def test_multiprocessing_matches_contract(self):
+        """Forcing multiple gen workers yields exactly num_samples pairs with
+        the same dtypes and disjoint factory seeds (no train/val leak)."""
+        n = 600
+        args = SFTArgs(seed=1, size=5, num_samples=n, max_level=0, gen_workers=3)
+        obs, *_, masks, eots, seeds, kinds = generate_dataset(args)
+        assert len(obs) == n
+        assert obs.dtype == torch.uint8 and masks.dtype == torch.bool
+        assert obs.shape[1:] == (len(Channel), 5, 5)
+        assert len(set(seeds.tolist())) >= 3  # each worker marched its own range
+        assert eots.sum().item() >= 1
+        assert set(kinds.tolist()).issubset({k.value for k in LessonKind})
+
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
 
@@ -491,7 +513,7 @@ class TestSFTLossConvergence:
             B = encoded.shape[0]
 
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile = bce_loss(tile_logits, masks)
+            loss_tile = bce_loss(tile_logits, masks.float())  # masks are bool
 
             x_B = tiles // agent.height
             y_B = tiles % agent.height
@@ -1026,13 +1048,16 @@ class TestEotHead:
         eots = [p[7] for p in pairs]
         assert sum(eots) == 1, f"Expected exactly one terminal pair, got {sum(eots)}"
         assert eots[-1] == 1, "Terminal pair must come last"
-        # Terminal observation equals solved (entities + directions).
+        # Terminal observation equals solved (entities + directions). obs is
+        # uint8, so cast to compare against the int64 solved world.
         terminal_obs = pairs[-1][0]
+        assert terminal_obs.dtype == torch.uint8
         assert torch.equal(
-            terminal_obs[Channel.ENTITIES.value], solved[Channel.ENTITIES.value]
+            terminal_obs[Channel.ENTITIES.value].long(), solved[Channel.ENTITIES.value]
         )
         assert torch.equal(
-            terminal_obs[Channel.DIRECTION.value], solved[Channel.DIRECTION.value]
+            terminal_obs[Channel.DIRECTION.value].long(),
+            solved[Channel.DIRECTION.value],
         )
 
     def test_eot_tensor_in_dataset(self):

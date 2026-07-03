@@ -4,7 +4,7 @@ Uses expert demonstrations from generate_lesson() to teach basic belt
 placement patterns before RL training via PPO.
 
 Usage:
-    python sft.py --size 8 --num-samples 50000 --epochs 30
+    python sft.py --size 11 --num-samples 5000000 --epochs 1
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 
@@ -124,11 +124,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
     remaining_locs = [tuple(loc) for loc in diff_locs]
 
     for step, (x, y) in enumerate(diff_locs):
-        valid_mask = torch.zeros(W * H)
+        valid_mask = torch.zeros(W * H, dtype=torch.bool)
         for rx, ry in remaining_locs[step:]:
-            valid_mask[rx * H + ry] = 1.0
+            valid_mask[rx * H + ry] = True
 
-        obs = state.clone()
+        # uint8 obs / bool mask: ~8x smaller than int64/float32, cast at use.
+        obs = state.to(torch.uint8)
         tile_idx = x * H + y
         entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
         direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
@@ -161,8 +162,8 @@ def extract_expert_actions(solved_CWH, task_CWH):
     # placement targets; the SFT loop's placement_mask zeroes out the
     # placement losses for this sample. valid_mask=all-zero matches the
     # invariant "no remaining tiles to place".
-    terminal_obs = state.clone()
-    terminal_valid_mask = torch.zeros(W * H)
+    terminal_obs = state.to(torch.uint8)
+    terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
     pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, 1))
 
     return pairs
@@ -170,25 +171,19 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 @dataclass
 class SFTArgs:
-    # Defaults reproduce run kkcv6xe3 (wandb "sft-11x11"), the canonical SFT
-    # config + checkpoint going forward: the sweep #3 architecture (ui3v0gn8 —
-    # layers 93-69-96, lr 3.242e-3, dropout 0.1827, weight_decay 1.661e-3)
-    # trained at scale (size 11, 1M samples, 45 epochs; best_val_throughput
-    # 0.335, val_acc 0.838). size is 11 (not the old 12) so the default config
-    # matches that checkpoint. Running sft.py with no flags reproduces the run
-    # (modulo the since-rebalanced eval budget: val_frac + eval_rollouts_max_seeds).
-    # NB: greedy throughput plateaued early (~epoch 3) in kkcv6xe3 — the long
-    # 1M x 45 schedule mainly drives per-step loss/acc, not throughput, so the
-    # epoch/sample counts are generous. Override any flag at the command line.
+    # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
     seed: int = 1
     """random seed"""
     size: int = 11
     """grid size (width and height)"""
-    num_samples: int = 1000000
+    num_samples: int = 45_000_000
     """number of (state, action) pairs to generate"""
+    gen_workers: int = 0
+    """data-generation worker processes. 0 = auto (parallelize large datasets,
+    stay single-process for small ones); N>0 forces N processes."""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
-    epochs: int = 45
+    epochs: int = 1
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
@@ -316,19 +311,18 @@ def _artifact_name(args: "SFTArgs") -> str:
     )
 
 
-def generate_dataset(args: SFTArgs):
-    """Generate SFT dataset from expert demonstrations.
+def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, reseed):
+    """Generate `target` (state, action) pairs from a disjoint seed range.
 
-    Samples uniformly across every value of `LessonKind` (auto-discovered),
-    so adding a new lesson kind to the enum is automatically picked up.
-    Per-kind sample/lesson counts are printed to stdout for visibility.
-
-    Also returns a per-pair lesson_seed tensor so callers can split
-    train/val at the lesson level (a single lesson with level=L produces
-    ~L pairs that all share its seed; splitting at the pair level leaks
-    factories across the split).
+    Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
+    shards never share a factory and the seed-level train/val split stays
+    leak-free across processes. `reseed` (None on the single-process path) seeds
+    the global RNG for an independent lesson-kind / shuffle stream per worker.
+    Always blanks at max_level (extract_expert_actions emits the full placement
+    progression per lesson). obs/masks come back uint8/bool from extract.
     """
-    max_level = args.max_level if args.max_level > 0 else args.size * args.size
+    if reseed is not None:
+        random.seed(reseed)
     kinds = list(LessonKind)
 
     all_obs = []
@@ -344,27 +338,18 @@ def generate_dataset(args: SFTArgs):
     kind_samples = {k.name: 0 for k in kinds}
     kind_lessons = {k.name: 0 for k in kinds}
 
-    seed = args.seed
+    seed = base_seed + worker_id
     samples_so_far = 0
-
-    while samples_so_far < args.num_samples:
+    while samples_so_far < target:
         kind = random.choice(kinds)
-        # Always blank at the cap. Per-lesson sampling of level was wasteful:
-        # extract_expert_actions already produces the full progression
-        # (1 entity placed → 2 → … → all-blanked) within a single lesson,
-        # so a lower level just means fewer pairs per factory. Pinning to
-        # max_level gives us maximum training data per factory layout.
-        level = max_level
-        seed += 1
-
-        factory = build_factory(size=args.size, kind=kind, seed=seed)
+        seed += num_workers
+        factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
             continue
         solved = factory.world_CWH
-        task, _ = blank_entities(factory, num_missing_entities=level)
+        task, _ = blank_entities(factory, num_missing_entities=max_level)
 
         kind_lessons[kind.name] += 1
-        pairs = extract_expert_actions(solved, task)
         for (
             obs,
             tile_idx,
@@ -374,7 +359,7 @@ def generate_dataset(args: SFTArgs):
             misc_id,
             valid_mask,
             eot,
-        ) in pairs:
+        ) in extract_expert_actions(solved, task):
             all_obs.append(obs)
             all_tile_idx.append(tile_idx)
             all_entity.append(entity_id)
@@ -387,8 +372,79 @@ def generate_dataset(args: SFTArgs):
             all_lesson_kinds.append(kind.value)
             kind_samples[kind.name] += 1
             samples_so_far += 1
-            if samples_so_far >= args.num_samples:
+            if samples_so_far >= target:
                 break
+
+    return {
+        "obs": torch.stack(all_obs),
+        "tile": torch.tensor(all_tile_idx, dtype=torch.long),
+        "ent": torch.tensor(all_entity, dtype=torch.long),
+        "dir": torch.tensor(all_direction, dtype=torch.long),
+        "item": torch.tensor(all_item, dtype=torch.long),
+        "misc": torch.tensor(all_misc, dtype=torch.long),
+        "mask": torch.stack(all_valid_masks),
+        "eot": torch.tensor(all_eot, dtype=torch.float),
+        "seed": torch.tensor(all_lesson_seeds, dtype=torch.long),
+        "kind": torch.tensor(all_lesson_kinds, dtype=torch.long),
+        "kind_samples": kind_samples,
+        "kind_lessons": kind_lessons,
+    }
+
+
+def generate_dataset(args: SFTArgs):
+    """Generate SFT dataset from expert demonstrations.
+
+    Samples uniformly across every value of `LessonKind` (auto-discovered).
+    Generation is embarrassingly parallel over the seed space, so large
+    datasets are sharded across `gen_workers` processes (disjoint seed ranges)
+    and concatenated; small datasets stay single-process. obs come back uint8
+    and masks bool. Also returns a per-pair lesson_seed tensor for a leak-free
+    lesson-level train/val split.
+    """
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
+
+    # gen_workers>0 forces that count; 0 auto-scales — single-process for small
+    # datasets (tests/dev, exact legacy behaviour), up to CPU count for large
+    # ones at ~250k pairs/worker.
+    if args.gen_workers > 0:
+        n_workers = max(1, min(args.gen_workers, args.num_samples))
+    else:
+        n_workers = max(1, min(os.cpu_count() or 1, max(1, args.num_samples // 250_000)))
+
+    # Split num_samples so shard lengths sum exactly (first `rem` get +1).
+    base, rem = divmod(args.num_samples, n_workers)
+    targets = [base + (1 if w < rem else 0) for w in range(n_workers)]
+    shard_args = [
+        (
+            args.size,
+            max_level,
+            args.seed,
+            w,
+            n_workers,
+            targets[w],
+            None if n_workers == 1 else args.seed + w,
+        )
+        for w in range(n_workers)
+    ]
+
+    if n_workers == 1:
+        shards = [_collect_shard(*shard_args[0])]
+    else:
+        # fork so workers inherit the imported Rust extension; safe because
+        # generate_dataset runs before any CUDA init in train_sft.
+        import multiprocessing as mp
+
+        print(f"Generating across {n_workers} processes...")
+        with mp.get_context("fork").Pool(n_workers) as pool:
+            shards = pool.starmap(_collect_shard, shard_args)
+
+    kind_samples = {k.name: 0 for k in LessonKind}
+    kind_lessons = {k.name: 0 for k in LessonKind}
+    for sh in shards:
+        for name, c in sh["kind_samples"].items():
+            kind_samples[name] += c
+        for name, c in sh["kind_lessons"].items():
+            kind_lessons[name] += c
 
     print("Per-kind breakdown:")
     name_w = max(len(k) for k in kind_samples)
@@ -397,28 +453,12 @@ def generate_dataset(args: SFTArgs):
             f"  {name:<{name_w}}  samples={kind_samples[name]:>6}  lessons={kind_lessons[name]:>6}"
         )
 
-    obs_tensor = torch.stack(all_obs)
-    tile_tensor = torch.tensor(all_tile_idx, dtype=torch.long)
-    ent_tensor = torch.tensor(all_entity, dtype=torch.long)
-    dir_tensor = torch.tensor(all_direction, dtype=torch.long)
-    item_tensor = torch.tensor(all_item, dtype=torch.long)
-    misc_tensor = torch.tensor(all_misc, dtype=torch.long)
-    mask_tensor = torch.stack(all_valid_masks)
-    eot_tensor = torch.tensor(all_eot, dtype=torch.float)
-    seed_tensor = torch.tensor(all_lesson_seeds, dtype=torch.long)
-    kind_tensor = torch.tensor(all_lesson_kinds, dtype=torch.long)
+    def _cat(key):
+        return torch.cat([sh[key] for sh in shards])
 
-    return (
-        obs_tensor,
-        tile_tensor,
-        ent_tensor,
-        dir_tensor,
-        item_tensor,
-        misc_tensor,
-        mask_tensor,
-        eot_tensor,
-        seed_tensor,
-        kind_tensor,
+    return tuple(
+        _cat(k)
+        for k in ("obs", "tile", "ent", "dir", "item", "misc", "mask", "eot", "seed", "kind")
     )
 
 
@@ -997,12 +1037,13 @@ def train_sft(args: SFTArgs):
     assert_device_ok(device)
     agent.to(device)
 
-    # Move the training set onto the device once. obs (int64) is transferred then
-    # cast to float on-device (cheaper than .float().to()); see EXPERIMENT_LOG.md.
+    # Move the training set onto the device once. obs stay uint8 (8x smaller
+    # resident, so a 45M-pair set fits in VRAM); .float() cast per-batch at
+    # gather time. See EXPERIMENT_LOG.md.
     (
         tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
     ) = (
-        train_tensors_cpu[0].to(device).float(),
+        train_tensors_cpu[0].to(device),
         *(t.to(device) for t in train_tensors_cpu[1:]),
     )
     n_train = tr_obs.shape[0]
@@ -1020,7 +1061,7 @@ def train_sft(args: SFTArgs):
     (
         va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
     ) = (
-        val_tensors_cpu[0].to(device).float(),
+        val_tensors_cpu[0].to(device),
         *(t.to(device) for t in val_tensors_cpu[1:]),
     )
     n_val = va_obs.shape[0]
@@ -1119,7 +1160,7 @@ def train_sft(args: SFTArgs):
             t_ready = time.time()
             train_data_s += t_ready - t_batch
             idx = idx_cpu.to(device)
-            batch_obs = tr_obs[idx]
+            batch_obs = tr_obs[idx].float()
             batch_tile = tr_tile[idx]
             batch_ent = tr_ent[idx]
             batch_dir = tr_dir[idx]
@@ -1145,7 +1186,7 @@ def train_sft(args: SFTArgs):
             # tiles are rewarded, not just the randomly-chosen one. Reduce
             # to per-sample, mask off terminal samples, then average.
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile_per = bce_loss_none(tile_logits, batch_mask).mean(dim=1)
+            loss_tile_per = bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
             loss_tile = (loss_tile_per * placement_mask).sum() / n_place
 
             # Extract features at target tile for entity/direction/item/misc heads
@@ -1293,7 +1334,7 @@ def train_sft(args: SFTArgs):
         with torch.no_grad():
             for (idx_cpu,) in val_index_loader:
                 idx = idx_cpu.to(device)
-                batch_obs = va_obs[idx]
+                batch_obs = va_obs[idx].float()
                 batch_tile = va_tile[idx]
                 batch_ent = va_ent[idx]
                 batch_dir = va_dir[idx]
@@ -1318,7 +1359,8 @@ def train_sft(args: SFTArgs):
                 # scale of bce_loss(reduction="mean"), keeping
                 # val/loss_tile comparable to train/loss_tile.
                 loss_tile_per = (
-                    bce_loss_none(tile_logits, batch_mask).mean(dim=1) * placement_mask
+                    bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
+                    * placement_mask
                 )
 
                 x_B = batch_tile // agent.height
