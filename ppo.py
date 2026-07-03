@@ -45,7 +45,6 @@ from PIL import Image, ImageDraw, ImageFont
 _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
-_TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
 _EMPTY_ITEM_VAL = str2item("empty").value
 # Counts / sentinels read in FactorioEnv.step's per-step validity chain; hoisted
 # so the chain doesn't re-evaluate len()/enum .value every step.
@@ -582,7 +581,6 @@ class FactorioEnv(gym.Env):
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
-            'material_cost': self._material_cost,
             'reward': self._reward,
             'cum_reward': self._cum_reward,
         }
@@ -653,7 +651,6 @@ class FactorioEnv(gym.Env):
         self._frac_reachable = 0
         self._frac_hallucin = 0
         self._final_dir_reward = 0
-        self._material_cost = 0
         self._reward = 0
         self._terminated = False
         self._truncated = False
@@ -904,12 +901,6 @@ class FactorioEnv(gym.Env):
             else:
                 final_dir_reward = 0.0
 
-            material_cost = (
-                1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
-                + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
-                + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
-            )
-
             # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
             if self._sol_n > 0:
                 tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
@@ -932,7 +923,6 @@ class FactorioEnv(gym.Env):
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
-            material_cost = 0.0
             tile_match_location = tile_match_entity = tile_match_direction = 0.0
             curr_match = self._prev_match
             loc_delta = ent_delta = dir_delta = 0.0
@@ -946,7 +936,6 @@ class FactorioEnv(gym.Env):
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
-        self._material_cost = material_cost
         self._reward = reward
         self._terminated = terminated
         self._truncated = truncated
@@ -972,7 +961,6 @@ class FactorioEnv(gym.Env):
                 'frac_reachable': frac_reachable,
                 'frac_hallucin': frac_hallucin,
                 'final_dir_reward': final_dir_reward,
-                'material_cost': material_cost,
                 'completion_bonus': self.max_steps - self.steps,
                 'min_entities_required': self.min_entities_required,
                 'num_entities': num_entities,
