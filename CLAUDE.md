@@ -163,8 +163,8 @@ Before claiming work is done, run all of the following:
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
 5. **Python linter**: `uv run ruff check .`
 6. **Type checker**: `uv run ty check .` (also enforced by the pre-push hook)
-7. **PPO smoke test**: `WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
-8. **SFT smoke test**: `WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
+7. **PPO smoke test**: `CI=1 WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+8. **SFT smoke test**: `CI=1 WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
 
 All eight must pass before the work is considered complete.
 
