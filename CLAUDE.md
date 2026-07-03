@@ -38,7 +38,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
 - `sft.py` — Supervised pretraining. `SFTArgs` dataclass, `extract_expert_actions` (factory pair → training tuples), `run_rollout_eval` (greedy throughput eval), `train_sft` (training loop). Imports `AgentCNN`/`FactorioEnv` **from `ppo.py`**, so the SFT and PPO policies are literally the same network — a checkpoint from one loads into the other.
 - `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`, `LessonKind`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
-- `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`) and the lesson generator (`build_factory` in `src/factory_gen.rs`, with a CPython-compatible RNG in `src/pyrandom.rs`; exposed to Python as `factorion.build_factory`, which is what training calls). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
+- `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`) and the lesson generator (`build_factory` in `src/factory_gen.rs`, with a fast deterministic RNG in `src/rng.rs`; exposed to Python as `factorion.build_factory`, which is what training calls). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
 - `scripts/factory_builder.py` — Local HTTP UI to hand-build factories and query a checkpoint's predictions. Shares `_resolve_wandb_checkpoint` with `ppo.py`.
 - `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`apply_sweep_best.py`/`apply_sft_sweep_best.py` (W&B sweeps → PR), `runpod_create.py`/`runpod_destroy.py`.
 - `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
@@ -163,8 +163,8 @@ Before claiming work is done, run all of the following:
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
 5. **Python linter**: `uv run ruff check .`
 6. **Type checker**: `uv run ty check .` (also enforced by the pre-push hook)
-7. **PPO smoke test**: `WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
-8. **SFT smoke test**: `WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
+7. **PPO smoke test**: `CI=1 WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 5000`
+8. **SFT smoke test**: `CI=1 WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
 
 All eight must pass before the work is considered complete.
 
@@ -198,3 +198,4 @@ invariant in the type instead, and delete the test.
 - Always run smoke tests before claiming work is done.
 - New code must be accompanied by end-to-end tests.
 - **Small, incremental commits.** Make each commit as small as possible while still being a logical, self-contained unit of change (e.g., "expand entity head" is one commit, "sample all lesson kinds" is another, "update tests for new return shape" is another). Do not bundle unrelated changes. Each commit should pass the pre-completion checklist on its own.
+- **Easy-to-review diffs, minimal churn.** Keep the diff as small as the change requires and no larger. Touch only lines relevant to the task — no changes to unrelated code, no reformatting/renaming/reordering for taste, no "while I'm here" cleanups, and don't reflow whitespace or rewrite comments the change doesn't force. A one-line behaviour change should be a one-line diff, not a one-liner buried in twenty lines of churn (and don't answer a +1/-1 change with a paragraph of new comments). If you spot an unrelated improvement worth making, mention it separately rather than folding it in.

@@ -8,20 +8,19 @@
 //! failure retries until one succeeds or the per-kind attempt budget is
 //! exhausted, returning `None` in that case.
 //!
-//! All layout randomness is drawn from [`crate::pyrandom`], a deterministic
+//! All layout randomness is drawn from [`crate::rng`], a fast deterministic
 //! generator seeded once per call, so the same `(size, kind, seed)` always
 //! produces the same factory. Each [`LessonKind`] is a different entity/layout
 //! pattern; the result is a [`BuiltFactory`] (the world tensor plus the
 //! blanking bookkeeping a training lesson needs).
 
-use crate::entities::entity_tiles;
 use crate::graph::build_graph;
-use crate::pyrandom::PyRandom;
+use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// The lesson kinds. This is the single source of truth for the kind set:
 /// Python's `LessonKind` enum is built from [`all_lesson_kinds`] via the PyO3
@@ -107,8 +106,7 @@ const DIRS: [Direction; 4] = [
 
 /// Neighbour deltas in `list(DIR_TO_DELTA.values())` order: N, E, S, W.
 /// BFS expands and records parents in this order, which fixes the order of
-/// the enumerated paths (and therefore the `random.shuffle` that consumes
-/// them).
+/// the enumerated paths (and therefore the shuffle that consumes them).
 const BFS_DELTAS: [(i64, i64); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
 /// Inverse of `BFS_DELTAS`: a one-step (dx, dy) → belt direction. Returns
@@ -161,174 +159,297 @@ fn world_throughput(world: &World) -> f64 {
 }
 
 type Cell = (i64, i64);
-type Belt = (i64, i64, Direction);
-/// BFS output: distance to each reachable cell, and every equal-distance
-/// predecessor of each (so all shortest paths can be enumerated).
-type BfsResult = (HashMap<Cell, usize>, HashMap<Cell, Vec<Cell>>);
 
-/// BFS from `start` to `end` avoiding `blocked`, returning `(dist, parents)`
-/// where `parents[cell]` holds *all* equal-distance predecessors (so all
-/// shortest paths can be enumerated). `None` if `end` is unreachable.
-fn bfs_shortest(size: i64, start: Cell, end: Cell, blocked: &HashSet<Cell>) -> Option<BfsResult> {
+/// Whether a route may tunnel under blocked cells, and how it may begin.
+enum Underground {
+    /// Belt-only: a plain shortest belt search; tunnels are never used.
+    Off,
+    /// Tunnels may clear blocked cells. `Some(dir)` also lets the route open with
+    /// a tunnel entrance on `start` itself (source → UG_DOWN facing `dir`).
+    On(Option<Direction>),
+}
+
+/// Up to `shortest_n` distinct minimal-cost routes from `start` to `end`
+/// (`shortest_n < 0` returns every valid one), each a `Vec<UgPlacement>` laying
+/// exactly one entity per cell from `start` through `end` (which faces `end_dir`).
+///
+/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 4 and
+/// a `span`-tile tunnel costs `5 * (span + 1)` (an integral 1.25×/tile penalty),
+/// so tunnels only ever clear blocked cells, with minimal span. Tunnels run
+/// straight; 180° reversals and self-overlapping routes are rejected. See
+/// [`Underground`] for the tunnel options; `Underground::Off` reduces this to a
+/// plain uniform-cost belt search.
+fn find_belt_paths(
+    start: Cell,
+    end: Cell,
+    end_dir: Direction,
+    size: i64,
+    blocked: &HashSet<Cell>,
+    underground: Underground,
+    shortest_n: i64,
+) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
-    if !in_bounds(start) || !in_bounds(end) {
-        return None;
-    }
-    if blocked.contains(&start) || blocked.contains(&end) {
-        return None;
+    if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
+        return vec![];
     }
 
-    let mut dist: HashMap<Cell, usize> = HashMap::new();
-    let mut parents: HashMap<Cell, Vec<Cell>> = HashMap::new();
-    let mut q: VecDeque<Cell> = VecDeque::new();
-    dist.insert(start, 0);
-    q.push_back(start);
+    // Whether tunnels are allowed, and the direction (if any) the route opens a
+    // tunnel toward on `start` itself.
+    let (allow_underground, start_adir) = match underground {
+        Underground::Off => (false, 0),
+        Underground::On(start_dir) => (true, start_dir.map_or(0, |d| d as i64)),
+    };
 
-    while let Some((r, c)) = q.pop_front() {
-        if (r, c) == end {
+    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
+    type State = (i64, i64, i64);
+    let start_state: State = (start.0, start.1, start_adir);
+
+    let mut dist: HashMap<State, u64> = HashMap::new();
+    // Every min-cost incoming edge of a state: the predecessor state plus the
+    // placement(s) emitted on that edge, so all shortest routes can enumerate.
+    let mut preds: HashMap<State, Vec<(State, Vec<UgPlacement>)>> = HashMap::new();
+    dist.insert(start_state, 0);
+    let mut counter: u64 = 0;
+    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
+    pq.push(Reverse((0, counter, start_state)));
+    counter += 1;
+
+    // Record a min-cost edge into `ns`: reset predecessors on a strict
+    // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
+    let mut relax = |dist: &mut HashMap<State, u64>,
+                     preds: &mut HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+                     pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
+                     ns: State,
+                     nd: u64,
+                     from: State,
+                     emit: Vec<UgPlacement>| {
+        let cur = *dist.get(&ns).unwrap_or(&u64::MAX);
+        if nd < cur {
+            dist.insert(ns, nd);
+            preds.insert(ns, vec![(from, emit)]);
+            pq.push(Reverse((nd, counter, ns)));
+            counter += 1;
+        } else if nd == cur {
+            preds.entry(ns).or_default().push((from, emit));
+        }
+    };
+
+    // Cheapest arrival(s) onto `end`: the state to backtrack from and the
+    // entity/entities covering `end` itself (a belt facing `end_dir`, or a
+    // UG_DOWN/UG_UP tunnel pair surfacing onto `end`).
+    let mut goal_cost: u64 = u64::MAX;
+    let mut goal_arrivals: Vec<(State, Vec<UgPlacement>)> = Vec::new();
+
+    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
+        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
+            continue;
+        }
+        // All equal-cost arrivals pop before any strictly costlier state, so once
+        // we pop past `goal_cost` every minimal route has been recorded.
+        if d_so_far > goal_cost {
             break;
         }
-        let nd = dist[&(r, c)] + 1;
-        for (dr, dc) in BFS_DELTAS {
-            let nr = r + dr;
-            let nc = c + dc;
-            if !(0 <= nr && nr < size && 0 <= nc && nc < size) {
+        let (cx, cy, adir) = state;
+        if (cx, cy) == end {
+            // Reached on the surface: `end` becomes a belt facing `end_dir`.
+            if d_so_far < goal_cost {
+                goal_cost = d_so_far;
+                goal_arrivals.clear();
+            }
+            goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            continue;
+        }
+
+        let back: Option<(i64, i64)> = if adir != 0 {
+            let (dx, dy) = Direction::from_i64(adir).delta();
+            Some((-dx, -dy))
+        } else {
+            None
+        };
+
+        // Normal surface belt step (no 180° reversal): this cell becomes a belt.
+        for d in DIRS {
+            let (dx, dy) = d.delta();
+            if back == Some((dx, dy)) {
                 continue;
             }
-            let ncell = (nr, nc);
-            if blocked.contains(&ncell) {
+            let n = (cx + dx, cy + dy);
+            if !in_bounds(n) || blocked.contains(&n) {
                 continue;
             }
-            match dist.get(&ncell) {
-                None => {
-                    dist.insert(ncell, nd);
-                    parents.entry(ncell).or_default().push((r, c));
-                    q.push_back(ncell);
+            let ns: State = (n.0, n.1, d as i64);
+            let nd = d_so_far + 4;
+            relax(
+                &mut dist,
+                &mut preds,
+                &mut pq,
+                ns,
+                nd,
+                state,
+                vec![(cx, cy, d, Misc::None)],
+            );
+        }
+
+        // Underground tunnel, continuing straight in the arrival direction.
+        if allow_underground && adir != 0 {
+            let d = Direction::from_i64(adir);
+            let (dx, dy) = d.delta();
+            for span in 2..=UNDERGROUND_MAX_OFFSET {
+                let exit_cell = (cx + dx * span, cy + dy * span);
+                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
+                    continue;
                 }
-                Some(&cur) if cur == nd => {
-                    parents.entry(ncell).or_default().push((r, c));
+                // Surface straight onto `end` (UG_UP → sink), no trailing belt.
+                // Charged like a normal tunnel, so used only when the obstruction
+                // reaches the sink.
+                if exit_cell == end && d == end_dir {
+                    let cost = d_so_far + 5 * (span as u64 + 1);
+                    if cost < goal_cost {
+                        goal_cost = cost;
+                        goal_arrivals.clear();
+                    }
+                    if cost == goal_cost {
+                        goal_arrivals.push((
+                            state,
+                            vec![
+                                (cx, cy, d, Misc::UndergroundDown),
+                                (end.0, end.1, d, Misc::UndergroundUp),
+                            ],
+                        ));
+                    }
+                    continue;
                 }
-                _ => {}
+                let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
+                if !in_bounds(surface) || blocked.contains(&surface) {
+                    continue;
+                }
+                let ns: State = (surface.0, surface.1, d as i64);
+                let nd = d_so_far + 5 * (span as u64 + 1);
+                relax(
+                    &mut dist,
+                    &mut preds,
+                    &mut pq,
+                    ns,
+                    nd,
+                    state,
+                    vec![
+                        (cx, cy, d, Misc::UndergroundDown),
+                        (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
+                    ],
+                );
             }
         }
     }
 
-    if !dist.contains_key(&end) {
-        return None;
+    if goal_arrivals.is_empty() {
+        return vec![];
     }
-    Some((dist, parents))
+
+    // Walk every predecessor chain from each goal arrival back to `start_state`,
+    // emitting start→end routes and dropping any that reuse a tile, until
+    // `shortest_n` valid routes are collected (`< 0` == unbounded).
+    let limit = if shortest_n < 0 {
+        usize::MAX
+    } else {
+        shortest_n as usize
+    };
+    fn walk(
+        state: State,
+        start_state: State,
+        preds: &HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+        acc: &mut Vec<UgPlacement>,
+        tail: &[UgPlacement],
+        results: &mut Vec<Vec<UgPlacement>>,
+        limit: usize,
+    ) {
+        if results.len() >= limit {
+            return;
+        }
+        if state == start_state {
+            let mut path: Vec<UgPlacement> = acc.iter().rev().copied().collect();
+            path.extend_from_slice(tail);
+            // One entity per tile: reject any self-overlapping (reorienting) detour.
+            let mut seen: HashSet<Cell> = HashSet::new();
+            if path.iter().all(|&(x, y, _, _)| seen.insert((x, y))) {
+                results.push(path);
+            }
+            return;
+        }
+        let Some(ps) = preds.get(&state) else {
+            return;
+        };
+        for (pstate, emit) in ps {
+            if results.len() >= limit {
+                return;
+            }
+            for &p in emit.iter().rev() {
+                acc.push(p);
+            }
+            walk(*pstate, start_state, preds, acc, tail, results, limit);
+            for _ in emit {
+                acc.pop();
+            }
+        }
+    }
+
+    let mut results: Vec<Vec<UgPlacement>> = Vec::new();
+    for (gstate, tail) in &goal_arrivals {
+        if results.len() >= limit {
+            break;
+        }
+        let mut acc: Vec<UgPlacement> = Vec::new();
+        walk(
+            *gstate,
+            start_state,
+            &preds,
+            &mut acc,
+            tail,
+            &mut results,
+            limit,
+        );
+    }
+    results
 }
 
 /// Convert a cell run into belt placements, last belt taking `end_dir`.
-fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
-    let mut belts: Vec<Belt> = Vec::new();
+fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<UgPlacement> {
+    let mut belts: Vec<UgPlacement> = Vec::new();
     for w in path.windows(2) {
         let (r1, c1) = w[0];
         let (r2, c2) = w[1];
         if let Some(d) = delta_to_dir(r2 - r1, c2 - c1) {
-            belts.push((r1, c1, d));
+            belts.push((r1, c1, d, Misc::None));
         }
     }
     if let Some(&(lx, ly)) = path.last() {
-        belts.push((lx, ly, end_dir));
+        belts.push((lx, ly, end_dir, Misc::None));
     }
     belts
 }
 
-/// A single shortest belt path from `start` to `end`, or `None`.
+/// The single shortest route from `start` to `end`, or `None` — a thin wrapper
+/// over [`find_belt_paths`] for the common "just one path" case.
 fn find_belt_path(
-    size: i64,
     start: Cell,
     end: Cell,
     end_dir: Direction,
+    size: i64,
     blocked: &HashSet<Cell>,
-) -> Option<Vec<Belt>> {
-    let (_dist, parents) = bfs_shortest(size, start, end, blocked)?;
-    let mut path: Vec<Cell> = Vec::new();
-    let mut cell = end;
-    while cell != start {
-        path.push(cell);
-        cell = parents[&cell][0];
-    }
-    path.push(start);
-    path.reverse();
-    Some(path_to_belts(&path, end_dir))
+    underground: Underground,
+) -> Option<Vec<UgPlacement>> {
+    find_belt_paths(start, end, end_dir, size, blocked, underground, 1)
+        .into_iter()
+        .next()
 }
 
 /// The `(x, y)` cells of a belt run (dropping directions).
-fn belt_cells(belts: &[Belt]) -> Vec<Cell> {
-    belts.iter().map(|&(x, y, _)| (x, y)).collect()
+fn belt_cells(belts: &[UgPlacement]) -> Vec<Cell> {
+    belts.iter().map(|&(x, y, _, _)| (x, y)).collect()
 }
 
 /// The `(x, y)` cells of a belt run as a set.
-fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
-    belts.iter().map(|&(x, y, _)| (x, y)).collect()
-}
-
-/// All shortest belt paths from a source's output cell to a sink's input
-/// cell, given their positions and facings.
-fn find_belt_paths_with_source_sink_orient(
-    size: i64,
-    src: Cell,
-    src_dir: Direction,
-    sink: Cell,
-    sink_dir: Direction,
-) -> Vec<Vec<Belt>> {
-    if src_dir == Direction::None || sink_dir == Direction::None {
-        return vec![];
-    }
-    let (dr_s, dc_s) = src_dir.delta();
-    let start = (src.0 + dr_s, src.1 + dc_s);
-    let (dr_k, dc_k) = sink_dir.delta();
-    let end = (sink.0 - dr_k, sink.1 - dc_k);
-
-    if start == src || start == sink || end == src || end == sink {
-        return vec![];
-    }
-
-    let mut blocked: HashSet<Cell> = HashSet::new();
-    blocked.insert(src);
-    blocked.insert(sink);
-    let (_dist, parents) = match bfs_shortest(size, start, end, &blocked) {
-        Some(v) => v,
-        None => return vec![],
-    };
-
-    let mut all_paths: Vec<Vec<Belt>> = Vec::new();
-    // Recursively walk every parent chain; the visit order fixes the path
-    // order (which a later shuffle then consumes), so keep it deterministic.
-    fn backtrack(
-        cell: Cell,
-        start: Cell,
-        sink_dir: Direction,
-        parents: &HashMap<Cell, Vec<Cell>>,
-        rev_path: &mut Vec<Cell>,
-        all_paths: &mut Vec<Vec<Belt>>,
-    ) {
-        if cell == start {
-            let mut path = vec![start];
-            path.extend(rev_path.iter().rev().copied());
-            all_paths.push(path_to_belts(&path, sink_dir));
-            return;
-        }
-        if let Some(ps) = parents.get(&cell) {
-            for &p in ps {
-                rev_path.push(cell);
-                backtrack(p, start, sink_dir, parents, rev_path, all_paths);
-                rev_path.pop();
-            }
-        }
-    }
-    let mut rev_path: Vec<Cell> = Vec::new();
-    backtrack(
-        end,
-        start,
-        sink_dir,
-        &parents,
-        &mut rev_path,
-        &mut all_paths,
-    );
-    all_paths
+fn belt_cell_set(belts: &[UgPlacement]) -> HashSet<Cell> {
+    belts.iter().map(|&(x, y, _, _)| (x, y)).collect()
 }
 
 /// The result of a successful `build_factory`: a complete world plus the
@@ -340,16 +461,21 @@ pub struct BuiltFactory {
     pub protected_positions: Vec<(usize, usize)>,
 }
 
-/// Lay a run of belts into `world`.
-fn place_belts(world: &mut World, belts: &[Belt]) {
-    for &(x, y, d) in belts {
-        world.set(
-            x as usize,
-            y as usize,
-            Channel::Entities,
-            Item::TransportBelt as i64,
-        );
-        world.set(x as usize, y as usize, Channel::Direction, d as i64);
+/// Lay a route into `world`: plain belts, and underground tunnel ends for any
+/// `Misc`-tagged placement.
+fn place_belts(world: &mut World, belts: &[UgPlacement]) {
+    for &(x, y, d, m) in belts {
+        if m == Misc::None {
+            world.set(
+                x as usize,
+                y as usize,
+                Channel::Entities,
+                Item::TransportBelt as i64,
+            );
+            world.set(x as usize, y as usize, Channel::Direction, d as i64);
+        } else {
+            world.place_underground(x as usize, y as usize, d, m);
+        }
     }
 }
 
@@ -364,7 +490,7 @@ pub fn build_factory(
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
-    let mut rng = PyRandom::seeded(seed);
+    let mut rng = Rng::seeded(seed);
     match kind {
         LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item, max_entities),
         LessonKind::MoveOneItemChaos => {
@@ -409,82 +535,46 @@ fn available_cells(s: i64, reserved: &HashSet<Cell>) -> Vec<Cell> {
     available
 }
 
-/// The shared per-iteration splitter placement: facing, anchor (20-try),
-/// tiles, input/output cells and the free-cell pool. Returns `None` for the
-/// reject cases (no fitting anchor, I/O out of bounds or overlapping, fewer
-/// than 3 free cells) — the caller treats that as `continue`. Drawn in the
-/// exact order SPLITTER_SPLIT and SPLITTER_MERGE share.
-struct SplitterLayout {
-    splitter_dir: Direction,
-    tiles: Vec<Cell>,
-    tile_set: HashSet<Cell>,
-    dd: (i64, i64),
-    input_cells: Vec<Cell>,
-    output_cells: Vec<Cell>,
-    available: Vec<Cell>,
+/// Rotate a direction 90° clockwise (North→East→South→West→North). `None`
+/// stays `None`.
+fn rotate_dir_cw(d: Direction) -> Direction {
+    match d {
+        Direction::North => Direction::East,
+        Direction::East => Direction::South,
+        Direction::South => Direction::West,
+        Direction::West => Direction::North,
+        Direction::None => Direction::None,
+    }
 }
 
-fn splitter_layout(rng: &mut PyRandom, s: i64) -> Option<SplitterLayout> {
-    let splitter_dir = DIRS[rng.choice_index(4)];
-
-    // Pick splitter anchor; both tiles must fit (up to 20 tries). The
-    // splitter occupies a 2×1 footprint.
-    let mut tiles: Option<Vec<Cell>> = None;
-    for _ in 0..20 {
-        let sx = rng.randint(0, s - 1);
-        let sy = rng.randint(0, s - 1);
-        let t: Option<Vec<Cell>> = entity_tiles(sx as usize, sy as usize, splitter_dir, 2, 1)
-            .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect());
-        if let Some(ref tt) = t {
-            if tt.iter().all(|&c| in_grid(c, s)) {
-                tiles = t;
-                break;
+/// Rotate a square world 90° clockwise: cell `(x, y)` → `(s-1-y, x)`, every
+/// entity's facing turned with it. Multi-tile entities (splitters) stay valid
+/// because each occupied tile is remapped independently — for any facing the
+/// downstream anchor is still the first tile visited in scan order. Empty
+/// cells keep their `World::empty` defaults.
+fn rotate_world_cw(world: &World) -> World {
+    let s = world.width();
+    debug_assert_eq!(s, world.height(), "rotation assumes a square grid");
+    let mut out = World::empty(s, s);
+    for x in 0..s {
+        for y in 0..s {
+            if world.entity_at(x, y).is_none() {
+                continue;
             }
+            let (nx, ny) = (s - 1 - y, x);
+            out.set(
+                nx,
+                ny,
+                Channel::Entities,
+                world.get(x, y, Channel::Entities),
+            );
+            let ndir = rotate_dir_cw(world.direction_at(x, y));
+            out.set(nx, ny, Channel::Direction, ndir as i64);
+            out.set(nx, ny, Channel::Items, world.get(x, y, Channel::Items));
+            out.set(nx, ny, Channel::Misc, world.get(x, y, Channel::Misc));
         }
     }
-    let tiles = tiles?;
-    let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
-    let dd = splitter_dir.delta();
-
-    let input_cells: Vec<Cell> = tiles
-        .iter()
-        .map(|&(tx, ty)| (tx - dd.0, ty - dd.1))
-        .collect();
-    let output_cells: Vec<Cell> = tiles
-        .iter()
-        .map(|&(tx, ty)| (tx + dd.0, ty + dd.1))
-        .collect();
-    let all_io: Vec<Cell> = input_cells
-        .iter()
-        .chain(output_cells.iter())
-        .copied()
-        .collect();
-    if all_io.iter().any(|&c| !in_grid(c, s)) {
-        return None;
-    }
-    if all_io.iter().any(|c| tile_set.contains(c)) {
-        return None;
-    }
-
-    let reserved: HashSet<Cell> = tile_set
-        .iter()
-        .copied()
-        .chain(all_io.iter().copied())
-        .collect();
-    let available = available_cells(s, &reserved);
-    if available.len() < 3 {
-        return None;
-    }
-
-    Some(SplitterLayout {
-        splitter_dir,
-        tiles,
-        tile_set,
-        dd,
-        input_cells,
-        output_cells,
-        available,
-    })
+    out
 }
 
 /// Place a splitter's tiles (entity + facing) into the world.
@@ -551,7 +641,7 @@ struct SourceSink {
 }
 
 fn draw_source_sink(
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     size: usize,
     pool: &[i64],
     random_item: bool,
@@ -583,7 +673,7 @@ fn draw_source_sink(
 
 fn build_move_one_item(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -607,8 +697,16 @@ fn build_move_one_item(
         place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
         place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
 
-        let mut paths =
-            find_belt_paths_with_source_sink_orient(s, source_wh, source_dir, sink_wh, sink_dir);
+        // Route from the source's output cell to the sink's input cell, keeping
+        // the markers themselves clear (all shortest belt paths; no tunnels).
+        let (dr_s, dc_s) = source_dir.delta();
+        let start = (source_wh.0 + dr_s, source_wh.1 + dc_s);
+        let (dr_k, dc_k) = sink_dir.delta();
+        let end = (sink_wh.0 - dr_k, sink_wh.1 - dc_k);
+        let mut blocked: HashSet<Cell> = HashSet::new();
+        blocked.insert(source_wh);
+        blocked.insert(sink_wh);
+        let mut paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, -1);
         paths.retain(|p| (p.len() as f64) <= max_entities);
 
         if paths.is_empty() {
@@ -616,7 +714,7 @@ fn build_move_one_item(
         }
 
         rng.shuffle(&mut paths);
-        let mut chosen: Option<Vec<Belt>> = None;
+        let mut chosen: Option<Vec<UgPlacement>> = None;
         for candidate in &paths {
             let mut trial = world.clone();
             place_belts(&mut trial, candidate);
@@ -640,7 +738,7 @@ fn build_move_one_item(
 
 fn build_move_one_item_chaos(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -696,7 +794,8 @@ fn build_move_one_item_chaos(
         // Segment A: source output → intermediate (protected later).
         let mut blocked_a = fixed.clone();
         blocked_a.insert(end);
-        let belts_a = match find_belt_path(s, start, mid, source_dir, &blocked_a) {
+        let belts_a = match find_belt_path(start, mid, source_dir, s, &blocked_a, Underground::Off)
+        {
             Some(b) => b,
             None => continue,
         };
@@ -709,7 +808,7 @@ fn build_move_one_item_chaos(
                 blocked_b.insert(c);
             }
         }
-        let belts_b = match find_belt_path(s, mid, end, sink_dir, &blocked_b) {
+        let belts_b = match find_belt_path(mid, end, sink_dir, s, &blocked_b, Underground::Off) {
             Some(b) => b,
             None => continue,
         };
@@ -743,17 +842,381 @@ fn build_move_one_item_chaos(
     None
 }
 
-fn build_splitter_split(
+/// Rebuild the entity placements of a run from just its ordered cells (the
+/// inverse of [`placement_cells`]). Adjacent cells become a belt facing the
+/// step; two colinear cells that are >1 apart become an underground pair
+/// (DOWN at the first, UP at the second) tunnelling between them. The final
+/// belt takes `end_dir`. Because a run is rebuilt purely from cell adjacency,
+/// reversing the cell list yields a valid reversed run — corners re-orient
+/// correctly and tunnels flip (DOWN↔UP, direction 180°) for free.
+fn path_to_placements(cells: &[Cell], end_dir: Direction) -> Option<Vec<UgPlacement>> {
+    let mut out: Vec<UgPlacement> = Vec::new();
+    let mut i = 0;
+    while i < cells.len() {
+        let (x, y) = cells[i];
+        match cells.get(i + 1) {
+            Some(&(nx, ny)) if (nx - x).abs() + (ny - y).abs() == 1 => {
+                out.push((x, y, delta_to_dir(nx - x, ny - y)?, Misc::None));
+                i += 1;
+            }
+            Some(&(nx, ny)) => {
+                // Colinear span-apart cells: a straight tunnel between them.
+                let d = delta_to_dir((nx - x).signum(), (ny - y).signum())?;
+                out.push((x, y, d, Misc::UndergroundDown));
+                out.push((nx, ny, d, Misc::UndergroundUp));
+                i += 2;
+            }
+            None => {
+                out.push((x, y, end_dir, Misc::None));
+                i += 1;
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A candidate wiring: `(total placements, stem, arm→prong1, arm→prong2)`.
+type Wiring = (usize, Vec<Cell>, Vec<Cell>, Vec<Cell>);
+
+/// A wired splitter Y in canonical (pre-rotation) orientation: a north-facing
+/// splitter with a base marker below it and two prong markers above, plus the
+/// runs connecting them (belts, and undergrounds where an arm tunnels under an
+/// obstruction). Runs are stored as cell sequences in split flow order (base →
+/// splitter, splitter → prong), so SPLITTER_SPLIT places them as-is (source →
+/// splitter → 2 sinks) and SPLITTER_MERGE reverses each sequence — rebuilt from
+/// the reversed cells by [`path_to_placements`] so corners re-orient and
+/// tunnels flip cleanly — into 2 sources → splitter → sink.
+struct SplitterYPlan {
+    item_value: i64,
+    tiles: Vec<Cell>,
+    base_pos: Cell,
+    base_dir_split: Direction,
+    prong1_pos: Cell,
+    prong1_dir_split: Direction,
+    prong2_pos: Cell,
+    prong2_dir_split: Direction,
+    stem: Vec<Cell>,
+    arm1: Vec<Cell>,
+    arm2: Vec<Cell>,
+    total_entities: usize,
+}
+
+/// Draw one prong (a sink, in split terms) in the north region, facing *away*
+/// from the splitter — so as a fed sink its input faces back toward the
+/// splitter, and after the merge flip (a feeding source) it faces toward it.
+/// The splitter sits at row `sy`, columns `sx..=sx+1`, strictly south of the
+/// prong, so north is always an away-facing; add the horizontal away-facing
+/// when the prong is off to one side. Returns `(pos, split-facing, input cell)`.
+fn draw_prong(rng: &mut Rng, s: i64, sy: i64, sx: i64) -> Option<(Cell, Direction, Cell)> {
+    let px = rng.randint(0, s - 1);
+    let py = rng.randint(0, sy - 2);
+    let mut away = vec![Direction::North];
+    if px < sx {
+        away.push(Direction::West); // splitter is east → face west
+    } else if px > sx + 1 {
+        away.push(Direction::East); // splitter is west → face east
+    }
+    let dir = away[rng.choice_index(away.len())];
+    let d = dir.delta();
+    let input = (px - d.0, py - d.1);
+    if !in_grid(input, s) {
+        return None;
+    }
+    Some(((px, py), dir, input))
+}
+
+/// Wire two splitter outputs to two prong inputs in a given order, the second
+/// path routed around the first. Returns the two runs mapped to (prong1, prong2)
+/// regardless of the order they were pathed in.
+#[allow(clippy::too_many_arguments)]
+fn wire_arms(
+    s: i64,
+    first_out: Cell,
+    first_in: Cell,
+    first_dir: Direction,
+    first_is_prong1: bool,
+    second_out: Cell,
+    second_in: Cell,
+    second_dir: Direction,
+    base_blocked: &HashSet<Cell>,
+) -> Option<(Vec<Cell>, Vec<Cell>)> {
+    let mut b1 = base_blocked.clone();
+    b1.extend([second_out, second_in]);
+    let p1 = belt_cells(&find_belt_path(
+        first_out,
+        first_in,
+        first_dir,
+        s,
+        &b1,
+        Underground::On(None),
+    )?);
+    let mut b2 = base_blocked.clone();
+    b2.extend(p1.iter().copied());
+    b2.insert(first_out);
+    let p2 = belt_cells(&find_belt_path(
+        second_out,
+        second_in,
+        second_dir,
+        s,
+        &b2,
+        Underground::On(None),
+    )?);
+    if first_is_prong1 {
+        Some((p1, p2))
+    } else {
+        Some((p2, p1))
+    }
+}
+
+/// Build a canonical (pre-rotation) splitter Y: a north-facing splitter with
+/// the source ("base") just below it — a short straight stem — and two sinks
+/// ("prongs") forward of it, facing outward. Among the choices of which
+/// splitter input the stem uses and which output feeds which prong (in which
+/// order), keep the wiring with the fewest placements, so no arm wraps the long
+/// way around. Arms may tunnel under an obstruction via undergrounds. Returns
+/// the plan, or `None` if this draw can't be wired.
+fn canonical_split(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
+    item_value: i64,
+    max_entities: f64,
+) -> Option<SplitterYPlan> {
+    let s = size as i64;
+    // Need ≥2 rows above the splitter for prongs and ≥2 below for the base.
+    if s < 5 {
+        return None;
+    }
+    let dd = Direction::North.delta(); // (0, -1)
+
+    // Splitter: a horizontal 2-tile pair facing north.
+    let sy = rng.randint(2, s - 3);
+    let sx = rng.randint(0, s - 2);
+    let tiles = vec![(sx, sy), (sx + 1, sy)];
+    let tile_set: HashSet<Cell> = tiles.iter().copied().collect();
+    let inputs: Vec<Cell> = tiles.iter().map(|&(x, y)| (x - dd.0, y - dd.1)).collect();
+    let outputs: Vec<Cell> = tiles.iter().map(|&(x, y)| (x + dd.0, y + dd.1)).collect();
+
+    // Base source under one of the splitter tiles, facing inward (north).
+    let bx = sx + rng.randint(0, 1);
+    let by = rng.randint(sy + 2, s - 1);
+    let base_pos = (bx, by);
+    let base_dir = Direction::North;
+    let base_output = (base_pos.0, base_pos.1 - 1);
+
+    // Two prong sinks forward of the base, facing away from the splitter.
+    let (prong1_pos, prong1_dir, prong1_in) = draw_prong(rng, s, sy, sx)?;
+    let (prong2_pos, prong2_dir, prong2_in) = draw_prong(rng, s, sy, sx)?;
+
+    // Distinctness / bounds of markers and their connection cells.
+    let markers = [base_pos, prong1_pos, prong2_pos];
+    let all_fixed: HashSet<Cell> = tile_set.iter().copied().chain(markers).collect();
+    if all_fixed.len() != tile_set.len() + 3 {
+        return None;
+    }
+    let conns = [base_output, prong1_in, prong2_in];
+    if conns.iter().any(|&c| !in_grid(c, s)) {
+        return None;
+    }
+    let conn_set: HashSet<Cell> = conns.iter().copied().collect();
+    if conn_set.len() != conns.len() || conn_set.iter().any(|c| all_fixed.contains(c)) {
+        return None;
+    }
+
+    // Cells on the far side of each prong (the side it faces) are blocked so no
+    // belt sneaks up behind a sink.
+    let prong_backs: Vec<Cell> = [(prong1_pos, prong1_dir), (prong2_pos, prong2_dir)]
+        .iter()
+        .map(|&((px, py), d)| (px + d.delta().0, py + d.delta().1))
+        .collect();
+
+    // Search wiring combinations, keeping the one with the fewest placements.
+    let mut best: Option<Wiring> = None;
+    for stem_i in 0..2usize {
+        let stem_in = inputs[stem_i];
+        let other_in = inputs[1 - stem_i];
+        let mut blocked_stem = all_fixed.clone();
+        blocked_stem.extend(outputs.iter().copied());
+        blocked_stem.extend([other_in, prong1_in, prong2_in]);
+        blocked_stem.extend(prong_backs.iter().copied());
+        let stem = match find_belt_path(
+            base_output,
+            stem_in,
+            Direction::North,
+            s,
+            &blocked_stem,
+            Underground::On(None),
+        ) {
+            Some(b) => belt_cells(&b),
+            None => continue,
+        };
+
+        let mut base_blocked = all_fixed.clone();
+        base_blocked.extend(stem.iter().copied());
+        base_blocked.extend(inputs.iter().copied());
+        base_blocked.extend(prong_backs.iter().copied());
+
+        // Both output→prong assignments, both pathing orders.
+        for &(o1, o2) in &[(0usize, 1usize), (1usize, 0usize)] {
+            for &prong1_first in &[true, false] {
+                let arms = if prong1_first {
+                    wire_arms(
+                        s,
+                        outputs[o1],
+                        prong1_in,
+                        prong1_dir,
+                        true,
+                        outputs[o2],
+                        prong2_in,
+                        prong2_dir,
+                        &base_blocked,
+                    )
+                } else {
+                    wire_arms(
+                        s,
+                        outputs[o2],
+                        prong2_in,
+                        prong2_dir,
+                        false,
+                        outputs[o1],
+                        prong1_in,
+                        prong1_dir,
+                        &base_blocked,
+                    )
+                };
+                if let Some((arm1, arm2)) = arms {
+                    let total = stem.len() + arm1.len() + arm2.len();
+                    if best.as_ref().is_none_or(|(bt, ..)| total < *bt) {
+                        best = Some((total, stem.clone(), arm1, arm2));
+                    }
+                }
+            }
+        }
+    }
+
+    let (total_belts, stem, arm1, arm2) = best?;
+    let total_entities = total_belts + 1; // + splitter
+    if (total_entities as f64) > max_entities {
+        return None;
+    }
+
+    Some(SplitterYPlan {
+        item_value,
+        tiles,
+        base_pos,
+        base_dir_split: base_dir,
+        prong1_pos,
+        prong1_dir_split: prong1_dir,
+        prong2_pos,
+        prong2_dir_split: prong2_dir,
+        stem,
+        arm1,
+        arm2,
+        total_entities,
+    })
+}
+
+/// Lay one belt run: for a split, the cells as-is ending in `split_end`; for a
+/// merge, the reversed cells ending in `merge_end` (facings recomputed from the
+/// reversed sequence, so corners are correct).
+fn place_run(
+    world: &mut World,
+    cells: &[Cell],
+    split_end: Direction,
+    merge_end: Direction,
+    merge: bool,
+) -> Option<()> {
+    let run = if merge {
+        let rev: Vec<Cell> = cells.iter().rev().copied().collect();
+        path_to_placements(&rev, merge_end)?
+    } else {
+        path_to_placements(cells, split_end)?
+    };
+    place_belts(world, &run);
+    Some(())
+}
+
+/// Realise a [`SplitterYPlan`] as either SPLITTER_SPLIT (`merge = false`) or
+/// SPLITTER_MERGE (`merge = true`, flow reversed).
+fn place_plan(plan: &SplitterYPlan, size: usize, merge: bool) -> Option<World> {
+    let mut world = World::empty(size, size);
+    let splitter_dir = if merge {
+        Direction::South
+    } else {
+        Direction::North
+    };
+    let (base_ent, prong_ent) = if merge {
+        (Item::Sink, Item::Source)
+    } else {
+        (Item::Source, Item::Sink)
+    };
+    let flip = |d: Direction| if merge { d.opposite() } else { d };
+
+    place_marker(
+        &mut world,
+        plan.base_pos,
+        base_ent,
+        flip(plan.base_dir_split),
+        plan.item_value,
+    );
+    place_marker(
+        &mut world,
+        plan.prong1_pos,
+        prong_ent,
+        flip(plan.prong1_dir_split),
+        plan.item_value,
+    );
+    place_marker(
+        &mut world,
+        plan.prong2_pos,
+        prong_ent,
+        flip(plan.prong2_dir_split),
+        plan.item_value,
+    );
+    place_splitter(&mut world, &plan.tiles, splitter_dir);
+
+    // Merge reverses every run; each then ends by feeding a south-facing
+    // splitter (arms) or the south-facing base sink (stem).
+    place_run(
+        &mut world,
+        &plan.stem,
+        Direction::North,
+        Direction::South,
+        merge,
+    )?;
+    place_run(
+        &mut world,
+        &plan.arm1,
+        plan.prong1_dir_split,
+        Direction::South,
+        merge,
+    )?;
+    place_run(
+        &mut world,
+        &plan.arm2,
+        plan.prong2_dir_split,
+        Direction::South,
+        merge,
+    )?;
+    Some(world)
+}
+
+/// Build a splitter Y lesson. Both SPLITTER_SPLIT and SPLITTER_MERGE are the
+/// same Y — a base wired through a splitter to two prongs — so both come from
+/// one canonical (base-toward-south-edge, facing north) layout: SPLITTER_MERGE
+/// reverses the flow, and a random number of 90° rotations then orients the
+/// whole factory. The splitter is left removable (no protected positions) so
+/// the policy learns to place it.
+fn build_splitter_y(
+    size: usize,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
+    merge: bool,
 ) -> Option<BuiltFactory> {
-    let s = size as i64;
     let pool = item_pool();
     let mut count = (500).max(size * size * 10);
 
-    // NOTE: unlike MOVE_ONE_ITEM, the item is drawn ONCE before the loop.
+    // NOTE: the item is drawn ONCE before the loop (as SPLITTER_SPLIT always has).
     let item_value = if random_item {
         pool[rng.choice_index(pool.len())]
     } else {
@@ -762,338 +1225,48 @@ fn build_splitter_split(
 
     while count > 0 {
         count -= 1;
-        let SplitterLayout {
-            splitter_dir,
-            tiles,
-            tile_set,
-            dd,
-            input_cells,
-            output_cells,
-            available,
-        } = match splitter_layout(rng, s) {
-            Some(l) => l,
+        let plan = match canonical_split(size, rng, item_value, max_entities) {
+            Some(p) => p,
             None => continue,
         };
-
-        let chosen = rng.sample(&available, 3);
-        let source_pos = chosen[0];
-        let sink1_pos = chosen[1];
-        let sink2_pos = chosen[2];
-
-        let source_dir = DIRS[rng.choice_index(4)];
-        let sink1_dir = DIRS[rng.choice_index(4)];
-        let sink2_dir = DIRS[rng.choice_index(4)];
-
-        let ds = source_dir.delta();
-        let dk1 = sink1_dir.delta();
-        let dk2 = sink2_dir.delta();
-        let source_output = (source_pos.0 + ds.0, source_pos.1 + ds.1);
-        let sink1_input = (sink1_pos.0 - dk1.0, sink1_pos.1 - dk1.1);
-        let sink2_input = (sink2_pos.0 - dk2.0, sink2_pos.1 - dk2.1);
-
-        let conn_cells = [source_output, sink1_input, sink2_input];
-        if conn_cells.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        let all_fixed: HashSet<Cell> = tile_set
-            .iter()
-            .copied()
-            .chain([source_pos, sink1_pos, sink2_pos])
-            .collect();
-        let conn_set: HashSet<Cell> = conn_cells.iter().copied().collect();
-        if conn_set.len() != conn_cells.len() {
-            continue;
-        }
-        if conn_set.iter().any(|c| all_fixed.contains(c)) {
-            continue;
-        }
-
-        // Path 1: source output → one of the splitter inputs.
-        let blocked_base = &all_fixed;
-        let unused_input_buffer_0 = (input_cells[0].0 - dd.0, input_cells[0].1 - dd.1);
-        let unused_input_buffer_1 = (input_cells[1].0 - dd.0, input_cells[1].1 - dd.1);
-
-        let mut blocked1: HashSet<Cell> = blocked_base.clone();
-        blocked1.extend(output_cells.iter().copied());
-        blocked1.extend([
-            sink1_input,
-            sink2_input,
-            input_cells[1],
-            unused_input_buffer_1,
-        ]);
-        let mut path1 = find_belt_path(s, source_output, input_cells[0], splitter_dir, &blocked1);
-        if path1.is_none() {
-            let mut b1: HashSet<Cell> = blocked_base.clone();
-            b1.extend(output_cells.iter().copied());
-            b1.extend([
-                sink1_input,
-                sink2_input,
-                input_cells[0],
-                unused_input_buffer_0,
-            ]);
-            path1 = find_belt_path(s, source_output, input_cells[1], splitter_dir, &b1);
-            if path1.is_none() {
-                continue;
-            }
-        }
-        let path1 = path1?;
-        let path1_end = (path1[path1.len() - 1].0, path1[path1.len() - 1].1);
-        let (unused_input, unused_buffer) = if path1_end == input_cells[0] {
-            (input_cells[1], unused_input_buffer_1)
-        } else {
-            (input_cells[0], unused_input_buffer_0)
-        };
-        let path1_cells = belt_cell_set(&path1);
-
-        let unused_block = [unused_input, unused_buffer];
-        let sink1_output = (sink1_pos.0 + dk1.0, sink1_pos.1 + dk1.1);
-        let sink2_output = (sink2_pos.0 + dk2.0, sink2_pos.1 + dk2.1);
-        let sink_buffers = [sink1_output, sink2_output];
-
-        // Path 2 + 3: try both sink assignments.
-        let mut found: Option<(Vec<Belt>, Vec<Belt>)> = None;
-        for (out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir) in [
-            (
-                output_cells[0],
-                output_cells[1],
-                sink1_input,
-                sink1_dir,
-                sink2_input,
-                sink2_dir,
-            ),
-            (
-                output_cells[0],
-                output_cells[1],
-                sink2_input,
-                sink2_dir,
-                sink1_input,
-                sink1_dir,
-            ),
-        ] {
-            let mut blocked2: HashSet<Cell> = blocked_base.clone();
-            blocked2.extend(path1_cells.iter().copied());
-            blocked2.extend([sk_b, out_b]);
-            blocked2.extend(input_cells.iter().copied());
-            blocked2.extend(unused_block);
-            blocked2.extend(sink_buffers);
-            let p2 = match find_belt_path(s, out_a, sk_a, sk_a_dir, &blocked2) {
-                Some(p) => p,
-                None => continue,
-            };
-            let p2_cells = belt_cell_set(&p2);
-            let mut blocked3: HashSet<Cell> = blocked_base.clone();
-            blocked3.extend(path1_cells.iter().copied());
-            blocked3.extend(p2_cells.iter().copied());
-            blocked3.insert(out_a);
-            blocked3.extend(input_cells.iter().copied());
-            blocked3.extend(unused_block);
-            blocked3.extend(sink_buffers);
-            if let Some(p3) = find_belt_path(s, out_b, sk_b, sk_b_dir, &blocked3) {
-                found = Some((p2, p3));
-                break;
-            }
-        }
-        let (path2, path3) = match found {
-            Some(v) => v,
+        let mut world = match place_plan(&plan, size, merge) {
+            Some(w) => w,
             None => continue,
         };
-
-        let total_entities = path1.len() + path2.len() + path3.len() + 1;
-        if (total_entities as f64) > max_entities {
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+        // Reject dead builds and any orphan tiles (a tunnel could otherwise
+        // strand a belt off every source→sink path).
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
-
-        let mut world = World::empty(size, size);
-        place_marker(&mut world, source_pos, Item::Source, source_dir, item_value);
-        place_marker(&mut world, sink1_pos, Item::Sink, sink1_dir, item_value);
-        place_marker(&mut world, sink2_pos, Item::Sink, sink2_dir, item_value);
-        place_splitter(&mut world, &tiles, splitter_dir);
-        place_belts(&mut world, &path1);
-        place_belts(&mut world, &path2);
-        place_belts(&mut world, &path3);
-
-        if world_throughput(&world) <= 0.0 {
-            continue;
-        }
-
-        let protected: Vec<(usize, usize)> = tiles
-            .iter()
-            .map(|&(x, y)| (x as usize, y as usize))
-            .collect();
-        return finish(world, total_entities, protected, count);
+        return finish(world, plan.total_entities, Vec::new(), count);
     }
     None
+}
+
+fn build_splitter_split(
+    size: usize,
+    rng: &mut Rng,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    build_splitter_y(size, rng, random_item, max_entities, false)
 }
 
 fn build_splitter_merge(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
-    let s = size as i64;
-    let pool = item_pool();
-    let mut count = (500).max(size * size * 10);
-
-    let item_value = if random_item {
-        pool[rng.choice_index(pool.len())]
-    } else {
-        Item::ElectronicCircuit as i64
-    };
-
-    while count > 0 {
-        count -= 1;
-        let SplitterLayout {
-            splitter_dir,
-            tiles,
-            tile_set,
-            dd,
-            input_cells,
-            output_cells,
-            available,
-        } = match splitter_layout(rng, s) {
-            Some(l) => l,
-            None => continue,
-        };
-
-        let chosen = rng.sample(&available, 3);
-        let source1_pos = chosen[0];
-        let source2_pos = chosen[1];
-        let sink_pos = chosen[2];
-
-        let source1_dir = DIRS[rng.choice_index(4)];
-        let source2_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-
-        let ds1 = source1_dir.delta();
-        let ds2 = source2_dir.delta();
-        let dk = sink_dir.delta();
-        let source1_output = (source1_pos.0 + ds1.0, source1_pos.1 + ds1.1);
-        let source2_output = (source2_pos.0 + ds2.0, source2_pos.1 + ds2.1);
-        let sink_input = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
-
-        let conn_cells = [source1_output, source2_output, sink_input];
-        if conn_cells.iter().any(|&c| !in_grid(c, s)) {
-            continue;
-        }
-        let all_fixed: HashSet<Cell> = tile_set
-            .iter()
-            .copied()
-            .chain([source1_pos, source2_pos, sink_pos])
-            .collect();
-        let conn_set: HashSet<Cell> = conn_cells.iter().copied().collect();
-        if conn_set.len() != conn_cells.len() {
-            continue;
-        }
-        if conn_set.iter().any(|c| all_fixed.contains(c)) {
-            continue;
-        }
-
-        let blocked_base = &all_fixed;
-
-        // Path 1: source1 output → splitter input 0 (fallback input 1).
-        let mut blocked1: HashSet<Cell> = blocked_base.clone();
-        blocked1.extend(output_cells.iter().copied());
-        blocked1.extend([source2_output, sink_input, input_cells[1]]);
-        let mut path1 = find_belt_path(s, source1_output, input_cells[0], splitter_dir, &blocked1);
-        if path1.is_none() {
-            let mut b1: HashSet<Cell> = blocked_base.clone();
-            b1.extend(output_cells.iter().copied());
-            b1.extend([source2_output, sink_input, input_cells[0]]);
-            path1 = find_belt_path(s, source1_output, input_cells[1], splitter_dir, &b1);
-            if path1.is_none() {
-                continue;
-            }
-        }
-        let path1 = path1?;
-        let path1_cells = belt_cell_set(&path1);
-        let path1_end = (path1[path1.len() - 1].0, path1[path1.len() - 1].1);
-        let remaining_input = if path1_end == input_cells[0] {
-            input_cells[1]
-        } else {
-            input_cells[0]
-        };
-
-        // Path 2: source2 output → remaining splitter input.
-        let mut blocked2: HashSet<Cell> = blocked_base.clone();
-        blocked2.extend(output_cells.iter().copied());
-        blocked2.extend(path1_cells.iter().copied());
-        blocked2.insert(sink_input);
-        let path2 =
-            match find_belt_path(s, source2_output, remaining_input, splitter_dir, &blocked2) {
-                Some(p) => p,
-                None => continue,
-            };
-        let path2_cells = belt_cell_set(&path2);
-
-        // Path 3: splitter output → sink input (try output 0, fallback 1).
-        let unused_output_buffer_0 = (output_cells[0].0 + dd.0, output_cells[0].1 + dd.1);
-        let unused_output_buffer_1 = (output_cells[1].0 + dd.0, output_cells[1].1 + dd.1);
-
-        let mut blocked3: HashSet<Cell> = blocked_base.clone();
-        blocked3.extend(path1_cells.iter().copied());
-        blocked3.extend(path2_cells.iter().copied());
-        blocked3.extend(input_cells.iter().copied());
-        blocked3.extend([output_cells[1], unused_output_buffer_1]);
-        let mut path3 = find_belt_path(s, output_cells[0], sink_input, sink_dir, &blocked3);
-        if path3.is_none() {
-            let mut b3: HashSet<Cell> = blocked_base.clone();
-            b3.extend(path1_cells.iter().copied());
-            b3.extend(path2_cells.iter().copied());
-            b3.extend(input_cells.iter().copied());
-            b3.extend([output_cells[0], unused_output_buffer_0]);
-            path3 = find_belt_path(s, output_cells[1], sink_input, sink_dir, &b3);
-            if path3.is_none() {
-                continue;
-            }
-        }
-        let path3 = path3?;
-
-        let total_entities = path1.len() + path2.len() + path3.len() + 1;
-        if (total_entities as f64) > max_entities {
-            continue;
-        }
-
-        let mut world = World::empty(size, size);
-        place_marker(
-            &mut world,
-            source1_pos,
-            Item::Source,
-            source1_dir,
-            item_value,
-        );
-        place_marker(
-            &mut world,
-            source2_pos,
-            Item::Source,
-            source2_dir,
-            item_value,
-        );
-        place_marker(&mut world, sink_pos, Item::Sink, sink_dir, item_value);
-        place_splitter(&mut world, &tiles, splitter_dir);
-        place_belts(&mut world, &path1);
-        place_belts(&mut world, &path2);
-        place_belts(&mut world, &path3);
-
-        if world_throughput(&world) <= 0.0 {
-            continue;
-        }
-
-        let protected: Vec<(usize, usize)> = tiles
-            .iter()
-            .map(|&(x, y)| (x as usize, y as usize))
-            .collect();
-        return finish(world, total_entities, protected, count);
-    }
-    None
+    build_splitter_y(size, rng, random_item, max_entities, true)
 }
 
 #[allow(unused)]
-fn build_assemble_1in1out(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_assemble_1in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // The choice pool: 1-in-1-out recipes in all_recipes() order. The recipe
     // table guarantees it is non-empty, so the choice below can't underflow.
@@ -1186,7 +1359,14 @@ fn build_assemble_1in1out(
             sink_input,
             out_drop,
         ]);
-        let path1 = match find_belt_path(s, source_output, in_pickup, in_inserter_dir, &blocked1) {
+        let path1 = match find_belt_path(
+            source_output,
+            in_pickup,
+            in_inserter_dir,
+            s,
+            &blocked1,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1203,7 +1383,14 @@ fn build_assemble_1in1out(
             source_output,
         ]);
         blocked2.extend(path1_cells.iter().copied());
-        let path2 = match find_belt_path(s, out_drop, sink_input, sink_dir, &blocked2) {
+        let path2 = match find_belt_path(
+            out_drop,
+            sink_input,
+            sink_dir,
+            s,
+            &blocked2,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1245,7 +1432,7 @@ fn build_assemble_1in1out(
 
 fn build_move_via_ug_belt(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -1381,7 +1568,7 @@ fn build_move_via_ug_belt(
         let flow_delta = flow_dir.delta();
 
         // Path 1: source_drop → UG_DOWN input (on the source side).
-        let path1: Vec<Belt> = if source_drop == ug_down_pos {
+        let path1: Vec<UgPlacement> = if source_drop == ug_down_pos {
             vec![]
         } else {
             let ug_down_input = (ug_down_pos.0 - flow_delta.0, ug_down_pos.1 - flow_delta.1);
@@ -1395,14 +1582,21 @@ fn build_move_via_ug_belt(
             if blocked1.contains(&source_drop) || blocked1.contains(&ug_down_input) {
                 continue;
             }
-            match find_belt_path(s, source_drop, ug_down_input, flow_dir, &blocked1) {
+            match find_belt_path(
+                source_drop,
+                ug_down_input,
+                flow_dir,
+                s,
+                &blocked1,
+                Underground::Off,
+            ) {
                 Some(p) => p,
                 None => continue,
             }
         };
 
         // Path 2: UG_UP drop → sink_input (on the sink side).
-        let path2: Vec<Belt> = if sink_input == ug_up_pos {
+        let path2: Vec<UgPlacement> = if sink_input == ug_up_pos {
             vec![]
         } else {
             let ug_up_drop = (ug_up_pos.0 + flow_delta.0, ug_up_pos.1 + flow_delta.1);
@@ -1418,7 +1612,14 @@ fn build_move_via_ug_belt(
             if blocked2.contains(&ug_up_drop) || blocked2.contains(&sink_input) {
                 continue;
             }
-            match find_belt_path(s, ug_up_drop, sink_input, sink_dir, &blocked2) {
+            match find_belt_path(
+                ug_up_drop,
+                sink_input,
+                sink_dir,
+                s,
+                &blocked2,
+                Underground::Off,
+            ) {
                 Some(p) => p,
                 None => continue,
             }
@@ -1462,11 +1663,7 @@ fn build_move_via_ug_belt(
 }
 
 #[allow(unused)]
-fn build_assemble_2in1out(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // The `random.choice` pool: 2-in-1-out recipes in all_recipes() order.
     let recipes: Vec<(Item, Recipe)> = all_recipes()
@@ -1581,7 +1778,14 @@ fn build_assemble_2in1out(
         // Path A: source A → input-A pickup.
         let mut blocked_a = fixed_cells.clone();
         blocked_a.extend([in_b_pickup, out_drop, src_b_out, sink_in]);
-        let path_a = match find_belt_path(s, src_a_out, in_a_pickup, in_a_dir, &blocked_a) {
+        let path_a = match find_belt_path(
+            src_a_out,
+            in_a_pickup,
+            in_a_dir,
+            s,
+            &blocked_a,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1591,7 +1795,14 @@ fn build_assemble_2in1out(
         let mut blocked_b = fixed_cells.clone();
         blocked_b.extend([in_a_pickup, out_drop, src_a_out, sink_in]);
         blocked_b.extend(path_a_cells.iter().copied());
-        let path_b = match find_belt_path(s, src_b_out, in_b_pickup, in_b_dir, &blocked_b) {
+        let path_b = match find_belt_path(
+            src_b_out,
+            in_b_pickup,
+            in_b_dir,
+            s,
+            &blocked_b,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1602,10 +1813,11 @@ fn build_assemble_2in1out(
         blocked_c.extend([in_a_pickup, in_b_pickup, src_a_out, src_b_out]);
         blocked_c.extend(path_a_cells.iter().copied());
         blocked_c.extend(path_b_cells.iter().copied());
-        let path_c = match find_belt_path(s, out_drop, sink_in, sink_dir, &blocked_c) {
-            Some(p) => p,
-            None => continue,
-        };
+        let path_c =
+            match find_belt_path(out_drop, sink_in, sink_dir, s, &blocked_c, Underground::Off) {
+                Some(p) => p,
+                None => continue,
+            };
 
         let total_entities = path_a.len() + path_b.len() + path_c.len() + 4;
         if (total_entities as f64) > max_entities {
@@ -1665,11 +1877,7 @@ fn build_assemble_2in1out(
 /// and produces (and the assembler's recipe tag), stripped of any long-belt
 /// routing — the routing is fixed at one tile, so only the recipe identity and
 /// the immediate inserter/belt geometry vary.
-fn build_memorise_recipes(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_memorise_recipes(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Any recipe is fair game — the lesson is about memorising recipe
     // identity, so we don't filter by ingredient count. The recipe table
@@ -1714,7 +1922,7 @@ fn build_memorise_recipes(
         // arm that can't be placed rejects the whole candidate.
         let mut occupied: HashSet<Cell> = asm_tiles.clone();
         let mut inserters: Vec<(Cell, Direction)> = Vec::with_capacity(n_arms);
-        let mut belts: Vec<Belt> = Vec::with_capacity(n_arms);
+        let mut belts: Vec<UgPlacement> = Vec::with_capacity(n_arms);
         // (position, direction, carried-item, is_source)
         let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
 
@@ -1788,7 +1996,7 @@ fn build_memorise_recipes(
             };
 
             inserters.push((inserter_pos, inserter_dir));
-            belts.push((belt_pos.0, belt_pos.1, belt_dir));
+            belts.push((belt_pos.0, belt_pos.1, belt_dir, Misc::None));
             markers.push((marker_pos, marker_dir, item_value, is_source));
             occupied.insert(inserter_pos);
             occupied.insert(belt_pos);
@@ -1869,7 +2077,7 @@ fn free_components(obstruction: &HashSet<Cell>, s: i64) -> Vec<Vec<Cell>> {
 /// A source/sink pair on the two opposite edges of one axis, with a random
 /// flow direction. `span_x` spans the left/right edges (flows E or W);
 /// otherwise the top/bottom edges (flows N or S).
-fn edge_endpoints(rng: &mut PyRandom, span_x: bool, s: i64) -> (Cell, Cell, Direction) {
+fn edge_endpoints(rng: &mut Rng, span_x: bool, s: i64) -> (Cell, Cell, Direction) {
     let (a, b, fwd, bwd) = if span_x {
         let ay = rng.randint(0, s - 1);
         let by = rng.randint(0, s - 1);
@@ -1891,7 +2099,7 @@ fn edge_endpoints(rng: &mut PyRandom, span_x: bool, s: i64) -> (Cell, Cell, Dire
 /// feeding the sink — is also free in the same component. Returns
 /// `(tile, facing, belt_cell)` or `None`.
 fn pick_endpoint(
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     comp: &[Cell],
     near: &HashSet<Cell>,
     is_source: bool,
@@ -1917,175 +2125,17 @@ fn pick_endpoint(
     None
 }
 
-/// Shortest belt path from `start` to `end` that may dip UNDER blocked cells via
-/// an underground entrance/exit pair (Misc tags distinguish belts from tunnels).
-///
-/// Costs scale by 4 so the 1.25×-per-spanned-tile penalty is integral (walk = 4,
-/// a `span`-tile tunnel = `5 * (span + 1)`): tunnels are used only to clear
-/// blocked cells, with minimal span, never under open belt. Tunnels run straight;
-/// 180° reversals and tile reuse are rejected. `start_dir` lets the path open
-/// with a tunnel (source → UG_DOWN); a tunnel may surface onto `end` (UG_UP →
-/// sink).
-fn ug_aware_belt_path(
-    size: i64,
-    start: Cell,
-    end: Cell,
-    end_dir: Direction,
-    blocked: &HashSet<Cell>,
-    start_dir: Option<Direction>,
-) -> Option<Vec<UgPlacement>> {
-    let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
-    if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
-        return None;
-    }
-
-    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
-    type State = (i64, i64, i64);
-    let start_state: State = (start.0, start.1, start_dir.map_or(0, |d| d as i64));
-
-    let mut dist: HashMap<State, u64> = HashMap::new();
-    let mut prev: HashMap<State, (State, Vec<UgPlacement>)> = HashMap::new();
-    dist.insert(start_state, 0);
-    let mut counter: u64 = 0;
-    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
-    pq.push(Reverse((0, counter, start_state)));
-    counter += 1;
-
-    // The goal cell's own entity is emitted on the edge that reaches it: a
-    // belt facing end_dir (normal arrival) or a UG_UP (a tunnel surfacing onto
-    // `end`). Track the cheapest such arrival.
-    let mut goal_cost: u64 = u64::MAX;
-    let mut goal_prev: Option<State> = None;
-    let mut goal_emit: Vec<UgPlacement> = Vec::new();
-
-    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
-        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
-            continue;
-        }
-        if d_so_far >= goal_cost {
-            break;
-        }
-        let (cx, cy, adir) = state;
-        if (cx, cy) == end {
-            goal_cost = d_so_far;
-            goal_prev = Some(state);
-            goal_emit = vec![(end.0, end.1, end_dir, Misc::None)];
-            continue;
-        }
-
-        let back: Option<(i64, i64)> = if adir != 0 {
-            let (dx, dy) = Direction::from_i64(adir).delta();
-            Some((-dx, -dy))
-        } else {
-            None
-        };
-
-        // Normal belt step (no 180° reversal): this cell becomes a belt.
-        for d in DIRS {
-            let (dx, dy) = d.delta();
-            if back == Some((dx, dy)) {
-                continue;
-            }
-            let n = (cx + dx, cy + dy);
-            if !in_bounds(n) || blocked.contains(&n) {
-                continue;
-            }
-            let ns: State = (n.0, n.1, d as i64);
-            let nd = d_so_far + 4;
-            if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
-                dist.insert(ns, nd);
-                prev.insert(ns, (state, vec![(cx, cy, d, Misc::None)]));
-                pq.push(Reverse((nd, counter, ns)));
-                counter += 1;
-            }
-        }
-
-        // Underground tunnel, continuing straight in the arrival direction.
-        if adir != 0 {
-            let d = Direction::from_i64(adir);
-            let (dx, dy) = d.delta();
-            for span in 2..=UNDERGROUND_MAX_OFFSET {
-                let exit_cell = (cx + dx * span, cy + dy * span);
-                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
-                    continue;
-                }
-                // Surface the exit straight onto the sink's feeder cell:
-                // UG_UP → sink, no trailing belt. Charged like a normal tunnel
-                // (5 per spanned tile, counting the exit), so it is used only
-                // when the obstruction reaches the sink.
-                if exit_cell == end && d == end_dir {
-                    let cost = d_so_far + 5 * (span as u64 + 1);
-                    if cost < goal_cost {
-                        goal_cost = cost;
-                        goal_prev = Some(state);
-                        goal_emit = vec![
-                            (cx, cy, d, Misc::UndergroundDown),
-                            (end.0, end.1, d, Misc::UndergroundUp),
-                        ];
-                    }
-                    continue;
-                }
-                let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
-                if !in_bounds(surface) || blocked.contains(&surface) {
-                    continue;
-                }
-                let ns: State = (surface.0, surface.1, d as i64);
-                let nd = d_so_far + 5 * (span as u64 + 1);
-                if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
-                    dist.insert(ns, nd);
-                    prev.insert(
-                        ns,
-                        (
-                            state,
-                            vec![
-                                (cx, cy, d, Misc::UndergroundDown),
-                                (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
-                            ],
-                        ),
-                    );
-                    pq.push(Reverse((nd, counter, ns)));
-                    counter += 1;
-                }
-            }
-        }
-    }
-
-    let goal_prev = goal_prev?;
-
-    // Walk back from the goal, collecting per-edge placements, then append the
-    // goal cell's own entity.
-    let mut placements: Vec<UgPlacement> = Vec::new();
-    let mut state = goal_prev;
-    while state != start_state {
-        let (pstate, emitted) = prev.get(&state)?;
-        for &p in emitted.iter().rev() {
-            placements.push(p);
-        }
-        state = *pstate;
-    }
-    placements.reverse();
-    placements.extend(goal_emit);
-
-    // One entity per tile: reject any self-overlapping (reorienting) detour.
-    let mut seen: HashSet<Cell> = HashSet::new();
-    for &(x, y, _, _) in &placements {
-        if !seen.insert((x, y)) {
-            return None;
-        }
-    }
-    Some(placements)
-}
-
 /// CROSS_UNDER_BELT: an obstruction belt line (source → belts → sink) runs
 /// between two opposite edges, forming a winding CUT that separates the grid into
 /// two halves. A second source/sink pair sits one per side; the crossing that
-/// joins them is routed with [`ug_aware_belt_path`], so the only way across is to
-/// tunnel UNDER the cut. The two lines carry distinct items, so gating on
+/// joins them is routed with [`find_belt_paths`] (underground enabled), so the
+/// only way across is to tunnel UNDER the cut. The two lines carry distinct
+/// items, so gating on
 /// `tp >= belt_flow` (both delivered) and no orphan tiles rejects a crossing that
 /// fails to connect.
 fn build_cross_under_belt(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -2117,7 +2167,14 @@ fn build_cross_under_belt(
         let mut obs_blocked: HashSet<Cell> = HashSet::new();
         obs_blocked.insert(obs_source);
         obs_blocked.insert(obs_sink);
-        let obs_path = match find_belt_path(s, obs_start, obs_end, obs_dir, &obs_blocked) {
+        let obs_path = match find_belt_path(
+            obs_start,
+            obs_end,
+            obs_dir,
+            s,
+            &obs_blocked,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -2163,13 +2220,13 @@ fn build_cross_under_belt(
         let mut cross_blocked = obstruction_tiles.clone();
         cross_blocked.insert(cross_source);
         cross_blocked.insert(cross_sink);
-        let cross_path = match ug_aware_belt_path(
-            s,
+        let cross_path = match find_belt_path(
             cross_start,
             cross_end,
             sink_dir,
+            s,
             &cross_blocked,
-            Some(source_dir),
+            Underground::On(Some(source_dir)),
         ) {
             Some(p) => p,
             None => continue,
@@ -2191,19 +2248,7 @@ fn build_cross_under_belt(
             cross_item,
         );
         place_marker(&mut world, cross_sink, Item::Sink, sink_dir, cross_item);
-        for &(x, y, d, m) in &cross_path {
-            if m == Misc::None {
-                world.set(
-                    x as usize,
-                    y as usize,
-                    Channel::Entities,
-                    Item::TransportBelt as i64,
-                );
-                world.set(x as usize, y as usize, Channel::Direction, d as i64);
-            } else {
-                world.place_underground(x as usize, y as usize, d, m);
-            }
-        }
+        place_belts(&mut world, &cross_path);
 
         // Both lines must deliver at full belt speed, and no entity may be an
         // orphan (off every source→sink path).
@@ -2457,18 +2502,100 @@ mod tests {
     #[test]
     fn test_ug_router_open_space_stays_on_surface() {
         // Nothing blocked → a tunnel is never cheaper than walking.
-        let path =
-            ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &HashSet::new(), None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &HashSet::new(),
+            Underground::On(None),
+        )
+        .unwrap();
         assert!(path.iter().all(|&(_, _, _, m)| m == Misc::None));
+    }
+
+    #[test]
+    fn test_shortest_n_caps_and_enumerates() {
+        // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
+        // shortest ones. `shortest_n` caps how many come back; -1 returns all.
+        let free = HashSet::new();
+        let all = find_belt_paths(
+            (0, 0),
+            (2, 2),
+            Direction::East,
+            5,
+            &free,
+            Underground::Off,
+            -1,
+        );
+        assert_eq!(all.len(), 6);
+        for p in &all {
+            // 5 cells (0,0)..=(2,2), all plain belts, no tile reused.
+            assert_eq!(p.len(), 5);
+            assert!(p.iter().all(|&(_, _, _, m)| m == Misc::None));
+            let cells: HashSet<Cell> = p.iter().map(|&(x, y, _, _)| (x, y)).collect();
+            assert_eq!(cells.len(), 5);
+            assert_eq!(
+                p.last().map(|&(x, y, d, _)| (x, y, d)),
+                Some((2, 2, Direction::East))
+            );
+        }
+        // A positive cap returns exactly that many; 1 matches `find_belt_path`.
+        assert_eq!(
+            find_belt_paths(
+                (0, 0),
+                (2, 2),
+                Direction::East,
+                5,
+                &free,
+                Underground::Off,
+                2
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            find_belt_paths(
+                (0, 0),
+                (2, 2),
+                Direction::East,
+                5,
+                &free,
+                Underground::Off,
+                1
+            )
+            .len(),
+            1
+        );
+        // Unreachable target → no routes, whatever the cap.
+        let blocked = wall(1, 5);
+        assert!(find_belt_paths(
+            (0, 0),
+            (2, 2),
+            Direction::East,
+            5,
+            &blocked,
+            Underground::Off,
+            -1
+        )
+        .is_empty());
     }
 
     #[test]
     fn test_ug_router_tunnels_under_a_wall() {
         let w = wall(4, 9);
         // Plain BFS can't cross a full-height wall.
-        assert!(find_belt_path(9, (1, 4), (7, 4), Direction::East, &w).is_none());
+        assert!(find_belt_path((1, 4), (7, 4), Direction::East, 9, &w, Underground::Off).is_none());
         // The UG-aware router tunnels under it with one entrance/exit pair.
-        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         let downs: Vec<_> = path
             .iter()
             .filter(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2484,7 +2611,15 @@ mod tests {
     #[test]
     fn test_ug_router_minimal_span_hugs_the_wall() {
         let w = wall(4, 9);
-        let path = ug_aware_belt_path(9, (1, 4), (8, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (8, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         let down = path
             .iter()
             .find(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2503,13 +2638,13 @@ mod tests {
         // start_dir given (source feeds `start` head-on) + a wall right after
         // start → the entrance sits on `start` itself (source → UG_DOWN).
         let w = wall(2, 9);
-        let path = ug_aware_belt_path(
-            9,
+        let path = find_belt_path(
             (1, 4),
             (5, 4),
             Direction::East,
+            9,
             &w,
-            Some(Direction::East),
+            Underground::On(Some(Direction::East)),
         )
         .unwrap();
         assert_eq!(path[0], (1, 4, Direction::East, Misc::UndergroundDown));
@@ -2519,7 +2654,15 @@ mod tests {
     fn test_ug_router_surfaces_into_sink() {
         // Wall right before `end` → the exit lands on `end` (UG_UP → sink).
         let w = wall(6, 9);
-        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         assert_eq!(
             *path.last().unwrap(),
             (7, 4, Direction::East, Misc::UndergroundUp)
@@ -2532,7 +2675,9 @@ mod tests {
         // facings: whatever the router returns, every tile is distinct.
         let w: HashSet<Cell> = (1..9).map(|y| (4, y)).collect();
         for sd in [None, Some(Direction::North), Some(Direction::East)] {
-            if let Some(path) = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, sd) {
+            if let Some(path) =
+                find_belt_path((1, 4), (7, 4), Direction::East, 9, &w, Underground::On(sd))
+            {
                 let mut seen = HashSet::new();
                 for &(x, y, _, _) in &path {
                     assert!(seen.insert((x, y)), "tile reused with start_dir={sd:?}");
@@ -2732,6 +2877,137 @@ mod tests {
                 );
             }
             assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_splitter_lessons_leave_splitter_removable() {
+        // The splitter must be removable (empty protected_positions) so the
+        // policy can learn to place it; the built factory still contains it.
+        for &kind in &[LessonKind::SplitterSplit, LessonKind::SplitterMerge] {
+            let mut checked = 0;
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    f.protected_positions.is_empty(),
+                    "{} seed={seed}: splitter must be removable, got protected {:?}",
+                    kind.name(),
+                    f.protected_positions
+                );
+                let mut splitter_tiles = 0;
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) == Some(Item::Splitter) {
+                            splitter_tiles += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    splitter_tiles,
+                    2,
+                    "{} seed={seed}: expected splitter",
+                    kind.name()
+                );
+            }
+            assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_splitter_y_roles() {
+        // The Y wires one base to two prongs through the splitter:
+        // SPLITTER_SPLIT is 1 source → 2 sinks, SPLITTER_MERGE is 2 sources →
+        // 1 sink. Both build with positive throughput across seeds.
+        for &(kind, want_sources, want_sinks) in &[
+            (LessonKind::SplitterSplit, 1, 2),
+            (LessonKind::SplitterMerge, 2, 1),
+        ] {
+            let mut checked = 0;
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    world_throughput(&f.world) > 0.0,
+                    "{} seed={seed}",
+                    kind.name()
+                );
+                let (mut sources, mut sinks, mut splitters) = (0, 0, 0);
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Source) => sources += 1,
+                            Some(Item::Sink) => sinks += 1,
+                            Some(Item::Splitter) => splitters += 1,
+                            _ => {}
+                        }
+                    }
+                }
+                assert_eq!(
+                    sources,
+                    want_sources,
+                    "{} seed={seed}: sources",
+                    kind.name()
+                );
+                assert_eq!(sinks, want_sinks, "{} seed={seed}: sinks", kind.name());
+                assert_eq!(splitters, 2, "{} seed={seed}: splitter tiles", kind.name());
+            }
+            assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_splitter_marker_facings() {
+        // Sources feed the splitter → they face toward it; sinks are fed by it
+        // → they face away. That's the sign of facing · (splitterCentroid −
+        // markerPos), which rotation preserves. (Centroid doubled to stay in
+        // integers: the two splitter tiles sum to 2·centroid.)
+        for &kind in &[LessonKind::SplitterSplit, LessonKind::SplitterMerge] {
+            for seed in 0..30u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                let (mut sx2, mut sy2, mut n) = (0i64, 0i64, 0i64);
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) == Some(Item::Splitter) {
+                            sx2 += x as i64;
+                            sy2 += y as i64;
+                            n += 1;
+                        }
+                    }
+                }
+                assert_eq!(n, 2, "{} seed={seed}", kind.name());
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let ent = f.world.entity_at(x, y);
+                        let (is_src, is_snk) = (ent == Some(Item::Source), ent == Some(Item::Sink));
+                        if !is_src && !is_snk {
+                            continue;
+                        }
+                        let d = f.world.direction_at(x, y).delta();
+                        let (vx, vy) = (sx2 - 2 * x as i64, sy2 - 2 * y as i64);
+                        let dot = d.0 * vx + d.1 * vy;
+                        if is_src {
+                            assert!(
+                                dot > 0,
+                                "{} seed={seed}: source at ({x},{y}) not facing toward splitter",
+                                kind.name()
+                            );
+                        } else {
+                            assert!(
+                                dot < 0,
+                                "{} seed={seed}: sink at ({x},{y}) not facing away from splitter",
+                                kind.name()
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

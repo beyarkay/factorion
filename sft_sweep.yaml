@@ -25,9 +25,9 @@ parameters:
   size:
     value: 11
   num_samples:
-    value: 300000
+    value: 5000000
   epochs:
-    value: 30
+    value: 1
   max_level:
     value: 0  # auto = 2*size = 22 entities blanked
 
