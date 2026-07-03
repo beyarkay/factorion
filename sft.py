@@ -1183,15 +1183,6 @@ def train_sft(args: SFTArgs):
     total_samples = args.epochs * n_train
     print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
 
-    # Metrics, rollout eval and checkpoint selection fire every eval_every
-    # optimiser-seen samples rather than once per epoch, so a single-epoch run
-    # over a huge dataset still produces a real training curve (and selects a
-    # best checkpoint) instead of one end-of-run point. We also always evaluate
-    # at each epoch boundary: that keeps the per-epoch val-loader RNG draws the
-    # train shuffle depends on (so multi-epoch runs stay bit-identical), and
-    # means 0 = the historical once-per-epoch cadence.
-    eval_every = args.eval_every_n_samples
-
     n_train_batches = len(train_index_loader)
 
     def _batch_stream():
@@ -1203,7 +1194,7 @@ def train_sft(args: SFTArgs):
 
     stream = _batch_stream()
     epoch = 0
-    next_eval_at = eval_every
+    next_eval_at = args.eval_every_n_samples
     stream_done = False
     while not stream_done:
         t_train = time.time()
@@ -1331,13 +1322,14 @@ def train_sft(args: SFTArgs):
             # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
 
-            hit_sample_cadence = eval_every > 0 and samples_seen >= next_eval_at
+            hit_sample_cadence = (
+                args.eval_every_n_samples > 0 and samples_seen >= next_eval_at
+            )
             if hit_sample_cadence:
-                next_eval_at += eval_every
+                next_eval_at += args.eval_every_n_samples
             if hit_sample_cadence or is_epoch_end:
                 break
         else:
-            # The stream (all epochs) is exhausted — nothing left to evaluate.
             stream_done = True
 
         # A window that consumed nothing (stream exhausted right on a boundary)

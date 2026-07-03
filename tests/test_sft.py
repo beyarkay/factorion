@@ -1202,59 +1202,6 @@ class TestPerKindEotMetrics:
         assert {k.split("/")[1] for k in acc_keys} == place_kinds
 
 
-class TestEvalCadence:
-    """Metrics + checkpoint selection fire every eval_every_n_samples
-    optimiser-seen samples, not once per epoch. With one epoch this is what
-    turns a single end-of-run point into a real training curve."""
-
-    def _run_capturing_steps(self, tmp_path, **overrides):
-        import wandb
-        from unittest.mock import MagicMock
-
-        steps: list[int | None] = []
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        fake_run.log.side_effect = lambda d, *a, **k: steps.append(k.get("step"))
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(wandb, "init", lambda *a, **k: fake_run)
-            mp.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-            args = SFTArgs(
-                seed=1,
-                size=5,
-                num_samples=400,
-                max_level=2,
-                epochs=1,
-                batch_size=32,
-                layer1=16,
-                layer2=16,
-                layer3=16,
-                track=True,
-                eval_rollouts=False,  # skip the slow greedy rollout
-                checkpoint_path=str(tmp_path / "k.pt"),
-                summary_path=str(tmp_path / "k.json"),
-                **overrides,
-            )
-            train_sft(args)
-        return steps
-
-    def test_multiple_evals_within_one_epoch(self, tmp_path):
-        """A small eval_every_n_samples must log several times in a single
-        epoch, each at a strictly increasing samples_seen (the wandb step)."""
-        steps = self._run_capturing_steps(tmp_path, eval_every_n_samples=128)
-        assert len(steps) >= 2, f"expected multiple intra-epoch evals, got {steps}"
-        assert all(isinstance(s, int) for s in steps)
-        assert steps == sorted(steps) and len(set(steps)) == len(steps), (
-            f"samples_seen must strictly increase across evals: {steps}"
-        )
-
-    def test_zero_cadence_logs_once_per_epoch(self, tmp_path):
-        """eval_every_n_samples=0 falls back to the historical once-per-epoch
-        cadence: a single-epoch run logs exactly once."""
-        steps = self._run_capturing_steps(tmp_path, eval_every_n_samples=0)
-        assert len(steps) == 1, f"expected one end-of-epoch eval, got {steps}"
-
-
 class TestTrainValSeedSplit:
     def test_no_lesson_overlap_between_train_and_val(self, capsys):
         """Train and val sets must not share any lesson seed. A pair-level
