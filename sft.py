@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import tqdm
 import tyro
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -1196,6 +1197,7 @@ def train_sft(args: SFTArgs):
     epoch = 0
     next_eval_at = args.eval_every_n_samples
     stream_done = False
+    pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
     while not stream_done:
         t_train = time.time()
         agent.train()
@@ -1285,6 +1287,7 @@ def train_sft(args: SFTArgs):
             scheduler.step()
             global_step += 1
             samples_seen += B
+            pbar.update(B)
 
             acc_loss += torch.stack([
                 loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
@@ -1654,7 +1657,7 @@ def train_sft(args: SFTArgs):
             rollout_seconds = None
             per_kind_thp_n = {}
 
-        print(
+        pbar.write(
             f"{samples_seen:>{len(str(total_samples))}}/{total_samples} samples "
             f"(epoch {epoch}/{args.epochs}) | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
@@ -1680,7 +1683,7 @@ def train_sft(args: SFTArgs):
                 for k in LessonKind
                 if per_kind_n[k.name] > 0
             )
-            print(f"  per-kind val_acc: {kind_summary}")
+            pbar.write(f"  per-kind val_acc: {kind_summary}")
 
         if args.track and run is not None:
             # Drive wandb's underlying _step with samples_seen (cumulative
@@ -1753,8 +1756,9 @@ def train_sft(args: SFTArgs):
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)
             ever_saved = True
-            print(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
+            pbar.write(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
 
+    pbar.close()
     if not ever_saved:
         # Rollouts disabled or no val factories — fall back to the final model
         # so a checkpoint always exists.
