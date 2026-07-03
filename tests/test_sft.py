@@ -438,6 +438,21 @@ class TestGenerateDataset:
         assert eots.sum().item() >= 1
         assert set(kinds.tolist()).issubset({k.value for k in LessonKind})
 
+    def test_unbuildable_kinds_dropped_not_hung(self):
+        """A lesson kind that can't fit the grid (a 3x3 assembler with 4-5
+        ingredient arms doesn't fit at size 5) must be dropped from the sampler,
+        not retried forever. Generation completes and simply omits those kinds;
+        the buildable memorise lessons still appear."""
+        args = SFTArgs(seed=1, size=5, num_samples=400, max_level=0)
+        *_, kinds = generate_dataset(args)
+        produced = set(kinds.tolist())
+        # The 4- and 5-ingredient memorise lessons can't be built at size 5.
+        assert LessonKind.MEMORISE_4_INGREDIENT_RECIPES.value not in produced
+        assert LessonKind.MEMORISE_5_INGREDIENT_RECIPES.value not in produced
+        # ...but the 1- and 2-ingredient ones (which always fit) do appear.
+        assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
+        assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
+
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
 

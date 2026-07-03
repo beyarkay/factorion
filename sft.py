@@ -311,6 +311,16 @@ def _artifact_name(args: "SFTArgs") -> str:
     )
 
 
+# Max consecutive build failures tolerated for a single lesson kind before it is
+# treated as unbuildable at the current grid size and dropped from the sampler.
+# build_factory already exhausts a full rejection-sampling budget per call, so a
+# None is a strong "can't build" signal; an unbuildable kind (e.g. a 3x3
+# assembler with 5 ingredient arms on a size-5 grid) returns None for every seed.
+# Without this cap the balance-by-fewest sampler would keep re-drawing that kind
+# forever (it stays at 0 samples, always the minimum) and hang.
+_MAX_BUILD_FAILURES_PER_KIND = 100
+
+
 def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, reseed):
     """Generate `target` (state, action) pairs from a disjoint seed range.
 
@@ -339,18 +349,38 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
     all_lesson_kinds = []
     kind_samples = {k.name: 0 for k in kinds}
     kind_lessons = {k.name: 0 for k in kinds}
+    # Kinds still believed buildable at this size, plus a per-kind counter of
+    # consecutive build failures. A kind that can't fit the grid returns None for
+    # every seed; once it exhausts the failure budget it is dropped so the
+    # sampler doesn't spin on it forever (see _MAX_BUILD_FAILURES_PER_KIND).
+    available = list(kinds)
+    consecutive_fails = {k.name: 0 for k in kinds}
 
     seed = base_seed + worker_id
     samples_so_far = 0
     while samples_so_far < target:
         # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
         # uniform kind choice starves the rare recipe/assembler heads.
-        fewest = min(kind_samples.values())
-        kind = random.choice([k for k in kinds if kind_samples[k.name] == fewest])
+        fewest = min(kind_samples[k.name] for k in available)
+        kind = random.choice([k for k in available if kind_samples[k.name] == fewest])
         seed += num_workers
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
+            consecutive_fails[kind.name] += 1
+            if consecutive_fails[kind.name] >= _MAX_BUILD_FAILURES_PER_KIND:
+                available.remove(kind)
+                print(
+                    f"[sft] {kind.name} did not build at size={size} after "
+                    f"{_MAX_BUILD_FAILURES_PER_KIND} consecutive attempts; "
+                    f"excluding it from this dataset shard."
+                )
+                if not available:
+                    raise RuntimeError(
+                        f"No lesson kind could be built at size={size}; cannot "
+                        f"generate an SFT dataset. Increase the grid size."
+                    )
             continue
+        consecutive_fails[kind.name] = 0
         solved = factory.world_CWH
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
