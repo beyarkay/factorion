@@ -1609,6 +1609,13 @@ def train_sft(args: SFTArgs):
             # changes; both are still logged as metrics so either can be
             # picked as a custom x-axis in the UI. (_step must increase
             # monotonically — samples_seen does, by construction.)
+            #
+            # commit=True is required: passing an explicit `step` makes wandb
+            # default to commit=False, which buffers each eval's metrics until
+            # the *next* eval logs a different step (and flushes the last only at
+            # run.finish()). That delays every point by one eval and hides the
+            # final one, so the live graph looks empty mid-run. Committing here
+            # writes each eval's row immediately, giving a live training curve.
             run.log(
                 {
                     "train/loss": train_loss,
@@ -1653,6 +1660,7 @@ def train_sft(args: SFTArgs):
                     **_dir_distance_diagnostics(dist_eval, dir_mismatch_eval),
                 },
                 step=samples_seen,
+                commit=True,
             )
 
         # Track best val accuracy for the summary, but DON'T select on it.
