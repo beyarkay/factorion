@@ -402,6 +402,17 @@ class TestGenerateDataset:
         for kind in LessonKind:
             assert kind.name in out, f"{kind.name} missing from breakdown:\n{out}"
 
+    def test_pairs_balanced_across_kinds(self):
+        """Sampling balances by pair count, not by lesson: every kind lands
+        within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
+        from collections import Counter
+
+        args = SFTArgs(seed=1, size=8, num_samples=3000, max_level=8)
+        *_, kinds = generate_dataset(args)
+        vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
+        assert len(vals) == len(LessonKind), "every kind should contribute pairs"
+        assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
+
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
 

@@ -312,7 +312,7 @@ def _artifact_name(args: "SFTArgs") -> str:
 def generate_dataset(args: SFTArgs):
     """Generate SFT dataset from expert demonstrations.
 
-    Samples uniformly across every value of `LessonKind` (auto-discovered),
+    Balances by pair count across every value of `LessonKind` (auto-discovered),
     so adding a new lesson kind to the enum is automatically picked up.
     Per-kind sample/lesson counts are printed to stdout for visibility.
 
@@ -341,7 +341,10 @@ def generate_dataset(args: SFTArgs):
     samples_so_far = 0
 
     while samples_so_far < args.num_samples:
-        kind = random.choice(kinds)
+        # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
+        # uniform kind choice starves the rare recipe/assembler heads.
+        fewest = min(kind_samples.values())
+        kind = random.choice([k for k in kinds if kind_samples[k.name] == fewest])
         # Always blank at the cap. Per-lesson sampling of level was wasteful:
         # extract_expert_actions already produces the full progression
         # (1 entity placed → 2 → … → all-blanked) within a single lesson,
