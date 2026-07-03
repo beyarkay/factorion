@@ -1197,8 +1197,6 @@ def train_sft(args: SFTArgs):
     epoch = 0
     next_eval_at = args.eval_every_n_samples
     stream_done = False
-    # Live per-batch progress (samples/s, ETA) on stderr so a single-epoch run
-    # stays visible between the sparse eval prints, even under buffered stdout.
     pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
     while not stream_done:
         t_train = time.time()
@@ -1289,7 +1287,7 @@ def train_sft(args: SFTArgs):
             scheduler.step()
             global_step += 1
             samples_seen += B
-            pbar.update(B)  # cheap tick, no GPU sync
+            pbar.update(B)
 
             acc_loss += torch.stack([
                 loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
