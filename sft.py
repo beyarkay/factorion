@@ -173,7 +173,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 @dataclass
 class SFTArgs:
-    # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
+    # Tuned HPs from W&B sweep o47ig39g (best val/thput_eot).
     seed: int = 1
     """random seed"""
     size: int = 11
@@ -185,31 +185,31 @@ class SFTArgs:
     """max curriculum level (0 = auto: size*size)"""
     epochs: int = 1
     """number of training epochs"""
-    batch_size: int = 512
+    batch_size: int = 128
     """training batch size"""
-    lr: float = 3.242e-3
+    lr: float = 3.43e-4
     """peak learning rate (after warmup, before cosine decay)"""
-    warmup_frac: float = 0.0
+    warmup_frac: float = 0.02
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
-    min_lr_ratio: float = 0.02869
+    min_lr_ratio: float = 0.00418
     """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
-    weight_decay: float = 1.661e-3
+    weight_decay: float = 4.14e-5
     """AdamW weight decay"""
-    dropout: float = 0.1827
+    dropout: float = 0.0481
     """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
-    max_grad_norm: float = 2.104
+    max_grad_norm: float = 1.74
     """grad L2-norm clip (0 disables clipping)"""
-    lw_tile: float = 1.162
+    lw_tile: float = 1.87
     """loss weight for the tile-selection (BCE) head"""
-    lw_ent: float = 0.6673
+    lw_ent: float = 0.351
     """loss weight for the entity (CE) head"""
-    lw_dir: float = 0.948
+    lw_dir: float = 0.307
     """loss weight for the direction (CE) head"""
-    lw_item: float = 0.6349
+    lw_item: float = 0.456
     """loss weight for the item / recipe (CE) head"""
-    lw_misc: float = 0.6236
+    lw_misc: float = 0.971
     """loss weight for the misc (CE) head"""
-    lw_eot: float = 1.302
+    lw_eot: float = 0.337
     """loss weight for the EOT (end-of-trajectory) BCE head"""
     eval_every_n_samples: int = 100_000
     """run validation + rollout eval + logging + checkpoint selection every N
@@ -231,17 +231,17 @@ class SFTArgs:
     # CNN encoder width per layer slot (see ppo.layers_from_args). A slot of 0
     # drops that layer; layer1..3 default to a 3-conv encoder.
     # RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 93
-    layer2: int = 69
+    layer1: int = 48
+    layer2: int = 64
     layer3: int = 96
-    layer4: int = 0
+    layer4: int = 64
     layer5: int = 0
     layer6: int = 0
     layer7: int = 0
     layer8: int = 0
-    kernel_size: int = 3
+    kernel_size: int = 5
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
-    tile_head_std: float = 0.02208
+    tile_head_std: float = 0.00248
     """tile head init std"""
     track: bool = False
     """track with W&B"""
