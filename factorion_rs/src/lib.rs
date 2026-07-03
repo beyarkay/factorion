@@ -23,8 +23,8 @@ extern crate alloc;
 mod entities;
 mod factory_gen;
 mod graph;
-mod pyrandom;
 mod render;
+mod rng;
 #[cfg(test)]
 mod textual;
 mod throughput;

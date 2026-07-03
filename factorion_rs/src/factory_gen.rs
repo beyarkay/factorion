@@ -8,7 +8,7 @@
 //! failure retries until one succeeds or the per-kind attempt budget is
 //! exhausted, returning `None` in that case.
 //!
-//! All layout randomness is drawn from [`crate::pyrandom`], a deterministic
+//! All layout randomness is drawn from [`crate::rng`], a fast deterministic
 //! generator seeded once per call, so the same `(size, kind, seed)` always
 //! produces the same factory. Each [`LessonKind`] is a different entity/layout
 //! pattern; the result is a [`BuiltFactory`] (the world tensor plus the
@@ -16,7 +16,7 @@
 
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
-use crate::pyrandom::PyRandom;
+use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
@@ -107,8 +107,7 @@ const DIRS: [Direction; 4] = [
 
 /// Neighbour deltas in `list(DIR_TO_DELTA.values())` order: N, E, S, W.
 /// BFS expands and records parents in this order, which fixes the order of
-/// the enumerated paths (and therefore the `random.shuffle` that consumes
-/// them).
+/// the enumerated paths (and therefore the shuffle that consumes them).
 const BFS_DELTAS: [(i64, i64); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
 /// Inverse of `BFS_DELTAS`: a one-step (dx, dy) → belt direction. Returns
@@ -364,7 +363,7 @@ pub fn build_factory(
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
-    let mut rng = PyRandom::seeded(seed);
+    let mut rng = Rng::seeded(seed);
     match kind {
         LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item, max_entities),
         LessonKind::MoveOneItemChaos => {
@@ -424,7 +423,7 @@ struct SplitterLayout {
     available: Vec<Cell>,
 }
 
-fn splitter_layout(rng: &mut PyRandom, s: i64) -> Option<SplitterLayout> {
+fn splitter_layout(rng: &mut Rng, s: i64) -> Option<SplitterLayout> {
     let splitter_dir = DIRS[rng.choice_index(4)];
 
     // Pick splitter anchor; both tiles must fit (up to 20 tries). The
@@ -551,7 +550,7 @@ struct SourceSink {
 }
 
 fn draw_source_sink(
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     size: usize,
     pool: &[i64],
     random_item: bool,
@@ -583,7 +582,7 @@ fn draw_source_sink(
 
 fn build_move_one_item(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -640,7 +639,7 @@ fn build_move_one_item(
 
 fn build_move_one_item_chaos(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -745,7 +744,7 @@ fn build_move_one_item_chaos(
 
 fn build_splitter_split(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -927,7 +926,7 @@ fn build_splitter_split(
 
 fn build_splitter_merge(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -1089,11 +1088,7 @@ fn build_splitter_merge(
 }
 
 #[allow(unused)]
-fn build_assemble_1in1out(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_assemble_1in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // The choice pool: 1-in-1-out recipes in all_recipes() order. The recipe
     // table guarantees it is non-empty, so the choice below can't underflow.
@@ -1245,7 +1240,7 @@ fn build_assemble_1in1out(
 
 fn build_move_via_ug_belt(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
@@ -1462,11 +1457,7 @@ fn build_move_via_ug_belt(
 }
 
 #[allow(unused)]
-fn build_assemble_2in1out(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // The `random.choice` pool: 2-in-1-out recipes in all_recipes() order.
     let recipes: Vec<(Item, Recipe)> = all_recipes()
@@ -1665,11 +1656,7 @@ fn build_assemble_2in1out(
 /// and produces (and the assembler's recipe tag), stripped of any long-belt
 /// routing — the routing is fixed at one tile, so only the recipe identity and
 /// the immediate inserter/belt geometry vary.
-fn build_memorise_recipes(
-    size: usize,
-    rng: &mut PyRandom,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
+fn build_memorise_recipes(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Any recipe is fair game — the lesson is about memorising recipe
     // identity, so we don't filter by ingredient count. The recipe table
@@ -1869,7 +1856,7 @@ fn free_components(obstruction: &HashSet<Cell>, s: i64) -> Vec<Vec<Cell>> {
 /// A source/sink pair on the two opposite edges of one axis, with a random
 /// flow direction. `span_x` spans the left/right edges (flows E or W);
 /// otherwise the top/bottom edges (flows N or S).
-fn edge_endpoints(rng: &mut PyRandom, span_x: bool, s: i64) -> (Cell, Cell, Direction) {
+fn edge_endpoints(rng: &mut Rng, span_x: bool, s: i64) -> (Cell, Cell, Direction) {
     let (a, b, fwd, bwd) = if span_x {
         let ay = rng.randint(0, s - 1);
         let by = rng.randint(0, s - 1);
@@ -1891,7 +1878,7 @@ fn edge_endpoints(rng: &mut PyRandom, span_x: bool, s: i64) -> (Cell, Cell, Dire
 /// feeding the sink — is also free in the same component. Returns
 /// `(tile, facing, belt_cell)` or `None`.
 fn pick_endpoint(
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     comp: &[Cell],
     near: &HashSet<Cell>,
     is_source: bool,
@@ -2085,7 +2072,7 @@ fn ug_aware_belt_path(
 /// fails to connect.
 fn build_cross_under_belt(
     size: usize,
-    rng: &mut PyRandom,
+    rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
