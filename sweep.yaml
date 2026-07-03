@@ -22,13 +22,13 @@ parameters:
     min: 5e-5
     max: 1e-3
 
-  chan1:
+  layer1:
     values: [32, 48, 64]
 
-  chan2:
+  layer2:
     values: [48, 64]
 
-  chan3:
+  layer3:
     values: [48, 64]
 
   clip_coef:

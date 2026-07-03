@@ -64,11 +64,11 @@ parameters:
   # ── Encoder capacity ──────────────────────────────────────────────
   # AgentCNN has no dropout, so bigger encoders can overfit the (fixed)
   # 300k-sample SFT dataset. Genuine interior optimum.
-  chan1:
+  layer1:
     values: [32, 48, 64]
-  chan2:
+  layer2:
     values: [48, 64]
-  chan3:
+  layer3:
     values: [48, 64]
 
   # ── Per-head loss weights ─────────────────────────────────────────
