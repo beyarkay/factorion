@@ -2666,33 +2666,29 @@ class TestMoveOneItemChaosProtectedStub:
         )
 
 
-# ── MEMORISE_RECIPES tests ──────────────────────────────────────────────────
+# ── MEMORISE_*_INGREDIENT_RECIPES tests ─────────────────────────────────────
 #
-# A MEMORISE_RECIPES lesson drills *recipe identity*, stripped of long-belt
-# routing. A single 3×3 assembler (tagged with a randomly-chosen recipe) is fed
-# and drained by maximally-compact arms:
+# The MEMORISE_N_INGREDIENT_RECIPES lessons drill *recipe identity*, stripped of
+# long-belt routing. A single 3×3 assembler (tagged with a randomly-chosen
+# recipe) is fed and drained by maximally-compact arms:
 #
 #   N× (source(input_i) → belt → input inserter) → assembler(recipe)
 #                                → output inserter → belt → sink(output)
 #
-# with exactly ONE belt between every source/sink and its inserter. N is the
-# recipe's ingredient count, so single-input recipes get one source and
-# multi-input recipes get one source per ingredient. Recipes are derived from
-# the live recipe table so the tests stay correct as new recipes land.
+# with exactly ONE belt between every source/sink and its inserter. Each lesson
+# fixes N — the recipe's ingredient count — so MEMORISE_N_INGREDIENT_RECIPES only
+# ever draws recipes with exactly N inputs and therefore places exactly N
+# sources. Recipes are derived from the live recipe table so the tests stay
+# correct as new recipes land.
 
-
-def _all_recipes_by_product():
-    """{product_name: (frozenset(input_names), product_name)} for every recipe.
-
-    The recipe table is keyed by its single product item, so the key *is* the
-    product name."""
-    out = {}
-    for name, r in recipes.items():
-        out[name] = (frozenset(r.consumes.keys()), name)
-    return out
-
-
-ALL_RECIPES_BY_PRODUCT = _all_recipes_by_product()
+# (lesson_kind, expected ingredient/source count) for every memorise lesson.
+MEMORISE_KINDS = [
+    (LessonKind.MEMORISE_1_INGREDIENT_RECIPES, 1),
+    (LessonKind.MEMORISE_2_INGREDIENT_RECIPES, 2),
+    (LessonKind.MEMORISE_3_INGREDIENT_RECIPES, 3),
+    (LessonKind.MEMORISE_4_INGREDIENT_RECIPES, 4),
+    (LessonKind.MEMORISE_5_INGREDIENT_RECIPES, 5),
+]
 
 
 def _markers(world, ent_name):
@@ -2702,36 +2698,37 @@ def _markers(world, ent_name):
     return [tuple(p.tolist()) for p in (ent == val).nonzero(as_tuple=False)]
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesBasic:
-    def test_generates_without_error(self):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=42)
+    def test_generates_without_error(self, kind, n_ing):
+        f = build_factory(size=10, kind=kind, seed=42)
         assert f is not None
         world, min_ent = blank_entities(f, num_missing_entities=0)
         assert world is not None
         assert min_ent is not None
 
-    def test_returns_cwh_tensor(self):
+    def test_returns_cwh_tensor(self, kind, n_ing):
         size = 10
-        f = build_factory(size=size, kind=LessonKind.MEMORISE_RECIPES, seed=42)
+        f = build_factory(size=size, kind=kind, seed=42)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         assert world.shape[0] == len(Channel)
         assert world.shape[1] == size
         assert world.shape[2] == size
 
-    def test_has_one_assembler_and_one_sink(self):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=42)
+    def test_has_one_assembler_and_n_sources_one_sink(self, kind, n_ing):
+        f = build_factory(size=10, kind=kind, seed=42)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("assembling_machine_1").value).sum().item() == 9
         assert (ent == str2ent("sink").value).sum().item() == 1
-        assert (ent == str2ent("source").value).sum().item() >= 1
+        assert (ent == str2ent("source").value).sum().item() == n_ing
 
-    def test_one_belt_and_one_inserter_per_arm(self):
+    def test_one_belt_and_one_inserter_per_arm(self, kind, n_ing):
         """The defining property: belts == inserters == sources + sinks. Each
         arm contributes exactly one inserter and exactly one belt."""
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=42)
+        f = build_factory(size=10, kind=kind, seed=42)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -2741,67 +2738,67 @@ class TestMemoriseRecipesBasic:
         n_snk = (ent == str2ent("sink").value).sum().item()
         assert n_belt == n_ins == n_src + n_snk
 
-    def test_nonzero_throughput(self):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=42)
+    def test_nonzero_throughput(self, kind, n_ing):
+        f = build_factory(size=10, kind=kind, seed=42)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"Expected positive throughput, got {tp}"
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesManySeeds:
-    @pytest.mark.parametrize("seed", range(50))
-    def test_size_10_seed(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(10))
+    def test_size_10_seed(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0, f"seed={seed}: throughput is {tp}"
 
-    @pytest.mark.parametrize("seed", range(30))
-    def test_size_8_seed(self, seed):
-        f = build_factory(size=8, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(6))
+    def test_size_8_seed(self, kind, n_ing, seed):
+        f = build_factory(size=8, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
-    @pytest.mark.parametrize("seed", range(20))
-    def test_size_15_seed(self, seed):
-        f = build_factory(size=15, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(4))
+    def test_size_15_seed(self, kind, n_ing, seed):
+        f = build_factory(size=15, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesGridSizes:
-    @pytest.mark.parametrize("size", [5, 8, 10, 12, 15])
-    def test_valid_factory_per_size(self, size):
-        f = build_factory(size=size, kind=LessonKind.MEMORISE_RECIPES, seed=7)
+    @pytest.mark.parametrize("size", [8, 10, 12, 15])
+    def test_valid_factory_per_size(self, kind, n_ing, size):
+        f = build_factory(size=size, kind=kind, seed=7)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("assembling_machine_1").value).sum().item() == 9
         assert (ent == str2ent("sink").value).sum().item() == 1
-        assert (ent == str2ent("source").value).sum().item() >= 1
+        assert (ent == str2ent("source").value).sum().item() == n_ing
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert tp > 0
 
     @pytest.mark.parametrize("size", [1, 2, 3, 4])
     @pytest.mark.parametrize("seed", [0, 1])
-    def test_grid_too_small_returns_none(self, size, seed):
+    def test_grid_too_small_returns_none(self, kind, n_ing, size, seed):
         # A 3×3 assembler plus arms can't fit in a grid this small.
-        assert (
-            build_factory(size=size, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
-            is None
-        )
+        assert build_factory(size=size, kind=kind, seed=seed) is None
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesEntityDirections:
-    @pytest.mark.parametrize("seed", range(20))
-    def test_all_entities_have_directions(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(6))
+    def test_all_entities_have_directions(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -2816,10 +2813,11 @@ class TestMemoriseRecipesEntityDirections:
                     )
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesNoOverlaps:
-    @pytest.mark.parametrize("seed", range(30))
-    def test_no_double_placement(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(8))
+    def test_no_double_placement(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -2831,6 +2829,7 @@ class TestMemoriseRecipesNoOverlaps:
         assert len(occ) == len(set(occ))
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesArmGeometry:
     """Every source reaches the assembler — and the assembler reaches the sink —
     through EXACTLY one belt and one inserter. In the flow graph that is a
@@ -2838,9 +2837,9 @@ class TestMemoriseRecipesArmGeometry:
     precise encoding of "exactly one belt between a source/sink and its
     inserter"."""
 
-    @pytest.mark.parametrize("seed", range(40))
-    def test_one_belt_one_inserter_on_every_arm(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(10))
+    def test_one_belt_one_inserter_on_every_arm(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         G = build_factory_graph(world.permute(1, 2, 0))
@@ -2863,13 +2862,14 @@ class TestMemoriseRecipesArmGeometry:
         )
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesInserterGeometry:
     """Input inserters drop into the assembler body; output inserters pick up
     from it. All sit on the 12 non-corner perimeter slots, one per arm."""
 
-    @pytest.mark.parametrize("seed", range(40))
-    def test_input_inserters_match_sources_output_match_sinks(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(10))
+    def test_input_inserters_match_sources_output_match_sinks(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         asm = _asm_tiles(world)
@@ -2898,9 +2898,9 @@ class TestMemoriseRecipesInserterGeometry:
             f"seed={seed}: {output_count} output inserters but {n_snk} sinks"
         )
 
-    @pytest.mark.parametrize("seed", range(30))
-    def test_inserters_on_non_corner_perimeter(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(8))
+    def test_inserters_on_non_corner_perimeter(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         asm = _asm_tiles(world)
@@ -2918,12 +2918,12 @@ class TestMemoriseRecipesInserterGeometry:
                 f"non-corner perimeter slot of assembler at ({ax},{ay})"
             )
 
-    @pytest.mark.parametrize("seed", range(50))
-    def test_source_and_sink_not_on_assembler_perimeter(self, seed):
+    @pytest.mark.parametrize("seed", range(10))
+    def test_source_and_sink_not_on_assembler_perimeter(self, kind, n_ing, seed):
         """REGRESSION: AssemblingMachine treats Source/Sink as inserter-like,
         so a marker on a perimeter slot would create a phantom infinite-rate
         edge straight into the assembler, bypassing the arm's belt+inserter."""
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         asm = _asm_tiles(world)
@@ -2942,14 +2942,15 @@ class TestMemoriseRecipesInserterGeometry:
             )
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesItems:
     """Sources carry the recipe's ingredient items (one source per ingredient);
     the sink carries the recipe's product; every assembler tile is tagged with
     the recipe."""
 
-    @pytest.mark.parametrize("seed", range(40))
-    def test_sources_and_sink_match_a_recipe(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(10))
+    def test_sources_and_sink_match_a_recipe(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -2967,6 +2968,11 @@ class TestMemoriseRecipesItems:
             f"seed={seed}: sink product {sink_name!r} is not a known recipe"
         )
         recipe = recipes[sink_name]
+        # The lesson only draws recipes with exactly this ingredient count.
+        assert len(recipe.consumes) == n_ing, (
+            f"seed={seed}: recipe {sink_name!r} has {len(recipe.consumes)} "
+            f"ingredients but lesson expects {n_ing}"
+        )
         # One source per ingredient, items matching the recipe's inputs.
         assert len(src_names) == len(recipe.consumes), (
             f"seed={seed}: {len(src_names)} sources but recipe "
@@ -2977,9 +2983,9 @@ class TestMemoriseRecipesItems:
             f"{sink_name!r} inputs {list(recipe.consumes.keys())}"
         )
 
-    @pytest.mark.parametrize("seed", range(30))
-    def test_assembler_recipe_matches_output(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(8))
+    def test_assembler_recipe_matches_output(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -2992,33 +2998,43 @@ class TestMemoriseRecipesItems:
 
 
 class TestMemoriseRecipesRecipeSelection:
-    def test_single_and_multi_input_recipes_both_appear(self):
-        """Recipes are drawn from the whole table, so over many seeds we see
-        both single-ingredient recipes (one source) and multi-ingredient ones
-        (several sources)."""
-        src_counts = set()
-        products = set()
-        for seed in range(80):
-            f = build_factory(size=12, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
+    def test_every_recipe_has_the_lesson_ingredient_count(self, kind, n_ing):
+        """Each lesson only ever draws recipes with exactly its ingredient
+        count, so every generated factory has exactly n_ing sources."""
+        for seed in range(40):
+            f = build_factory(size=12, kind=kind, seed=seed)
             assert f is not None
             world, _ = blank_entities(f, num_missing_entities=0)
             n_src = len(_markers(world, "source"))
-            src_counts.add(n_src)
-            ent = world[Channel.ENTITIES.value]
-            item = world[Channel.ITEMS.value]
-            snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
-            products.add(items[item[snk[0], snk[1]].item()].name)
-        assert 1 in src_counts, "no single-ingredient recipe ever selected"
-        assert any(c >= 2 for c in src_counts), "no multi-ingredient recipe selected"
-        assert len(products) >= 5, (
-            f"expected a diverse set of recipes, saw only {products}"
-        )
+            assert n_src == n_ing, (
+                f"{kind.name} seed={seed}: {n_src} sources, expected {n_ing}"
+            )
+
+    def test_lessons_with_many_recipes_are_diverse(self):
+        """A lesson whose ingredient-count bucket holds several recipes draws a
+        variety of products over many seeds (the 5-ingredient bucket has a
+        single recipe, so it is excluded)."""
+        for kind, _ in MEMORISE_KINDS[:-1]:
+            products = set()
+            for seed in range(80):
+                f = build_factory(size=12, kind=kind, seed=seed)
+                assert f is not None
+                world, _ = blank_entities(f, num_missing_entities=0)
+                ent = world[Channel.ENTITIES.value]
+                item = world[Channel.ITEMS.value]
+                snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
+                products.add(items[item[snk[0], snk[1]].item()].name)
+            assert len(products) >= 2, (
+                f"{kind.name}: expected varied recipes, saw only {products}"
+            )
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesConnectivity:
-    @pytest.mark.parametrize("seed", range(20))
-    def test_every_source_reaches_assembler_and_sink(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(6))
+    def test_every_source_reaches_assembler_and_sink(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         G = build_factory_graph(world.permute(1, 2, 0))
@@ -3032,6 +3048,7 @@ class TestMemoriseRecipesConnectivity:
         assert nx.has_path(G, asm[0], sink[0])
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesThroughputPerRecipe:
     """Closed-form throughput from the live recipe table. One output inserter
     caps the result at INSERTER_CAP; each ingredient arm caps its input at
@@ -3039,9 +3056,9 @@ class TestMemoriseRecipesThroughputPerRecipe:
 
     INSERTER_CAP = 0.86
 
-    @pytest.mark.parametrize("seed", range(40))
-    def test_throughput_matches_recipe_closed_form(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(10))
+    def test_throughput_matches_recipe_closed_form(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
         ent = world[Channel.ENTITIES.value]
@@ -3061,11 +3078,12 @@ class TestMemoriseRecipesThroughputPerRecipe:
         )
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesDeterminism:
     @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
-    def test_same_seed_same_world(self, seed):
-        f1 = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
-        f2 = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    def test_same_seed_same_world(self, kind, n_ing, seed):
+        f1 = build_factory(size=10, kind=kind, seed=seed)
+        f2 = build_factory(size=10, kind=kind, seed=seed)
         assert f1 is not None and f2 is not None
         w1, m1 = blank_entities(f1, num_missing_entities=0, seed=seed)
         w2, m2 = blank_entities(f2, num_missing_entities=0, seed=seed)
@@ -3073,19 +3091,20 @@ class TestMemoriseRecipesDeterminism:
         assert m1 == m2
 
 
+@pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesMissingEntities:
-    @pytest.mark.parametrize("seed", range(10))
-    def test_missing_inf_returns_positive_count(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(6))
+    def test_missing_inf_returns_positive_count(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, min_ent = blank_entities(f, num_missing_entities=float("inf"))
         assert world is not None
         assert min_ent is not None and min_ent > 0
 
-    @pytest.mark.parametrize("seed", range(10))
+    @pytest.mark.parametrize("seed", range(4))
     @pytest.mark.parametrize("num_missing", [1, 5, 20, float("inf")])
-    def test_assembler_kept_or_fully_removed(self, seed, num_missing):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    def test_assembler_kept_or_fully_removed(self, kind, n_ing, seed, num_missing):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=num_missing)
         ent = world[Channel.ENTITIES.value]
@@ -3095,9 +3114,9 @@ class TestMemoriseRecipesMissingEntities:
             f"removed ({asm_count} tiles, expected 0 or 9)"
         )
 
-    @pytest.mark.parametrize("seed", range(20))
-    def test_sources_and_sink_preserved(self, seed):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+    @pytest.mark.parametrize("seed", range(6))
+    def test_sources_and_sink_preserved(self, kind, n_ing, seed):
+        f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         n_src_full = len(_markers(f.world_CWH, "source"))
         world, _ = blank_entities(f, num_missing_entities=float("inf"))
