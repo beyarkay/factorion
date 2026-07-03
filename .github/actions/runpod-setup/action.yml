@@ -38,11 +38,19 @@ runs:
     - uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python_version }}
-        cache: "pip"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
 
     - name: Install CI dependencies
       shell: bash
-      run: pip install runpod wandb
+      # Only `runpod` is needed on the runner — runpod_create.py / runpod_destroy.py
+      # import nothing else, and W&B runs on the pod, not here. uv resolves and
+      # installs in parallel and caches wheels across runs, so this is much
+      # faster than pip.
+      run: uv pip install --system runpod
 
     - name: Set up SSH key
       shell: bash
