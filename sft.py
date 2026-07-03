@@ -210,7 +210,7 @@ class SFTArgs:
     """loss weight for the misc (CE) head"""
     lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
-    eval_every_n_samples: int = 1_000_000
+    eval_every_n_samples: int = 100_000
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
