@@ -8,6 +8,7 @@ Usage:
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 
+import io
 import json
 import os
 import random
@@ -902,6 +903,8 @@ def _dir_distance_diagnostics(distances, mismatches):
 
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -991,13 +994,14 @@ def train_sft(args: SFTArgs):
         # so memory is bounded by the prefetch buffer. pin_memory + non_blocking
         # (in the batch source) hide the per-batch host->device copy behind the
         # GPU step.
-        stream_workers = os.cpu_count() or 1
+        stream_workers = min(16, os.cpu_count() or 1)
         train_stream_loader = DataLoader(
             StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
             batch_size=args.batch_size,
             num_workers=stream_workers,
             pin_memory=(device.type == "cuda"),
             persistent_workers=stream_workers > 0,
+            multiprocessing_context="forkserver",
         )
         n_train = args.num_samples
         steps_per_epoch = _steps_per_epoch(
@@ -1653,6 +1657,7 @@ def train_sft(args: SFTArgs):
                     **_dir_distance_diagnostics(dist_eval, dir_mismatch_eval),
                 },
                 step=samples_seen,
+                commit=True,
             )
 
         # Track best val accuracy for the summary, but DON'T select on it.
