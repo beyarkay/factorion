@@ -669,7 +669,7 @@ class TestTrackedArtifact:
             layer2=16,
             layer3=16,
             track=True,
-            eval_rollouts_every_n_epochs=0,
+            eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
@@ -710,7 +710,7 @@ class TestTrackedArtifact:
             layer2=16,
             layer3=16,
             track=True,
-            eval_rollouts_every_n_epochs=0,
+            eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
@@ -1169,7 +1169,7 @@ class TestPerKindEotMetrics:
             layer2=16,
             layer3=16,
             track=True,
-            eval_rollouts_every_n_epochs=0,  # skip the slow greedy rollout
+            eval_rollouts=False,  # skip the slow greedy rollout
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
