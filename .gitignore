@@ -20,6 +20,4 @@ claude-resume.sh
 *.pt
 .claude/settings.local.json
 tests/benchmarks/baseline_signature.json
-# Upstream Factorio game data, cloned by .claude/hooks/session-start.sh
-# (or container provisioning) — never tracked in this repo.
 factorio-data/
