@@ -37,9 +37,13 @@ pub enum LessonKind {
     MoveViaUgBelt = 6,
     #[deprecated]
     Assemble2In1Out = 7,
-    MemoriseRecipes = 8,
+    Memorise1IngredientRecipes = 8,
     MoveOneItemChaos = 9,
     CrossUnderBelt = 10,
+    Memorise2IngredientRecipes = 11,
+    Memorise3IngredientRecipes = 12,
+    Memorise4IngredientRecipes = 13,
+    Memorise5IngredientRecipes = 14,
 }
 
 impl LessonKind {
@@ -53,9 +57,13 @@ impl LessonKind {
             6 => Some(LessonKind::MoveViaUgBelt),
             #[allow(deprecated)]
             7 => Some(LessonKind::Assemble2In1Out),
-            8 => Some(LessonKind::MemoriseRecipes),
+            8 => Some(LessonKind::Memorise1IngredientRecipes),
             9 => Some(LessonKind::MoveOneItemChaos),
             10 => Some(LessonKind::CrossUnderBelt),
+            11 => Some(LessonKind::Memorise2IngredientRecipes),
+            12 => Some(LessonKind::Memorise3IngredientRecipes),
+            13 => Some(LessonKind::Memorise4IngredientRecipes),
+            14 => Some(LessonKind::Memorise5IngredientRecipes),
             _ => None,
         }
     }
@@ -72,7 +80,11 @@ impl LessonKind {
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
             #[allow(deprecated)]
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
-            LessonKind::MemoriseRecipes => "MEMORISE_RECIPES",
+            LessonKind::Memorise1IngredientRecipes => "MEMORISE_1_INGREDIENT_RECIPES",
+            LessonKind::Memorise2IngredientRecipes => "MEMORISE_2_INGREDIENT_RECIPES",
+            LessonKind::Memorise3IngredientRecipes => "MEMORISE_3_INGREDIENT_RECIPES",
+            LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
+            LessonKind::Memorise5IngredientRecipes => "MEMORISE_5_INGREDIENT_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
         }
@@ -89,7 +101,11 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
         // LessonKind::Assemble2In1Out,
-        LessonKind::MemoriseRecipes,
+        LessonKind::Memorise1IngredientRecipes,
+        LessonKind::Memorise2IngredientRecipes,
+        LessonKind::Memorise3IngredientRecipes,
+        LessonKind::Memorise4IngredientRecipes,
+        LessonKind::Memorise5IngredientRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
     ]
@@ -380,7 +396,21 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
-        LessonKind::MemoriseRecipes => build_memorise_recipes(size, &mut rng, max_entities),
+        LessonKind::Memorise1IngredientRecipes => {
+            build_memorise_recipes(size, &mut rng, max_entities, 1)
+        }
+        LessonKind::Memorise2IngredientRecipes => {
+            build_memorise_recipes(size, &mut rng, max_entities, 2)
+        }
+        LessonKind::Memorise3IngredientRecipes => {
+            build_memorise_recipes(size, &mut rng, max_entities, 3)
+        }
+        LessonKind::Memorise4IngredientRecipes => {
+            build_memorise_recipes(size, &mut rng, max_entities, 4)
+        }
+        LessonKind::Memorise5IngredientRecipes => {
+            build_memorise_recipes(size, &mut rng, max_entities, 5)
+        }
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
@@ -1642,26 +1672,41 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
     None
 }
 
-/// Build a MEMORISE_RECIPES factory: a single assembler fed and drained by the
-/// most compact possible arms — every ingredient and product travels
-/// `source → belt → inserter → assembler → inserter → belt → sink` with
+/// Build a MEMORISE_`N`_INGREDIENT_RECIPES factory: a single assembler fed and
+/// drained by the most compact possible arms — every ingredient and product
+/// travels `source → belt → inserter → assembler → inserter → belt → sink` with
 /// **exactly one** belt between a source/sink and its inserter. The recipe is
-/// drawn at random from [`all_recipes`], so the number of input arms equals the
-/// recipe's ingredient count (one source per input) and there is one output arm
-/// per product. Each arm's inserter sits on a randomly-chosen, non-corner
-/// assembler perimeter slot, and the source/sink hangs off a randomly-chosen
-/// free neighbour of that arm's belt. The assembler anchor itself is random.
+/// drawn at random from the [`all_recipes`] entries that consume exactly
+/// `n_ingredients` items, so the number of input arms equals `n_ingredients`
+/// (one source per input) and there is one output arm per product. Each arm's
+/// inserter sits on a randomly-chosen, non-corner assembler perimeter slot, and
+/// the source/sink hangs off a randomly-chosen free neighbour of that arm's
+/// belt. The assembler anchor itself is random.
 ///
-/// The lesson teaches the policy to *memorise* which items a recipe consumes
-/// and produces (and the assembler's recipe tag), stripped of any long-belt
-/// routing — the routing is fixed at one tile, so only the recipe identity and
-/// the immediate inserter/belt geometry vary.
-fn build_memorise_recipes(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+/// Splitting the memorise lesson by ingredient count lets each lesson drill a
+/// fixed input-arm count in isolation. The lesson teaches the policy to
+/// *memorise* which items a recipe consumes and produces (and the assembler's
+/// recipe tag), stripped of any long-belt routing — the routing is fixed at one
+/// tile, so only the recipe identity and the immediate inserter/belt geometry
+/// vary.
+fn build_memorise_recipes(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    n_ingredients: usize,
+) -> Option<BuiltFactory> {
     let s = size as i64;
-    // Any recipe is fair game — the lesson is about memorising recipe
-    // identity, so we don't filter by ingredient count. The recipe table
-    // guarantees the list is non-empty, so the choice below can't underflow.
-    let recipes = all_recipes();
+    // Only recipes with exactly `n_ingredients` inputs are eligible — the
+    // lesson drills memorising recipe identity at a fixed input-arm count. If no
+    // recipe matches (an ingredient count the table never uses) there is nothing
+    // to build, so reject immediately.
+    let recipes: Vec<(Item, Recipe)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.consumes.len() == n_ingredients)
+        .collect();
+    if recipes.is_empty() {
+        return None;
+    }
     let mut count = (500).max(size * size * 16);
 
     while count > 0 {
@@ -2255,49 +2300,64 @@ mod tests {
 
     #[test]
     fn test_memorise_recipes_smoke() {
-        // A handful of seeds should all produce positive-throughput factories
-        // with one belt per arm: belts == inserters (one belt per inserter),
-        // exactly one assembler unit, and at least one source + one sink.
-        let mut built = 0;
-        for seed in 0..50u64 {
-            if let Some(f) =
-                build_factory(11, LessonKind::MemoriseRecipes, seed, true, f64::INFINITY)
-            {
-                assert!(world_throughput(&f.world) > 0.0, "seed={seed}");
+        // Each per-ingredient-count memorise lesson should produce
+        // positive-throughput factories with one belt per arm (belts ==
+        // inserters), exactly one assembler unit, one sink, and exactly
+        // `n_ingredients` sources (one input arm per ingredient).
+        let kinds = [
+            (LessonKind::Memorise1IngredientRecipes, 1),
+            (LessonKind::Memorise2IngredientRecipes, 2),
+            (LessonKind::Memorise3IngredientRecipes, 3),
+            (LessonKind::Memorise4IngredientRecipes, 4),
+            (LessonKind::Memorise5IngredientRecipes, 5),
+        ];
+        for (kind, n_ingredients) in kinds {
+            let mut built = 0;
+            for seed in 0..50u64 {
+                if let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) {
+                    assert!(world_throughput(&f.world) > 0.0, "{kind:?} seed={seed}");
 
-                let mut n_belt = 0;
-                let mut n_inserter = 0;
-                let mut n_assembler = 0;
-                let mut n_source = 0;
-                let mut n_sink = 0;
-                for x in 0..f.world.width() {
-                    for y in 0..f.world.height() {
-                        match f.world.entity_at(x, y) {
-                            Some(Item::TransportBelt) => n_belt += 1,
-                            Some(Item::Inserter) => n_inserter += 1,
-                            Some(Item::AssemblingMachine1) => n_assembler += 1,
-                            Some(Item::Source) => n_source += 1,
-                            Some(Item::Sink) => n_sink += 1,
-                            _ => {}
+                    let mut n_belt = 0;
+                    let mut n_inserter = 0;
+                    let mut n_assembler = 0;
+                    let mut n_source = 0;
+                    let mut n_sink = 0;
+                    for x in 0..f.world.width() {
+                        for y in 0..f.world.height() {
+                            match f.world.entity_at(x, y) {
+                                Some(Item::TransportBelt) => n_belt += 1,
+                                Some(Item::Inserter) => n_inserter += 1,
+                                Some(Item::AssemblingMachine1) => n_assembler += 1,
+                                Some(Item::Source) => n_source += 1,
+                                Some(Item::Sink) => n_sink += 1,
+                                _ => {}
+                            }
                         }
                     }
+                    // One belt per arm == one belt per inserter.
+                    assert_eq!(
+                        n_belt, n_inserter,
+                        "{kind:?} seed={seed}: belts != inserters"
+                    );
+                    // The assembler is 3x3 → 9 tiles.
+                    assert_eq!(n_assembler, 9, "{kind:?} seed={seed}: assembler not 3x3");
+                    // One source per ingredient — the lesson's defining property.
+                    assert_eq!(
+                        n_source, n_ingredients,
+                        "{kind:?} seed={seed}: source count != ingredient count"
+                    );
+                    assert_eq!(n_sink, 1, "{kind:?} seed={seed}: expected exactly one sink");
+                    // Inserters = sources + sinks (one inserter per arm).
+                    assert_eq!(
+                        n_inserter,
+                        n_source + n_sink,
+                        "{kind:?} seed={seed}: inserter count != arm count"
+                    );
+                    built += 1;
                 }
-                // One belt per arm == one belt per inserter.
-                assert_eq!(n_belt, n_inserter, "seed={seed}: belts != inserters");
-                // The assembler is 3x3 → 9 tiles.
-                assert_eq!(n_assembler, 9, "seed={seed}: assembler not 3x3");
-                assert!(n_source >= 1, "seed={seed}: no source");
-                assert_eq!(n_sink, 1, "seed={seed}: expected exactly one sink");
-                // Inserters = sources + sinks (one inserter per arm).
-                assert_eq!(
-                    n_inserter,
-                    n_source + n_sink,
-                    "seed={seed}: inserter count != arm count"
-                );
-                built += 1;
             }
+            assert!(built > 40, "{kind:?}: most seeds should build, got {built}");
         }
-        assert!(built > 40, "most seeds should build, got {built}");
     }
 
     #[test]

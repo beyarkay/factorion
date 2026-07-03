@@ -31,7 +31,7 @@ def _grid_rows(world_CWH):
 class TestRenderFactoryShape:
     @pytest.mark.parametrize("size", [5, 8, 10])
     def test_row_and_column_count(self, size):
-        f = build_factory(size=size, kind=LessonKind.MEMORISE_RECIPES, seed=3)
+        f = build_factory(size=size, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=3)
         assert f is not None
         rows = _grid_rows(f)
         assert len(rows) == size, f"expected {size} rows, got {len(rows)}"
@@ -41,7 +41,7 @@ class TestRenderFactoryShape:
             assert len(r) <= 3 * size - 1
 
     def test_accepts_factory_or_tensor(self):
-        f = build_factory(size=8, kind=LessonKind.MEMORISE_RECIPES, seed=1)
+        f = build_factory(size=8, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=1)
         assert f is not None
         from_factory = render_factory(f)
         from_tensor = render_factory(f.world_CWH)
@@ -53,7 +53,7 @@ class TestRenderFactoryContent:
     def test_single_tile_entities_render_correctly(self, seed):
         """Every single-tile entity (source/sink/belt/inserter) renders as its
         registry char + direction marker at its (x, y) position."""
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+        f = build_factory(size=10, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=seed)
         assert f is not None
         world = f.world_CWH
         ent = world[Channel.ENTITIES.value]
@@ -82,7 +82,7 @@ class TestRenderFactoryContent:
     def test_assembler_box_present(self, seed):
         """The 3×3 assembler renders as a bordered box: a contiguous 3×3 of 'a'
         body characters with a blank interior centre."""
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=seed)
+        f = build_factory(size=10, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=seed)
         assert f is not None
         world = f.world_CWH
         ent = world[Channel.ENTITIES.value]
@@ -101,7 +101,7 @@ class TestRenderFactoryContent:
         assert rows[ay + 1][3 * (ax + 1)] == " "
 
     def test_empty_tiles_render_as_dots(self):
-        f = build_factory(size=10, kind=LessonKind.MEMORISE_RECIPES, seed=0)
+        f = build_factory(size=10, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=0)
         assert f is not None
         world = f.world_CWH
         ent = world[Channel.ENTITIES.value]
