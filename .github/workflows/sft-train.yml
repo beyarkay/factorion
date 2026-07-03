@@ -11,12 +11,12 @@ on:
       num_samples:
         description: "Number of SFT samples"
         required: true
-        default: "1000000"
+        default: "45000000"
         type: string
       epochs:
         description: "Number of training epochs"
         required: true
-        default: "45"
+        default: "1"
         type: string
       ref:
         description: "Git ref to train (branch / SHA / tag)"
