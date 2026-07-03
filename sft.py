@@ -8,6 +8,7 @@ Usage:
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 
+import io
 import json
 import os
 import random
@@ -902,6 +903,8 @@ def _dir_distance_diagnostics(distances, mismatches):
 
 def train_sft(args: SFTArgs):
     """Main SFT training loop."""
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -1653,6 +1656,7 @@ def train_sft(args: SFTArgs):
                     **_dir_distance_diagnostics(dist_eval, dir_mismatch_eval),
                 },
                 step=samples_seen,
+                commit=True,
             )
 
         # Track best val accuracy for the summary, but DON'T select on it.
