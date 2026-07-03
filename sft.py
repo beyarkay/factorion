@@ -317,9 +317,11 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     shards never share a factory and the seed-level train/val split stays
     leak-free across processes. `reseed` (None on the single-process path) seeds
-    the global RNG for an independent lesson-kind / shuffle stream per worker.
-    Always blanks at max_level (extract_expert_actions emits the full placement
-    progression per lesson). obs/masks come back uint8/bool from extract.
+    the global RNG for an independent tie-break / shuffle stream per worker.
+    Draws the fewest-pairs kind each step so the shard balances by pair count,
+    not by lesson. Always blanks at max_level (extract_expert_actions emits the
+    full placement progression per lesson). obs/masks come back uint8/bool from
+    extract.
     """
     if reseed is not None:
         random.seed(reseed)
@@ -341,7 +343,10 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
     seed = base_seed + worker_id
     samples_so_far = 0
     while samples_so_far < target:
-        kind = random.choice(kinds)
+        # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
+        # uniform kind choice starves the rare recipe/assembler heads.
+        fewest = min(kind_samples.values())
+        kind = random.choice([k for k in kinds if kind_samples[k.name] == fewest])
         seed += num_workers
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
@@ -394,8 +399,9 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
 def generate_dataset(args: SFTArgs):
     """Generate SFT dataset from expert demonstrations.
 
-    Samples uniformly across every value of `LessonKind` (auto-discovered).
-    Generation is embarrassingly parallel over the seed space, so large
+    Balances by (state, action) pair count across every value of `LessonKind`
+    (auto-discovered), per shard. Generation is embarrassingly parallel over
+    the seed space, so large
     datasets are sharded across `gen_workers` processes (disjoint seed ranges)
     and concatenated; small datasets stay single-process. obs come back uint8
     and masks bool. Also returns a per-pair lesson_seed tensor for a leak-free
