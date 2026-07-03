@@ -16,8 +16,8 @@
 # Optional env vars:
 #   NUM_SEEDS           - Number of seeds to run (default: 5)
 #   MAX_PARALLEL        - Max seeds to run concurrently (default: 5)
-#   NUM_SAMPLES         - SFT samples per seed (default: 50000)
-#   EPOCHS              - SFT epochs per seed (default: 30)
+#   NUM_SAMPLES         - SFT samples per seed (default: 5000000)
+#   EPOCHS              - SFT epochs per seed (default: 1)
 #   PR_NUMBER           - PR number for tagging
 #   COMMIT_SHA          - Git commit SHA for tagging
 #   BRANCH_LABEL        - Label for this branch (default: "pr")
@@ -28,8 +28,8 @@ set -euo pipefail
 
 NUM_SEEDS="${NUM_SEEDS:-5}"
 MAX_PARALLEL="${MAX_PARALLEL:-5}"
-NUM_SAMPLES="${NUM_SAMPLES:-50000}"
-EPOCHS="${EPOCHS:-30}"
+NUM_SAMPLES="${NUM_SAMPLES:-5000000}"
+EPOCHS="${EPOCHS:-1}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
 COMMIT_SHA="${COMMIT_SHA:-unknown}"

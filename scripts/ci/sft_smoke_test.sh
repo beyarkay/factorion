@@ -11,8 +11,8 @@
 #   WANDB_PROJECT       - W&B project name (e.g. factorion)
 #
 # Optional env vars:
-#   NUM_SAMPLES         - Number of SFT samples (default: 300000)
-#   EPOCHS              - Number of training epochs (default: 30)
+#   NUM_SAMPLES         - Number of SFT samples (default: 5000000)
+#   EPOCHS              - Number of training epochs (default: 1)
 #   WATCHDOG_SECONDS    - Self-terminate watchdog timeout (default: 14400 = 4h)
 #   PR_NUMBER           - PR number for tagging
 #   COMMIT_SHA          - Git commit SHA for tagging
@@ -21,8 +21,8 @@
 
 set -euo pipefail
 
-NUM_SAMPLES="${NUM_SAMPLES:-300000}"
-EPOCHS="${EPOCHS:-30}"
+NUM_SAMPLES="${NUM_SAMPLES:-5000000}"
+EPOCHS="${EPOCHS:-1}"
 WATCHDOG_SECONDS="${WATCHDOG_SECONDS:-14400}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
