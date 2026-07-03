@@ -44,10 +44,8 @@ from ppo import (  # noqa: E402
     make_env,
     layers_from_args,
     assert_device_ok,
-    _CH_ENT,
-    _CH_FOOTPRINT,
-    _EMPTY_ENT_ID,
-    _FOOTPRINT_UNAVAILABLE,
+    _legal_tile_mask,
+    _TILE_MASK_FILL,
 )
 from training_config import SftArgs  # noqa: E402
 
@@ -401,16 +399,6 @@ class RolloutEval(TypedDict):
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
 
 
-def _apply_legal_tile_mask(tile_logits, obs_batch):
-    """Mask illegal placement tiles to -inf so an argmax skips them."""
-    K = tile_logits.shape[0]
-    ent_ch = obs_batch[:, _CH_ENT]
-    foot_ch = obs_batch[:, _CH_FOOTPRINT]
-    # legal iff no entity & tile is placeable
-    legal = (ent_ch == _EMPTY_ENT_ID) & (foot_ch != _FOOTPRINT_UNAVAILABLE)
-    return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
-
-
 def run_rollout_eval(
     agent,
     args: SftArgs,
@@ -541,8 +529,9 @@ def run_rollout_eval(
             encoded = agent.encoder(agent._encode_input(obs_batch))
             eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
 
-            tile_logits = _apply_legal_tile_mask(
-                agent.tile_logits(encoded).reshape(K, -1), obs_batch
+            # Restrict the greedy argmax to legal (empty + buildable) tiles.
+            tile_logits = agent.tile_logits(encoded).reshape(K, -1).masked_fill(
+                ~_legal_tile_mask(obs_batch), _TILE_MASK_FILL
             )
             tile_idx_K = tile_logits.argmax(dim=1)
             x_K = tile_idx_K // args.size

@@ -13,7 +13,8 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env  # noqa: E402
-from helpers import Channel  # noqa: E402
+from helpers import Channel, str2ent  # noqa: E402
+from factorion import Footprint  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
 
@@ -137,6 +138,10 @@ class TestGradientFlow:
         """Verify gradients flow to encoder, tile_logits, and all four
         per-tile heads (entity, direction, item, misc)."""
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        # Tiles must be legal (empty + buildable) for the masked tile head to
+        # receive gradient — an all-illegal obs freezes it by design.
+        obs[:, Channel.ENTITIES.value] = str2ent("empty").value
+        obs[:, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()

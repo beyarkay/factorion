@@ -27,7 +27,6 @@ import sft
 from sft import (
     SftArgs,
     StreamingDemoDataset,
-    _apply_legal_tile_mask,
     _artifact_name,
     _dir_distance_diagnostics,
     _dir_mismatch_by_distance,
@@ -44,7 +43,14 @@ from sft import (
     run_rollout_eval,
     train_sft,
 )
-from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args
+from ppo import (
+    FactorioEnv,
+    AgentCNN,
+    make_env,
+    layers_from_args,
+    _legal_tile_mask,
+    _TILE_MASK_FILL,
+)
 
 
 def _materialise_args(args):
@@ -1082,9 +1088,9 @@ class TestLegalTileMask:
         logits[0, 5] = 5.0
 
         assert logits.argmax(dim=1).item() == 0, "sanity: unmasked picks occupied"
-        masked = _apply_legal_tile_mask(logits, obs)
+        masked = logits.masked_fill(~_legal_tile_mask(obs), _TILE_MASK_FILL)
         assert masked.argmax(dim=1).item() == 5, "masked must skip to legal runner-up"
-        assert masked[0, 0] == float("-inf"), "occupied tile must be -inf"
+        assert masked[0, 0] == _TILE_MASK_FILL, "occupied tile must be masked out"
 
     def test_argmax_skips_unbuildable_tile(self):
         """UNAVAILABLE (unbuildable) tiles are masked out just like occupied
@@ -1097,9 +1103,9 @@ class TestLegalTileMask:
         logits[0, 4] = 10.0
         logits[0, 2] = 5.0
 
-        masked = _apply_legal_tile_mask(logits, obs)
+        masked = logits.masked_fill(~_legal_tile_mask(obs), _TILE_MASK_FILL)
         assert masked.argmax(dim=1).item() == 2
-        assert masked[0, 4] == float("-inf")
+        assert masked[0, 4] == _TILE_MASK_FILL
 
     def test_all_illegal_row_is_nan_free(self):
         """A fully occupied grid leaves every tile illegal; the masked argmax
@@ -1109,8 +1115,9 @@ class TestLegalTileMask:
         obs[0, Channel.ENTITIES.value] = str2ent("transport_belt").value  # occupy everything
         logits = torch.randn(1, size * size)
 
-        masked = _apply_legal_tile_mask(logits, obs)
-        assert torch.isinf(masked).all(), "every tile should be masked to -inf"
+        masked = logits.masked_fill(~_legal_tile_mask(obs), _TILE_MASK_FILL)
+        assert (masked == _TILE_MASK_FILL).all(), "every tile should be masked out"
+        assert masked.argmax(dim=1).item() == 0, "all-illegal row falls back to tile 0"
         idx = masked.argmax(dim=1).item()
         assert idx == 0, "all-illegal row falls back to tile 0"
 

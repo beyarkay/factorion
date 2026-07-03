@@ -77,6 +77,26 @@ _CH_FOOTPRINT = Channel.FOOTPRINT.value
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 
+# Illegal tiles are masked to this large-but-finite negative logit. Finite (not
+# -inf) keeps log_softmax/entropy NaN-free, makes an all-illegal grid a uniform
+# rather than a NaN, and is argmax-equivalent to -inf for the greedy eval;
+# masked_fill also zeroes the gradient to the logit, so illegal prefs stay frozen.
+_TILE_MASK_FILL = -1e9
+
+
+def _legal_tile_mask(obs_BCWH):
+    """Bool mask (B, W*H), True where a single-tile placement is legal: the
+    tile is empty (ENTITIES == empty) and buildable (FOOTPRINT != UNAVAILABLE)
+    — the same pre-checks FactorioEnv.step runs before rejecting a placement.
+    Flattened x-major (index = x * H + y) to match the tile head's logit layout.
+    """
+    B = obs_BCWH.shape[0]
+    ent_ch = obs_BCWH[:, _CH_ENT]
+    foot_ch = obs_BCWH[:, _CH_FOOTPRINT]
+    legal = (ent_ch == _EMPTY_ENT_ID) & (foot_ch != _FOOTPRINT_UNAVAILABLE)
+    return legal.reshape(B, -1)
+
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -1285,7 +1305,10 @@ class AgentCNN(nn.Module):
 
         # --- Tile selection: joint (x, y) via 1x1 conv ---
         tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
-        tile_logits_BN = tile_logits_B1WH.reshape(B, -1)       # (B, W*H)
+        # Mask illegal tiles so we never place where FactorioEnv.step would reject.
+        tile_logits_BN = tile_logits_B1WH.reshape(B, -1).masked_fill(
+            ~_legal_tile_mask(x_BCWH), _TILE_MASK_FILL
+        )
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
         if action is None:
