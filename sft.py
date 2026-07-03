@@ -214,8 +214,14 @@ class SFTArgs:
     val_frac: float = 0.05
     """fraction of data for validation (feeds the per-step metrics only, not
     checkpoint selection — so kept small; the budget goes to rollout seeds)"""
-    eval_rollouts_every_n_epochs: int = 1
-    """run greedy rollout eval (the default checkpoint-selection metric) every N epochs (0 disables)"""
+    eval_every_n_samples: int = 1_000_000
+    """run validation + rollout eval + logging + checkpoint selection every N
+    optimiser-seen samples rather than once per epoch (0 = evaluate only once,
+    after the final batch). Samples, not epochs, so a single-epoch run over a
+    huge dataset still yields a real training curve instead of one point."""
+    eval_rollouts: bool = True
+    """run the greedy rollout eval (the default checkpoint-selection metric) on
+    each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
@@ -1174,13 +1180,36 @@ def train_sft(args: SFTArgs):
     # samples_seen counts training pairs the model has been updated on.
     global_step = 0
     samples_seen = 0
-    print(f"Training for {args.epochs} epochs on {device}...")
+    total_samples = args.epochs * n_train
+    print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
 
-    for epoch in range(1, args.epochs + 1):
+    # Metrics, rollout eval and checkpoint selection fire every eval_every
+    # optimiser-seen samples rather than once per epoch, so a single-epoch run
+    # over a huge dataset still produces a real training curve (and selects a
+    # best checkpoint) instead of one end-of-run point. We also always evaluate
+    # at each epoch boundary: that keeps the per-epoch val-loader RNG draws the
+    # train shuffle depends on (so multi-epoch runs stay bit-identical), and
+    # means 0 = the historical once-per-epoch cadence.
+    eval_every = args.eval_every_n_samples
+
+    n_train_batches = len(train_index_loader)
+
+    def _batch_stream():
+        """(epoch, is_epoch_end, batch) across every epoch; re-iterating the
+        loader per epoch keeps the per-epoch reshuffle."""
+        for ep in range(1, args.epochs + 1):
+            for i, batch in enumerate(train_index_loader):
+                yield ep, i == n_train_batches - 1, batch
+
+    stream = _batch_stream()
+    epoch = 0
+    next_eval_at = eval_every
+    stream_done = False
+    while not stream_done:
         t_train = time.time()
         agent.train()
-        # On-GPU accumulators converted ONCE at epoch end (logging-only), instead
-        # of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
+        # On-GPU accumulators converted ONCE per eval window (logging-only),
+        # instead of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
         acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
         acc_correct = torch.zeros((), device=device)
         acc_eot_correct = torch.zeros((), device=device)
@@ -1188,11 +1217,11 @@ def train_sft(args: SFTArgs):
         train_total = 0
         grad_norm_count = 0
         # DataLoader-wait attribution (CPU side; needs no GPU sync). The compute
-        # share is derived at epoch end as train_seconds - train_data_s.
+        # share is derived at window end as train_seconds - train_data_s.
         train_data_s = 0.0
 
         t_batch = time.time()
-        for (idx_cpu,) in train_index_loader:
+        for epoch, is_epoch_end, (idx_cpu,) in stream:
             t_ready = time.time()
             train_data_s += t_ready - t_batch
             idx = idx_cpu.to(device)
@@ -1302,7 +1331,21 @@ def train_sft(args: SFTArgs):
             # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
 
-        # Single GPU->CPU sync for the whole epoch's accumulated stats.
+            hit_sample_cadence = eval_every > 0 and samples_seen >= next_eval_at
+            if hit_sample_cadence:
+                next_eval_at += eval_every
+            if hit_sample_cadence or is_epoch_end:
+                break
+        else:
+            # The stream (all epochs) is exhausted — nothing left to evaluate.
+            stream_done = True
+
+        # A window that consumed nothing (stream exhausted right on a boundary)
+        # has no stats to sync or log; skip straight to loop exit.
+        if train_total == 0:
+            break
+
+        # Single GPU->CPU sync for the whole window's accumulated stats.
         (
             train_loss,
             train_loss_tile,
@@ -1583,12 +1626,11 @@ def train_sft(args: SFTArgs):
 
         val_seconds = time.time() - t_val
 
-        # Rollout eval: every N epochs greedy-play the held-out factories
-        # and record final throughput. Same lessons as val accuracy, so
-        # val/thput is directly comparable to val/acc curves.
-        do_rollout = args.eval_rollouts_every_n_epochs > 0 and (
-            epoch % args.eval_rollouts_every_n_epochs == 0 or epoch == args.epochs
-        )
+        # Rollout eval: greedy-play the held-out factories and record final
+        # throughput. Same lessons as val accuracy, so val/thput is directly
+        # comparable to val/acc curves. Runs on every eval window unless
+        # disabled (it's the slow part of an eval).
+        do_rollout = args.eval_rollouts
         if do_rollout and len(val_seeds_to_kind) > 0:
             t_rollout = time.time()
             roll = run_rollout_eval(
@@ -1621,7 +1663,8 @@ def train_sft(args: SFTArgs):
             per_kind_thp_n = {}
 
         print(
-            f"Epoch {epoch:3d}/{args.epochs} | "
+            f"{samples_seen:>{len(str(total_samples))}}/{total_samples} samples "
+            f"(epoch {epoch}/{args.epochs}) | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
             f"train_eot_acc={train_eot_acc:.3f} | "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.3f} "
@@ -1713,7 +1756,7 @@ def train_sft(args: SFTArgs):
             best_val_acc = val_acc
 
         # Default checkpoint-selection metric: greedy throughput (EOT ignored).
-        # overall_thp is None on epochs where no rollout ran.
+        # overall_thp is None on evals where no rollout ran.
         if overall_thp is not None and overall_thp >= best_val_throughput:
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)

@@ -62,7 +62,7 @@ case "$KIND" in
     WANDB_MODE=disabled WANDB_DISABLED=true uv run python sft.py \
       --seed 1 --size 11 --num-samples 60000 --epochs 10 --batch-size 512 \
       --layer1 93 --layer2 69 --layer3 96 \
-      --eval-rollouts-every-n-epochs 0 \
+      --no-eval-rollouts \
       --dataset-cache "$CACHE" \
       --checkpoint-path "${CKPT:-/tmp/bench_sft_ckpt.pt}" \
       --summary-path "${SUMMARY_PATH:-/tmp/bench_sft.json}" "$@"
