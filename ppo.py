@@ -343,6 +343,68 @@ def _rollout_episode_metrics(
     }
 
 
+def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """1 - Var(y_true - y_pred) / Var(y_true). NaN for a constant y_true."""
+    if y_true.size == 0:
+        return float("nan")
+    # `< 1e-12` not `== 0`: a float-constant vector's tiny variance blows EV up.
+    var_y = float(np.var(y_true))
+    return float("nan") if var_y < 1e-12 else 1.0 - float(np.var(y_true - y_pred)) / var_y
+
+
+def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation; NaN when either side is constant (<2 samples or zero spread)."""
+    if a.size < 2:
+        return float("nan")
+    sa, sb = float(np.std(a)), float(np.std(b))
+    if sa == 0.0 or sb == 0.0:
+        return float("nan")
+    return float(np.mean((a - a.mean()) * (b - b.mean())) / (sa * sb))
+
+
+def _critic_stats(values: np.ndarray, returns: np.ndarray, advantages: np.ndarray) -> dict:
+    """The value-head diagnostic bundle for one set of transitions (global or per-lesson)."""
+    err = values - returns
+    return {
+        "explained_variance": _explained_variance(returns, values),
+        "value_rmse": float(np.sqrt(np.mean(err ** 2))) if err.size else float("nan"),
+        "value_bias": float(np.mean(err)) if err.size else float("nan"),
+        "value_mean": float(np.mean(values)) if values.size else float("nan"),
+        "return_mean": float(np.mean(returns)) if returns.size else float("nan"),
+        "value_std": float(np.std(values)) if values.size else float("nan"),
+        "return_std": float(np.std(returns)) if returns.size else float("nan"),
+        "value_return_corr": _pearson_corr(values, returns),
+        "adv_abs_mean": float(np.mean(np.abs(advantages))) if advantages.size else float("nan"),
+    }
+
+
+def _critic_diagnostics(
+    values: np.ndarray,
+    returns: np.ndarray,
+    advantages: np.ndarray,
+    kinds: np.ndarray,
+) -> dict:
+    """Value-head (critic) diagnostics for one PPO update — global + per-lesson.
+
+    Predicted values vs realised GAE returns; the metrics are documented in the
+    W&B dashboards section of CLAUDE.md. Pure (numpy only) so it's unit-testable.
+    Per-lesson slices carry the lesson name and back each with `n` transitions
+    (variance-based fields are NaN when `n`<2)."""
+    out: dict[str, float] = {}
+    for k, v in _critic_stats(values, returns, advantages).items():
+        out[f"critic/{k}"] = v
+    for kind_val in np.unique(kinds):
+        name = LessonKind(int(kind_val)).name
+        mask = kinds == kind_val
+        s = _critic_stats(values[mask], returns[mask], advantages[mask])
+        out[f"critic/{name}/explained_variance"] = s["explained_variance"]
+        out[f"critic/{name}/value_rmse"] = s["value_rmse"]
+        out[f"critic/{name}/value_bias"] = s["value_bias"]
+        out[f"critic/{name}/value_return_corr"] = s["value_return_corr"]
+        out[f"critic/{name}/n"] = float(int(mask.sum()))
+    return out
+
+
 def _resolve_wandb_checkpoint(
     run_spec: str, project: str, entity: Optional[str]
 ) -> tuple[str, dict]:
@@ -1488,6 +1550,14 @@ if __name__ == "__main__":
         for m in ["policy", "value", "entropy", "total", "approx_kl",
                   "clipfrac", "explained_variance"]:
             wandb.define_metric(f"losses/{m}", summary="last")
+        for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
+                  "return_mean", "value_std", "return_std", "value_return_corr",
+                  "adv_abs_mean"]:
+            wandb.define_metric(f"critic/{m}", summary="last")
+        for ln in _LESSONS:
+            for m in ["explained_variance", "value_rmse", "value_bias",
+                      "value_return_corr", "n"]:
+                wandb.define_metric(f"critic/{ln}/{m}", summary="last")
         for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
             wandb.define_metric(f"optim/{m}", summary="last")
         for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
@@ -1662,6 +1732,9 @@ if __name__ == "__main__":
     rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     dones_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     values_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
+    # Lesson kind of the state valued at each (step, env), for the critic/*
+    # per-lesson buckets. Filled from current_kind_E below.
+    kinds_SE = np.zeros((args.num_steps, args.num_envs), dtype=np.int64)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -1669,7 +1742,7 @@ if __name__ == "__main__":
     quality_ema: Optional[float] = None
     time_to_quality: Optional[float] = None
     reached_quality = False
-    next_obs_ECWH, _ = envs.reset(
+    next_obs_ECWH, reset_infos = envs.reset(
         seed=args.seed,
         options={
             'num_missing_entities': float('inf'),
@@ -1677,6 +1750,11 @@ if __name__ == "__main__":
     )
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32, device=device)
+    # Lesson currently loaded in each env, tracked host-side. Can't read
+    # infos["kind"] every step: _full_diagnostics=False omits it mid-episode, so
+    # we seed from the reset info and refresh on autoreset (kind only changes at
+    # an episode boundary, so this stays exact between updates).
+    current_kind_E = np.asarray(reset_infos["kind"], dtype=np.int64).copy()
     final_thputs_100ma = sum(end_of_episode_thputs) / len(end_of_episode_thputs)
     unclipped_grad_norm = np.nan
     approx_kl = np.nan
@@ -1757,6 +1835,7 @@ if __name__ == "__main__":
                 pbar.set_description(f"taking step {step+1: 4}/{args.num_steps}; gstep:{global_step: 6}; thput:{final_thputs_100ma:.3f}")
             obs_SECWH[step] = next_obs_ECWH
             dones_SE[step] = next_done
+            kinds_SE[step] = current_kind_E  # lesson of the state valued this step
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
@@ -1816,6 +1895,11 @@ if __name__ == "__main__":
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(reward, dtype=torch.float32, device=device)
+            # Refresh the tracker for envs that reset this step (autoreset
+            # surfaces the new episode's kind, masked by infos["_kind"]).
+            if "kind" in infos:
+                kind_mask = infos["_kind"]
+                current_kind_E[kind_mask] = np.asarray(infos["kind"])[kind_mask]
 
             # Done envs are rebuilt by Gymnasium's NEXT_STEP autoreset, which
             # calls FactorioEnv.reset(seed=None) -> the train_seed_base march
@@ -1968,9 +2052,12 @@ if __name__ == "__main__":
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = values_B.cpu().numpy(), returns_B.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        # Value-head (critic) diagnostics, global + per-lesson.
+        critic_metrics = _critic_diagnostics(
+            values_B.cpu().numpy(), returns_B.cpu().numpy(),
+            advantages_B.cpu().numpy(), kinds_SE.reshape(-1),
+        )
+        explained_var = critic_metrics["critic/explained_variance"]  # losses/* back-compat
 
         update_seconds = time.time() - update_start
         rollout_seconds_hist.append(rollout_seconds)
@@ -2014,6 +2101,7 @@ if __name__ == "__main__":
         }
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
+        iter_metrics.update(critic_metrics)
         iter_metrics.update(eval_metrics)
 
         if iteration == 1:
