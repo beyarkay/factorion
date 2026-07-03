@@ -18,8 +18,8 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 
-echo "[session-start] Initializing git submodules (factorio-data)..."
-git submodule update --init --recursive
+# echo "[session-start] Initializing git submodules (factorio-data)..."
+# git submodule update --init --recursive
 
 echo "[session-start] Syncing Python environment with uv..."
 uv sync
