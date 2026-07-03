@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
@@ -177,10 +177,8 @@ class SFTArgs:
     size: int = 11
     """grid size (width and height)"""
     num_samples: int = 45_000_000
-    """number of (state, action) pairs to generate"""
-    gen_workers: int = 0
-    """data-generation worker processes. 0 = auto (parallelize large datasets,
-    stay single-process for small ones); N>0 forces N processes."""
+    """(state, action) pairs streamed per epoch. Generated on the fly by
+    DataLoader workers, so this is never held in memory all at once."""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
     epochs: int = 1
@@ -211,9 +209,6 @@ class SFTArgs:
     """loss weight for the misc (CE) head"""
     lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
-    val_frac: float = 0.05
-    """fraction of data for validation (feeds the per-step metrics only, not
-    checkpoint selection — so kept small; the budget goes to rollout seeds)"""
     eval_every_n_samples: int = 1_000_000
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
@@ -259,11 +254,10 @@ class SFTArgs:
     summary_path: Optional[str] = None
     """path to write summary JSON (default: sft_summary.json next to sft.py)"""
     dataset_cache: Optional[str] = None
-    """if set, torch.load the generated (state,action) tensors from this path
-    when it exists, else generate them and torch.save there. Lets repeated runs
-    (e.g. the speed benchmark, or dev iteration) skip the expensive build_factory
-    data generation — the dataset is a pure function of (size, num_samples,
-    max_level, seed), so the cache is only reused for a matching config."""
+    """if set, materialise the training stream to this path once and reuse it on
+    later runs (torch.save/torch.load), trading the streaming generation for a
+    fixed on-disk dataset. Lets repeated runs (benchmarks, dev iteration) skip
+    build_factory; the tensors are a pure function of (size, num_samples, seed)."""
 
 
 def _humanize_count(n: int) -> str:
@@ -327,34 +321,18 @@ def _artifact_name(args: "SFTArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, reseed):
-    """Generate `target` (state, action) pairs from a disjoint seed range.
+def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
+    """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
-    shards never share a factory and the seed-level train/val split stays
-    leak-free across processes. `reseed` (None on the single-process path) seeds
-    the global RNG for an independent tie-break / shuffle stream per worker.
-    Draws the fewest-pairs kind each step so the shard balances by pair count,
-    not by lesson. Always blanks at max_level (extract_expert_actions emits the
-    full placement progression per lesson). obs/masks come back uint8/bool from
-    extract.
+    concurrent workers never share a factory. Draws the fewest-pairs kind each
+    step so output balances by pair count, not by lesson. Blanks at max_level
+    (the full placement progression per lesson); obs/mask are uint8/bool. Runs
+    until `target` pairs are produced, or forever when `target` is None. Callers
+    own their own RNG seeding.
     """
-    if reseed is not None:
-        random.seed(reseed)
     kinds = list(LessonKind)
-
-    all_obs = []
-    all_tile_idx = []
-    all_entity = []
-    all_direction = []
-    all_item = []
-    all_misc = []
-    all_valid_masks = []
-    all_eot = []
-    all_lesson_seeds = []
-    all_lesson_kinds = []
     kind_samples = {k.name: 0 for k in kinds}
-    kind_lessons = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
     # every seed; once it exhausts the failure budget it is dropped so the
@@ -363,8 +341,8 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
     consecutive_fails = {k.name: 0 for k in kinds}
 
     seed = base_seed + worker_id
-    samples_so_far = 0
-    while samples_so_far < target:
+    produced = 0
+    while target is None or produced < target:
         # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
         # uniform kind choice starves the rare recipe/assembler heads.
         fewest = min(kind_samples[k.name] for k in available)
@@ -387,121 +365,85 @@ def _collect_shard(size, max_level, base_seed, worker_id, num_workers, target, r
                     )
             continue
         consecutive_fails[kind.name] = 0
-        solved = factory.world_CWH
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
-        kind_lessons[kind.name] += 1
-        for (
-            obs,
-            tile_idx,
-            entity_id,
-            direction_id,
-            item_id,
-            misc_id,
-            valid_mask,
-            eot,
-        ) in extract_expert_actions(solved, task):
-            all_obs.append(obs)
-            all_tile_idx.append(tile_idx)
-            all_entity.append(entity_id)
-            all_direction.append(direction_id)
-            all_item.append(item_id)
-            all_misc.append(misc_id)
-            all_valid_masks.append(valid_mask)
-            all_eot.append(eot)
-            all_lesson_seeds.append(seed)
-            all_lesson_kinds.append(kind.value)
+        for pair in extract_expert_actions(factory.world_CWH, task):
+            yield (*pair, seed, kind.value)
             kind_samples[kind.name] += 1
-            samples_so_far += 1
-            if samples_so_far >= target:
+            produced += 1
+            if target is not None and produced >= target:
                 break
 
-    return {
-        "obs": torch.stack(all_obs),
-        "tile": torch.tensor(all_tile_idx, dtype=torch.long),
-        "ent": torch.tensor(all_entity, dtype=torch.long),
-        "dir": torch.tensor(all_direction, dtype=torch.long),
-        "item": torch.tensor(all_item, dtype=torch.long),
-        "misc": torch.tensor(all_misc, dtype=torch.long),
-        "mask": torch.stack(all_valid_masks),
-        "eot": torch.tensor(all_eot, dtype=torch.float),
-        "seed": torch.tensor(all_lesson_seeds, dtype=torch.long),
-        "kind": torch.tensor(all_lesson_kinds, dtype=torch.long),
-        "kind_samples": kind_samples,
-        "kind_lessons": kind_lessons,
-    }
 
-
-def generate_dataset(args: SFTArgs):
-    """Generate SFT dataset from expert demonstrations.
-
-    Balances by (state, action) pair count across every value of `LessonKind`
-    (auto-discovered), per shard. Generation is embarrassingly parallel over
-    the seed space, so large
-    datasets are sharded across `gen_workers` processes (disjoint seed ranges)
-    and concatenated; small datasets stay single-process. obs come back uint8
-    and masks bool. Also returns a per-pair lesson_seed tensor for a leak-free
-    lesson-level train/val split.
-    """
-    max_level = args.max_level if args.max_level > 0 else args.size * args.size
-
-    # gen_workers>0 forces that count; 0 auto-scales — single-process for small
-    # datasets (tests/dev, exact legacy behaviour), up to CPU count for large
-    # ones at ~250k pairs/worker.
-    if args.gen_workers > 0:
-        n_workers = max(1, min(args.gen_workers, args.num_samples))
-    else:
-        n_workers = max(1, min(os.cpu_count() or 1, max(1, args.num_samples // 250_000)))
-
-    # Split num_samples so shard lengths sum exactly (first `rem` get +1).
-    base, rem = divmod(args.num_samples, n_workers)
-    targets = [base + (1 if w < rem else 0) for w in range(n_workers)]
-    shard_args = [
-        (
-            args.size,
-            max_level,
-            args.seed,
-            w,
-            n_workers,
-            targets[w],
-            None if n_workers == 1 else args.seed + w,
-        )
-        for w in range(n_workers)
-    ]
-
-    if n_workers == 1:
-        shards = [_collect_shard(*shard_args[0])]
-    else:
-        # fork so workers inherit the imported Rust extension; safe because
-        # generate_dataset runs before any CUDA init in train_sft.
-        import multiprocessing as mp
-
-        print(f"Generating across {n_workers} processes...")
-        with mp.get_context("fork").Pool(n_workers) as pool:
-            shards = pool.starmap(_collect_shard, shard_args)
-
-    kind_samples = {k.name: 0 for k in LessonKind}
-    kind_lessons = {k.name: 0 for k in LessonKind}
-    for sh in shards:
-        for name, c in sh["kind_samples"].items():
-            kind_samples[name] += c
-        for name, c in sh["kind_lessons"].items():
-            kind_lessons[name] += c
-
-    print("Per-kind breakdown:")
-    name_w = max(len(k) for k in kind_samples)
-    for name in sorted(kind_samples):
-        print(
-            f"  {name:<{name_w}}  samples={kind_samples[name]:>6}  lessons={kind_lessons[name]:>6}"
-        )
-
-    def _cat(key):
-        return torch.cat([sh[key] for sh in shards])
-
-    return tuple(
-        _cat(k)
-        for k in ("obs", "tile", "ent", "dir", "item", "misc", "mask", "eot", "seed", "kind")
+def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
+    """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
+    item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
+    `n_lessons` distinct factories when that is given instead."""
+    random.seed(base_seed)
+    rows = []
+    seeds = set()
+    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target):
+        if n_lessons is not None and row[8] not in seeds:
+            if len(seeds) >= n_lessons:
+                break
+            seeds.add(row[8])
+        rows.append(row)
+    cols = list(zip(*rows))
+    return (
+        torch.stack(cols[0]),
+        torch.tensor(cols[1], dtype=torch.long),
+        torch.tensor(cols[2], dtype=torch.long),
+        torch.tensor(cols[3], dtype=torch.long),
+        torch.tensor(cols[4], dtype=torch.long),
+        torch.tensor(cols[5], dtype=torch.long),
+        torch.stack(cols[6]),
+        torch.tensor(cols[7], dtype=torch.float),
+        torch.tensor(cols[8], dtype=torch.long),
+        torch.tensor(cols[9], dtype=torch.long),
     )
+
+
+class StreamingDemoDataset(IterableDataset):
+    """Generates SFT demonstrations on the fly, sharded across DataLoader workers.
+
+    Yields the model-input 8-tuple (obs uint8, tile, ent, dir, item, misc,
+    mask bool, eot) for `target` pairs per pass; worker w of W walks the disjoint
+    seed range base_seed+w mod W so no factory is produced twice. CPU generation
+    overlaps GPU training via DataLoader prefetch.
+    """
+
+    def __init__(self, size, max_level, base_seed, target):
+        self.size = size
+        self.max_level = max_level
+        self.base_seed = base_seed
+        self.target = target
+
+    def __iter__(self):
+        info = torch.utils.data.get_worker_info()
+        worker_id = 0 if info is None else info.id
+        num_workers = 1 if info is None else info.num_workers
+        random.seed(self.base_seed + worker_id)
+        base, rem = divmod(self.target, num_workers)
+        my_target = base + (1 if worker_id < rem else 0)
+        for row in _iter_demo_pairs(
+            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
+        ):
+            # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
+            # training only needs the first 8 — seed/kind are val-only metadata.
+            yield row[:8]
+
+
+def _steps_per_epoch(target, n_workers, batch_size):
+    """Optimizer steps one streaming pass yields: each worker batches its own
+    per-worker share (partial last batch), so it's the sum of per-worker
+    ceil-divisions, not one global ceil-division."""
+    n = max(1, n_workers)
+    base, rem = divmod(target, n)
+    total = 0
+    for w in range(n):
+        pw = base + (1 if w < rem else 0)
+        total += (pw + batch_size - 1) // batch_size
+    return max(1, total)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
@@ -964,95 +906,42 @@ def train_sft(args: SFTArgs):
     torch.manual_seed(args.seed)
 
     t0 = time.time()
-    cache = args.dataset_cache
-    if cache is not None and os.path.exists(cache):
-        print(f"Loading cached dataset from {cache} ...")
-        # weights_only=False: our own locally-produced, trusted cache.
-        tensors = torch.load(cache, weights_only=False)
-        print(f"Loaded {len(tensors[0])} samples in {time.time() - t0:.1f}s")
-    else:
-        print(f"Generating {args.num_samples} expert demonstrations...")
-        tensors = generate_dataset(args)
-        print(f"Generated {len(tensors[0])} samples in {time.time() - t0:.1f}s")
-        if cache is not None:
-            torch.save(tensors, cache)
-            print(f"Cached dataset to {cache}")
-    if cache is not None:
-        # Re-seed so a cached (load) run and a fresh (generate) run reach the
-        # split/init/training with identical RNG -> identical val_loss (generate
-        # consumes RNG, load doesn't). Only when --dataset-cache is set.
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-    (
-        obs,
-        tiles,
-        ents,
-        dirs,
-        items_t,
-        miscs_t,
-        valid_masks,
-        eot_labels,
-        lesson_seeds,
-        lesson_kinds,
-    ) = tensors
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
 
-    # Train/val split at the LESSON SEED level. A pair-level random split
-    # would leak factories: a lesson at level=L produces ~L pairs that all
-    # share the same factory geometry, just at different intermediate
-    # states. Splitting on pairs would put some of those intermediates in
-    # train and others in val, so val acc would measure "complete a factory
-    # whose other partial states you've trained on", not "complete a
-    # factory you've never seen". Splitting on seed guarantees val
-    # factories are entirely held out.
-    unique_seeds = torch.unique(lesson_seeds)
-    n_seeds = len(unique_seeds)
-    n_val_seeds = max(1, int(n_seeds * args.val_frac))
-    seed_perm = unique_seeds[torch.randperm(n_seeds)]
-    val_seeds = set(seed_perm[:n_val_seeds].tolist())
-
-    val_mask = torch.tensor([s.item() in val_seeds for s in lesson_seeds])
-    val_idx = val_mask.nonzero(as_tuple=False).squeeze(-1)
-    train_idx = (~val_mask).nonzero(as_tuple=False).squeeze(-1)
-    print(
-        f"Train/val split at seed level: {len(train_idx)} train pairs from "
-        f"{n_seeds - n_val_seeds} lessons, {len(val_idx)} val pairs from "
-        f"{n_val_seeds} lessons (no factory overlap)"
+    # Held-out validation: the first eval_rollouts_max_seeds distinct factories
+    # from seed `args.seed` upward. The rollout eval replays these same lessons,
+    # so val/acc and val/thput stay directly comparable.
+    val = _materialise(
+        args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
     )
+    val_tensors_cpu = (*val[:8], val[9])  # obs..eot, kind (per-pair seed dropped)
+    val_seeds_to_kind: dict[int, int] = dict(zip(val[8].tolist(), val[9].tolist()))
 
-    # (seed -> kind_int) for every held-out lesson. generate_dataset bumps
-    # `seed` once per lesson, so each val seed maps to a unique kind. This
-    # is the set of factories the rollout eval will replay end-to-end —
-    # same lessons as val accuracy, so the two metrics are directly
-    # comparable.
-    val_seeds_to_kind: dict[int, int] = {}
-    for s, k in zip(lesson_seeds.tolist(), lesson_kinds.tolist()):
-        if s in val_seeds:
-            val_seeds_to_kind[s] = k
+    # Training draws every seed above the ones validation consumed, so the two
+    # sets are disjoint by construction — no factory is ever both trained and
+    # validated on. Streams on the fly (bounded memory); --dataset-cache instead
+    # materialises the stream to disk once and trains from it, so repeated runs
+    # (benchmarks, dev iteration) skip build_factory.
+    train_base = int(val[8].max()) + 1
+    cached_train = None
+    if args.dataset_cache is not None:
+        if os.path.exists(args.dataset_cache):
+            print(f"Loading cached dataset from {args.dataset_cache} ...")
+            # weights_only=False: our own locally-produced, trusted cache.
+            cached_train = torch.load(args.dataset_cache, weights_only=False)
+        else:
+            print(f"Materialising {args.num_samples} demonstrations to cache ...")
+            cached_train = _materialise(
+                args.size, max_level, train_base, target=args.num_samples
+            )[:8]
+            torch.save(cached_train, args.dataset_cache)
+            print(f"Cached dataset to {args.dataset_cache}")
 
-    # Train/val tensors are moved GPU-resident below (once `device` exists) and
-    # iterated via an index DataLoader; see tests/benchmarks/EXPERIMENT_LOG.md.
-    train_tensors_cpu = (
-        obs[train_idx],
-        tiles[train_idx],
-        ents[train_idx],
-        dirs[train_idx],
-        items_t[train_idx],
-        miscs_t[train_idx],
-        valid_masks[train_idx],
-        eot_labels[train_idx],
-    )
-    val_tensors_cpu = (
-        obs[val_idx],
-        tiles[val_idx],
-        ents[val_idx],
-        dirs[val_idx],
-        items_t[val_idx],
-        miscs_t[val_idx],
-        valid_masks[val_idx],
-        eot_labels[val_idx],
-        lesson_kinds[val_idx],
-    )
+    # Re-seed so training RNG is identical whether the cache was just created
+    # (which consumes the generator RNG) or loaded.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     # Create agent via a temporary env (AgentCNN needs envs for init)
     env_id = "factorion/FactorioEnv-v0-sft"
@@ -1079,27 +968,41 @@ def train_sft(args: SFTArgs):
     assert_device_ok(device)
     agent.to(device)
 
-    # Move the training set onto the device once. obs stay uint8 (8x smaller
-    # resident, so a 45M-pair set fits in VRAM); .float() cast per-batch at
-    # gather time. See EXPERIMENT_LOG.md.
-    (
-        tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
-    ) = (
-        train_tensors_cpu[0].to(device),
-        *(t.to(device) for t in train_tensors_cpu[1:]),
-    )
-    n_train = tr_obs.shape[0]
-    # Shuffle via a DataLoader over INDICES (not the data) so it reuses the real
-    # RandomSampler RNG → identical batch order (bit-identical val_loss) with no
-    # per-batch host->device copy. (Rationale: tests/benchmarks/EXPERIMENT_LOG.md.)
-    train_index_loader = DataLoader(
-        TensorDataset(torch.arange(n_train)),
-        batch_size=args.batch_size,
-        shuffle=True,
-    )
-    # Val, same treatment. NB: shuffle=False but the index DataLoader still draws
-    # the same 2 global-RNG ints/epoch as the old val loader, which the train
-    # shuffle's RNG stream depends on — so val_loss stays bit-identical.
+    if cached_train is not None:
+        # Cached: the whole training set goes GPU-resident once (obs stay uint8,
+        # cast to float per-batch), shuffled via a DataLoader over indices so no
+        # data is copied per batch.
+        (
+            tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
+        ) = (
+            cached_train[0].to(device),
+            *(t.to(device) for t in cached_train[1:]),
+        )
+        n_train = tr_obs.shape[0]
+        train_index_loader = DataLoader(
+            TensorDataset(torch.arange(n_train)),
+            batch_size=args.batch_size,
+            shuffle=True,
+        )
+        steps_per_epoch = max(1, (n_train + args.batch_size - 1) // args.batch_size)
+    else:
+        # Stream: train batches are generated on the fly by DataLoader workers,
+        # so memory is bounded by the prefetch buffer. pin_memory + non_blocking
+        # (in the batch source) hide the per-batch host->device copy behind the
+        # GPU step.
+        stream_workers = os.cpu_count() or 1
+        train_stream_loader = DataLoader(
+            StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
+            batch_size=args.batch_size,
+            num_workers=stream_workers,
+            pin_memory=(device.type == "cuda"),
+            persistent_workers=stream_workers > 0,
+        )
+        n_train = args.num_samples
+        steps_per_epoch = _steps_per_epoch(
+            args.num_samples, stream_workers, args.batch_size
+        )
+    # Val goes GPU-resident too, iterated via an index DataLoader.
     (
         va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
     ) = (
@@ -1118,10 +1021,7 @@ def train_sft(args: SFTArgs):
     )
 
     # Scheduler spans every optimizer step (not every epoch) so warmup_frac
-    # is a fraction of the *whole* run regardless of dataset size.
-    # ceil(n_train / batch_size) == the old len(train_loader) (drop_last=False),
-    # so total_steps — and thus the LR schedule — is unchanged.
-    steps_per_epoch = max(1, (n_train + args.batch_size - 1) // args.batch_size)
+    # is a fraction of the whole run regardless of dataset size.
     total_steps = args.epochs * steps_per_epoch
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
@@ -1149,20 +1049,6 @@ def train_sft(args: SFTArgs):
             group=args.wandb_group,
             tags=sft_tags,
         )
-        # Dataset composition is a one-shot constant for the run — write it
-        # to summary (which keeps the value visible in the run sidebar)
-        # rather than wandb.log (which would create a flat plottable line).
-        from collections import Counter, defaultdict
-
-        samples_by_kind = Counter(kind_names[k] for k in lesson_kinds.tolist())
-        seeds_by_kind: dict[str, set] = defaultdict(set)
-        for s, k in zip(lesson_seeds.tolist(), lesson_kinds.tolist()):
-            seeds_by_kind[kind_names[k]].add(s)
-        for k in LessonKind:
-            run.summary[f"dataset/samples/{k.name}"] = samples_by_kind.get(k.name, 0)
-            run.summary[f"dataset/lessons/{k.name}"] = len(
-                seeds_by_kind.get(k.name, set())
-            )
 
     best_val_acc = 0.0
     best_val_throughput = 0.0
@@ -1183,14 +1069,42 @@ def train_sft(args: SFTArgs):
     total_samples = args.epochs * n_train
     print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
 
-    n_train_batches = len(train_index_loader)
+    # Train batch source yielding the 8 model-input tensors per batch (obs, tile,
+    # ent, dir, item, misc, mask, eot; obs/eot already float). Cached: gather
+    # GPU-resident tensors by shuffled index (no host->device copy). Stream: pull
+    # CPU batches from the generating workers and copy them to device
+    # (non_blocking, overlapping the GPU step).
+    def _train_batches():
+        if cached_train is not None:
+            for (idx_cpu,) in train_index_loader:
+                idx = idx_cpu.to(device)
+                yield (
+                    tr_obs[idx].float(), tr_tile[idx], tr_ent[idx], tr_dir[idx],
+                    tr_item[idx], tr_misc[idx], tr_mask[idx], tr_eot[idx],
+                )
+        else:
+            for b_obs, b_tile, b_ent, b_dir, b_item, b_misc, b_mask, b_eot in (
+                train_stream_loader
+            ):
+                yield (
+                    b_obs.to(device, non_blocking=True).float(),
+                    b_tile.to(device, non_blocking=True),
+                    b_ent.to(device, non_blocking=True),
+                    b_dir.to(device, non_blocking=True),
+                    b_item.to(device, non_blocking=True),
+                    b_misc.to(device, non_blocking=True),
+                    b_mask.to(device, non_blocking=True),
+                    b_eot.to(device, non_blocking=True).float(),
+                )
 
     def _batch_stream():
-        """(epoch, is_epoch_end, batch) across every epoch; re-iterating the
-        loader per epoch keeps the per-epoch reshuffle."""
+        """(epoch, is_epoch_end, batch) across every epoch; a fresh
+        _train_batches() per epoch re-runs the stream / reshuffles the cache.
+        Streamed epochs can vary by a batch, so is_epoch_end is keyed to the
+        predicted steps_per_epoch; the final eval is guaranteed by exhaustion."""
         for ep in range(1, args.epochs + 1):
-            for i, batch in enumerate(train_index_loader):
-                yield ep, i == n_train_batches - 1, batch
+            for i, batch in enumerate(_train_batches()):
+                yield ep, i == steps_per_epoch - 1, batch
 
     stream = _batch_stream()
     epoch = 0
@@ -1212,18 +1126,13 @@ def train_sft(args: SFTArgs):
         train_data_s = 0.0
 
         t_batch = time.time()
-        for epoch, is_epoch_end, (idx_cpu,) in stream:
+        for epoch, is_epoch_end, batch in stream:
             t_ready = time.time()
             train_data_s += t_ready - t_batch
-            idx = idx_cpu.to(device)
-            batch_obs = tr_obs[idx].float()
-            batch_tile = tr_tile[idx]
-            batch_ent = tr_ent[idx]
-            batch_dir = tr_dir[idx]
-            batch_item = tr_item[idx]
-            batch_misc = tr_misc[idx]
-            batch_mask = tr_mask[idx]
-            batch_eot = tr_eot[idx]
+            (
+                batch_obs, batch_tile, batch_ent, batch_dir,
+                batch_item, batch_misc, batch_mask, batch_eot,
+            ) = batch
 
             encoded = agent.encoder(batch_obs)
             B = encoded.shape[0]
