@@ -21,7 +21,7 @@ use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// The lesson kinds. This is the single source of truth for the kind set:
 /// Python's `LessonKind` enum is built from [`all_lesson_kinds`] via the PyO3
@@ -162,61 +162,248 @@ fn world_throughput(world: &World) -> f64 {
 
 type Cell = (i64, i64);
 type Belt = (i64, i64, Direction);
-/// BFS output: distance to each reachable cell, and every equal-distance
-/// predecessor of each (so all shortest paths can be enumerated).
-type BfsResult = (HashMap<Cell, usize>, HashMap<Cell, Vec<Cell>>);
 
-/// BFS from `start` to `end` avoiding `blocked`, returning `(dist, parents)`
-/// where `parents[cell]` holds *all* equal-distance predecessors (so all
-/// shortest paths can be enumerated). `None` if `end` is unreachable.
-fn bfs_shortest(size: i64, start: Cell, end: Cell, blocked: &HashSet<Cell>) -> Option<BfsResult> {
+/// Up to `shortest_n` distinct minimal-cost belt routes from `start` to `end`
+/// (`shortest_n < 0` returns every valid one), each a `Vec<UgPlacement>` laying
+/// exactly one entity per cell from `start` through `end` (which faces
+/// `end_dir`).
+///
+/// A single weighted Dijkstra over `(x, y, arrival_dir)` states supersedes the
+/// belt-only routers: every surface belt step costs 4, and — only when
+/// `allow_underground` — a tunnel spanning `span` blocked tiles costs
+/// `5 * (span + 1)` (an integral 1.25×/tile penalty), so tunnels are used solely
+/// to clear blocked cells, with minimal span, never under open belt. Tunnels run
+/// straight; 180° reversals and self-overlapping (tile-reusing) routes are
+/// rejected. `start_dir` lets a route open with a tunnel (source → UG_DOWN); a
+/// tunnel may surface directly onto `end` (UG_UP → sink).
+///
+/// With `allow_underground = false` and `start_dir = None` this reduces to a
+/// plain uniform-cost search enumerating all shortest belt-only paths.
+#[allow(clippy::too_many_arguments)]
+fn find_belt_paths(
+    size: i64,
+    start: Cell,
+    end: Cell,
+    end_dir: Direction,
+    blocked: &HashSet<Cell>,
+    start_dir: Option<Direction>,
+    allow_underground: bool,
+    shortest_n: i64,
+) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
-    if !in_bounds(start) || !in_bounds(end) {
-        return None;
-    }
-    if blocked.contains(&start) || blocked.contains(&end) {
-        return None;
+    if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
+        return vec![];
     }
 
-    let mut dist: HashMap<Cell, usize> = HashMap::new();
-    let mut parents: HashMap<Cell, Vec<Cell>> = HashMap::new();
-    let mut q: VecDeque<Cell> = VecDeque::new();
-    dist.insert(start, 0);
-    q.push_back(start);
+    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
+    type State = (i64, i64, i64);
+    let start_state: State = (start.0, start.1, start_dir.map_or(0, |d| d as i64));
 
-    while let Some((r, c)) = q.pop_front() {
-        if (r, c) == end {
+    let mut dist: HashMap<State, u64> = HashMap::new();
+    // Every min-cost incoming edge of a state: the predecessor state plus the
+    // placement(s) emitted on that edge, so all shortest routes can enumerate.
+    let mut preds: HashMap<State, Vec<(State, Vec<UgPlacement>)>> = HashMap::new();
+    dist.insert(start_state, 0);
+    let mut counter: u64 = 0;
+    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
+    pq.push(Reverse((0, counter, start_state)));
+    counter += 1;
+
+    // Record a min-cost edge into `ns`: reset predecessors on a strict
+    // improvement, accumulate on a tie (equal-cost edges enumerate alternatives).
+    let mut relax = |dist: &mut HashMap<State, u64>,
+                     preds: &mut HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+                     pq: &mut BinaryHeap<Reverse<(u64, u64, State)>>,
+                     ns: State,
+                     nd: u64,
+                     from: State,
+                     emit: Vec<UgPlacement>| {
+        let cur = *dist.get(&ns).unwrap_or(&u64::MAX);
+        if nd < cur {
+            dist.insert(ns, nd);
+            preds.insert(ns, vec![(from, emit)]);
+            pq.push(Reverse((nd, counter, ns)));
+            counter += 1;
+        } else if nd == cur {
+            preds.entry(ns).or_default().push((from, emit));
+        }
+    };
+
+    // Cheapest arrival(s) onto `end`: the state to backtrack from and the
+    // entity/entities covering `end` itself (a belt facing `end_dir`, or a
+    // UG_DOWN/UG_UP tunnel pair surfacing onto `end`).
+    let mut goal_cost: u64 = u64::MAX;
+    let mut goal_arrivals: Vec<(State, Vec<UgPlacement>)> = Vec::new();
+
+    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
+        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
+            continue;
+        }
+        // All equal-cost arrivals pop before any strictly costlier state, so once
+        // we pop past `goal_cost` every minimal route has been recorded.
+        if d_so_far > goal_cost {
             break;
         }
-        let nd = dist[&(r, c)] + 1;
-        for (dr, dc) in BFS_DELTAS {
-            let nr = r + dr;
-            let nc = c + dc;
-            if !(0 <= nr && nr < size && 0 <= nc && nc < size) {
+        let (cx, cy, adir) = state;
+        if (cx, cy) == end {
+            // Reached on the surface: `end` becomes a belt facing `end_dir`.
+            if d_so_far < goal_cost {
+                goal_cost = d_so_far;
+                goal_arrivals.clear();
+            }
+            goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            continue;
+        }
+
+        let back: Option<(i64, i64)> = if adir != 0 {
+            let (dx, dy) = Direction::from_i64(adir).delta();
+            Some((-dx, -dy))
+        } else {
+            None
+        };
+
+        // Normal surface belt step (no 180° reversal): this cell becomes a belt.
+        for d in DIRS {
+            let (dx, dy) = d.delta();
+            if back == Some((dx, dy)) {
                 continue;
             }
-            let ncell = (nr, nc);
-            if blocked.contains(&ncell) {
+            let n = (cx + dx, cy + dy);
+            if !in_bounds(n) || blocked.contains(&n) {
                 continue;
             }
-            match dist.get(&ncell) {
-                None => {
-                    dist.insert(ncell, nd);
-                    parents.entry(ncell).or_default().push((r, c));
-                    q.push_back(ncell);
+            let ns: State = (n.0, n.1, d as i64);
+            let nd = d_so_far + 4;
+            relax(
+                &mut dist,
+                &mut preds,
+                &mut pq,
+                ns,
+                nd,
+                state,
+                vec![(cx, cy, d, Misc::None)],
+            );
+        }
+
+        // Underground tunnel, continuing straight in the arrival direction.
+        if allow_underground && adir != 0 {
+            let d = Direction::from_i64(adir);
+            let (dx, dy) = d.delta();
+            for span in 2..=UNDERGROUND_MAX_OFFSET {
+                let exit_cell = (cx + dx * span, cy + dy * span);
+                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
+                    continue;
                 }
-                Some(&cur) if cur == nd => {
-                    parents.entry(ncell).or_default().push((r, c));
+                // Surface straight onto `end` (UG_UP → sink), no trailing belt.
+                // Charged like a normal tunnel, so used only when the obstruction
+                // reaches the sink.
+                if exit_cell == end && d == end_dir {
+                    let cost = d_so_far + 5 * (span as u64 + 1);
+                    if cost < goal_cost {
+                        goal_cost = cost;
+                        goal_arrivals.clear();
+                    }
+                    if cost == goal_cost {
+                        goal_arrivals.push((
+                            state,
+                            vec![
+                                (cx, cy, d, Misc::UndergroundDown),
+                                (end.0, end.1, d, Misc::UndergroundUp),
+                            ],
+                        ));
+                    }
+                    continue;
                 }
-                _ => {}
+                let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
+                if !in_bounds(surface) || blocked.contains(&surface) {
+                    continue;
+                }
+                let ns: State = (surface.0, surface.1, d as i64);
+                let nd = d_so_far + 5 * (span as u64 + 1);
+                relax(
+                    &mut dist,
+                    &mut preds,
+                    &mut pq,
+                    ns,
+                    nd,
+                    state,
+                    vec![
+                        (cx, cy, d, Misc::UndergroundDown),
+                        (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
+                    ],
+                );
             }
         }
     }
 
-    if !dist.contains_key(&end) {
-        return None;
+    if goal_arrivals.is_empty() {
+        return vec![];
     }
-    Some((dist, parents))
+
+    // Walk every predecessor chain from each goal arrival back to `start_state`,
+    // emitting start→end routes and dropping any that reuse a tile, until
+    // `shortest_n` valid routes are collected (`< 0` == unbounded).
+    let limit = if shortest_n < 0 {
+        usize::MAX
+    } else {
+        shortest_n as usize
+    };
+    fn walk(
+        state: State,
+        start_state: State,
+        preds: &HashMap<State, Vec<(State, Vec<UgPlacement>)>>,
+        acc: &mut Vec<UgPlacement>,
+        tail: &[UgPlacement],
+        results: &mut Vec<Vec<UgPlacement>>,
+        limit: usize,
+    ) {
+        if results.len() >= limit {
+            return;
+        }
+        if state == start_state {
+            let mut path: Vec<UgPlacement> = acc.iter().rev().copied().collect();
+            path.extend_from_slice(tail);
+            // One entity per tile: reject any self-overlapping (reorienting) detour.
+            let mut seen: HashSet<Cell> = HashSet::new();
+            if path.iter().all(|&(x, y, _, _)| seen.insert((x, y))) {
+                results.push(path);
+            }
+            return;
+        }
+        let Some(ps) = preds.get(&state) else {
+            return;
+        };
+        for (pstate, emit) in ps {
+            if results.len() >= limit {
+                return;
+            }
+            for &p in emit.iter().rev() {
+                acc.push(p);
+            }
+            walk(*pstate, start_state, preds, acc, tail, results, limit);
+            for _ in emit {
+                acc.pop();
+            }
+        }
+    }
+
+    let mut results: Vec<Vec<UgPlacement>> = Vec::new();
+    for (gstate, tail) in &goal_arrivals {
+        if results.len() >= limit {
+            break;
+        }
+        let mut acc: Vec<UgPlacement> = Vec::new();
+        walk(
+            *gstate,
+            start_state,
+            &preds,
+            &mut acc,
+            tail,
+            &mut results,
+            limit,
+        );
+    }
+    results
 }
 
 /// Convert a cell run into belt placements, last belt taking `end_dir`.
@@ -235,7 +422,8 @@ fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
     belts
 }
 
-/// A single shortest belt path from `start` to `end`, or `None`.
+/// A single shortest belt-only path from `start` to `end`, or `None`. A thin
+/// belt-typed adapter over [`find_belt_paths`] (no tunnels, first shortest).
 fn find_belt_path(
     size: i64,
     start: Cell,
@@ -243,16 +431,10 @@ fn find_belt_path(
     end_dir: Direction,
     blocked: &HashSet<Cell>,
 ) -> Option<Vec<Belt>> {
-    let (_dist, parents) = bfs_shortest(size, start, end, blocked)?;
-    let mut path: Vec<Cell> = Vec::new();
-    let mut cell = end;
-    while cell != start {
-        path.push(cell);
-        cell = parents[&cell][0];
-    }
-    path.push(start);
-    path.reverse();
-    Some(path_to_belts(&path, end_dir))
+    find_belt_paths(size, start, end, end_dir, blocked, None, false, 1)
+        .into_iter()
+        .next()
+        .map(|p| p.into_iter().map(|(x, y, d, _)| (x, y, d)).collect())
 }
 
 /// The `(x, y)` cells of a belt run (dropping directions).
@@ -266,7 +448,9 @@ fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
 }
 
 /// All shortest belt paths from a source's output cell to a sink's input
-/// cell, given their positions and facings.
+/// cell, given their positions and facings. A thin belt-typed adapter over
+/// [`find_belt_paths`] that translates the source/sink orientation into the
+/// router's `(start, end, blocked)` contract (no tunnels, every shortest path).
 fn find_belt_paths_with_source_sink_orient(
     size: i64,
     src: Cell,
@@ -289,46 +473,10 @@ fn find_belt_paths_with_source_sink_orient(
     let mut blocked: HashSet<Cell> = HashSet::new();
     blocked.insert(src);
     blocked.insert(sink);
-    let (_dist, parents) = match bfs_shortest(size, start, end, &blocked) {
-        Some(v) => v,
-        None => return vec![],
-    };
-
-    let mut all_paths: Vec<Vec<Belt>> = Vec::new();
-    // Recursively walk every parent chain; the visit order fixes the path
-    // order (which a later shuffle then consumes), so keep it deterministic.
-    fn backtrack(
-        cell: Cell,
-        start: Cell,
-        sink_dir: Direction,
-        parents: &HashMap<Cell, Vec<Cell>>,
-        rev_path: &mut Vec<Cell>,
-        all_paths: &mut Vec<Vec<Belt>>,
-    ) {
-        if cell == start {
-            let mut path = vec![start];
-            path.extend(rev_path.iter().rev().copied());
-            all_paths.push(path_to_belts(&path, sink_dir));
-            return;
-        }
-        if let Some(ps) = parents.get(&cell) {
-            for &p in ps {
-                rev_path.push(cell);
-                backtrack(p, start, sink_dir, parents, rev_path, all_paths);
-                rev_path.pop();
-            }
-        }
-    }
-    let mut rev_path: Vec<Cell> = Vec::new();
-    backtrack(
-        end,
-        start,
-        sink_dir,
-        &parents,
-        &mut rev_path,
-        &mut all_paths,
-    );
-    all_paths
+    find_belt_paths(size, start, end, sink_dir, &blocked, None, false, -1)
+        .into_iter()
+        .map(|p| p.into_iter().map(|(x, y, d, _)| (x, y, d)).collect())
+        .collect()
 }
 
 /// The result of a successful `build_factory`: a complete world plus the
@@ -1917,170 +2065,12 @@ fn pick_endpoint(
     None
 }
 
-/// Shortest belt path from `start` to `end` that may dip UNDER blocked cells via
-/// an underground entrance/exit pair (Misc tags distinguish belts from tunnels).
-///
-/// Costs scale by 4 so the 1.25×-per-spanned-tile penalty is integral (walk = 4,
-/// a `span`-tile tunnel = `5 * (span + 1)`): tunnels are used only to clear
-/// blocked cells, with minimal span, never under open belt. Tunnels run straight;
-/// 180° reversals and tile reuse are rejected. `start_dir` lets the path open
-/// with a tunnel (source → UG_DOWN); a tunnel may surface onto `end` (UG_UP →
-/// sink).
-fn ug_aware_belt_path(
-    size: i64,
-    start: Cell,
-    end: Cell,
-    end_dir: Direction,
-    blocked: &HashSet<Cell>,
-    start_dir: Option<Direction>,
-) -> Option<Vec<UgPlacement>> {
-    let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
-    if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
-        return None;
-    }
-
-    // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
-    type State = (i64, i64, i64);
-    let start_state: State = (start.0, start.1, start_dir.map_or(0, |d| d as i64));
-
-    let mut dist: HashMap<State, u64> = HashMap::new();
-    let mut prev: HashMap<State, (State, Vec<UgPlacement>)> = HashMap::new();
-    dist.insert(start_state, 0);
-    let mut counter: u64 = 0;
-    let mut pq: BinaryHeap<Reverse<(u64, u64, State)>> = BinaryHeap::new();
-    pq.push(Reverse((0, counter, start_state)));
-    counter += 1;
-
-    // The goal cell's own entity is emitted on the edge that reaches it: a
-    // belt facing end_dir (normal arrival) or a UG_UP (a tunnel surfacing onto
-    // `end`). Track the cheapest such arrival.
-    let mut goal_cost: u64 = u64::MAX;
-    let mut goal_prev: Option<State> = None;
-    let mut goal_emit: Vec<UgPlacement> = Vec::new();
-
-    while let Some(Reverse((d_so_far, _, state))) = pq.pop() {
-        if d_so_far > *dist.get(&state).unwrap_or(&u64::MAX) {
-            continue;
-        }
-        if d_so_far >= goal_cost {
-            break;
-        }
-        let (cx, cy, adir) = state;
-        if (cx, cy) == end {
-            goal_cost = d_so_far;
-            goal_prev = Some(state);
-            goal_emit = vec![(end.0, end.1, end_dir, Misc::None)];
-            continue;
-        }
-
-        let back: Option<(i64, i64)> = if adir != 0 {
-            let (dx, dy) = Direction::from_i64(adir).delta();
-            Some((-dx, -dy))
-        } else {
-            None
-        };
-
-        // Normal belt step (no 180° reversal): this cell becomes a belt.
-        for d in DIRS {
-            let (dx, dy) = d.delta();
-            if back == Some((dx, dy)) {
-                continue;
-            }
-            let n = (cx + dx, cy + dy);
-            if !in_bounds(n) || blocked.contains(&n) {
-                continue;
-            }
-            let ns: State = (n.0, n.1, d as i64);
-            let nd = d_so_far + 4;
-            if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
-                dist.insert(ns, nd);
-                prev.insert(ns, (state, vec![(cx, cy, d, Misc::None)]));
-                pq.push(Reverse((nd, counter, ns)));
-                counter += 1;
-            }
-        }
-
-        // Underground tunnel, continuing straight in the arrival direction.
-        if adir != 0 {
-            let d = Direction::from_i64(adir);
-            let (dx, dy) = d.delta();
-            for span in 2..=UNDERGROUND_MAX_OFFSET {
-                let exit_cell = (cx + dx * span, cy + dy * span);
-                if !in_bounds(exit_cell) || blocked.contains(&exit_cell) {
-                    continue;
-                }
-                // Surface the exit straight onto the sink's feeder cell:
-                // UG_UP → sink, no trailing belt. Charged like a normal tunnel
-                // (5 per spanned tile, counting the exit), so it is used only
-                // when the obstruction reaches the sink.
-                if exit_cell == end && d == end_dir {
-                    let cost = d_so_far + 5 * (span as u64 + 1);
-                    if cost < goal_cost {
-                        goal_cost = cost;
-                        goal_prev = Some(state);
-                        goal_emit = vec![
-                            (cx, cy, d, Misc::UndergroundDown),
-                            (end.0, end.1, d, Misc::UndergroundUp),
-                        ];
-                    }
-                    continue;
-                }
-                let surface = (cx + dx * (span + 1), cy + dy * (span + 1));
-                if !in_bounds(surface) || blocked.contains(&surface) {
-                    continue;
-                }
-                let ns: State = (surface.0, surface.1, d as i64);
-                let nd = d_so_far + 5 * (span as u64 + 1);
-                if nd < *dist.get(&ns).unwrap_or(&u64::MAX) {
-                    dist.insert(ns, nd);
-                    prev.insert(
-                        ns,
-                        (
-                            state,
-                            vec![
-                                (cx, cy, d, Misc::UndergroundDown),
-                                (exit_cell.0, exit_cell.1, d, Misc::UndergroundUp),
-                            ],
-                        ),
-                    );
-                    pq.push(Reverse((nd, counter, ns)));
-                    counter += 1;
-                }
-            }
-        }
-    }
-
-    let goal_prev = goal_prev?;
-
-    // Walk back from the goal, collecting per-edge placements, then append the
-    // goal cell's own entity.
-    let mut placements: Vec<UgPlacement> = Vec::new();
-    let mut state = goal_prev;
-    while state != start_state {
-        let (pstate, emitted) = prev.get(&state)?;
-        for &p in emitted.iter().rev() {
-            placements.push(p);
-        }
-        state = *pstate;
-    }
-    placements.reverse();
-    placements.extend(goal_emit);
-
-    // One entity per tile: reject any self-overlapping (reorienting) detour.
-    let mut seen: HashSet<Cell> = HashSet::new();
-    for &(x, y, _, _) in &placements {
-        if !seen.insert((x, y)) {
-            return None;
-        }
-    }
-    Some(placements)
-}
-
 /// CROSS_UNDER_BELT: an obstruction belt line (source → belts → sink) runs
 /// between two opposite edges, forming a winding CUT that separates the grid into
 /// two halves. A second source/sink pair sits one per side; the crossing that
-/// joins them is routed with [`ug_aware_belt_path`], so the only way across is to
-/// tunnel UNDER the cut. The two lines carry distinct items, so gating on
+/// joins them is routed with [`find_belt_paths`] (underground enabled), so the
+/// only way across is to tunnel UNDER the cut. The two lines carry distinct
+/// items, so gating on
 /// `tp >= belt_flow` (both delivered) and no orphan tiles rejects a crossing that
 /// fails to connect.
 fn build_cross_under_belt(
@@ -2163,14 +2153,19 @@ fn build_cross_under_belt(
         let mut cross_blocked = obstruction_tiles.clone();
         cross_blocked.insert(cross_source);
         cross_blocked.insert(cross_sink);
-        let cross_path = match ug_aware_belt_path(
+        let cross_path = match find_belt_paths(
             s,
             cross_start,
             cross_end,
             sink_dir,
             &cross_blocked,
             Some(source_dir),
-        ) {
+            true,
+            1,
+        )
+        .into_iter()
+        .next()
+        {
             Some(p) => p,
             None => continue,
         };
@@ -2338,6 +2333,21 @@ mod tests {
         (0..size).map(|y| (col, y)).collect()
     }
 
+    /// The single shortest underground-aware route from `start` to `end`, or
+    /// `None` — a thin wrapper over [`find_belt_paths`] for the router tests.
+    fn ug_path(
+        size: i64,
+        start: Cell,
+        end: Cell,
+        end_dir: Direction,
+        blocked: &HashSet<Cell>,
+        start_dir: Option<Direction>,
+    ) -> Option<Vec<UgPlacement>> {
+        find_belt_paths(size, start, end, end_dir, blocked, start_dir, true, 1)
+            .into_iter()
+            .next()
+    }
+
     /// Build a CROSS_UNDER_BELT factory, panicking on the rare reject.
     fn build_cub(size: usize, seed: u64) -> BuiltFactory {
         build_factory(size, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY)
@@ -2457,9 +2467,49 @@ mod tests {
     #[test]
     fn test_ug_router_open_space_stays_on_surface() {
         // Nothing blocked → a tunnel is never cheaper than walking.
-        let path =
-            ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &HashSet::new(), None).unwrap();
+        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &HashSet::new(), None).unwrap();
         assert!(path.iter().all(|&(_, _, _, m)| m == Misc::None));
+    }
+
+    #[test]
+    fn test_shortest_n_caps_and_enumerates() {
+        // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
+        // shortest ones. `shortest_n` caps how many come back; -1 returns all.
+        let free = HashSet::new();
+        let all = find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, -1);
+        assert_eq!(all.len(), 6);
+        for p in &all {
+            // 5 cells (0,0)..=(2,2), all plain belts, no tile reused.
+            assert_eq!(p.len(), 5);
+            assert!(p.iter().all(|&(_, _, _, m)| m == Misc::None));
+            let cells: HashSet<Cell> = p.iter().map(|&(x, y, _, _)| (x, y)).collect();
+            assert_eq!(cells.len(), 5);
+            assert_eq!(
+                p.last().map(|&(x, y, d, _)| (x, y, d)),
+                Some((2, 2, Direction::East))
+            );
+        }
+        // A positive cap returns exactly that many; 1 matches `find_belt_path`.
+        assert_eq!(
+            find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, 2).len(),
+            2
+        );
+        assert_eq!(
+            find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, 1).len(),
+            1
+        );
+        // Unreachable target → no routes, whatever the cap.
+        assert!(find_belt_paths(
+            5,
+            (0, 0),
+            (2, 2),
+            Direction::East,
+            &wall(1, 5),
+            None,
+            false,
+            -1
+        )
+        .is_empty());
     }
 
     #[test]
@@ -2468,7 +2518,7 @@ mod tests {
         // Plain BFS can't cross a full-height wall.
         assert!(find_belt_path(9, (1, 4), (7, 4), Direction::East, &w).is_none());
         // The UG-aware router tunnels under it with one entrance/exit pair.
-        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
         let downs: Vec<_> = path
             .iter()
             .filter(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2484,7 +2534,7 @@ mod tests {
     #[test]
     fn test_ug_router_minimal_span_hugs_the_wall() {
         let w = wall(4, 9);
-        let path = ug_aware_belt_path(9, (1, 4), (8, 4), Direction::East, &w, None).unwrap();
+        let path = ug_path(9, (1, 4), (8, 4), Direction::East, &w, None).unwrap();
         let down = path
             .iter()
             .find(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2503,7 +2553,7 @@ mod tests {
         // start_dir given (source feeds `start` head-on) + a wall right after
         // start → the entrance sits on `start` itself (source → UG_DOWN).
         let w = wall(2, 9);
-        let path = ug_aware_belt_path(
+        let path = ug_path(
             9,
             (1, 4),
             (5, 4),
@@ -2519,7 +2569,7 @@ mod tests {
     fn test_ug_router_surfaces_into_sink() {
         // Wall right before `end` → the exit lands on `end` (UG_UP → sink).
         let w = wall(6, 9);
-        let path = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
         assert_eq!(
             *path.last().unwrap(),
             (7, 4, Direction::East, Misc::UndergroundUp)
@@ -2532,7 +2582,7 @@ mod tests {
         // facings: whatever the router returns, every tile is distinct.
         let w: HashSet<Cell> = (1..9).map(|y| (4, y)).collect();
         for sd in [None, Some(Direction::North), Some(Direction::East)] {
-            if let Some(path) = ug_aware_belt_path(9, (1, 4), (7, 4), Direction::East, &w, sd) {
+            if let Some(path) = ug_path(9, (1, 4), (7, 4), Direction::East, &w, sd) {
                 let mut seen = HashSet::new();
                 for &(x, y, _, _) in &path {
                     assert!(seen.insert((x, y)), "tile reused with start_dir={sd:?}");
