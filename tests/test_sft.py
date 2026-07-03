@@ -26,6 +26,7 @@ from factorion import Footprint
 import sft
 from sft import (
     SFTArgs,
+    StreamingDemoDataset,
     _apply_legal_tile_mask,
     _artifact_name,
     _dir_distance_diagnostics,
@@ -33,15 +34,24 @@ from sft import (
     _direction_diagnostics,
     _humanize_count,
     _humanize_lr,
+    _iter_demo_pairs,
+    _materialise,
     _point_biserial,
     _source_sink_distance,
+    _steps_per_epoch,
     build_lr_schedule,
     extract_expert_actions,
-    generate_dataset,
     run_rollout_eval,
     train_sft,
 )
 from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args
+
+
+def _materialise_args(args):
+    """Eagerly collect a full dataset (the 10-tensor tuple) for assertions,
+    matching how train_sft draws its data from `_materialise`."""
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
+    return _materialise(args.size, max_level, args.seed, target=args.num_samples)
 
 
 class TestExtractExpertActions:
@@ -232,7 +242,7 @@ class TestGenerateDataset:
         """Dataset should have the requested number of samples."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
         obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = (
-            generate_dataset(args)
+            _materialise_args(args)
         )
         assert len(obs) == 100
         assert len(tiles) == 100
@@ -248,7 +258,7 @@ class TestGenerateDataset:
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        obs, *_ = generate_dataset(args)
+        obs, *_ = _materialise_args(args)
         assert obs.shape[1] == len(Channel)  # channels
         assert obs.shape[2] == 5  # width
         assert obs.shape[3] == 5  # height
@@ -256,16 +266,16 @@ class TestGenerateDataset:
     def test_tile_indices_in_range(self):
         """Tile indices should be in [0, W*H)."""
         args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
-        _, tiles, *_ = generate_dataset(args)
+        _, tiles, *_ = _materialise_args(args)
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
 
     def test_seeds_returned_per_pair(self):
-        """generate_dataset returns a per-pair lesson_seed tensor; pairs
+        """_materialise returns a per-pair lesson_seed tensor; pairs
         from the same lesson share the same seed (multiple pairs per
         lesson when level > 1)."""
         args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
-        *_, seeds, _kinds = generate_dataset(args)
+        *_, seeds, _kinds = _materialise_args(args)
         # Multiple unique seeds expected (each lesson has its own seed).
         assert len(set(seeds.tolist())) >= 2
         # And at least one seed appears more than once (level=2 → ~2 pairs).
@@ -353,7 +363,7 @@ class TestGenerateDataset:
         carry electronic_circuit, which would let the model memorise
         item_id == electronic_circuit as a constant feature."""
         args = SFTArgs(seed=1, size=8, num_samples=200, max_level=4)
-        obs, *_ = generate_dataset(args)
+        obs, *_ = _materialise_args(args)
         item_channel = obs[:, Channel.ITEMS.value]
         unique_items = set(item_channel.flatten().tolist())
         # 0 = empty (always present); we want at least 2 non-empty item types.
@@ -363,12 +373,12 @@ class TestGenerateDataset:
         )
 
     def test_kinds_returned_per_pair(self):
-        """generate_dataset must return a per-pair kind tensor with the
+        """_materialise must return a per-pair kind tensor with the
         same length as the rest. Values must be valid LessonKind enum
         values, and at least two distinct kinds should appear (proves the
         per-kind val aggregation in train_sft has something to bucket)."""
         args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
-        obs, tiles, *_, kinds = generate_dataset(args)
+        obs, tiles, *_, kinds = _materialise_args(args)
         assert len(kinds) == len(obs)
         valid_values = {k.value for k in LessonKind}
         assert set(kinds.tolist()).issubset(valid_values), (
@@ -379,31 +389,12 @@ class TestGenerateDataset:
             f"expected >=2 distinct kinds, got {sorted(set(kinds.tolist()))}"
         )
 
-    def test_samples_span_multiple_kinds(self, capsys):
-        """Dataset should draw from more than one LessonKind.
-
-        Now that every kind protects its structural entity (inserter,
-        splitter), every blanked target is a belt — so we can't tell
-        kinds apart from the entity_id targets. Instead, parse the
-        per-kind breakdown that generate_dataset prints and verify at
-        least two kinds contributed samples.
-        """
+    def test_samples_span_multiple_kinds(self):
+        """Dataset should draw from more than one LessonKind (the per-pair kind
+        tensor carries the labels directly)."""
         args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
-        generate_dataset(args)
-        out = capsys.readouterr().out
-        productive = [
-            line
-            for line in out.splitlines()
-            if "samples=" in line
-            and "samples=     0" not in line
-            and "samples=    0" not in line
-        ]
-        assert len(productive) >= 2, (
-            f"Expected >=2 productive kinds in breakdown, got:\n{out}"
-        )
-        # Auto-discovery: every enum value appears in the breakdown.
-        for kind in LessonKind:
-            assert kind.name in out, f"{kind.name} missing from breakdown:\n{out}"
+        *_, kinds = _materialise_args(args)
+        assert len(set(kinds.tolist())) >= 2
 
     def test_pairs_balanced_across_kinds(self):
         """Sampling balances by pair count, not by lesson: every kind lands
@@ -411,7 +402,7 @@ class TestGenerateDataset:
         from collections import Counter
 
         args = SFTArgs(seed=1, size=8, num_samples=3000, max_level=8)
-        *_, kinds = generate_dataset(args)
+        *_, kinds = _materialise_args(args)
         vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
         assert len(vals) == len(LessonKind), "every kind should contribute pairs"
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
@@ -419,24 +410,11 @@ class TestGenerateDataset:
     def test_obs_uint8_masks_bool(self):
         """obs stored uint8 and masks bool (the memory cut); eot stays float."""
         args = SFTArgs(seed=1, size=8, num_samples=300, max_level=4)
-        obs, *_, masks, eots, _seeds, _kinds = generate_dataset(args)
+        obs, *_, masks, eots, _seeds, _kinds = _materialise_args(args)
         assert obs.dtype == torch.uint8
         assert masks.dtype == torch.bool
         assert int(obs.max()) < 256  # nothing overflowed the uint8 range
         assert eots.dtype == torch.float
-
-    def test_multiprocessing_matches_contract(self):
-        """Forcing multiple gen workers yields exactly num_samples pairs with
-        the same dtypes and disjoint factory seeds (no train/val leak)."""
-        n = 600
-        args = SFTArgs(seed=1, size=5, num_samples=n, max_level=0, gen_workers=3)
-        obs, *_, masks, eots, seeds, kinds = generate_dataset(args)
-        assert len(obs) == n
-        assert obs.dtype == torch.uint8 and masks.dtype == torch.bool
-        assert obs.shape[1:] == (len(Channel), 5, 5)
-        assert len(set(seeds.tolist())) >= 3  # each worker marched its own range
-        assert eots.sum().item() >= 1
-        assert set(kinds.tolist()).issubset({k.value for k in LessonKind})
 
     def test_unbuildable_kinds_dropped_not_hung(self):
         """A lesson kind that can't fit the grid (a 3x3 assembler with 4-5
@@ -444,7 +422,7 @@ class TestGenerateDataset:
         not retried forever. Generation completes and simply omits those kinds;
         the buildable memorise lessons still appear."""
         args = SFTArgs(seed=1, size=5, num_samples=400, max_level=0)
-        *_, kinds = generate_dataset(args)
+        *_, kinds = _materialise_args(args)
         produced = set(kinds.tolist())
         # The 4- and 5-ingredient memorise lessons can't be built at size 5.
         assert LessonKind.MEMORISE_4_INGREDIENT_RECIPES.value not in produced
@@ -452,6 +430,61 @@ class TestGenerateDataset:
         # ...but the 1- and 2-ingredient ones (which always fit) do appear.
         assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
+
+
+class TestStreamingDemoDataset:
+    """StreamingDemoDataset generates the same pairs as the materialised path,
+    but lazily and sharded across DataLoader workers."""
+
+    def test_yields_target_count_and_shapes(self):
+        """A pass yields exactly `target` pairs with the extract 8-tuple's
+        shapes/dtypes (obs uint8 (C,W,H), mask bool (W*H), collated to a batch)."""
+        from torch.utils.data import DataLoader
+
+        target = 300
+        ds = StreamingDemoDataset(size=5, max_level=25, base_seed=1, target=target)
+        loader = DataLoader(ds, batch_size=64, num_workers=0)
+        batches = list(loader)
+        assert sum(b[0].shape[0] for b in batches) == target
+        obs, tile, ent, dirn, item, misc, mask, eot = batches[0]
+        assert obs.dtype == torch.uint8
+        assert obs.shape[1:] == (len(Channel), 5, 5)
+        assert mask.dtype == torch.bool
+        assert mask.shape[1] == 5 * 5
+        assert tile.shape[0] == obs.shape[0]
+
+    def test_workers_walk_disjoint_seeds(self):
+        """Sharding is leak-free: worker w of W walks a seed class no other
+        worker touches, so no factory is ever generated twice. (seed is at
+        index 8 of the yielded 10-tuple.)"""
+        random.seed(0)
+        seeds_w0 = {row[8] for row in _iter_demo_pairs(5, 25, 100, 0, 2, 150)}
+        seeds_w1 = {row[8] for row in _iter_demo_pairs(5, 25, 100, 1, 2, 150)}
+        assert seeds_w0 and seeds_w1
+        assert seeds_w0.isdisjoint(seeds_w1)
+
+    def test_train_stream_disjoint_from_val(self):
+        """Training starts one seed above the highest val seed, so the val set
+        and the training stream never share a factory (as train_sft wires it)."""
+        val = _materialise(5, 25, 1, n_lessons=30)
+        val_seeds = set(val[8].tolist())
+        train_base = max(val_seeds) + 1
+        random.seed(1)
+        train_seeds = {
+            row[8] for row in _iter_demo_pairs(5, 25, train_base, 0, 1, 200)
+        }
+        assert min(train_seeds) >= train_base
+        assert val_seeds.isdisjoint(train_seeds)
+
+    def test_steps_per_epoch_matches_loader(self):
+        """_steps_per_epoch predicts the batch count the DataLoader actually
+        yields (used to size the LR schedule before training)."""
+        from torch.utils.data import DataLoader
+
+        target, batch, workers = 240, 64, 2
+        ds = StreamingDemoDataset(size=5, max_level=25, base_seed=1, target=target)
+        loader = DataLoader(ds, batch_size=batch, num_workers=workers)
+        assert len(list(loader)) == _steps_per_epoch(target, workers, batch)
 
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
@@ -519,7 +552,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = generate_dataset(
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = _materialise_args(
             args
         )
 
@@ -597,6 +630,32 @@ class TestTrainSFTEndToEnd:
         assert "best_val_acc" in s
         assert s["num_samples"] == 100
         assert s["epochs"] == 2
+
+    def test_train_sft_dataset_cache_roundtrips(self, tmp_path):
+        """--dataset-cache materialises the training stream to disk on the first
+        run and trains from it on the second. Both runs produce a checkpoint."""
+        cache = str(tmp_path / "ds_cache.pt")
+
+        def run(tag):
+            args = SFTArgs(
+                seed=1,
+                size=5,
+                num_samples=300,
+                epochs=1,
+                batch_size=64,
+                layer1=16,
+                layer2=16,
+                layer3=16,
+                dataset_cache=cache,
+                checkpoint_path=str(tmp_path / f"ckpt_{tag}.pt"),
+                summary_path=str(tmp_path / f"summary_{tag}.json"),
+            )
+            train_sft(args)
+
+        run("create")
+        assert os.path.exists(cache), "Cache should be written on first run"
+        run("load")  # second run loads the cache instead of generating
+        assert os.path.exists(str(tmp_path / "ckpt_load.pt"))
 
 
 class TestSFTDropout:
@@ -724,7 +783,7 @@ class TestRunRolloutEval:
     def _build_val_seeds_to_kind(self, size, num_kinds=4, start_seed=10_000):
         """Collect up to `num_kinds` (seed -> kind) pairs, one per distinct
         lesson kind, each producing a valid lesson at the given size. Mirrors
-        the try/except-continue pattern that generate_dataset uses for
+        the try/except-continue pattern that _iter_demo_pairs uses for
         malformed seeds, so this fixture doesn't get flaky when an enum value
         lands a bad seed.
 
@@ -1087,10 +1146,10 @@ class TestEotHead:
         )
 
     def test_eot_tensor_in_dataset(self):
-        """generate_dataset must return a per-pair eot tensor with values
+        """_materialise must return a per-pair eot tensor with values
         in {0.0, 1.0} and at least one positive (terminal) example."""
         args = SFTArgs(seed=1, size=5, num_samples=200, max_level=4)
-        *_, eots, _seeds, _kinds = generate_dataset(args)
+        *_, eots, _seeds, _kinds = _materialise_args(args)
         assert eots.dtype == torch.float
         assert set(eots.unique().tolist()).issubset({0.0, 1.0})
         assert eots.sum().item() >= 1, "Dataset must contain >=1 terminal pair"
@@ -1200,33 +1259,6 @@ class TestPerKindEotMetrics:
             if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
         }
         assert {k.split("/")[1] for k in acc_keys} == place_kinds
-
-
-class TestTrainValSeedSplit:
-    def test_no_lesson_overlap_between_train_and_val(self, capsys):
-        """Train and val sets must not share any lesson seed. A pair-level
-        random split would leak factories across the boundary; this test
-        is the regression guard for the seed-level split in train_sft."""
-        # Capture stdout to read the "Train/val split at seed level" line.
-        args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2, val_frac=0.2)
-        # Reproduce the split logic without spinning up training.
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        *_, lesson_seeds, _kinds = generate_dataset(args)
-
-        unique_seeds = torch.unique(lesson_seeds)
-        n_seeds = len(unique_seeds)
-        n_val_seeds = max(1, int(n_seeds * args.val_frac))
-        seed_perm = unique_seeds[torch.randperm(n_seeds)]
-        val_seeds = set(seed_perm[:n_val_seeds].tolist())
-        train_seeds = set(seed_perm[n_val_seeds:].tolist())
-
-        assert val_seeds.isdisjoint(train_seeds), (
-            f"Train and val share lesson seeds: {val_seeds & train_seeds}"
-        )
-        assert len(val_seeds) >= 1
-        assert len(train_seeds) >= 1
 
 
 class TestDirectionConfusion:
