@@ -175,7 +175,8 @@ class SFTArgs:
     # layers 93-69-96, lr 3.242e-3, dropout 0.1827, weight_decay 1.661e-3)
     # trained at scale (size 11, 1M samples, 45 epochs; best_val_throughput
     # 0.335, val_acc 0.838). size is 11 (not the old 12) so the default config
-    # matches that checkpoint. Running sft.py with no flags reproduces the run.
+    # matches that checkpoint. Running sft.py with no flags reproduces the run
+    # (modulo the since-rebalanced eval budget: val_frac + eval_rollouts_max_seeds).
     # NB: greedy throughput plateaued early (~epoch 3) in kkcv6xe3 — the long
     # 1M x 45 schedule mainly drives per-step loss/acc, not throughput, so the
     # epoch/sample counts are generous. Override any flag at the command line.
@@ -215,12 +216,14 @@ class SFTArgs:
     """loss weight for the misc (CE) head"""
     lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
-    val_frac: float = 0.1
-    """fraction of data for validation"""
+    val_frac: float = 0.05
+    """fraction of data for validation (feeds the per-step metrics only, not
+    checkpoint selection — so kept small; the budget goes to rollout seeds)"""
     eval_rollouts_every_n_epochs: int = 1
     """run greedy rollout eval (the default checkpoint-selection metric) every N epochs (0 disables)"""
-    eval_rollouts_max_seeds: int = 100
-    """cap on number of val seeds per rollout eval — bounds eval cost"""
+    eval_rollouts_max_seeds: int = 400
+    """cap on val seeds per rollout eval — the sample size of the selection
+    metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
