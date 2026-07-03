@@ -98,15 +98,14 @@ class TestPPOFactoryDiversity:
         assert len(set(seen)) == 28
 
 
-# ── SFT: generate_dataset marches its seed ───────────────────────────────────
+# ── SFT: the demo generator marches its seed ─────────────────────────────────
 
 
 class TestSFTFactoryDiversity:
     def _distinct_factory_seeds(self, num_samples: int) -> int:
-        from sft import SFTArgs, generate_dataset
+        from sft import _materialise
 
-        args = SFTArgs(seed=1, size=5, num_samples=num_samples, max_level=0)
-        out = generate_dataset(args)
+        out = _materialise(5, 25, 1, target=num_samples)
         seed_tensor = out[8]  # per-pair lesson seed; unique => one per factory
         return len(set(seed_tensor.tolist()))
 
