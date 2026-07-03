@@ -215,7 +215,7 @@ class SFTArgs:
     val_frac: float = 0.05
     """fraction of data for validation (feeds the per-step metrics only, not
     checkpoint selection — so kept small; the budget goes to rollout seeds)"""
-    eval_every_n_samples: int = 1_000_000
+    eval_every_n_samples: int = 100_000
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
