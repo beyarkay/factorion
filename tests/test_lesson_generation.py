@@ -261,21 +261,22 @@ class TestSplitterSplitMissingEntities:
         world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
-    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
     @pytest.mark.parametrize("seed", range(10))
-    def test_splitter_always_present_after_blanking(self, num_missing, seed):
-        """The central splitter must never be blanked, even at maximum
-        num_missing_entities — without it the lesson is ambiguous (could be
-        solved by belts alone)."""
+    def test_splitter_removable_on_full_blank(self, seed):
+        """A full blank must remove the splitter so the expert completion
+        includes placing it — otherwise the policy never learns to."""
         factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed)
         assert factory is not None
-        world, _ = blank_entities(factory, num_missing_entities=num_missing)
+        world, _ = blank_entities(factory, num_missing_entities=float("inf"))
         ent_layer = world[Channel.ENTITIES.value]
         splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
-        assert splitter_tiles == 2, (
-            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
-            f"seed={seed}; got {splitter_tiles}"
+        assert splitter_tiles == 0, (
+            f"Expected splitter removed on full blank, seed={seed}; "
+            f"got {splitter_tiles} tiles still present"
         )
+        # Source/sink stay protected.
+        assert (ent_layer == str2ent("source").value).sum().item() == 1
+        assert (ent_layer == str2ent("sink").value).sum().item() == 2
 
 
 class TestSplitterSplitDeterminism:
@@ -544,21 +545,22 @@ class TestSplitterMergeMissingEntities:
         world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
         assert min_ent >= 4  # at least 1 splitter + 3 belts
 
-    @pytest.mark.parametrize("num_missing", [1, 5, 10, 100, float("inf")])
     @pytest.mark.parametrize("seed", range(10))
-    def test_splitter_always_present_after_blanking(self, num_missing, seed):
-        """The central splitter must never be blanked, even at maximum
-        num_missing_entities — without it the lesson is ambiguous (could be
-        solved by belts alone)."""
+    def test_splitter_removable_on_full_blank(self, seed):
+        """A full blank must remove the splitter so the expert completion
+        includes placing it — otherwise the policy never learns to."""
         factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed)
         assert factory is not None
-        world, _ = blank_entities(factory, num_missing_entities=num_missing)
+        world, _ = blank_entities(factory, num_missing_entities=float("inf"))
         ent_layer = world[Channel.ENTITIES.value]
         splitter_tiles = (ent_layer == str2ent("splitter").value).sum().item()
-        assert splitter_tiles == 2, (
-            f"Expected splitter (2 tiles) at num_missing={num_missing}, "
-            f"seed={seed}; got {splitter_tiles}"
+        assert splitter_tiles == 0, (
+            f"Expected splitter removed on full blank, seed={seed}; "
+            f"got {splitter_tiles} tiles still present"
         )
+        # Source/sink stay protected.
+        assert (ent_layer == str2ent("source").value).sum().item() == 2
+        assert (ent_layer == str2ent("sink").value).sum().item() == 1
 
 
 class TestSplitterMergeDeterminism:
@@ -658,10 +660,12 @@ class TestRemoveEntitiesSplitterIntegrity:
         world_full, _ = blank_entities(factory, num_missing_entities=0)
         ent_full = world_full[Channel.ENTITIES.value]
 
-        # Count entity units (splitter = 1 unit despite 2 tiles)
+        # Count entity units (splitter = 1 unit despite 2 tiles; each
+        # underground-belt end is its own single-tile unit).
         full_belts = (ent_full == str2ent("transport_belt").value).sum().item()
+        full_ug = (ent_full == str2ent("underground_belt").value).sum().item()
         full_splitter_tiles = (ent_full == str2ent("splitter").value).sum().item()
-        full_units = full_belts + (full_splitter_tiles // 2)
+        full_units = full_belts + full_ug + (full_splitter_tiles // 2)
 
         # Remove 2 entities
         factory = build_factory(size=10, kind=LessonKind.SPLITTER_SPLIT, seed=seed
@@ -672,8 +676,9 @@ class TestRemoveEntitiesSplitterIntegrity:
 
         ent_partial = world_partial[Channel.ENTITIES.value]
         partial_belts = (ent_partial == str2ent("transport_belt").value).sum().item()
+        partial_ug = (ent_partial == str2ent("underground_belt").value).sum().item()
         partial_splitter_tiles = (ent_partial == str2ent("splitter").value).sum().item()
-        partial_units = partial_belts + (partial_splitter_tiles // 2)
+        partial_units = partial_belts + partial_ug + (partial_splitter_tiles // 2)
 
         units_removed = full_units - partial_units
         assert units_removed == 2, (
