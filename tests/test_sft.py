@@ -727,6 +727,8 @@ class TestTrackedArtifact:
             layer1=16,
             layer2=16,
             layer3=16,
+            layer4=0,
+            kernel_size=3,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1387,6 +1389,8 @@ class TestArtifactNameHelpers:
             layer1=48,
             layer2=48,
             layer3=48,
+            layer4=0,
+            kernel_size=3,
         )
         assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48"
 
@@ -1394,8 +1398,8 @@ class TestArtifactNameHelpers:
         """Depth is part of the suffix: a 4-layer encoder of the same width
         must not collide with a 3-layer one (else the deeper run would file
         under the shallower run's artifact)."""
-        three = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=0)
-        four = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=48)
+        three = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=0, kernel_size=3)
+        four = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=48, kernel_size=3)
         assert _artifact_name(three).endswith("-c48-48-48")
         assert _artifact_name(four).endswith("-c48-48-48-48")
         assert _artifact_name(three) != _artifact_name(four)
@@ -1403,7 +1407,7 @@ class TestArtifactNameHelpers:
     def test_artifact_name_asymmetric_channels(self):
         """Differing per-layer widths expand into the full list, so a
         c32-64-64 run can't accidentally file under a c48-48-48 run."""
-        args = SFTArgs(layer1=32, layer2=64, layer3=64)
+        args = SFTArgs(layer1=32, layer2=64, layer3=64, layer4=0, kernel_size=3)
         # Assert only the channel suffix (the behaviour under test) so this
         # doesn't break when the default size/samples/epochs/lr change.
         assert _artifact_name(args).endswith("-c32-64-64")
@@ -1414,7 +1418,7 @@ class TestArtifactNameHelpers:
         token (keeps existing names stable)."""
         # Default kernel (3) adds no suffix; a non-default kernel appends
         # -k{N}. Derive from the default name so this survives default changes.
-        base = _artifact_name(SFTArgs())
+        base = _artifact_name(SFTArgs(kernel_size=3))
         assert not base.endswith(("-k3", "-k5", "-k7"))
         assert _artifact_name(SFTArgs(kernel_size=5)) == base + "-k5"
 
