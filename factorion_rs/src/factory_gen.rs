@@ -161,33 +161,33 @@ fn world_throughput(world: &World) -> f64 {
 }
 
 type Cell = (i64, i64);
-type Belt = (i64, i64, Direction);
 
-/// Up to `shortest_n` distinct minimal-cost belt routes from `start` to `end`
+/// Whether a route may tunnel under blocked cells, and how it may begin.
+enum Underground {
+    /// Belt-only: a plain shortest belt search; tunnels are never used.
+    Off,
+    /// Tunnels may clear blocked cells. `Some(dir)` also lets the route open with
+    /// a tunnel entrance on `start` itself (source → UG_DOWN facing `dir`).
+    On(Option<Direction>),
+}
+
+/// Up to `shortest_n` distinct minimal-cost routes from `start` to `end`
 /// (`shortest_n < 0` returns every valid one), each a `Vec<UgPlacement>` laying
-/// exactly one entity per cell from `start` through `end` (which faces
-/// `end_dir`).
+/// exactly one entity per cell from `start` through `end` (which faces `end_dir`).
 ///
-/// A single weighted Dijkstra over `(x, y, arrival_dir)` states supersedes the
-/// belt-only routers: every surface belt step costs 4, and — only when
-/// `allow_underground` — a tunnel spanning `span` blocked tiles costs
-/// `5 * (span + 1)` (an integral 1.25×/tile penalty), so tunnels are used solely
-/// to clear blocked cells, with minimal span, never under open belt. Tunnels run
-/// straight; 180° reversals and self-overlapping (tile-reusing) routes are
-/// rejected. `start_dir` lets a route open with a tunnel (source → UG_DOWN); a
-/// tunnel may surface directly onto `end` (UG_UP → sink).
-///
-/// With `allow_underground = false` and `start_dir = None` this reduces to a
-/// plain uniform-cost search enumerating all shortest belt-only paths.
-#[allow(clippy::too_many_arguments)]
+/// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 4 and
+/// a `span`-tile tunnel costs `5 * (span + 1)` (an integral 1.25×/tile penalty),
+/// so tunnels only ever clear blocked cells, with minimal span. Tunnels run
+/// straight; 180° reversals and self-overlapping routes are rejected. See
+/// [`Underground`] for the tunnel options; `Underground::Off` reduces this to a
+/// plain uniform-cost belt search.
 fn find_belt_paths(
-    size: i64,
     start: Cell,
     end: Cell,
     end_dir: Direction,
+    size: i64,
     blocked: &HashSet<Cell>,
-    start_dir: Option<Direction>,
-    allow_underground: bool,
+    underground: Underground,
     shortest_n: i64,
 ) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
@@ -195,9 +195,16 @@ fn find_belt_paths(
         return vec![];
     }
 
+    // Whether tunnels are allowed, and the direction (if any) the route opens a
+    // tunnel toward on `start` itself.
+    let (allow_underground, start_adir) = match underground {
+        Underground::Off => (false, 0),
+        Underground::On(start_dir) => (true, start_dir.map_or(0, |d| d as i64)),
+    };
+
     // State = (x, y, arrival_dir_value); arrival_dir 0 == "free" (the start).
     type State = (i64, i64, i64);
-    let start_state: State = (start.0, start.1, start_dir.map_or(0, |d| d as i64));
+    let start_state: State = (start.0, start.1, start_adir);
 
     let mut dist: HashMap<State, u64> = HashMap::new();
     // Every min-cost incoming edge of a state: the predecessor state plus the
@@ -407,76 +414,44 @@ fn find_belt_paths(
 }
 
 /// Convert a cell run into belt placements, last belt taking `end_dir`.
-fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<Belt> {
-    let mut belts: Vec<Belt> = Vec::new();
+fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<UgPlacement> {
+    let mut belts: Vec<UgPlacement> = Vec::new();
     for w in path.windows(2) {
         let (r1, c1) = w[0];
         let (r2, c2) = w[1];
         if let Some(d) = delta_to_dir(r2 - r1, c2 - c1) {
-            belts.push((r1, c1, d));
+            belts.push((r1, c1, d, Misc::None));
         }
     }
     if let Some(&(lx, ly)) = path.last() {
-        belts.push((lx, ly, end_dir));
+        belts.push((lx, ly, end_dir, Misc::None));
     }
     belts
 }
 
-/// A single shortest belt-only path from `start` to `end`, or `None`. A thin
-/// belt-typed adapter over [`find_belt_paths`] (no tunnels, first shortest).
+/// The single shortest route from `start` to `end`, or `None` — a thin wrapper
+/// over [`find_belt_paths`] for the common "just one path" case.
 fn find_belt_path(
-    size: i64,
     start: Cell,
     end: Cell,
     end_dir: Direction,
+    size: i64,
     blocked: &HashSet<Cell>,
-) -> Option<Vec<Belt>> {
-    find_belt_paths(size, start, end, end_dir, blocked, None, false, 1)
+    underground: Underground,
+) -> Option<Vec<UgPlacement>> {
+    find_belt_paths(start, end, end_dir, size, blocked, underground, 1)
         .into_iter()
         .next()
-        .map(|p| p.into_iter().map(|(x, y, d, _)| (x, y, d)).collect())
 }
 
 /// The `(x, y)` cells of a belt run (dropping directions).
-fn belt_cells(belts: &[Belt]) -> Vec<Cell> {
-    belts.iter().map(|&(x, y, _)| (x, y)).collect()
+fn belt_cells(belts: &[UgPlacement]) -> Vec<Cell> {
+    belts.iter().map(|&(x, y, _, _)| (x, y)).collect()
 }
 
 /// The `(x, y)` cells of a belt run as a set.
-fn belt_cell_set(belts: &[Belt]) -> HashSet<Cell> {
-    belts.iter().map(|&(x, y, _)| (x, y)).collect()
-}
-
-/// All shortest belt paths from a source's output cell to a sink's input
-/// cell, given their positions and facings. A thin belt-typed adapter over
-/// [`find_belt_paths`] that translates the source/sink orientation into the
-/// router's `(start, end, blocked)` contract (no tunnels, every shortest path).
-fn find_belt_paths_with_source_sink_orient(
-    size: i64,
-    src: Cell,
-    src_dir: Direction,
-    sink: Cell,
-    sink_dir: Direction,
-) -> Vec<Vec<Belt>> {
-    if src_dir == Direction::None || sink_dir == Direction::None {
-        return vec![];
-    }
-    let (dr_s, dc_s) = src_dir.delta();
-    let start = (src.0 + dr_s, src.1 + dc_s);
-    let (dr_k, dc_k) = sink_dir.delta();
-    let end = (sink.0 - dr_k, sink.1 - dc_k);
-
-    if start == src || start == sink || end == src || end == sink {
-        return vec![];
-    }
-
-    let mut blocked: HashSet<Cell> = HashSet::new();
-    blocked.insert(src);
-    blocked.insert(sink);
-    find_belt_paths(size, start, end, sink_dir, &blocked, None, false, -1)
-        .into_iter()
-        .map(|p| p.into_iter().map(|(x, y, d, _)| (x, y, d)).collect())
-        .collect()
+fn belt_cell_set(belts: &[UgPlacement]) -> HashSet<Cell> {
+    belts.iter().map(|&(x, y, _, _)| (x, y)).collect()
 }
 
 /// The result of a successful `build_factory`: a complete world plus the
@@ -488,16 +463,21 @@ pub struct BuiltFactory {
     pub protected_positions: Vec<(usize, usize)>,
 }
 
-/// Lay a run of belts into `world`.
-fn place_belts(world: &mut World, belts: &[Belt]) {
-    for &(x, y, d) in belts {
-        world.set(
-            x as usize,
-            y as usize,
-            Channel::Entities,
-            Item::TransportBelt as i64,
-        );
-        world.set(x as usize, y as usize, Channel::Direction, d as i64);
+/// Lay a route into `world`: plain belts, and underground tunnel ends for any
+/// `Misc`-tagged placement.
+fn place_belts(world: &mut World, belts: &[UgPlacement]) {
+    for &(x, y, d, m) in belts {
+        if m == Misc::None {
+            world.set(
+                x as usize,
+                y as usize,
+                Channel::Entities,
+                Item::TransportBelt as i64,
+            );
+            world.set(x as usize, y as usize, Channel::Direction, d as i64);
+        } else {
+            world.place_underground(x as usize, y as usize, d, m);
+        }
     }
 }
 
@@ -755,8 +735,16 @@ fn build_move_one_item(
         place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
         place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
 
-        let mut paths =
-            find_belt_paths_with_source_sink_orient(s, source_wh, source_dir, sink_wh, sink_dir);
+        // Route from the source's output cell to the sink's input cell, keeping
+        // the markers themselves clear (all shortest belt paths; no tunnels).
+        let (dr_s, dc_s) = source_dir.delta();
+        let start = (source_wh.0 + dr_s, source_wh.1 + dc_s);
+        let (dr_k, dc_k) = sink_dir.delta();
+        let end = (sink_wh.0 - dr_k, sink_wh.1 - dc_k);
+        let mut blocked: HashSet<Cell> = HashSet::new();
+        blocked.insert(source_wh);
+        blocked.insert(sink_wh);
+        let mut paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, -1);
         paths.retain(|p| (p.len() as f64) <= max_entities);
 
         if paths.is_empty() {
@@ -764,7 +752,7 @@ fn build_move_one_item(
         }
 
         rng.shuffle(&mut paths);
-        let mut chosen: Option<Vec<Belt>> = None;
+        let mut chosen: Option<Vec<UgPlacement>> = None;
         for candidate in &paths {
             let mut trial = world.clone();
             place_belts(&mut trial, candidate);
@@ -844,7 +832,8 @@ fn build_move_one_item_chaos(
         // Segment A: source output → intermediate (protected later).
         let mut blocked_a = fixed.clone();
         blocked_a.insert(end);
-        let belts_a = match find_belt_path(s, start, mid, source_dir, &blocked_a) {
+        let belts_a = match find_belt_path(start, mid, source_dir, s, &blocked_a, Underground::Off)
+        {
             Some(b) => b,
             None => continue,
         };
@@ -857,7 +846,7 @@ fn build_move_one_item_chaos(
                 blocked_b.insert(c);
             }
         }
-        let belts_b = match find_belt_path(s, mid, end, sink_dir, &blocked_b) {
+        let belts_b = match find_belt_path(mid, end, sink_dir, s, &blocked_b, Underground::Off) {
             Some(b) => b,
             None => continue,
         };
@@ -969,7 +958,14 @@ fn build_splitter_split(
             input_cells[1],
             unused_input_buffer_1,
         ]);
-        let mut path1 = find_belt_path(s, source_output, input_cells[0], splitter_dir, &blocked1);
+        let mut path1 = find_belt_path(
+            source_output,
+            input_cells[0],
+            splitter_dir,
+            s,
+            &blocked1,
+            Underground::Off,
+        );
         if path1.is_none() {
             let mut b1: HashSet<Cell> = blocked_base.clone();
             b1.extend(output_cells.iter().copied());
@@ -979,7 +975,14 @@ fn build_splitter_split(
                 input_cells[0],
                 unused_input_buffer_0,
             ]);
-            path1 = find_belt_path(s, source_output, input_cells[1], splitter_dir, &b1);
+            path1 = find_belt_path(
+                source_output,
+                input_cells[1],
+                splitter_dir,
+                s,
+                &b1,
+                Underground::Off,
+            );
             if path1.is_none() {
                 continue;
             }
@@ -999,7 +1002,7 @@ fn build_splitter_split(
         let sink_buffers = [sink1_output, sink2_output];
 
         // Path 2 + 3: try both sink assignments.
-        let mut found: Option<(Vec<Belt>, Vec<Belt>)> = None;
+        let mut found: Option<(Vec<UgPlacement>, Vec<UgPlacement>)> = None;
         for (out_a, out_b, sk_a, sk_a_dir, sk_b, sk_b_dir) in [
             (
                 output_cells[0],
@@ -1024,7 +1027,7 @@ fn build_splitter_split(
             blocked2.extend(input_cells.iter().copied());
             blocked2.extend(unused_block);
             blocked2.extend(sink_buffers);
-            let p2 = match find_belt_path(s, out_a, sk_a, sk_a_dir, &blocked2) {
+            let p2 = match find_belt_path(out_a, sk_a, sk_a_dir, s, &blocked2, Underground::Off) {
                 Some(p) => p,
                 None => continue,
             };
@@ -1036,7 +1039,8 @@ fn build_splitter_split(
             blocked3.extend(input_cells.iter().copied());
             blocked3.extend(unused_block);
             blocked3.extend(sink_buffers);
-            if let Some(p3) = find_belt_path(s, out_b, sk_b, sk_b_dir, &blocked3) {
+            if let Some(p3) = find_belt_path(out_b, sk_b, sk_b_dir, s, &blocked3, Underground::Off)
+            {
                 found = Some((p2, p3));
                 break;
             }
@@ -1143,12 +1147,26 @@ fn build_splitter_merge(
         let mut blocked1: HashSet<Cell> = blocked_base.clone();
         blocked1.extend(output_cells.iter().copied());
         blocked1.extend([source2_output, sink_input, input_cells[1]]);
-        let mut path1 = find_belt_path(s, source1_output, input_cells[0], splitter_dir, &blocked1);
+        let mut path1 = find_belt_path(
+            source1_output,
+            input_cells[0],
+            splitter_dir,
+            s,
+            &blocked1,
+            Underground::Off,
+        );
         if path1.is_none() {
             let mut b1: HashSet<Cell> = blocked_base.clone();
             b1.extend(output_cells.iter().copied());
             b1.extend([source2_output, sink_input, input_cells[0]]);
-            path1 = find_belt_path(s, source1_output, input_cells[1], splitter_dir, &b1);
+            path1 = find_belt_path(
+                source1_output,
+                input_cells[1],
+                splitter_dir,
+                s,
+                &b1,
+                Underground::Off,
+            );
             if path1.is_none() {
                 continue;
             }
@@ -1167,11 +1185,17 @@ fn build_splitter_merge(
         blocked2.extend(output_cells.iter().copied());
         blocked2.extend(path1_cells.iter().copied());
         blocked2.insert(sink_input);
-        let path2 =
-            match find_belt_path(s, source2_output, remaining_input, splitter_dir, &blocked2) {
-                Some(p) => p,
-                None => continue,
-            };
+        let path2 = match find_belt_path(
+            source2_output,
+            remaining_input,
+            splitter_dir,
+            s,
+            &blocked2,
+            Underground::Off,
+        ) {
+            Some(p) => p,
+            None => continue,
+        };
         let path2_cells = belt_cell_set(&path2);
 
         // Path 3: splitter output → sink input (try output 0, fallback 1).
@@ -1183,14 +1207,28 @@ fn build_splitter_merge(
         blocked3.extend(path2_cells.iter().copied());
         blocked3.extend(input_cells.iter().copied());
         blocked3.extend([output_cells[1], unused_output_buffer_1]);
-        let mut path3 = find_belt_path(s, output_cells[0], sink_input, sink_dir, &blocked3);
+        let mut path3 = find_belt_path(
+            output_cells[0],
+            sink_input,
+            sink_dir,
+            s,
+            &blocked3,
+            Underground::Off,
+        );
         if path3.is_none() {
             let mut b3: HashSet<Cell> = blocked_base.clone();
             b3.extend(path1_cells.iter().copied());
             b3.extend(path2_cells.iter().copied());
             b3.extend(input_cells.iter().copied());
             b3.extend([output_cells[0], unused_output_buffer_0]);
-            path3 = find_belt_path(s, output_cells[1], sink_input, sink_dir, &b3);
+            path3 = find_belt_path(
+                output_cells[1],
+                sink_input,
+                sink_dir,
+                s,
+                &b3,
+                Underground::Off,
+            );
             if path3.is_none() {
                 continue;
             }
@@ -1334,7 +1372,14 @@ fn build_assemble_1in1out(
             sink_input,
             out_drop,
         ]);
-        let path1 = match find_belt_path(s, source_output, in_pickup, in_inserter_dir, &blocked1) {
+        let path1 = match find_belt_path(
+            source_output,
+            in_pickup,
+            in_inserter_dir,
+            s,
+            &blocked1,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1351,7 +1396,14 @@ fn build_assemble_1in1out(
             source_output,
         ]);
         blocked2.extend(path1_cells.iter().copied());
-        let path2 = match find_belt_path(s, out_drop, sink_input, sink_dir, &blocked2) {
+        let path2 = match find_belt_path(
+            out_drop,
+            sink_input,
+            sink_dir,
+            s,
+            &blocked2,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1529,7 +1581,7 @@ fn build_move_via_ug_belt(
         let flow_delta = flow_dir.delta();
 
         // Path 1: source_drop → UG_DOWN input (on the source side).
-        let path1: Vec<Belt> = if source_drop == ug_down_pos {
+        let path1: Vec<UgPlacement> = if source_drop == ug_down_pos {
             vec![]
         } else {
             let ug_down_input = (ug_down_pos.0 - flow_delta.0, ug_down_pos.1 - flow_delta.1);
@@ -1543,14 +1595,21 @@ fn build_move_via_ug_belt(
             if blocked1.contains(&source_drop) || blocked1.contains(&ug_down_input) {
                 continue;
             }
-            match find_belt_path(s, source_drop, ug_down_input, flow_dir, &blocked1) {
+            match find_belt_path(
+                source_drop,
+                ug_down_input,
+                flow_dir,
+                s,
+                &blocked1,
+                Underground::Off,
+            ) {
                 Some(p) => p,
                 None => continue,
             }
         };
 
         // Path 2: UG_UP drop → sink_input (on the sink side).
-        let path2: Vec<Belt> = if sink_input == ug_up_pos {
+        let path2: Vec<UgPlacement> = if sink_input == ug_up_pos {
             vec![]
         } else {
             let ug_up_drop = (ug_up_pos.0 + flow_delta.0, ug_up_pos.1 + flow_delta.1);
@@ -1566,7 +1625,14 @@ fn build_move_via_ug_belt(
             if blocked2.contains(&ug_up_drop) || blocked2.contains(&sink_input) {
                 continue;
             }
-            match find_belt_path(s, ug_up_drop, sink_input, sink_dir, &blocked2) {
+            match find_belt_path(
+                ug_up_drop,
+                sink_input,
+                sink_dir,
+                s,
+                &blocked2,
+                Underground::Off,
+            ) {
                 Some(p) => p,
                 None => continue,
             }
@@ -1729,7 +1795,14 @@ fn build_assemble_2in1out(
         // Path A: source A → input-A pickup.
         let mut blocked_a = fixed_cells.clone();
         blocked_a.extend([in_b_pickup, out_drop, src_b_out, sink_in]);
-        let path_a = match find_belt_path(s, src_a_out, in_a_pickup, in_a_dir, &blocked_a) {
+        let path_a = match find_belt_path(
+            src_a_out,
+            in_a_pickup,
+            in_a_dir,
+            s,
+            &blocked_a,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1739,7 +1812,14 @@ fn build_assemble_2in1out(
         let mut blocked_b = fixed_cells.clone();
         blocked_b.extend([in_a_pickup, out_drop, src_a_out, sink_in]);
         blocked_b.extend(path_a_cells.iter().copied());
-        let path_b = match find_belt_path(s, src_b_out, in_b_pickup, in_b_dir, &blocked_b) {
+        let path_b = match find_belt_path(
+            src_b_out,
+            in_b_pickup,
+            in_b_dir,
+            s,
+            &blocked_b,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -1750,10 +1830,11 @@ fn build_assemble_2in1out(
         blocked_c.extend([in_a_pickup, in_b_pickup, src_a_out, src_b_out]);
         blocked_c.extend(path_a_cells.iter().copied());
         blocked_c.extend(path_b_cells.iter().copied());
-        let path_c = match find_belt_path(s, out_drop, sink_in, sink_dir, &blocked_c) {
-            Some(p) => p,
-            None => continue,
-        };
+        let path_c =
+            match find_belt_path(out_drop, sink_in, sink_dir, s, &blocked_c, Underground::Off) {
+                Some(p) => p,
+                None => continue,
+            };
 
         let total_entities = path_a.len() + path_b.len() + path_c.len() + 4;
         if (total_entities as f64) > max_entities {
@@ -1862,7 +1943,7 @@ fn build_memorise_recipes(
         // arm that can't be placed rejects the whole candidate.
         let mut occupied: HashSet<Cell> = asm_tiles.clone();
         let mut inserters: Vec<(Cell, Direction)> = Vec::with_capacity(n_arms);
-        let mut belts: Vec<Belt> = Vec::with_capacity(n_arms);
+        let mut belts: Vec<UgPlacement> = Vec::with_capacity(n_arms);
         // (position, direction, carried-item, is_source)
         let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
 
@@ -1936,7 +2017,7 @@ fn build_memorise_recipes(
             };
 
             inserters.push((inserter_pos, inserter_dir));
-            belts.push((belt_pos.0, belt_pos.1, belt_dir));
+            belts.push((belt_pos.0, belt_pos.1, belt_dir, Misc::None));
             markers.push((marker_pos, marker_dir, item_value, is_source));
             occupied.insert(inserter_pos);
             occupied.insert(belt_pos);
@@ -2107,7 +2188,14 @@ fn build_cross_under_belt(
         let mut obs_blocked: HashSet<Cell> = HashSet::new();
         obs_blocked.insert(obs_source);
         obs_blocked.insert(obs_sink);
-        let obs_path = match find_belt_path(s, obs_start, obs_end, obs_dir, &obs_blocked) {
+        let obs_path = match find_belt_path(
+            obs_start,
+            obs_end,
+            obs_dir,
+            s,
+            &obs_blocked,
+            Underground::Off,
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -2153,19 +2241,14 @@ fn build_cross_under_belt(
         let mut cross_blocked = obstruction_tiles.clone();
         cross_blocked.insert(cross_source);
         cross_blocked.insert(cross_sink);
-        let cross_path = match find_belt_paths(
-            s,
+        let cross_path = match find_belt_path(
             cross_start,
             cross_end,
             sink_dir,
+            s,
             &cross_blocked,
-            Some(source_dir),
-            true,
-            1,
-        )
-        .into_iter()
-        .next()
-        {
+            Underground::On(Some(source_dir)),
+        ) {
             Some(p) => p,
             None => continue,
         };
@@ -2186,19 +2269,7 @@ fn build_cross_under_belt(
             cross_item,
         );
         place_marker(&mut world, cross_sink, Item::Sink, sink_dir, cross_item);
-        for &(x, y, d, m) in &cross_path {
-            if m == Misc::None {
-                world.set(
-                    x as usize,
-                    y as usize,
-                    Channel::Entities,
-                    Item::TransportBelt as i64,
-                );
-                world.set(x as usize, y as usize, Channel::Direction, d as i64);
-            } else {
-                world.place_underground(x as usize, y as usize, d, m);
-            }
-        }
+        place_belts(&mut world, &cross_path);
 
         // Both lines must deliver at full belt speed, and no entity may be an
         // orphan (off every source→sink path).
@@ -2333,21 +2404,6 @@ mod tests {
         (0..size).map(|y| (col, y)).collect()
     }
 
-    /// The single shortest underground-aware route from `start` to `end`, or
-    /// `None` — a thin wrapper over [`find_belt_paths`] for the router tests.
-    fn ug_path(
-        size: i64,
-        start: Cell,
-        end: Cell,
-        end_dir: Direction,
-        blocked: &HashSet<Cell>,
-        start_dir: Option<Direction>,
-    ) -> Option<Vec<UgPlacement>> {
-        find_belt_paths(size, start, end, end_dir, blocked, start_dir, true, 1)
-            .into_iter()
-            .next()
-    }
-
     /// Build a CROSS_UNDER_BELT factory, panicking on the rare reject.
     fn build_cub(size: usize, seed: u64) -> BuiltFactory {
         build_factory(size, LessonKind::CrossUnderBelt, seed, true, f64::INFINITY)
@@ -2467,7 +2523,15 @@ mod tests {
     #[test]
     fn test_ug_router_open_space_stays_on_surface() {
         // Nothing blocked → a tunnel is never cheaper than walking.
-        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &HashSet::new(), None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &HashSet::new(),
+            Underground::On(None),
+        )
+        .unwrap();
         assert!(path.iter().all(|&(_, _, _, m)| m == Misc::None));
     }
 
@@ -2476,7 +2540,15 @@ mod tests {
         // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
         // shortest ones. `shortest_n` caps how many come back; -1 returns all.
         let free = HashSet::new();
-        let all = find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, -1);
+        let all = find_belt_paths(
+            (0, 0),
+            (2, 2),
+            Direction::East,
+            5,
+            &free,
+            Underground::Off,
+            -1,
+        );
         assert_eq!(all.len(), 6);
         for p in &all {
             // 5 cells (0,0)..=(2,2), all plain belts, no tile reused.
@@ -2491,22 +2563,40 @@ mod tests {
         }
         // A positive cap returns exactly that many; 1 matches `find_belt_path`.
         assert_eq!(
-            find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, 2).len(),
+            find_belt_paths(
+                (0, 0),
+                (2, 2),
+                Direction::East,
+                5,
+                &free,
+                Underground::Off,
+                2
+            )
+            .len(),
             2
         );
         assert_eq!(
-            find_belt_paths(5, (0, 0), (2, 2), Direction::East, &free, None, false, 1).len(),
+            find_belt_paths(
+                (0, 0),
+                (2, 2),
+                Direction::East,
+                5,
+                &free,
+                Underground::Off,
+                1
+            )
+            .len(),
             1
         );
         // Unreachable target → no routes, whatever the cap.
+        let blocked = wall(1, 5);
         assert!(find_belt_paths(
-            5,
             (0, 0),
             (2, 2),
             Direction::East,
-            &wall(1, 5),
-            None,
-            false,
+            5,
+            &blocked,
+            Underground::Off,
             -1
         )
         .is_empty());
@@ -2516,9 +2606,17 @@ mod tests {
     fn test_ug_router_tunnels_under_a_wall() {
         let w = wall(4, 9);
         // Plain BFS can't cross a full-height wall.
-        assert!(find_belt_path(9, (1, 4), (7, 4), Direction::East, &w).is_none());
+        assert!(find_belt_path((1, 4), (7, 4), Direction::East, 9, &w, Underground::Off).is_none());
         // The UG-aware router tunnels under it with one entrance/exit pair.
-        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         let downs: Vec<_> = path
             .iter()
             .filter(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2534,7 +2632,15 @@ mod tests {
     #[test]
     fn test_ug_router_minimal_span_hugs_the_wall() {
         let w = wall(4, 9);
-        let path = ug_path(9, (1, 4), (8, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (8, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         let down = path
             .iter()
             .find(|&&(_, _, _, m)| m == Misc::UndergroundDown)
@@ -2553,13 +2659,13 @@ mod tests {
         // start_dir given (source feeds `start` head-on) + a wall right after
         // start → the entrance sits on `start` itself (source → UG_DOWN).
         let w = wall(2, 9);
-        let path = ug_path(
-            9,
+        let path = find_belt_path(
             (1, 4),
             (5, 4),
             Direction::East,
+            9,
             &w,
-            Some(Direction::East),
+            Underground::On(Some(Direction::East)),
         )
         .unwrap();
         assert_eq!(path[0], (1, 4, Direction::East, Misc::UndergroundDown));
@@ -2569,7 +2675,15 @@ mod tests {
     fn test_ug_router_surfaces_into_sink() {
         // Wall right before `end` → the exit lands on `end` (UG_UP → sink).
         let w = wall(6, 9);
-        let path = ug_path(9, (1, 4), (7, 4), Direction::East, &w, None).unwrap();
+        let path = find_belt_path(
+            (1, 4),
+            (7, 4),
+            Direction::East,
+            9,
+            &w,
+            Underground::On(None),
+        )
+        .unwrap();
         assert_eq!(
             *path.last().unwrap(),
             (7, 4, Direction::East, Misc::UndergroundUp)
@@ -2582,7 +2696,9 @@ mod tests {
         // facings: whatever the router returns, every tile is distinct.
         let w: HashSet<Cell> = (1..9).map(|y| (4, y)).collect();
         for sd in [None, Some(Direction::North), Some(Direction::East)] {
-            if let Some(path) = ug_path(9, (1, 4), (7, 4), Direction::East, &w, sd) {
+            if let Some(path) =
+                find_belt_path((1, 4), (7, 4), Direction::East, 9, &w, Underground::On(sd))
+            {
                 let mut seen = HashSet::new();
                 for &(x, y, _, _) in &path {
                     assert!(seen.insert((x, y)), "tile reused with start_dir={sd:?}");
