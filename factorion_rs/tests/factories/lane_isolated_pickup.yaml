@@ -1,0 +1,20 @@
+description: |
+  Lane control end-to-end: two items ride the two lanes of ONE belt, and two
+  inserters unmix them by pickup priority. Iron sideloads onto the LEFT lane
+  (from the north), copper onto the RIGHT lane (from the south). The in-line
+  inserter prefers the left lane and delivers only iron; the perpendicular
+  inserter (approaching from the south) prefers its near — right — lane and
+  delivers only copper. Each is inserter-limited at 0.86 i/s.
+items:
+- { x: 1, y: 0, item: iron_plate }     # north source → left lane
+- { x: 1, y: 2, item: copper_plate }   # south source → right lane
+- { x: 4, y: 1, item: iron_plate }     # in-line inserter's sink
+- { x: 2, y: 3, item: copper_plate }   # perpendicular inserter's sink
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: copper_plate, per_second: 0.86 }
+factory: |
+  .. Sv .. .. ..
+  .. b> b> i> K>
+  .. S^ iv .. ..
+  .. .. Kv .. ..

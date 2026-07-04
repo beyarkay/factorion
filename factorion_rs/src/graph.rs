@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
-use crate::types::{Item, Misc, NodeId, LANES};
+use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
+use crate::types::{Direction, Item, Misc, NodeId, LANES};
 use crate::world::World;
 
 /// A node in the factory graph.
@@ -21,6 +21,14 @@ pub struct GraphNode {
     /// four across its two tiles); grouping by anchor recovers the entity —
     /// e.g. unreachability is counted per entity, not per lane node.
     pub anchor: (usize, usize),
+    /// The tile's facing. The solver needs it to resolve inserter pickup
+    /// lane priority (near lane when the belt runs perpendicular to the
+    /// inserter, left lane otherwise).
+    pub direction: Direction,
+    /// Whether this tile is a CURVED transport belt (lone side feed).
+    /// Inserters picking from a curve prefer its LEFT lane regardless of
+    /// relative orientation.
+    pub curved: bool,
     /// Accumulated input flow rates per item type.
     pub input: HashMap<Item, f64>,
     /// Computed output flow rates per item type.
@@ -130,6 +138,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             }
 
             let anchor = lane_tile_anchor.get(&(x, y)).copied().unwrap_or((x, y));
+            let curved = entity_kind == Item::TransportBelt && is_curved_belt(world, (x, y));
 
             let node_ids: Vec<NodeId> = if entity_kind.is_lane_aware() {
                 LANES
@@ -161,6 +170,8 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                         None
                     },
                     anchor,
+                    direction,
+                    curved,
                     input: HashMap::new(),
                     output,
                 });
