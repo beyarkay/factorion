@@ -61,23 +61,34 @@ factory: |
   .. b> Y> ..
   .. .. Y> ..
 ---
-graph: "b@1,1 -> Y@2,0"
+# The belt enters via the splitter's SECOND tile (2,1) — since dual lanes,
+# splitter tiles are distinct graph nodes, so the edge names the actual
+# tile rather than being remapped to the anchor.
+graph: "b@1,1 -> Y@2,1"
 factory: |
   .. .. Y> ..
   .. b> Y> ..
 ---
-graph: "Y@1,0 -> b@2,0"
+# Both splitter tiles route to every output (that IS the splitting), so a
+# single output belt receives an edge from each tile's pool.
+graph: |
+  Y@1,0 -> b@2,0
+  Y@1,1 -> b@2,0
 factory: |
   .. Y> b> ..
   .. Y> .. ..
 ---
-graph: "Y@1,0 -> b@2,1"
+graph: |
+  Y@1,0 -> b@2,1
+  Y@1,1 -> b@2,1
 factory: |
   .. Y> .. ..
   .. Y> b> ..
 ---
-description: east-facing splitter drops onto the belt ahead
-graph: "Y@1,0 -> b@2,0"
+description: east-facing splitter drops onto the belt ahead (from both tiles)
+graph: |
+  Y@1,0 -> b@2,0
+  Y@1,1 -> b@2,0
 factory: |
   .. Y> b> ..
   .. Y> .. ..

@@ -66,6 +66,7 @@ impl Direction {
     /// The absolute direction of the LEFT side of an entity facing `self`
     /// (90° counter-clockwise): a north-facing belt's left lane sits on its
     /// west side.
+    #[allow(dead_code)] // used by the curve/sideload and inserter lane rules
     pub fn left_side(self) -> Self {
         match self {
             Direction::North => Direction::West,
@@ -78,6 +79,7 @@ impl Direction {
 
     /// The absolute direction of the RIGHT side of an entity facing `self`
     /// (90° clockwise).
+    #[allow(dead_code)] // used by the curve/sideload and inserter lane rules
     pub fn right_side(self) -> Self {
         self.left_side().opposite()
     }
@@ -96,6 +98,7 @@ pub enum Lane {
 
 pub const LANES: [Lane; 2] = [Lane::Left, Lane::Right];
 
+#[allow(dead_code)] // used by the curve/sideload and inserter lane rules
 impl Lane {
     /// The other lane.
     pub fn opposite(self) -> Self {
@@ -429,6 +432,19 @@ impl Item {
                 | Item::Sink
                 | Item::Source
                 | Item::Splitter
+        )
+    }
+
+    /// Whether this entity's tiles carry two independent belt lanes.
+    /// Lane-aware entities get one graph node per (tile, lane) pair —
+    /// including EACH tile of a splitter (a splitter is a left belt and a
+    /// right belt side by side, so it owns four lane nodes in total).
+    /// Everything else (inserters, assemblers, sources, sinks) is a single
+    /// lane-less node.
+    pub fn is_lane_aware(self) -> bool {
+        matches!(
+            self,
+            Item::TransportBelt | Item::UndergroundBelt | Item::Splitter
         )
     }
 

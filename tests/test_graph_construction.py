@@ -45,6 +45,12 @@ def _n(name, x, y):
     return f"{name}\n@{x},{y}"
 
 
+def _lanes(name, x, y):
+    """Both lane-node labels of a belt-ish entity tile: ``name:L`` and
+    ``name:R`` (lanes are named relative to the tile's facing)."""
+    return [f"{name}:L\n@{x},{y}", f"{name}:R\n@{x},{y}"]
+
+
 def _summary(graph):
     """(set of node labels, set of (src, dst) edge tuples)."""
     return set(graph.nodes), set(graph.edges)
@@ -57,23 +63,32 @@ class TestHandcraftedGraphSnapshots:
     """Full node+edge sets for unambiguous, hand-laid worlds."""
 
     def test_belt_chain(self):
-        # source → belt → belt → sink, all facing east on one row.
+        # source → belt → belt → sink, all facing east on one row. Each belt
+        # tile is two lane nodes: the source fills both lanes, belt→belt is
+        # lane-preserving, and the sink drains both lanes.
         w = make_world(6)
         set_entity(w, 0, 0, "source", Direction.EAST, "copper_cable")
         set_entity(w, 1, 0, "transport_belt", Direction.EAST)
         set_entity(w, 2, 0, "transport_belt", Direction.EAST)
         set_entity(w, 3, 0, "sink", Direction.EAST, "copper_cable")
         nodes, edges = _summary(build_factory_graph(w))
+        b1l, b1r = _lanes("transport_belt", 1, 0)
+        b2l, b2r = _lanes("transport_belt", 2, 0)
         assert nodes == {
             _n("stack_inserter", 0, 0),
-            _n("transport_belt", 1, 0),
-            _n("transport_belt", 2, 0),
+            b1l,
+            b1r,
+            b2l,
+            b2r,
             _n("bulk_inserter", 3, 0),
         }
         assert edges == {
-            (_n("stack_inserter", 0, 0), _n("transport_belt", 1, 0)),
-            (_n("transport_belt", 1, 0), _n("transport_belt", 2, 0)),
-            (_n("transport_belt", 2, 0), _n("bulk_inserter", 3, 0)),
+            (_n("stack_inserter", 0, 0), b1l),
+            (_n("stack_inserter", 0, 0), b1r),
+            (b1l, b2l),
+            (b1r, b2r),
+            (b2l, _n("bulk_inserter", 3, 0)),
+            (b2r, _n("bulk_inserter", 3, 0)),
         }
 
     def test_inserter_chain(self):
@@ -85,17 +100,21 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 3, 0, "inserter", Direction.EAST)
         set_entity(w, 4, 0, "sink", Direction.EAST, "copper_cable")
         nodes, edges = _summary(build_factory_graph(w))
+        bl, br = _lanes("transport_belt", 2, 0)
         assert nodes == {
             _n("stack_inserter", 0, 0),
             _n("inserter", 1, 0),
-            _n("transport_belt", 2, 0),
+            bl,
+            br,
             _n("inserter", 3, 0),
             _n("bulk_inserter", 4, 0),
         }
         assert edges == {
             (_n("stack_inserter", 0, 0), _n("inserter", 1, 0)),
-            (_n("inserter", 1, 0), _n("transport_belt", 2, 0)),
-            (_n("transport_belt", 2, 0), _n("inserter", 3, 0)),
+            (_n("inserter", 1, 0), bl),
+            (_n("inserter", 1, 0), br),
+            (bl, _n("inserter", 3, 0)),
+            (br, _n("inserter", 3, 0)),
             (_n("inserter", 3, 0), _n("bulk_inserter", 4, 0)),
         }
 
@@ -128,9 +147,9 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 2, 0, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
         assert nodes == {
-            _n("transport_belt", 0, 0),
+            *_lanes("transport_belt", 0, 0),
             _n("long_handed_inserter", 1, 0),
-            _n("transport_belt", 2, 0),
+            *_lanes("transport_belt", 2, 0),
         }
         assert edges == set()
 
@@ -144,23 +163,26 @@ class TestHandcraftedGraphSnapshots:
                    misc=Misc.UNDERGROUND_UP.value)
         set_entity(w, 5, 0, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
-        assert nodes == {
-            _n("transport_belt", 0, 0),
-            _n("underground_belt", 1, 0),
-            _n("underground_belt", 4, 0),
-            _n("transport_belt", 5, 0),
-        }
+        b0l, b0r = _lanes("transport_belt", 0, 0)
+        udl, udr = _lanes("underground_belt", 1, 0)
+        uul, uur = _lanes("underground_belt", 4, 0)
+        b5l, b5r = _lanes("transport_belt", 5, 0)
+        assert nodes == {b0l, b0r, udl, udr, uul, uur, b5l, b5r}
+        # Lanes persist through the tunnel: Left→Left, Right→Right.
         assert edges == {
-            (_n("transport_belt", 0, 0), _n("underground_belt", 1, 0)),
-            (_n("underground_belt", 1, 0), _n("underground_belt", 4, 0)),
-            (_n("underground_belt", 4, 0), _n("transport_belt", 5, 0)),
+            (b0l, udl),
+            (b0r, udr),
+            (udl, uul),
+            (udr, uur),
+            (uul, b5l),
+            (uur, b5r),
         }
 
     def test_single_belt_has_no_edges(self):
         w = make_world(3)
         set_entity(w, 1, 1, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
-        assert nodes == {_n("transport_belt", 1, 1)}
+        assert nodes == set(_lanes("transport_belt", 1, 1))
         assert edges == set()
 
     def test_empty_world_has_no_nodes(self):
@@ -183,7 +205,10 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 1, 0, "transport_belt", Direction.EAST)
         set_entity(w, 2, 0, "transport_belt", Direction.WEST)
         nodes, edges = _summary(build_factory_graph(w))
-        assert nodes == {_n("transport_belt", 1, 0), _n("transport_belt", 2, 0)}
+        assert nodes == {
+            *_lanes("transport_belt", 1, 0),
+            *_lanes("transport_belt", 2, 0),
+        }
         assert edges == set()
 
     def test_source_drops_onto_belt_ahead(self):
@@ -191,8 +216,11 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 0, 0, "source", Direction.EAST, "copper_cable")
         set_entity(w, 1, 0, "transport_belt", Direction.EAST)
         _, edges = _summary(build_factory_graph(w))
+        bl, br = _lanes("transport_belt", 1, 0)
+        # A source fills BOTH lanes of the belt it points into.
         assert edges == {
-            (_n("stack_inserter", 0, 0), _n("transport_belt", 1, 0)),
+            (_n("stack_inserter", 0, 0), bl),
+            (_n("stack_inserter", 0, 0), br),
         }
 
     def test_sink_pulls_from_belt_behind(self):
@@ -200,50 +228,66 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 0, 0, "transport_belt", Direction.EAST)
         set_entity(w, 1, 0, "sink", Direction.EAST, "copper_cable")
         _, edges = _summary(build_factory_graph(w))
+        bl, br = _lanes("transport_belt", 0, 0)
+        # A sink drains BOTH lanes of the belt feeding it.
         assert edges == {
-            (_n("transport_belt", 0, 0), _n("bulk_inserter", 1, 0)),
+            (bl, _n("bulk_inserter", 1, 0)),
+            (br, _n("bulk_inserter", 1, 0)),
         }
 
 
 class TestSplitterGraphSnapshots:
-    """A 2-wide splitter merges/splits across both of its lanes, and every
-    edge endpoint is remapped onto the anchor tile (2,2)."""
+    """A splitter is two belts side by side, each with two lanes: four graph
+    nodes across its two tiles. Inputs feed the tile they touch, lane-
+    preservingly; every tile-lane pool fans out to the same lane of the
+    receivers ahead of BOTH tiles (that fan-out is the splitting)."""
 
-    def test_merge_both_input_belts_feed_anchor(self):
-        # Two east-facing belts, one behind each splitter lane, feed in.
+    def test_merge_both_input_belts_feed_their_tiles(self):
+        # Two east-facing belts, one behind each splitter tile, feed in.
         w = make_world(8)
         set_splitter(w, 2, 2, Direction.EAST)  # tiles (2,2) anchor, (2,3)
         set_entity(w, 1, 2, "transport_belt", Direction.EAST)
         set_entity(w, 1, 3, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
-        assert nodes == {
-            _n("splitter", 2, 2),
-            _n("transport_belt", 1, 2),
-            _n("transport_belt", 1, 3),
-        }
+        b2l, b2r = _lanes("transport_belt", 1, 2)
+        b3l, b3r = _lanes("transport_belt", 1, 3)
+        y2l, y2r = _lanes("splitter", 2, 2)
+        y3l, y3r = _lanes("splitter", 2, 3)
+        assert nodes == {b2l, b2r, b3l, b3r, y2l, y2r, y3l, y3r}
         assert edges == {
-            (_n("transport_belt", 1, 2), _n("splitter", 2, 2)),
-            (_n("transport_belt", 1, 3), _n("splitter", 2, 2)),
+            (b2l, y2l),
+            (b2r, y2r),
+            (b3l, y3l),
+            (b3r, y3r),
         }
 
-    def test_split_anchor_feeds_both_output_belts(self):
-        # One belt feeds the splitter, which fans out to both output lanes.
+    def test_split_every_tile_lane_feeds_both_output_belts(self):
+        # One belt feeds the splitter, which fans out to both output belts.
         w = make_world(8)
         set_splitter(w, 2, 2, Direction.EAST)  # tiles (2,2) anchor, (2,3)
         set_entity(w, 1, 2, "transport_belt", Direction.EAST)
         set_entity(w, 3, 2, "transport_belt", Direction.EAST)
         set_entity(w, 3, 3, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
-        assert nodes == {
-            _n("splitter", 2, 2),
-            _n("transport_belt", 1, 2),
-            _n("transport_belt", 3, 2),
-            _n("transport_belt", 3, 3),
-        }
+        inl, inr = _lanes("transport_belt", 1, 2)
+        y2l, y2r = _lanes("splitter", 2, 2)
+        y3l, y3r = _lanes("splitter", 2, 3)
+        o2l, o2r = _lanes("transport_belt", 3, 2)
+        o3l, o3r = _lanes("transport_belt", 3, 3)
+        assert nodes == {inl, inr, y2l, y2r, y3l, y3r, o2l, o2r, o3l, o3r}
         assert edges == {
-            (_n("transport_belt", 1, 2), _n("splitter", 2, 2)),
-            (_n("splitter", 2, 2), _n("transport_belt", 3, 2)),
-            (_n("splitter", 2, 2), _n("transport_belt", 3, 3)),
+            (inl, y2l),
+            (inr, y2r),
+            # Left pools route to left lanes of both outputs…
+            (y2l, o2l),
+            (y2l, o3l),
+            (y3l, o2l),
+            (y3l, o3l),
+            # …and right pools to right lanes. No lane leakage.
+            (y2r, o2r),
+            (y2r, o3r),
+            (y3r, o2r),
+            (y3r, o3r),
         }
 
 
@@ -332,8 +376,9 @@ class TestGeneratedWorldConnectivity:
     @pytest.mark.parametrize("kind", _CONNECTIVITY_KINDS, ids=lambda k: k.name)
     @pytest.mark.parametrize("seed", range(6))
     def test_graph_nodes_match_placed_entities(self, kind, seed):
-        """Every node corresponds to a real placed-entity anchor tile, and the
-        node count never exceeds the number of non-empty tiles."""
+        """Every node corresponds to a real placed-entity tile, and the node
+        count never exceeds two per non-empty tile (belt-ish tiles own one
+        node per lane; everything else one per entity)."""
         factory = build_factory(size=10, kind=kind, seed=seed)
         if factory is None:
             pytest.skip(f"{kind.name} seed={seed}: layout search returned None")
@@ -341,7 +386,7 @@ class TestGeneratedWorldConnectivity:
         graph = build_factory_graph(world_CWH.permute(1, 2, 0))
         ent_ch = world_CWH[0]
         non_empty = int((ent_ch != 0).sum().item())
-        assert 0 < graph.number_of_nodes() <= non_empty, (
+        assert 0 < graph.number_of_nodes() <= 2 * non_empty, (
             f"{kind.name} seed={seed}: {graph.number_of_nodes()} nodes vs "
             f"{non_empty} non-empty tiles"
         )

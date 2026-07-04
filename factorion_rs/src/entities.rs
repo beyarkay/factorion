@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{get_recipe, Direction, Item, Misc, NodeId, Pos};
+use crate::types::{get_recipe, Direction, Item, Misc, NodeId, Pos, LANES};
 use crate::world::World;
 
 /// An edge in the factory graph: (source_node, destination_node).
@@ -9,6 +9,57 @@ pub type Edge = (NodeId, NodeId);
 /// How far an underground-belt entrance reaches for its paired exit
 /// (delta 1..UNDERGROUND_REACH — up to 5 tiles apart, like a yellow belt).
 const UNDERGROUND_REACH: i64 = 6;
+
+/// Maximum items/second one belt lane carries. A belt tile is two lanes
+/// (2 × 7.5 = the familiar 15 i/s per belt); lane-aware entities cap each
+/// lane node here instead of at the whole-entity `Item::flow_rate()`.
+pub const LANE_FLOW_RATE: f64 = 7.5;
+
+/// The node(s) an entity endpoint contributes to an edge: both lane nodes
+/// for a lane-aware entity, the single lane-less node otherwise.
+fn endpoint_nodes(kind: Item, pos: (usize, usize)) -> Vec<NodeId> {
+    let (x, y) = pos;
+    if kind.is_lane_aware() {
+        LANES
+            .iter()
+            .map(|&l| NodeId::with_lane(kind, x, y, l))
+            .collect()
+    } else {
+        vec![NodeId::new(kind, x, y)]
+    }
+}
+
+/// The lane-preserving edge set between two adjacent entities. Between two
+/// lane-aware entities this is the Left→Left / Right→Right pair (lanes are
+/// named relative to each tile's own facing, so the pair is also correct
+/// through a curve — left stays left around the bend). A lane-less endpoint
+/// collapses: a single node feeds both lanes / both lanes drain into it.
+fn lane_preserving_edges(
+    src_kind: Item,
+    src_pos: (usize, usize),
+    dst_kind: Item,
+    dst_pos: (usize, usize),
+) -> Vec<Edge> {
+    if src_kind.is_lane_aware() && dst_kind.is_lane_aware() {
+        LANES
+            .iter()
+            .map(|&l| {
+                (
+                    NodeId::with_lane(src_kind, src_pos.0, src_pos.1, l),
+                    NodeId::with_lane(dst_kind, dst_pos.0, dst_pos.1, l),
+                )
+            })
+            .collect()
+    } else {
+        let mut edges = Vec::new();
+        for src in endpoint_nodes(src_kind, src_pos) {
+            for dst in endpoint_nodes(dst_kind, dst_pos) {
+                edges.push((src.clone(), dst));
+            }
+        }
+        edges
+    }
+}
 
 /// Trait abstracting over factory entity types.
 ///
@@ -123,9 +174,11 @@ impl FactoryEntity for TransportBelt {
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        // A belt node is one LANE of a belt tile, so it caps at the per-lane
+        // rate (7.5), not the whole-tile 15.
         input
             .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
+            .map(|(&item, &rate)| (item, rate.min(LANE_FLOW_RATE)))
             .collect()
     }
 }
@@ -294,7 +347,6 @@ impl FactoryEntity for UndergroundBelt {
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
         let mut edges = Vec::new();
         let (x, y) = pos;
-        let self_id = NodeId::new(Item::UndergroundBelt, x, y);
         if dir == Direction::None {
             return edges;
         }
@@ -315,7 +367,12 @@ impl FactoryEntity for UndergroundBelt {
                                 || (dst == Item::UndergroundBelt
                                     && world.misc_at(au, av) == Misc::UndergroundDown);
                         if droppable && world.direction_at(au, av) != dir.opposite() {
-                            edges.push((self_id, NodeId::new(dst, au, av)));
+                            edges.extend(lane_preserving_edges(
+                                Item::UndergroundBelt,
+                                (x, y),
+                                dst,
+                                (au, av),
+                            ));
                         }
                     }
                 }
@@ -324,6 +381,7 @@ impl FactoryEntity for UndergroundBelt {
             // first same-direction exit within reach. The tunnel passes beneath
             // non-underground entities; the first underground belt it meets ends
             // the search, and pairs only if that belt is a matching exit.
+            // Lanes persist through the tunnel.
             Misc::UndergroundDown => {
                 for delta in 1..UNDERGROUND_REACH {
                     let (tx, ty) = (x as i64 + dx * delta, y as i64 + dy * delta);
@@ -336,7 +394,12 @@ impl FactoryEntity for UndergroundBelt {
                             if world.misc_at(tu, tv) == Misc::UndergroundUp
                                 && world.direction_at(tu, tv) == dir
                             {
-                                edges.push((self_id, NodeId::new(e, tu, tv)));
+                                edges.extend(lane_preserving_edges(
+                                    Item::UndergroundBelt,
+                                    (x, y),
+                                    e,
+                                    (tu, tv),
+                                ));
                             }
                             break;
                         }
@@ -350,9 +413,10 @@ impl FactoryEntity for UndergroundBelt {
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        // One node per lane: cap at the per-lane rate.
         input
             .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
+            .map(|(&item, &rate)| (item, rate.min(LANE_FLOW_RATE)))
             .collect()
     }
 }
@@ -427,7 +491,6 @@ fn belt_connections(
     let mut edges = Vec::new();
     let (x, y) = pos;
     let (dx, dy) = dir.delta();
-    let self_id = NodeId::new(self_kind, x, y);
     let self_is_ss = matches!(self_kind, Item::Source | Item::Sink);
     let belt_like = |it: Item| matches!(it, Item::TransportBelt | Item::Source | Item::Sink);
 
@@ -443,7 +506,7 @@ fn belt_connections(
                 && world.direction_at(bx, by) == dir;
             let blocked = self_is_ss && matches!(src, Item::Source | Item::Sink);
             if beltish && !blocked {
-                edges.push((NodeId::new(src, bx, by), self_id.clone()));
+                edges.extend(lane_preserving_edges(src, (bx, by), self_kind, (x, y)));
             }
         }
     }
@@ -465,7 +528,7 @@ fn belt_connections(
                 && dst_dir != dir.opposite();
             let blocked = self_is_ss && matches!(dst, Item::Source | Item::Sink);
             if ((droppable && !opposing) || exit_sideload) && !blocked {
-                edges.push((self_id, NodeId::new(dst, fx, fy)));
+                edges.extend(lane_preserving_edges(self_kind, (x, y), dst, (fx, fy)));
             }
         }
     }
@@ -495,13 +558,13 @@ fn inserter_connections(
     let mut edges = Vec::new();
     let (x, y) = pos;
     let (dx, dy) = dir.delta();
-    let self_id = NodeId::new(self_kind, x, y);
 
     // Pick up from `reach` tiles behind (opposite of facing direction). A real
     // inserter can only pick up from an entity that carries or produces items:
     // a source, belt, underground belt, or assembler. Notably NOT another
     // inserter (see #122) or a sink. (Splitters are excluded too, mirroring the
-    // drop side — not quite true to Factorio, may revisit.)
+    // drop side — not quite true to Factorio, may revisit.) Picking from a
+    // belt draws from both of its lanes.
     let src_x = x as i64 - dx * reach;
     let src_y = y as i64 - dy * reach;
     if world.in_bounds(src_x, src_y) {
@@ -517,7 +580,12 @@ fn inserter_connections(
                     | Item::AssemblingMachine1
             );
             if src_is_pickable {
-                edges.push((NodeId::new(src_entity, sx, sy), self_id.clone()));
+                edges.extend(lane_preserving_edges(
+                    src_entity,
+                    (sx, sy),
+                    self_kind,
+                    (x, y),
+                ));
             }
         }
     }
@@ -538,7 +606,12 @@ fn inserter_connections(
                     | Item::Sink
             );
             if dst_is_insertable {
-                edges.push((self_id, NodeId::new(dst_entity, dx_u, dy_u)));
+                edges.extend(lane_preserving_edges(
+                    self_kind,
+                    (x, y),
+                    dst_entity,
+                    (dx_u, dy_u),
+                ));
             }
         }
     }
@@ -588,10 +661,12 @@ pub fn entity_tiles(
 
 // ── Splitter ───────────────────────────────────────────────────────────────
 //
-// A splitter is 2 tiles wide (perpendicular to flow) and 1 tile deep.
-// It has up to 2 inputs (behind both tiles) and up to 2 outputs (ahead of both tiles).
-// Flow splitting (dividing output among successors) is handled in calc_throughput,
-// not here — transform_flow just caps at the flow rate.
+// A splitter is 2 tiles wide (perpendicular to flow) and 1 tile deep — a left
+// belt and a right belt side by side, each with its own two lanes, so it owns
+// FOUR lane nodes. Splitting preserves lanes: each (tile, lane) input node
+// fans out to the same lane of the receivers ahead of BOTH tiles, and the
+// solver's even fan-out split divides the flow between them. Merging is just
+// input accumulation at the receivers.
 
 pub struct Splitter;
 
@@ -604,7 +679,6 @@ impl FactoryEntity for Splitter {
         let mut edges = Vec::new();
         let (x, y) = pos;
         let (dx, dy) = dir.delta();
-        let self_id = NodeId::new(Item::Splitter, x, y);
 
         let tiles = match entity_tiles(x, y, dir, 2, 1) {
             Some(t) => t,
@@ -612,8 +686,18 @@ impl FactoryEntity for Splitter {
         };
         let tile_set: std::collections::HashSet<Pos> = tiles.iter().copied().collect();
 
+        // Receivers ahead of each tile, collected first: every splitter
+        // tile-lane fans out to the same lane of ALL of them.
+        let mut receivers: Vec<(Item, (usize, usize))> = Vec::new();
+
         for &tile in &tiles {
-            // Input: cell behind this tile (opposite of facing direction)
+            let tile_xy = match tile.to_usize() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            // Input: cell behind this tile (opposite of facing direction).
+            // Lane-preserving into this tile's own lane nodes.
             let in_pos = Pos::new(tile.x - dx, tile.y - dy);
             if let Some((ix, iy)) = in_pos.to_usize() {
                 if world.in_bounds(in_pos.x, in_pos.y) {
@@ -627,7 +711,12 @@ impl FactoryEntity for Splitter {
                         let src_is_source_sink =
                             matches!(src_entity, Item::Source | Item::Sink) && src_dir == dir;
                         if (src_is_belt || src_is_source_sink) && !tile_set.contains(&in_pos) {
-                            edges.push((NodeId::new(src_entity, ix, iy), self_id.clone()));
+                            edges.extend(lane_preserving_edges(
+                                src_entity,
+                                (ix, iy),
+                                Item::Splitter,
+                                tile_xy,
+                            ));
                         }
                     }
                 }
@@ -648,10 +737,27 @@ impl FactoryEntity for Splitter {
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
-                            edges.push((self_id.clone(), NodeId::new(dst_entity, ox, oy)));
+                            receivers.push((dst_entity, (ox, oy)));
                         }
                     }
                 }
+            }
+        }
+
+        // Fan out: each tile-lane node feeds the same lane of every receiver
+        // (identity per lane — left pool stays left, right stays right).
+        for &tile in &tiles {
+            let tile_xy = match tile.to_usize() {
+                Some(t) => t,
+                None => continue,
+            };
+            for &(dst_kind, dst_pos) in &receivers {
+                edges.extend(lane_preserving_edges(
+                    Item::Splitter,
+                    tile_xy,
+                    dst_kind,
+                    dst_pos,
+                ));
             }
         }
 
@@ -659,9 +765,11 @@ impl FactoryEntity for Splitter {
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        // One node per (tile, lane): each caps at the per-lane rate
+        // (4 × 7.5 = the old whole-splitter 30 i/s).
         input
             .iter()
-            .map(|(&item, &rate)| (item, rate.min(self.flow_rate())))
+            .map(|(&item, &rate)| (item, rate.min(LANE_FLOW_RATE)))
             .collect()
     }
 }
@@ -778,40 +886,44 @@ mod tests {
     fn test_transport_belt_connections_chain() {
         let w = make_belt_chain_world();
 
-        // Belt at (1,0): pulls from the source behind (a belt-like now) and
-        // feeds the belt ahead.
+        // Belt at (1,0): pulls from the source behind (a belt-like now) into
+        // BOTH lanes, and feeds the belt ahead lane-preservingly.
         let belt = TransportBelt;
         let edges = belt.connections((1, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 2);
-        assert!(edges.contains(&(
-            NodeId::new(Item::Source, 0, 0),
-            NodeId::new(Item::TransportBelt, 1, 0),
-        )));
-        assert!(edges.contains(&(
-            NodeId::new(Item::TransportBelt, 1, 0),
-            NodeId::new(Item::TransportBelt, 2, 0),
-        )));
+        assert_eq!(edges.len(), 4, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::new(Item::Source, 0, 0),
+                NodeId::with_lane(Item::TransportBelt, 1, 0, lane),
+            )));
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 1, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
+            )));
+        }
     }
 
     #[test]
     fn test_transport_belt_chain_second_belt() {
         let w = make_belt_chain_world();
 
-        // Belt at (2,0): pulls from the belt behind and feeds the sink ahead
-        // (a sink is a belt-like now).
+        // Belt at (2,0): pulls lane-preservingly from the belt behind; both
+        // lanes drain into the sink ahead (a sink is a belt-like now).
         let belt = TransportBelt;
         let edges = belt.connections((2, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 2);
-        assert!(edges.contains(&(
-            NodeId::new(Item::TransportBelt, 1, 0),
-            NodeId::new(Item::TransportBelt, 2, 0),
-        )));
-        assert!(edges.contains(&(
-            NodeId::new(Item::TransportBelt, 2, 0),
-            NodeId::new(Item::Sink, 3, 0),
-        )));
+        assert_eq!(edges.len(), 4, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 1, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
+            )));
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
+                NodeId::new(Item::Sink, 3, 0),
+            )));
+        }
     }
 
     #[test]
@@ -838,17 +950,19 @@ mod tests {
         let inserter = Inserter;
         let edges = inserter.connections((1, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 2);
+        assert_eq!(edges.len(), 3, "got edges: {edges:?}");
         // Source → Inserter
         assert!(edges.contains(&(
             NodeId::new(Item::Source, 0, 0),
             NodeId::new(Item::Inserter, 1, 0),
         )));
-        // Inserter → Belt
-        assert!(edges.contains(&(
-            NodeId::new(Item::Inserter, 1, 0),
-            NodeId::new(Item::TransportBelt, 2, 0),
-        )));
+        // Inserter → Belt (both lanes until the drop-lane rules land)
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::new(Item::Inserter, 1, 0),
+                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
+            )));
+        }
     }
 
     #[test]
@@ -908,17 +1022,20 @@ mod tests {
         let lhi = LongHandedInserter;
         let edges = lhi.connections((2, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        assert_eq!(edges.len(), 3, "got edges: {edges:?}");
         // Source(0,0) → LongHandedInserter(2,0)
         assert!(edges.contains(&(
             NodeId::new(Item::Source, 0, 0),
             NodeId::new(Item::LongHandedInserter, 2, 0),
         )));
-        // LongHandedInserter(2,0) → Belt(4,0)
-        assert!(edges.contains(&(
-            NodeId::new(Item::LongHandedInserter, 2, 0),
-            NodeId::new(Item::TransportBelt, 4, 0),
-        )));
+        // LongHandedInserter(2,0) → Belt(4,0) (both lanes until the
+        // drop-lane rules land)
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::new(Item::LongHandedInserter, 2, 0),
+                NodeId::with_lane(Item::TransportBelt, 4, 0, lane),
+            )));
+        }
     }
 
     #[test]
@@ -1061,8 +1178,9 @@ mod tests {
         let belt = TransportBelt;
         let input = HashMap::from([(Item::CopperCable, 20.0)]);
         let output = belt.transform_flow(&input);
-        // Capped at flow rate of 15.0
-        assert!((output[&Item::CopperCable] - 15.0).abs() < 1e-9);
+        // A belt node is one lane: capped at the per-lane 7.5, not the
+        // whole-tile 15.
+        assert!((output[&Item::CopperCable] - LANE_FLOW_RATE).abs() < 1e-9);
 
         let input = HashMap::from([(Item::CopperCable, 5.0)]);
         let output = belt.transform_flow(&input);
@@ -1081,10 +1199,15 @@ mod tests {
         };
         let edges = ub.connections((1, 0), Direction::East, &w);
 
-        // Should find the underground belt at (3,0)
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].0, NodeId::new(Item::UndergroundBelt, 1, 0));
-        assert_eq!(edges[0].1, NodeId::new(Item::UndergroundBelt, 3, 0));
+        // Should find the underground belt at (3,0); lanes persist through
+        // the tunnel (Left→Left, Right→Right).
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::UndergroundBelt, 1, 0, lane),
+                NodeId::with_lane(Item::UndergroundBelt, 3, 0, lane),
+            )));
+        }
     }
 
     #[test]
@@ -1099,14 +1222,15 @@ mod tests {
         };
         let edges = ub.connections((3, 0), Direction::East, &w);
 
-        // An exit outputs like a belt: it feeds the cell directly ahead.
-        assert_eq!(
-            edges,
-            vec![(
-                NodeId::new(Item::UndergroundBelt, 3, 0),
-                NodeId::new(Item::TransportBelt, 4, 0),
-            )]
-        );
+        // An exit outputs like a belt: it feeds the cell directly ahead,
+        // lane-preservingly.
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::UndergroundBelt, 3, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 4, 0, lane),
+            )));
+        }
     }
 
     #[test]
@@ -1124,12 +1248,24 @@ mod tests {
         let splitter = Splitter;
         let edges = splitter.connections((2, 0), Direction::East, &w);
 
-        // Should have: belt(1,0)->splitter, splitter->belt(3,0), splitter->belt(3,1)
-        let self_id = NodeId::new(Item::Splitter, 2, 0);
-        assert!(edges.contains(&(NodeId::new(Item::TransportBelt, 1, 0), self_id.clone())));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 3, 0))));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 3, 1))));
-        assert_eq!(edges.len(), 3);
+        // Input: belt(1,0) feeds the tile it touches, (2,0), lane-preserving.
+        // Output: EVERY tile-lane pool fans to the same lane of BOTH output
+        // belts (2 tiles × 2 receivers × 2 lanes = 8 edges).
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 1, 0, lane),
+                NodeId::with_lane(Item::Splitter, 2, 0, lane),
+            )));
+            for tile_y in [0, 1] {
+                for out_y in [0, 1] {
+                    assert!(edges.contains(&(
+                        NodeId::with_lane(Item::Splitter, 2, tile_y, lane),
+                        NodeId::with_lane(Item::TransportBelt, 3, out_y, lane),
+                    )));
+                }
+            }
+        }
+        assert_eq!(edges.len(), 10, "got edges: {edges:?}");
     }
 
     #[test]
@@ -1147,25 +1283,36 @@ mod tests {
         let splitter = Splitter;
         let edges = splitter.connections((0, 2), Direction::North, &w);
 
-        let self_id = NodeId::new(Item::Splitter, 0, 2);
-        assert!(edges.contains(&(NodeId::new(Item::TransportBelt, 0, 3), self_id.clone())));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 0, 1))));
-        assert!(edges.contains(&(self_id.clone(), NodeId::new(Item::TransportBelt, 1, 1))));
-        assert_eq!(edges.len(), 3);
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 0, 3, lane),
+                NodeId::with_lane(Item::Splitter, 0, 2, lane),
+            )));
+            for tile_x in [0, 1] {
+                for out_x in [0, 1] {
+                    assert!(edges.contains(&(
+                        NodeId::with_lane(Item::Splitter, tile_x, 2, lane),
+                        NodeId::with_lane(Item::TransportBelt, out_x, 1, lane),
+                    )));
+                }
+            }
+        }
+        assert_eq!(edges.len(), 10, "got edges: {edges:?}");
     }
 
     #[test]
     fn test_splitter_transform_flow() {
         let splitter = Splitter;
-        // 20 i/s passes through (under 30 cap)
+        // A splitter node is one (tile, lane) pool: 5 i/s passes through
+        // (under the per-lane 7.5 cap)…
+        let input = HashMap::from([(Item::CopperCable, 5.0)]);
+        let output = splitter.transform_flow(&input);
+        assert!((output[&Item::CopperCable] - 5.0).abs() < 1e-9);
+
+        // …and 20 i/s caps at 7.5 (4 pools × 7.5 = the old whole-splitter 30).
         let input = HashMap::from([(Item::CopperCable, 20.0)]);
         let output = splitter.transform_flow(&input);
-        assert!((output[&Item::CopperCable] - 20.0).abs() < 1e-9);
-
-        // 40 i/s capped at 30 (2 lanes × 15)
-        let input = HashMap::from([(Item::CopperCable, 40.0)]);
-        let output = splitter.transform_flow(&input);
-        assert!((output[&Item::CopperCable] - 30.0).abs() < 1e-9);
+        assert!((output[&Item::CopperCable] - LANE_FLOW_RATE).abs() < 1e-9);
     }
 
     #[test]

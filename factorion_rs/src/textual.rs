@@ -67,7 +67,7 @@ use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::render::{bbox, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS};
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Misc, NodeId};
+use crate::types::{Channel, Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
@@ -471,7 +471,10 @@ fn parse_graph_spec(text: &str) -> Result<Vec<(NodeId, NodeId)>, String> {
     Ok(edges)
 }
 
-/// Parse one `<char>@x,y` node reference into a [`NodeId`].
+/// Parse one `<char>@x,y[:L|:R]` node reference into a [`NodeId`]. The
+/// optional lane suffix names one lane node of a belt-ish entity; without
+/// it the reference is lane-less (and, in a fixture that uses no lane
+/// suffixes at all, matches the whole entity — see [`check_graph`]).
 fn parse_graph_node(s: &str) -> Result<NodeId, String> {
     let s = s.trim();
     let (head, coords) = s
@@ -485,6 +488,17 @@ fn parse_graph_node(s: &str) -> Result<NodeId, String> {
             .ok_or_else(|| format!("graph node '{s}': unknown entity character '{c}'"))?,
         _ => return Err(format!("graph node '{s}': entity must be one character")),
     };
+    let (coords, lane) = match coords.split_once(':') {
+        Some((c, l)) => {
+            let lane = match l.trim() {
+                "L" => Lane::Left,
+                "R" => Lane::Right,
+                other => return Err(format!("graph node '{s}': unknown lane '{other}'")),
+            };
+            (c, Some(lane))
+        }
+        None => (coords, None),
+    };
     let (xs, ys) = coords
         .split_once(',')
         .ok_or_else(|| format!("graph node '{s}': expected coordinates 'x,y'"))?;
@@ -496,16 +510,26 @@ fn parse_graph_node(s: &str) -> Result<NodeId, String> {
         .trim()
         .parse::<usize>()
         .map_err(|_| format!("graph node '{s}': invalid y coordinate"))?;
-    Ok(NodeId::new(item, x, y))
+    Ok(match lane {
+        Some(l) => NodeId::with_lane(item, x, y, l),
+        None => NodeId::new(item, x, y),
+    })
 }
 
-/// Compact `<char>@x,y` rendering of a node, for graph-mismatch messages.
+/// Compact `<char>@x,y[:L|:R]` rendering of a node, for graph-mismatch
+/// messages.
 fn fmt_node(id: &NodeId) -> String {
+    let lane = match id.lane {
+        None => "",
+        Some(Lane::Left) => ":L",
+        Some(Lane::Right) => ":R",
+    };
     format!(
-        "{}@{},{}",
+        "{}@{},{}{}",
         render_char(id.entity_kind, Misc::None),
         id.x,
-        id.y
+        id.y,
+        lane
     )
 }
 
@@ -593,17 +617,33 @@ pub(crate) fn assert_throughput(spec: &FactorySpec) {
 /// Check the graph produced by parsing the factory against the header's
 /// `graph:` edge set (order-independent). Returns `Ok` when no `graph:` was
 /// given, otherwise `Err` listing the missing and unexpected edges.
+///
+/// Two comparison modes, chosen per fixture: if ANY expected node carries a
+/// lane suffix (`:L`/`:R`), produced edges are compared exactly, lane nodes
+/// and all. If none do, the produced graph is projected to entity level
+/// first (lanes dropped, parallel lane edges deduplicated) — those fixtures
+/// assert entity connectivity, not lane wiring.
 pub(crate) fn check_graph(spec: &FactorySpec) -> Result<(), String> {
     let expected = match &spec.expected_graph {
         Some(e) => e,
         None => return Ok(()),
     };
     let graph = build_graph(&spec.world);
+    let lane_mode = expected
+        .iter()
+        .any(|(a, b)| a.lane.is_some() || b.lane.is_some());
 
+    let strip = |id: &NodeId| -> NodeId {
+        let mut id = id.clone();
+        if !lane_mode {
+            id.lane = None;
+        }
+        id
+    };
     let mut actual: HashSet<(NodeId, NodeId)> = HashSet::new();
     for (i, succs) in graph.successors.iter().enumerate() {
         for &j in succs {
-            actual.insert((graph.nodes[i].id.clone(), graph.nodes[j].id.clone()));
+            actual.insert((strip(&graph.nodes[i].id), strip(&graph.nodes[j].id)));
         }
     }
     let expected: HashSet<(NodeId, NodeId)> = expected.iter().cloned().collect();

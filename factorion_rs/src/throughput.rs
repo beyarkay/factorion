@@ -86,8 +86,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .collect();
 
     if sources.is_empty() || sinks.is_empty() {
-        // No sources or no sinks → no throughput, but all nodes are unreachable
-        return (Vec::new(), graph.node_count());
+        // No sources or no sinks → no throughput, every entity is unreachable
+        return (
+            Vec::new(),
+            count_unreachable_entities(graph, &HashSet::new()),
+        );
     }
 
     // Find nodes reachable from sources (for determining processing order)
@@ -209,8 +212,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         });
     }
 
-    // 4. Count unreachable nodes
-    // unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
+    // 4. Count unreachable ENTITIES (not nodes)
+    // on_path = can_reach_sink ∩ reachable_from_source.
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
     // source to sink, both will be in the intersection. If not, they're unreachable.
@@ -221,10 +224,22 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .copied()
         .collect();
 
-    let all_nodes: HashSet<usize> = (0..graph.node_count()).collect();
-    let unreachable = all_nodes.difference(&on_path).count();
+    (deliveries, count_unreachable_entities(graph, &on_path))
+}
 
-    (deliveries, unreachable)
+/// Count entity units with NO node on a source→sink path. Since dual lanes,
+/// nodes are not 1:1 with entities — a belt tile owns two lane nodes and a
+/// splitter four — and plenty of legitimate layouts leave a lane forever
+/// empty (an inserter only ever fills one lane of the belt it drops on), so
+/// unreachability is an entity-level judgment: an entity is an orphan iff
+/// none of its nodes lie on a path. Grouping is by the entity's anchor tile.
+fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) -> usize {
+    let mut unit_on_path: HashMap<(usize, usize), bool> = HashMap::new();
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        let hit = unit_on_path.entry(node.anchor).or_insert(false);
+        *hit |= on_path.contains(&idx);
+    }
+    unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
 /// Check if the graph has any cycles using DFS.
@@ -382,6 +397,7 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
+                    anchor: (0, 0),
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
@@ -391,6 +407,7 @@ mod tests {
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
+                    anchor: (1, 0),
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },

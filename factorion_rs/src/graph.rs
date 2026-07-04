@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
-use crate::types::{Item, Misc, NodeId};
+use crate::types::{Item, Misc, NodeId, LANES};
 use crate::world::World;
 
 /// A node in the factory graph.
@@ -16,6 +16,11 @@ pub struct GraphNode {
     /// Recipe for assembling machines (determines what they craft).
     /// `None` for non-assemblers and assemblers with no recipe set.
     pub recipe_item: Option<Item>,
+    /// Anchor tile of the entity unit this node belongs to. Nodes are no
+    /// longer 1:1 with entities (a belt tile owns two lane nodes, a splitter
+    /// four across its two tiles); grouping by anchor recovers the entity —
+    /// e.g. unreachability is counted per entity, not per lane node.
+    pub anchor: (usize, usize),
     /// Accumulated input flow rates per item type.
     pub input: HashMap<Item, f64>,
     /// Computed output flow rates per item type.
@@ -59,21 +64,34 @@ impl FactoryGraph {
     }
 }
 
-/// Build a directed graph from a World: one node per placeable entity (the
-/// anchor tile only, for multi-tile units), with edges per the engine's
+/// Build a directed graph from a World, with edges per the engine's
 /// entity-connection rules. This is the single source of truth for factory
 /// graph construction.
+///
+/// Nodes are not 1:1 with entities: lane-aware entities (belts, underground
+/// belts, and EACH tile of a splitter) get one node per lane; everything
+/// else gets a single node at its anchor tile (multi-tile assemblers still
+/// collapse their secondary tiles onto the anchor).
 pub fn build_graph(world: &World) -> FactoryGraph {
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
     let mut edge_list: Vec<(NodeId, NodeId)> = Vec::new();
 
-    // For multi-tile entities: maps secondary tile (x,y) → anchor (x,y).
-    // Used to (a) skip secondary tiles during node creation, and
-    // (b) remap edge endpoints so all edges point to the anchor node.
+    // For lane-less multi-tile entities (assembler): maps secondary tile
+    // (x,y) → anchor (x,y). Used to (a) skip secondary tiles during node
+    // creation, and (b) remap edge endpoints so all edges point to the
+    // anchor node.
     let mut anchor_of: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
 
-    // First pass: create one node per entity (anchor tile only for multi-tile)
+    // For lane-aware multi-tile entities (splitter): secondary tile → anchor.
+    // These tiles DO get their own lane nodes (a splitter is two belts side
+    // by side); the map only records unit membership and suppresses a second
+    // `connections()` call — the anchor visit emits edges for both tiles.
+    let mut lane_tile_anchor: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+
+    // First pass: create nodes and collect edges. The scan order (x, then y,
+    // ascending) visits every multi-tile anchor before its secondary tiles,
+    // so the anchor registers them ahead of their own visit.
     for x in 0..world.width() {
         for y in 0..world.height() {
             // Empty cell, or a stray non-placeable item in the entities
@@ -86,6 +104,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             if anchor_of.contains_key(&(x, y)) {
                 continue;
             }
+            let secondary_lane_tile = lane_tile_anchor.contains_key(&(x, y));
 
             let item = world.item_at(x, y);
             let direction = world.direction_at(x, y);
@@ -96,50 +115,67 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             // direction for tile computation since their footprint is
             // rotation-independent.
             let (ew, eh) = entity_kind.size();
-            if ew > 1 || eh > 1 {
+            if !secondary_lane_tile && (ew > 1 || eh > 1) {
                 if let Some(tiles) = entity_tiles(x, y, direction, ew, eh) {
                     for tile in &tiles[1..] {
                         if let Some((tx, ty)) = tile.to_usize() {
-                            anchor_of.insert((tx, ty), (x, y));
+                            if entity_kind.is_lane_aware() {
+                                lane_tile_anchor.insert((tx, ty), (x, y));
+                            } else {
+                                anchor_of.insert((tx, ty), (x, y));
+                            }
                         }
                     }
                 }
             }
 
-            let node_id = NodeId::new(entity_kind, x, y);
+            let anchor = lane_tile_anchor.get(&(x, y)).copied().unwrap_or((x, y));
 
-            let output = if entity_kind == Item::Source {
-                let mut m = HashMap::new();
-                if let Some(i) = item {
-                    m.insert(i, f64::INFINITY);
-                }
-                m
+            let node_ids: Vec<NodeId> = if entity_kind.is_lane_aware() {
+                LANES
+                    .iter()
+                    .map(|&lane| NodeId::with_lane(entity_kind, x, y, lane))
+                    .collect()
             } else {
-                HashMap::new()
+                vec![NodeId::new(entity_kind, x, y)]
             };
-
-            let idx = nodes.len();
-            nodes.push(GraphNode {
-                id: node_id.clone(),
-                entity_kind,
-                item,
-                misc,
-                recipe_item: if entity_kind == Item::AssemblingMachine1 {
-                    item
+            for node_id in node_ids {
+                let output = if entity_kind == Item::Source {
+                    let mut m = HashMap::new();
+                    if let Some(i) = item {
+                        m.insert(i, f64::INFINITY);
+                    }
+                    m
                 } else {
-                    None
-                },
-                input: HashMap::new(),
-                output,
-            });
-            node_index.insert(node_id, idx);
+                    HashMap::new()
+                };
+                let idx = nodes.len();
+                nodes.push(GraphNode {
+                    id: node_id.clone(),
+                    entity_kind,
+                    item,
+                    misc,
+                    recipe_item: if entity_kind == Item::AssemblingMachine1 {
+                        item
+                    } else {
+                        None
+                    },
+                    anchor,
+                    input: HashMap::new(),
+                    output,
+                });
+                node_index.insert(node_id, idx);
+            }
 
             // entity_kind is guaranteed placeable by the loop guard, so
             // EntityEnum::new always returns Some here. We still match
-            // defensively rather than unwrap.
-            if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
-                let edges = entity.connections((x, y), direction, world);
-                edge_list.extend(edges);
+            // defensively rather than unwrap. Secondary lane tiles skip
+            // this: their unit's anchor already emitted edges for them.
+            if !secondary_lane_tile {
+                if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
+                    let edges = entity.connections((x, y), direction, world);
+                    edge_list.extend(edges);
+                }
             }
         }
     }
@@ -173,11 +209,18 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     }
 }
 
-/// If (id.x, id.y) is a secondary tile of a multi-tile entity, return a new
-/// NodeId pointing to the anchor. Otherwise return the original.
+/// If (id.x, id.y) is a secondary tile of a lane-less multi-tile entity
+/// (assembler), return a new NodeId pointing to the anchor. Otherwise return
+/// the original. Splitter tiles are NOT in this map — each keeps its own
+/// per-tile lane nodes.
 fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usize)>) -> NodeId {
     if let Some(&(ax, ay)) = anchor_of.get(&(id.x, id.y)) {
-        NodeId::new(id.entity_kind, ax, ay)
+        NodeId {
+            entity_kind: id.entity_kind,
+            x: ax,
+            y: ay,
+            lane: id.lane,
+        }
     } else {
         id.clone()
     }
@@ -273,10 +316,21 @@ mod tests {
         place_conn_cfg(&mut w, cx, cy, a, a_dir);
         place_conn_cfg(&mut w, bx, by, b, b_dir);
         let g = build_graph(&w);
-        let ia = g.get_index(&NodeId::new(a.item, cx, cy)).unwrap();
-        let ib = g.get_index(&NodeId::new(b.item, bx, by)).unwrap();
-        let a2b = g.successors[ia].contains(&ib);
-        let b2a = g.successors[ib].contains(&ia);
+        // Connectivity is judged at the ENTITY level: any edge between any of
+        // A's nodes and any of B's (belt-ish entities own one node per lane).
+        let nodes_at = |x: usize, y: usize| -> Vec<usize> {
+            (0..g.node_count())
+                .filter(|&i| g.nodes[i].id.x == x && g.nodes[i].id.y == y)
+                .collect()
+        };
+        let ia = nodes_at(cx, cy);
+        let ib = nodes_at(bx, by);
+        let any_edge = |from: &[usize], to: &[usize]| {
+            from.iter()
+                .any(|&i| g.successors[i].iter().any(|j| to.contains(j)))
+        };
+        let a2b = any_edge(&ia, &ib);
+        let b2a = any_edge(&ib, &ia);
         match (a2b, b2a) {
             (false, false) => Conn::None,
             (true, false) => Conn::AToB,
@@ -348,9 +402,10 @@ mod tests {
         w.place(1, 1, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 1);
-        assert!(g.successors[0].is_empty());
-        assert!(g.predecessors[0].is_empty());
+        // One node per lane.
+        assert_eq!(g.node_count(), 2);
+        assert!(g.successors.iter().all(|s| s.is_empty()));
+        assert!(g.predecessors.iter().all(|p| p.is_empty()));
     }
 
     #[test]
@@ -363,25 +418,27 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 4);
+        // Source(1) + 2 belts (2 lane nodes each) + Sink(1).
+        assert_eq!(g.node_count(), 6);
 
-        // Belt(1,0) → Belt(2,0) edge should exist
-        let belt1 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 1, 0))
-            .unwrap();
-        let belt2 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 2, 0))
-            .unwrap();
-        assert!(g.successors[belt1].contains(&belt2));
-        assert!(g.predecessors[belt2].contains(&belt1));
-
-        // Source uses inserter-style connections: drops onto belt at (1,0)
         let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
-        assert!(g.successors[source].contains(&belt1));
-
-        // Sink picks up from belt at (2,0)
         let sink = g.get_index(&NodeId::new(Item::Sink, 3, 0)).unwrap();
-        assert!(g.predecessors[sink].contains(&belt2));
+        for lane in LANES {
+            // Belt(1,0) → Belt(2,0) is lane-preserving.
+            let belt1 = g
+                .get_index(&NodeId::with_lane(Item::TransportBelt, 1, 0, lane))
+                .unwrap();
+            let belt2 = g
+                .get_index(&NodeId::with_lane(Item::TransportBelt, 2, 0, lane))
+                .unwrap();
+            assert!(g.successors[belt1].contains(&belt2));
+            assert!(g.predecessors[belt2].contains(&belt1));
+
+            // The source fills both lanes of the belt at (1,0)…
+            assert!(g.successors[source].contains(&belt1));
+            // …and the sink drains both lanes of the belt at (2,0).
+            assert!(g.predecessors[sink].contains(&belt2));
+        }
     }
 
     #[test]
@@ -395,22 +452,26 @@ mod tests {
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        assert_eq!(g.node_count(), 5);
+        // Source + 2 inserters + sink (single) + belt (2 lane nodes).
+        assert_eq!(g.node_count(), 6);
 
         // Source → Inserter(1,0)
         let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
         let ins1 = g.get_index(&NodeId::new(Item::Inserter, 1, 0)).unwrap();
         assert!(g.successors[source].contains(&ins1) || g.predecessors[ins1].contains(&source));
 
-        // Inserter(1,0) → Belt(2,0)
-        let belt = g
-            .get_index(&NodeId::new(Item::TransportBelt, 2, 0))
-            .unwrap();
-        assert!(g.successors[ins1].contains(&belt));
-
-        // Belt(2,0) → Inserter(3,0)
         let ins2 = g.get_index(&NodeId::new(Item::Inserter, 3, 0)).unwrap();
-        assert!(g.predecessors[ins2].contains(&belt));
+        for lane in LANES {
+            // Inserter(1,0) → Belt(2,0): both lanes until the drop-lane
+            // rules land.
+            let belt = g
+                .get_index(&NodeId::with_lane(Item::TransportBelt, 2, 0, lane))
+                .unwrap();
+            assert!(g.successors[ins1].contains(&belt));
+
+            // Belt(2,0) → Inserter(3,0): picks from both lanes.
+            assert!(g.predecessors[ins2].contains(&belt));
+        }
     }
 
     #[test]
@@ -423,20 +484,43 @@ mod tests {
         w.place(5, 0, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
+        // 4 belt-ish entities × 2 lane nodes.
+        assert_eq!(g.node_count(), 8);
+
+        for lane in LANES {
+            // Underground(down,1,0) → Underground(up,4,0): lanes persist
+            // through the tunnel.
+            let ug_down = g
+                .get_index(&NodeId::with_lane(Item::UndergroundBelt, 1, 0, lane))
+                .unwrap();
+            let ug_up = g
+                .get_index(&NodeId::with_lane(Item::UndergroundBelt, 4, 0, lane))
+                .unwrap();
+            assert!(g.successors[ug_down].contains(&ug_up));
+
+            let belt0 = g
+                .get_index(&NodeId::with_lane(Item::TransportBelt, 0, 0, lane))
+                .unwrap();
+            assert!(g.successors[belt0].contains(&ug_down));
+        }
+    }
+
+    #[test]
+    fn test_splitter_four_lane_nodes() {
+        // A splitter is two belts side by side, each with two lanes: four
+        // nodes, all sharing the anchor for entity-unit grouping.
+        let mut w = World::empty(4, 3);
+        w.place_splitter(1, 0, Direction::East, None);
+
+        let g = build_graph(&w);
         assert_eq!(g.node_count(), 4);
-
-        // Underground(down,1,0) → Underground(up,4,0)
-        let ug_down = g
-            .get_index(&NodeId::new(Item::UndergroundBelt, 1, 0))
-            .unwrap();
-        let ug_up = g
-            .get_index(&NodeId::new(Item::UndergroundBelt, 4, 0))
-            .unwrap();
-        assert!(g.successors[ug_down].contains(&ug_up));
-
-        let belt0 = g
-            .get_index(&NodeId::new(Item::TransportBelt, 0, 0))
-            .unwrap();
-        assert!(g.successors[belt0].contains(&ug_down));
+        for tile_y in [0, 1] {
+            for lane in LANES {
+                let idx = g
+                    .get_index(&NodeId::with_lane(Item::Splitter, 1, tile_y, lane))
+                    .unwrap();
+                assert_eq!(g.nodes[idx].anchor, (1, 0));
+            }
+        }
     }
 }
