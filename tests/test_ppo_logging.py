@@ -16,7 +16,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
-    Args,
+    PPOArgs,
     AgentCNN,
     FactorioEnv,
     make_env,
@@ -44,7 +44,7 @@ def registered_env():
 
 class TestRunSignature:
     def test_encodes_core_hyperparams(self):
-        sig = _run_signature(Args(size=11, learning_rate=5e-5, seed=3))
+        sig = _run_signature(PPOArgs(size=11, learning_rate=5e-5, seed=3))
         assert sig.startswith("ppo-s11-")
         assert "lr5e-05" in sig
         assert sig.endswith("-seed3")
@@ -52,12 +52,12 @@ class TestRunSignature:
         assert not (set(sig) & set("/:\\ "))
 
     def test_includes_start_from_and_warmup(self):
-        sig = _run_signature(Args(start_from="j0s5y2mc", critic_warmup=10))
+        sig = _run_signature(PPOArgs(start_from="j0s5y2mc", critic_warmup=10))
         assert "fromj0s5y2mc" in sig
         assert "cw10" in sig
 
     def test_omits_optional_when_default(self):
-        sig = _run_signature(Args(critic_warmup=0, start_from=None, target_kl=None))
+        sig = _run_signature(PPOArgs(critic_warmup=0, start_from=None, target_kl=None))
         assert "cw" not in sig
         assert "from" not in sig
         assert "kl" not in sig
@@ -68,7 +68,7 @@ class TestRunSignature:
 
 class TestBuildEvalSet:
     def test_disjoint_seeds_all_kinds_buildable(self):
-        args = Args(size=11, eval_seeds_per_kind=2, seed=1)
+        args = PPOArgs(size=11, eval_seeds_per_kind=2, seed=1)
         s2k = _build_eval_set(args)
         # Unique seeds (dict keys), and every (seed, kind) actually builds.
         assert len(s2k) == len(set(s2k))
@@ -83,7 +83,7 @@ class TestBuildEvalSet:
     def test_seeds_disjoint_from_training_range(self):
         # Training resets use seeds near args.seed (+ env idx); the eval pool
         # lives in a high range so eval factories are never trained on.
-        args = Args(size=11, eval_seeds_per_kind=2, seed=1)
+        args = PPOArgs(size=11, eval_seeds_per_kind=2, seed=1)
         assert min(_build_eval_set(args)) > 1_000_000
 
 

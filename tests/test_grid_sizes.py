@@ -70,8 +70,8 @@ class TestGridSizes:
         env.close()
 
     def test_default_size_is_11(self):
-        """Default Args.size is 11, matching the canonical SFT checkpoint
+        """Default PPOArgs.size is 11, matching the canonical SFT checkpoint
         (kkcv6xe3) so `ppo.py --start_from <ckpt>` loads without arch flags."""
-        from ppo import Args
-        args = Args()
+        from ppo import PPOArgs
+        args = PPOArgs()
         assert args.size == 11

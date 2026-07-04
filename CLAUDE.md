@@ -35,7 +35,8 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 
 ## Project Structure
 
-- `ppo.py` — Main PPO training script. Contains `Args` dataclass, `FactorioEnv` (Gymnasium env), and `AgentCNN` (PyTorch policy network).
+- `ppo.py` — Main PPO training script. Contains `FactorioEnv` (Gymnasium env) and `AgentCNN` (PyTorch policy network); imports the `PPOArgs` hyperparameter dataclass from `training_config.py`.
+- `training_config.py` — Single source of truth for training hyperparameters. Defines `SharedArgs` (defaults common to PPO + SFT: grid `size`, CNN encoder shape, W&B project, seed, tags) and the `PPOArgs`/`SFTArgs` dataclasses that inherit it. `ppo.py`/`sft.py` and the CI scripts all read defaults from here.
 - `sft.py` — Supervised pretraining. `SFTArgs` dataclass, `extract_expert_actions` (factory pair → training tuples), `run_rollout_eval` (greedy throughput eval), `train_sft` (training loop). Imports `AgentCNN`/`FactorioEnv` **from `ppo.py`**, so the SFT and PPO policies are literally the same network — a checkpoint from one loads into the other.
 - `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`, `LessonKind`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
 - `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`) and the lesson generator (`build_factory` in `src/factory_gen.rs`, with a fast deterministic RNG in `src/rng.rs`; exposed to Python as `factorion.build_factory`, which is what training calls). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
@@ -52,7 +53,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - **Underground lessons**: `MOVE_VIA_UG_BELT` forces underground belts with an `UNAVAILABLE`-footprint wall; `CROSS_UNDER_BELT` gives a real, protected belt line (the "obstruction" — a winding edge-to-edge cut) the crossing must tunnel *under* via `factory_gen.rs::ug_aware_belt_path` (a Dijkstra that may dip under blocked cells; minimal tunnel span, no 180° reversals or tile reuse, source→UG-down / UG-up→sink shortcuts).
 - **No-orphan invariant**: no lesson's solved factory may contain orphan tiles — throughput must report `unreachable == 0` (checked by `factory_gen.rs::tests::test_no_orphan_tiles_every_lesson` across every `LessonKind`).
 - **Rendering factories to ASCII** — when asked to "render"/"show"/"draw" factories, use the real renderer, never hand-roll one: `from factorion import render_factory; print(render_factory(factory))` (accepts a `Factory` or a `(C, W, H)` world tensor; Rust binding `factorion_rs.render_factory(world_WHC)` lives in `factorion_rs/src/render.rs`). It returns the two-char grid format the textual fixtures use — `b`=belt, `i`=inserter, `l`=long-handed inserter, `a`=assembler box, `Y`=splitter, `d`/`u`=underground down/up, `S`=source, `K`=sink, each plus a facing marker `^>v<`; `..` is an empty tile. To also show each factory's recipe, read the assembler's tagged item from the `ITEMS` channel (or the sink's carried item).
-- **`ppo.py`**: `Args` (all PPO hyperparams + `start_from`, `critic_warmup`, `eval_every`), `FactorioEnv` (`reset`/`step`; reward = `-step_penalty` per step `+ throughput_reward_scale * thput_normed` on termination; `eot` is a real action that ends the episode; `info['kind']` carries the lesson for per-lesson logging), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`; stashes `_last_head_entropy`/`_last_eot_prob` for the policy/* metrics), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading), `_run_signature` (run name), `_build_eval_set`/`_run_greedy_eval` (the eval/ section).
+- **`ppo.py`**: `PPOArgs` (all PPO hyperparams + `start_from`, `critic_warmup`, `eval_every`; defined in `training_config.py`), `FactorioEnv` (`reset`/`step`; reward = `-step_penalty` per step `+ throughput_reward_scale * thput_normed` on termination; `eot` is a real action that ends the episode; `info['kind']` carries the lesson for per-lesson logging), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`; stashes `_last_head_entropy`/`_last_eot_prob` for the policy/* metrics), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading), `_run_signature` (run name), `_build_eval_set`/`_run_greedy_eval` (the eval/ section).
 - **`sft.py`**: `run_rollout_eval` returns `RolloutEval` with `overall`/`overall_eot` and per-`LessonKind` breakdowns; checkpoint is selected on `val/thput` (EOT ignored). PPO reuses this for its `eval/` metrics (lazy import to avoid the ppo↔sft cycle).
 
 ## W&B dashboards
@@ -124,7 +125,7 @@ with `<kind>` ∈ `ppo-speed` (pure-speed fixed-iteration loop → `results.csv`
 training loop → `sft_bench_results.csv`).
 
 Headlines so far: PPO time-to-quality **113 → 36 s (−68%)** — recipe (now the
-`Args` defaults) + fused sampling + `torch.compile(reduce-overhead)` CUDA graphs
+`PPOArgs` defaults) + fused sampling + `torch.compile(reduce-overhead)` CUDA graphs
 + numpy world-writes. SFT training **88.4 → 22.6 s (−74%)** — GPU-resident data
 (both loops) + lazy imports; the conv fwd/backward is then the floor.
 
@@ -171,7 +172,7 @@ All eight must pass before the work is considered complete.
 
 ## Code Conventions
 
-- CLI arguments are defined via a `Args` dataclass parsed by `tyro`.
+- CLI arguments are defined via the `PPOArgs`/`SFTArgs` dataclasses (in `training_config.py`) parsed by `tyro`.
 - The RL environment follows the Gymnasium API (`reset`, `step`, `render`).
 - Factory state is represented as 3D tensors with semantic channels.
 - Experiment runs are tracked with Weights & Biases.

@@ -12,7 +12,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, Args, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, PPOArgs, FactorioEnv, make_env  # noqa: E402
 from helpers import Channel  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -224,8 +224,8 @@ class TestRegularisation:
 
     def test_arg_defaults_are_noop(self):
         """The CLI defaults must leave training behaviour unchanged."""
-        assert Args().dropout == 0.0
-        assert Args().weight_decay == 0.0
+        assert PPOArgs().dropout == 0.0
+        assert PPOArgs().weight_decay == 0.0
 
     def test_default_agent_carries_inert_dropout(self, agent):
         """Default AgentCNN has Dropout2d layers (so the knob exists) but
@@ -261,7 +261,7 @@ class TestRegularisation:
         no L2 penalty in the Adam param group."""
         import torch.optim as optim
 
-        opt = optim.Adam(agent.parameters(), weight_decay=Args().weight_decay)
+        opt = optim.Adam(agent.parameters(), weight_decay=PPOArgs().weight_decay)
         assert opt.param_groups[0]["weight_decay"] == 0.0
         tuned = optim.Adam(agent.parameters(), weight_decay=0.01)
         assert tuned.param_groups[0]["weight_decay"] == 0.01

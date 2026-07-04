@@ -1,17 +1,17 @@
 """Single source of truth for training hyperparameters.
 
-`Args` (PPO) and `SFTArgs` share their identical defaults through the
+`PPOArgs` and `SFTArgs` share their identical defaults through the
 `SharedArgs` base so a value like the grid size, the CNN encoder shape, or the
 W&B project lives in exactly one place. `ppo.py` and `sft.py` import the
-dataclasses from here (`from training_config import Args` / `SFTArgs`); the CI
+dataclasses from here (`from training_config import PPOArgs` / `SFTArgs`); the CI
 shell scripts read the same defaults with
-``python -c "from training_config import Args; print(Args().<field>)"`` instead
+``python -c "from training_config import PPOArgs; print(PPOArgs().<field>)"`` instead
 of hardcoding their own copies.
 
 Keep this module a leaf: it must not import torch / ppo / sft / factorion, so
 importing it (from Python or a shell one-liner) stays cheap.
 
-Fields that share a *name* but not a *value* across PPO and SFT (they are tuned
+Fields that share a *name* but not a *value* across PPO (`PPOArgs`) and SFT (they are tuned
 independently — e.g. `learning_rate`/`lr`, `dropout`, `weight_decay`,
 `max_grad_norm`, `tile_head_std`) live on each dataclass, not on `SharedArgs`.
 """
@@ -27,7 +27,7 @@ NUM_LAYER_SLOTS = 8
 
 @dataclass
 class SharedArgs:
-    """Defaults common to PPO (`Args`) and SFT (`SFTArgs`) with identical values.
+    """Defaults common to PPO (`PPOArgs`) and SFT (`SFTArgs`) with identical values.
 
     The CNN encoder shape (`layer1..8`, `kernel_size`) and `size` MUST match
     between the two so an SFT checkpoint loads into the PPO policy unchanged.
@@ -67,7 +67,7 @@ class SharedArgs:
 
 
 @dataclass
-class Args(SharedArgs):
+class PPOArgs(SharedArgs):
     exp_name: str = "ppo"
     """the name of this experiment"""
     torch_deterministic: bool = True

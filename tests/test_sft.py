@@ -660,7 +660,7 @@ class TestTrainSFTEndToEnd:
 
 class TestSFTDropout:
     """The SFT dropout knob, when set, must reach the encoder via AgentCNN —
-    mirrors ppo.Args' regularisation contract."""
+    mirrors ppo.PPOArgs' regularisation contract."""
 
     def test_train_sft_threads_dropout_into_agent(self, monkeypatch, tmp_path):
         """train_sft must pass args.dropout through to AgentCNN. Spy on the
