@@ -461,15 +461,22 @@ mod tests {
         assert!(g.successors[source].contains(&ins1) || g.predecessors[ins1].contains(&source));
 
         let ins2 = g.get_index(&NodeId::new(Item::Inserter, 3, 0)).unwrap();
+        // Inserter(1,0) → Belt(2,0): parallel belt → drops on the RIGHT
+        // lane only.
+        let belt_r = g
+            .get_index(&NodeId::with_lane(
+                Item::TransportBelt,
+                2,
+                0,
+                crate::types::Lane::Right,
+            ))
+            .unwrap();
+        assert!(g.successors[ins1].contains(&belt_r));
         for lane in LANES {
-            // Inserter(1,0) → Belt(2,0): both lanes until the drop-lane
-            // rules land.
+            // Belt(2,0) → Inserter(3,0): picks from both lanes.
             let belt = g
                 .get_index(&NodeId::with_lane(Item::TransportBelt, 2, 0, lane))
                 .unwrap();
-            assert!(g.successors[ins1].contains(&belt));
-
-            // Belt(2,0) → Inserter(3,0): picks from both lanes.
             assert!(g.predecessors[ins2].contains(&belt));
         }
     }

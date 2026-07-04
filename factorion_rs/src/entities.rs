@@ -705,7 +705,13 @@ fn inserter_connections(
         }
     }
 
-    // Drop onto the cell `reach` tiles ahead (in facing direction)
+    // Drop onto the cell `reach` tiles ahead (in facing direction). Onto a
+    // belt-ish tile, an inserter only ever fills ONE lane (wiki rules): the
+    // FAR lane when the belt runs perpendicular to the inserter (the arm
+    // sweeps across to the opposite side — `Lane::on_side` of the arm's
+    // direction), and the belt's RIGHT lane when it runs parallel or
+    // anti-parallel. A curved tile facing perpendicular to the arm gets the
+    // far side via the same expression.
     let dst_x = x as i64 + dx * reach;
     let dst_y = y as i64 + dy * reach;
     if world.in_bounds(dst_x, dst_y) {
@@ -721,12 +727,21 @@ fn inserter_connections(
                     | Item::Sink
             );
             if dst_is_insertable {
-                edges.extend(lane_preserving_edges(
-                    self_kind,
-                    (x, y),
-                    dst_entity,
-                    (dx_u, dy_u),
-                ));
+                if dst_entity.is_lane_aware() {
+                    let dst_dir = world.direction_at(dx_u, dy_u);
+                    let lane = Lane::on_side(dst_dir, dir).unwrap_or(Lane::Right);
+                    edges.push((
+                        NodeId::new(self_kind, x, y),
+                        NodeId::with_lane(dst_entity, dx_u, dy_u, lane),
+                    ));
+                } else {
+                    edges.extend(lane_preserving_edges(
+                        self_kind,
+                        (x, y),
+                        dst_entity,
+                        (dx_u, dy_u),
+                    ));
+                }
             }
         }
     }
@@ -1068,19 +1083,18 @@ mod tests {
         let inserter = Inserter;
         let edges = inserter.connections((1, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 3, "got edges: {edges:?}");
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
         // Source → Inserter
         assert!(edges.contains(&(
             NodeId::new(Item::Source, 0, 0),
             NodeId::new(Item::Inserter, 1, 0),
         )));
-        // Inserter → Belt (both lanes until the drop-lane rules land)
-        for lane in LANES {
-            assert!(edges.contains(&(
-                NodeId::new(Item::Inserter, 1, 0),
-                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
-            )));
-        }
+        // Inserter → Belt: the belt runs parallel to the inserter, so the
+        // drop lands on its RIGHT lane only.
+        assert!(edges.contains(&(
+            NodeId::new(Item::Inserter, 1, 0),
+            NodeId::with_lane(Item::TransportBelt, 2, 0, Lane::Right),
+        )));
     }
 
     #[test]
@@ -1140,20 +1154,17 @@ mod tests {
         let lhi = LongHandedInserter;
         let edges = lhi.connections((2, 0), Direction::East, &w);
 
-        assert_eq!(edges.len(), 3, "got edges: {edges:?}");
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
         // Source(0,0) → LongHandedInserter(2,0)
         assert!(edges.contains(&(
             NodeId::new(Item::Source, 0, 0),
             NodeId::new(Item::LongHandedInserter, 2, 0),
         )));
-        // LongHandedInserter(2,0) → Belt(4,0) (both lanes until the
-        // drop-lane rules land)
-        for lane in LANES {
-            assert!(edges.contains(&(
-                NodeId::new(Item::LongHandedInserter, 2, 0),
-                NodeId::with_lane(Item::TransportBelt, 4, 0, lane),
-            )));
-        }
+        // LongHandedInserter(2,0) → Belt(4,0): parallel belt → right lane.
+        assert!(edges.contains(&(
+            NodeId::new(Item::LongHandedInserter, 2, 0),
+            NodeId::with_lane(Item::TransportBelt, 4, 0, Lane::Right),
+        )));
     }
 
     #[test]
@@ -1431,6 +1442,55 @@ mod tests {
         let input = HashMap::from([(Item::CopperCable, 20.0)]);
         let output = splitter.transform_flow(&input);
         assert!((output[&Item::CopperCable] - LANE_FLOW_RATE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_inserter_drop_lane_matrix() {
+        // Wiki rules: perpendicular belt → FAR lane (opposite side from the
+        // inserter); parallel or anti-parallel belt → the belt's RIGHT lane.
+        // An east-facing inserter at (0,0) dropping onto the belt at (1,0):
+        // the far side is East.
+        let cases = [
+            // (belt facing, expected drop lane)
+            (Direction::North, Lane::Right), // north-facing: east = right
+            (Direction::South, Lane::Left),  // south-facing: east = left
+            (Direction::East, Lane::Right),  // parallel → right
+            (Direction::West, Lane::Right),  // anti-parallel → right
+        ];
+        for (belt_dir, want) in cases {
+            let mut w = World::empty(3, 3);
+            w.place(0, 0, Item::Inserter, Direction::East, None);
+            w.place(1, 0, Item::TransportBelt, belt_dir, None);
+            let edges = Inserter.connections((0, 0), Direction::East, &w);
+            let drops: Vec<_> = edges
+                .iter()
+                .filter(|(s, _)| s.entity_kind == Item::Inserter)
+                .collect();
+            assert_eq!(
+                drops,
+                vec![&(
+                    NodeId::new(Item::Inserter, 0, 0),
+                    NodeId::with_lane(Item::TransportBelt, 1, 0, want),
+                )],
+                "belt facing {belt_dir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_inserter_drop_onto_ug_uses_same_lane_rule() {
+        // Dropping onto an underground tile follows the same far/right rule.
+        let mut w = World::empty(3, 3);
+        w.place(0, 0, Item::Inserter, Direction::East, None);
+        w.place_underground(1, 0, Direction::North, Misc::UndergroundDown);
+        let edges = Inserter.connections((0, 0), Direction::East, &w);
+        assert_eq!(
+            edges,
+            vec![(
+                NodeId::new(Item::Inserter, 0, 0),
+                NodeId::with_lane(Item::UndergroundBelt, 1, 0, Lane::Right),
+            )]
+        );
     }
 
     #[test]

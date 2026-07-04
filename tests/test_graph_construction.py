@@ -109,9 +109,10 @@ class TestHandcraftedGraphSnapshots:
             _n("inserter", 3, 0),
             _n("bulk_inserter", 4, 0),
         }
+        # The drop lands on the belt's RIGHT lane only (belt parallel to the
+        # inserter — wiki rule); pickup draws from both lanes.
         assert edges == {
             (_n("stack_inserter", 0, 0), _n("inserter", 1, 0)),
-            (_n("inserter", 1, 0), bl),
             (_n("inserter", 1, 0), br),
             (bl, _n("inserter", 3, 0)),
             (br, _n("inserter", 3, 0)),
