@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{get_recipe, Direction, Item, Misc, NodeId, Pos, LANES};
+use crate::types::{get_recipe, Direction, Item, Lane, Misc, NodeId, Pos, LANES};
 use crate::world::World;
 
 /// An edge in the factory graph: (source_node, destination_node).
@@ -26,6 +26,120 @@ fn endpoint_nodes(kind: Item, pos: (usize, usize)) -> Vec<NodeId> {
             .collect()
     } else {
         vec![NodeId::new(kind, x, y)]
+    }
+}
+
+/// The four cardinal directions (facing `None` excluded).
+const CARDINALS: [Direction; 4] = [
+    Direction::North,
+    Direction::East,
+    Direction::South,
+    Direction::West,
+];
+
+/// The travel directions of every belt-connectable feeder pointing into the
+/// belt-ish tile at `pos` — the inputs that determine the tile's shape
+/// (straight vs curved) and whether a side feed is a curve or a sideload.
+/// Feeders are belts, sources/sinks (Factorion's belt-like markers),
+/// underground EXITS, and splitter tiles, each on an adjacent tile facing
+/// into `pos`. Head-on feeds (the receiver facing straight back at the
+/// feeder) never connect and are not feeders. Inserters don't affect belt
+/// shape, exactly as in Factorio.
+fn belt_feeders(world: &World, pos: (usize, usize)) -> Vec<Direction> {
+    let (x, y) = pos;
+    let receiver_dir = world.direction_at(x, y);
+    let mut feeders = Vec::new();
+    for side in CARDINALS {
+        let (dx, dy) = side.delta();
+        let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+        if !world.in_bounds(nx, ny) {
+            continue;
+        }
+        let (nx, ny) = (nx as usize, ny as usize);
+        let kind = match world.entity_at(nx, ny) {
+            Some(k) => k,
+            None => continue,
+        };
+        let travel = world.direction_at(nx, ny);
+        // Must point from the neighbor tile into `pos`…
+        if travel != side.opposite() {
+            continue;
+        }
+        // …and a mutual head-on never connects.
+        if receiver_dir == travel.opposite() {
+            continue;
+        }
+        let emits = match kind {
+            Item::TransportBelt | Item::Source | Item::Sink | Item::Splitter => true,
+            // Only an exit emits onto a neighbor (an entrance's output goes
+            // underground).
+            Item::UndergroundBelt => world.misc_at(nx, ny) == Misc::UndergroundUp,
+            _ => false,
+        };
+        if emits {
+            feeders.push(travel);
+        }
+    }
+    feeders
+}
+
+/// Whether the tile at `pos` is a CURVED transport belt: exactly one
+/// belt-connectable feeder, entering from the side. A curve preserves lanes
+/// (and inserters treat it specially); with any other input mix the belt
+/// stays straight and side feeds become sideloads. Underground belts and
+/// splitters never curve.
+pub(crate) fn is_curved_belt(world: &World, pos: (usize, usize)) -> bool {
+    let (x, y) = pos;
+    if world.entity_at(x, y) != Some(Item::TransportBelt) {
+        return false;
+    }
+    let dir = world.direction_at(x, y);
+    let feeders = belt_feeders(world, pos);
+    feeders.len() == 1 && feeders[0] != dir
+}
+
+/// Edges for a belt-connectable feed from `src` onto the belt-ish tile
+/// `dst`, implementing the curve/sideload rules:
+///
+/// * straight (same travel direction) → lane-preserving pair;
+/// * side feed onto a LONE-input transport belt → the belt is a curve:
+///   lane-preserving pair (left stays left around the bend);
+/// * any other side feed → SIDELOAD: everything the feeder carries (both
+///   lanes) lands on the receiver's near-side lane only. Underground tiles
+///   never curve, so side feeds onto them always sideload.
+///
+/// Lane-less receivers (sink/source) just collect everything.
+fn feed_edges(
+    src_kind: Item,
+    src_pos: (usize, usize),
+    dst_kind: Item,
+    dst_pos: (usize, usize),
+    world: &World,
+) -> Vec<Edge> {
+    if !dst_kind.is_lane_aware() {
+        return lane_preserving_edges(src_kind, src_pos, dst_kind, dst_pos);
+    }
+    let src_dir = world.direction_at(src_pos.0, src_pos.1);
+    let dst_dir = world.direction_at(dst_pos.0, dst_pos.1);
+    if src_dir == dst_dir {
+        return lane_preserving_edges(src_kind, src_pos, dst_kind, dst_pos);
+    }
+    // Side feed. A transport belt whose ONLY input is this (side) feed is a
+    // curve — the single decision inserter lane rules consult too.
+    if is_curved_belt(world, dst_pos) {
+        return lane_preserving_edges(src_kind, src_pos, dst_kind, dst_pos);
+    }
+    // Sideload: the near-side lane is the one on the side the feeder
+    // touches (the absolute direction from receiver back to feeder).
+    let side = src_dir.opposite();
+    match Lane::on_side(dst_dir, side) {
+        Some(near) => endpoint_nodes(src_kind, src_pos)
+            .into_iter()
+            .map(|src| (src, NodeId::with_lane(dst_kind, dst_pos.0, dst_pos.1, near)))
+            .collect(),
+        // Degenerate facing (Direction::None) — no flank to land on; fall
+        // back to the lane-preserving pair rather than dropping the edge.
+        None => lane_preserving_edges(src_kind, src_pos, dst_kind, dst_pos),
     }
 }
 
@@ -367,11 +481,12 @@ impl FactoryEntity for UndergroundBelt {
                                 || (dst == Item::UndergroundBelt
                                     && world.misc_at(au, av) == Misc::UndergroundDown);
                         if droppable && world.direction_at(au, av) != dir.opposite() {
-                            edges.extend(lane_preserving_edges(
+                            edges.extend(feed_edges(
                                 Item::UndergroundBelt,
                                 (x, y),
                                 dst,
                                 (au, av),
+                                world,
                             ));
                         }
                     }
@@ -528,7 +643,7 @@ fn belt_connections(
                 && dst_dir != dir.opposite();
             let blocked = self_is_ss && matches!(dst, Item::Source | Item::Sink);
             if ((droppable && !opposing) || exit_sideload) && !blocked {
-                edges.extend(lane_preserving_edges(self_kind, (x, y), dst, (fx, fy)));
+                edges.extend(feed_edges(self_kind, (x, y), dst, (fx, fy), world));
             }
         }
     }
@@ -745,18 +860,21 @@ impl FactoryEntity for Splitter {
         }
 
         // Fan out: each tile-lane node feeds the same lane of every receiver
-        // (identity per lane — left pool stays left, right stays right).
+        // (identity per lane — left pool stays left, right stays right). A
+        // perpendicular receiver goes through the curve/sideload rules like
+        // any other belt-connectable feed.
         for &tile in &tiles {
             let tile_xy = match tile.to_usize() {
                 Some(t) => t,
                 None => continue,
             };
             for &(dst_kind, dst_pos) in &receivers {
-                edges.extend(lane_preserving_edges(
+                edges.extend(feed_edges(
                     Item::Splitter,
                     tile_xy,
                     dst_kind,
                     dst_pos,
+                    world,
                 ));
             }
         }
@@ -1313,6 +1431,110 @@ mod tests {
         let input = HashMap::from([(Item::CopperCable, 20.0)]);
         let output = splitter.transform_flow(&input);
         assert!((output[&Item::CopperCable] - LANE_FLOW_RATE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_lone_side_feed_is_lane_preserving_curve() {
+        // East-belt into a south-belt with no other input: the receiver is a
+        // curve, so the feed keeps Left→Left / Right→Right.
+        let mut w = World::empty(4, 3);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::TransportBelt, Direction::South, None);
+
+        assert!(is_curved_belt(&w, (1, 0)));
+        let edges = TransportBelt.connections((0, 0), Direction::East, &w);
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 0, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 1, 0, lane),
+            )));
+        }
+    }
+
+    #[test]
+    fn test_side_feed_with_behind_input_sideloads_near_lane() {
+        // The south-belt at (1,1) also has a belt behind it, so the east-belt
+        // side feed pools BOTH its lanes onto the near-side lane: the feeder
+        // touches the west side, and a south-facing belt's west lane is its
+        // RIGHT lane.
+        let mut w = World::empty(4, 4);
+        w.place(1, 0, Item::TransportBelt, Direction::South, None);
+        w.place(0, 1, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::South, None);
+
+        assert!(!is_curved_belt(&w, (1, 1)));
+        let edges = TransportBelt.connections((0, 1), Direction::East, &w);
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 0, 1, lane),
+                NodeId::with_lane(Item::TransportBelt, 1, 1, Lane::Right),
+            )));
+        }
+    }
+
+    #[test]
+    fn test_opposite_side_feeds_land_on_opposite_lanes() {
+        // Two side feeds (no behind input) both sideload, each onto ITS
+        // near lane: for the south-facing receiver, the west feeder fills
+        // the right (west) lane, the east feeder the left (east) lane.
+        let mut w = World::empty(4, 3);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place(1, 0, Item::TransportBelt, Direction::South, None);
+        w.place(2, 0, Item::TransportBelt, Direction::West, None);
+
+        assert!(!is_curved_belt(&w, (1, 0)));
+        let west_feed = TransportBelt.connections((0, 0), Direction::East, &w);
+        let east_feed = TransportBelt.connections((2, 0), Direction::West, &w);
+        for lane in LANES {
+            assert!(west_feed.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 0, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 1, 0, Lane::Right),
+            )));
+            assert!(east_feed.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 2, 0, lane),
+                NodeId::with_lane(Item::TransportBelt, 1, 0, Lane::Left),
+            )));
+        }
+    }
+
+    #[test]
+    fn test_perpendicular_feed_onto_ug_entrance_always_sideloads() {
+        // A UG mouth can't curve: even a LONE side feed onto it is a
+        // sideload onto the near lane (west side of a south-facing entrance
+        // = its right lane).
+        let mut w = World::empty(4, 3);
+        w.place(0, 0, Item::TransportBelt, Direction::East, None);
+        w.place_underground(1, 0, Direction::South, Misc::UndergroundDown);
+
+        let edges = TransportBelt.connections((0, 0), Direction::East, &w);
+        assert_eq!(edges.len(), 2, "got edges: {edges:?}");
+        for lane in LANES {
+            assert!(edges.contains(&(
+                NodeId::with_lane(Item::TransportBelt, 0, 0, lane),
+                NodeId::with_lane(Item::UndergroundBelt, 1, 0, Lane::Right),
+            )));
+        }
+    }
+
+    #[test]
+    fn test_curve_status_flips_when_second_feeder_appears() {
+        // The same corner is a curve alone and a straight-with-sideload once
+        // anything else feeds the receiver from behind.
+        let mut w = World::empty(4, 4);
+        w.place(0, 1, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::South, None);
+        assert!(is_curved_belt(&w, (1, 1)));
+
+        w.place(
+            1,
+            0,
+            Item::Source,
+            Direction::South,
+            Some(Item::CopperCable),
+        );
+        assert!(!is_curved_belt(&w, (1, 1)));
     }
 
     #[test]
