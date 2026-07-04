@@ -14,10 +14,8 @@ import os
 import random
 import sys
 import time
-import typing
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 import gymnasium as gym
 import numpy as np
@@ -51,6 +49,7 @@ from ppo import (  # noqa: E402
     _EMPTY_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
+from training_config import SFTArgs  # noqa: E402
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -170,96 +169,6 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
     return pairs
 
-
-@dataclass
-class SFTArgs:
-    # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
-    seed: int = 1
-    """random seed"""
-    size: int = 11
-    """grid size (width and height)"""
-    num_samples: int = 45_000_000
-    """(state, action) pairs streamed per epoch. Generated on the fly by
-    DataLoader workers, so this is never held in memory all at once."""
-    max_level: int = 0
-    """max curriculum level (0 = auto: size*size)"""
-    epochs: int = 1
-    """number of training epochs"""
-    batch_size: int = 512
-    """training batch size"""
-    lr: float = 3.242e-3
-    """peak learning rate (after warmup, before cosine decay)"""
-    warmup_frac: float = 0.0
-    """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
-    min_lr_ratio: float = 0.02869
-    """cosine decay floor as a fraction of lr (final LR = lr * min_lr_ratio)"""
-    weight_decay: float = 1.661e-3
-    """AdamW weight decay"""
-    dropout: float = 0.1827
-    """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
-    max_grad_norm: float = 2.104
-    """grad L2-norm clip (0 disables clipping)"""
-    lw_tile: float = 1.162
-    """loss weight for the tile-selection (BCE) head"""
-    lw_ent: float = 0.6673
-    """loss weight for the entity (CE) head"""
-    lw_dir: float = 0.948
-    """loss weight for the direction (CE) head"""
-    lw_item: float = 0.6349
-    """loss weight for the item / recipe (CE) head"""
-    lw_misc: float = 0.6236
-    """loss weight for the misc (CE) head"""
-    lw_eot: float = 1.302
-    """loss weight for the EOT (end-of-trajectory) BCE head"""
-    eval_every_n_samples: int = 100_000
-    """run validation + rollout eval + logging + checkpoint selection every N
-    optimiser-seen samples rather than once per epoch (0 = evaluate only once,
-    after the final batch). Samples, not epochs, so a single-epoch run over a
-    huge dataset still yields a real training curve instead of one point."""
-    eval_rollouts: bool = True
-    """run the greedy rollout eval (the default checkpoint-selection metric) on
-    each eval. Disable to skip the slow rollout (val accuracy still logged)."""
-    eval_rollouts_max_seeds: int = 400
-    """cap on val seeds per rollout eval — the sample size of the selection
-    metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
-    eval_rollouts_num_envs: int = 8
-    """parallel envs for rollout eval; batches the CNN forward across them"""
-    rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput_eot)"""
-    checkpoint_path: str = "sft_checkpoint.pt"
-    """path to save the trained model"""
-    # CNN encoder width per layer slot (see ppo.layers_from_args). A slot of 0
-    # drops that layer; layer1..3 default to a 3-conv encoder.
-    # RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 93
-    layer2: int = 69
-    layer3: int = 96
-    layer4: int = 0
-    layer5: int = 0
-    layer6: int = 0
-    layer7: int = 0
-    layer8: int = 0
-    kernel_size: int = 3
-    """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
-    tile_head_std: float = 0.02208
-    """tile head init std"""
-    track: bool = False
-    """track with W&B"""
-    wandb_project_name: str = "factorion"
-    """W&B project name"""
-    wandb_entity: Optional[str] = None
-    """W&B entity (team or user)"""
-    wandb_group: Optional[str] = None
-    """W&B run group name"""
-    tags: typing.Optional[typing.List[str]] = None
-    """Tags to apply to the wandb run"""
-    summary_path: Optional[str] = None
-    """path to write summary JSON (default: sft_summary.json next to sft.py)"""
-    dataset_cache: Optional[str] = None
-    """if set, materialise the training stream to this path once and reuse it on
-    later runs (torch.save/torch.load), trading the streaming generation for a
-    fixed on-disk dataset. Lets repeated runs (benchmarks, dev iteration) skip
-    build_factory; the tensors are a pure function of (size, num_samples, seed)."""
 
 
 def _humanize_count(n: int) -> str:
