@@ -1007,8 +1007,9 @@ def build_graph_nx(world_WHC):
     truth for entity connectivity; this thin wrapper rebuilds its
     ``(node_labels, edges)`` output into a ``networkx`` graph for connectivity
     queries and drawing/layout. Nodes are labelled
-    ``f"{entity_name}\\n@{x},{y}"`` and edges follow the engine's
-    entity-connection rules.
+    ``f"{entity_name}\\n@{x},{y}"`` — with a ``:L``/``:R`` suffix on the name
+    line for the two lane nodes of a belt-ish tile — and edges follow the
+    engine's entity-connection rules.
 
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
     ``factorion_rs.simulate_throughput`` takes.

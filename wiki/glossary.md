@@ -15,7 +15,8 @@ independently of the other; density and speed per lane are constant. Items
 stay on their lane unless moved by a [[splitter]], by [[glossary#sideloading|
 sideloading]], or by inserter placement/extraction.
 
-> **Not yet in Factorion.** Belts are modeled as single-lane pipes.
+> **In Factorion:** every belt-ish tile is two lane nodes in the flow
+> graph, each capped at 7.5 items/sec.
 
 ### Sideloading
 
@@ -35,7 +36,9 @@ Common uses:
   saturate it beyond what forward-loading alone achieves.
 - **Lane swapping:** chain two sideloads to swap items from left to right.
 
-> **Not yet in Factorion.** Requires the lane system.
+> **In Factorion:** a perpendicular feed sideloads onto the near-side lane
+> whenever the receiving belt has any other belt-connectable input (a lone
+> side feed is a curve instead).
 
 ### Throughput
 
