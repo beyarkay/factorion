@@ -1271,7 +1271,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0, cat_embed_dim=8):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1288,6 +1288,24 @@ class AgentCNN(nn.Module):
         self.num_directions = len(Direction)
         self.num_items = len(items)
         self.num_misc = len(Misc)
+
+        # --- Input encoding for the nominal (categorical) channels ---
+        # The observation's ENTITIES/DIRECTION/ITEMS/MISC channels hold raw
+        # category ids as floats. Feeding those straight into the conv treats
+        # them as ordinal magnitudes (belt=1, assembler=3, splitter=5), which
+        # is meaningless — the ids are nominal labels. Instead we encode each
+        # channel categorically before the conv: a learned embedding for the
+        # two wide vocabularies (entity/item, ~68 each) and a one-hot for the
+        # two narrow ones (direction=5, misc=3). FOOTPRINT is genuinely binary,
+        # so it stays a scalar channel. The embedding vocab covers the *full*
+        # catalog (len(entities)/len(items)) — the input can carry the env-only
+        # source/sink ids even though the entity head never emits them.
+        self.cat_embed_dim = cat_embed_dim
+        self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
+        self.item_embed = nn.Embedding(len(items), cat_embed_dim)
+        # Encoder input channels after categorical expansion: two embeddings +
+        # two one-hots + the scalar footprint.
+        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1307,7 +1325,7 @@ class AgentCNN(nn.Module):
             raise ValueError("layers must contain at least one conv layer")
         padding = kernel_size // 2
         conv_stack = []
-        in_ch = self.channels
+        in_ch = self.input_channels
         for ch in layers:
             conv_stack.append(
                 layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=padding))
@@ -1361,8 +1379,34 @@ class AgentCNN(nn.Module):
                 head.bias.fill_(0.0)
                 head.bias.data[0] = 1.0
 
+    def _encode_input(self, x_BCWH):
+        """Expand the raw (B, len(Channel), W, H) observation into the conv's
+        input by encoding the nominal channels categorically: learned
+        embeddings for entity/item, one-hots for direction/misc, and the raw
+        footprint scalar. Returns (B, self.input_channels, W, H).
+
+        The channels carry category ids as floats; we cast to long to index.
+        The clamp is a defensive no-op on valid observations (ids are bounded
+        by the observation space) that keeps the embedding/one-hot lookups
+        in range for any caller that hands in an out-of-range float.
+        """
+        ent_idx = x_BCWH[:, _CH_ENT].long().clamp_(0, self.ent_embed.num_embeddings - 1)
+        item_idx = x_BCWH[:, _CH_ITEMS].long().clamp_(0, self.item_embed.num_embeddings - 1)
+        dir_idx = x_BCWH[:, _CH_DIR].long().clamp_(0, self.num_directions - 1)
+        misc_idx = x_BCWH[:, _CH_MISC].long().clamp_(0, self.num_misc - 1)
+
+        # Embeddings: (B, W, H, d) -> (B, d, W, H)
+        ent_e = self.ent_embed(ent_idx).permute(0, 3, 1, 2)
+        item_e = self.item_embed(item_idx).permute(0, 3, 1, 2)
+        # One-hots: (B, W, H, n) -> (B, n, W, H)
+        dir_oh = F.one_hot(dir_idx, self.num_directions).permute(0, 3, 1, 2).to(x_BCWH.dtype)
+        misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
+        footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
+
+        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+
     def get_value(self, x_BCWH):
-        encoded = self.encoder(x_BCWH)
+        encoded = self.encoder(self._encode_input(x_BCWH))
         value_B = self.critic_head(encoded).squeeze(-1)
         return value_B
 
@@ -1374,7 +1418,7 @@ class AgentCNN(nn.Module):
         this from inference rollouts to decide whether the agent thinks
         the factory is finished.
         """
-        encoded = self.encoder(x_BCWH)
+        encoded = self.encoder(self._encode_input(x_BCWH))
         return torch.sigmoid(self.eot_head(encoded).squeeze(-1))
 
     def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
@@ -1384,7 +1428,7 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH = self.encoder(x_BCWH)  # (B, chan3, W, H)
+        encoded_BCWH = self.encoder(self._encode_input(x_BCWH))  # (B, chan3, W, H)
         value_B = self.critic_head(encoded_BCWH).squeeze(-1)
 
         B = encoded_BCWH.shape[0]
