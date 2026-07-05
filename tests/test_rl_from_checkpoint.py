@@ -141,7 +141,7 @@ class TestEotTerminationAndMetrics:
     def test_reward_hparams_default(self):
         a = PpoArgs()
         assert a.throughput_reward_scale == 1.0
-        assert a.step_penalty == 0.01
+        assert a.step_penalty == 0.0
 
 
 class TestCriticWarmupParamSplit:
