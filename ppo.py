@@ -340,7 +340,7 @@ def _resolve_start_from(
     return path
 
 
-def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=1.0, step_penalty=0.01):
+def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=PpoArgs.throughput_reward_scale, step_penalty=PpoArgs.step_penalty):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
@@ -410,8 +410,8 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
-        throughput_reward_scale: float = 1.0,
-        step_penalty: float = 0.01,
+        throughput_reward_scale: float = PpoArgs.throughput_reward_scale,
+        step_penalty: float = PpoArgs.step_penalty,
     ):
         super().__init__()
         self.throughput_reward_scale = throughput_reward_scale
