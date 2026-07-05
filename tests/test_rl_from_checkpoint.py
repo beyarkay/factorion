@@ -22,7 +22,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, Args, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env  # noqa: E402
 from helpers import Channel  # noqa: E402
 from factorion import LessonKind  # noqa: E402
 
@@ -139,9 +139,9 @@ class TestEotTerminationAndMetrics:
         assert "episode" not in info
 
     def test_reward_hparams_default(self):
-        a = Args()
+        a = PpoArgs()
         assert a.throughput_reward_scale == 1.0
-        assert a.step_penalty == 0.01
+        assert a.step_penalty == 0.0
 
 
 class TestCriticWarmupParamSplit:

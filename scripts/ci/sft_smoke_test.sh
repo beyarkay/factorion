@@ -78,9 +78,9 @@ export WANDB_API_KEY
 echo ""
 echo ">>> Starting SFT smoke test (${NUM_SAMPLES} samples, ${EPOCHS} epochs)..."
 
+# seed / grid size come from sft.py's own defaults (training_config.py); only
+# the smoke-specific sample count and epoch count are overridden here.
 python sft.py \
-    --seed 1 \
-    --size 11 \
     --num-samples "$NUM_SAMPLES" \
     --epochs "$EPOCHS" \
     --track \
