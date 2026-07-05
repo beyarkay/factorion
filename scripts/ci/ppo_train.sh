@@ -11,11 +11,15 @@
 #   WANDB_PROJECT          - W&B project name (e.g. factorion)
 #   START_FROM             - SFT checkpoint: a W&B run id OR a local .pt path
 #
-# Optional env vars:
-#   TOTAL_TIMESTEPS        - PPO total timesteps (default: 500000)
-#   SIZE                   - grid size; MUST match the SFT checkpoint (default: 11)
-#   CRITIC_WARMUP          - critic-only warm-up iterations (default: 10)
-#   SEED                   - random seed (default: 1)
+# Optional env vars (each is an OVERRIDE — leave unset/empty to use ppo.py's
+# own default from training_config.py, so there is one source of truth):
+#   TOTAL_TIMESTEPS        - PPO total timesteps
+#   SIZE                   - grid size; MUST match the SFT checkpoint
+#   CRITIC_WARMUP          - critic-only warm-up iterations
+#   ENT_COEF               - entropy bonus (sets both --ent-coef-start & -end)
+#   LEARNING_RATE          - peak LR
+#   TARGET_KL              - KL early-stop threshold
+#   SEED                   - random seed
 #   WATCHDOG_SECONDS       - self-terminate watchdog timeout (default: 7200 = 2h)
 #   PR_NUMBER, COMMIT_SHA  - tagging
 #   RUNPOD_POD_ID, RUNPOD_API_KEY - for the self-terminate watchdog
@@ -23,13 +27,6 @@
 set -euo pipefail
 
 : "${START_FROM:?START_FROM (a W&B run id or a .pt path) is required}"
-TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-500000}"
-SIZE="${SIZE:-11}"
-CRITIC_WARMUP="${CRITIC_WARMUP:-10}"
-ENT_COEF="${ENT_COEF:-0}"
-LEARNING_RATE="${LEARNING_RATE:-5e-5}"
-TARGET_KL="${TARGET_KL:-0.02}"
-SEED="${SEED:-1}"
 WATCHDOG_SECONDS="${WATCHDOG_SECONDS:-7200}"
 WANDB_PROJECT="${WANDB_PROJECT:-factorion}"
 PR_NUMBER="${PR_NUMBER:-unknown}"
@@ -41,13 +38,13 @@ echo "============================================"
 echo "  GPU:                 $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  CUDA:                $(nvcc --version 2>/dev/null | tail -1 || echo 'unknown')"
 echo "  start_from:          ${START_FROM}"
-echo "  total_timesteps:     ${TOTAL_TIMESTEPS}"
-echo "  size:                ${SIZE}"
-echo "  critic_warmup:       ${CRITIC_WARMUP}"
-echo "  ent_coef:            ${ENT_COEF}"
-echo "  learning_rate:       ${LEARNING_RATE}"
-echo "  target_kl:           ${TARGET_KL}"
-echo "  seed:                ${SEED}"
+echo "  total_timesteps:     ${TOTAL_TIMESTEPS:-(ppo.py default)}"
+echo "  size:                ${SIZE:-(ppo.py default)}"
+echo "  critic_warmup:       ${CRITIC_WARMUP:-(ppo.py default)}"
+echo "  ent_coef:            ${ENT_COEF:-(ppo.py default)}"
+echo "  learning_rate:       ${LEARNING_RATE:-(ppo.py default)}"
+echo "  target_kl:           ${TARGET_KL:-(ppo.py default)}"
+echo "  seed:                ${SEED:-(ppo.py default)}"
 echo "  watchdog:            ${WATCHDOG_SECONDS}s"
 echo "  W&B project:         ${WANDB_PROJECT}"
 echo "  PR:                  ${PR_NUMBER}"
@@ -88,20 +85,22 @@ fi
 export WANDB_API_KEY
 
 # ── Run PPO ──────────────────────────────────────────────────────
+# Only pass a flag when the caller set the override; otherwise ppo.py's
+# training_config default applies (single source of truth).
 echo ""
-echo ">>> Starting PPO (${TOTAL_TIMESTEPS} timesteps, from ${START_FROM})..."
+echo ">>> Starting PPO (from ${START_FROM})..."
+
+PPO_ARGS=(--start-from "$START_FROM")
+[ -n "${SEED:-}" ]            && PPO_ARGS+=(--seed "$SEED")
+[ -n "${SIZE:-}" ]           && PPO_ARGS+=(--size "$SIZE")
+[ -n "${CRITIC_WARMUP:-}" ]  && PPO_ARGS+=(--critic-warmup "$CRITIC_WARMUP")
+[ -n "${ENT_COEF:-}" ]       && PPO_ARGS+=(--ent-coef-start "$ENT_COEF" --ent-coef-end "$ENT_COEF")
+[ -n "${LEARNING_RATE:-}" ]  && PPO_ARGS+=(--learning-rate "$LEARNING_RATE")
+[ -n "${TARGET_KL:-}" ]      && PPO_ARGS+=(--target-kl "$TARGET_KL")
+[ -n "${TOTAL_TIMESTEPS:-}" ] && PPO_ARGS+=(--total-timesteps "$TOTAL_TIMESTEPS")
 
 python ppo.py \
-    --seed "$SEED" \
-    --env-id factorion/FactorioEnv-v0 \
-    --size "$SIZE" \
-    --start-from "$START_FROM" \
-    --critic-warmup "$CRITIC_WARMUP" \
-    --ent-coef-start "$ENT_COEF" \
-    --ent-coef-end "$ENT_COEF" \
-    --learning-rate "$LEARNING_RATE" \
-    --target-kl "$TARGET_KL" \
-    --total-timesteps "$TOTAL_TIMESTEPS" \
+    "${PPO_ARGS[@]}" \
     --track \
     --wandb-project-name "$WANDB_PROJECT" \
     --tags ci ppo-train "pr:${PR_NUMBER}" "sha:${COMMIT_SHA}" "from:${START_FROM}" \

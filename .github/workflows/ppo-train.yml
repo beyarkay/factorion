@@ -17,35 +17,37 @@ on:
         required: true
         default: "500000"
         type: string
+      # These override ppo.py's own defaults (training_config.py). Leave blank
+      # to use the default baked into ppo.py — the single source of truth.
       size:
-        description: "Grid size (must match the SFT checkpoint)"
+        description: "Grid size, must match the SFT checkpoint. Blank = ppo.py default"
         required: false
-        default: "11"
+        default: ""
         type: string
       critic_warmup:
-        description: "Critic-only warm-up iterations before joint PPO"
+        description: "Critic-only warm-up iterations before joint PPO. Blank = ppo.py default"
         required: false
-        default: "10"
+        default: ""
         type: string
       ent_coef:
-        description: "Entropy bonus (constant; sets both start & end). 0 = no entropy bonus, right for finetuning an SFT policy"
+        description: "Entropy bonus (constant; sets both start & end). Blank = ppo.py default"
         required: false
-        default: "0"
+        default: ""
         type: string
       learning_rate:
-        description: "Peak LR. Small (e.g. 5e-5) for stable SFT finetuning"
+        description: "Peak LR. Blank = ppo.py default"
         required: false
-        default: "5e-5"
+        default: ""
         type: string
       target_kl:
-        description: "KL early-stop threshold per rollout (trust region). e.g. 0.02"
+        description: "KL early-stop threshold per rollout (trust region). Blank = ppo.py default"
         required: false
-        default: "0.02"
+        default: ""
         type: string
       seed:
-        description: "Random seed"
+        description: "Random seed. Blank = ppo.py default"
         required: false
-        default: "1"
+        default: ""
         type: string
       ref:
         description: "Git ref to run (branch / SHA / tag)"
