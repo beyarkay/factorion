@@ -122,8 +122,8 @@ class PpoArgs(SharedArgs):
     """coefficient of the value function"""
     throughput_reward_scale: float = 1.0
     """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
-    step_penalty: float = 0.01
-    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale."""
+    step_penalty: float = 0.0
+    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput_eot)."""
     max_grad_norm: float = 1.979
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
