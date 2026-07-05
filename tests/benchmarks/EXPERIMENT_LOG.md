@@ -518,15 +518,15 @@ crossing-iter is an unbiased ~25±4 draw, so `E[time_to_quality] ∝ per_iter`.
 ## WON (cumulative; all confirmed 5-seed, all on `main`)
 
 - **Recipe: `--critic-warmup 5 --learning-rate 7e-4` → 62.9 s (−44%)**, now the
-  `PPOArgs` defaults (lr, critic_warmup, target_kl).
-  - *lr 7e-4 rationale (moved from the `PPOArgs.learning_rate` docstring):* the
+  `PpoArgs` defaults (lr, critic_warmup, target_kl).
+  - *lr 7e-4 rationale (moved from the `PpoArgs.learning_rate` docstring):* the
     confirmed SFT→PPO finetune optimum — bigger policy steps converge in fewer
     iters AND hit the `--target-kl 0.02` ceiling sooner, so the update
     early-stops its epochs (cheaper per-iter too). lr 1e-3 overshoots.
-  - *critic_warmup 5 (moved from `PPOArgs.critic_warmup`):* sweet spot — 0 is worse
+  - *critic_warmup 5 (moved from `PpoArgs.critic_warmup`):* sweet spot — 0 is worse
     (a random critic's advantages wreck the SFT policy), 10 wastes dead iters;
     set 0 to disable for from-scratch runs.
-  - *target_kl 0.02 (moved from `PPOArgs.target_kl`):* early-stops the update's
+  - *target_kl 0.02 (moved from `PpoArgs.target_kl`):* early-stops the update's
     epochs once the policy has moved enough — this is what makes the higher LR
     cheap per-iter as well as fast-converging. None = always run all epochs.
   - Deliberately did NOT bake gamma/gae_lambda/ent_coef into defaults — those are

@@ -37,7 +37,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PPOArgs
+from training_config import NUM_LAYER_SLOTS, PpoArgs
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -1065,7 +1065,7 @@ class FactorioEnv(gym.Env):
 
 def layers_from_args(args) -> list[int]:
     """Compact the ``layer1..layer{NUM_LAYER_SLOTS}`` width slots on an
-    ``PPOArgs``/``SFTArgs`` into the CNN encoder's channel list: every slot with
+    ``PpoArgs``/``SftArgs`` into the CNN encoder's channel list: every slot with
     positive width becomes one conv layer, in slot order; a zero-width slot is
     dropped. This lets a W&B Bayesian sweep tune the encoder's depth *and*
     per-layer width as independent numeric dimensions (drive a slot toward 0 to
@@ -1338,7 +1338,7 @@ class AgentCNN(nn.Module):
 if __name__ == "__main__":
     print("Starting...")
     start_time = time.time()
-    args = tyro.cli(PPOArgs)
+    args = tyro.cli(PpoArgs)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
@@ -1588,7 +1588,7 @@ if __name__ == "__main__":
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    # Time-to-quality benchmarking state (see PPOArgs.target_metric).
+    # Time-to-quality benchmarking state (see PpoArgs.target_metric).
     quality_ema: Optional[float] = None
     time_to_quality: Optional[float] = None
     reached_quality = False

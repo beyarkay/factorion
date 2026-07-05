@@ -49,7 +49,7 @@ from ppo import (  # noqa: E402
     _EMPTY_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
-from training_config import SFTArgs  # noqa: E402
+from training_config import SftArgs  # noqa: E402
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -197,7 +197,7 @@ def _humanize_lr(lr: float) -> str:
     return f"{mantissa:.2g}e{exp}"
 
 
-def _artifact_name(args: "SFTArgs") -> str:
+def _artifact_name(args: "SftArgs") -> str:
     """Build a descriptive W&B artifact name from the training config.
 
     Identical-config runs collapse into versions of the same artifact;
@@ -357,7 +357,7 @@ def _steps_per_epoch(target, n_workers, batch_size):
     return max(1, total)
 
 
-def build_lr_schedule(optimizer, total_steps: int, args: "SFTArgs"):
+def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     """Linear warmup → cosine decay scheduler, stepped once per optimizer step.
 
     Warmup goes from `lr * 1e-3` up to `lr` over the first
@@ -413,7 +413,7 @@ def _apply_legal_tile_mask(tile_logits, obs_batch):
 
 def run_rollout_eval(
     agent,
-    args: SFTArgs,
+    args: SftArgs,
     val_seeds_to_kind: dict[int, int],
     device,
     max_seeds: int = 100,
@@ -810,7 +810,7 @@ def _dir_distance_diagnostics(distances, mismatches):
     }
 
 
-def train_sft(args: SFTArgs):
+def train_sft(args: SftArgs):
     """Main SFT training loop."""
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(line_buffering=True)
@@ -1671,5 +1671,5 @@ def train_sft(args: SFTArgs):
 
 
 if __name__ == "__main__":
-    args = tyro.cli(SFTArgs)
+    args = tyro.cli(SftArgs)
     train_sft(args)

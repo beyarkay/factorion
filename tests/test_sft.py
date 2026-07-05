@@ -25,7 +25,7 @@ from helpers import (
 from factorion import Footprint
 import sft
 from sft import (
-    SFTArgs,
+    SftArgs,
     StreamingDemoDataset,
     _apply_legal_tile_mask,
     _artifact_name,
@@ -240,7 +240,7 @@ class TestExtractExpertActions:
 class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
-        args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
+        args = SftArgs(seed=1, size=5, num_samples=100, max_level=2)
         obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = (
             _materialise_args(args)
         )
@@ -257,7 +257,7 @@ class TestGenerateDataset:
 
     def test_observation_shape(self):
         """Observations should have correct shape (C, W, H)."""
-        args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
+        args = SftArgs(seed=1, size=5, num_samples=50, max_level=2)
         obs, *_ = _materialise_args(args)
         assert obs.shape[1] == len(Channel)  # channels
         assert obs.shape[2] == 5  # width
@@ -265,7 +265,7 @@ class TestGenerateDataset:
 
     def test_tile_indices_in_range(self):
         """Tile indices should be in [0, W*H)."""
-        args = SFTArgs(seed=1, size=5, num_samples=50, max_level=2)
+        args = SftArgs(seed=1, size=5, num_samples=50, max_level=2)
         _, tiles, *_ = _materialise_args(args)
         assert (tiles >= 0).all()
         assert (tiles < 5 * 5).all()
@@ -274,7 +274,7 @@ class TestGenerateDataset:
         """_materialise returns a per-pair lesson_seed tensor; pairs
         from the same lesson share the same seed (multiple pairs per
         lesson when level > 1)."""
-        args = SFTArgs(seed=1, size=5, num_samples=100, max_level=2)
+        args = SftArgs(seed=1, size=5, num_samples=100, max_level=2)
         *_, seeds, _kinds = _materialise_args(args)
         # Multiple unique seeds expected (each lesson has its own seed).
         assert len(set(seeds.tolist())) >= 2
@@ -362,7 +362,7 @@ class TestGenerateDataset:
         channel (sources/sinks). Without random_item the lessons all
         carry electronic_circuit, which would let the model memorise
         item_id == electronic_circuit as a constant feature."""
-        args = SFTArgs(seed=1, size=8, num_samples=200, max_level=4)
+        args = SftArgs(seed=1, size=8, num_samples=200, max_level=4)
         obs, *_ = _materialise_args(args)
         item_channel = obs[:, Channel.ITEMS.value]
         unique_items = set(item_channel.flatten().tolist())
@@ -377,7 +377,7 @@ class TestGenerateDataset:
         same length as the rest. Values must be valid LessonKind enum
         values, and at least two distinct kinds should appear (proves the
         per-kind val aggregation in train_sft has something to bucket)."""
-        args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
+        args = SftArgs(seed=1, size=8, num_samples=400, max_level=8)
         obs, tiles, *_, kinds = _materialise_args(args)
         assert len(kinds) == len(obs)
         valid_values = {k.value for k in LessonKind}
@@ -392,7 +392,7 @@ class TestGenerateDataset:
     def test_samples_span_multiple_kinds(self):
         """Dataset should draw from more than one LessonKind (the per-pair kind
         tensor carries the labels directly)."""
-        args = SFTArgs(seed=1, size=8, num_samples=400, max_level=8)
+        args = SftArgs(seed=1, size=8, num_samples=400, max_level=8)
         *_, kinds = _materialise_args(args)
         assert len(set(kinds.tolist())) >= 2
 
@@ -401,7 +401,7 @@ class TestGenerateDataset:
         within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
         from collections import Counter
 
-        args = SFTArgs(seed=1, size=8, num_samples=3000, max_level=8)
+        args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
         *_, kinds = _materialise_args(args)
         vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
         assert len(vals) == len(LessonKind), "every kind should contribute pairs"
@@ -409,7 +409,7 @@ class TestGenerateDataset:
 
     def test_obs_uint8_masks_bool(self):
         """obs stored uint8 and masks bool (the memory cut); eot stays float."""
-        args = SFTArgs(seed=1, size=8, num_samples=300, max_level=4)
+        args = SftArgs(seed=1, size=8, num_samples=300, max_level=4)
         obs, *_, masks, eots, _seeds, _kinds = _materialise_args(args)
         assert obs.dtype == torch.uint8
         assert masks.dtype == torch.bool
@@ -421,7 +421,7 @@ class TestGenerateDataset:
         ingredient arms doesn't fit at size 5) must be dropped from the sampler,
         not retried forever. Generation completes and simply omits those kinds;
         the buildable memorise lessons still appear."""
-        args = SFTArgs(seed=1, size=5, num_samples=400, max_level=0)
+        args = SftArgs(seed=1, size=5, num_samples=400, max_level=0)
         *_, kinds = _materialise_args(args)
         produced = set(kinds.tolist())
         # The 4- and 5-ingredient memorise lessons can't be built at size 5.
@@ -551,7 +551,7 @@ class TestSFTCheckpointLoading:
 class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
-        args = SFTArgs(seed=42, size=5, num_samples=200, max_level=2)
+        args = SftArgs(seed=42, size=5, num_samples=200, max_level=2)
         obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = _materialise_args(
             args
         )
@@ -606,7 +606,7 @@ class TestTrainSFTEndToEnd:
         """End-to-end: train_sft() should run and produce a valid checkpoint."""
         ckpt = str(tmp_path / "sft_e2e.pt")
         summary = str(tmp_path / "sft_e2e_summary.json")
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=5,
             num_samples=100,
@@ -637,7 +637,7 @@ class TestTrainSFTEndToEnd:
         cache = str(tmp_path / "ds_cache.pt")
 
         def run(tag):
-            args = SFTArgs(
+            args = SftArgs(
                 seed=1,
                 size=5,
                 num_samples=300,
@@ -660,7 +660,7 @@ class TestTrainSFTEndToEnd:
 
 class TestSFTDropout:
     """The SFT dropout knob, when set, must reach the encoder via AgentCNN —
-    mirrors ppo.PPOArgs' regularisation contract."""
+    mirrors ppo.PpoArgs' regularisation contract."""
 
     def test_train_sft_threads_dropout_into_agent(self, monkeypatch, tmp_path):
         """train_sft must pass args.dropout through to AgentCNN. Spy on the
@@ -677,7 +677,7 @@ class TestSFTDropout:
 
         monkeypatch.setattr(sft_mod, "AgentCNN", spy)
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=5,
             num_samples=100,
@@ -717,7 +717,7 @@ class TestTrackedArtifact:
         monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
         monkeypatch.setattr(wandb, "Artifact", fake_artifact)
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=5,
             num_samples=200,
@@ -758,7 +758,7 @@ class TestTrackedArtifact:
         monkeypatch.setattr(wandb, "init", fake_init)
         monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=5,
             num_samples=200,
@@ -817,7 +817,7 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -871,7 +871,7 @@ class TestRunRolloutEval:
 
         # max_level left at its 0 default -> size*size (25) >> 2*size (10),
         # so the whole 5x5 factory is blanked.
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -901,7 +901,7 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -930,7 +930,7 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -960,7 +960,7 @@ class TestRunRolloutEval:
         agent = AgentCNN(envs, layers=(16, 16, 16))
         envs.close()
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -1020,7 +1020,7 @@ class TestRunRolloutEval:
 
         monkeypatch.setattr(sft, "FactorioEnv", RecordingEnv)
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=size,
             num_samples=50,
@@ -1148,7 +1148,7 @@ class TestEotHead:
     def test_eot_tensor_in_dataset(self):
         """_materialise must return a per-pair eot tensor with values
         in {0.0, 1.0} and at least one positive (terminal) example."""
-        args = SFTArgs(seed=1, size=5, num_samples=200, max_level=4)
+        args = SftArgs(seed=1, size=5, num_samples=200, max_level=4)
         *_, eots, _seeds, _kinds = _materialise_args(args)
         assert eots.dtype == torch.float
         assert set(eots.unique().tolist()).issubset({0.0, 1.0})
@@ -1217,7 +1217,7 @@ class TestPerKindEotMetrics:
         monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
         monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
 
-        args = SFTArgs(
+        args = SftArgs(
             seed=1,
             size=5,
             num_samples=400,
@@ -1378,7 +1378,7 @@ class TestArtifactNameHelpers:
         assert _humanize_lr(0) == "0"
 
     def test_artifact_name_larger_run(self):
-        args = SFTArgs(
+        args = SftArgs(
             size=16,
             num_samples=200_000,
             epochs=50,
@@ -1394,8 +1394,8 @@ class TestArtifactNameHelpers:
         """Depth is part of the suffix: a 4-layer encoder of the same width
         must not collide with a 3-layer one (else the deeper run would file
         under the shallower run's artifact)."""
-        three = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=0)
-        four = SFTArgs(layer1=48, layer2=48, layer3=48, layer4=48)
+        three = SftArgs(layer1=48, layer2=48, layer3=48, layer4=0)
+        four = SftArgs(layer1=48, layer2=48, layer3=48, layer4=48)
         assert _artifact_name(three).endswith("-c48-48-48")
         assert _artifact_name(four).endswith("-c48-48-48-48")
         assert _artifact_name(three) != _artifact_name(four)
@@ -1403,7 +1403,7 @@ class TestArtifactNameHelpers:
     def test_artifact_name_asymmetric_channels(self):
         """Differing per-layer widths expand into the full list, so a
         c32-64-64 run can't accidentally file under a c48-48-48 run."""
-        args = SFTArgs(layer1=32, layer2=64, layer3=64)
+        args = SftArgs(layer1=32, layer2=64, layer3=64)
         # Assert only the channel suffix (the behaviour under test) so this
         # doesn't break when the default size/samples/epochs/lr change.
         assert _artifact_name(args).endswith("-c32-64-64")
@@ -1414,15 +1414,15 @@ class TestArtifactNameHelpers:
         token (keeps existing names stable)."""
         # Default kernel (3) adds no suffix; a non-default kernel appends
         # -k{N}. Derive from the default name so this survives default changes.
-        base = _artifact_name(SFTArgs())
+        base = _artifact_name(SftArgs())
         assert not base.endswith(("-k3", "-k5", "-k7"))
-        assert _artifact_name(SFTArgs(kernel_size=5)) == base + "-k5"
+        assert _artifact_name(SftArgs(kernel_size=5)) == base + "-k5"
 
     def test_artifact_name_stable_across_runs(self):
-        """Two SFTArgs with the same hyperparams must produce the same
+        """Two SftArgs with the same hyperparams must produce the same
         artifact name (otherwise we lose version collapsing)."""
-        a = SFTArgs(seed=1)
-        b = SFTArgs(seed=999)  # seed isn't part of the artifact name
+        a = SftArgs(seed=1)
+        b = SftArgs(seed=999)  # seed isn't part of the artifact name
         assert _artifact_name(a) == _artifact_name(b)
 
 
@@ -1441,7 +1441,7 @@ class TestLRSchedule:
         return lrs
 
     def test_warmup_then_cosine(self):
-        args = SFTArgs(lr=1e-3, warmup_frac=0.1, min_lr_ratio=0.01)
+        args = SftArgs(lr=1e-3, warmup_frac=0.1, min_lr_ratio=0.01)
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         total_steps = 100
@@ -1458,7 +1458,7 @@ class TestLRSchedule:
         assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-4)
 
     def test_no_warmup_path(self):
-        args = SFTArgs(lr=2e-3, warmup_frac=0.0, min_lr_ratio=0.1)
+        args = SftArgs(lr=2e-3, warmup_frac=0.0, min_lr_ratio=0.1)
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         scheduler = build_lr_schedule(optimizer, 50, args)
@@ -1473,7 +1473,7 @@ class TestLRSchedule:
         # cosine_steps = max(1, total_steps - warmup_steps) guards against
         # tiny runs where total_steps <= warmup_steps. Should still build a
         # valid scheduler.
-        args = SFTArgs(lr=1e-3, warmup_frac=0.5)
+        args = SftArgs(lr=1e-3, warmup_frac=0.5)
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         scheduler = build_lr_schedule(optimizer, 1, args)
