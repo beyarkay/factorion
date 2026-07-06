@@ -164,6 +164,18 @@ class TestPodName:
             SHA[:7],
         )
 
+    def test_timestamps_are_iso8601(self):
+        # 2026-07-06 15:16:10 UTC — readable in the RunPod console at a glance.
+        name = pod_name("ppo", 1783350970, 1783356170, SHA)
+        assert name == f"factorion-ci-ppo-c20260706T151610Z-d20260706T164250Z-{SHA[:7]}"
+
+    def test_legacy_epoch_names_still_parse(self):
+        # Pods launched before the ISO switch keep epoch-seconds names; the
+        # watchdog must be able to reap them until they've all cycled out.
+        meta = parse_pod_name(f"factorion-ci-ppo-c1783350970-d1783356170-{SHA[:7]}")
+        assert meta is not None
+        assert (meta.created, meta.deadline) == (1783350970, 1783356170)
+
     def test_foreign_names_rejected(self):
         for name in ("my-dev-pod", "factorion-ci-sft-nonsense", "", "ci-smoke-12345"):
             assert parse_pod_name(name) is None

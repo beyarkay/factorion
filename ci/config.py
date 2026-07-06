@@ -14,7 +14,9 @@ import it in a bare GitHub cron environment.
 
 from __future__ import annotations
 
+import calendar
 import re
+import time
 import dataclasses
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
@@ -48,19 +50,37 @@ ALLOWED_CUDA_VERSIONS = ["13.0"]
 # ── Pod naming ─────────────────────────────────────────────────────
 # Every CI pod encodes its own creation time and kill-by deadline in its name,
 # so the watchdog can enforce cleanup statelessly from `runpod.get_pods()`
-# alone: factorion-ci-<kind>-c<created_epoch>-d<deadline_epoch>-<sha7>
+# alone: factorion-ci-<kind>-c<created>-d<deadline>-<sha7>, with timestamps
+# in compact UTC ISO 8601 (20260706T151610Z — no dashes/colons, since dashes
+# separate the name's fields). Bare epoch-seconds timestamps still parse for
+# pods launched before the switch.
 POD_PREFIX = "factorion-ci-"
 _POD_NAME_RE = re.compile(
-    r"^factorion-ci-(?P<kind>[a-z-]+)-c(?P<created>\d+)-d(?P<deadline>\d+)-(?P<sha7>[0-9a-f]+)$"
+    r"^factorion-ci-(?P<kind>[a-z-]+)-c(?P<created>\d{8}T\d{6}Z|\d+)"
+    r"-d(?P<deadline>\d{8}T\d{6}Z|\d+)-(?P<sha7>[0-9a-f]+)$"
 )
+_POD_TS_FMT = "%Y%m%dT%H%M%SZ"
 
 # Absolute backstop: no CI pod may outlive this, deadline or not. Generous
 # because the default 45M-sample SFT run legitimately takes ~20h.
 MAX_POD_AGE_SECONDS = 48 * 3600
 
 
+def _pod_ts(epoch: int) -> str:
+    return time.strftime(_POD_TS_FMT, time.gmtime(epoch))
+
+
+def _parse_pod_ts(token: str) -> int:
+    if "T" not in token:  # legacy epoch-seconds name
+        return int(token)
+    return calendar.timegm(time.strptime(token, _POD_TS_FMT))
+
+
 def pod_name(kind: str, created_epoch: int, deadline_epoch: int, sha: str) -> str:
-    return f"{POD_PREFIX}{kind}-c{created_epoch}-d{deadline_epoch}-{sha[:7]}"
+    return (
+        f"{POD_PREFIX}{kind}-c{_pod_ts(created_epoch)}"
+        f"-d{_pod_ts(deadline_epoch)}-{sha[:7]}"
+    )
 
 
 @dataclass
@@ -78,8 +98,8 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
         return None
     return PodMeta(
         kind=m.group("kind"),
-        created=int(m.group("created")),
-        deadline=int(m.group("deadline")),
+        created=_parse_pod_ts(m.group("created")),
+        deadline=_parse_pod_ts(m.group("deadline")),
         sha7=m.group("sha7"),
     )
 
