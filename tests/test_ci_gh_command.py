@@ -24,6 +24,9 @@ def gh_ctx(monkeypatch):
 
     monkeypatch.setenv("PR_NUMBER", "42")
     monkeypatch.setenv("HEAD_SHA", SHA)
+    monkeypatch.setenv(
+        "COMMENT_URL", "https://github.com/beyarkay/factorion/pull/42#issuecomment-999"
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rp-test")
     monkeypatch.setenv("WANDB_API_KEY", "wb-test")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-test")
@@ -81,6 +84,9 @@ class TestSftDispatch:
         assert len(run_id) == 8
         assert f"https://wandb.ai/testent/factorion/runs/{run_id}" in body
         assert "https://console.runpod.io/pods/pod-1" in body
+        # Every CI comment links back to the /ci comment that triggered it.
+        assert "Originally triggered by" in body
+        assert "#issuecomment-999" in body
 
 
 class TestPpoDispatch:

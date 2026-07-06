@@ -5,8 +5,8 @@ module parses the command, launches pods with the repo's secrets, and posts
 the outcome back to the PR — comments are the backbone of CI reporting.
 `/ci help` posts HELP below, which doubles as the grammar reference.
 
-Env: COMMENT_BODY, PR_NUMBER, HEAD_SHA, GITHUB_TOKEN, GITHUB_REPOSITORY,
-RUNPOD_API_KEY, WANDB_API_KEY.
+Env: COMMENT_BODY, COMMENT_URL, PR_NUMBER, HEAD_SHA, GITHUB_TOKEN,
+GITHUB_REPOSITORY, RUNPOD_API_KEY, WANDB_API_KEY.
 """
 
 from __future__ import annotations
@@ -179,6 +179,11 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
 
 
 def _post(ctx, body: str) -> None:
+    """Post a PR comment, appending a link back to the /ci comment that
+    triggered it — PRs accumulate many CI comments and the trail matters."""
+    url = ctx.get("comment_url")
+    if url:
+        body = f"{body.rstrip()}\n\n_Originally triggered by [this comment]({url})_"
     github_api.post_pr_comment(ctx["pr"], body)
 
 
@@ -508,6 +513,7 @@ def main() -> None:
     ctx = {
         "pr": int(os.environ["PR_NUMBER"]),
         "sha": os.environ["HEAD_SHA"],
+        "comment_url": os.environ.get("COMMENT_URL", ""),
     }
     tokens, assertions = parse_comment(body)
     ctx["assertions"] = assertions
