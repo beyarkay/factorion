@@ -42,6 +42,9 @@ def _run_overrides(job: SftJob | PpoJob) -> list[str]:
         out += ["--seed", str(job.seed)]
     if job.group is not None:
         out += ["--wandb-group", job.group]
+    run_id = os.environ.get("FCI_WANDB_RUN_ID")
+    if run_id:
+        out += ["--wandb-run-id", run_id]
     return out
 
 

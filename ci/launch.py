@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
+import string
 import subprocess
 import time
 from typing import Optional
@@ -127,7 +129,21 @@ def launch(
     deadline = now + job.budget_seconds()
     name = pod_name(job.KIND, now, deadline, job.sha)
     spec = job_to_dict(job)
-    info = {"pod_id": None, "pod_name": name, "deadline": deadline, "job": spec}
+    # Mint the W&B run id here so the run URL is known (and linkable from the
+    # PR) before the pod boots. Travels as env, not in the job spec, so pods
+    # running older commits simply ignore it. Sweep agents mint their own ids.
+    wandb_run_id = (
+        "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
+        if job.KIND in ("sft", "ppo")
+        else None
+    )
+    info = {
+        "pod_id": None,
+        "pod_name": name,
+        "deadline": deadline,
+        "job": spec,
+        "wandb_run_id": wandb_run_id,
+    }
 
     env = {
         "RUNPOD_API_KEY": os.environ.get("RUNPOD_API_KEY", ""),
@@ -139,9 +155,13 @@ def launch(
         "FCI_DEADLINE": str(deadline),
         "FCI_WANDB_PROJECT": WANDB_PROJECT,
     }
+    if wandb_run_id:
+        env["FCI_WANDB_RUN_ID"] = wandb_run_id
 
     print(f"Job:      {spec}")
     print(f"Pod name: {name}")
+    if wandb_run_id:
+        print(f"W&B run:  {wandb_run_id} (URL live once the pod starts logging)")
     print(f"GPU:      {gpu_type} (with fallbacks)")
     print(f"Deadline: {time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(deadline))} "
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")

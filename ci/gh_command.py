@@ -117,10 +117,35 @@ def _wandb_runs_url(sha7: str) -> str:
     return f"https://wandb.ai/?project={WANDB_PROJECT} (runs tagged `sha:{sha7}`)"
 
 
+_ENTITY_CACHE: list = []
+
+
+def _wandb_entity():
+    """Cached W&B entity for building run URLs; None if unresolvable."""
+    if not _ENTITY_CACHE:
+        try:
+            import wandb
+
+            _ENTITY_CACHE.append(wandb.Api().default_entity)
+        except Exception:
+            _ENTITY_CACHE.append(None)
+    return _ENTITY_CACHE[0]
+
+
 def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
-    lines = [f"## &#x1F680; {title}", ""]
+    lines = [f"## &#x1F440; {title}", ""]
+    entity = _wandb_entity() if any(i.get("wandb_run_id") for i in infos) else None
     for info in infos:
-        lines.append(f"- pod `{info['pod_id']}` (`{info['pod_name']}`)")
+        line = f"- pod `{info['pod_id']}` (`{info['pod_name']}`)"
+        run_id = info.get("wandb_run_id")
+        if run_id and entity:
+            line += (
+                f" &rarr; [W&B run `{run_id}`]"
+                f"(https://wandb.ai/{entity}/{WANDB_PROJECT}/runs/{run_id})"
+            )
+        elif run_id:
+            line += f" &rarr; W&B run `{run_id}`"
+        lines.append(line)
     deadline = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(infos[0]["deadline"]))
     spec = {k: v for k, v in infos[0]["job"].items() if k != "extra_tags"}
     lines += [

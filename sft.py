@@ -962,6 +962,8 @@ def train_sft(args: SftArgs):
             name=_artifact_name(args),
             group=args.wandb_group,
             tags=sft_tags,
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
         )
 
     best_val_acc = 0.0

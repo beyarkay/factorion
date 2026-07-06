@@ -15,6 +15,7 @@ import it in a bare GitHub cron environment.
 from __future__ import annotations
 
 import re
+import dataclasses
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
 
@@ -176,7 +177,8 @@ def job_from_dict(d: dict) -> Job:
     kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob)}
     d = dict(d)
     cls = kinds[d.pop("kind")]
-    return cls(**d)
+    known = {f.name for f in dataclasses.fields(cls)}
+    return cls(**{k: v for k, v in d.items() if k in known})
 
 
 # ── Compare fan-out ────────────────────────────────────────────────

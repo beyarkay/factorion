@@ -36,6 +36,7 @@ def gh_ctx(monkeypatch):
         return {"id": f"pod-{len(captured['pods'])}"}
 
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
+    monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
     monkeypatch.setattr(
         gh_command.github_api,
         "post_pr_comment",
@@ -74,6 +75,10 @@ class TestSftDispatch:
         ((pr, body),) = gh_ctx["comments"]
         assert pr == 42
         assert "pod-1" in body
+        # The W&B run id is minted at launch and linked in the comment.
+        run_id = pod["env"]["FCI_WANDB_RUN_ID"]
+        assert len(run_id) == 8
+        assert f"https://wandb.ai/testent/factorion/runs/{run_id}" in body
 
 
 class TestPpoDispatch:
