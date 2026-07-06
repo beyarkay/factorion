@@ -29,13 +29,38 @@ from ci.config import REPO_URL as DEFAULT_REPO_URL
 # Phase-1 bootstrap, shipped to the pod as FCI_BOOT_B64 (base64 dodges the
 # quoting hazards of RunPod's docker-args plumbing). Static on purpose: all
 # per-job values arrive via env vars, never via string templating.
+#
+# Container logs vanish when the pod terminates itself, so a failing
+# bootstrap uploads its log to W&B (run tagged `boot-failure`) first —
+# otherwise pod-side failures would be invisible.
 BOOTSTRAP = """\
 set -euo pipefail
-terminate_pod() {
+mkdir -p /workspace
+exec > >(tee -a /workspace/boot.log) 2>&1
+on_exit() {
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "[fci] job failed (exit ${rc}); uploading boot log to W&B"
+        FCI_RC="$rc" python - << 'PY' || true
+import os
+
+import wandb
+
+run = wandb.init(
+    project=os.environ.get("FCI_WANDB_PROJECT", "factorion"),
+    name=f"boot-failure-{os.environ.get('RUNPOD_POD_ID', 'unknown')}",
+    tags=["ci", "boot-failure", f"sha:{os.environ.get('FCI_SHA', 'unknown')[:7]}"],
+)
+run.summary["exit_code"] = int(os.environ.get("FCI_RC", "1"))
+if os.path.exists("/workspace/boot.log"):
+    wandb.save("/workspace/boot.log", base_path="/workspace")
+run.finish(exit_code=1)
+PY
+    fi
     echo "[fci] terminating pod ${RUNPOD_POD_ID:-unknown}"
     python -c 'import os, runpod; runpod.api_key = os.environ["RUNPOD_API_KEY"]; runpod.terminate_pod(os.environ["RUNPOD_POD_ID"])' || true
 }
-trap terminate_pod EXIT
+trap on_exit EXIT
 echo "[fci] cloning ${FCI_REPO_URL} @ ${FCI_SHA}"
 cd /workspace
 git clone --quiet "${FCI_REPO_URL}" factorion
@@ -112,6 +137,7 @@ def launch(
         "FCI_REPO_URL": repo_url,
         "FCI_SHA": job.sha,
         "FCI_DEADLINE": str(deadline),
+        "FCI_WANDB_PROJECT": WANDB_PROJECT,
     }
 
     print(f"Job:      {spec}")
@@ -186,13 +212,9 @@ def launch_compare(
     return infos
 
 
-def create_sweep(algo: str, sha: str) -> str:
-    """Create a W&B sweep from the commitish's own ci/sweep_{algo}.yaml.
-
-    Reading the config via `git show <sha>:...` (not the working tree) keeps
-    the sweep true to the commit being swept.
-    """
-    import wandb
+def read_sweep_config(algo: str, sha: str) -> dict:
+    """Load ci/sweep_{algo}.yaml as it exists AT THE COMMIT (`git show`, not
+    the working tree), so the sweep is true to the commit being swept."""
     import yaml
 
     try:
@@ -202,9 +224,28 @@ def create_sweep(algo: str, sha: str) -> str:
             f"error: ci/sweep_{algo}.yaml does not exist at {sha[:12]} — "
             "sweeps need a commit that contains the ci/ directory"
         )
-    sweep_config = yaml.safe_load(raw)
+    return yaml.safe_load(raw)
+
+
+def sweep_summary_line(config: dict) -> str:
+    """One line describing a sweep config: metric, run cap, swept params."""
+    metric = config.get("metric", {})
+    params = config.get("parameters", {})
+    return (
+        f"{metric.get('goal', '?')} `{metric.get('name', '?')}` over "
+        f"{len(params)} parameter(s), run_cap {config.get('run_cap', 'unset')}: "
+        f"{', '.join(f'`{p}`' for p in sorted(params))}"
+    )
+
+
+def create_sweep(algo: str, sha: str) -> str:
+    """Create a W&B sweep from the commitish's own ci/sweep_{algo}.yaml."""
+    import wandb
+
+    sweep_config = read_sweep_config(algo, sha)
     sweep_id = wandb.sweep(sweep=sweep_config, project=WANDB_PROJECT)
     entity = wandb.Api().default_entity
     sweep_path = f"{entity}/{WANDB_PROJECT}/{sweep_id}"
     print(f"Sweep created: https://wandb.ai/{entity}/{WANDB_PROJECT}/sweeps/{sweep_id}")
+    print(f"Sweep config: {sweep_summary_line(sweep_config)}")
     return sweep_path
