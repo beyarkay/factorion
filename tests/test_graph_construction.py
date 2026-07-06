@@ -41,14 +41,14 @@ from helpers import (
 
 
 def _n(name, x, y):
-    """Graph node label: ``f"{name}\\n@{x},{y}"`` (engine convention)."""
-    return f"{name}\n@{x},{y}"
+    """Graph node label in the engine's canonical ``name@x,y`` format."""
+    return f"{name}@{x},{y}"
 
 
 def _lanes(name, x, y):
-    """Both lane-node labels of a belt-ish entity tile: ``name:L`` and
-    ``name:R`` (lanes are named relative to the tile's facing)."""
-    return [f"{name}:L\n@{x},{y}", f"{name}:R\n@{x},{y}"]
+    """Both lane-node labels of a belt-ish entity tile: ``name@x,y:L`` and
+    ``name@x,y:R`` (lanes are named relative to the tile's facing)."""
+    return [f"{name}@{x},{y}:L", f"{name}@{x},{y}:R"]
 
 
 def _summary(graph):

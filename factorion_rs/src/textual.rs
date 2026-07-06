@@ -26,6 +26,18 @@
 //! `throughput:`/`graph:` checks are skipped. An empty file (or one of only
 //! comments / `---` separators) holds zero factories and the sweep skips it.
 //!
+//! ## Graph blocks and lanes
+//!
+//! A `graph:` block lists one expected edge per line in the canonical node
+//! format ([`NodeId::label`]): `entity_name@x,y`, plus a `:L`/`:R` suffix to
+//! name one lane node of a belt-ish entity — e.g.
+//! `transport_belt@1,0:L -> underground_belt@2,0:R`. Lane markers are
+//! elidable per DOCUMENT: if no reference in the block carries a suffix, the
+//! produced graph is projected to entity level before comparison (parallel
+//! lane edges deduplicate), so the fixture asserts which entities connect
+//! without spelling out ~2x lane edges. Any suffix anywhere in the block
+//! opts the whole document into exact lane-node comparison.
+//!
 //! ## Grid encoding
 //!
 //! Every tile is exactly **two characters**, and tiles are separated by one
@@ -67,7 +79,7 @@ use crate::entities::entity_tiles;
 use crate::graph::build_graph;
 use crate::render::{bbox, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS};
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Lane, Misc, NodeId};
+use crate::types::{all_items, Channel, Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
@@ -102,7 +114,7 @@ enum Cell {
 /// Classify a single two-character tile. Every character must be meaningful:
 /// an entity, a direction marker, or a filler (`.` = none, ` ` = multi-tile
 /// padding). Anything else — or two directions, or two different entities — is
-/// an error, so a typo like `b@` is rejected rather than silently read as `b`.
+/// an error, so a typo like `transport_belt@` is rejected rather than silently read as `b`.
 fn classify(c0: char, c1: char) -> Result<Cell, String> {
     if c0 == '.' && c1 == '.' {
         return Ok(Cell::Empty);
@@ -356,7 +368,8 @@ struct Header {
     /// Expected per-sink deliveries, asserted by [`assert_throughput`].
     #[serde(default)]
     throughput: Vec<ThroughputEntry>,
-    /// Expected factory graph: one `A@x,y -> B@x,y` edge per line. Checked by
+    /// Expected factory graph: one `entity_name@x,y -> entity_name@x,y` edge
+    /// per line (optionally lane-suffixed, see module docs). Checked by
     /// [`check_graph`]. Multi-tile entities are referenced by their anchor.
     #[serde(default)]
     graph: Option<String>,
@@ -392,8 +405,9 @@ pub(crate) struct FactorySpec {
     /// [`Header::ignored`]).
     pub ignored: bool,
     /// Expected directed edges from the `graph:` block, if any — each a
-    /// `(source, destination)` referenced by `<char>@x,y` (multi-tile entities
-    /// by their anchor). Asserted by [`check_graph`].
+    /// `(source, destination)` referenced by `entity_name@x,y[:L|:R]`
+    /// (lane-less multi-tile entities by their anchor). Asserted by
+    /// [`check_graph`].
     pub expected_graph: Option<Vec<(NodeId, NodeId)>>,
 }
 
@@ -454,8 +468,9 @@ fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
     })
 }
 
-/// Parse a `graph:` block — one `A@x,y -> B@x,y` edge per line — into directed
-/// edges. Blank lines and `#` comments are ignored.
+/// Parse a `graph:` block — one edge per line in the canonical node format,
+/// `entity_name@x,y -> entity_name@x,y` — into directed edges. Blank lines
+/// and `#` comments are ignored.
 fn parse_graph_spec(text: &str) -> Result<Vec<(NodeId, NodeId)>, String> {
     let mut edges = Vec::new();
     for raw in text.lines() {
@@ -465,29 +480,29 @@ fn parse_graph_spec(text: &str) -> Result<Vec<(NodeId, NodeId)>, String> {
         }
         let (lhs, rhs) = line
             .split_once("->")
-            .ok_or_else(|| format!("graph edge '{line}': expected 'A@x,y -> B@x,y'"))?;
+            .ok_or_else(|| format!("graph edge '{line}': expected 'entity@x,y -> entity@x,y'"))?;
         edges.push((parse_graph_node(lhs)?, parse_graph_node(rhs)?));
     }
     Ok(edges)
 }
 
-/// Parse one `<char>@x,y[:L|:R]` node reference into a [`NodeId`]. The
-/// optional lane suffix names one lane node of a belt-ish entity; without
-/// it the reference is lane-less (and, in a fixture that uses no lane
-/// suffixes at all, matches the whole entity — see [`check_graph`]).
+/// Parse one node reference in the ONE canonical format shared with
+/// [`NodeId::label`]: `entity_name@x,y[:L|:R]` (e.g.
+/// `transport_belt@1,0:L`, `stack_inserter@0,0`). The optional lane suffix
+/// names one lane node of a belt-ish entity; without it the reference is
+/// lane-less (and, in a fixture that uses no lane suffixes at all, matches
+/// the whole entity — see [`check_graph`]).
 fn parse_graph_node(s: &str) -> Result<NodeId, String> {
     let s = s.trim();
     let (head, coords) = s
         .split_once('@')
-        .ok_or_else(|| format!("graph node '{s}': expected '<entity>@x,y'"))?;
+        .ok_or_else(|| format!("graph node '{s}': expected 'entity_name@x,y'"))?;
     let head = head.trim();
-    let mut chars = head.chars();
-    let (ch, rest) = (chars.next(), chars.next());
-    let (item, _misc) = match (ch, rest) {
-        (Some(c), None) => entity_for_char(c)
-            .ok_or_else(|| format!("graph node '{s}': unknown entity character '{c}'"))?,
-        _ => return Err(format!("graph node '{s}': entity must be one character")),
-    };
+    let item = all_items()
+        .iter()
+        .copied()
+        .find(|i| i.is_placeable() && i.name() == head)
+        .ok_or_else(|| format!("graph node '{s}': unknown entity name '{head}'"))?;
     let (coords, lane) = match coords.split_once(':') {
         Some((c, l)) => {
             let lane = match l.trim() {
@@ -510,27 +525,13 @@ fn parse_graph_node(s: &str) -> Result<NodeId, String> {
         .trim()
         .parse::<usize>()
         .map_err(|_| format!("graph node '{s}': invalid y coordinate"))?;
-    Ok(match lane {
-        Some(l) => NodeId::with_lane(item, x, y, l),
-        None => NodeId::new(item, x, y),
-    })
+    Ok(NodeId::new(item, x, y, lane))
 }
 
-/// Compact `<char>@x,y[:L|:R]` rendering of a node, for graph-mismatch
-/// messages.
+/// Node rendering for graph-mismatch messages: exactly [`NodeId::label`],
+/// the same canonical format the fixtures are written in.
 fn fmt_node(id: &NodeId) -> String {
-    let lane = match id.lane {
-        None => "",
-        Some(Lane::Left) => ":L",
-        Some(Lane::Right) => ":R",
-    };
-    format!(
-        "{}@{},{}{}",
-        render_char(id.entity_kind, Misc::None),
-        id.x,
-        id.y,
-        lane
-    )
+    id.label()
 }
 
 /// Parse a single-document YAML factory into a [`FactorySpec`].
@@ -788,7 +789,7 @@ mod tests {
     #[test]
     fn test_malformed_unexpected_characters() {
         // Junk character paired with a valid entity — must NOT be read as `b`.
-        assert!(parse_grid("b@").is_err());
+        assert!(parse_grid("transport_belt@").is_err());
         assert!(parse_grid("b1").is_err());
         // Junk character on its own.
         assert!(parse_grid("zz").is_err());
@@ -986,8 +987,8 @@ factory: |
         let spec = parse(
             "
 graph: |
-  S@0,0 -> b@1,0
-  b@1,0 -> K@2,0
+  stack_inserter@0,0 -> transport_belt@1,0
+  transport_belt@1,0 -> bulk_inserter@2,0
 factory: |
   S> b> K>
 ",
@@ -997,12 +998,12 @@ factory: |
             spec.expected_graph,
             Some(vec![
                 (
-                    NodeId::new(Item::Source, 0, 0),
-                    NodeId::new(Item::TransportBelt, 1, 0),
+                    NodeId::new(Item::Source, 0, 0, None),
+                    NodeId::new(Item::TransportBelt, 1, 0, None),
                 ),
                 (
-                    NodeId::new(Item::TransportBelt, 1, 0),
-                    NodeId::new(Item::Sink, 2, 0),
+                    NodeId::new(Item::TransportBelt, 1, 0, None),
+                    NodeId::new(Item::Sink, 2, 0, None),
                 ),
             ])
         );
@@ -1014,8 +1015,8 @@ factory: |
         let spec = parse(
             "
 graph: |
-  S@0,0 -> b@1,0
-  b@1,0 -> K@2,0
+  stack_inserter@0,0 -> transport_belt@1,0
+  transport_belt@1,0 -> bulk_inserter@2,0
 factory: |
   S> b> K>
 ",
@@ -1026,12 +1027,12 @@ factory: |
 
     #[test]
     fn test_check_graph_detects_missing_and_extra_edges() {
-        // Missing b@1,0 -> K@2,0, and an invented edge that isn't produced.
+        // Missing transport_belt@1,0 -> bulk_inserter@2,0, and an invented edge that isn't produced.
         let spec = parse(
             "
 graph: |
-  S@0,0 -> b@1,0
-  S@0,0 -> K@2,0
+  stack_inserter@0,0 -> transport_belt@1,0
+  stack_inserter@0,0 -> bulk_inserter@2,0
 factory: |
   S> b> K>
 ",
@@ -1039,8 +1040,14 @@ factory: |
         .unwrap();
         let err = check_graph(&spec).unwrap_err();
         assert!(err.contains("graph mismatch"), "{err}");
-        assert!(err.contains("b@1,0 -> K@2,0"), "{err}"); // missing
-        assert!(err.contains("S@0,0 -> K@2,0"), "{err}"); // unexpected
+        assert!(
+            err.contains("transport_belt@1,0 -> bulk_inserter@2,0"),
+            "{err}"
+        ); // missing
+        assert!(
+            err.contains("stack_inserter@0,0 -> bulk_inserter@2,0"),
+            "{err}"
+        ); // unexpected
     }
 
     #[test]
@@ -1049,7 +1056,7 @@ factory: |
         let spec = parse(
             "
 graph: |
-  S@0,0 -> K@2,0
+  stack_inserter@0,0 -> bulk_inserter@2,0
 factory: |
   S> b> K>
 ",
@@ -1061,9 +1068,15 @@ factory: |
     #[test]
     fn test_graph_node_parse_errors() {
         // Malformed graph specs are rejected at parse time.
-        assert!(parse("graph: |\n  S@0,0 b@1,0\nfactory: |\n  S> b>").is_err()); // no ->
-        assert!(parse("graph: |\n  Z@0,0 -> b@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
-        assert!(parse("graph: |\n  S@x,0 -> b@1,0\nfactory: |\n  S> b>").is_err());
+        assert!(
+            parse("graph: |\n  stack_inserter@0,0 transport_belt@1,0\nfactory: |\n  S> b>")
+                .is_err()
+        ); // no ->
+        assert!(parse("graph: |\n  Z@0,0 -> transport_belt@1,0\nfactory: |\n  S> b>").is_err()); // bad entity
+        assert!(
+            parse("graph: |\n  stack_inserter@x,0 -> transport_belt@1,0\nfactory: |\n  S> b>")
+                .is_err()
+        );
         // bad coord
     }
 

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
-use crate::types::{Direction, Item, Misc, NodeId, LANES};
+use crate::types::{Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
+use strum::IntoEnumIterator;
 
 /// A node in the factory graph.
 #[derive(Debug, Clone)]
@@ -141,12 +142,11 @@ pub fn build_graph(world: &World) -> FactoryGraph {
             let curved = entity_kind == Item::TransportBelt && is_curved_belt(world, (x, y));
 
             let node_ids: Vec<NodeId> = if entity_kind.is_lane_aware() {
-                LANES
-                    .iter()
-                    .map(|&lane| NodeId::with_lane(entity_kind, x, y, lane))
+                Lane::iter()
+                    .map(|lane| NodeId::new(entity_kind, x, y, Some(lane)))
                     .collect()
             } else {
-                vec![NodeId::new(entity_kind, x, y)]
+                vec![NodeId::new(entity_kind, x, y, None)]
             };
             for node_id in node_ids {
                 let output = if entity_kind == Item::Source {
@@ -432,15 +432,15 @@ mod tests {
         // Source(1) + 2 belts (2 lane nodes each) + Sink(1).
         assert_eq!(g.node_count(), 6);
 
-        let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
-        let sink = g.get_index(&NodeId::new(Item::Sink, 3, 0)).unwrap();
-        for lane in LANES {
+        let source = g.get_index(&NodeId::new(Item::Source, 0, 0, None)).unwrap();
+        let sink = g.get_index(&NodeId::new(Item::Sink, 3, 0, None)).unwrap();
+        for lane in Lane::iter() {
             // Belt(1,0) → Belt(2,0) is lane-preserving.
             let belt1 = g
-                .get_index(&NodeId::with_lane(Item::TransportBelt, 1, 0, lane))
+                .get_index(&NodeId::new(Item::TransportBelt, 1, 0, Some(lane)))
                 .unwrap();
             let belt2 = g
-                .get_index(&NodeId::with_lane(Item::TransportBelt, 2, 0, lane))
+                .get_index(&NodeId::new(Item::TransportBelt, 2, 0, Some(lane)))
                 .unwrap();
             assert!(g.successors[belt1].contains(&belt2));
             assert!(g.predecessors[belt2].contains(&belt1));
@@ -467,26 +467,30 @@ mod tests {
         assert_eq!(g.node_count(), 6);
 
         // Source → Inserter(1,0)
-        let source = g.get_index(&NodeId::new(Item::Source, 0, 0)).unwrap();
-        let ins1 = g.get_index(&NodeId::new(Item::Inserter, 1, 0)).unwrap();
+        let source = g.get_index(&NodeId::new(Item::Source, 0, 0, None)).unwrap();
+        let ins1 = g
+            .get_index(&NodeId::new(Item::Inserter, 1, 0, None))
+            .unwrap();
         assert!(g.successors[source].contains(&ins1) || g.predecessors[ins1].contains(&source));
 
-        let ins2 = g.get_index(&NodeId::new(Item::Inserter, 3, 0)).unwrap();
+        let ins2 = g
+            .get_index(&NodeId::new(Item::Inserter, 3, 0, None))
+            .unwrap();
         // Inserter(1,0) → Belt(2,0): parallel belt → drops on the RIGHT
         // lane only.
         let belt_r = g
-            .get_index(&NodeId::with_lane(
+            .get_index(&NodeId::new(
                 Item::TransportBelt,
                 2,
                 0,
-                crate::types::Lane::Right,
+                Some(crate::types::Lane::Right),
             ))
             .unwrap();
         assert!(g.successors[ins1].contains(&belt_r));
-        for lane in LANES {
+        for lane in Lane::iter() {
             // Belt(2,0) → Inserter(3,0): picks from both lanes.
             let belt = g
-                .get_index(&NodeId::with_lane(Item::TransportBelt, 2, 0, lane))
+                .get_index(&NodeId::new(Item::TransportBelt, 2, 0, Some(lane)))
                 .unwrap();
             assert!(g.predecessors[ins2].contains(&belt));
         }
@@ -505,19 +509,19 @@ mod tests {
         // 4 belt-ish entities × 2 lane nodes.
         assert_eq!(g.node_count(), 8);
 
-        for lane in LANES {
+        for lane in Lane::iter() {
             // Underground(down,1,0) → Underground(up,4,0): lanes persist
             // through the tunnel.
             let ug_down = g
-                .get_index(&NodeId::with_lane(Item::UndergroundBelt, 1, 0, lane))
+                .get_index(&NodeId::new(Item::UndergroundBelt, 1, 0, Some(lane)))
                 .unwrap();
             let ug_up = g
-                .get_index(&NodeId::with_lane(Item::UndergroundBelt, 4, 0, lane))
+                .get_index(&NodeId::new(Item::UndergroundBelt, 4, 0, Some(lane)))
                 .unwrap();
             assert!(g.successors[ug_down].contains(&ug_up));
 
             let belt0 = g
-                .get_index(&NodeId::with_lane(Item::TransportBelt, 0, 0, lane))
+                .get_index(&NodeId::new(Item::TransportBelt, 0, 0, Some(lane)))
                 .unwrap();
             assert!(g.successors[belt0].contains(&ug_down));
         }
@@ -533,9 +537,9 @@ mod tests {
         let g = build_graph(&w);
         assert_eq!(g.node_count(), 4);
         for tile_y in [0, 1] {
-            for lane in LANES {
+            for lane in Lane::iter() {
                 let idx = g
-                    .get_index(&NodeId::with_lane(Item::Splitter, 1, tile_y, lane))
+                    .get_index(&NodeId::new(Item::Splitter, 1, tile_y, Some(lane)))
                     .unwrap();
                 assert_eq!(g.nodes[idx].anchor, (1, 0));
             }

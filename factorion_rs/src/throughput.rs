@@ -458,7 +458,7 @@ mod tests {
         let mut g = FactoryGraph {
             nodes: vec![
                 crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 0, 0),
+                    id: NodeId::new(Item::TransportBelt, 0, 0, None),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
@@ -470,7 +470,7 @@ mod tests {
                     output: HashMap::new(),
                 },
                 crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 1, 0),
+                    id: NodeId::new(Item::TransportBelt, 1, 0, None),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
@@ -483,8 +483,8 @@ mod tests {
                 },
             ],
             node_index: HashMap::from([
-                (NodeId::new(Item::TransportBelt, 0, 0), 0),
-                (NodeId::new(Item::TransportBelt, 1, 0), 1),
+                (NodeId::new(Item::TransportBelt, 0, 0, None), 0),
+                (NodeId::new(Item::TransportBelt, 1, 0, None), 1),
             ]),
             successors: vec![vec![1], vec![0]], // 0→1→0 cycle
             predecessors: vec![vec![1], vec![0]],

@@ -82,9 +82,10 @@ type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
 /// `simulate_throughput` takes.
 ///
 /// Returns `(nodes, edges)` where:
-///   * `nodes` is a list of node labels in the engine's
-///     `"{entity_name}\n@{x},{y}"` format (one per placeable entity, anchor
-///     tile only for multi-tile entities), and
+///   * `nodes` is a list of node labels in the engine's canonical
+///     `"{entity_name}@{x},{y}"` format, plus a `:L`/`:R` suffix for the two
+///     lane nodes of a belt-ish tile (lane-less entities collapse to their
+///     anchor tile; splitter tiles keep per-tile identity), and
 ///   * `edges` is a list of `(src_index, dst_index)` pairs indexing into
 ///     `nodes`.
 ///

@@ -714,9 +714,13 @@ def plot_flow_network(G):
     import networkx as nx
 
     # Extract x, y coordinates from node names
+    # Node labels are "entity_name@x,y" with an optional ":L"/":R" lane
+    # suffix after the coordinates.
     pos = {
         node: (int(x), -int(y))
-        for node, (x, y) in ((n, n.split("@")[1].split(",")) for n in G.nodes)
+        for node, (x, y) in (
+            (n, n.split("@")[1].split(":")[0].split(",")) for n in G.nodes
+        )
     }
     plt.figure(
         figsize=(
@@ -1006,10 +1010,10 @@ def build_graph_nx(world_WHC):
     The Rust engine (``factorion_rs.py_build_graph``) is the single source of
     truth for entity connectivity; this thin wrapper rebuilds its
     ``(node_labels, edges)`` output into a ``networkx`` graph for connectivity
-    queries and drawing/layout. Nodes are labelled
-    ``f"{entity_name}\\n@{x},{y}"`` — with a ``:L``/``:R`` suffix on the name
-    line for the two lane nodes of a belt-ish tile — and edges follow the
-    engine's entity-connection rules.
+    queries and drawing/layout. Nodes are labelled in the engine's canonical
+    format ``f"{entity_name}@{x},{y}"`` — plus a ``:L``/``:R`` suffix for the
+    two lane nodes of a belt-ish tile — and edges follow the engine's
+    entity-connection rules.
 
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that
     ``factorion_rs.simulate_throughput`` takes.

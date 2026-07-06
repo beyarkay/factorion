@@ -89,22 +89,22 @@ factory: |
   .. l^ .. d< ..
 ---
 description: long_handed_inserter/E vs belt/N
-graph: "l@1,0 -> b@3,0"
+graph: "long_handed_inserter@1,0 -> transport_belt@3,0"
 factory: |
   .. l> .. b^ ..
 ---
 description: long_handed_inserter/E vs belt/E
-graph: "l@1,0 -> b@3,0"
+graph: "long_handed_inserter@1,0 -> transport_belt@3,0"
 factory: |
   .. l> .. b> ..
 ---
 description: long_handed_inserter/E vs belt/S
-graph: "l@1,0 -> b@3,0"
+graph: "long_handed_inserter@1,0 -> transport_belt@3,0"
 factory: |
   .. l> .. bv ..
 ---
 description: long_handed_inserter/E vs belt/W
-graph: "l@1,0 -> b@3,0"
+graph: "long_handed_inserter@1,0 -> transport_belt@3,0"
 factory: |
   .. l> .. b< ..
 ---
@@ -129,42 +129,42 @@ factory: |
   .. l> .. i< ..
 ---
 description: long_handed_inserter/E vs ug_up/N
-graph: "l@1,0 -> u@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. u^ ..
 ---
 description: long_handed_inserter/E vs ug_up/E
-graph: "l@1,0 -> u@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. u> ..
 ---
 description: long_handed_inserter/E vs ug_up/S
-graph: "l@1,0 -> u@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. uv ..
 ---
 description: long_handed_inserter/E vs ug_up/W
-graph: "l@1,0 -> u@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. u< ..
 ---
 description: long_handed_inserter/E vs ug_down/N
-graph: "l@1,0 -> d@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. d^ ..
 ---
 description: long_handed_inserter/E vs ug_down/E
-graph: "l@1,0 -> d@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. d> ..
 ---
 description: long_handed_inserter/E vs ug_down/S
-graph: "l@1,0 -> d@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. dv ..
 ---
 description: long_handed_inserter/E vs ug_down/W
-graph: "l@1,0 -> d@3,0"
+graph: "long_handed_inserter@1,0 -> underground_belt@3,0"
 factory: |
   .. l> .. d< ..
 ---
@@ -249,22 +249,22 @@ factory: |
   .. lv .. d< ..
 ---
 description: long_handed_inserter/W vs belt/N
-graph: "b@3,0 -> l@1,0"
+graph: "transport_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. b^ ..
 ---
 description: long_handed_inserter/W vs belt/E
-graph: "b@3,0 -> l@1,0"
+graph: "transport_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. b> ..
 ---
 description: long_handed_inserter/W vs belt/S
-graph: "b@3,0 -> l@1,0"
+graph: "transport_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. bv ..
 ---
 description: long_handed_inserter/W vs belt/W
-graph: "b@3,0 -> l@1,0"
+graph: "transport_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. b< ..
 ---
@@ -289,41 +289,41 @@ factory: |
   .. l< .. i< ..
 ---
 description: long_handed_inserter/W vs ug_up/N
-graph: "u@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. u^ ..
 ---
 description: long_handed_inserter/W vs ug_up/E
-graph: "u@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. u> ..
 ---
 description: long_handed_inserter/W vs ug_up/S
-graph: "u@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. uv ..
 ---
 description: long_handed_inserter/W vs ug_up/W
-graph: "u@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. u< ..
 ---
 description: long_handed_inserter/W vs ug_down/N
-graph: "d@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. d^ ..
 ---
 description: long_handed_inserter/W vs ug_down/E
-graph: "d@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. d> ..
 ---
 description: long_handed_inserter/W vs ug_down/S
-graph: "d@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. dv ..
 ---
 description: long_handed_inserter/W vs ug_down/W
-graph: "d@3,0 -> l@1,0"
+graph: "underground_belt@3,0 -> long_handed_inserter@1,0"
 factory: |
   .. l< .. d< ..

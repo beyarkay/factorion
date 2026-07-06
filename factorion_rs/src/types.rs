@@ -65,8 +65,8 @@ impl Direction {
 
     /// The absolute direction of the LEFT side of an entity facing `self`
     /// (90° counter-clockwise): a north-facing belt's left lane sits on its
-    /// west side.
-    #[allow(dead_code)] // used by the curve/sideload and inserter lane rules
+    /// west side. (Orientation-relative sides are named left/right/fore/aft
+    /// throughout the codebase.)
     pub fn left_side(self) -> Self {
         match self {
             Direction::North => Direction::West,
@@ -79,7 +79,6 @@ impl Direction {
 
     /// The absolute direction of the RIGHT side of an entity facing `self`
     /// (90° clockwise).
-    #[allow(dead_code)] // used by the curve/sideload and inserter lane rules
     pub fn right_side(self) -> Self {
         self.left_side().opposite()
     }
@@ -90,35 +89,15 @@ impl Direction {
 /// Belt-ish entities (transport belt, underground belt, each splitter tile)
 /// get one graph node per lane; everything else is lane-less (`None` in
 /// [`NodeId::lane`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Lane {
     Left,
     Right,
 }
 
-pub const LANES: [Lane; 2] = [Lane::Left, Lane::Right];
-
-#[allow(dead_code)] // used by the curve/sideload and inserter lane rules
 impl Lane {
-    /// The other lane.
-    pub fn opposite(self) -> Self {
-        match self {
-            Lane::Left => Lane::Right,
-            Lane::Right => Lane::Left,
-        }
-    }
-
-    /// The absolute direction of the side this lane sits on, for a tile
-    /// facing `dir`.
-    pub fn side(self, dir: Direction) -> Direction {
-        match self {
-            Lane::Left => dir.left_side(),
-            Lane::Right => dir.right_side(),
-        }
-    }
-
     /// Which lane of a tile facing `dir` sits on the absolute side `side`.
-    /// `None` when `side` is ahead/behind rather than a flank.
+    /// `None` when `side` is fore/aft rather than a flank.
     pub fn on_side(dir: Direction, side: Direction) -> Option<Self> {
         if side == dir.left_side() {
             Some(Lane::Left)
@@ -126,6 +105,17 @@ impl Lane {
             Some(Lane::Right)
         } else {
             None
+        }
+    }
+
+    /// The `:L` / `:R` suffix this lane contributes to a node reference —
+    /// the single formatting point shared by [`NodeId::label`] and the
+    /// textual fixture format.
+    pub fn suffix(lane: Option<Lane>) -> &'static str {
+        match lane {
+            None => "",
+            Some(Lane::Left) => ":L",
+            Some(Lane::Right) => ":R",
         }
     }
 }
@@ -448,8 +438,9 @@ impl Item {
         )
     }
 
-    /// Maximum items/second this item can transfer when placed as an
-    /// entity. Returns 0.0 for non-placeable items.
+    /// Maximum items/second one TILE of this item can transfer when placed
+    /// as an entity (lane-aware entities cap each lane node at half this).
+    /// Returns 0.0 for non-placeable items.
     #[allow(dead_code)]
     pub fn flow_rate(self) -> f64 {
         match self {
@@ -463,7 +454,9 @@ impl Item {
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
-            Item::Splitter => 30.0, // 2 lanes × 15 i/s
+            // Per constituent belt: a splitter is two belts side by side,
+            // each a full 15 i/s tile (4 lane pools × 7.5 = 30 total).
+            Item::Splitter => 15.0,
             // Non-placeable: cannot transfer flow on its own.
             Item::CopperCable
             | Item::CopperPlate
@@ -1247,10 +1240,12 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Its [`label`](NodeId::label) renders as `"entity_name\n@x,y"` for
-/// lane-less nodes and `"entity_name:L\n@x,y"` / `":R"` for lane nodes
-/// (the lane suffix stays on the name line so coordinate parsing —
-/// `label.split("@")[1]` on the Python side — is unaffected).
+///
+/// Its [`label`](NodeId::label) renders in the ONE canonical node-reference
+/// format used everywhere — engine labels, the Python graph API, and the
+/// textual fixture `graph:` blocks alike:
+/// `"{entity_name}@{x},{y}"` plus a `:L`/`:R` suffix for lane nodes, e.g.
+/// `transport_belt@3,4:L`, `stack_inserter@0,0`.
 ///
 /// `entity_kind` is an `Item` (post-unification) and should always be
 /// placeable — only placeable items become graph nodes. Belt-ish entities
@@ -1265,36 +1260,22 @@ pub struct NodeId {
 }
 
 impl NodeId {
-    pub fn new(entity_kind: Item, x: usize, y: usize) -> Self {
+    pub fn new(entity_kind: Item, x: usize, y: usize, lane: Option<Lane>) -> Self {
         Self {
             entity_kind,
             x,
             y,
-            lane: None,
-        }
-    }
-
-    pub fn with_lane(entity_kind: Item, x: usize, y: usize, lane: Lane) -> Self {
-        Self {
-            entity_kind,
-            x,
-            y,
-            lane: Some(lane),
+            lane,
         }
     }
 
     pub fn label(&self) -> String {
-        let lane = match self.lane {
-            None => "",
-            Some(Lane::Left) => ":L",
-            Some(Lane::Right) => ":R",
-        };
         format!(
-            "{}{}\n@{},{}",
+            "{}@{},{}{}",
             self.entity_kind.name(),
-            lane,
             self.x,
-            self.y
+            self.y,
+            Lane::suffix(self.lane)
         )
     }
 }
@@ -1360,18 +1341,10 @@ mod tests {
             Direction::South,
             Direction::West,
         ] {
-            for lane in LANES {
-                let side = lane.side(dir);
-                // A lane's side maps back to that lane…
-                assert_eq!(Lane::on_side(dir, side), Some(lane), "{dir:?} {lane:?}");
-                // …and the opposite side maps to the opposite lane.
-                assert_eq!(
-                    Lane::on_side(dir, side.opposite()),
-                    Some(lane.opposite()),
-                    "{dir:?} {lane:?}"
-                );
-            }
-            // Ahead/behind are not lane sides.
+            // The left flank maps to the Left lane, the right flank to the
+            // Right lane, and fore/aft are not lane sides.
+            assert_eq!(Lane::on_side(dir, dir.left_side()), Some(Lane::Left));
+            assert_eq!(Lane::on_side(dir, dir.right_side()), Some(Lane::Right));
             assert_eq!(Lane::on_side(dir, dir), None);
             assert_eq!(Lane::on_side(dir, dir.opposite()), None);
         }
@@ -1380,16 +1353,16 @@ mod tests {
     #[test]
     fn test_node_id_label_lane_suffix() {
         assert_eq!(
-            NodeId::new(Item::TransportBelt, 3, 4).label(),
-            "transport_belt\n@3,4"
+            NodeId::new(Item::TransportBelt, 3, 4, None).label(),
+            "transport_belt@3,4"
         );
         assert_eq!(
-            NodeId::with_lane(Item::TransportBelt, 3, 4, Lane::Left).label(),
-            "transport_belt:L\n@3,4"
+            NodeId::new(Item::TransportBelt, 3, 4, Some(Lane::Left)).label(),
+            "transport_belt@3,4:L"
         );
         assert_eq!(
-            NodeId::with_lane(Item::Splitter, 0, 1, Lane::Right).label(),
-            "splitter:R\n@0,1"
+            NodeId::new(Item::Splitter, 0, 1, Some(Lane::Right)).label(),
+            "splitter@0,1:R"
         );
     }
 
@@ -1433,6 +1406,8 @@ mod tests {
         assert_eq!(Item::LongHandedInserter.flow_rate(), 0.86);
         assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
         assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
+        // Per splitter tile — each of its two tiles is a belt.
+        assert_eq!(Item::Splitter.flow_rate(), 15.0);
         assert!(Item::Sink.flow_rate().is_infinite());
         assert!(Item::Source.flow_rate().is_infinite());
         assert_eq!(Item::CopperCable.flow_rate(), 0.0);
@@ -1580,7 +1555,7 @@ mod tests {
 
     #[test]
     fn test_node_id_label() {
-        let id = NodeId::new(Item::TransportBelt, 3, 5);
-        assert_eq!(id.label(), "transport_belt\n@3,5");
+        let id = NodeId::new(Item::TransportBelt, 3, 5, None);
+        assert_eq!(id.label(), "transport_belt@3,5");
     }
 }

@@ -7,7 +7,7 @@
 
 description: west side — long inserter two tiles left, facing east, feeds the assembler
 graph: |
-  l@0,1 -> a@2,0
+  long_handed_inserter@0,1 -> assembling_machine_1@2,0
 factory: |
   .. .. aaaaaaaa
   l> .. aa    aa
@@ -15,7 +15,7 @@ factory: |
 ---
 description: east side — long inserter two tiles right, facing east, is fed by the assembler
 graph: |
-  a@0,0 -> l@4,1
+  assembling_machine_1@0,0 -> long_handed_inserter@4,1
 factory: |
   aaaaaaaa .. ..
   aa    aa .. l>
@@ -23,7 +23,7 @@ factory: |
 ---
 description: north side — long inserter two tiles above, facing south, feeds the assembler
 graph: |
-  l@1,0 -> a@0,2
+  long_handed_inserter@1,0 -> assembling_machine_1@0,2
 factory: |
   .. lv ..
   .. .. ..
@@ -33,7 +33,7 @@ factory: |
 ---
 description: south side — long inserter two tiles below, facing south, is fed by the assembler
 graph: |
-  a@0,0 -> l@1,4
+  assembling_machine_1@0,0 -> long_handed_inserter@1,4
 factory: |
   aaaaaaaa
   aa    aa
@@ -46,7 +46,7 @@ description: |
   inserter at (0,2) faces east and drops two tiles ahead onto (2,2), the
   assembler's bottom-left tile, yet the edge points at the anchor (2,0).
 graph: |
-  l@0,2 -> a@2,0
+  long_handed_inserter@0,2 -> assembling_machine_1@2,0
 factory: |
   .. .. aaaaaaaa
   .. .. aa    aa

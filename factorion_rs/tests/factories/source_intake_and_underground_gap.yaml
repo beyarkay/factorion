@@ -27,7 +27,7 @@ factory: |
 #  any belt -> belt connection. Contrast the negative case above — the only
 #  difference is the belt's facing.
 #graph: |
-#  b@0,0 -> S@1,0
+#  transport_belt@0,0 -> stack_inserter@1,0
 #factory: |
 #  b> S>
 ---
@@ -43,10 +43,10 @@ description: |
   u -> b (exit feeds the belt ahead) edges are the ones the removed Python
   builder mis-wired.
 graph: |
-  S@0,0 -> b@1,0
-  b@1,0 -> d@2,0
-  d@2,0 -> u@5,0
-  u@5,0 -> b@6,0
-  b@6,0 -> K@7,0
+  stack_inserter@0,0 -> transport_belt@1,0
+  transport_belt@1,0 -> underground_belt@2,0
+  underground_belt@2,0 -> underground_belt@5,0
+  underground_belt@5,0 -> transport_belt@6,0
+  transport_belt@6,0 -> bulk_inserter@7,0
 factory: |
   S> b> d> .. .. u> b> K>

@@ -31,7 +31,7 @@ factory: |
 description: |
   Drop at distance 2: the sink is two cells ahead (connects) while the source
   one cell behind is skipped — so only the drop edge forms.
-graph: "l@1,2 -> K@1,0"
+graph: "long_handed_inserter@1,2 -> bulk_inserter@1,0"
 factory: |
   .. K^ ..
   .. .. ..
@@ -42,7 +42,7 @@ factory: |
 description: |
   Pickup at distance 2: the source is two cells behind (connects) while the sink
   one cell ahead is skipped — so only the pickup edge forms.
-graph: "S@1,4 -> l@1,2"
+graph: "stack_inserter@1,4 -> long_handed_inserter@1,2"
 factory: |
   .. .. ..
   .. K^ ..

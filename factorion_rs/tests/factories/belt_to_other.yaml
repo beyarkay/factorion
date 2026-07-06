@@ -17,7 +17,7 @@ factory: |
   .. b^ bv ..
 ---
 description: belt/N vs belt/W
-graph: "b@2,0 -> b@1,0"
+graph: "transport_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. b^ b< ..
 ---
@@ -27,7 +27,7 @@ factory: |
   .. b^ i^ ..
 ---
 description: belt/N vs inserter/E
-graph: "b@1,0 -> i@2,0"
+graph: "transport_belt@1,0 -> inserter@2,0"
 factory: |
   .. b^ i> ..
 ---
@@ -37,7 +37,7 @@ factory: |
   .. b^ iv ..
 ---
 description: belt/N vs inserter/W
-graph: "i@2,0 -> b@1,0"
+graph: "inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b^ i< ..
 ---
@@ -57,7 +57,7 @@ factory: |
   .. b^ uv ..
 ---
 description: belt/N vs ug_up/W
-graph: "u@2,0 -> b@1,0"
+graph: "underground_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. b^ u< ..
 ---
@@ -82,17 +82,17 @@ factory: |
   .. b^ d< ..
 ---
 description: belt/E vs belt/N
-graph: "b@1,0 -> b@2,0"
+graph: "transport_belt@1,0 -> transport_belt@2,0"
 factory: |
   .. b> b^ ..
 ---
 description: belt/E vs belt/E
-graph: "b@1,0 -> b@2,0"
+graph: "transport_belt@1,0 -> transport_belt@2,0"
 factory: |
   .. b> b> ..
 ---
 description: belt/E vs belt/S
-graph: "b@1,0 -> b@2,0"
+graph: "transport_belt@1,0 -> transport_belt@2,0"
 factory: |
   .. b> bv ..
 ---
@@ -107,7 +107,7 @@ factory: |
   .. b> i^ ..
 ---
 description: belt/E vs inserter/E
-graph: "b@1,0 -> i@2,0"
+graph: "transport_belt@1,0 -> inserter@2,0"
 factory: |
   .. b> i> ..
 ---
@@ -117,12 +117,12 @@ factory: |
   .. b> iv ..
 ---
 description: belt/E vs inserter/W
-graph: "i@2,0 -> b@1,0"
+graph: "inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b> i< ..
 ---
 description: belt/E vs ug_up/N
-graph: "b@1,0 -> u@2,0"
+graph: "transport_belt@1,0 -> underground_belt@2,0"
 factory: |
   .. b> u^ ..
 ---
@@ -132,7 +132,7 @@ factory: |
   .. b> u> ..
 ---
 description: belt/E vs ug_up/S
-graph: "b@1,0 -> u@2,0"
+graph: "transport_belt@1,0 -> underground_belt@2,0"
 factory: |
   .. b> uv ..
 ---
@@ -142,17 +142,17 @@ factory: |
   .. b> u< ..
 ---
 description: belt/E vs ug_down/N
-graph: "b@1,0 -> d@2,0"
+graph: "transport_belt@1,0 -> underground_belt@2,0"
 factory: |
   .. b> d^ ..
 ---
 description: belt/E vs ug_down/E
-graph: "b@1,0 -> d@2,0"
+graph: "transport_belt@1,0 -> underground_belt@2,0"
 factory: |
   .. b> d> ..
 ---
 description: belt/E vs ug_down/S
-graph: "b@1,0 -> d@2,0"
+graph: "transport_belt@1,0 -> underground_belt@2,0"
 factory: |
   .. b> dv ..
 ---
@@ -177,7 +177,7 @@ factory: |
   .. bv bv ..
 ---
 description: belt/S vs belt/W
-graph: "b@2,0 -> b@1,0"
+graph: "transport_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. bv b< ..
 ---
@@ -187,7 +187,7 @@ factory: |
   .. bv i^ ..
 ---
 description: belt/S vs inserter/E
-graph: "b@1,0 -> i@2,0"
+graph: "transport_belt@1,0 -> inserter@2,0"
 factory: |
   .. bv i> ..
 ---
@@ -197,7 +197,7 @@ factory: |
   .. bv iv ..
 ---
 description: belt/S vs inserter/W
-graph: "i@2,0 -> b@1,0"
+graph: "inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. bv i< ..
 ---
@@ -217,7 +217,7 @@ factory: |
   .. bv uv ..
 ---
 description: belt/S vs ug_up/W
-graph: "u@2,0 -> b@1,0"
+graph: "underground_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. bv u< ..
 ---
@@ -257,7 +257,7 @@ factory: |
   .. b< bv ..
 ---
 description: belt/W vs belt/W
-graph: "b@2,0 -> b@1,0"
+graph: "transport_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. b< b< ..
 ---
@@ -267,7 +267,7 @@ factory: |
   .. b< i^ ..
 ---
 description: belt/W vs inserter/E
-graph: "b@1,0 -> i@2,0"
+graph: "transport_belt@1,0 -> inserter@2,0"
 factory: |
   .. b< i> ..
 ---
@@ -277,7 +277,7 @@ factory: |
   .. b< iv ..
 ---
 description: belt/W vs inserter/W
-graph: "i@2,0 -> b@1,0"
+graph: "inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b< i< ..
 ---
@@ -297,7 +297,7 @@ factory: |
   .. b< uv ..
 ---
 description: belt/W vs ug_up/W
-graph: "u@2,0 -> b@1,0"
+graph: "underground_belt@2,0 -> transport_belt@1,0"
 factory: |
   .. b< u< ..
 ---

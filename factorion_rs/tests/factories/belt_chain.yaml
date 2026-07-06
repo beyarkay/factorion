@@ -7,8 +7,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 15 }
 graph: |
-  S@0,0 -> b@1,0
-  b@1,0 -> b@2,0
-  b@2,0 -> K@3,0
+  stack_inserter@0,0 -> transport_belt@1,0
+  transport_belt@1,0 -> transport_belt@2,0
+  transport_belt@2,0 -> bulk_inserter@3,0
 factory: |
   S> b> b> K> ..

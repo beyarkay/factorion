@@ -7,13 +7,13 @@
 
 description: long inserter pulls from a source two tiles behind it
 graph: |
-  S@0,0 -> l@2,0
+  stack_inserter@0,0 -> long_handed_inserter@2,0
 factory: |
   S> .. l> ..
 ---
 description: long inserter drops onto a sink two tiles ahead of it
 graph: |
-  l@1,0 -> K@3,0
+  long_handed_inserter@1,0 -> bulk_inserter@3,0
 factory: |
   .. l> .. K>
 ---

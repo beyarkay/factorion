@@ -20,7 +20,7 @@ factory: |
   .. b^ Sv ..
 ---
 description: belt/N vs source/W
-graph: "S@2,0 -> b@1,0"
+graph: "stack_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b^ S< ..
 ---
@@ -40,22 +40,22 @@ factory: |
   .. b^ Kv ..
 ---
 description: belt/N vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: "bulk_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b^ K< ..
 ---
 description: belt/E vs source/N
-graph: "b@1,0 -> S@2,0"
+graph: "transport_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. b> S^ ..
 ---
 description: belt/E vs source/E
-graph: "b@1,0 -> S@2,0"
+graph: "transport_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. b> S> ..
 ---
 description: belt/E vs source/S
-graph: "b@1,0 -> S@2,0"
+graph: "transport_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. b> Sv ..
 ---
@@ -65,17 +65,17 @@ factory: |
   .. b> S< ..
 ---
 description: belt/E vs sink/N
-graph: "b@1,0 -> K@2,0"
+graph: "transport_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. b> K^ ..
 ---
 description: belt/E vs sink/E
-graph: "b@1,0 -> K@2,0"
+graph: "transport_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. b> K> ..
 ---
 description: belt/E vs sink/S
-graph: "b@1,0 -> K@2,0"
+graph: "transport_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. b> Kv ..
 ---
@@ -100,7 +100,7 @@ factory: |
   .. bv Sv ..
 ---
 description: belt/S vs source/W
-graph: "S@2,0 -> b@1,0"
+graph: "stack_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. bv S< ..
 ---
@@ -120,7 +120,7 @@ factory: |
   .. bv Kv ..
 ---
 description: belt/S vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: "bulk_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. bv K< ..
 ---
@@ -140,7 +140,7 @@ factory: |
   .. b< Sv ..
 ---
 description: belt/W vs source/W
-graph: "S@2,0 -> b@1,0"
+graph: "stack_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b< S< ..
 ---
@@ -160,7 +160,7 @@ factory: |
   .. b< Kv ..
 ---
 description: belt/W vs sink/W
-graph: "K@2,0 -> b@1,0"
+graph: "bulk_inserter@2,0 -> transport_belt@1,0"
 factory: |
   .. b< K< ..
 ---
@@ -205,42 +205,42 @@ factory: |
   .. i^ K< ..
 ---
 description: inserter/E vs source/N
-graph: "i@1,0 -> S@2,0"
+graph: "inserter@1,0 -> stack_inserter@2,0"
 factory: |
   .. i> S^ ..
 ---
 description: inserter/E vs source/E
-graph: "i@1,0 -> S@2,0"
+graph: "inserter@1,0 -> stack_inserter@2,0"
 factory: |
   .. i> S> ..
 ---
 description: inserter/E vs source/S
-graph: "i@1,0 -> S@2,0"
+graph: "inserter@1,0 -> stack_inserter@2,0"
 factory: |
   .. i> Sv ..
 ---
 description: inserter/E vs source/W
-graph: "i@1,0 -> S@2,0"
+graph: "inserter@1,0 -> stack_inserter@2,0"
 factory: |
   .. i> S< ..
 ---
 description: inserter/E vs sink/N
-graph: "i@1,0 -> K@2,0"
+graph: "inserter@1,0 -> bulk_inserter@2,0"
 factory: |
   .. i> K^ ..
 ---
 description: inserter/E vs sink/E
-graph: "i@1,0 -> K@2,0"
+graph: "inserter@1,0 -> bulk_inserter@2,0"
 factory: |
   .. i> K> ..
 ---
 description: inserter/E vs sink/S
-graph: "i@1,0 -> K@2,0"
+graph: "inserter@1,0 -> bulk_inserter@2,0"
 factory: |
   .. i> Kv ..
 ---
 description: inserter/E vs sink/W
-graph: "i@1,0 -> K@2,0"
+graph: "inserter@1,0 -> bulk_inserter@2,0"
 factory: |
   .. i> K< ..
 ---
@@ -285,42 +285,42 @@ factory: |
   .. iv K< ..
 ---
 description: inserter/W vs source/N
-graph: "S@2,0 -> i@1,0"
+graph: "stack_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< S^ ..
 ---
 description: inserter/W vs source/E
-graph: "S@2,0 -> i@1,0"
+graph: "stack_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< S> ..
 ---
 description: inserter/W vs source/S
-graph: "S@2,0 -> i@1,0"
+graph: "stack_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< Sv ..
 ---
 description: inserter/W vs source/W
-graph: "S@2,0 -> i@1,0"
+graph: "stack_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< S< ..
 ---
 description: inserter/W vs sink/N
-graph: "K@2,0 -> i@1,0"
+graph: "bulk_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< K^ ..
 ---
 description: inserter/W vs sink/E
-graph: "K@2,0 -> i@1,0"
+graph: "bulk_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< K> ..
 ---
 description: inserter/W vs sink/S
-graph: "K@2,0 -> i@1,0"
+graph: "bulk_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< Kv ..
 ---
 description: inserter/W vs sink/W
-graph: "K@2,0 -> i@1,0"
+graph: "bulk_inserter@2,0 -> inserter@1,0"
 factory: |
   .. i< K< ..
 ---
@@ -340,7 +340,7 @@ factory: |
   .. K^ bv ..
 ---
 description: sink/N vs belt/W
-graph: "b@2,0 -> K@1,0"
+graph: "transport_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K^ b< ..
 ---
@@ -350,7 +350,7 @@ factory: |
   .. K^ i^ ..
 ---
 description: sink/N vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: "bulk_inserter@1,0 -> inserter@2,0"
 factory: |
   .. K^ i> ..
 ---
@@ -360,7 +360,7 @@ factory: |
   .. K^ iv ..
 ---
 description: sink/N vs inserter/W
-graph: "i@2,0 -> K@1,0"
+graph: "inserter@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K^ i< ..
 ---
@@ -380,7 +380,7 @@ factory: |
   .. K^ uv ..
 ---
 description: sink/N vs ug_up/W
-graph: "u@2,0 -> K@1,0"
+graph: "underground_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K^ u< ..
 ---
@@ -445,17 +445,17 @@ factory: |
   .. K^ K< ..
 ---
 description: sink/E vs belt/N
-graph: "K@1,0 -> b@2,0"
+graph: "bulk_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. K> b^ ..
 ---
 description: sink/E vs belt/E
-graph: "K@1,0 -> b@2,0"
+graph: "bulk_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. K> b> ..
 ---
 description: sink/E vs belt/S
-graph: "K@1,0 -> b@2,0"
+graph: "bulk_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. K> bv ..
 ---
@@ -470,7 +470,7 @@ factory: |
   .. K> i^ ..
 ---
 description: sink/E vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: "bulk_inserter@1,0 -> inserter@2,0"
 factory: |
   .. K> i> ..
 ---
@@ -480,12 +480,12 @@ factory: |
   .. K> iv ..
 ---
 description: sink/E vs inserter/W
-graph: "i@2,0 -> K@1,0"
+graph: "inserter@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K> i< ..
 ---
 description: sink/E vs ug_up/N
-graph: "K@1,0 -> u@2,0"
+graph: "bulk_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. K> u^ ..
 ---
@@ -495,7 +495,7 @@ factory: |
   .. K> u> ..
 ---
 description: sink/E vs ug_up/S
-graph: "K@1,0 -> u@2,0"
+graph: "bulk_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. K> uv ..
 ---
@@ -505,17 +505,17 @@ factory: |
   .. K> u< ..
 ---
 description: sink/E vs ug_down/N
-graph: "K@1,0 -> d@2,0"
+graph: "bulk_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. K> d^ ..
 ---
 description: sink/E vs ug_down/E
-graph: "K@1,0 -> d@2,0"
+graph: "bulk_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. K> d> ..
 ---
 description: sink/E vs ug_down/S
-graph: "K@1,0 -> d@2,0"
+graph: "bulk_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. K> dv ..
 ---
@@ -580,7 +580,7 @@ factory: |
   .. Kv bv ..
 ---
 description: sink/S vs belt/W
-graph: "b@2,0 -> K@1,0"
+graph: "transport_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. Kv b< ..
 ---
@@ -590,7 +590,7 @@ factory: |
   .. Kv i^ ..
 ---
 description: sink/S vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: "bulk_inserter@1,0 -> inserter@2,0"
 factory: |
   .. Kv i> ..
 ---
@@ -600,7 +600,7 @@ factory: |
   .. Kv iv ..
 ---
 description: sink/S vs inserter/W
-graph: "i@2,0 -> K@1,0"
+graph: "inserter@2,0 -> bulk_inserter@1,0"
 factory: |
   .. Kv i< ..
 ---
@@ -620,7 +620,7 @@ factory: |
   .. Kv uv ..
 ---
 description: sink/S vs ug_up/W
-graph: "u@2,0 -> K@1,0"
+graph: "underground_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. Kv u< ..
 ---
@@ -700,7 +700,7 @@ factory: |
   .. K< bv ..
 ---
 description: sink/W vs belt/W
-graph: "b@2,0 -> K@1,0"
+graph: "transport_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K< b< ..
 ---
@@ -710,7 +710,7 @@ factory: |
   .. K< i^ ..
 ---
 description: sink/W vs inserter/E
-graph: "K@1,0 -> i@2,0"
+graph: "bulk_inserter@1,0 -> inserter@2,0"
 factory: |
   .. K< i> ..
 ---
@@ -720,7 +720,7 @@ factory: |
   .. K< iv ..
 ---
 description: sink/W vs inserter/W
-graph: "i@2,0 -> K@1,0"
+graph: "inserter@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K< i< ..
 ---
@@ -740,7 +740,7 @@ factory: |
   .. K< uv ..
 ---
 description: sink/W vs ug_up/W
-graph: "u@2,0 -> K@1,0"
+graph: "underground_belt@2,0 -> bulk_inserter@1,0"
 factory: |
   .. K< u< ..
 ---
@@ -820,7 +820,7 @@ factory: |
   .. S^ bv ..
 ---
 description: source/N vs belt/W
-graph: "b@2,0 -> S@1,0"
+graph: "transport_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. S^ b< ..
 ---
@@ -830,7 +830,7 @@ factory: |
   .. S^ i^ ..
 ---
 description: source/N vs inserter/E
-graph: "S@1,0 -> i@2,0"
+graph: "stack_inserter@1,0 -> inserter@2,0"
 factory: |
   .. S^ i> ..
 ---
@@ -840,7 +840,7 @@ factory: |
   .. S^ iv ..
 ---
 description: source/N vs inserter/W
-graph: "i@2,0 -> S@1,0"
+graph: "inserter@2,0 -> stack_inserter@1,0"
 factory: |
   .. S^ i< ..
 ---
@@ -860,7 +860,7 @@ factory: |
   .. S^ uv ..
 ---
 description: source/N vs ug_up/W
-graph: "u@2,0 -> S@1,0"
+graph: "underground_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. S^ u< ..
 ---
@@ -925,17 +925,17 @@ factory: |
   .. S^ K< ..
 ---
 description: source/E vs belt/N
-graph: "S@1,0 -> b@2,0"
+graph: "stack_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. S> b^ ..
 ---
 description: source/E vs belt/E
-graph: "S@1,0 -> b@2,0"
+graph: "stack_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. S> b> ..
 ---
 description: source/E vs belt/S
-graph: "S@1,0 -> b@2,0"
+graph: "stack_inserter@1,0 -> transport_belt@2,0"
 factory: |
   .. S> bv ..
 ---
@@ -950,7 +950,7 @@ factory: |
   .. S> i^ ..
 ---
 description: source/E vs inserter/E
-graph: "S@1,0 -> i@2,0"
+graph: "stack_inserter@1,0 -> inserter@2,0"
 factory: |
   .. S> i> ..
 ---
@@ -960,12 +960,12 @@ factory: |
   .. S> iv ..
 ---
 description: source/E vs inserter/W
-graph: "i@2,0 -> S@1,0"
+graph: "inserter@2,0 -> stack_inserter@1,0"
 factory: |
   .. S> i< ..
 ---
 description: source/E vs ug_up/N
-graph: "S@1,0 -> u@2,0"
+graph: "stack_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. S> u^ ..
 ---
@@ -975,7 +975,7 @@ factory: |
   .. S> u> ..
 ---
 description: source/E vs ug_up/S
-graph: "S@1,0 -> u@2,0"
+graph: "stack_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. S> uv ..
 ---
@@ -985,17 +985,17 @@ factory: |
   .. S> u< ..
 ---
 description: source/E vs ug_down/N
-graph: "S@1,0 -> d@2,0"
+graph: "stack_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. S> d^ ..
 ---
 description: source/E vs ug_down/E
-graph: "S@1,0 -> d@2,0"
+graph: "stack_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. S> d> ..
 ---
 description: source/E vs ug_down/S
-graph: "S@1,0 -> d@2,0"
+graph: "stack_inserter@1,0 -> underground_belt@2,0"
 factory: |
   .. S> dv ..
 ---
@@ -1060,7 +1060,7 @@ factory: |
   .. Sv bv ..
 ---
 description: source/S vs belt/W
-graph: "b@2,0 -> S@1,0"
+graph: "transport_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. Sv b< ..
 ---
@@ -1070,7 +1070,7 @@ factory: |
   .. Sv i^ ..
 ---
 description: source/S vs inserter/E
-graph: "S@1,0 -> i@2,0"
+graph: "stack_inserter@1,0 -> inserter@2,0"
 factory: |
   .. Sv i> ..
 ---
@@ -1080,7 +1080,7 @@ factory: |
   .. Sv iv ..
 ---
 description: source/S vs inserter/W
-graph: "i@2,0 -> S@1,0"
+graph: "inserter@2,0 -> stack_inserter@1,0"
 factory: |
   .. Sv i< ..
 ---
@@ -1100,7 +1100,7 @@ factory: |
   .. Sv uv ..
 ---
 description: source/S vs ug_up/W
-graph: "u@2,0 -> S@1,0"
+graph: "underground_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. Sv u< ..
 ---
@@ -1180,7 +1180,7 @@ factory: |
   .. S< bv ..
 ---
 description: source/W vs belt/W
-graph: "b@2,0 -> S@1,0"
+graph: "transport_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. S< b< ..
 ---
@@ -1190,7 +1190,7 @@ factory: |
   .. S< i^ ..
 ---
 description: source/W vs inserter/E
-graph: "S@1,0 -> i@2,0"
+graph: "stack_inserter@1,0 -> inserter@2,0"
 factory: |
   .. S< i> ..
 ---
@@ -1200,7 +1200,7 @@ factory: |
   .. S< iv ..
 ---
 description: source/W vs inserter/W
-graph: "i@2,0 -> S@1,0"
+graph: "inserter@2,0 -> stack_inserter@1,0"
 factory: |
   .. S< i< ..
 ---
@@ -1220,7 +1220,7 @@ factory: |
   .. S< uv ..
 ---
 description: source/W vs ug_up/W
-graph: "u@2,0 -> S@1,0"
+graph: "underground_belt@2,0 -> stack_inserter@1,0"
 factory: |
   .. S< u< ..
 ---
@@ -1300,7 +1300,7 @@ factory: |
   .. u^ Sv ..
 ---
 description: ug_up/N vs source/W
-graph: "S@2,0 -> u@1,0"
+graph: "stack_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. u^ S< ..
 ---
@@ -1320,22 +1320,22 @@ factory: |
   .. u^ Kv ..
 ---
 description: ug_up/N vs sink/W
-graph: "K@2,0 -> u@1,0"
+graph: "bulk_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. u^ K< ..
 ---
 description: ug_up/E vs source/N
-graph: "u@1,0 -> S@2,0"
+graph: "underground_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. u> S^ ..
 ---
 description: ug_up/E vs source/E
-graph: "u@1,0 -> S@2,0"
+graph: "underground_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. u> S> ..
 ---
 description: ug_up/E vs source/S
-graph: "u@1,0 -> S@2,0"
+graph: "underground_belt@1,0 -> stack_inserter@2,0"
 factory: |
   .. u> Sv ..
 ---
@@ -1345,17 +1345,17 @@ factory: |
   .. u> S< ..
 ---
 description: ug_up/E vs sink/N
-graph: "u@1,0 -> K@2,0"
+graph: "underground_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. u> K^ ..
 ---
 description: ug_up/E vs sink/E
-graph: "u@1,0 -> K@2,0"
+graph: "underground_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. u> K> ..
 ---
 description: ug_up/E vs sink/S
-graph: "u@1,0 -> K@2,0"
+graph: "underground_belt@1,0 -> bulk_inserter@2,0"
 factory: |
   .. u> Kv ..
 ---
@@ -1380,7 +1380,7 @@ factory: |
   .. uv Sv ..
 ---
 description: ug_up/S vs source/W
-graph: "S@2,0 -> u@1,0"
+graph: "stack_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. uv S< ..
 ---
@@ -1400,7 +1400,7 @@ factory: |
   .. uv Kv ..
 ---
 description: ug_up/S vs sink/W
-graph: "K@2,0 -> u@1,0"
+graph: "bulk_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. uv K< ..
 ---
@@ -1460,7 +1460,7 @@ factory: |
   .. d^ Sv ..
 ---
 description: ug_down/N vs source/W
-graph: "S@2,0 -> d@1,0"
+graph: "stack_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. d^ S< ..
 ---
@@ -1480,7 +1480,7 @@ factory: |
   .. d^ Kv ..
 ---
 description: ug_down/N vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: "bulk_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. d^ K< ..
 ---
@@ -1540,7 +1540,7 @@ factory: |
   .. dv Sv ..
 ---
 description: ug_down/S vs source/W
-graph: "S@2,0 -> d@1,0"
+graph: "stack_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. dv S< ..
 ---
@@ -1560,7 +1560,7 @@ factory: |
   .. dv Kv ..
 ---
 description: ug_down/S vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: "bulk_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. dv K< ..
 ---
@@ -1580,7 +1580,7 @@ factory: |
   .. d< Sv ..
 ---
 description: ug_down/W vs source/W
-graph: "S@2,0 -> d@1,0"
+graph: "stack_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. d< S< ..
 ---
@@ -1600,6 +1600,6 @@ factory: |
   .. d< Kv ..
 ---
 description: ug_down/W vs sink/W
-graph: "K@2,0 -> d@1,0"
+graph: "bulk_inserter@2,0 -> underground_belt@1,0"
 factory: |
   .. d< K< ..

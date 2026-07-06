@@ -8,8 +8,8 @@
 # real and the graph asserts every one.
 description: long inserter bridges an underground entrance and exit at reach 2
 graph: |
-  d@0,0 -> l@2,0
-  l@2,0 -> u@4,0
-  d@0,0 -> u@4,0
+  underground_belt@0,0 -> long_handed_inserter@2,0
+  long_handed_inserter@2,0 -> underground_belt@4,0
+  underground_belt@0,0 -> underground_belt@4,0
 factory: |
   d> .. l> .. u>

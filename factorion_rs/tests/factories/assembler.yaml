@@ -13,10 +13,10 @@ items:
 throughput:
 - { item: iron_gear_wheel, per_second: 0.43 }
 graph: |
-  S@0,1 -> i@1,1
-  i@1,1 -> a@2,0
-  a@2,0 -> i@5,1
-  i@5,1 -> K@6,1
+  stack_inserter@0,1 -> inserter@1,1
+  inserter@1,1 -> assembling_machine_1@2,0
+  assembling_machine_1@2,0 -> inserter@5,1
+  inserter@5,1 -> bulk_inserter@6,1
 factory: |
   .. .. aaaaaaaa .. ..
   S> i> aa    aa i> K>
