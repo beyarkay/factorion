@@ -40,15 +40,32 @@ from helpers import (
 )
 
 
+# Entity-name → grid-registry char, for the canonical ``<char>@x,y`` node
+# format (see factorion_rs ENTITY_CHARS). Underground belts render per their
+# misc state (``d``/``u``), so callers pass the char directly for those.
+_CHAR = {
+    "transport_belt": "b",
+    "inserter": "i",
+    "long_handed_inserter": "l",
+    "assembling_machine_1": "a",
+    "splitter": "Y",
+    "source": "S",
+    "stack_inserter": "S",
+    "sink": "K",
+    "bulk_inserter": "K",
+}
+
+
 def _n(name, x, y):
-    """Graph node label in the engine's canonical ``name@x,y`` format."""
-    return f"{name}@{x},{y}"
+    """Graph node label in the engine's canonical ``<char>@x,y`` format."""
+    return f"{_CHAR.get(name, name)}@{x},{y}"
 
 
 def _lanes(name, x, y):
-    """Both lane-node labels of a belt-ish entity tile: ``name@x,y:L`` and
-    ``name@x,y:R`` (lanes are named relative to the tile's facing)."""
-    return [f"{name}@{x},{y}:L", f"{name}@{x},{y}:R"]
+    """Both lane-node labels of a belt-ish entity tile: ``<char>@x,y:L`` and
+    ``<char>@x,y:R`` (lanes are named relative to the tile's facing)."""
+    ch = _CHAR.get(name, name)
+    return [f"{ch}@{x},{y}:L", f"{ch}@{x},{y}:R"]
 
 
 def _summary(graph):
@@ -165,8 +182,8 @@ class TestHandcraftedGraphSnapshots:
         set_entity(w, 5, 0, "transport_belt", Direction.EAST)
         nodes, edges = _summary(build_factory_graph(w))
         b0l, b0r = _lanes("transport_belt", 0, 0)
-        udl, udr = _lanes("underground_belt", 1, 0)
-        uul, uur = _lanes("underground_belt", 4, 0)
+        udl, udr = _lanes("d", 1, 0)
+        uul, uur = _lanes("u", 4, 0)
         b5l, b5r = _lanes("transport_belt", 5, 0)
         assert nodes == {b0l, b0r, udl, udr, uul, uur, b5l, b5r}
         # Lanes persist through the tunnel: Left→Left, Right→Right.
@@ -360,8 +377,8 @@ class TestGeneratedWorldConnectivity:
         graph = _graph_of_generated(kind, seed)
         if graph is None:
             pytest.skip(f"{kind.name} seed={seed}: layout search returned None")
-        sources = [n for n in graph.nodes if "stack_inserter" in n]
-        sinks = [n for n in graph.nodes if "bulk_inserter" in n]
+        sources = [n for n in graph.nodes if n.startswith("S@")]
+        sinks = [n for n in graph.nodes if n.startswith("K@")]
         assert sources, f"{kind.name} seed={seed}: no source node in graph"
         assert sinks, f"{kind.name} seed={seed}: no sink node in graph"
 

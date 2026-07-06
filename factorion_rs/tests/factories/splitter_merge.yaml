@@ -5,13 +5,13 @@ description: |
   lane drains nowhere. Mirror image of splitter_split.yaml. Graph-only — the
   point is the merge connectivity, not a throughput figure.
 graph: |
-  stack_inserter@0,0 -> transport_belt@1,0
-  stack_inserter@0,1 -> transport_belt@1,1
-  transport_belt@1,0 -> splitter@2,0
-  transport_belt@1,1 -> splitter@2,1
-  splitter@2,0 -> transport_belt@3,0
-  splitter@2,1 -> transport_belt@3,0
-  transport_belt@3,0 -> bulk_inserter@4,0
+  S@0,0 -> b@1,0
+  S@0,1 -> b@1,1
+  b@1,0 -> Y@2,0
+  b@1,1 -> Y@2,1
+  Y@2,0 -> b@3,0
+  Y@2,1 -> b@3,0
+  b@3,0 -> K@4,0
 factory: |
   S> b> Y> b> K>
   S> b> Y> .. ..

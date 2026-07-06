@@ -1244,8 +1244,9 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 /// Its [`label`](NodeId::label) renders in the ONE canonical node-reference
 /// format used everywhere — engine labels, the Python graph API, and the
 /// textual fixture `graph:` blocks alike:
-/// `"{entity_name}@{x},{y}"` plus a `:L`/`:R` suffix for lane nodes, e.g.
-/// `transport_belt@3,4:L`, `stack_inserter@0,0`.
+/// `"{entity_char}@{x},{y}"` plus a `:L`/`:R` suffix for lane nodes, e.g.
+/// `b@3,4:L`, `i@0,1`, `S@0,0` (chars per the grid registry,
+/// [`crate::render::ENTITY_CHARS`]).
 ///
 /// `entity_kind` is an `Item` (post-unification) and should always be
 /// placeable — only placeable items become graph nodes. Belt-ish entities
@@ -1269,10 +1270,13 @@ impl NodeId {
         }
     }
 
-    pub fn label(&self) -> String {
+    /// Canonical node reference (`b@x,y:L`, `i@0,1`, …). `misc` picks the
+    /// right underground char when the caller knows it (`u` for exits vs
+    /// the kind-generic fallback); pass `Misc::None` otherwise.
+    pub fn label(&self, misc: Misc) -> String {
         format!(
             "{}@{},{}{}",
-            self.entity_kind.name(),
+            crate::render::render_char(self.entity_kind, misc),
             self.x,
             self.y,
             Lane::suffix(self.lane)
@@ -1353,16 +1357,16 @@ mod tests {
     #[test]
     fn test_node_id_label_lane_suffix() {
         assert_eq!(
-            NodeId::new(Item::TransportBelt, 3, 4, None).label(),
-            "transport_belt@3,4"
+            NodeId::new(Item::TransportBelt, 3, 4, None).label(Misc::None),
+            "b@3,4"
         );
         assert_eq!(
-            NodeId::new(Item::TransportBelt, 3, 4, Some(Lane::Left)).label(),
-            "transport_belt@3,4:L"
+            NodeId::new(Item::TransportBelt, 3, 4, Some(Lane::Left)).label(Misc::None),
+            "b@3,4:L"
         );
         assert_eq!(
-            NodeId::new(Item::Splitter, 0, 1, Some(Lane::Right)).label(),
-            "splitter@0,1:R"
+            NodeId::new(Item::Splitter, 0, 1, Some(Lane::Right)).label(Misc::None),
+            "Y@0,1:R"
         );
     }
 
@@ -1556,6 +1560,6 @@ mod tests {
     #[test]
     fn test_node_id_label() {
         let id = NodeId::new(Item::TransportBelt, 3, 5, None);
-        assert_eq!(id.label(), "transport_belt@3,5");
+        assert_eq!(id.label(Misc::None), "b@3,5");
     }
 }

@@ -83,9 +83,10 @@ type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
 ///
 /// Returns `(nodes, edges)` where:
 ///   * `nodes` is a list of node labels in the engine's canonical
-///     `"{entity_name}@{x},{y}"` format, plus a `:L`/`:R` suffix for the two
-///     lane nodes of a belt-ish tile (lane-less entities collapse to their
-///     anchor tile; splitter tiles keep per-tile identity), and
+///     `"{entity_char}@{x},{y}"` format (grid-registry chars: `b`, `i`, `Y`,
+///     `d`/`u`, `S`, `K`, …), plus a `:L`/`:R` suffix for the two lane nodes
+///     of a belt-ish tile (lane-less entities collapse to their anchor tile;
+///     splitter tiles keep per-tile identity), and
 ///   * `edges` is a list of `(src_index, dst_index)` pairs indexing into
 ///     `nodes`.
 ///
@@ -97,7 +98,7 @@ type PyGraphData = (Vec<String>, Vec<(usize, usize)>);
 fn py_build_graph(world: PyReadonlyArray3<i64>) -> PyResult<PyGraphData> {
     let world = World::from_numpy(&world);
     let graph = build_graph(&world);
-    let nodes: Vec<String> = graph.nodes.iter().map(|node| node.id.label()).collect();
+    let nodes: Vec<String> = graph.nodes.iter().map(|node| node.label()).collect();
     let mut edges: Vec<(usize, usize)> = Vec::new();
     for (src, succ) in graph.successors.iter().enumerate() {
         for &dst in succ {

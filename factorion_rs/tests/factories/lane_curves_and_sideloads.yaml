@@ -8,12 +8,12 @@ items:
 throughput:
 - { item: copper_cable, per_second: 15 }
 graph: |
-  stack_inserter@0,0 -> transport_belt@1,0:L
-  stack_inserter@0,0 -> transport_belt@1,0:R
-  transport_belt@1,0:L -> transport_belt@2,0:L
-  transport_belt@1,0:R -> transport_belt@2,0:R
-  transport_belt@2,0:L -> bulk_inserter@2,1
-  transport_belt@2,0:R -> bulk_inserter@2,1
+  S@0,0 -> b@1,0:L
+  S@0,0 -> b@1,0:R
+  b@1,0:L -> b@2,0:L
+  b@1,0:R -> b@2,0:R
+  b@2,0:L -> K@2,1
+  b@2,0:R -> K@2,1
 factory: |
   S> b> bv
   .. .. Kv
@@ -30,11 +30,11 @@ items:
 throughput:
 - { item: copper_cable, per_second: 7.5 }
 graph: |
-  transport_belt@1,0:L -> transport_belt@1,1:L
-  transport_belt@1,0:R -> transport_belt@1,1:R
-  stack_inserter@0,1 -> transport_belt@1,1:R
-  transport_belt@1,1:L -> bulk_inserter@1,2
-  transport_belt@1,1:R -> bulk_inserter@1,2
+  b@1,0:L -> b@1,1:L
+  b@1,0:R -> b@1,1:R
+  S@0,1 -> b@1,1:R
+  b@1,1:L -> K@1,2
+  b@1,1:R -> K@1,2
 factory: |
   .. bv ..
   S> bv ..
@@ -51,10 +51,10 @@ items:
 throughput:
 - { item: copper_cable, per_second: 15 }
 graph: |
-  stack_inserter@0,0 -> transport_belt@1,0:R
-  stack_inserter@2,0 -> transport_belt@1,0:L
-  transport_belt@1,0:L -> bulk_inserter@1,1
-  transport_belt@1,0:R -> bulk_inserter@1,1
+  S@0,0 -> b@1,0:R
+  S@2,0 -> b@1,0:L
+  b@1,0:L -> K@1,1
+  b@1,0:R -> K@1,1
 factory: |
   S> bv S<
   .. Kv ..
@@ -71,13 +71,13 @@ items:
 throughput:
 - { item: copper_cable, per_second: 7.5 }
 graph: |
-  stack_inserter@0,0 -> transport_belt@1,0:L
-  stack_inserter@0,0 -> transport_belt@1,0:R
-  transport_belt@1,0:L -> underground_belt@2,0:R
-  underground_belt@2,0:L -> underground_belt@2,2:L
-  underground_belt@2,0:R -> underground_belt@2,2:R
-  underground_belt@2,2:L -> bulk_inserter@2,3
-  underground_belt@2,2:R -> bulk_inserter@2,3
+  S@0,0 -> b@1,0:L
+  S@0,0 -> b@1,0:R
+  b@1,0:L -> d@2,0:R
+  d@2,0:L -> u@2,2:L
+  d@2,0:R -> u@2,2:R
+  u@2,2:L -> K@2,3
+  u@2,2:R -> K@2,3
 factory: |
   S> b> dv
   .. .. ..
@@ -95,13 +95,13 @@ items:
 throughput:
 - { item: copper_cable, per_second: 7.5 }
 graph: |
-  stack_inserter@0,2 -> transport_belt@1,2:L
-  stack_inserter@0,2 -> transport_belt@1,2:R
-  transport_belt@1,2:R -> underground_belt@2,2:R
-  underground_belt@2,0:L -> underground_belt@2,2:L
-  underground_belt@2,0:R -> underground_belt@2,2:R
-  underground_belt@2,2:L -> bulk_inserter@2,3
-  underground_belt@2,2:R -> bulk_inserter@2,3
+  S@0,2 -> b@1,2:L
+  S@0,2 -> b@1,2:R
+  b@1,2:R -> u@2,2:R
+  d@2,0:L -> u@2,2:L
+  d@2,0:R -> u@2,2:R
+  u@2,2:L -> K@2,3
+  u@2,2:R -> K@2,3
 factory: |
   .. .. dv
   .. .. ..

@@ -9,8 +9,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> long_handed_inserter@2,0
-  long_handed_inserter@2,0 -> bulk_inserter@4,0
+  S@0,0 -> l@2,0
+  l@2,0 -> K@4,0
 factory: |
   S> .. l> .. K>
 ---
@@ -21,8 +21,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@4,0 -> long_handed_inserter@2,0
-  long_handed_inserter@2,0 -> bulk_inserter@0,0
+  S@4,0 -> l@2,0
+  l@2,0 -> K@0,0
 factory: |
   K< .. l< .. S<
 ---
@@ -33,8 +33,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,4 -> long_handed_inserter@0,2
-  long_handed_inserter@0,2 -> bulk_inserter@0,0
+  S@0,4 -> l@0,2
+  l@0,2 -> K@0,0
 factory: |
   K^
   ..
@@ -49,8 +49,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> long_handed_inserter@0,2
-  long_handed_inserter@0,2 -> bulk_inserter@0,4
+  S@0,0 -> l@0,2
+  l@0,2 -> K@0,4
 factory: |
   Sv
   ..
@@ -68,9 +68,9 @@ items:
 throughput:
 - { item: iron_plate, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> transport_belt@1,0
-  transport_belt@1,0 -> long_handed_inserter@3,0
-  long_handed_inserter@3,0 -> bulk_inserter@5,0
+  S@0,0 -> b@1,0
+  b@1,0 -> l@3,0
+  l@3,0 -> K@5,0
 factory: |
   S> b> .. l> .. K>
 ---
@@ -83,10 +83,10 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> long_handed_inserter@2,0
-  long_handed_inserter@2,0 -> transport_belt@4,0
-  transport_belt@4,0 -> long_handed_inserter@6,0
-  long_handed_inserter@6,0 -> bulk_inserter@8,0
+  S@0,0 -> l@2,0
+  l@2,0 -> b@4,0
+  b@4,0 -> l@6,0
+  l@6,0 -> K@8,0
 factory: |
   S> .. l> .. b> .. l> .. K>
 ---
@@ -99,10 +99,10 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> long_handed_inserter@2,0
-  long_handed_inserter@2,0 -> underground_belt@4,0
-  underground_belt@4,0 -> underground_belt@6,0
-  underground_belt@6,0 -> bulk_inserter@7,0
+  S@0,0 -> l@2,0
+  l@2,0 -> d@4,0
+  d@4,0 -> u@6,0
+  u@6,0 -> K@7,0
 factory: |
   S> .. l> .. d> .. u> K>
 ---
@@ -122,10 +122,10 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,1 -> long_handed_inserter@2,1
-  long_handed_inserter@2,1 -> assembling_machine_1@4,0
-  assembling_machine_1@4,0 -> long_handed_inserter@8,1
-  long_handed_inserter@8,1 -> bulk_inserter@10,1
+  S@0,1 -> l@2,1
+  l@2,1 -> a@4,0
+  a@4,0 -> l@8,1
+  l@8,1 -> K@10,1
 factory: |
   .. .. .. .. aaaaaaaa .. .. .. ..
   S> .. l> .. aa    aa .. l> .. K>

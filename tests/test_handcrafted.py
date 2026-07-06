@@ -497,7 +497,7 @@ class TestAssemblerPerimeterConnections:
 
         edges = _assembler_edges(world, self.AX, self.AY)
         # Exactly one edge should exist, and it should flow INTO a body tile.
-        inserter_tag = f"inserter@{ix},{iy}"
+        inserter_tag = f"i@{ix},{iy}"
         matching = [
             (u, v) for (u, v, u_body, v_body) in edges
             if (u == inserter_tag and v_body) or (v == inserter_tag and u_body)
@@ -523,7 +523,7 @@ class TestAssemblerPerimeterConnections:
         set_entity(world, ix, iy, "inserter", away_dir)
 
         edges = _assembler_edges(world, self.AX, self.AY)
-        inserter_tag = f"inserter@{ix},{iy}"
+        inserter_tag = f"i@{ix},{iy}"
         matching = [
             (u, v) for (u, v, u_body, v_body) in edges
             if (u == inserter_tag and v_body) or (v == inserter_tag and u_body)
@@ -548,7 +548,7 @@ class TestAssemblerPerimeterConnections:
                 set_entity(world, ix, iy, "inserter", facing)
 
                 edges = _assembler_edges(world, self.AX, self.AY)
-                inserter_tag = f"inserter@{ix},{iy}"
+                inserter_tag = f"i@{ix},{iy}"
                 touching = [
                     (u, v) for (u, v, _, _) in edges if inserter_tag in (u, v)
                 ]

@@ -14,16 +14,16 @@ throughput:
 - { item: iron_plate, per_second: 0.86 }
 - { item: copper_plate, per_second: 0.86 }
 graph: |
-  stack_inserter@1,0 -> transport_belt@1,1:L
-  stack_inserter@1,2 -> transport_belt@1,1:R
-  transport_belt@1,1:L -> transport_belt@2,1:L
-  transport_belt@1,1:R -> transport_belt@2,1:R
-  transport_belt@2,1:L -> inserter@3,1
-  transport_belt@2,1:R -> inserter@3,1
-  transport_belt@2,1:L -> inserter@2,2
-  transport_belt@2,1:R -> inserter@2,2
-  inserter@3,1 -> bulk_inserter@4,1
-  inserter@2,2 -> bulk_inserter@2,3
+  S@1,0 -> b@1,1:L
+  S@1,2 -> b@1,1:R
+  b@1,1:L -> b@2,1:L
+  b@1,1:R -> b@2,1:R
+  b@2,1:L -> i@3,1
+  b@2,1:R -> i@3,1
+  b@2,1:L -> i@2,2
+  b@2,1:R -> i@2,2
+  i@3,1 -> K@4,1
+  i@2,2 -> K@2,3
 factory: |
   .. Sv .. .. ..
   .. b> b> i> K>

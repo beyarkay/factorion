@@ -14,8 +14,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@1,4 -> long_handed_inserter@1,2
-  long_handed_inserter@1,2 -> bulk_inserter@1,0
+  S@1,4 -> l@1,2
+  l@1,2 -> K@1,0
 factory: |
   .. K^ ..
   .. .. ..
@@ -33,8 +33,8 @@ items:
 throughput:
 - { item: copper_cable, per_second: 0.86 }
 graph: |
-  stack_inserter@0,0 -> long_handed_inserter@2,0
-  long_handed_inserter@2,0 -> bulk_inserter@4,0
+  S@0,0 -> l@2,0
+  l@2,0 -> K@4,0
 factory: |
   S> .. l> .. K>
 ---
@@ -43,9 +43,9 @@ description: |
   but the long inserter still bridges the belts two tiles out, at (0,0) and
   (4,0). The belt chain and the long-hand edges coexist.
 graph: |
-  transport_belt@0,0 -> transport_belt@1,0
-  transport_belt@0,0 -> long_handed_inserter@2,0
-  transport_belt@3,0 -> transport_belt@4,0
-  long_handed_inserter@2,0 -> transport_belt@4,0
+  b@0,0 -> b@1,0
+  b@0,0 -> l@2,0
+  b@3,0 -> b@4,0
+  l@2,0 -> b@4,0
 factory: |
   b> b> l> b> b>

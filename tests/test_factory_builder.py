@@ -194,11 +194,11 @@ class TestRenderGraphPng:
         # A non-empty PNG was produced and throughput was computed.
         assert len(out["png"]) > 0
         assert "throughput" in out["info"]
-        # Edges are repr()'d (node names embed a literal newline). The
-        # source→belt→belt→sink chain must be present.
+        # The source→belt→belt→sink chain must be present (canonical
+        # <char>@x,y node labels).
         flat = " ".join(u + " " + v for u, v in out["edges"])
-        assert "stack_inserter" in flat and "bulk_inserter" in flat
-        assert flat.count("transport_belt") >= 3
+        assert "S@" in flat and "K@" in flat
+        assert flat.count("b@") >= 3
 
 
 # ── Lesson generation + entity clearing ─────────────────────────────────────

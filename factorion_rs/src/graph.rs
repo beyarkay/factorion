@@ -50,6 +50,14 @@ pub struct FactoryGraph {
     pub predecessors: Vec<Vec<usize>>,
 }
 
+impl GraphNode {
+    /// Canonical node reference (`b@x,y:L`, `u@x,y`, …) — [`NodeId::label`]
+    /// with this node's underground state honoured (`d` vs `u`).
+    pub fn label(&self) -> String {
+        self.id.label(self.misc)
+    }
+}
+
 impl FactoryGraph {
     pub fn node_count(&self) -> usize {
         self.nodes.len()

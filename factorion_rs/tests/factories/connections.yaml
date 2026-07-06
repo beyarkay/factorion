@@ -1,13 +1,13 @@
 # A long long list of ~every 2-entity connection
-graph: "transport_belt@1,0 -> transport_belt@2,0"
+graph: "b@1,0 -> b@2,0"
 factory: |
   .. b> b> ..
 ---
-graph: "transport_belt@1,0 -> transport_belt@2,0"
+graph: "b@1,0 -> b@2,0"
 factory: |
   .. b> b^ ..
 ---
-graph: "transport_belt@1,0 -> transport_belt@2,0"
+graph: "b@1,0 -> b@2,0"
 factory: |
   .. b> bv ..
 ---
@@ -16,47 +16,47 @@ factory: |
   .. b> b< ..
 ---
 description: sink pulls from the belt behind it
-graph: "transport_belt@1,0 -> bulk_inserter@2,0"
+graph: "b@1,0 -> K@2,0"
 factory: |
   .. b> K> ..
 ---
 description: belt feeds an underground entrance
-graph: "transport_belt@1,0 -> underground_belt@2,0"
+graph: "b@1,0 -> d@2,0"
 factory: |
   .. b> d> ..
 ---
 description: underground exit feeds the belt ahead
-graph: "underground_belt@1,0 -> transport_belt@2,0"
+graph: "u@1,0 -> b@2,0"
 factory: |
   .. u> b> ..
 ---
 description: underground entrance tunnels to its paired exit
-graph: "underground_belt@1,0 -> underground_belt@3,0"
+graph: "d@1,0 -> u@3,0"
 factory: |
   .. d> .. u> ..
 ---
 description: belt feeds an inserter
-graph: "transport_belt@1,0 -> inserter@2,0"
+graph: "b@1,0 -> i@2,0"
 factory: |
   .. b> i> ..
 ---
 description: inserter drops onto the belt ahead
-graph: "inserter@1,0 -> transport_belt@2,0"
+graph: "i@1,0 -> b@2,0"
 factory: |
   .. i> b> ..
 ---
 description: source drops onto a belt
-graph: "stack_inserter@1,0 -> transport_belt@2,0"
+graph: "S@1,0 -> b@2,0"
 factory: |
   .. S> b> ..
 ---
 description: source feeds an inserter (inserter picks up behind it)
-graph: "stack_inserter@1,0 -> inserter@2,0"
+graph: "S@1,0 -> i@2,0"
 factory: |
   .. S> i> ..
 ---
 description: belt feeds an east-facing splitter (2x1, spans two rows)
-graph: "transport_belt@1,0 -> splitter@2,0"
+graph: "b@1,0 -> Y@2,0"
 factory: |
   .. b> Y> ..
   .. .. Y> ..
@@ -64,7 +64,7 @@ factory: |
 # The belt enters via the splitter's SECOND tile (2,1) — since dual lanes,
 # splitter tiles are distinct graph nodes, so the edge names the actual
 # tile rather than being remapped to the anchor.
-graph: "transport_belt@1,1 -> splitter@2,1"
+graph: "b@1,1 -> Y@2,1"
 factory: |
   .. .. Y> ..
   .. b> Y> ..
@@ -72,36 +72,36 @@ factory: |
 # Both splitter tiles route to every output (that IS the splitting), so a
 # single output belt receives an edge from each tile's pool.
 graph: |
-  splitter@1,0 -> transport_belt@2,0
-  splitter@1,1 -> transport_belt@2,0
+  Y@1,0 -> b@2,0
+  Y@1,1 -> b@2,0
 factory: |
   .. Y> b> ..
   .. Y> .. ..
 ---
 graph: |
-  splitter@1,0 -> transport_belt@2,1
-  splitter@1,1 -> transport_belt@2,1
+  Y@1,0 -> b@2,1
+  Y@1,1 -> b@2,1
 factory: |
   .. Y> .. ..
   .. Y> b> ..
 ---
 description: east-facing splitter drops onto the belt ahead (from both tiles)
 graph: |
-  splitter@1,0 -> transport_belt@2,0
-  splitter@1,1 -> transport_belt@2,0
+  Y@1,0 -> b@2,0
+  Y@1,1 -> b@2,0
 factory: |
   .. Y> b> ..
   .. Y> .. ..
 ---
 description: inserter feeds an assembler (anchor is its top-left tile)
-graph: "inserter@0,1 -> assembling_machine_1@1,0"
+graph: "i@0,1 -> a@1,0"
 factory: |
   .. aaaaaaaa ..
   i> aa    aa ..
   .. aaaaaaaa ..
 ---
 description: assembler hands off to an inserter facing away
-graph: "assembling_machine_1@1,0 -> inserter@4,1"
+graph: "a@1,0 -> i@4,1"
 factory: |
   .. aaaaaaaa ..
   .. aa    aa i>

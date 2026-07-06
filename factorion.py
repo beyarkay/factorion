@@ -1011,8 +1011,9 @@ def build_graph_nx(world_WHC):
     truth for entity connectivity; this thin wrapper rebuilds its
     ``(node_labels, edges)`` output into a ``networkx`` graph for connectivity
     queries and drawing/layout. Nodes are labelled in the engine's canonical
-    format ``f"{entity_name}@{x},{y}"`` — plus a ``:L``/``:R`` suffix for the
-    two lane nodes of a belt-ish tile — and edges follow the engine's
+    format ``f"{entity_char}@{x},{y}"`` (grid-registry chars: ``b``, ``i``,
+    ``Y``, ``d``/``u``, ``S``, ``K``, …) — plus a ``:L``/``:R`` suffix for
+    the two lane nodes of a belt-ish tile — and edges follow the engine's
     entity-connection rules.
 
     Accepts the same ``(W, H, C)`` world — a torch tensor or numpy array — that

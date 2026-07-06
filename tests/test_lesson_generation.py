@@ -1326,9 +1326,9 @@ class TestAssemble1In1OutConnectivity:
         G = build_factory_graph(world.permute(1, 2, 0))
 
         # Find source / sink / assembler nodes by name substring
-        source_nodes = [n for n in G.nodes if "stack_inserter" in n]
-        sink_nodes = [n for n in G.nodes if "bulk_inserter" in n]
-        asm_nodes = [n for n in G.nodes if "assembling_machine" in n]
+        source_nodes = [n for n in G.nodes if n.startswith("S@")]
+        sink_nodes = [n for n in G.nodes if n.startswith("K@")]
+        asm_nodes = [n for n in G.nodes if n.startswith("a@")]
         assert len(source_nodes) == 1, f"seed={seed}: {len(source_nodes)} sources"
         assert len(sink_nodes) == 1, f"seed={seed}: {len(sink_nodes)} sinks"
         assert len(asm_nodes) == 1, f"seed={seed}: {len(asm_nodes)} assemblers"
@@ -1353,9 +1353,9 @@ class TestAssemble1In1OutConnectivity:
         G = build_factory_graph(world.permute(1, 2, 0))
         import networkx as nx
 
-        source_nodes = [n for n in G.nodes if "stack_inserter" in n]
-        sink_nodes = [n for n in G.nodes if "bulk_inserter" in n]
-        belt_nodes = [n for n in G.nodes if "transport_belt" in n]
+        source_nodes = [n for n in G.nodes if n.startswith("S@")]
+        sink_nodes = [n for n in G.nodes if n.startswith("K@")]
+        belt_nodes = [n for n in G.nodes if n.startswith("b@")]
         assert source_nodes and sink_nodes
         src, snk = source_nodes[0], sink_nodes[0]
         for belt in belt_nodes:
@@ -1410,9 +1410,9 @@ class TestAssemble1In1OutThroughputPerRecipe:
         # Detect via graph predecessors and pick the right expectation.
         from helpers import build_factory_graph
         G = build_factory_graph(world.permute(1, 2, 0))
-        asm = next(n for n in G.nodes if "assembling_machine" in n)
+        asm = next(n for n in G.nodes if n.startswith("a@"))
         preds = list(G.predecessors(asm))
-        source_directly_adjacent = any("stack_inserter" in p for p in preds)
+        source_directly_adjacent = any(p.startswith("S@") for p in preds)
 
         if source_directly_adjacent:
             # input ≥ recipe needs, ratio capped at 1, output = prod_count,
@@ -2322,9 +2322,9 @@ TWO_IN_ONE_OUT_RECIPES = _two_in_one_out_recipes()
 #         world, _ = blank_entities(f, num_missing_entities=0)
 #         G = build_factory_graph(world.permute(1, 2, 0))
 #         import networkx as nx
-#         sources = [n for n in G.nodes if "stack_inserter" in n]
-#         sink = [n for n in G.nodes if "bulk_inserter" in n]
-#         asm = [n for n in G.nodes if "assembling_machine" in n]
+#         sources = [n for n in G.nodes if n.startswith("S@")]
+#         sink = [n for n in G.nodes if n.startswith("K@")]
+#         asm = [n for n in G.nodes if n.startswith("a@")]
 #         assert len(sources) == 2 and len(sink) == 1 and len(asm) == 1
 #         for s in sources:
 #             assert nx.has_path(G, s, asm[0])
@@ -2844,9 +2844,9 @@ class TestMemoriseRecipesArmGeometry:
         world, _ = blank_entities(f, num_missing_entities=0)
         G = build_factory_graph(world.permute(1, 2, 0))
         import networkx as nx
-        sources = [n for n in G.nodes if "stack_inserter" in n]
-        sink = [n for n in G.nodes if "bulk_inserter" in n][0]
-        asm = [n for n in G.nodes if "assembling_machine" in n][0]
+        sources = [n for n in G.nodes if n.startswith("S@")]
+        sink = [n for n in G.nodes if n.startswith("K@")][0]
+        asm = [n for n in G.nodes if n.startswith("a@")][0]
         # source → belt → inserter → assembler  ==  3 edges
         for s in sources:
             d = nx.shortest_path_length(G, s, asm)
@@ -3039,9 +3039,9 @@ class TestMemoriseRecipesConnectivity:
         world, _ = blank_entities(f, num_missing_entities=0)
         G = build_factory_graph(world.permute(1, 2, 0))
         import networkx as nx
-        sources = [n for n in G.nodes if "stack_inserter" in n]
-        sink = [n for n in G.nodes if "bulk_inserter" in n]
-        asm = [n for n in G.nodes if "assembling_machine" in n]
+        sources = [n for n in G.nodes if n.startswith("S@")]
+        sink = [n for n in G.nodes if n.startswith("K@")]
+        asm = [n for n in G.nodes if n.startswith("a@")]
         assert len(sources) >= 1 and len(sink) == 1 and len(asm) == 1
         for s in sources:
             assert nx.has_path(G, s, asm[0]), f"seed={seed}: {s} can't reach asm"
