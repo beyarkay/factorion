@@ -534,7 +534,7 @@ def _predict(grid: list[list[dict]]) -> dict:
     H = obs_CWH.shape[3]
 
     with torch.no_grad():
-        encoded_BCWH = agent.encoder(obs_CWH)
+        encoded_BCWH = agent.encoder(agent._encode_input(obs_CWH))
         # End-of-turn probability — sigmoid of the eot head's single
         # logit. Surfaced in the side panel so the user can see when
         # the model thinks the factory is finished.

@@ -568,7 +568,7 @@ class TestSFTLossConvergence:
         for epoch in range(5):
             agent.train()
             batch_obs = obs.float()
-            encoded = agent.encoder(batch_obs)
+            encoded = agent.encoder(agent._encode_input(batch_obs))
             B = encoded.shape[0]
 
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
@@ -1165,7 +1165,7 @@ class TestEotHead:
         # Forward a fake batch through the encoder + eot_head.
         B, C, W, H = 4, agent.channels, agent.width, agent.height
         x = torch.zeros((B, C, W, H), dtype=torch.float32)
-        enc = agent.encoder(x)
+        enc = agent.encoder(agent._encode_input(x))
         logits = agent.eot_head(enc).squeeze(-1)
         assert logits.shape == (B,), (
             f"eot_head output should be (B,), got {logits.shape}"

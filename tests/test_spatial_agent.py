@@ -237,7 +237,9 @@ class TestRegularisation:
     def test_dropout_zero_is_deterministic_in_train(self, agent):
         """p=0 in train() mode is a true no-op: repeated encodes match."""
         agent.train()
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        # These probe the conv stack directly, downstream of the categorical
+        # input encoding, so feed it the encoder's expanded input channels.
+        obs = torch.randn(2, agent.input_channels, 5, 5)
         torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))
 
     def test_dropout_active_varies_in_train(self, envs):
@@ -245,7 +247,7 @@ class TestRegularisation:
         source of variation — dropout — makes two encodes differ."""
         agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.train()
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(2, agent.input_channels, 5, 5)
         assert not torch.allclose(agent.encoder(obs), agent.encoder(obs))
 
     def test_dropout_inert_in_eval(self, envs):
@@ -253,7 +255,7 @@ class TestRegularisation:
         deterministic even with a high drop probability."""
         agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
         agent.eval()
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(2, agent.input_channels, 5, 5)
         torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))
 
     def test_weight_decay_default_adds_no_penalty(self, agent):
@@ -265,3 +267,51 @@ class TestRegularisation:
         assert opt.param_groups[0]["weight_decay"] == 0.0
         tuned = optim.Adam(agent.parameters(), weight_decay=0.01)
         assert tuned.param_groups[0]["weight_decay"] == 0.01
+
+
+class TestCategoricalInputEncoding:
+    """The nominal observation channels (entity/item/direction/misc) are
+    encoded categorically before the conv — embeddings for the two wide
+    vocabularies, one-hots for the two narrow ones, footprint left scalar —
+    rather than fed as raw ordinal id floats."""
+
+    def test_encoded_shape(self, agent):
+        """_encode_input expands len(Channel) into the conv's input channels:
+        two embeddings + two one-hots + footprint."""
+        d = agent.cat_embed_dim
+        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1
+        enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert enc.shape == (2, agent.input_channels, 5, 5)
+
+    def test_direction_channel_is_one_hot(self, agent):
+        """A direction id lands as a one-hot in the direction slice, not a
+        scalar magnitude."""
+        obs = torch.zeros(1, NUM_CHANNELS, 3, 3)
+        obs[0, Channel.DIRECTION.value, 1, 1] = 2.0
+        d = agent.cat_embed_dim
+        dir_slice = agent._encode_input(obs)[0, 2 * d : 2 * d + agent.num_directions, 1, 1]
+        assert dir_slice.argmax().item() == 2
+        assert dir_slice.sum().item() == pytest.approx(1.0)
+
+    def test_distinct_entities_get_independent_encodings(self, agent):
+        """The whole point: two different entity ids map to independent
+        embeddings, not scalar multiples as the old float channel implied."""
+        obs1 = torch.zeros(1, NUM_CHANNELS, 3, 3)
+        obs2 = torch.zeros(1, NUM_CHANNELS, 3, 3)
+        obs1[0, Channel.ENTITIES.value, 1, 1] = 1.0
+        obs2[0, Channel.ENTITIES.value, 1, 1] = 3.0
+        d = agent.cat_embed_dim
+        e1 = agent._encode_input(obs1)[0, :d, 1, 1]
+        e2 = agent._encode_input(obs2)[0, :d, 1, 1]
+        assert not torch.allclose(e1, e2)
+
+    def test_embedding_gradients_flow(self, agent):
+        """Gradients reach the new entity/item embedding tables through a
+        full forward + backward."""
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        obs[:, Channel.ENTITIES.value] = 1.0
+        obs[:, Channel.ITEMS.value] = 2.0
+        _, logp_B, _, value_B = agent.get_action_and_value(obs)
+        (logp_B.mean() + value_B.mean()).backward()
+        assert agent.ent_embed.weight.grad is not None
+        assert agent.item_embed.weight.grad is not None

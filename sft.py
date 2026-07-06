@@ -538,7 +538,7 @@ def run_rollout_eval(
             # outputs are discarded; the per-eval cost of K-1 stale
             # forwards at the tail is negligible compared to the
             # batching win earlier in the queue.
-            encoded = agent.encoder(obs_batch)
+            encoded = agent.encoder(agent._encode_input(obs_batch))
             eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
 
             tile_logits = _apply_legal_tile_mask(
@@ -1049,7 +1049,7 @@ def train_sft(args: SftArgs):
                 batch_item, batch_misc, batch_mask, batch_eot,
             ) = batch
 
-            encoded = agent.encoder(batch_obs)
+            encoded = agent.encoder(agent._encode_input(batch_obs))
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
             # eot=1 samples carry sentinel placement targets. Normalise by
@@ -1240,7 +1240,7 @@ def train_sft(args: SftArgs):
                 batch_eot = va_eot[idx]
                 batch_kind = va_kind[idx]
 
-                encoded = agent.encoder(batch_obs)
+                encoded = agent.encoder(agent._encode_input(batch_obs))
                 B = encoded.shape[0]
                 placement_mask = (batch_eot < 0.5).float()
                 is_place = placement_mask.bool()
