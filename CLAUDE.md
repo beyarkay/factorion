@@ -41,9 +41,8 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - `factorion.py` — Environment utilities module: enums (`Channel`, `Direction`, `Entity`, `Item`, `Recipe`, `LessonKind`), blueprint encoding/decoding, factory generation, lesson creation, factory-graph building (`world2graph`). Import symbols directly (`from factorion import build_factory, blank_entities, Channel, ...`).
 - `factorion_rs/` — Rust extension (PyO3/maturin) for the throughput simulation (`simulate_throughput`) and the lesson generator (`build_factory` in `src/factory_gen.rs`, with a fast deterministic RNG in `src/rng.rs`; exposed to Python as `factorion.build_factory`, which is what training calls). Built into the venv via `maturin develop`; stubs in `factorion_rs/__init__.pyi` (keep in sync or `ty` fails).
 - `scripts/factory_builder.py` — Local HTTP UI to hand-build factories and query a checkpoint's predictions. Shares `_resolve_wandb_checkpoint` with `ppo.py`.
-- `scripts/ci/` — CI/training automation: `ppo_train.sh` & `sft_train.sh` (in-pod RunPod training), `create_sweep.py`/`sweep_report.py` (W&B sweeps + reporting), `runpod_create.py`/`runpod_destroy.py`. Sweep results are reported, not auto-applied — hyperparameter defaults live in `training_config.py` and are edited by hand.
-- `.github/workflows/` — `ppo-train.yml` & `sft-train.yml` (manual `workflow_dispatch` GPU runs on RunPod), `ci.yml`, `claude.yml`.
-- `sweep.yaml` — Weights & Biases Bayesian hyperparameter sweep config (PPO; metric `curriculum/score`).
+- `ci/` — **All CI/training automation** (read `ci/README.md`). GPU jobs run on fire-and-forget, self-terminating RunPod pods, triggered by `/ci ...` PR comments (`ci/gh_command.py`) or `uv run python -m ci ...`; results are posted back as PR comments. Job specs in `ci/config.py` are the complete CI override surface (commitish, SFT `num_samples`, PPO `start_from`/`total_timesteps`, compare seeds) — every other hyperparameter flows from `training_config.py`. Includes the every-metric compare report + `assert pr:metric > main:metric` gating (`ci/report.py`), the leaked-pod watchdog (`ci/watchdog.py`), and the sweep configs `ci/sweep_ppo.yaml`/`ci/sweep_sft.yaml` (metric `eval/thput_eot` / `val/acc`; results are reported, not auto-applied — defaults in `training_config.py` are edited by hand).
+- `.github/workflows/` — thin pointers into `ci/`: `ci.yml` (lint + tests, no GPU), `ci-command.yml` (`/ci` comments), `ci-reporter.yml` (posts run results to PRs), `pod-watchdog.yml` (6-hourly pod reaper), `launch.yml` (manual dispatch), `claude.yml`.
 - `factorio-icons/` — Entity icon PNGs.
 
 ### Codebase map (grep these symbols)
@@ -62,7 +61,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 
 Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
 
-- **`eval/`** — periodic greedy held-out throughput (`eval/thput`, `eval/thput_eot`, `eval/{LESSON}/*`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`sweep.yaml`).
+- **`eval/`** — periodic greedy held-out throughput (`eval/thput`, `eval/thput_eot`, `eval/{LESSON}/*`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`ci/sweep_ppo.yaml`).
 - **`rollout/`** — on-policy sampled episode stats (`thput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`) + per-lesson `rollout/{LESSON}/{thput,thput_raw,reward,length}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
 - **`policy/`** — acting-policy distribution: `entropy`, per-head `entropy_{tile,entity,direction,item,misc,eot}`, `eot_prob`.
 - **`critic/`** — value-head health (is the critic predicting factory value?), global + per-lesson (`ppo.py:_critic_diagnostics`). Global: `explained_variance` (headline: 1=perfect, 0=predicts-the-mean, <0=worse), `value_rmse`/`value_bias` (error size / signed over-under-estimation, in reward units), `value_return_corr` (ordering skill, robust to scale/offset), `value_std` vs `return_std` (tells a collapsed-to-constant critic apart from a responsive one), `value_mean`/`return_mean`, `adv_abs_mean` (mean |GAE advantage|, a TD-error proxy). Per-lesson `critic/{LESSON}/{explained_variance,value_rmse,value_bias,value_return_corr,n}` — so a critic that nails belts but is clueless on assemblers shows as a split curve (`n` = transitions backing that slice; variance-based fields are NaN when `n`<2).
@@ -109,10 +108,12 @@ uv run python ppo.py \
   --total-timesteps 500000
 ```
 
-Run a W&B sweep:
+Run a W&B sweep (creates the sweep from `ci/sweep_ppo.yaml`/`ci/sweep_sft.yaml`
+at the given commit and drains it on self-terminating RunPod pods; or comment
+`/ci sweep ppo` on a PR):
 
 ```bash
-bash run_sweep.sh
+uv run python -m ci sweep ppo --ref main
 ```
 
 ## Benchmarks

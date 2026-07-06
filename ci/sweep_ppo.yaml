@@ -1,4 +1,8 @@
-# sweep.yaml — PPO hyperparameter sweep
+# ci/sweep_ppo.yaml — PPO hyperparameter sweep
+#
+# Launched with: uv run python -m ci sweep ppo --ref <commitish>  (or comment /ci sweep ppo on a PR)
+# Sweep results are reported (ci sweep-report), not auto-applied —
+# hyperparameter defaults live in training_config.py and are edited by hand.
 
 method: bayes
 run_cap: 30
@@ -22,13 +26,13 @@ parameters:
     min: 5e-5
     max: 1e-3
 
-  chan1:
+  layer1:
     values: [32, 48, 64]
 
-  chan2:
+  layer2:
     values: [48, 64]
 
-  chan3:
+  layer3:
     values: [48, 64]
 
   clip_coef:
@@ -68,9 +72,12 @@ parameters:
 
 program: ppo.py
 
+# Plain `python`: on a CI pod deps are installed system-wide; locally, run the
+# agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
 command:
-  - bash
-  - run_sweep.sh
+  - ${env}
+  - python
+  - ${program}
   - --total-timesteps
   - 250_000
   - --track

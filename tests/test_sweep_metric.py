@@ -1,4 +1,4 @@
-"""Tests for read_metric in scripts/ci/wandb_metric.py.
+"""Tests for read_metric in ci/wandb_metric.py.
 
 Regression coverage for the W&B sweep-report crash where a metric resolved
 to a nested ``SummarySubDict`` and ``runs.sort`` raised
@@ -6,13 +6,8 @@ to a nested ``SummarySubDict`` and ``runs.sort`` raised
 """
 
 import math
-import os
-import sys
 
-# Add scripts/ci to sys.path so we can import the module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "ci"))
-
-from wandb_metric import read_metric  # noqa: E402
+from ci.wandb_metric import read_metric
 
 
 class SummarySubDict:

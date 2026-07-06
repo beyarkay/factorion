@@ -1,17 +1,9 @@
-"""Tests for RunPod cost tracking in scripts/ci/runpod_destroy.py."""
+"""Tests for RunPod cost tracking in ci/runpod_api.py."""
 
-import json
 import os
-import sys
-import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-# Add scripts/ci to sys.path so we can import the module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "ci"))
-
-from runpod_destroy import format_uptime, query_pod_cost  # noqa: E402
+from ci.runpod_api import format_uptime, query_pod_cost
 
 
 class TestFormatUptime:
@@ -38,7 +30,7 @@ class TestFormatUptime:
 
 
 class TestQueryPodCost:
-    @patch("runpod_destroy.runpod")
+    @patch("ci.runpod_api.runpod")
     def test_cost_from_runtime_uptime_in_seconds(self, mock_runpod):
         """Prefers runtime.uptimeInSeconds (current API) over legacy uptimeSeconds."""
         mock_runpod.get_pod.return_value = {
@@ -60,7 +52,7 @@ class TestQueryPodCost:
         assert result["uptime_human"] == "20m 55s"
         mock_runpod.get_pod.assert_called_once_with("pod-123")
 
-    @patch("runpod_destroy.runpod")
+    @patch("ci.runpod_api.runpod")
     def test_cost_from_legacy_uptime_seconds(self, mock_runpod):
         """Falls back to legacy uptimeSeconds when runtime field is missing."""
         mock_runpod.get_pod.return_value = {
@@ -75,8 +67,8 @@ class TestQueryPodCost:
         assert result["uptime_seconds"] == 1255
         assert result["total_cost"] == 0.91
 
-    @patch("runpod_destroy.time")
-    @patch("runpod_destroy.runpod")
+    @patch("ci.runpod_api.time")
+    @patch("ci.runpod_api.runpod")
     def test_cost_from_created_at_fallback(self, mock_runpod, mock_time):
         """Falls back to created_at when both API uptime fields return 0."""
         mock_runpod.get_pod.return_value = {
@@ -97,7 +89,7 @@ class TestQueryPodCost:
         # 1.39 * (1800/3600) = 0.695 -> round(0.695, 2) = 0.69
         assert result["total_cost"] == 0.69
 
-    @patch("runpod_destroy.runpod")
+    @patch("ci.runpod_api.runpod")
     def test_cost_with_flat_gpu_name(self, mock_runpod):
         """Falls back to top-level gpuDisplayName if machine dict is missing."""
         mock_runpod.get_pod.return_value = {
@@ -113,42 +105,8 @@ class TestQueryPodCost:
         assert result["gpu_name"] == "RTX 4090"
 
 
-class TestAppendToSummary:
-    def test_append_to_existing_summary(self, tmp_path):
-        summary_file = tmp_path / "summary.md"
-        summary_file.write_text("# Smoke Test Results\nAll good.\n")
-
-        cost_line = (
-            "\n**Cost:** $0.91 "
-            "(20m 55s on NVIDIA A100 80GB PCIe "
-            "@ $2.61/hr via RunPod)\n"
-        )
-
-        existing = summary_file.read_text()
-        summary_file.write_text(existing + cost_line)
-
-        content = summary_file.read_text()
-        assert "# Smoke Test Results" in content
-        assert "**Cost:** $0.91" in content
-        assert "20m 55s on NVIDIA A100 80GB PCIe" in content
-
-    def test_append_to_missing_summary(self, tmp_path):
-        """When summary file doesn't exist, create it with just the cost line."""
-        summary_file = tmp_path / "summary.md"
-
-        cost_line = "\n**Cost:** $0.50 (10m 0s on GPU @ $3.00/hr via RunPod)\n"
-
-        existing = ""
-        if summary_file.exists():
-            existing = summary_file.read_text()
-        summary_file.write_text(existing + cost_line)
-
-        assert summary_file.exists()
-        assert "**Cost:** $0.50" in summary_file.read_text()
-
-
 class TestCostErrorStillTerminates:
-    @patch("runpod_destroy.runpod")
+    @patch("ci.runpod_api.runpod")
     def test_cost_error_still_terminates(self, mock_runpod):
         """If cost query raises, pod should still be terminated."""
         mock_runpod.get_pod.side_effect = Exception("API timeout")

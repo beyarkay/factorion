@@ -3,10 +3,10 @@
 `PpoArgs` and `SftArgs` share their identical defaults through the
 `SharedArgs` base so a value like the grid size, the CNN encoder shape, or the
 W&B project lives in exactly one place. `ppo.py` and `sft.py` import the
-dataclasses from here (`from training_config import PpoArgs` / `SftArgs`); the CI
-shell scripts read the same defaults with
-``python -c "from training_config import PpoArgs; print(PpoArgs().<field>)"`` instead
-of hardcoding their own copies.
+dataclasses from here (`from training_config import PpoArgs` / `SftArgs`). CI
+jobs (`ci/jobs.py`) pass only their whitelisted overrides on the command line,
+so everything else falls through to these defaults — never copy a value out
+of here into CI config.
 
 Keep this module a leaf: it must not import torch / ppo / sft / factorion, so
 importing it (from Python or a shell one-liner) stays cheap.

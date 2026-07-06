@@ -1,0 +1,70 @@
+name: CI command
+
+# Comment `/ci <command>` on a PR to launch GPU training jobs on
+# self-terminating RunPod pods. `/ci help` posts the full grammar. All the
+# logic lives in ci/gh_command.py — this workflow just wires up context and
+# secrets. Results come back as PR comments (and a commit status for
+# `/ci compare` assertions).
+#
+# Security: gated to collaborators, but note the tooling runs from the PR
+# head (so /ci works on the code being reviewed), which exposes repo secrets
+# to code on that branch — fine for a personal repo where collaborators are
+# trusted; revisit if untrusted contributors ever get write access.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  ci-command:
+    if: >-
+      github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/ci')
+      && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                  github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Acknowledge the command
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=rocket
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          fetch-depth: 0
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install CI dependencies
+        run: uv pip install --system tyro runpod wandb pyyaml requests
+
+      - name: Dispatch
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          export HEAD_SHA
+          python -m ci.gh_command

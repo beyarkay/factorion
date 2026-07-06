@@ -1,0 +1,66 @@
+name: Launch (manual)
+
+# Manual bridge to the CI CLI for jobs not tied to a PR (e.g. a production
+# SFT run from main). Pods are fire-and-forget: this workflow exits once the
+# pod is created; results live in W&B and, for runs launched from a PR
+# comment instead, in PR comments. See ci/README.md for the command grammar —
+# `command` is everything after `python -m ci`, minus --ref.
+#
+# Examples:
+#   command: sft --num-samples 45000000
+#   command: ppo --start-from j0s5y2mc
+#   command: sweep sft --pods 2
+#   command: pods
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "CI subcommand + flags (e.g. 'sft --num-samples 200000')"
+        required: true
+        type: string
+      ref:
+        description: "Commitish to run (branch / tag / SHA)"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install CI dependencies
+        run: uv pip install --system tyro runpod wandb pyyaml requests
+
+      - name: Launch
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          CI_COMMAND: ${{ inputs.command }}
+          CI_REF: ${{ inputs.ref }}
+        run: |
+          # Word-splitting of CI_COMMAND is intentional (subcommand + flags).
+          # Management commands (pods/kill/watchdog/...) take no --ref.
+          case "$CI_COMMAND" in
+            sft*|ppo*|sweep*|compare*)
+              python -m ci $CI_COMMAND --ref "$CI_REF" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            *)
+              python -m ci $CI_COMMAND | tee -a "$GITHUB_STEP_SUMMARY" ;;
+          esac
