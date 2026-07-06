@@ -164,7 +164,7 @@ def launch(
     if wandb_run_id:
         print(f"W&B run:  {wandb_run_id} (URL live once the pod starts logging)")
     print(f"GPU:      {gpu_type} (with fallbacks)")
-    print(f"Deadline: {time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(deadline))} "
+    print(f"Deadline: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(deadline))} "
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")
 
     if dry_run:
