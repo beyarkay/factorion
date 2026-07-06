@@ -18,6 +18,7 @@ from ci.config import (
     job_from_dict,
     job_to_dict,
     parse_pod_name,
+    pod_emoji,
     pod_name,
     ppo_budget_seconds,
     sft_budget_seconds,
@@ -164,9 +165,34 @@ class TestPodName:
             SHA[:7],
         )
 
+    def test_timestamps_are_iso8601(self):
+        # 2026-07-06 15:16:10 UTC — readable in the RunPod console at a glance.
+        name = pod_name("ppo", 1783350970, 1783356170, SHA)
+        assert name == f"factorion-ci-ppo-c20260706T151610Z-d20260706T164250Z-{SHA[:7]}"
+
+    def test_legacy_epoch_names_still_parse(self):
+        # Pods launched before the ISO switch keep epoch-seconds names; the
+        # watchdog must be able to reap them until they've all cycled out.
+        meta = parse_pod_name(f"factorion-ci-ppo-c1783350970-d1783356170-{SHA[:7]}")
+        assert meta is not None
+        assert (meta.created, meta.deadline) == (1783350970, 1783356170)
+
     def test_foreign_names_rejected(self):
         for name in ("my-dev-pod", "factorion-ci-sft-nonsense", "", "ci-smoke-12345"):
             assert parse_pod_name(name) is None
+
+
+class TestPodEmoji:
+    def test_every_pod_state(self):
+        now = 10_000.0
+        alive = {"name": pod_name("sft", 9_000, 20_000, SHA)}
+        assert pod_emoji(None, now) == "🗑"  # no longer listed
+        assert pod_emoji(alive, now) == "⏳"  # no container yet
+        assert pod_emoji({**alive, "runtime": {"uptimeInSeconds": 5}}, now) == "🚀"
+        overdue = {"name": pod_name("sft", 1_000, 9_999, SHA)}
+        # Past its name deadline the pod is watchdog bait even if "running".
+        assert pod_emoji(overdue, now) == "💀"
+        assert pod_emoji({**overdue, "runtime": {"uptimeInSeconds": 5}}, now) == "💀"
 
 
 class TestWatchdog:

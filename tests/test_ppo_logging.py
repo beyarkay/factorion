@@ -248,11 +248,9 @@ class TestCriticDiagnostics:
         m = _critic_diagnostics(values, returns, advantages, kinds)
         assert m["critic/MOVE_ONE_ITEM/explained_variance"] == pytest.approx(1.0)
         assert m["critic/MOVE_ONE_ITEM/value_bias"] == pytest.approx(0.0)
-        assert m["critic/MOVE_ONE_ITEM/n"] == 3.0
         # Constant +1 offset: perfect ordering but biased.
         assert m["critic/SPLITTER_SPLIT/value_bias"] == pytest.approx(1.0)
         assert m["critic/SPLITTER_SPLIT/value_return_corr"] == pytest.approx(1.0)
-        assert m["critic/SPLITTER_SPLIT/n"] == 3.0
         # A lesson with no transitions this iter emits no keys.
         assert "critic/ASSEMBLE_1IN_1OUT/explained_variance" not in m
 
@@ -264,4 +262,3 @@ class TestCriticDiagnostics:
         assert np.isnan(m["critic/MOVE_ONE_ITEM/explained_variance"])
         assert np.isnan(m["critic/MOVE_ONE_ITEM/value_return_corr"])
         assert m["critic/MOVE_ONE_ITEM/value_bias"] == pytest.approx(0.5)
-        assert m["critic/MOVE_ONE_ITEM/n"] == 1.0

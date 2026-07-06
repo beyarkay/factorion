@@ -261,8 +261,8 @@ def _critic_diagnostics(
 
     Predicted values vs realised GAE returns; the metrics are documented in the
     W&B dashboards section of CLAUDE.md. Pure (numpy only) so it's unit-testable.
-    Per-lesson slices carry the lesson name and back each with `n` transitions
-    (variance-based fields are NaN when `n`<2)."""
+    Per-lesson slices carry the lesson name (variance-based fields are NaN when
+    fewer than 2 transitions back that slice)."""
     out: dict[str, float] = {}
     for k, v in _critic_stats(values, returns, advantages).items():
         out[f"critic/{k}"] = v
@@ -274,7 +274,6 @@ def _critic_diagnostics(
         out[f"critic/{name}/value_rmse"] = s["value_rmse"]
         out[f"critic/{name}/value_bias"] = s["value_bias"]
         out[f"critic/{name}/value_return_corr"] = s["value_return_corr"]
-        out[f"critic/{name}/n"] = float(int(mask.sum()))
     return out
 
 
