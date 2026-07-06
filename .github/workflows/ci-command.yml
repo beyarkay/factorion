@@ -31,13 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      # The instant ack: if your /ci comment doesn't get eyes within ~30s,
+      # GitHub dropped the event (rare but real) — just repost the comment.
       - name: Acknowledge the command
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api --method POST \
             "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
-            -f content=rocket
+            -f content=eyes
 
       - uses: actions/checkout@v4
         with:
@@ -68,3 +70,15 @@ jobs:
           HEAD_SHA="$(git rev-parse HEAD)"
           export HEAD_SHA
           python -m ci.gh_command
+
+      # ci/gh_command.py replies with its own errors; this catches everything
+      # BEFORE it (checkout, deps, a PR head with no ci/ directory) so a /ci
+      # command can never fail without a trace on the PR.
+      - name: Report dispatch failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -f body="&#x274C; /ci dispatch failed before it could reply — see the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). (A PR branch that predates the ci/ directory needs an update from main.)"
