@@ -113,10 +113,6 @@ def parse_comment(body: str) -> tuple[list[str], list[str]]:
     return tokens, assertions
 
 
-def _wandb_runs_url(sha7: str) -> str:
-    return f"https://wandb.ai/?project={WANDB_PROJECT} (runs tagged `sha:{sha7}`)"
-
-
 _ENTITY_CACHE: list = []
 
 
@@ -130,6 +126,13 @@ def _wandb_entity():
         except Exception:
             _ENTITY_CACHE.append(None)
     return _ENTITY_CACHE[0]
+
+
+def _project_link(sha7: str) -> str:
+    """Markdown link to the W&B project (filter by tag sha:<sha7> there)."""
+    entity = _wandb_entity()
+    url = f"https://wandb.ai/{entity}/{WANDB_PROJECT}" if entity else "https://wandb.ai"
+    return f"[W&B project]({url}) (runs tagged `sha:{sha7}`)"
 
 
 def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
@@ -173,7 +176,7 @@ def cmd_sft(args, ctx) -> None:
         _launched_comment(
             f"SFT run launched at `{ctx['sha'][:7]}`",
             [info],
-            footer=f"Results land here as a comment when the run finishes. {_wandb_runs_url(ctx['sha'][:7])}",
+            footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
     )
 
@@ -191,7 +194,7 @@ def cmd_ppo(args, ctx) -> None:
         _launched_comment(
             f"PPO run launched at `{ctx['sha'][:7]}` (from `{args.start_from}`)",
             [info],
-            footer=f"Results land here as a comment when the run finishes. {_wandb_runs_url(ctx['sha'][:7])}",
+            footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
     )
 
