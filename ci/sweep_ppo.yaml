@@ -1,0 +1,84 @@
+# ci/sweep_ppo.yaml — PPO hyperparameter sweep
+#
+# Launched with: uv run python -m ci sweep-ppo --ref <commitish>
+# Sweep results are reported (ci sweep-report), not auto-applied —
+# hyperparameter defaults live in training_config.py and are edited by hand.
+
+method: bayes
+run_cap: 30
+metric:
+  name: "eval/thput_eot"
+  goal: maximize
+
+parameters:
+  ent_coef_start:
+    distribution: log_uniform_values
+    min: 0.005
+    max: 0.2
+
+  ent_coef_end:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 0.01
+
+  learning_rate:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 1e-3
+
+  layer1:
+    values: [32, 48, 64]
+
+  layer2:
+    values: [48, 64]
+
+  layer3:
+    values: [48, 64]
+
+  clip_coef:
+    distribution: uniform
+    min: 0.18
+    max: 0.32
+
+  gamma:
+    distribution: uniform
+    min: 0.95
+    max: 0.999
+
+  gae_lambda:
+    distribution: uniform
+    min: 0.8
+    max: 0.975
+
+  tile_head_std:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+
+  vf_coef:
+    distribution: uniform
+    min: 0.5
+    max: 0.9
+
+  max_grad_norm:
+    distribution: uniform
+    min: 0.75
+    max: 2.5
+
+  adam_epsilon:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 2e-4
+
+program: ppo.py
+
+# Plain `python`: on a CI pod deps are installed system-wide; locally, run the
+# agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --total-timesteps
+  - 250_000
+  - --track
+  - ${args}
