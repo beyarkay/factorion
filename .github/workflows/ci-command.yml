@@ -60,6 +60,7 @@ jobs:
         run: uv pip install --system tyro runpod wandb pyyaml requests
 
       - name: Dispatch
+        id: dispatch
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_URL: ${{ github.event.comment.html_url }}
@@ -85,9 +86,12 @@ jobs:
 
       # ci/gh_command.py replies with its own errors; this catches everything
       # BEFORE it (checkout, deps, a PR head with no ci/ directory) so a /ci
-      # command can never fail without a trace on the PR.
+      # command can never fail without a trace on the PR. `replied` guards it:
+      # a run that already commented (e.g. a compare exiting 1 on a failed
+      # assertion after posting its report) must not add a bogus "failed
+      # before it could reply".
       - name: Report dispatch failure
-        if: failure()
+        if: failure() && steps.dispatch.outputs.replied != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
