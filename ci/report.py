@@ -359,7 +359,10 @@ def wait_for_groups(
 
     Ends early when every launched pod is gone (pass `pod_ids`): a vanished
     pod can never add a run, so whatever exists at that point is final — one
-    grace poll for W&B to settle, then report. Falls back to the timeout when
+    grace poll for W&B to settle, then report. A pod past its name-encoded
+    deadline counts as gone even while RunPod still lists it (a pod that
+    never started a container sits idle until the watchdog reaps it — the
+    report must not wait on that corpse). Falls back to the timeout when
     pods can't be checked.
     """
     import wandb
@@ -380,8 +383,15 @@ def wait_for_groups(
         if pod_ids:
             try:
                 from ci import runpod_api
+                from ci.config import parse_pod_name
 
-                live = {p["id"] for p in runpod_api.list_ci_pods()}
+                now = time.time()
+                live = set()
+                for p in runpod_api.list_ci_pods():
+                    meta = parse_pod_name(p.get("name") or "")
+                    if meta is not None and meta.deadline <= now:
+                        continue  # dead man walking: can never add a run
+                    live.add(p["id"])
                 alive = sorted(set(pod_ids) & live)
             except Exception as e:
                 alive = None
