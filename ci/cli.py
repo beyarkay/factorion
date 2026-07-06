@@ -157,6 +157,32 @@ def compare(
     )
 
 
+def pod_summary(pod: dict, now: Optional[float] = None) -> dict:
+    """One CI pod as display fields (shared by the CLI text and PR markdown)."""
+    from ci import runpod_api
+
+    now = time.time() if now is None else now
+    meta = parse_pod_name(pod.get("name") or "")
+    uptime = (pod.get("runtime") or {}).get("uptimeInSeconds") or 0
+    deadline = (
+        f"deadline in {runpod_api.format_uptime(meta.deadline - now)}"
+        if meta and meta.deadline > now
+        else "PAST DEADLINE"
+        if meta
+        else "no deadline (unparseable name)"
+    )
+    return {
+        "id": pod["id"],
+        "url": pod_url(pod["id"]),
+        "name": pod.get("name") or "?",
+        "status": pod.get("desiredStatus") or "?",
+        "gpu": pod.get("machine", {}).get("gpuDisplayName", "?"),
+        "uptime": runpod_api.format_uptime(uptime),
+        "cost_hr": pod.get("costPerHr", "?"),
+        "deadline": deadline,
+    }
+
+
 def pods() -> None:
     """List CI pods (name, status, GPU, uptime, cost, deadline)."""
     from ci import runpod_api
@@ -165,23 +191,11 @@ def pods() -> None:
     if not ci_pods:
         print("No CI pods running.")
         return
-    now = time.time()
     for pod in ci_pods:
-        meta = parse_pod_name(pod.get("name") or "")
-        uptime = (pod.get("runtime") or {}).get("uptimeInSeconds") or 0
-        cost_hr = pod.get("costPerHr", "?")
-        gpu = pod.get("machine", {}).get("gpuDisplayName", "?")
-        deadline = (
-            f"deadline in {runpod_api.format_uptime(meta.deadline - now)}"
-            if meta and meta.deadline > now
-            else "PAST DEADLINE"
-            if meta
-            else "no deadline (unparseable name)"
-        )
+        s = pod_summary(pod)
         print(
-            f"{pod['id']}  {pod.get('name')}  [{pod.get('desiredStatus')}]  "
-            f"{gpu}  up {runpod_api.format_uptime(uptime)}  ${cost_hr}/hr  {deadline}  "
-            f"{pod_url(pod['id'])}"
+            f"{s['id']}  {s['name']}  [{s['status']}]  {s['gpu']}  "
+            f"up {s['uptime']}  ${s['cost_hr']}/hr  {s['deadline']}  {s['url']}"
         )
 
 

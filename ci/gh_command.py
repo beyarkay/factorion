@@ -12,8 +12,6 @@ RUNPOD_API_KEY, WANDB_API_KEY.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import json
 import os
 import shlex
@@ -129,6 +127,20 @@ def _wandb_entity():
     return _ENTITY_CACHE[0]
 
 
+def _commit_link(sha: str) -> str:
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if repo:
+        return f"[`{sha[:7]}`](https://github.com/{repo}/commit/{sha})"
+    return f"`{sha[:7]}`"
+
+
+def _group_link(group: str) -> str:
+    entity = _wandb_entity()
+    if entity:
+        return f"[`{group}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{group})"
+    return f"`{group}`"
+
+
 def _project_link(sha7: str) -> str:
     """Markdown link to the W&B project (filter by tag sha:<sha7> there)."""
     entity = _wandb_entity()
@@ -172,7 +184,7 @@ def cmd_sft(args, ctx) -> None:
     github_api.post_pr_comment(
         ctx["pr"],
         _launched_comment(
-            f"SFT run launched at `{ctx['sha'][:7]}`",
+            f"SFT run launched at {_commit_link(ctx['sha'])}",
             [info],
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
@@ -190,7 +202,7 @@ def cmd_ppo(args, ctx) -> None:
     github_api.post_pr_comment(
         ctx["pr"],
         _launched_comment(
-            f"PPO run launched at `{ctx['sha'][:7]}` (from `{args.start_from}`)",
+            f"PPO run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
             [info],
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
@@ -247,10 +259,14 @@ def cmd_compare(args, ctx) -> None:
     github_api.post_pr_comment(
         ctx["pr"],
         _launched_comment(
-            f"Compare launched: `{ctx['sha'][:7]}` vs `{args.base_ref}` "
+            f"Compare launched: {_commit_link(ctx['sha'])} vs `{args.base_ref}` "
             f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per run)",
             infos,
-            footer=f"Assertions:\n{assertion_note}",
+            footer=(
+                f"W&B groups: {_group_link(compare_group(ctx['sha'], 'test'))} vs "
+                f"{_group_link(compare_group(ctx['sha'], 'base'))}\n\n"
+                f"Assertions:\n{assertion_note}"
+            ),
         ),
     )
     github_api.set_commit_status(
@@ -292,7 +308,7 @@ def cmd_sweep(args, ctx) -> None:
     github_api.post_pr_comment(
         ctx["pr"],
         _launched_comment(
-            f"{algo.upper()} sweep launched at `{ctx['sha'][:7]}` "
+            f"{algo.upper()} sweep launched at {_commit_link(ctx['sha'])} "
             f"({args.pods} pod(s) x {args.agents_per_pod} agents)",
             infos,
             footer=(
@@ -322,32 +338,68 @@ def _wait_for_sweep(sweep_path: str, timeout_seconds: int = MAX_WAIT_SECONDS) ->
     print(f"sweep still running after {timeout_seconds}s; posting a partial report")
 
 
-def _captured(fn, *args, **kwargs) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        fn(*args, **kwargs)
-    return buf.getvalue()
+def _pods_table(pods: list[dict]) -> str:
+    from ci.cli import pod_summary
+
+    lines = [
+        "| Pod | Name | Status | GPU | Uptime | $/hr | Deadline |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for pod in pods:
+        s = pod_summary(pod)
+        lines.append(
+            f"| [`{s['id']}`]({s['url']}) | `{s['name']}` | {s['status']} "
+            f"| {s['gpu']} | {s['uptime']} | ${s['cost_hr']} | {s['deadline']} |"
+        )
+    return "\n".join(lines)
 
 
 def cmd_pods(args, ctx) -> None:
-    from ci import cli
+    from ci import runpod_api
 
-    out = _captured(cli.pods) or "(no output)"
-    github_api.post_pr_comment(ctx["pr"], f"```\n{out}\n```")
+    ci_pods = runpod_api.list_ci_pods()
+    body = _pods_table(ci_pods) if ci_pods else "No CI pods running."
+    github_api.post_pr_comment(ctx["pr"], body)
 
 
 def cmd_kill(args, ctx) -> None:
-    from ci import cli
+    from ci import runpod_api
 
-    out = _captured(cli.kill, pod_id=args.pod_id, all=args.all) or "(no output)"
-    github_api.post_pr_comment(ctx["pr"], f"```\n{out}\n```")
+    targets = (
+        runpod_api.list_ci_pods()
+        if args.all
+        else [{"id": args.pod_id}]
+        if args.pod_id
+        else []
+    )
+    if not targets:
+        github_api.post_pr_comment(ctx["pr"], "Nothing to kill: pass a pod id or `--all`.")
+        return
+    lines = []
+    for pod in targets:
+        runpod_api.terminate_with_retry(pod["id"])
+        lines.append(f"- terminated [`{pod['id']}`]({pod_url(pod['id'])})")
+    github_api.post_pr_comment(ctx["pr"], "\n".join(lines))
 
 
 def cmd_watchdog(args, ctx) -> None:
-    from ci import watchdog
+    from ci import runpod_api
+    from ci.watchdog import decide_terminations
 
-    out = _captured(watchdog.run, dry_run=args.dry_run) or "(no output)"
-    github_api.post_pr_comment(ctx["pr"], f"```\n{out}\n```")
+    pods = runpod_api.list_pods()
+    doomed = decide_terminations(pods, now=time.time())
+    verb = "would terminate" if args.dry_run else "terminating"
+    lines = [
+        f"{len(pods)} pod(s) total, "
+        f"{sum(1 for p in pods if (p.get('name') or '').startswith('factorion-ci-'))} CI pod(s)."
+    ]
+    for pod, reason in doomed:
+        lines.append(f"- {verb} [`{pod['id']}`]({pod_url(pod['id'])}) `{pod.get('name')}`: {reason}")
+        if not args.dry_run:
+            runpod_api.terminate_with_retry(pod["id"])
+    if not doomed:
+        lines.append("Nothing to reap.")
+    github_api.post_pr_comment(ctx["pr"], "\n".join(lines))
 
 
 def build_parser() -> argparse.ArgumentParser:

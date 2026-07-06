@@ -379,7 +379,15 @@ def compare_report(
             False,
         )
     rows = compare_metric_rows(base, test)
+    entity = api.default_entity
     md = render_compare_markdown(rows, base_label=base_group, test_label=test_group)
+    if entity:
+        for group in (base_group, test_group):
+            md = md.replace(
+                f"`{group}`",
+                f"[`{group}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{group})",
+                1,
+            )
     ok = True
     if assertions:
         results = [evaluate_assertion(a, rows) for a in assertions]
@@ -532,11 +540,15 @@ def run_summary_markdown(
     """Summary comment for a single finished CI run."""
     icon = "&#x2705;" if state == "finished" else "&#x274C;"
     duration = summary_flat.get("_runtime")
+    import os
+
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    commit = f"[`{sha7}`](https://github.com/{repo}/commit/{sha7})" if repo else f"`{sha7}`"
     lines = [
         RUN_MARKER_TEMPLATE.format(run_id=run_id),
         f"## {icon} CI {kind} run `{name}` {state}",
         "",
-        f"Commit `{sha7}` &middot; [view on W&B]({url})"
+        f"Commit {commit} &middot; [view on W&B]({url})"
         + (f" &middot; {int(duration) // 60} min" if duration else ""),
         "",
     ]
