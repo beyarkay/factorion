@@ -15,6 +15,7 @@ import it in a bare GitHub cron environment.
 from __future__ import annotations
 
 import re
+import dataclasses
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
 
@@ -87,8 +88,9 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 # Calibration: SFT streams ~1000 sample-epochs/sec, PPO ~200 env-steps/sec,
 # both CPU-bound so the rates hold across the GPU lineup. 1.5-2x safety margin
 # so the watchdog never kills a legitimate run, plus slack for pod boot +
-# clone + rust build.
-SETUP_SLACK_SECONDS = 1800
+# clone + rust build — cold hosts have been observed to take ~20 min just to
+# pull the image, so the slack must comfortably exceed that.
+SETUP_SLACK_SECONDS = 2700
 SWEEP_BUDGET_SECONDS = 8 * 3600  # sweeps run until run_cap (from the yaml)
 
 
@@ -176,7 +178,8 @@ def job_from_dict(d: dict) -> Job:
     kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob)}
     d = dict(d)
     cls = kinds[d.pop("kind")]
-    return cls(**d)
+    known = {f.name for f in dataclasses.fields(cls)}
+    return cls(**{k: v for k, v in d.items() if k in known})
 
 
 # ── Compare fan-out ────────────────────────────────────────────────
@@ -188,15 +191,35 @@ COMPARE_SEEDS_DEFAULT = 3
 COMPARE_NUM_SAMPLES_DEFAULT = 5_000_000  # hours, not days, per compare
 
 
-def compare_group(sha: str, role: str) -> str:
-    """W&B group name for one side of a compare (role: 'test' | 'base')."""
-    return f"cmp-{sha[:7]}-{role}"
+def pod_url(pod_id: str) -> str:
+    """RunPod console page for a pod (logs, metrics, terminate button)."""
+    return f"https://console.runpod.io/pods/{pod_id}"
+
+
+def compare_nonce() -> str:
+    """Short random token that makes one compare launch's groups unique."""
+    import secrets
+
+    return secrets.token_hex(2)
+
+
+def compare_group(sha: str, algo: str, nonce: str, side: str) -> str:
+    """W&B group name for one side of a compare (side: 'pr' | 'main').
+
+    The algo and a per-launch nonce are part of the name because groups must
+    be unique per compare LAUNCH: two compares at the same commit (or a rerun)
+    would otherwise share groups, and the stale runs would pollute the new
+    report — seen live when an sft and a ppo compare on one PR head fed each
+    other's runs into both reports.
+    """
+    return f"cmp-{sha[:7]}-{algo}-{nonce}-{side}"
 
 
 def compare_fanout(
     algo: str,
     sha: str,
     base_sha: str,
+    nonce: str,
     seeds: int = COMPARE_SEEDS_DEFAULT,
     num_samples: int = COMPARE_NUM_SAMPLES_DEFAULT,
     start_from: Optional[str] = None,
@@ -214,16 +237,16 @@ def compare_fanout(
         raise ValueError("PPO compare needs --start-from (a W&B SFT run id)")
 
     jobs: list[SftJob | PpoJob] = []
-    for role, role_sha in (("test", sha), ("base", base_sha)):
+    for side, side_sha in (("pr", sha), ("main", base_sha)):
         for seed in range(1, seeds + 1):
-            tags = [f"cmp:{sha[:7]}", f"cmp-role:{role}", *(extra_tags or [])]
+            tags = [f"cmp:{sha[:7]}", f"cmp-side:{side}", *(extra_tags or [])]
             if algo == "sft":
                 jobs.append(
                     SftJob(
-                        sha=role_sha,
+                        sha=side_sha,
                         num_samples=num_samples,
                         seed=seed,
-                        group=compare_group(sha, role),
+                        group=compare_group(sha, algo, nonce, side),
                         extra_tags=tags,
                     )
                 )
@@ -231,11 +254,11 @@ def compare_fanout(
                 assert start_from is not None
                 jobs.append(
                     PpoJob(
-                        sha=role_sha,
+                        sha=side_sha,
                         start_from=start_from,
                         total_timesteps=total_timesteps,
                         seed=seed,
-                        group=compare_group(sha, role),
+                        group=compare_group(sha, algo, nonce, side),
                         extra_tags=tags,
                     )
                 )

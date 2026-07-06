@@ -62,6 +62,9 @@ class SharedArgs:
     """the entity (team) of wandb's project"""
     wandb_group: Optional[str] = None
     """W&B run group name (groups parallel seeds together in the dashboard)"""
+    wandb_run_id: Optional[str] = None
+    """Pre-assigned W&B run id. CI sets this at launch so the run URL is known
+    (and linkable from the PR) before the pod even boots. None = W&B mints one."""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
 

@@ -24,6 +24,9 @@ def gh_ctx(monkeypatch):
 
     monkeypatch.setenv("PR_NUMBER", "42")
     monkeypatch.setenv("HEAD_SHA", SHA)
+    monkeypatch.setenv(
+        "COMMENT_URL", "https://github.com/beyarkay/factorion/pull/42#issuecomment-999"
+    )
     monkeypatch.setenv("RUNPOD_API_KEY", "rp-test")
     monkeypatch.setenv("WANDB_API_KEY", "wb-test")
     monkeypatch.setenv("GITHUB_TOKEN", "gh-test")
@@ -36,6 +39,8 @@ def gh_ctx(monkeypatch):
         return {"id": f"pod-{len(captured['pods'])}"}
 
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
+    monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
+    monkeypatch.setattr(gh_command, "_missing_run_warnings", lambda infos: "")
     monkeypatch.setattr(
         gh_command.github_api,
         "post_pr_comment",
@@ -74,6 +79,14 @@ class TestSftDispatch:
         ((pr, body),) = gh_ctx["comments"]
         assert pr == 42
         assert "pod-1" in body
+        # The W&B run id is minted at launch and linked in the comment.
+        run_id = pod["env"]["FCI_WANDB_RUN_ID"]
+        assert len(run_id) == 8
+        assert f"https://wandb.ai/testent/factorion/runs/{run_id}" in body
+        assert "https://console.runpod.io/pods/pod-1" in body
+        # Every CI comment links back to the /ci comment that triggered it.
+        assert "Originally triggered by" in body
+        assert "#issuecomment-999" in body
 
 
 class TestPpoDispatch:
@@ -103,8 +116,8 @@ class TestCompareDispatch:
         )
         reports = []
 
-        def fake_compare_report(base_group, test_group, assertions=None):
-            reports.append((base_group, test_group, assertions))
+        def fake_compare_report(main_group, pr_group, assertions=None):
+            reports.append((main_group, pr_group, assertions))
             return "REPORT-MD", True
 
         monkeypatch.setattr("ci.report.compare_report", fake_compare_report)
@@ -133,7 +146,7 @@ class TestCompareDispatch:
         monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
         monkeypatch.setattr(
             "ci.report.compare_report",
-            lambda base_group, test_group, assertions=None: ("BAD-MD", False),
+            lambda main_group, pr_group, assertions=None: ("BAD-MD", False),
         )
         with pytest.raises(SystemExit) as exc:
             gh_command.main()
@@ -157,7 +170,7 @@ class TestComparePpoDispatch:
         monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
         monkeypatch.setattr(
             "ci.report.compare_report",
-            lambda base_group, test_group, assertions=None: ("MD", True),
+            lambda main_group, pr_group, assertions=None: ("MD", True),
         )
         gh_command.main()
 

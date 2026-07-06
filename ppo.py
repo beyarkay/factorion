@@ -1427,8 +1427,12 @@ if __name__ == "__main__":
             group=args.wandb_group,
             save_code=True,
             tags=args.tags,
-            id=args.start_from_wandb,
-            resume="must" if args.start_from_wandb is not None else None,
+            id=args.start_from_wandb or args.wandb_run_id,
+            resume="must"
+            if args.start_from_wandb is not None
+            else "allow"
+            if args.wandb_run_id
+            else None,
         )
         _append_run_tags(
             run,

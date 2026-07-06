@@ -11,7 +11,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from ci.config import WANDB_PROJECT
 from ci.stats import mean, paired_t_test, stdev, welch_t_test
@@ -68,18 +68,18 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
 @dataclass
 class MetricRow:
     name: str
-    base_mean: float
-    base_std: float
-    test_mean: float
-    test_std: float
-    n_base: int
-    n_test: int
+    main_mean: float
+    main_std: float
+    pr_mean: float
+    pr_std: float
+    n_main: int
+    n_pr: int
     p_value: Optional[float]  # None when either side has < 2 values
     paired: bool
 
     @property
     def delta(self) -> float:
-        return self.test_mean - self.base_mean
+        return self.pr_mean - self.main_mean
 
     def verdict(self, alpha: float = 0.05) -> str:
         if self.p_value is None or self.p_value > alpha:
@@ -92,7 +92,7 @@ class MetricRow:
 
 
 def compare_metric_rows(
-    base: dict[int, dict[str, float]], test: dict[int, dict[str, float]]
+    main: dict[int, dict[str, float]], pr: dict[int, dict[str, float]]
 ) -> list[MetricRow]:
     """Compare every metric across two {seed: flat_summary} sides.
 
@@ -100,31 +100,31 @@ def compare_metric_rows(
     Welch's t-test on the unpaired values. Rows are sorted most-significant
     first, so the interesting differences top the table.
     """
-    names = sorted({m for fs in list(base.values()) + list(test.values()) for m in fs})
+    names = sorted({m for fs in list(main.values()) + list(pr.values()) for m in fs})
     rows = []
     for name in names:
-        b = {s: fs[name] for s, fs in base.items() if name in fs}
-        t = {s: fs[name] for s, fs in test.items() if name in fs}
-        if not b or not t:
+        m_by_seed = {s: fs[name] for s, fs in main.items() if name in fs}
+        p_by_seed = {s: fs[name] for s, fs in pr.items() if name in fs}
+        if not m_by_seed or not p_by_seed:
             continue  # metric only exists on one side; nothing to compare
-        common = sorted(set(b) & set(t))
+        common = sorted(set(m_by_seed) & set(p_by_seed))
         paired = len(common) >= 2
         if paired:
-            b_vals = [b[s] for s in common]
-            t_vals = [t[s] for s in common]
-            _, _, p = paired_t_test(t_vals, b_vals)
+            m_vals = [m_by_seed[s] for s in common]
+            p_vals = [p_by_seed[s] for s in common]
+            _, _, p = paired_t_test(p_vals, m_vals)
         else:
-            b_vals, t_vals = list(b.values()), list(t.values())
-            p = welch_t_test(t_vals, b_vals)[2] if min(len(b_vals), len(t_vals)) >= 2 else None
+            m_vals, p_vals = list(m_by_seed.values()), list(p_by_seed.values())
+            p = welch_t_test(p_vals, m_vals)[2] if min(len(m_vals), len(p_vals)) >= 2 else None
         rows.append(
             MetricRow(
                 name=name,
-                base_mean=mean(b_vals),
-                base_std=stdev(b_vals),
-                test_mean=mean(t_vals),
-                test_std=stdev(t_vals),
-                n_base=len(b_vals),
-                n_test=len(t_vals),
+                main_mean=mean(m_vals),
+                main_std=stdev(m_vals),
+                pr_mean=mean(p_vals),
+                pr_std=stdev(p_vals),
+                n_main=len(m_vals),
+                n_pr=len(p_vals),
                 p_value=p,
                 paired=paired,
             )
@@ -133,15 +133,42 @@ def compare_metric_rows(
     return rows
 
 
-# Metrics surfaced OUTSIDE the <details> block of a compare comment (the full
-# every-metric table sits inside it). Placeholder set — edit freely.
-HEADLINE_METRICS = [
-    "val/thput",
-    "val/thput_eot",
-    "val/acc",
-    "eval/thput",
-    "eval/thput_eot",
+# Metrics surfaced OUTSIDE the <details> block of a report (the full
+# every-metric table sits inside it). Ordered regexes; a metric is headline
+# when any matches, and headline rows sort by first-matching pattern. Lesson
+# names are matched, never hardcoded (`val/{LESSON}/thput_eot` covers every
+# current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
+# spaces are disjoint, so one list serves both kinds.
+HEADLINE_PATTERNS = [
+    # SFT: throughput first (overall then per-lesson), then accuracies
+    # (overall then per-head; the head names come from the [a-z]+_acc shape,
+    # which deliberately excludes per-lesson accs like val/{LESSON}/acc).
+    r"^val/thput_eot$",
+    r"^val/[A-Z0-9_]+/thput_eot$",
+    r"^val/acc$",
+    r"^val/[a-z]+_acc$",
+    # PPO: on-policy rollout health (overall then per-lesson), then speed.
+    r"^rollout/thput$",
+    r"^rollout/reward$",
+    r"^rollout/length$",
+    r"^rollout/invalid_frac$",
+    r"^rollout/[A-Z0-9_]+/thput$",
+    r"^perf/update_seconds$",
+    r"^perf/rollout_seconds$",
+    r"^perf/eval_seconds$",
+    r"^perf/sps$",
+    # Speed tail for SFT (train/val seconds).
+    r"^perf/",
 ]
+_HEADLINE_RES = [re.compile(p) for p in HEADLINE_PATTERNS]
+
+
+def select_headline(names) -> list[str]:
+    """Headline subset of metric names, ordered by pattern then name."""
+    out = []
+    for pattern in _HEADLINE_RES:
+        out.extend(sorted(n for n in names if pattern.match(n) and n not in out))
+    return out
 
 
 def _row_line(r: MetricRow, alpha: float) -> str:
@@ -149,29 +176,34 @@ def _row_line(r: MetricRow, alpha: float) -> str:
     p_str = "-" if r.p_value is None else (f"{r.p_value:.3f}" if r.p_value >= 0.001 else f"{r.p_value:.1e}")
     v = r.verdict(alpha)
     return (
-        f"| `{r.name}` | {r.base_mean:.4g} ± {r.base_std:.2g} (n={r.n_base}) "
-        f"| {r.test_mean:.4g} ± {r.test_std:.2g} (n={r.n_test}) "
+        f"| `{r.name}` | {r.main_mean:.4g} ± {r.main_std:.2g} (n={r.n_main}) "
+        f"| {r.pr_mean:.4g} ± {r.pr_std:.2g} (n={r.n_pr}) "
         f"| {r.delta:+.4g} | {p_str} | {icons[v]} {v} |"
     )
 
 
 def render_compare_markdown(
     rows: list[MetricRow],
-    base_label: str,
-    test_label: str,
+    main_label: str,
+    pr_label: str,
     alpha: float = 0.05,
-    headline: list[str] = HEADLINE_METRICS,
+    headline: Optional[list[str]] = None,
 ) -> str:
-    """Headline metrics up front; the full every-metric table in <details>."""
+    """Headline metrics up front; the full every-metric table in <details>.
+
+    headline: explicit metric names, or None for the HEADLINE_PATTERNS match.
+    """
     header = [
-        f"| Metric | {base_label} | {test_label} | Δ | p | |",
+        f"| Metric | {main_label} | {pr_label} | Δ | p | |",
         "|---|---|---|---|---|---|",
     ]
     by_name = {r.name: r for r in rows}
+    if headline is None:
+        headline = select_headline(by_name)
     headline_rows = [by_name[m] for m in headline if m in by_name]
 
     lines = [
-        f"## Compare: `{test_label}` vs `{base_label}`",
+        f"## Compare: `{pr_label}` vs `{main_label}`",
         "",
         f"Paired by seed where possible (paired t-test; Welch's otherwise). "
         f"Significance level: {alpha}.",
@@ -196,8 +228,8 @@ def render_compare_markdown(
 
 # ── Assertions ─────────────────────────────────────────────────────
 # e.g. "pr:val/thput > main:val/thput" — evaluated on group means. Sides:
-# pr:/test: = the commit under test, main:/base: = the baseline; a bare
-# number is a constant threshold. == and ~= mean approximately equal
+# pr: = the PR's commit, main: = the baseline (test:/base: kept as aliases);
+# a bare number is a constant threshold. == and ~= mean approximately equal
 # (|lhs - rhs| <= tolerance): exact float equality on run means would
 # never hold, so a tolerance is built in and overridable with a trailing
 # "+- 0.01" (or "+/- 0.01").
@@ -205,7 +237,7 @@ def render_compare_markdown(
 _ASSERT_RE = re.compile(
     r"^\s*(\S+)\s*(<=|>=|==|~=|<|>)\s*(\S+?)\s*(?:\+/?-\s*(\S+)\s*)?$"
 )
-_SIDE_ALIASES = {"pr": "test", "test": "test", "main": "base", "base": "base"}
+_SIDE_ALIASES = {"pr": "pr", "test": "pr", "main": "main", "base": "main"}
 _OPS = {
     "<": lambda a, b: a < b,
     ">": lambda a, b: a > b,
@@ -224,13 +256,13 @@ class AssertionResult:
 
 
 def _resolve_operand(token: str, means: dict[str, dict[str, float]]) -> tuple[float, str]:
-    """Returns (value, human label). `means` maps side ("test"/"base") to
+    """Returns (value, human label). `means` maps side ("pr"/"main") to
     {metric: mean}. Raises ValueError for unknown sides/metrics."""
     if ":" in token:
         side_raw, metric = token.split(":", 1)
         side = _SIDE_ALIASES.get(side_raw.lower())
         if side is None:
-            raise ValueError(f"unknown side '{side_raw}' (use pr:/test: or main:/base:)")
+            raise ValueError(f"unknown side '{side_raw}' (use pr: or main:)")
         if metric not in means[side]:
             raise ValueError(f"metric '{metric}' not found on the {side} side")
         return means[side][metric], f"{token}={means[side][metric]:.4g}"
@@ -239,8 +271,8 @@ def _resolve_operand(token: str, means: dict[str, dict[str, float]]) -> tuple[fl
 
 def evaluate_assertion(expression: str, rows: list[MetricRow]) -> AssertionResult:
     means = {
-        "test": {r.name: r.test_mean for r in rows},
-        "base": {r.name: r.base_mean for r in rows},
+        "pr": {r.name: r.pr_mean for r in rows},
+        "main": {r.name: r.main_mean for r in rows},
     }
     m = _ASSERT_RE.match(expression)
     if m is None:
@@ -282,14 +314,32 @@ def render_assertions_markdown(results: list[AssertionResult]) -> str:
 
 
 def _fetch_group(api, project_path: str, group: str) -> dict[int, dict[str, float]]:
-    """Fetch a W&B group's runs as {seed: flattened summary}."""
-    out: dict[int, dict[str, float]] = {}
+    """Fetch a W&B group's FINISHED runs as {seed: flattened summary}.
+
+    Two finished runs on one seed (a rerun into the same group) would
+    silently shadow each other in the dict, so the newest wins and the
+    collision is logged — a seed's numbers must never be a lottery over
+    which run iterated last.
+    """
+    newest_by_seed: dict[int, Any] = {}
     for run in api.runs(project_path, filters={"group": group}):
         seed = run.config.get("seed")
-        if seed is None:
+        if seed is None or run.state != "finished":
             continue
+        seed = int(seed)
+        prev = newest_by_seed.get(seed)
+        if prev is not None:
+            print(
+                f"warning: group {group} has multiple finished runs for seed "
+                f"{seed}; keeping the newest",
+                flush=True,
+            )
+        if prev is None or (run.created_at or "") > (prev.created_at or ""):
+            newest_by_seed[seed] = run
+    out: dict[int, dict[str, float]] = {}
+    for seed, run in newest_by_seed.items():
         summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
-        out[int(seed)] = flatten_summary(summary)
+        out[seed] = flatten_summary(summary)
     return out
 
 
@@ -298,34 +348,62 @@ def _project_path(api) -> str:
 
 
 def wait_for_groups(
-    base_group: str,
-    test_group: str,
+    main_group: str,
+    pr_group: str,
     expect_each: int,
     timeout_seconds: int,
     poll_seconds: int = 120,
+    pod_ids: Optional[list[str]] = None,
 ) -> None:
-    """Block until both W&B groups have `expect_each` finished runs (or the
-    timeout passes — the report is then built from whatever exists)."""
+    """Block until both W&B groups have `expect_each` finished runs.
+
+    Ends early when every launched pod is gone (pass `pod_ids`): a vanished
+    pod can never add a run, so whatever exists at that point is final — one
+    grace poll for W&B to settle, then report. Falls back to the timeout when
+    pods can't be checked.
+    """
     import wandb
 
     deadline = time.time() + timeout_seconds
+    pods_all_gone_since = None
     while time.time() < deadline:
         api = wandb.Api()  # fresh client: avoid cached run listings
         path = _project_path(api)
         counts = {}
-        for group in (base_group, test_group):
+        for group in (main_group, pr_group):
             runs = api.runs(path, filters={"group": group})
             counts[group] = sum(1 for r in runs if r.state == "finished")
         print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
         if all(c >= expect_each for c in counts.values()):
             return
+
+        if pod_ids:
+            try:
+                from ci import runpod_api
+
+                live = {p["id"] for p in runpod_api.list_ci_pods()}
+                alive = sorted(set(pod_ids) & live)
+            except Exception as e:
+                alive = None
+                print(f"could not check pod liveness: {e}", flush=True)
+            if alive == []:
+                if pods_all_gone_since is None:
+                    pods_all_gone_since = time.time()
+                    print("all launched pods are gone; one grace poll for W&B to settle", flush=True)
+                else:
+                    print("pods gone and counts settled; reporting what exists", flush=True)
+                    return
+            elif alive:
+                pods_all_gone_since = None
+                print(f"still waiting on pod(s): {alive}", flush=True)
+
         time.sleep(poll_seconds)
     print(f"wait_for_groups timed out after {timeout_seconds}s; reporting what exists")
 
 
 def compare_report(
-    base_group: str,
-    test_group: str,
+    main_group: str,
+    pr_group: str,
     assertions: Optional[list[str]] = None,
 ) -> tuple[str, bool]:
     """Markdown comparison of every metric across two W&B run groups.
@@ -337,16 +415,24 @@ def compare_report(
 
     api = wandb.Api()
     path = _project_path(api)
-    base = _fetch_group(api, path, base_group)
-    test = _fetch_group(api, path, test_group)
-    if not base or not test:
+    main = _fetch_group(api, path, main_group)
+    pr = _fetch_group(api, path, pr_group)
+    if not main or not pr:
         return (
-            f"No runs found for comparison: {base_group} has {len(base)} run(s), "
-            f"{test_group} has {len(test)} run(s).",
+            f"No runs found for comparison: {main_group} has {len(main)} run(s), "
+            f"{pr_group} has {len(pr)} run(s).",
             False,
         )
-    rows = compare_metric_rows(base, test)
-    md = render_compare_markdown(rows, base_label=base_group, test_label=test_group)
+    rows = compare_metric_rows(main, pr)
+    entity = api.default_entity
+    md = render_compare_markdown(rows, main_label=main_group, pr_label=pr_group)
+    if entity:
+        for group in (main_group, pr_group):
+            md = md.replace(
+                f"`{group}`",
+                f"[`{group}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{group})",
+                1,
+            )
     ok = True
     if assertions:
         results = [evaluate_assertion(a, rows) for a in assertions]
@@ -494,19 +580,25 @@ def run_summary_markdown(
     kind: str,
     sha7: str,
     summary_flat: dict[str, float],
-    headline: list[str] = HEADLINE_METRICS,
+    headline: Optional[list[str]] = None,
 ) -> str:
     """Summary comment for a single finished CI run."""
     icon = "&#x2705;" if state == "finished" else "&#x274C;"
     duration = summary_flat.get("_runtime")
+    import os
+
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    commit = f"[`{sha7}`](https://github.com/{repo}/commit/{sha7})" if repo else f"`{sha7}`"
     lines = [
         RUN_MARKER_TEMPLATE.format(run_id=run_id),
         f"## {icon} CI {kind} run `{name}` {state}",
         "",
-        f"Commit `{sha7}` &middot; [view on W&B]({url})"
+        f"Commit {commit} &middot; [view on W&B]({url})"
         + (f" &middot; {int(duration) // 60} min" if duration else ""),
         "",
     ]
+    if headline is None:
+        headline = select_headline(summary_flat)
     shown = [(m, summary_flat[m]) for m in headline if m in summary_flat]
     if shown:
         lines += ["| Metric | Value |", "|---|---|"]
@@ -572,6 +664,8 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
         tags = set(run.tags or [])
         if any(t.startswith("cmp:") for t in tags):
             continue
+        if not any(t.startswith("kind:") for t in tags):
+            continue  # pre-rework runs also carried ci + pr:<N> tags
         pr = next((t.removeprefix("pr:") for t in tags if t.startswith("pr:")), None)
         if pr is None or not pr.isdigit():
             continue
