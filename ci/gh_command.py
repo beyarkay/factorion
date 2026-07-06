@@ -150,7 +150,6 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
         elif run_id:
             line += f" &rarr; W&B run `{run_id}`"
         lines.append(line)
-    deadline = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(infos[0]["deadline"]))
     spec = {k: v for k, v in infos[0]["job"].items() if k != "extra_tags"}
     lines += [
         "",
@@ -159,8 +158,6 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
         "```json",
         json.dumps(spec, indent=2),
         "```",
-        f"Pods terminate themselves when done (EXIT trap + deadline timer at "
-        f"{deadline} + 6-hourly watchdog).",
     ]
     if footer:
         lines += ["", footer]
