@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
+import string
 import subprocess
 import time
 from typing import Optional
@@ -23,6 +25,7 @@ from ci.config import (
     compare_fanout,
     job_to_dict,
     pod_name,
+    pod_url,
 )
 from ci.config import REPO_URL as DEFAULT_REPO_URL
 
@@ -127,7 +130,21 @@ def launch(
     deadline = now + job.budget_seconds()
     name = pod_name(job.KIND, now, deadline, job.sha)
     spec = job_to_dict(job)
-    info = {"pod_id": None, "pod_name": name, "deadline": deadline, "job": spec}
+    # Mint the W&B run id here so the run URL is known (and linkable from the
+    # PR) before the pod boots. Travels as env, not in the job spec, so pods
+    # running older commits simply ignore it. Sweep agents mint their own ids.
+    wandb_run_id = (
+        "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
+        if job.KIND in ("sft", "ppo")
+        else None
+    )
+    info = {
+        "pod_id": None,
+        "pod_name": name,
+        "deadline": deadline,
+        "job": spec,
+        "wandb_run_id": wandb_run_id,
+    }
 
     env = {
         "RUNPOD_API_KEY": os.environ.get("RUNPOD_API_KEY", ""),
@@ -139,11 +156,15 @@ def launch(
         "FCI_DEADLINE": str(deadline),
         "FCI_WANDB_PROJECT": WANDB_PROJECT,
     }
+    if wandb_run_id:
+        env["FCI_WANDB_RUN_ID"] = wandb_run_id
 
     print(f"Job:      {spec}")
     print(f"Pod name: {name}")
+    if wandb_run_id:
+        print(f"W&B run:  {wandb_run_id} (URL live once the pod starts logging)")
     print(f"GPU:      {gpu_type} (with fallbacks)")
-    print(f"Deadline: {time.strftime('%Y-%m-%d %H:%M:%S %z', time.localtime(deadline))} "
+    print(f"Deadline: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(deadline))} "
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")
 
     if dry_run:
@@ -163,7 +184,7 @@ def launch(
     print(f"\nPod {pod_id} created. The job runs unattended and the pod")
     print("terminates itself when done. Track progress:")
     print(f"  W&B:    https://wandb.ai/ (project {WANDB_PROJECT}, tag sha:{job.sha[:7]})")
-    print(f"  RunPod: https://www.runpod.io/console/pods (container logs for {name})")
+    print(f"  RunPod: {pod_url(pod_id)} (container logs)")
     print(f"  CLI:    uv run python -m ci pods   |   uv run python -m ci kill {pod_id}")
 
     if not wait:
@@ -185,6 +206,7 @@ def launch_compare(
     algo: str,
     sha: str,
     base_sha: str,
+    nonce: str,
     seeds: int,
     num_samples: int,
     start_from: Optional[str],
@@ -199,6 +221,7 @@ def launch_compare(
         algo=algo,
         sha=sha,
         base_sha=base_sha,
+        nonce=nonce,
         seeds=seeds,
         num_samples=num_samples,
         start_from=start_from,

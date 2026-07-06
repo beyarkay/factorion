@@ -27,6 +27,10 @@ assert pr:sps == main:sps +- 100           # ~equal within a tolerance
 
 What comes back as PR comments:
 
+- reactions on your comment: **&#x1F440; instantly** (no eyes within ~30s
+  means GitHub dropped the event — repost) and **&#x1F44D; when the command
+  has run to completion** (for `compare`, that includes the report posting
+  and its assertions passing);
 - a **launch comment** immediately (pod ids, W&B links);
 - for `sft`/`ppo`: a **result comment** with headline metrics when the run
   finishes (posted by the reporter cron, so runs longer than GitHub's 6h job
@@ -35,7 +39,9 @@ What comes back as PR comments:
   the full table (100s of metrics, seed-paired t-tests, sorted by p-value)
   inside a `<details>` block — plus a `factorion-ci/compare` **commit
   status** that passes/fails your `assert` lines. Headline metrics are the
-  `HEADLINE_METRICS` list in `ci/report.py` — edit freely;
+  `HEADLINE_PATTERNS` regexes in `ci/report.py` (thput_eot overall + per
+  lesson, overall + per-head accuracies for SFT; eval/rollout/critic
+  headliners for PPO) — edit freely;
 - for sweeps: the ranked **sweep report** when the sweep drains its run_cap.
 
 For jobs not tied to a PR (e.g. a production SFT run from main), use the
@@ -60,11 +66,13 @@ the intended path.
 4. The pod **terminates itself** when the job ends, however it ends.
 
 A `compare` fans out into 2 × seeds pods — **one training run per pod**, so
-seeds never compete for CPU — grouped in W&B by role (`cmp-<sha7>-test` /
-`cmp-<sha7>-base`); the report is assembled from W&B afterwards.
+seeds never compete for CPU — grouped in W&B by side
+(`cmp-<sha7>-<algo>-<nonce>-pr` / `…-main`; the per-launch nonce keeps a
+rerun or a second compare at the same commit from polluting the groups);
+the report is assembled from W&B afterwards.
 
 W&B runs are tagged `ci`, `kind:<sft|ppo>`, `sha:<sha7>`, `pr:<num>` (and
-`cmp:<sha7>` + `cmp-role:<test|base>` for compare runs). Raw logs are in the
+`cmp:<sha7>` + `cmp-side:<pr|main>` for compare runs). Raw logs are in the
 RunPod console (the pod's container logs; the job also tees to
 `/workspace/job.log`).
 

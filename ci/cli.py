@@ -18,7 +18,9 @@ from ci.config import (
     SftJob,
     SweepJob,
     compare_group,
+    compare_nonce,
     parse_pod_name,
+    pod_url,
 )
 from ci.launch import create_sweep, launch, launch_compare, resolve_ref
 
@@ -139,10 +141,12 @@ def compare(
         dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)
+    nonce = compare_nonce()
     launch_compare(
         algo=algo,
         sha=sha,
         base_sha=resolve_ref(base_ref),
+        nonce=nonce,
         seeds=seeds,
         num_samples=num_samples,
         start_from=start_from,
@@ -151,9 +155,38 @@ def compare(
         dry_run=dry_run,
     )
     print(
-        f"\nRuns land in W&B groups {compare_group(sha, 'test')} / "
-        f"{compare_group(sha, 'base')}; on a PR, /ci compare posts the report."
+        f"\nRuns land in W&B groups {compare_group(sha, algo, nonce, 'pr')} / "
+        f"{compare_group(sha, algo, nonce, 'main')}; on a PR, /ci compare posts the report."
     )
+
+
+def pod_summary(pod: dict, now: Optional[float] = None) -> dict:
+    """One CI pod as display fields (shared by the CLI text and PR markdown)."""
+    from ci import runpod_api
+
+    now = time.time() if now is None else now
+    meta = parse_pod_name(pod.get("name") or "")
+    uptime = (pod.get("runtime") or {}).get("uptimeInSeconds") or 0
+    deadline = (
+        f"deadline in {runpod_api.format_uptime(meta.deadline - now)}"
+        if meta and meta.deadline > now
+        else "PAST DEADLINE"
+        if meta
+        else "no deadline (unparseable name)"
+    )
+    # desiredStatus says RUNNING even while the host is still pulling the
+    # image; only a live runtime means the container actually started.
+    booting = pod.get("desiredStatus") == "RUNNING" and not uptime
+    return {
+        "id": pod["id"],
+        "url": pod_url(pod["id"]),
+        "name": pod.get("name") or "?",
+        "status": "BOOTING (image pull)" if booting else pod.get("desiredStatus") or "?",
+        "gpu": pod.get("machine", {}).get("gpuDisplayName", "?"),
+        "uptime": runpod_api.format_uptime(uptime) if uptime else "-",
+        "cost_hr": pod.get("costPerHr", "?"),
+        "deadline": deadline,
+    }
 
 
 def pods() -> None:
@@ -164,22 +197,11 @@ def pods() -> None:
     if not ci_pods:
         print("No CI pods running.")
         return
-    now = time.time()
     for pod in ci_pods:
-        meta = parse_pod_name(pod.get("name") or "")
-        uptime = (pod.get("runtime") or {}).get("uptimeInSeconds") or 0
-        cost_hr = pod.get("costPerHr", "?")
-        gpu = pod.get("machine", {}).get("gpuDisplayName", "?")
-        deadline = (
-            f"deadline in {runpod_api.format_uptime(meta.deadline - now)}"
-            if meta and meta.deadline > now
-            else "PAST DEADLINE"
-            if meta
-            else "no deadline (unparseable name)"
-        )
+        s = pod_summary(pod)
         print(
-            f"{pod['id']}  {pod.get('name')}  [{pod.get('desiredStatus')}]  "
-            f"{gpu}  up {runpod_api.format_uptime(uptime)}  ${cost_hr}/hr  {deadline}"
+            f"{s['id']}  {s['name']}  [{s['status']}]  {s['gpu']}  "
+            f"up {s['uptime']}  ${s['cost_hr']}/hr  {s['deadline']}  {s['url']}"
         )
 
 
