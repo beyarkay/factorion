@@ -84,10 +84,10 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 
 
 # ── Time budgets ───────────────────────────────────────────────────
-# Calibration carried over from the old GH workflows: SFT streams ~1000
-# sample-epochs/sec, PPO ~200 env-steps/sec, both CPU-bound so the rates hold
-# across the GPU lineup. 1.5-2x safety margin so the watchdog never kills a
-# legitimate run, plus slack for pod boot + clone + rust build.
+# Calibration: SFT streams ~1000 sample-epochs/sec, PPO ~200 env-steps/sec,
+# both CPU-bound so the rates hold across the GPU lineup. 1.5-2x safety margin
+# so the watchdog never kills a legitimate run, plus slack for pod boot +
+# clone + rust build.
 SETUP_SLACK_SECONDS = 1800
 SWEEP_BUDGET_SECONDS = 8 * 3600  # sweeps run until run_cap (from the yaml)
 

@@ -1,8 +1,7 @@
 """Thin wrappers around the RunPod SDK: create / list / terminate / cost.
 
-Ported from the old scripts/ci/runpod_create.py + runpod_destroy.py, minus the
-SSH plumbing — pods are now fire-and-forget (the job command ships in the pod's
-docker args), so nothing here ever needs a shell on the pod.
+Pods are fire-and-forget — the job command ships in the pod's docker args —
+so nothing here ever needs a shell on the pod.
 
 Required env var: RUNPOD_API_KEY.
 """

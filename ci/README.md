@@ -2,7 +2,7 @@
 
 Everything CI lives in this directory. GPU training jobs run on
 **fire-and-forget RunPod pods** and log to W&B; **PR comments are the
-backbone of reporting** — no labels, no babysitting workflows, no 6-hour cap.
+backbone of reporting**.
 
 ## Triggering jobs: comment `/ci ...` on a PR
 
@@ -48,8 +48,8 @@ the intended path.
 ## How a job runs
 
 1. `ci/launch.py` resolves the commitish to a **pushed** SHA and creates a
-   pod whose docker command is a tiny bootstrap (shipped base64-encoded in an
-   env var — no scp, no ssh session).
+   pod whose docker command is a tiny bootstrap, shipped base64-encoded in an
+   env var (base64 sidesteps the quoting hazards of docker-args).
 2. The bootstrap clones the repo at that SHA and runs `ci/runner.sh`, which
    builds the Rust extension and hands off to `python -m ci.jobs`.
 3. `ci/jobs.py` decodes the job spec (`FCI_JOB_B64`) and runs the training
@@ -65,7 +65,8 @@ seeds never compete for CPU — grouped in W&B by role (`cmp-<sha7>-test` /
 
 W&B runs are tagged `ci`, `kind:<sft|ppo>`, `sha:<sha7>`, `pr:<num>` (and
 `cmp:<sha7>` + `cmp-role:<test|base>` for compare runs). Raw logs are in the
-RunPod console, or `ssh` to the pod and read `/workspace/job.log`.
+RunPod console (the pod's container logs; the job also tees to
+`/workspace/job.log`).
 
 ## Pods can't leak (three layers)
 
@@ -105,4 +106,4 @@ RunPod console, or `ssh` to the pod and read `/workspace/job.log`.
 - `launch.yml` — manual `workflow_dispatch` bridge to the same CLI.
 
 Secrets used: `RUNPOD_API_KEY`, `WANDB_API_KEY` (plus the automatic
-`GITHUB_TOKEN`). The old `RUNPOD_SSH_PRIVATE_KEY` secret is no longer needed.
+`GITHUB_TOKEN`).

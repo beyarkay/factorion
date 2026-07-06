@@ -1,9 +1,5 @@
 name: CI
 
-# Lint + tests only. GPU training jobs are NOT run from here — they're
-# launched onto self-terminating RunPod pods via `/ci ...` PR comments
-# (ci-command.yml) or the manual bridge (launch.yml). See ci/README.md.
-
 on:
   pull_request:
     branches: [main, master]

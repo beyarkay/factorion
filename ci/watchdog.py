@@ -5,7 +5,7 @@ works even for pods that never booted far enough to start the first two. Every
 CI pod encodes its creation time and kill-by deadline in its name (see
 ci/config.pod_name), so the decision needs nothing but `runpod.get_pods()`.
 
-Pods not named `fci-*` are never touched — manually created pods are safe.
+Pods not named `factorion-ci-*` are never touched — manually created pods are safe.
 
 Usage:
     python -m ci.watchdog [--dry-run]
@@ -32,11 +32,11 @@ def decide_terminations(
             continue
         meta = parse_pod_name(name)
         if meta is None:
-            # A renamed/foreign fci-* pod: fall back to observed uptime.
+            # A renamed CI pod with no parseable deadline: fall back to observed uptime.
             uptime = (pod.get("runtime") or {}).get("uptimeInSeconds") or 0
             if uptime > max_age_seconds:
                 to_kill.append(
-                    (pod, f"unparseable fci name, uptime {int(uptime)}s > {max_age_seconds}s")
+                    (pod, f"unparseable CI pod name, uptime {int(uptime)}s > {max_age_seconds}s")
                 )
         elif now > meta.deadline:
             to_kill.append((pod, f"past its deadline (epoch {meta.deadline})"))

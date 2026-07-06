@@ -1,8 +1,7 @@
 """Dependency-free statistical helpers for multi-seed run comparison.
 
 Paired t-test when both sides share the same seeds (removes between-seed
-variance, dramatically more power), Welch's t-test otherwise. Ported unchanged
-from the old scripts/ci/compare_runs.py.
+variance, dramatically more power), Welch's t-test otherwise.
 """
 
 from __future__ import annotations
