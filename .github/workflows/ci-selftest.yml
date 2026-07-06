@@ -60,12 +60,52 @@ jobs:
             ALIVE=$(python -m ci pods | grep -c "factorion-ci-" || true)
             echo "poll ${i}: ${ALIVE} CI pod(s) still alive"
             if [ "$ALIVE" = "0" ]; then
-              echo "All CI pods self-terminated. Selftest PASSED."
+              echo "All CI pods self-terminated."
               exit 0
             fi
           done
           echo "::error::CI pods still alive after 35 min — self-termination failed"
           exit 1
+
+      # Pods disappearing is necessary but not sufficient (a crashed bootstrap
+      # also terminates its pod): demand one finished W&B run per kind, and
+      # surface any boot-failure logs the pods uploaded before dying.
+      - name: Verify the runs actually trained (W&B)
+        run: |
+          sleep 60
+          python - << 'PY'
+          import os
+          import sys
+
+          import wandb
+
+          api = wandb.Api()
+          sha7 = os.environ["GITHUB_SHA"][:7]
+          path = f"{api.default_entity}/factorion"
+          runs = list(api.runs(path, filters={"tags": f"sha:{sha7}"}))
+          for run in runs:
+              print(run.id, run.name, run.state, sorted(run.tags))
+              if "boot-failure" in run.tags:
+                  try:
+                      run.file("boot.log").download(root="/tmp/bf", replace=True)
+                      print("---- boot.log (tail) ----")
+                      print(open("/tmp/bf/boot.log").read()[-8000:])
+                      print("-------------------------")
+                  except Exception as e:
+                      print(f"(could not fetch boot.log: {e})")
+          finished = {
+              kind: any(
+                  run.state == "finished" and f"kind:{kind}" in run.tags
+                  for run in runs
+              )
+              for kind in ("sft", "ppo")
+          }
+          print(f"finished runs by kind: {finished}")
+          if not all(finished.values()):
+              print("::error::missing a finished sft/ppo W&B run for this sha")
+              sys.exit(1)
+          print("Selftest PASSED.")
+          PY
 
       - name: Cleanup any leftover pods
         if: failure() || cancelled()
