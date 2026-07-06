@@ -158,6 +158,8 @@ HEADLINE_PATTERNS = [
     r"^critic/explained_variance$",
     r"^policy/entropy$",
     r"^perf/sps$",
+    # Speed tail for both kinds (SFT: train/val seconds; PPO: phase seconds).
+    r"^perf/",
 ]
 _HEADLINE_RES = [re.compile(p) for p in HEADLINE_PATTERNS]
 

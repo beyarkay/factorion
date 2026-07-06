@@ -19,6 +19,7 @@ from ci.config import (
     SweepJob,
     compare_group,
     parse_pod_name,
+    pod_url,
 )
 from ci.launch import create_sweep, launch, launch_compare, resolve_ref
 
@@ -179,7 +180,8 @@ def pods() -> None:
         )
         print(
             f"{pod['id']}  {pod.get('name')}  [{pod.get('desiredStatus')}]  "
-            f"{gpu}  up {runpod_api.format_uptime(uptime)}  ${cost_hr}/hr  {deadline}"
+            f"{gpu}  up {runpod_api.format_uptime(uptime)}  ${cost_hr}/hr  {deadline}  "
+            f"{pod_url(pod['id'])}"
         )
 
 

@@ -25,6 +25,7 @@ from ci.config import (
     compare_fanout,
     job_to_dict,
     pod_name,
+    pod_url,
 )
 from ci.config import REPO_URL as DEFAULT_REPO_URL
 
@@ -183,7 +184,7 @@ def launch(
     print(f"\nPod {pod_id} created. The job runs unattended and the pod")
     print("terminates itself when done. Track progress:")
     print(f"  W&B:    https://wandb.ai/ (project {WANDB_PROJECT}, tag sha:{job.sha[:7]})")
-    print(f"  RunPod: https://www.runpod.io/console/pods (container logs for {name})")
+    print(f"  RunPod: {pod_url(pod_id)} (container logs)")
     print(f"  CLI:    uv run python -m ci pods   |   uv run python -m ci kill {pod_id}")
 
     if not wait:

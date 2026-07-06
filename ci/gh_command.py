@@ -30,6 +30,7 @@ from ci.config import (
     PpoJob,
     SftJob,
     compare_group,
+    pod_url,
     ppo_budget_seconds,
     sft_budget_seconds,
 )
@@ -139,7 +140,7 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
     lines = [f"## &#x1F440; {title}", ""]
     entity = _wandb_entity() if any(i.get("wandb_run_id") for i in infos) else None
     for info in infos:
-        line = f"- pod `{info['pod_id']}` (`{info['pod_name']}`)"
+        line = f"- pod [`{info['pod_id']}`]({pod_url(info['pod_id'])}) (`{info['pod_name']}`)"
         run_id = info.get("wandb_run_id")
         if run_id and entity:
             line += (

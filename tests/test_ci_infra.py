@@ -394,6 +394,7 @@ class TestSelectHeadline:
             "val/tile_acc",
             "val/eot_acc",
             "val/eot_pos_recall",  # not an accuracy
+            "perf/train_seconds",
             "train/loss",
         ]
         got = select_headline(names)
@@ -405,6 +406,7 @@ class TestSelectHeadline:
             "val/acc",
             "val/eot_acc",
             "val/tile_acc",
+            "perf/train_seconds",
         ]
 
     def test_ppo_patterns(self):

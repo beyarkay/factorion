@@ -190,6 +190,11 @@ COMPARE_SEEDS_DEFAULT = 3
 COMPARE_NUM_SAMPLES_DEFAULT = 5_000_000  # hours, not days, per compare
 
 
+def pod_url(pod_id: str) -> str:
+    """RunPod console page for a pod (logs, metrics, terminate button)."""
+    return f"https://console.runpod.io/pods/{pod_id}"
+
+
 def compare_group(sha: str, role: str) -> str:
     """W&B group name for one side of a compare (role: 'test' | 'base')."""
     return f"cmp-{sha[:7]}-{role}"
