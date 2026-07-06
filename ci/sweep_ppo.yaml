@@ -4,15 +4,16 @@
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Focused sweep: vary ONLY --step-penalty over [0, 0.01]; every other
-# hyperparameter stays at its training_config.py default, which reproduces the
-# collapsed run y324x0d4 (lr 7e-4, ent 0.02041->0.0004576, kl 0.02, cw5,
-# layers 93/69/96) at the step_penalty=0 grid point. Finetunes from the SFT
-# base uju9n8ql (the base that collapsed) so this directly measures whether a
-# per-step length penalty rescues the EOT-head collapse (eot_rate 0.87 -> 0,
-# length -> 123 truncation, thput -> 0).
+# Focused sweep: vary --step-penalty over [0, 0.01] x 3 seeds (replicates to
+# see through RL variance); every other hyperparameter stays at its
+# training_config.py default, which reproduces the collapsed run y324x0d4
+# (lr 7e-4, ent 0.02041->0.0004576, kl 0.02, cw5, layers 93/69/96) at the
+# step_penalty=0 grid point. Finetunes from the SFT base uju9n8ql (the base
+# that collapsed) so this directly measures whether a per-step length penalty
+# rescues the EOT-head collapse (eot_rate 0.87 -> 0, length -> 123 truncation,
+# thput -> 0). 5 step_penalty values x 3 seeds = 15 runs.
 method: grid
-run_cap: 5
+run_cap: 15
 metric:
   name: "eval/thput_eot"
   goal: maximize
@@ -20,6 +21,9 @@ metric:
 parameters:
   step_penalty:
     values: [0.0, 0.0025, 0.005, 0.0075, 0.01]
+
+  seed:
+    values: [1, 2, 3]
 
 program: ppo.py
 
