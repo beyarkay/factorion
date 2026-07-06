@@ -1,0 +1,72 @@
+name: CI selftest (temporary)
+
+# TEMPORARY — delete before merging PR #253. Live-fire test of the ci/
+# launch path from this branch: push-triggered because workflow_dispatch and
+# issue_comment only fire for workflows on the default branch, while push
+# runs the branch's own copy (with secrets, since pushes to this repo are
+# collaborator-only). Launches one short SFT and one short PPO pod, then
+# polls until both self-terminate — proving the EXIT trap actually fires.
+
+on:
+  push:
+    branches: [claude/ci-infrastructure-rework-026jt1]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-selftest
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install CI dependencies
+        run: uv pip install --system tyro runpod wandb pyyaml requests
+
+      - name: Watchdog dry-run + pod listing
+        run: |
+          python -m ci watchdog --dry-run
+          python -m ci pods
+
+      - name: Launch short SFT run (200k samples, ~5 min)
+        run: python -m ci sft --ref "$GITHUB_REF_NAME" --num-samples 200000
+
+      - name: Launch short PPO run (100k steps, ~8 min)
+        run: python -m ci ppo --ref "$GITHUB_REF_NAME" --start-from j0s5y2mc --total-timesteps 100000
+
+      - name: Wait for both pods to self-terminate
+        run: |
+          for i in $(seq 1 70); do
+            sleep 30
+            ALIVE=$(python -m ci pods | grep -c "factorion-ci-" || true)
+            echo "poll ${i}: ${ALIVE} CI pod(s) still alive"
+            if [ "$ALIVE" = "0" ]; then
+              echo "All CI pods self-terminated. Selftest PASSED."
+              exit 0
+            fi
+          done
+          echo "::error::CI pods still alive after 35 min — self-termination failed"
+          exit 1
+
+      - name: Cleanup any leftover pods
+        if: failure() || cancelled()
+        run: python -m ci kill --all
