@@ -42,10 +42,11 @@ package = false
 
 [tool.ty.environment]
 # First-party modules imported flat by their siblings (tests do `import helpers`,
-# scripts/ci modules import each other, the mod server imports `blueprint`).
-# These dirs are on sys.path at runtime (pytest rootdir insertion / cwd), so
-# mirror them here for ty's module resolution.
-extra-paths = ["tests", "scripts", "scripts/ci", "factorion-mod/server"]
+# the mod server imports `blueprint`). These dirs are on sys.path at runtime
+# (pytest rootdir insertion / cwd), so mirror them here for ty's module
+# resolution. The ci/ package is imported from the repo root, so it needs no
+# extra path.
+extra-paths = ["tests", "scripts", "factorion-mod/server"]
 
 [tool.ruff]
 # Existing code has many pre-existing violations in the training script.

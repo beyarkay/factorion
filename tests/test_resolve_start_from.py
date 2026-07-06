@@ -4,7 +4,7 @@
 like 'j0s5y2mc'). `_resolve_start_from` picks the branch; `_resolve_wandb_checkpoint`
 (shared with scripts/factory_builder.py) does the artifact download. These cover
 both, so the "download the SFT checkpoint from a run id" contract documented on
-the flag (and relied on by scripts/ci/ppo_train.sh) stays wired up.
+the flag (and relied on by ci/jobs.py) stays wired up.
 """
 
 import os
