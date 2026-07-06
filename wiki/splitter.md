@@ -54,8 +54,8 @@ belts, curves, undergrounds, splitters, and sideloads (each sideload
 deposits onto a specific lane). Swapping lanes is only possible via a
 **pair of sideloads**.
 
-> **In Factorion:** modeled. A splitter is four lane nodes (two tiles × two
-> lanes); each pool fans out to the same lane of both outputs, so routing is
+> **In Factorion:** a splitter is four lane nodes (two tiles × two lanes);
+> each pool fans out to the same lane of both outputs, so routing is
 > per-lane independent and items never change lanes.
 
 ### Priority Settings

@@ -5,12 +5,12 @@ independently. This is one of the most important cross-cutting mechanics in
 the game — it touches belts, inserters, splitters, sideloading, and factory
 design patterns like "main bus".
 
-**Implemented in Factorion** (#65): the throughput engine models every
-belt-ish tile as two lane nodes in the flow graph — belts, underground
-belts, and each of a splitter's two tiles — with a 7.5 items/sec cap per
-lane, lane-preserving straight/curve/tunnel/splitter flow, sideloading onto
-the near-side lane, and the wiki inserter drop/pickup lane rules. This page
-documents the Factorio mechanics the engine mirrors.
+The throughput engine models every belt-ish tile as two lane nodes in the
+flow graph — belts, underground belts, and each of a splitter's two tiles —
+with a 7.5 items/sec cap per lane, lane-preserving straight/curve/tunnel/
+splitter flow, sideloading onto the near-side lane, and the inserter
+drop/pickup lane rules below. This page documents the Factorio mechanics
+the engine mirrors.
 
 ## Canonical specs
 
