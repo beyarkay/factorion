@@ -54,8 +54,9 @@ inserting into a belt and a second inserter extracting from the same belt
 downstream will not short-circuit — the extracting inserter sees the item on
 the lane it doesn't read first.
 
-> **Not yet in Factorion.** No lane distinction — inserters interact with the
-> belt as a single flow.
+> **In Factorion:** drops target the far lane (right lane when the belt is
+> parallel/anti-parallel); pickups greedily drain the near lane first
+> (left lane when in-line or curved), topping up from the other lane.
 
 ### Variants
 

@@ -103,7 +103,8 @@ def build_factory_graph(world_WHC):
     """Build a factory's connection graph as a networkx ``DiGraph``.
 
     The single indirection point for graph construction across the test
-    suite. Nodes are named ``f"{entity_name}\\n@{x},{y}"`` and edges follow
+    suite. Nodes are named ``f"{entity_char}@{x},{y}"`` (plus a ``:L``/``:R``
+    lane suffix for belt-ish lane nodes) and edges follow
     the engine's entity-connection rules. Delegates to the Rust engine via
     ``factorion.build_graph_nx`` (issue #178).
     """

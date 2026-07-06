@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::entities::{EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
-use crate::types::Item;
+use crate::types::{Item, Lane};
 
 /// Exponent for the factory score's power mean over per-sink deliveries.
 ///
@@ -86,8 +86,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .collect();
 
     if sources.is_empty() || sinks.is_empty() {
-        // No sources or no sinks → no throughput, but all nodes are unreachable
-        return (Vec::new(), graph.node_count());
+        // No sources or no sinks → no throughput, every entity is unreachable
+        return (
+            Vec::new(),
+            count_unreachable_entities(graph, &HashSet::new()),
+        );
     }
 
     // Find nodes reachable from sources (for determining processing order)
@@ -132,13 +135,21 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
 
         // If this node's output is already set (e.g., source), skip input computation
         if node_outputs[node_idx].is_empty() {
-            // Accumulate input from all predecessors' outputs
-            let mut accumulated_input: HashMap<Item, f64> = HashMap::new();
-            for &pred in &graph.predecessors[node_idx] {
-                for (&item, &flow_rate) in &node_outputs[pred] {
-                    *accumulated_input.entry(item).or_insert(0.0) += flow_rate;
-                }
-            }
+            // Accumulate input from all predecessors' outputs. Inserters
+            // fill their capacity lane-by-lane in priority order instead of
+            // summing everything.
+            let accumulated_input: HashMap<Item, f64> =
+                if matches!(entity_kind, Item::Inserter | Item::LongHandedInserter) {
+                    pickup_input(graph, node_idx, &node_outputs)
+                } else {
+                    let mut acc: HashMap<Item, f64> = HashMap::new();
+                    for &pred in &graph.predecessors[node_idx] {
+                        for (&item, &flow_rate) in &node_outputs[pred] {
+                            *acc.entry(item).or_insert(0.0) += flow_rate;
+                        }
+                    }
+                    acc
+                };
             node_inputs[node_idx] = accumulated_input.clone();
 
             // Compute output using stack-allocated enum dispatch (no heap allocation)
@@ -209,8 +220,8 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         });
     }
 
-    // 4. Count unreachable nodes
-    // unreachable = all_nodes - (can_reach_sink ∩ reachable_from_source)
+    // 4. Count unreachable ENTITIES (not nodes)
+    // on_path = can_reach_sink ∩ reachable_from_source.
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
     // source to sink, both will be in the intersection. If not, they're unreachable.
@@ -221,10 +232,80 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .copied()
         .collect();
 
-    let all_nodes: HashSet<usize> = (0..graph.node_count()).collect();
-    let unreachable = all_nodes.difference(&on_path).count();
+    (deliveries, count_unreachable_entities(graph, &on_path))
+}
 
-    (deliveries, unreachable)
+/// Count entity units with NO node on a source→sink path. Since dual lanes,
+/// nodes are not 1:1 with entities — a belt tile owns two lane nodes and a
+/// splitter four — and plenty of legitimate layouts leave a lane forever
+/// empty (an inserter only ever fills one lane of the belt it drops on), so
+/// unreachability is an entity-level judgment: an entity is an orphan iff
+/// none of its nodes lie on a path. Grouping is by the entity's anchor tile.
+fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) -> usize {
+    let mut unit_on_path: HashMap<(usize, usize), bool> = HashMap::new();
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        let hit = unit_on_path.entry(node.anchor).or_insert(false);
+        *hit |= on_path.contains(&idx);
+    }
+    unit_on_path.values().filter(|&&hit| !hit).count()
+}
+
+/// An inserter's accumulated input: greedily fill its capacity (0.86 i/s)
+/// from its predecessors in lane-priority order, per the wiki pickup rules.
+/// When picking from a belt perpendicular to the inserter, the NEAR lane is
+/// preferred (the lane on the inserter's side — `Lane::on_side` of the
+/// belt's facing and the belt→inserter direction, which is the inserter's
+/// own facing); from a parallel/anti-parallel belt or a curve, the belt's
+/// LEFT lane. The other lane only tops up whatever capacity remains — this
+/// is the steady-state reading of "takes from the far lane if the near lane
+/// is empty", and it decides which ITEM wins the inserter when the two
+/// lanes carry different items. Items within one predecessor drain in id
+/// order for determinism (HashMap iteration order is not).
+fn pickup_input(
+    graph: &FactoryGraph,
+    node_idx: usize,
+    node_outputs: &[HashMap<Item, f64>],
+) -> HashMap<Item, f64> {
+    let ins_dir = graph.nodes[node_idx].direction;
+    let mut preds = graph.predecessors[node_idx].clone();
+    preds.sort_by_key(|&p| {
+        let pn = &graph.nodes[p];
+        match pn.id.lane {
+            Some(lane) => {
+                let preferred = if pn.curved {
+                    Lane::Left
+                } else {
+                    Lane::on_side(pn.direction, ins_dir).unwrap_or(Lane::Left)
+                };
+                usize::from(lane != preferred)
+            }
+            // Lane-less predecessors (assembler/source) can't co-occur with
+            // lane nodes — an inserter picks from a single tile — but order
+            // them last for form.
+            None => 2,
+        }
+    });
+
+    let mut remaining = graph.nodes[node_idx].entity_kind.flow_rate();
+    let mut input: HashMap<Item, f64> = HashMap::new();
+    for p in preds {
+        if remaining <= 0.0 {
+            break;
+        }
+        let mut items: Vec<(Item, f64)> = node_outputs[p].iter().map(|(&i, &r)| (i, r)).collect();
+        items.sort_by_key(|&(i, _)| i as i64);
+        for (item, rate) in items {
+            if remaining <= 0.0 {
+                break;
+            }
+            let take = rate.min(remaining);
+            if take > 0.0 {
+                *input.entry(item).or_insert(0.0) += take;
+                remaining -= take;
+            }
+        }
+    }
+    input
 }
 
 /// Check if the graph has any cycles using DFS.
@@ -377,27 +458,33 @@ mod tests {
         let mut g = FactoryGraph {
             nodes: vec![
                 crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 0, 0),
+                    id: NodeId::new(Item::TransportBelt, 0, 0, None),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
+                    anchor: (0, 0),
+                    direction: Direction::East,
+                    curved: false,
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
                 crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 1, 0),
+                    id: NodeId::new(Item::TransportBelt, 1, 0, None),
                     entity_kind: Item::TransportBelt,
                     item: None,
                     misc: Misc::None,
                     recipe_item: None,
+                    anchor: (1, 0),
+                    direction: Direction::East,
+                    curved: false,
                     input: HashMap::new(),
                     output: HashMap::new(),
                 },
             ],
             node_index: HashMap::from([
-                (NodeId::new(Item::TransportBelt, 0, 0), 0),
-                (NodeId::new(Item::TransportBelt, 1, 0), 1),
+                (NodeId::new(Item::TransportBelt, 0, 0, None), 0),
+                (NodeId::new(Item::TransportBelt, 1, 0, None), 1),
             ]),
             successors: vec![vec![1], vec![0]], // 0→1→0 cycle
             predecessors: vec![vec![1], vec![0]],
@@ -596,6 +683,91 @@ mod tests {
             output
         );
         assert_eq!(unreachable, 0);
+    }
+
+    /// Two-item belt for the pickup-priority tests: iron sideloaded onto the
+    /// LEFT lane (from the north), copper onto the RIGHT lane (from the
+    /// south) of an east-running belt at (1,1)→(2,1).
+    fn make_two_lane_belt_world(w_extra: impl FnOnce(&mut World)) -> World {
+        let mut w = World::empty(5, 4);
+        w.place(1, 0, Item::Source, Direction::South, Some(Item::IronPlate));
+        w.place(
+            1,
+            2,
+            Item::Source,
+            Direction::North,
+            Some(Item::CopperPlate),
+        );
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place(2, 1, Item::TransportBelt, Direction::East, None);
+        w_extra(&mut w);
+        w
+    }
+
+    #[test]
+    fn test_pickup_prefers_left_lane_from_parallel_belt() {
+        // In-line inserter at (3,1): the belt runs parallel, so it prefers
+        // the LEFT lane (iron) and its 0.86 capacity is spent entirely on
+        // iron — no copper gets through.
+        for (sink_item, want) in [(Item::IronPlate, 0.86), (Item::CopperPlate, 0.0)] {
+            let w = make_two_lane_belt_world(|w| {
+                w.place(3, 1, Item::Inserter, Direction::East, None);
+                w.place(4, 1, Item::Sink, Direction::East, Some(sink_item));
+            });
+            let g = build_graph(&w);
+            let (output, _) = calc_throughput(&g);
+            assert_eq!(output.len(), 1);
+            assert!(
+                (output[0].achieved - want).abs() < 1e-9,
+                "sink {sink_item:?}: expected {want}, got {:?}",
+                output
+            );
+        }
+    }
+
+    #[test]
+    fn test_pickup_prefers_near_lane_from_perpendicular_belt() {
+        // Perpendicular inserter at (2,2), south of the belt: the near lane
+        // is the belt's south side — its RIGHT lane, carrying copper.
+        for (sink_item, want) in [(Item::CopperPlate, 0.86), (Item::IronPlate, 0.0)] {
+            let w = make_two_lane_belt_world(|w| {
+                w.place(2, 2, Item::Inserter, Direction::South, None);
+                w.place(2, 3, Item::Sink, Direction::South, Some(sink_item));
+            });
+            let g = build_graph(&w);
+            let (output, _) = calc_throughput(&g);
+            assert_eq!(output.len(), 1);
+            assert!(
+                (output[0].achieved - want).abs() < 1e-9,
+                "sink {sink_item:?}: expected {want}, got {:?}",
+                output
+            );
+        }
+    }
+
+    #[test]
+    fn test_pickup_falls_back_to_other_lane() {
+        // Only the non-preferred lane carries items (iron on the LEFT lane,
+        // perpendicular pickup from the south prefers the empty RIGHT lane):
+        // the inserter tops up from the far lane and still moves 0.86.
+        let mut w = World::empty(5, 4);
+        w.place(1, 0, Item::Source, Direction::South, Some(Item::IronPlate));
+        // A bare belt stub behind (1,1) keeps it straight (two feeders → the
+        // side source sideloads onto the LEFT lane instead of curving).
+        w.place(0, 1, Item::TransportBelt, Direction::East, None);
+        w.place(1, 1, Item::TransportBelt, Direction::East, None);
+        w.place(2, 1, Item::TransportBelt, Direction::East, None);
+        w.place(2, 2, Item::Inserter, Direction::South, None);
+        w.place(2, 3, Item::Sink, Direction::South, Some(Item::IronPlate));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert_eq!(output.len(), 1);
+        assert!(
+            (output[0].achieved - 0.86).abs() < 1e-9,
+            "expected fallback pickup of 0.86, got {:?}",
+            output
+        );
     }
 
     #[test]

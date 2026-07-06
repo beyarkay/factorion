@@ -45,9 +45,9 @@ facing direction), and the two are **completely independent**:
   reaches to the far lane if the near one is empty. For belts parallel to the
   inserter, "nearest" resolves to the left lane from the belt's perspective.
 
-> **Not yet in Factorion:** The two-lane system is not modeled. Belts are
-> treated as single-lane pipes. If lanes are added later, sideloading and
-> inserter lane targeting would also need to be implemented.
+> **In Factorion:** each belt tile is two lane nodes (7.5 items/sec each)
+> in the flow graph; sideloading and inserter lane targeting behave as
+> described here.
 
 ### Curves & Placement
 
@@ -60,7 +60,9 @@ facing direction), and the two are **completely independent**:
   throughput.
 - Items do not fall off the end of a belt; they stop and wait
 
-> **Not yet in Factorion:** Belt curving and curve geometry are not modeled.
+> **In Factorion:** a belt whose only belt-connectable input is a single
+> perpendicular feed is a curve and preserves lanes. The outer-lane length
+> difference (a density effect, not a rate effect) is not modeled.
 
 ### Sideloading
 
@@ -80,7 +82,12 @@ Sideloading also has travel-distance mechanics (late sideloads travel 68
 internal positions, early sideloads travel 188) that affect how a sideloading
 junction behaves under load.
 
-> **Not yet in Factorion:** Sideloading is not modeled (requires lanes).
+> **In Factorion:** a side feed onto a belt with another input pools both
+> feeder lanes onto the near-side lane (7.5 items/sec cap). Side feeds onto
+> underground-belt tiles connect only the feeder lane over the tile's
+> surface half (aft half of an entrance, fore half of an exit) — the other
+> feeder lane is blocked by the ramp. The internal-position travel-distance
+> mechanics are not modeled.
 
 ### Tiers
 
@@ -119,9 +126,9 @@ entities initiate their own connections.
 
 | Mechanic | Real Factorio | Factorion |
 |---|---|---|
-| Lanes | Two independent lanes | Single-lane pipe |
-| Curves | Affect throughput | No curve modeling |
-| Sideloading | Merges onto one lane | Not modeled |
+| Lanes | Two independent lanes | Two lane nodes per tile (7.5 items/s each) |
+| Curves | Affect throughput | Lane-preserving; length difference ignored |
+| Sideloading | Merges onto one lane | Merges onto the near-side lane |
 | Item tracking | Discrete items on belt | Graph-based flow analysis |
 | Tiers | 3 tiers (15/30/45 items/s) | Single tier (15 items/s) |
 

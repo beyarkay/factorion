@@ -47,7 +47,10 @@ not reduce throughput.
 Underground belts preserve the [[glossary#lane]] system — items on the left
 lane stay on the left lane through the underground segment.
 
-> **Not yet in Factorion.** Lanes aren't modeled, so this doesn't apply.
+> **In Factorion:** the tunnel emits Left→Left / Right→Right edges. UG
+> mouths never curve, so a perpendicular feed always sideloads — and since
+> only half the tile is at surface level (the aft half of an entrance, the
+> fore half of an exit), only the feeder lane over that half connects.
 
 ## Factorion Implementation
 

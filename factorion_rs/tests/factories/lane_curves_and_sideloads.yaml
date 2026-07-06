@@ -1,0 +1,109 @@
+description: |
+  Lone corner: the south-belt's ONLY input is the perpendicular east-belt,
+  so it is a CURVE — lanes are preserved around the bend (left stays left)
+  and the full 15 i/s flows through.
+items:
+- { x: 0, y: 0, item: copper_cable }   # source
+- { x: 2, y: 1, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 15 }
+graph: |
+  S@0,0 -> b@1,0:L
+  S@0,0 -> b@1,0:R
+  b@1,0:L -> b@2,0:L
+  b@1,0:R -> b@2,0:R
+  b@2,0:L -> K@2,1
+  b@2,0:R -> K@2,1
+factory: |
+  S> b> bv
+  .. .. Kv
+---
+description: |
+  Sideload: the south-belt at (1,1) has an input from behind (the belt above
+  it), so the perpendicular source feed from the west is a SIDELOAD — all of
+  it lands on the near-side (west = right, for a south-facing belt) lane
+  only, capping the side feed at the per-lane 7.5 i/s. The behind-belt
+  carries nothing, so 7.5 is all the sink sees.
+items:
+- { x: 0, y: 1, item: copper_cable }   # side source
+- { x: 1, y: 2, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 7.5 }
+graph: |
+  b@1,0:L -> b@1,1:L
+  b@1,0:R -> b@1,1:R
+  S@0,1 -> b@1,1:R
+  b@1,1:L -> K@1,2
+  b@1,1:R -> K@1,2
+factory: |
+  .. bv ..
+  S> bv ..
+  .. Kv ..
+---
+description: |
+  Two-side fill: two perpendicular sources sideload onto opposite sides of
+  one south-facing belt (two side feeds means no curve — both sideload).
+  Each fills its near lane at 7.5, saturating the belt at the full 15 i/s.
+items:
+- { x: 0, y: 0, item: copper_cable }   # west source
+- { x: 2, y: 0, item: copper_cable }   # east source
+- { x: 1, y: 1, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 15 }
+graph: |
+  S@0,0 -> b@1,0:R
+  S@2,0 -> b@1,0:L
+  b@1,0:L -> K@1,1
+  b@1,0:R -> K@1,1
+factory: |
+  S> bv S<
+  .. Kv ..
+---
+description: |
+  Belt side-feeding a UG ENTRANCE. A UG mouth never curves, so this is a
+  sideload — and only the aft (north) half of the south-descending entrance
+  is still at surface level, so just the feeder's left lane connects (its
+  right lane is blocked by the ramp): one edge onto the entrance's near
+  (right) lane, 7.5 max. The tunnel then preserves lanes to the exit.
+items:
+- { x: 0, y: 0, item: copper_cable }   # source
+- { x: 2, y: 3, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 7.5 }
+graph: |
+  S@0,0 -> b@1,0:L
+  S@0,0 -> b@1,0:R
+  b@1,0:L -> d@2,0:R
+  d@2,0:L -> u@2,2:L
+  d@2,0:R -> u@2,2:R
+  u@2,2:L -> K@2,3
+  u@2,2:R -> K@2,3
+factory: |
+  S> b> dv
+  .. .. ..
+  .. .. uv
+  .. .. Kv
+---
+description: |
+  Belt side-feeding a UG EXIT (the mirror case): the exit rises toward its
+  facing, so its surface half is the fore (south) half — only the feeder's
+  right lane connects, onto the exit's near (right) lane. The tunnel above
+  it has no source, so the sideloaded 7.5 is all the sink sees.
+items:
+- { x: 0, y: 2, item: copper_cable }   # side source
+- { x: 2, y: 3, item: copper_cable }   # sink
+throughput:
+- { item: copper_cable, per_second: 7.5 }
+graph: |
+  S@0,2 -> b@1,2:L
+  S@0,2 -> b@1,2:R
+  b@1,2:R -> u@2,2:R
+  d@2,0:L -> u@2,2:L
+  d@2,0:R -> u@2,2:R
+  u@2,2:L -> K@2,3
+  u@2,2:R -> K@2,3
+factory: |
+  .. .. dv
+  .. .. ..
+  S> b> uv
+  .. .. Kv

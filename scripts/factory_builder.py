@@ -296,10 +296,7 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     except Exception as e:
         info = f"throughput failed: {e}"
 
-    # Node names contain literal '\n' (e.g. "transport_belt\n@0,0"), so use
-    # repr() to make embedded newlines visible as \n in the edge list panel
-    # instead of breaking the line mid-name.
-    edges = [[repr(u), repr(v)] for u, v in G.edges]
+    edges = [[u, v] for u, v in G.edges]
     return {"png": png_b64, "info": info, "edges": edges}
 
 

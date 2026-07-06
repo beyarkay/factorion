@@ -62,6 +62,62 @@ impl Direction {
             Direction::None => Direction::None,
         }
     }
+
+    /// The absolute direction of the LEFT side of an entity facing `self`
+    /// (90° counter-clockwise): a north-facing belt's left lane sits on its
+    /// west side. (Orientation-relative sides are named left/right/fore/aft
+    /// throughout the codebase.)
+    pub fn left_side(self) -> Self {
+        match self {
+            Direction::North => Direction::West,
+            Direction::West => Direction::South,
+            Direction::South => Direction::East,
+            Direction::East => Direction::North,
+            Direction::None => Direction::None,
+        }
+    }
+
+    /// The absolute direction of the RIGHT side of an entity facing `self`
+    /// (90° clockwise).
+    pub fn right_side(self) -> Self {
+        self.left_side().opposite()
+    }
+}
+
+/// One of the two lanes of a belt-ish tile, named relative to the tile's
+/// facing direction (a north-facing belt's `Left` lane is its west half).
+/// Belt-ish entities (transport belt, underground belt, each splitter tile)
+/// get one graph node per lane; everything else is lane-less (`None` in
+/// [`NodeId::lane`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
+pub enum Lane {
+    Left,
+    Right,
+}
+
+impl Lane {
+    /// Which lane of a tile facing `dir` sits on the absolute side `side`.
+    /// `None` when `side` is fore/aft rather than a flank.
+    pub fn on_side(dir: Direction, side: Direction) -> Option<Self> {
+        if side == dir.left_side() {
+            Some(Lane::Left)
+        } else if side == dir.right_side() {
+            Some(Lane::Right)
+        } else {
+            None
+        }
+    }
+
+    /// The `:L` / `:R` suffix this lane contributes to a node reference —
+    /// the single formatting point shared by [`NodeId::label`] and the
+    /// textual fixture format.
+    pub fn suffix(lane: Option<Lane>) -> &'static str {
+        match lane {
+            None => "",
+            Some(Lane::Left) => ":L",
+            Some(Lane::Right) => ":R",
+        }
+    }
 }
 
 /// Underground belt state flag.
@@ -369,8 +425,22 @@ impl Item {
         )
     }
 
-    /// Maximum items/second this item can transfer when placed as an
-    /// entity. Returns 0.0 for non-placeable items.
+    /// Whether this entity's tiles carry two independent belt lanes.
+    /// Lane-aware entities get one graph node per (tile, lane) pair —
+    /// including EACH tile of a splitter (a splitter is a left belt and a
+    /// right belt side by side, so it owns four lane nodes in total).
+    /// Everything else (inserters, assemblers, sources, sinks) is a single
+    /// lane-less node.
+    pub fn is_lane_aware(self) -> bool {
+        matches!(
+            self,
+            Item::TransportBelt | Item::UndergroundBelt | Item::Splitter
+        )
+    }
+
+    /// Maximum items/second one TILE of this item can transfer when placed
+    /// as an entity (lane-aware entities cap each lane node at half this).
+    /// Returns 0.0 for non-placeable items.
     #[allow(dead_code)]
     pub fn flow_rate(self) -> f64 {
         match self {
@@ -384,7 +454,9 @@ impl Item {
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
-            Item::Splitter => 30.0, // 2 lanes × 15 i/s
+            // Per constituent belt: a splitter is two belts side by side,
+            // each a full 15 i/s tile (4 lane pools × 7.5 = 30 total).
+            Item::Splitter => 15.0,
             // Non-placeable: cannot transfer flow on its own.
             Item::CopperCable
             | Item::CopperPlate
@@ -1168,24 +1240,47 @@ pub fn get_recipe(item: Item) -> Option<Recipe> {
 }
 
 /// Unique identifier for a node in the factory graph.
-/// Its [`label`](NodeId::label) renders as `"entity_name\n@x,y"`.
+///
+/// Its [`label`](NodeId::label) renders in the ONE canonical node-reference
+/// format used everywhere — engine labels, the Python graph API, and the
+/// textual fixture `graph:` blocks alike:
+/// `"{entity_char}@{x},{y}"` plus a `:L`/`:R` suffix for lane nodes, e.g.
+/// `b@3,4:L`, `i@0,1`, `S@0,0` (chars per the grid registry,
+/// [`crate::render::ENTITY_CHARS`]).
 ///
 /// `entity_kind` is an `Item` (post-unification) and should always be
-/// placeable — only placeable items become graph nodes.
+/// placeable — only placeable items become graph nodes. Belt-ish entities
+/// carry `Some(lane)` (one node per lane per tile); all other entities are
+/// lane-less (`None`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
     pub entity_kind: Item,
     pub x: usize,
     pub y: usize,
+    pub lane: Option<Lane>,
 }
 
 impl NodeId {
-    pub fn new(entity_kind: Item, x: usize, y: usize) -> Self {
-        Self { entity_kind, x, y }
+    pub fn new(entity_kind: Item, x: usize, y: usize, lane: Option<Lane>) -> Self {
+        Self {
+            entity_kind,
+            x,
+            y,
+            lane,
+        }
     }
 
-    pub fn label(&self) -> String {
-        format!("{}\n@{},{}", self.entity_kind.name(), self.x, self.y)
+    /// Canonical node reference (`b@x,y:L`, `i@0,1`, …). `misc` picks the
+    /// right underground char when the caller knows it (`u` for exits vs
+    /// the kind-generic fallback); pass `Misc::None` otherwise.
+    pub fn label(&self, misc: Misc) -> String {
+        format!(
+            "{}@{},{}{}",
+            crate::render::render_char(self.entity_kind, misc),
+            self.x,
+            self.y,
+            Lane::suffix(self.lane)
+        )
     }
 }
 
@@ -1219,6 +1314,60 @@ mod tests {
         assert_eq!(Direction::South.opposite(), Direction::North);
         assert_eq!(Direction::East.opposite(), Direction::West);
         assert_eq!(Direction::West.opposite(), Direction::East);
+    }
+
+    #[test]
+    fn test_direction_sides() {
+        // Facing north (up the grid, -y), your left hand points west.
+        assert_eq!(Direction::North.left_side(), Direction::West);
+        assert_eq!(Direction::East.left_side(), Direction::North);
+        assert_eq!(Direction::South.left_side(), Direction::East);
+        assert_eq!(Direction::West.left_side(), Direction::South);
+        assert_eq!(Direction::None.left_side(), Direction::None);
+        for d in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            assert_eq!(d.right_side(), d.left_side().opposite(), "{d:?}");
+            // Sides are flanks: never ahead or behind.
+            assert_ne!(d.left_side(), d, "{d:?}");
+            assert_ne!(d.left_side(), d.opposite(), "{d:?}");
+        }
+    }
+
+    #[test]
+    fn test_lane_side_roundtrip() {
+        for dir in [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ] {
+            // The left flank maps to the Left lane, the right flank to the
+            // Right lane, and fore/aft are not lane sides.
+            assert_eq!(Lane::on_side(dir, dir.left_side()), Some(Lane::Left));
+            assert_eq!(Lane::on_side(dir, dir.right_side()), Some(Lane::Right));
+            assert_eq!(Lane::on_side(dir, dir), None);
+            assert_eq!(Lane::on_side(dir, dir.opposite()), None);
+        }
+    }
+
+    #[test]
+    fn test_node_id_label_lane_suffix() {
+        assert_eq!(
+            NodeId::new(Item::TransportBelt, 3, 4, None).label(Misc::None),
+            "b@3,4"
+        );
+        assert_eq!(
+            NodeId::new(Item::TransportBelt, 3, 4, Some(Lane::Left)).label(Misc::None),
+            "b@3,4:L"
+        );
+        assert_eq!(
+            NodeId::new(Item::Splitter, 0, 1, Some(Lane::Right)).label(Misc::None),
+            "Y@0,1:R"
+        );
     }
 
     #[test]
@@ -1261,6 +1410,8 @@ mod tests {
         assert_eq!(Item::LongHandedInserter.flow_rate(), 0.86);
         assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
         assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
+        // Per splitter tile — each of its two tiles is a belt.
+        assert_eq!(Item::Splitter.flow_rate(), 15.0);
         assert!(Item::Sink.flow_rate().is_infinite());
         assert!(Item::Source.flow_rate().is_infinite());
         assert_eq!(Item::CopperCable.flow_rate(), 0.0);
@@ -1408,7 +1559,7 @@ mod tests {
 
     #[test]
     fn test_node_id_label() {
-        let id = NodeId::new(Item::TransportBelt, 3, 5);
-        assert_eq!(id.label(), "transport_belt\n@3,5");
+        let id = NodeId::new(Item::TransportBelt, 3, 5, None);
+        assert_eq!(id.label(Misc::None), "b@3,5");
     }
 }
