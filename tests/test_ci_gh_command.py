@@ -83,7 +83,7 @@ class TestSftDispatch:
         run_id = pod["env"]["FCI_WANDB_RUN_ID"]
         assert len(run_id) == 8
         assert f"https://wandb.ai/testent/factorion/runs/{run_id}" in body
-        assert "https://console.runpod.io/pods/pod-1" in body
+        assert "https://console.runpod.io/pods?id=pod-1" in body
         # Every CI comment links back to the /ci comment that triggered it.
         assert "Originally triggered by" in body
         assert "#issuecomment-999" in body

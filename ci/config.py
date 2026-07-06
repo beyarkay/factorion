@@ -213,7 +213,7 @@ COMPARE_NUM_SAMPLES_DEFAULT = 5_000_000  # hours, not days, per compare
 
 def pod_url(pod_id: str) -> str:
     """RunPod console page for a pod (logs, metrics, terminate button)."""
-    return f"https://console.runpod.io/pods/{pod_id}"
+    return f"https://console.runpod.io/pods?id={pod_id}"
 
 
 def compare_nonce() -> str:
