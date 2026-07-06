@@ -80,9 +80,11 @@ assert pr:val/thput > main:val/thput
 assert pr:val/acc >= 0.5
 ```
 
-(`pr:`/`test:` = this branch, `main:`/`base:` = the baseline; bare numbers are
-thresholds. Comparators: < > <= >= on group means; a missing metric or
-unparseable line fails the check.)
+(`pr:`/`test:` = this branch, `main:`/`base:` = the baseline; bare numbers
+are thresholds. Comparators on group means: `<` `>` `<=` `>=`, plus `==` /
+`~=` meaning approximately equal — |lhs − rhs| <= 1e-3 by default, or append
+a tolerance like `assert pr:val/acc == main:val/acc +- 0.01`. A missing
+metric or unparseable line fails the check.)
 
 ### Sweeps
 

@@ -197,9 +197,14 @@ def render_compare_markdown(
 # ── Assertions ─────────────────────────────────────────────────────
 # e.g. "pr:val/thput > main:val/thput" — evaluated on group means. Sides:
 # pr:/test: = the commit under test, main:/base: = the baseline; a bare
-# number is a constant threshold.
+# number is a constant threshold. == and ~= mean approximately equal
+# (|lhs - rhs| <= tolerance): exact float equality on run means would
+# never hold, so a tolerance is built in and overridable with a trailing
+# "+- 0.01" (or "+/- 0.01").
 
-_ASSERT_RE = re.compile(r"^\s*(\S+)\s*(<=|>=|<|>)\s*(\S+)\s*$")
+_ASSERT_RE = re.compile(
+    r"^\s*(\S+)\s*(<=|>=|==|~=|<|>)\s*(\S+?)\s*(?:\+/?-\s*(\S+)\s*)?$"
+)
 _SIDE_ALIASES = {"pr": "test", "test": "test", "main": "base", "base": "base"}
 _OPS = {
     "<": lambda a, b: a < b,
@@ -207,6 +212,8 @@ _OPS = {
     "<=": lambda a, b: a <= b,
     ">=": lambda a, b: a >= b,
 }
+_APPROX_OPS = ("==", "~=")
+APPROX_TOLERANCE_DEFAULT = 1e-3
 
 
 @dataclass
@@ -237,13 +244,28 @@ def evaluate_assertion(expression: str, rows: list[MetricRow]) -> AssertionResul
     }
     m = _ASSERT_RE.match(expression)
     if m is None:
-        return AssertionResult(expression, False, "could not parse (want: LHS <op> RHS)")
-    lhs_tok, op, rhs_tok = m.groups()
+        return AssertionResult(
+            expression, False, "could not parse (want: LHS <op> RHS [+- TOL])"
+        )
+    lhs_tok, op, rhs_tok, tol_tok = m.groups()
+    if tol_tok is not None and op not in _APPROX_OPS:
+        return AssertionResult(
+            expression, False, f"a '+- tolerance' only applies to == / ~=, not {op}"
+        )
     try:
         lhs, lhs_label = _resolve_operand(lhs_tok, means)
         rhs, rhs_label = _resolve_operand(rhs_tok, means)
+        tolerance = float(tol_tok) if tol_tok is not None else APPROX_TOLERANCE_DEFAULT
     except ValueError as e:
         return AssertionResult(expression, False, str(e))
+    if op in _APPROX_OPS:
+        diff = abs(lhs - rhs)
+        passed = diff <= tolerance
+        return AssertionResult(
+            expression,
+            passed,
+            f"{lhs_label} {op} {rhs_label}: |Δ| = {diff:.4g} vs tolerance {tolerance:g}",
+        )
     passed = _OPS[op](lhs, rhs)
     return AssertionResult(expression, passed, f"{lhs_label} {op} {rhs_label}")
 

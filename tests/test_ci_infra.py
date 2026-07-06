@@ -260,6 +260,27 @@ class TestAssertions:
         r = evaluate_assertion("gibberish", _rows_for_assertions())
         assert not r.passed
 
+    def test_approx_equal_within_default_tolerance(self):
+        rows = [MetricRow("m", 0.5000, 0.0, 0.5004, 0.0, 3, 3, 0.9, True)]
+        assert evaluate_assertion("pr:m == main:m", rows).passed
+        assert evaluate_assertion("pr:m ~= 0.5", rows).passed
+
+    def test_approx_equal_fails_outside_default_tolerance(self):
+        r = evaluate_assertion("pr:val/acc == main:val/acc", _rows_for_assertions())
+        assert not r.passed  # 0.70 vs 0.80 is nowhere near 1e-3
+        assert "tolerance" in r.detail
+
+    def test_approx_equal_custom_tolerance(self):
+        rows = _rows_for_assertions()
+        assert evaluate_assertion("pr:val/acc == main:val/acc +- 0.2", rows).passed
+        assert evaluate_assertion("pr:val/acc == main:val/acc +/- 0.2", rows).passed
+        assert not evaluate_assertion("pr:val/acc == main:val/acc +- 0.05", rows).passed
+
+    def test_tolerance_rejected_on_ordering_comparators(self):
+        r = evaluate_assertion("pr:val/acc > main:val/acc +- 0.2", _rows_for_assertions())
+        assert not r.passed
+        assert "only applies" in r.detail
+
 
 # ── Compare report ─────────────────────────────────────────────────
 
