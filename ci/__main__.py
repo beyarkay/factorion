@@ -15,7 +15,6 @@ def main() -> None:
             "pods": cli.pods,
             "kill": cli.kill,
             "watchdog": cli.watchdog,
-            "compare-report": cli.compare_report,
             "sweep-report": cli.sweep_report,
             "history": cli.history,
             "post-pending-reports": cli.post_pending_reports,

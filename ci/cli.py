@@ -121,10 +121,9 @@ def compare(
 
     Invoked as `compare sft --ref X` or `compare ppo --ref X --start-from ID`.
     Fans out into 2 x seeds pods — one training run per pod, so seeds never
-    compete for CPU. Both sides run their own commit's code. When the runs
-    finish, `compare-report` diffs every logged metric with seed-paired
-    t-tests (on a PR, the /ci compare comment command does all of this and
-    posts the result).
+    compete for CPU. Both sides run their own commit's code. On a PR, the
+    /ci compare comment command launches this AND posts the every-metric
+    seed-paired report (plus the assert commit status) when the runs finish.
 
     Args:
         algo: "sft" (from scratch) or "ppo" (finetune from --start-from on
@@ -151,7 +150,10 @@ def compare(
         gpu_type=gpu_type,
         dry_run=dry_run,
     )
-    print(f"\nWhen done: uv run python -m ci compare-report --ref {sha[:7]}")
+    print(
+        f"\nRuns land in W&B groups {compare_group(sha, 'test')} / "
+        f"{compare_group(sha, 'base')}; on a PR, /ci compare posts the report."
+    )
 
 
 def pods() -> None:
@@ -208,37 +210,6 @@ def watchdog(dry_run: bool = False) -> None:
     from ci import watchdog as watchdog_mod
 
     watchdog_mod.run(dry_run=dry_run)
-
-
-def compare_report(
-    ref: str,
-    asserts: tuple[str, ...] = (),
-    out: str = "",
-) -> None:
-    """Print (and optionally save) the every-metric report for a compare.
-
-    Exits non-zero when an assertion fails, so this can gate CI.
-
-    Args:
-        ref: The commitish (or sha) the compare was launched for.
-        asserts: Pass/fail conditions on group means, e.g.
-            "pr:val/thput > main:val/thput" or "pr:val/acc >= 0.5".
-        out: Optional path to also write the markdown report to.
-    """
-    from ci import report
-
-    sha = resolve_ref(ref)
-    md, ok = report.compare_report(
-        base_group=compare_group(sha, "base"),
-        test_group=compare_group(sha, "test"),
-        assertions=list(asserts),
-    )
-    print(md)
-    if out:
-        with open(out, "w") as f:
-            f.write(md)
-    if not ok:
-        raise SystemExit(1)
 
 
 def post_pending_reports(dry_run: bool = False, window_days: int = 3) -> None:

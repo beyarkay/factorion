@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import shlex
 import sys
@@ -32,7 +33,14 @@ from ci.config import (
     ppo_budget_seconds,
     sft_budget_seconds,
 )
-from ci.launch import create_sweep, launch, launch_compare, resolve_ref
+from ci.launch import (
+    create_sweep,
+    launch,
+    launch_compare,
+    read_sweep_config,
+    resolve_ref,
+    sweep_summary_line,
+)
 
 COMPARE_STATUS_CONTEXT = "factorion-ci/compare"
 # Compare waits in-workflow so the commit status lands promptly; cap the wait
@@ -73,8 +81,8 @@ assert pr:val/acc >= 0.5
 ```
 
 (`pr:`/`test:` = this branch, `main:`/`base:` = the baseline; bare numbers are
-thresholds.) `/ci compare-report` re-posts the report for this PR head, and
-re-evaluates any `assert` lines on the same comment.
+thresholds. Comparators: < > <= >= on group means; a missing metric or
+unparseable line fails the check.)
 
 ### Sweeps
 
@@ -111,10 +119,17 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
     lines = [f"## &#x1F680; {title}", ""]
     for info in infos:
         lines.append(f"- pod `{info['pod_id']}` (`{info['pod_name']}`)")
+    deadline = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(infos[0]["deadline"]))
+    spec = {k: v for k, v in infos[0]["job"].items() if k != "extra_tags"}
     lines += [
         "",
-        "Pods terminate themselves when done (EXIT trap + deadline timer + "
-        "6-hourly watchdog).",
+        "Job spec (every other hyperparameter comes from `training_config.py` "
+        "at this commit; for compares, `seed` varies per pod):",
+        "```json",
+        json.dumps(spec, indent=2),
+        "```",
+        f"Pods terminate themselves when done (EXIT trap + deadline timer at "
+        f"{deadline} + 6-hourly watchdog).",
     ]
     if footer:
         lines += ["", footer]
@@ -225,10 +240,6 @@ def cmd_compare(args, ctx) -> None:
     _post_compare_outcome(ctx, ctx["assertions"])
 
 
-def cmd_compare_report(args, ctx) -> None:
-    _post_compare_outcome(ctx, ctx["assertions"])
-
-
 def cmd_sweep(args, ctx) -> None:
     algo = args.algo
     sweep_path = create_sweep(algo, ctx["sha"])
@@ -249,13 +260,17 @@ def cmd_sweep(args, ctx) -> None:
     ]
     entity, project, sweep_id = sweep_path.split("/")
     sweep_url = f"https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}"
+    sweep_line = sweep_summary_line(read_sweep_config(algo, ctx["sha"]))
     github_api.post_pr_comment(
         ctx["pr"],
         _launched_comment(
             f"{algo.upper()} sweep launched at `{ctx['sha'][:7]}` "
             f"({args.pods} pod(s) x {args.agents_per_pod} agents)",
             infos,
-            footer=f"[View sweep on W&B]({sweep_url}) — report follows when the sweep drains.",
+            footer=(
+                f"Sweeping: {sweep_line}\n\n"
+                f"[View sweep on W&B]({sweep_url}) — report follows when the sweep drains."
+            ),
         ),
     )
 
@@ -332,8 +347,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--total-timesteps", type=int, default=None)
     common(sp)
 
-    sub.add_parser("compare-report", add_help=False)
-
     sp = sub.add_parser("sweep", add_help=False)
     sp.add_argument("algo", choices=("sft", "ppo"))
     sp.add_argument("--pods", type=int, default=1)
@@ -380,7 +393,6 @@ def main() -> None:
             "sft": cmd_sft,
             "ppo": cmd_ppo,
             "compare": cmd_compare,
-            "compare-report": cmd_compare_report,
             "sweep": cmd_sweep,
             "pods": cmd_pods,
             "kill": cmd_kill,

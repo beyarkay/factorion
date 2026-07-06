@@ -127,8 +127,10 @@ class TestCompareDispatch:
 
     def test_failed_assertion_fails_the_check(self, gh_ctx, monkeypatch):
         monkeypatch.setenv(
-            "COMMENT_BODY", "/ci compare-report\nassert pr:val/acc > 1000"
+            "COMMENT_BODY", "/ci compare --seeds 1\nassert pr:val/acc > 1000"
         )
+        monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)
+        monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
         monkeypatch.setattr(
             "ci.report.compare_report",
             lambda base_group, test_group, assertions=None: ("BAD-MD", False),
@@ -136,8 +138,14 @@ class TestCompareDispatch:
         with pytest.raises(SystemExit) as exc:
             gh_command.main()
         assert exc.value.code == 1
-        assert gh_ctx["statuses"][-1][1] == "failure"
-        assert gh_ctx["pods"] == []  # compare-report launches nothing
+        assert [s[1] for s in gh_ctx["statuses"]] == ["pending", "failure"]
+
+    def test_launch_comment_echoes_job_spec(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv("COMMENT_BODY", "/ci sft --num-samples 200000")
+        gh_command.main()
+        ((_, body),) = gh_ctx["comments"]
+        assert '"num_samples": 200000' in body  # params visible up front
+        assert "training_config.py" in body
 
 
 class TestComparePpoDispatch:
@@ -165,6 +173,15 @@ class TestSweepDispatch:
         monkeypatch.setattr(
             gh_command, "create_sweep", lambda algo, sha: f"me/factorion/swp-{algo}"
         )
+        monkeypatch.setattr(
+            gh_command,
+            "read_sweep_config",
+            lambda algo, sha: {
+                "metric": {"name": "val/acc", "goal": "maximize"},
+                "run_cap": 30,
+                "parameters": {"lr": {}, "batch_size": {}},
+            },
+        )
         monkeypatch.setattr(gh_command, "_wait_for_sweep", lambda path: None)
         monkeypatch.setattr("ci.report.sweep_report", lambda path: "SWEEP-MD")
         gh_command.main()
@@ -173,6 +190,9 @@ class TestSweepDispatch:
         specs = [_job_spec(p) for p in gh_ctx["pods"]]
         assert {s["kind"] for s in specs} == {"sweep"}
         assert {s["sweep_path"] for s in specs} == {"me/factorion/swp-sft"}
+        # The launch comment shows what's being swept, not just pod ids.
+        launch_body = gh_ctx["comments"][0][1]
+        assert "val/acc" in launch_body and "run_cap 30" in launch_body
         assert any("SWEEP-MD" in body for _, body in gh_ctx["comments"])
 
     def test_sweep_requires_algo(self, gh_ctx, monkeypatch):
