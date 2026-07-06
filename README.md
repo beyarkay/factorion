@@ -222,14 +222,6 @@ graph for the green-circuits factory is given below:
 
 ![](imgs/flow.png)
 
-## Next steps:
-
-1.  Increasing world size to present more complex path finding problems.
-2.  Introducing more entities, such as inserters, assembling machines,
-    underground belts, power poles.
-3.  Moving towards more complex tasks, such as building a complete production
-    line to transform copper and iron plates into electronic circuits.
-
 ## Running the Code
 
 ```bash
@@ -245,56 +237,9 @@ uv run python ppo.py \
 Most runs that get to any level of ability take at least 1 hour on my M1
 macbook pro.
 
-## Factorio environment rewrite/overhaul
+## Out of scope
 
-Still need to add:
-
-- Assembling machines: This one will be a doozy. assembling machines are 3x3,
-  and take input items _only_ by inserters (not by transport belt) and then
-  they wait for the correct number of ingredients (e.g. 3 copper cable + 2 iron
-  plate) and then consume those ingredients to create the product (e.g.
-  electronic circuit). So to represent it we'll have to represent the recipe
-  that the assembling machine has on a different channel.
-
-  Then the lessons will first choose a random recipe (I'll dump a bunch of
-  recipes into context, or maybe you can search for some?)
-
-- Underground belts: These entities are like belts but go for up to 4 tiles
-  underground e.g. `bbbd____ubbb` where b is belt, d is descending underground,
-  `_` is an empty tile, u is ascending underground, and b is belt. Note that
-  these undergrounds have two forms of rotation: the belt can be
-  ascending/descending, and can be rotated so that the opening of the
-  underground faces north/south/east/west. Probably we just have an ascending
-  underground belt entity and a descending underground belt.
-
-  Then the lessons for these are tricky, we want to ensure the agent learns
-  that underground belts are only useful to get _under_ something, but we don't
-  really have things that it makes sense to go underneath just yet. But later
-  on this'll be other parts of the factory, assembling machines, inserters, or
-  other belts. So we won't create "dummy" entities for the underground belts to
-  go under, this will need to be real scenarios in which underground belts are
-  required.
-
-- Maybe also an "ores" layer?
-- Belts having two sides
-- Some entities being sources/sinks themselves (miners, science labs, nuclear
-  power stations, coal furnaces)
-- long inserters
-
-Also:
-
-- have the factory logic live in FactorioEnv
-- Speed is important, look at rust with pyO3
-- don't always assume 1x1 sized entities
-
-Eventually, the layers will look like:
-
-- Entity ID (maybe this should be combined with rotation?)
-- Rotation
-- Recipe (for assembling machines)
-- Ore
-
-Ignoring:
+The following Factorio mechanics are intentionally not modelled:
 
 - Circuit conditions
 - Trains/railways
@@ -302,10 +247,8 @@ Ignoring:
 - Fluids
 - Robots/logistics
 - Biters
-- modules
-- filters (on inserters, splitters)
-
-And then also want a way of visualising this nicely, for debugging.
+- Modules
+- Filters (on inserters, splitters)
 
 ## Factorio Wiki Reference
 
