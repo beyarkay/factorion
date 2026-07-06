@@ -1,8 +1,8 @@
-"""Tests for the ci/ package: job specs, command building, pod-name deadline
-encoding, watchdog decisions, and the every-metric compare report.
+"""Tests for the ci/ package: job specs, command building, compare fan-out,
+pod-name deadline encoding, watchdog decisions, assertions, and reports.
 
 Everything here runs offline — the pure decision/formatting cores are tested
-directly; nothing talks to RunPod or W&B.
+directly; nothing talks to RunPod, W&B, or GitHub.
 """
 
 import math
@@ -10,10 +10,10 @@ import time
 
 from ci.config import (
     MAX_POD_AGE_SECONDS,
-    CompareJob,
     PpoJob,
     SftJob,
     SweepJob,
+    compare_fanout,
     compare_group,
     job_from_dict,
     job_to_dict,
@@ -22,18 +22,17 @@ from ci.config import (
     ppo_budget_seconds,
     sft_budget_seconds,
 )
-from ci.jobs import (
-    compare_seed_command,
-    ppo_command,
-    sft_command,
-    sweep_agent_command,
-)
+from ci.gh_command import parse_comment
+from ci.jobs import ppo_command, sft_command, sweep_agent_command
 from ci.report import (
     MetricRow,
     compare_metric_rows,
+    evaluate_assertion,
     flatten_summary,
     metric_direction,
     render_compare_markdown,
+    run_summary_markdown,
+    select_unreported,
 )
 from ci.watchdog import decide_terminations
 
@@ -53,13 +52,14 @@ class TestSftCommand:
         forbidden = {"--num-samples", "--epochs", "--size", "--lr", "--seed", "--batch-size"}
         assert forbidden.isdisjoint(cmd)
 
-    def test_num_samples_is_the_only_knob(self):
+    def test_num_samples_is_the_only_hyperparam_knob(self):
         cmd = sft_command(SftJob(sha=SHA, num_samples=123))
         assert cmd[cmd.index("--num-samples") + 1] == "123"
 
     def test_tags_identify_the_run(self):
-        cmd = sft_command(SftJob(sha=SHA))
-        assert "ci" in cmd and "fci:sft" in cmd and f"sha:{SHA[:7]}" in cmd
+        cmd = sft_command(SftJob(sha=SHA, extra_tags=["pr:42"]))
+        assert "ci" in cmd and "kind:sft" in cmd and f"sha:{SHA[:7]}" in cmd
+        assert "pr:42" in cmd
 
 
 class TestPpoCommand:
@@ -75,30 +75,51 @@ class TestPpoCommand:
         assert cmd[cmd.index("--total-timesteps") + 1] == "99"
 
 
-class TestCompareCommand:
-    def test_seed_group_and_role(self):
-        job = CompareJob(sha=SHA, base_sha=BASE_SHA, seeds=3, num_samples=1000)
-        cmd = compare_seed_command(job, "base", BASE_SHA, seed=2)
-        assert cmd[cmd.index("--seed") + 1] == "2"
-        assert cmd[cmd.index("--wandb-group") + 1] == compare_group(SHA, "base")
-        # The base side is tagged with the BASE sha (what actually ran).
-        assert f"sha:{BASE_SHA[:7]}" in cmd
-        assert f"cmp:{SHA[:7]}" in cmd and "cmp-role:base" in cmd
-
-    def test_checkpoints_do_not_collide_across_seeds_or_roles(self):
-        job = CompareJob(sha=SHA, base_sha=BASE_SHA, seeds=2, num_samples=1000)
-        paths = set()
-        for role, role_sha in (("test", SHA), ("base", BASE_SHA)):
-            for seed in (1, 2):
-                cmd = compare_seed_command(job, role, role_sha, seed)
-                paths.add(cmd[cmd.index("--checkpoint-path") + 1])
-        assert len(paths) == 4
-
-
 class TestSweepCommand:
     def test_agent_targets_the_sweep(self):
         job = SweepJob(sha=SHA, algo="sft", sweep_path="me/factorion/ab12cd34")
         assert sweep_agent_command(job) == ["wandb", "agent", "me/factorion/ab12cd34"]
+
+
+# ── Compare fan-out: one pod per (role, seed) ──────────────────────
+
+
+class TestCompareFanout:
+    def test_sft_fanout_shape(self):
+        jobs = compare_fanout("sft", SHA, BASE_SHA, seeds=3, num_samples=1000)
+        assert len(jobs) == 6
+        test_side = [j for j in jobs if j.sha == SHA]
+        base_side = [j for j in jobs if j.sha == BASE_SHA]
+        assert len(test_side) == len(base_side) == 3
+        # Seeds pair up across sides; each side gets its own W&B group.
+        assert sorted(j.seed for j in test_side) == [1, 2, 3]
+        assert {j.group for j in test_side} == {compare_group(SHA, "test")}
+        assert {j.group for j in base_side} == {compare_group(SHA, "base")}
+        # Groups are keyed on the TEST sha for both sides (one compare = one key).
+        assert all(SHA[:7] in (j.group or "") for j in jobs)
+
+    def test_fanout_tags_mark_compare_runs(self):
+        jobs = compare_fanout("sft", SHA, BASE_SHA, seeds=1, num_samples=10, extra_tags=["pr:7"])
+        for job in jobs:
+            assert f"cmp:{SHA[:7]}" in job.extra_tags
+            assert "pr:7" in job.extra_tags
+        roles = {t for j in jobs for t in j.extra_tags if t.startswith("cmp-role:")}
+        assert roles == {"cmp-role:test", "cmp-role:base"}
+
+    def test_ppo_fanout_uses_same_checkpoint_both_sides(self):
+        jobs = compare_fanout(
+            "ppo", SHA, BASE_SHA, seeds=2, start_from="j0s5y2mc", total_timesteps=100
+        )
+        ppo_jobs = [j for j in jobs if isinstance(j, PpoJob)]
+        assert len(ppo_jobs) == len(jobs) == 4
+        assert {j.start_from for j in ppo_jobs} == {"j0s5y2mc"}
+
+    def test_ppo_fanout_requires_start_from(self):
+        try:
+            compare_fanout("ppo", SHA, BASE_SHA)
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
 
 
 # ── Job spec serialization (launcher → pod round trip) ─────────────
@@ -107,10 +128,9 @@ class TestSweepCommand:
 class TestJobSerialization:
     def test_round_trip_every_kind(self):
         jobs = [
-            SftJob(sha=SHA, num_samples=5),
+            SftJob(sha=SHA, num_samples=5, seed=2, group="g", extra_tags=["pr:1"]),
             PpoJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=7),
             SweepJob(sha=SHA, algo="ppo", sweep_path="e/p/s", agents_per_pod=2),
-            CompareJob(sha=SHA, base_sha=BASE_SHA, seeds=4, num_samples=9),
         ]
         for job in jobs:
             assert job_from_dict(job_to_dict(job)) == job
@@ -132,7 +152,7 @@ class TestPodName:
         )
 
     def test_foreign_names_rejected(self):
-        for name in ("my-dev-pod", "fci-sft-nonsense", "", "ci-smoke-12345"):
+        for name in ("my-dev-pod", "factorion-ci-sft-nonsense", "", "ci-smoke-12345"):
             assert parse_pod_name(name) is None
 
 
@@ -147,17 +167,17 @@ class TestWatchdog:
         doomed = decide_terminations([expired, alive], now=now)
         assert [p["name"] for p, _ in doomed] == [expired["name"]]
 
-    def test_never_touches_non_fci_pods(self):
+    def test_never_touches_non_ci_pods(self):
         now = time.time()
         personal = self._pod("my-experiment-pod", uptime=10 * MAX_POD_AGE_SECONDS)
         assert decide_terminations([personal], now=now) == []
 
-    def test_unparseable_fci_pod_reaped_after_max_age(self):
+    def test_unparseable_ci_pod_reaped_after_max_age(self):
         now = time.time()
-        young = self._pod("fci-sft-renamed", uptime=60)
-        old = self._pod("fci-sft-renamed-old", uptime=MAX_POD_AGE_SECONDS + 1)
+        young = self._pod("factorion-ci-sft-renamed", uptime=60)
+        old = self._pod("factorion-ci-sft-old", uptime=MAX_POD_AGE_SECONDS + 1)
         doomed = decide_terminations([young, old], now=now)
-        assert [p["name"] for p, _ in doomed] == ["fci-sft-renamed-old"]
+        assert [p["name"] for p, _ in doomed] == ["factorion-ci-sft-old"]
 
     def test_absolute_age_cap_beats_a_far_future_deadline(self):
         now = time.time()
@@ -175,10 +195,70 @@ class TestBudgets:
         assert sft_budget_seconds(10_000_000, 1) > sft_budget_seconds(1_000_000, 1)
         assert ppo_budget_seconds(1_000_000) > ppo_budget_seconds(100_000)
 
-    def test_compare_budget_covers_both_roles(self):
-        job = CompareJob(sha=SHA, base_sha=BASE_SHA, seeds=3, num_samples=1_000_000)
-        single = sft_budget_seconds(1_000_000, 1)
-        assert job.budget_seconds() > 2 * single
+    def test_compare_pods_budget_like_single_runs(self):
+        (job, *_) = compare_fanout("sft", SHA, BASE_SHA, seeds=1, num_samples=1_000_000)
+        assert job.budget_seconds() == sft_budget_seconds(1_000_000, 1)
+
+
+# ── /ci comment parsing ────────────────────────────────────────────
+
+
+class TestParseComment:
+    def test_command_and_assert_lines(self):
+        body = (
+            "/ci compare --seeds 3\n"
+            "assert pr:val/thput > main:val/thput\n"
+            "assert pr:val/acc >= 0.5\n"
+        )
+        tokens, assertions = parse_comment(body)
+        assert tokens == ["compare", "--seeds", "3"]
+        assert assertions == [
+            "pr:val/thput > main:val/thput",
+            "pr:val/acc >= 0.5",
+        ]
+
+    def test_surrounding_prose_is_ignored(self):
+        body = "some context first\n\n/ci sft --num-samples 200000\nthanks!"
+        tokens, assertions = parse_comment(body)
+        assert tokens == ["sft", "--num-samples", "200000"]
+        assert assertions == []
+
+    def test_no_command(self):
+        assert parse_comment("just a normal comment") == ([], [])
+
+
+# ── Assertions ─────────────────────────────────────────────────────
+
+
+def _rows_for_assertions():
+    return [
+        MetricRow("val/thput", 0.10, 0.01, 0.30, 0.01, 3, 3, 0.001, True),
+        MetricRow("val/acc", 0.80, 0.01, 0.70, 0.01, 3, 3, 0.001, True),
+    ]
+
+
+class TestAssertions:
+    def test_pr_beats_main_passes(self):
+        r = evaluate_assertion("pr:val/thput > main:val/thput", _rows_for_assertions())
+        assert r.passed
+
+    def test_regression_fails(self):
+        r = evaluate_assertion("pr:val/acc >= main:val/acc", _rows_for_assertions())
+        assert not r.passed
+
+    def test_numeric_threshold_and_aliases(self):
+        rows = _rows_for_assertions()
+        assert evaluate_assertion("test:val/thput >= 0.3", rows).passed
+        assert evaluate_assertion("base:val/thput < 0.2", rows).passed
+
+    def test_unknown_metric_fails_gracefully(self):
+        r = evaluate_assertion("pr:val/nope > main:val/nope", _rows_for_assertions())
+        assert not r.passed
+        assert "not found" in r.detail
+
+    def test_unparseable_fails_gracefully(self):
+        r = evaluate_assertion("gibberish", _rows_for_assertions())
+        assert not r.passed
 
 
 # ── Compare report ─────────────────────────────────────────────────
@@ -230,19 +310,6 @@ class TestCompareRows:
         (row,) = compare_metric_rows(base, test)
         assert row.verdict() == "better"
 
-    def test_one_sided_metric_is_skipped(self):
-        base, test = self._sides()
-        base[1]["only/base"] = 1.0
-        base[2]["only/base"] = 1.0
-        names = {r.name for r in compare_metric_rows(base, test)}
-        assert "only/base" not in names
-
-    def test_markdown_renders_all_rows(self):
-        base, test = self._sides()
-        rows = compare_metric_rows(base, test)
-        md = render_compare_markdown(rows, "grp-base", "grp-test")
-        assert "val/thput" in md and "train/loss" in md and "grp-base" in md
-
     def test_unpaired_falls_back_to_welch(self):
         base = {s: {"m": 1.0 + 0.1 * s} for s in (1, 2, 3)}
         test = {s: {"m": 5.0 + 0.1 * s} for s in (7, 8, 9)}
@@ -251,15 +318,42 @@ class TestCompareRows:
         assert row.p_value is not None
 
     def test_verdict_requires_significance(self):
-        row = MetricRow(
-            name="val/thput",
-            base_mean=0.1,
-            base_std=0.1,
-            test_mean=0.11,
-            test_std=0.1,
-            n_base=3,
-            n_test=3,
-            p_value=0.9,
-            paired=True,
-        )
+        row = MetricRow("val/thput", 0.1, 0.1, 0.11, 0.1, 3, 3, 0.9, True)
         assert row.verdict() == ""
+
+    def test_markdown_headline_outside_details(self):
+        base, test = self._sides()
+        base[1]["obscure/metric"] = 1.0
+        test[1]["obscure/metric"] = 1.1
+        rows = compare_metric_rows(base, test)
+        md = render_compare_markdown(rows, "grp-base", "grp-test", headline=["val/thput"])
+        before_details, details = md.split("<details>", 1)
+        assert "val/thput" in before_details  # headline shown up front
+        assert "obscure/metric" not in before_details  # long tail hidden…
+        assert "obscure/metric" in details  # …but present in the full table
+
+
+# ── Reporter (PR summary comments) ─────────────────────────────────
+
+
+class TestReporter:
+    def test_select_unreported_skips_marked_runs(self):
+        candidates = [{"run_id": "aaa"}, {"run_id": "bbb"}]
+        bodies = ["intro", "report\n<!-- factorion-ci-run:aaa -->"]
+        assert select_unreported(candidates, bodies) == [{"run_id": "bbb"}]
+
+    def test_run_summary_contains_marker_and_headline(self):
+        md = run_summary_markdown(
+            run_id="abc123",
+            name="sft-s11-x",
+            state="finished",
+            url="https://wandb.ai/x/y/runs/abc123",
+            kind="sft",
+            sha7=SHA[:7],
+            summary_flat={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+        )
+        assert "<!-- factorion-ci-run:abc123 -->" in md
+        before_details, details = md.split("<details>", 1)
+        assert "val/thput" in before_details
+        assert "obscure/x" not in before_details
+        assert "obscure/x" in details

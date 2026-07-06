@@ -15,10 +15,12 @@ import json
 import os
 import subprocess
 import time
+from typing import Optional
 
 from ci.config import (
     WANDB_PROJECT,
     Job,
+    compare_fanout,
     job_to_dict,
     pod_name,
 )
@@ -91,12 +93,16 @@ def launch(
     dry_run: bool = False,
     wait: bool = True,
     repo_url: str = DEFAULT_REPO_URL,
-) -> None:
-    """Create the pod for `job` and (optionally) wait for it to boot."""
+) -> dict:
+    """Create the pod for `job` and (optionally) wait for it to boot.
+
+    Returns {"pod_id", "pod_name", "deadline", "job"} (pod_id None on dry-run).
+    """
     now = int(time.time())
     deadline = now + job.budget_seconds()
     name = pod_name(job.KIND, now, deadline, job.sha)
     spec = job_to_dict(job)
+    info = {"pod_id": None, "pod_name": name, "deadline": deadline, "job": spec}
 
     env = {
         "RUNPOD_API_KEY": os.environ.get("RUNPOD_API_KEY", ""),
@@ -115,9 +121,8 @@ def launch(
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")
 
     if dry_run:
-        print("\n--dry-run: not creating a pod. Bootstrap script:\n")
-        print(BOOTSTRAP)
-        return
+        print("--dry-run: not creating a pod.\n")
+        return info
 
     for var in ("RUNPOD_API_KEY", "WANDB_API_KEY"):
         if not env[var]:
@@ -127,6 +132,7 @@ def launch(
 
     pod = runpod_api.create_pod(name=name, gpu_type=gpu_type, docker_args=DOCKER_ARGS, env=env)
     pod_id = pod["id"]
+    info["pod_id"] = pod_id
 
     print(f"\nPod {pod_id} created. The job runs unattended and the pod")
     print("terminates itself when done. Track progress:")
@@ -135,7 +141,7 @@ def launch(
     print(f"  CLI:    uv run python -m ci pods   |   uv run python -m ci kill {pod_id}")
 
     if not wait:
-        return
+        return info
     try:
         status = runpod_api.wait_until_running(pod_id)
         gpu = status.get("machine", {}).get("gpuDisplayName", "unknown")
@@ -146,6 +152,38 @@ def launch(
         print("Pod failed to boot in time; terminating it.")
         runpod_api.terminate_with_retry(pod_id)
         raise SystemExit(1)
+    return info
+
+
+def launch_compare(
+    algo: str,
+    sha: str,
+    base_sha: str,
+    seeds: int,
+    num_samples: int,
+    start_from: Optional[str],
+    total_timesteps: Optional[int],
+    gpu_type: str,
+    dry_run: bool = False,
+    extra_tags: Optional[list[str]] = None,
+) -> list[dict]:
+    """Fan a compare out into 2 x seeds single-run pods (one run per pod, so
+    seeds never compete for CPU). Returns the launch info of every pod."""
+    jobs = compare_fanout(
+        algo=algo,
+        sha=sha,
+        base_sha=base_sha,
+        seeds=seeds,
+        num_samples=num_samples,
+        start_from=start_from,
+        total_timesteps=total_timesteps,
+        extra_tags=extra_tags,
+    )
+    infos = []
+    for job in jobs:
+        # Never block on boot: 2 x seeds pods launch back-to-back.
+        infos.append(launch(job, gpu_type, dry_run=dry_run, wait=False))
+    return infos
 
 
 def create_sweep(algo: str, sha: str) -> str:

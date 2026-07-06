@@ -8,6 +8,8 @@ left behind on a pod.
 from __future__ import annotations
 
 import math
+import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -131,32 +133,129 @@ def compare_metric_rows(
     return rows
 
 
+# Metrics surfaced OUTSIDE the <details> block of a compare comment (the full
+# every-metric table sits inside it). Placeholder set — edit freely.
+HEADLINE_METRICS = [
+    "val/thput",
+    "val/thput_eot",
+    "val/acc",
+    "eval/thput",
+    "eval/thput_eot",
+]
+
+
+def _row_line(r: MetricRow, alpha: float) -> str:
+    icons = {"better": "&#x2705;", "worse": "&#x274C;", "significant": "&#x26A0;&#xFE0F;", "": ""}
+    p_str = "-" if r.p_value is None else (f"{r.p_value:.3f}" if r.p_value >= 0.001 else f"{r.p_value:.1e}")
+    v = r.verdict(alpha)
+    return (
+        f"| `{r.name}` | {r.base_mean:.4g} ± {r.base_std:.2g} (n={r.n_base}) "
+        f"| {r.test_mean:.4g} ± {r.test_std:.2g} (n={r.n_test}) "
+        f"| {r.delta:+.4g} | {p_str} | {icons[v]} {v} |"
+    )
+
+
 def render_compare_markdown(
     rows: list[MetricRow],
     base_label: str,
     test_label: str,
     alpha: float = 0.05,
+    headline: list[str] = HEADLINE_METRICS,
 ) -> str:
-    icons = {"better": "&#x2705;", "worse": "&#x274C;", "significant": "&#x26A0;&#xFE0F;", "": ""}
-    lines = [
-        f"## SFT comparison: `{test_label}` vs `{base_label}`",
-        "",
-        f"Every numeric W&B summary metric, paired by seed where possible "
-        f"(paired t-test; Welch's otherwise). Significance level: {alpha}.",
-        "",
+    """Headline metrics up front; the full every-metric table in <details>."""
+    header = [
         f"| Metric | {base_label} | {test_label} | Δ | p | |",
         "|---|---|---|---|---|---|",
     ]
-    for r in rows:
-        p_str = "-" if r.p_value is None else (f"{r.p_value:.3f}" if r.p_value >= 0.001 else f"{r.p_value:.1e}")
-        v = r.verdict(alpha)
-        lines.append(
-            f"| `{r.name}` | {r.base_mean:.4g} ± {r.base_std:.2g} (n={r.n_base}) "
-            f"| {r.test_mean:.4g} ± {r.test_std:.2g} (n={r.n_test}) "
-            f"| {r.delta:+.4g} | {p_str} | {icons[v]} {v} |"
-        )
-    if not rows:
+    by_name = {r.name: r for r in rows}
+    headline_rows = [by_name[m] for m in headline if m in by_name]
+
+    lines = [
+        f"## Compare: `{test_label}` vs `{base_label}`",
+        "",
+        f"Paired by seed where possible (paired t-test; Welch's otherwise). "
+        f"Significance level: {alpha}.",
+        "",
+    ]
+    if headline_rows:
+        lines += header + [_row_line(r, alpha) for r in headline_rows] + [""]
+    significant = sum(1 for r in rows if r.verdict(alpha))
+    lines.append(
+        f"<details><summary>All {len(rows)} metrics "
+        f"({significant} significant, sorted by p-value)</summary>"
+    )
+    lines.append("")
+    lines += header
+    if rows:
+        lines += [_row_line(r, alpha) for r in rows]
+    else:
         lines.append("| _no comparable metrics found_ | | | | | |")
+    lines += ["", "</details>"]
+    return "\n".join(lines)
+
+
+# ── Assertions ─────────────────────────────────────────────────────
+# e.g. "pr:val/thput > main:val/thput" — evaluated on group means. Sides:
+# pr:/test: = the commit under test, main:/base: = the baseline; a bare
+# number is a constant threshold.
+
+_ASSERT_RE = re.compile(r"^\s*(\S+)\s*(<=|>=|<|>)\s*(\S+)\s*$")
+_SIDE_ALIASES = {"pr": "test", "test": "test", "main": "base", "base": "base"}
+_OPS = {
+    "<": lambda a, b: a < b,
+    ">": lambda a, b: a > b,
+    "<=": lambda a, b: a <= b,
+    ">=": lambda a, b: a >= b,
+}
+
+
+@dataclass
+class AssertionResult:
+    expression: str
+    passed: bool
+    detail: str
+
+
+def _resolve_operand(token: str, means: dict[str, dict[str, float]]) -> tuple[float, str]:
+    """Returns (value, human label). `means` maps side ("test"/"base") to
+    {metric: mean}. Raises ValueError for unknown sides/metrics."""
+    if ":" in token:
+        side_raw, metric = token.split(":", 1)
+        side = _SIDE_ALIASES.get(side_raw.lower())
+        if side is None:
+            raise ValueError(f"unknown side '{side_raw}' (use pr:/test: or main:/base:)")
+        if metric not in means[side]:
+            raise ValueError(f"metric '{metric}' not found on the {side} side")
+        return means[side][metric], f"{token}={means[side][metric]:.4g}"
+    return float(token), token
+
+
+def evaluate_assertion(expression: str, rows: list[MetricRow]) -> AssertionResult:
+    means = {
+        "test": {r.name: r.test_mean for r in rows},
+        "base": {r.name: r.base_mean for r in rows},
+    }
+    m = _ASSERT_RE.match(expression)
+    if m is None:
+        return AssertionResult(expression, False, "could not parse (want: LHS <op> RHS)")
+    lhs_tok, op, rhs_tok = m.groups()
+    try:
+        lhs, lhs_label = _resolve_operand(lhs_tok, means)
+        rhs, rhs_label = _resolve_operand(rhs_tok, means)
+    except ValueError as e:
+        return AssertionResult(expression, False, str(e))
+    passed = _OPS[op](lhs, rhs)
+    return AssertionResult(expression, passed, f"{lhs_label} {op} {rhs_label}")
+
+
+def render_assertions_markdown(results: list[AssertionResult]) -> str:
+    if not results:
+        return ""
+    lines = ["### Assertions", ""]
+    for r in results:
+        icon = "&#x2705;" if r.passed else "&#x274C;"
+        lines.append(f"- {icon} `{r.expression}` — {r.detail}")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -176,8 +275,42 @@ def _project_path(api) -> str:
     return f"{api.default_entity}/{WANDB_PROJECT}"
 
 
-def compare_report(base_group: str, test_group: str) -> str:
-    """Markdown comparison of every metric across two W&B run groups."""
+def wait_for_groups(
+    base_group: str,
+    test_group: str,
+    expect_each: int,
+    timeout_seconds: int,
+    poll_seconds: int = 120,
+) -> None:
+    """Block until both W&B groups have `expect_each` finished runs (or the
+    timeout passes — the report is then built from whatever exists)."""
+    import wandb
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        api = wandb.Api()  # fresh client: avoid cached run listings
+        path = _project_path(api)
+        counts = {}
+        for group in (base_group, test_group):
+            runs = api.runs(path, filters={"group": group})
+            counts[group] = sum(1 for r in runs if r.state == "finished")
+        print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
+        if all(c >= expect_each for c in counts.values()):
+            return
+        time.sleep(poll_seconds)
+    print(f"wait_for_groups timed out after {timeout_seconds}s; reporting what exists")
+
+
+def compare_report(
+    base_group: str,
+    test_group: str,
+    assertions: Optional[list[str]] = None,
+) -> tuple[str, bool]:
+    """Markdown comparison of every metric across two W&B run groups.
+
+    Returns (markdown, ok): ok is False when any assertion fails or when
+    either group has no finished runs to compare.
+    """
     import wandb
 
     api = wandb.Api()
@@ -187,10 +320,17 @@ def compare_report(base_group: str, test_group: str) -> str:
     if not base or not test:
         return (
             f"No runs found for comparison: {base_group} has {len(base)} run(s), "
-            f"{test_group} has {len(test)} run(s)."
+            f"{test_group} has {len(test)} run(s).",
+            False,
         )
     rows = compare_metric_rows(base, test)
-    return render_compare_markdown(rows, base_label=base_group, test_label=test_group)
+    md = render_compare_markdown(rows, base_label=base_group, test_label=test_group)
+    ok = True
+    if assertions:
+        results = [evaluate_assertion(a, rows) for a in assertions]
+        ok = all(r.passed for r in results)
+        md = render_assertions_markdown(results) + "\n" + md
+    return md, ok
 
 
 def sweep_report(sweep_path: str, top_n: int = 5) -> str:
@@ -313,3 +453,137 @@ def history_csv(out: str, limit: int = 500) -> int:
         writer.writeheader()
         writer.writerows(rows)
     return len(rows)
+
+
+# ── Per-run PR summaries (posted by the reporter cron) ─────────────
+# Long training runs outlive GitHub's 6h job limit, so the workflow that
+# launched them can't wait around. Instead ci-reporter.yml runs every 30 min:
+# any finished W&B run tagged pr:<N> that has no summary comment yet gets one.
+# An invisible marker in each comment makes the sweep idempotent.
+
+RUN_MARKER_TEMPLATE = "<!-- factorion-ci-run:{run_id} -->"
+
+
+def run_summary_markdown(
+    run_id: str,
+    name: str,
+    state: str,
+    url: str,
+    kind: str,
+    sha7: str,
+    summary_flat: dict[str, float],
+    headline: list[str] = HEADLINE_METRICS,
+) -> str:
+    """Summary comment for a single finished CI run."""
+    icon = "&#x2705;" if state == "finished" else "&#x274C;"
+    duration = summary_flat.get("_runtime")
+    lines = [
+        RUN_MARKER_TEMPLATE.format(run_id=run_id),
+        f"## {icon} CI {kind} run `{name}` {state}",
+        "",
+        f"Commit `{sha7}` &middot; [view on W&B]({url})"
+        + (f" &middot; {int(duration) // 60} min" if duration else ""),
+        "",
+    ]
+    shown = [(m, summary_flat[m]) for m in headline if m in summary_flat]
+    if shown:
+        lines += ["| Metric | Value |", "|---|---|"]
+        lines += [f"| `{m}` | {v:.4g} |" for m, v in shown]
+    others = {
+        m: v
+        for m, v in sorted(summary_flat.items())
+        if m not in dict(shown) and not m.startswith("_")
+    }
+    if others:
+        lines += [
+            "",
+            f"<details><summary>All {len(shown) + len(others)} metrics</summary>",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            *[f"| `{m}` | {v:.4g} |" for m, v in others.items()],
+            "",
+            "</details>",
+        ]
+    return "\n".join(lines)
+
+
+def select_unreported(
+    candidates: list[dict], existing_bodies: list[str]
+) -> list[dict]:
+    """Pure core of the reporter: candidates (dicts with a "run_id" key) whose
+    marker doesn't appear in any existing PR comment body."""
+    joined = "\n".join(existing_bodies)
+    return [
+        c
+        for c in candidates
+        if RUN_MARKER_TEMPLATE.format(run_id=c["run_id"]) not in joined
+    ]
+
+
+def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
+    """Post summary comments for finished PR-linked runs that lack one.
+
+    Scans W&B runs tagged `ci` from the last `window_days`, keeps terminal
+    runs carrying a pr:<N> tag (skipping compare fan-out runs — those are
+    reported as one comparison by the compare workflow), and comments on the
+    PR unless the run's marker is already present. Returns #posted.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import wandb
+
+    from ci import github_api
+
+    api = wandb.Api()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+
+    by_pr: dict[int, list[dict]] = {}
+    for run in api.runs(_project_path(api), filters={"tags": "ci"}, order="-created_at"):
+        created = datetime.fromisoformat(str(run.created_at).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < cutoff:
+            break  # runs are newest-first; everything after this is older
+        if run.state not in ("finished", "crashed", "failed"):
+            continue
+        tags = set(run.tags or [])
+        if any(t.startswith("cmp:") for t in tags):
+            continue
+        pr = next((t.removeprefix("pr:") for t in tags if t.startswith("pr:")), None)
+        if pr is None or not pr.isdigit():
+            continue
+        summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
+        flat = flatten_summary(summary)
+        if "_runtime" in summary and _is_number(summary["_runtime"]):
+            flat["_runtime"] = float(summary["_runtime"])
+        by_pr.setdefault(int(pr), []).append(
+            {
+                "run_id": run.id,
+                "name": run.name,
+                "state": run.state,
+                "url": run.url,
+                "kind": next(
+                    (t.removeprefix("kind:") for t in tags if t.startswith("kind:")), "?"
+                ),
+                "sha7": next(
+                    (t.removeprefix("sha:") for t in tags if t.startswith("sha:")), "?"
+                ),
+                "summary_flat": flat,
+            }
+        )
+
+    posted = 0
+    for pr_number, candidates in by_pr.items():
+        bodies = github_api.list_pr_comment_bodies(pr_number)
+        for c in select_unreported(candidates, bodies):
+            md = run_summary_markdown(**c)
+            if dry_run:
+                print(f"[dry-run] would comment on PR #{pr_number} for run {c['run_id']}")
+            else:
+                github_api.post_pr_comment(pr_number, md)
+                print(f"Commented on PR #{pr_number} for run {c['run_id']}")
+            posted += 1
+    if not posted:
+        print("No pending run reports.")
+    return posted

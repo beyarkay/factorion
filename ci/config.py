@@ -15,7 +15,7 @@ import it in a bare GitHub cron environment.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import ClassVar, Optional
 
 from training_config import PpoArgs, SftArgs
@@ -47,10 +47,10 @@ ALLOWED_CUDA_VERSIONS = ["13.0"]
 # ── Pod naming ─────────────────────────────────────────────────────
 # Every CI pod encodes its own creation time and kill-by deadline in its name,
 # so the watchdog can enforce cleanup statelessly from `runpod.get_pods()`
-# alone: fci-<kind>-c<created_epoch>-d<deadline_epoch>-<sha7>
-POD_PREFIX = "fci-"
+# alone: factorion-ci-<kind>-c<created_epoch>-d<deadline_epoch>-<sha7>
+POD_PREFIX = "factorion-ci-"
 _POD_NAME_RE = re.compile(
-    r"^fci-(?P<kind>[a-z-]+)-c(?P<created>\d+)-d(?P<deadline>\d+)-(?P<sha7>[0-9a-f]+)$"
+    r"^factorion-ci-(?P<kind>[a-z-]+)-c(?P<created>\d+)-d(?P<deadline>\d+)-(?P<sha7>[0-9a-f]+)$"
 )
 
 # Absolute backstop: no CI pod may outlive this, deadline or not. Generous
@@ -104,6 +104,10 @@ def ppo_budget_seconds(total_timesteps: int) -> int:
 # The full override surface of CI training jobs. Serialized to JSON, handed to
 # the pod via env, and decoded by ci/jobs.py. If a knob isn't here, it can't
 # be changed from the CI side — training_config.py decides it.
+#
+# seed / group / extra_tags are infrastructure, not hyperparameters: the
+# compare fan-out uses them to pair runs across commits, and PR-triggered
+# jobs use extra_tags to link W&B runs back to their PR (tag "pr:<num>").
 
 
 @dataclass
@@ -112,6 +116,9 @@ class SftJob:
 
     sha: str
     num_samples: Optional[int] = None  # None = SftArgs default
+    seed: Optional[int] = None  # None = SftArgs default
+    group: Optional[str] = None  # W&B group
+    extra_tags: list[str] = field(default_factory=list)
 
     KIND: ClassVar[str] = "sft"
 
@@ -128,6 +135,9 @@ class PpoJob:
     sha: str
     start_from: str
     total_timesteps: Optional[int] = None  # None = PpoArgs default
+    seed: Optional[int] = None  # None = PpoArgs default
+    group: Optional[str] = None  # W&B group
+    extra_tags: list[str] = field(default_factory=list)
 
     KIND: ClassVar[str] = "ppo"
 
@@ -155,25 +165,7 @@ class SweepJob:
         return SWEEP_BUDGET_SECONDS
 
 
-@dataclass
-class CompareJob:
-    """Multi-seed SFT comparison: this commit vs a base commit (origin/main)."""
-
-    sha: str
-    base_sha: str
-    seeds: int = 3
-    num_samples: int = 5_000_000
-
-    KIND: ClassVar[str] = "compare"
-
-    def budget_seconds(self) -> int:
-        # Two roles run back-to-back; each role's seeds run in parallel but
-        # share the CPU, so a role takes roughly seeds * single-run time.
-        per_role = sft_budget_seconds(self.num_samples * self.seeds, SftArgs().epochs)
-        return 2 * per_role + SETUP_SLACK_SECONDS
-
-
-Job = SftJob | PpoJob | SweepJob | CompareJob
+Job = SftJob | PpoJob | SweepJob
 
 
 def job_to_dict(job: Job) -> dict:
@@ -181,12 +173,70 @@ def job_to_dict(job: Job) -> dict:
 
 
 def job_from_dict(d: dict) -> Job:
-    kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob, CompareJob)}
+    kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob)}
     d = dict(d)
     cls = kinds[d.pop("kind")]
     return cls(**d)
 
 
+# ── Compare fan-out ────────────────────────────────────────────────
+# A compare is not a pod-side job kind: it fans out into 2 x seeds ordinary
+# single-run pods (one run per pod so seeds never compete for CPU), grouped in
+# W&B by role. The report is assembled from W&B afterwards.
+
+COMPARE_SEEDS_DEFAULT = 3
+COMPARE_NUM_SAMPLES_DEFAULT = 5_000_000  # hours, not days, per compare
+
+
 def compare_group(sha: str, role: str) -> str:
-    """W&B group name for one side of a compare job (role: 'test' | 'base')."""
-    return f"fci-cmp-{sha[:7]}-{role}"
+    """W&B group name for one side of a compare (role: 'test' | 'base')."""
+    return f"cmp-{sha[:7]}-{role}"
+
+
+def compare_fanout(
+    algo: str,
+    sha: str,
+    base_sha: str,
+    seeds: int = COMPARE_SEEDS_DEFAULT,
+    num_samples: int = COMPARE_NUM_SAMPLES_DEFAULT,
+    start_from: Optional[str] = None,
+    total_timesteps: Optional[int] = None,
+    extra_tags: Optional[list[str]] = None,
+) -> list[SftJob | PpoJob]:
+    """Build the 2 x seeds single-run job specs for a compare.
+
+    algo "sft" compares from-scratch SFT; algo "ppo" compares PPO finetuning
+    from the same start_from checkpoint on both commits.
+    """
+    if algo not in ("sft", "ppo"):
+        raise ValueError(f"algo must be 'sft' or 'ppo', got {algo!r}")
+    if algo == "ppo" and not start_from:
+        raise ValueError("PPO compare needs --start-from (a W&B SFT run id)")
+
+    jobs: list[SftJob | PpoJob] = []
+    for role, role_sha in (("test", sha), ("base", base_sha)):
+        for seed in range(1, seeds + 1):
+            tags = [f"cmp:{sha[:7]}", f"cmp-role:{role}", *(extra_tags or [])]
+            if algo == "sft":
+                jobs.append(
+                    SftJob(
+                        sha=role_sha,
+                        num_samples=num_samples,
+                        seed=seed,
+                        group=compare_group(sha, role),
+                        extra_tags=tags,
+                    )
+                )
+            else:
+                assert start_from is not None
+                jobs.append(
+                    PpoJob(
+                        sha=role_sha,
+                        start_from=start_from,
+                        total_timesteps=total_timesteps,
+                        seed=seed,
+                        group=compare_group(sha, role),
+                        extra_tags=tags,
+                    )
+                )
+    return jobs

@@ -11,15 +11,16 @@ import time
 from typing import Optional
 
 from ci.config import (
+    COMPARE_NUM_SAMPLES_DEFAULT,
+    COMPARE_SEEDS_DEFAULT,
     GPU_FALLBACKS,
-    CompareJob,
     PpoJob,
     SftJob,
     SweepJob,
     compare_group,
     parse_pod_name,
 )
-from ci.launch import create_sweep, launch, resolve_ref
+from ci.launch import create_sweep, launch, launch_compare, resolve_ref
 
 DEFAULT_GPU = GPU_FALLBACKS[0]
 
@@ -122,34 +123,47 @@ def sweep_ppo(
 def compare(
     ref: str,
     base_ref: str = "main",
-    seeds: int = 3,
-    num_samples: int = 5_000_000,
+    algo: str = "sft",
+    seeds: int = COMPARE_SEEDS_DEFAULT,
+    num_samples: int = COMPARE_NUM_SAMPLES_DEFAULT,
+    start_from: Optional[str] = None,
+    total_timesteps: Optional[int] = None,
     gpu_type: str = DEFAULT_GPU,
     dry_run: bool = False,
-    no_wait: bool = False,
 ) -> None:
-    """Compare a commitish's SFT against a base (default origin/main), multi-seed.
+    """Compare a commitish against a base (default origin/main), multi-seed.
 
-    One pod runs `seeds` SFT runs at `ref`, then `seeds` at `base_ref` (each
-    side executes its own commit's code, including its own Rust build), and
-    finishes by printing an every-metric statistical comparison. Re-generate
-    the report anytime with `python -m ci compare-report --ref <ref>`.
+    Fans out into 2 x seeds pods — one training run per pod, so seeds never
+    compete for CPU. Both sides run their own commit's code. When the runs
+    finish, `compare-report` diffs every logged metric with seed-paired
+    t-tests (on a PR, the /ci compare comment command does all of this and
+    posts the result).
 
     Args:
         ref: Commitish under test; must be pushed to origin.
         base_ref: Baseline commitish (default: main).
+        algo: "sft" (from scratch) or "ppo" (finetune from --start-from on
+            both commits).
         seeds: Seeds per side; runs are seed-paired for the t-test.
         num_samples: SFT samples per run (smaller than a production run so a
-            compare finishes in hours, not days).
+            compare finishes in hours, not days). Ignored for --algo ppo.
+        start_from: W&B SFT run id; required for --algo ppo.
+        total_timesteps: PPO override; default = PpoArgs().total_timesteps.
         gpu_type: RunPod GPU type (falls back through the standard lineup).
-        dry_run: Print what would launch without creating a pod.
-        no_wait: Return right after pod creation instead of waiting for boot.
+        dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)
-    job = CompareJob(
-        sha=sha, base_sha=resolve_ref(base_ref), seeds=seeds, num_samples=num_samples
+    launch_compare(
+        algo=algo,
+        sha=sha,
+        base_sha=resolve_ref(base_ref),
+        seeds=seeds,
+        num_samples=num_samples,
+        start_from=start_from,
+        total_timesteps=total_timesteps,
+        gpu_type=gpu_type,
+        dry_run=dry_run,
     )
-    launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
     print(f"\nWhen done: uv run python -m ci compare-report --ref {sha[:7]}")
 
 
@@ -209,23 +223,47 @@ def watchdog(dry_run: bool = False) -> None:
     watchdog_mod.run(dry_run=dry_run)
 
 
-def compare_report(ref: str, out: str = "") -> None:
-    """Print (and optionally save) the every-metric report for a compare job.
+def compare_report(
+    ref: str,
+    asserts: tuple[str, ...] = (),
+    out: str = "",
+) -> None:
+    """Print (and optionally save) the every-metric report for a compare.
+
+    Exits non-zero when an assertion fails, so this can gate CI.
 
     Args:
-        ref: The commitish (or sha) the compare job was launched for.
+        ref: The commitish (or sha) the compare was launched for.
+        asserts: Pass/fail conditions on group means, e.g.
+            "pr:val/thput > main:val/thput" or "pr:val/acc >= 0.5".
         out: Optional path to also write the markdown report to.
     """
     from ci import report
 
     sha = resolve_ref(ref)
-    md = report.compare_report(
-        base_group=compare_group(sha, "base"), test_group=compare_group(sha, "test")
+    md, ok = report.compare_report(
+        base_group=compare_group(sha, "base"),
+        test_group=compare_group(sha, "test"),
+        assertions=list(asserts),
     )
     print(md)
     if out:
         with open(out, "w") as f:
             f.write(md)
+    if not ok:
+        raise SystemExit(1)
+
+
+def post_pending_reports(dry_run: bool = False, window_days: int = 3) -> None:
+    """Post PR summary comments for finished runs that lack one (reporter cron).
+
+    Args:
+        dry_run: Report what would be posted without posting.
+        window_days: How far back to scan W&B for finished runs.
+    """
+    from ci import report
+
+    report.post_pending_reports(window_days=window_days, dry_run=dry_run)
 
 
 def sweep_report(sweep: str, top_n: int = 5, out: str = "") -> None:

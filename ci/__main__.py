@@ -19,6 +19,7 @@ def main() -> None:
             "compare-report": cli.compare_report,
             "sweep-report": cli.sweep_report,
             "history": cli.history,
+            "post-pending-reports": cli.post_pending_reports,
         },
         description="Launch and manage factorion GPU training jobs on RunPod.",
     )

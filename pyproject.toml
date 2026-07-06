@@ -20,6 +20,7 @@ dependencies = [
     "runpod",
     "pyyaml",
     "pillow",
+    "requests",  # ci/github_api.py (already in the tree via wandb)
 ]
 
 # Tooling for the pre-commit/pre-push checklist (`uv sync` installs these too).
