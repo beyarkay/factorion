@@ -20,6 +20,7 @@ from ci.config import (
     compare_group,
     compare_nonce,
     parse_pod_name,
+    pod_emoji,
     pod_url,
 )
 from ci.launch import create_sweep, launch, launch_compare, resolve_ref
@@ -174,14 +175,21 @@ def pod_summary(pod: dict, now: Optional[float] = None) -> dict:
         if meta
         else "no deadline (unparseable name)"
     )
-    # desiredStatus says RUNNING even while the host is still pulling the
-    # image; only a live runtime means the container actually started.
-    booting = pod.get("desiredStatus") == "RUNNING" and not uptime
+    # desiredStatus says RUNNING even when no container has ever started;
+    # the API can't tell a slow image pull from a pod that's stuck idle, so
+    # the label claims only what is knowable. These pods never arm their
+    # in-pod deadline timer — the hourly watchdog is what reaps them.
+    no_container = pod.get("desiredStatus") == "RUNNING" and not uptime
+    label = (
+        "NO CONTAINER (pulling or stuck)"
+        if no_container
+        else pod.get("desiredStatus") or "?"
+    )
     return {
         "id": pod["id"],
         "url": pod_url(pod["id"]),
         "name": pod.get("name") or "?",
-        "status": "BOOTING (image pull)" if booting else pod.get("desiredStatus") or "?",
+        "status": f"{pod_emoji(pod, now)} {label}",
         "gpu": pod.get("machine", {}).get("gpuDisplayName", "?"),
         "uptime": runpod_api.format_uptime(uptime) if uptime else "-",
         "cost_hr": pod.get("costPerHr", "?"),

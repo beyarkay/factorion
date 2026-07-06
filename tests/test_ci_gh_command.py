@@ -20,7 +20,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 @pytest.fixture
 def gh_ctx(monkeypatch):
     """Env + mocks for a /ci comment on PR #42; returns the capture dict."""
-    captured = {"pods": [], "comments": [], "statuses": []}
+    captured = {"pods": [], "comments": [], "statuses": [], "edits": []}
 
     monkeypatch.setenv("PR_NUMBER", "42")
     monkeypatch.setenv("HEAD_SHA", SHA)
@@ -41,10 +41,22 @@ def gh_ctx(monkeypatch):
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
     monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
     monkeypatch.setattr(gh_command, "_missing_run_warnings", lambda infos: "")
+    # Live pod/run statuses hit RunPod + W&B; give every pod a "running" pair.
+    monkeypatch.setattr(
+        gh_command,
+        "_launch_statuses",
+        lambda infos: {i["pod_id"]: ("🚀", "🚀") for i in infos},
+    )
+
+    def fake_post_comment(pr, body):
+        captured["comments"].append((pr, body))
+        return 9000 + len(captured["comments"])  # a comment id, like the real API
+
+    monkeypatch.setattr(gh_command.github_api, "post_pr_comment", fake_post_comment)
     monkeypatch.setattr(
         gh_command.github_api,
-        "post_pr_comment",
-        lambda pr, body: captured["comments"].append((pr, body)),
+        "update_pr_comment",
+        lambda comment_id, body: captured["edits"].append((comment_id, body)),
     )
     monkeypatch.setattr(
         gh_command.github_api,
@@ -83,7 +95,7 @@ class TestSftDispatch:
         run_id = pod["env"]["FCI_WANDB_RUN_ID"]
         assert len(run_id) == 8
         assert f"https://wandb.ai/testent/factorion/runs/{run_id}" in body
-        assert "https://console.runpod.io/pods/pod-1" in body
+        assert "https://console.runpod.io/pods?id=pod-1" in body
         # Every CI comment links back to the /ci comment that triggered it.
         assert "Originally triggered by" in body
         assert "#issuecomment-999" in body
@@ -132,6 +144,15 @@ class TestCompareDispatch:
         # Waited for both groups, then reported with the comment's assertion.
         assert waits[0]["expect_each"] == 2
         assert reports[0][2] == ["pr:val/thput > main:val/thput"]
+
+        # The launch comment starts all-pending and is edited in place with
+        # live pod/run statuses (final refresh after the wait ends). The +1
+        # on each count is the status legend line.
+        launch_body = gh_ctx["comments"][0][1]
+        assert launch_body.count("⏳") == 2 * len(gh_ctx["pods"]) + 1
+        ((edit_id, edit_body),) = gh_ctx["edits"]
+        assert edit_id == 9001  # edits target the launch comment, not a new one
+        assert edit_body.count("🚀") == 2 * len(gh_ctx["pods"]) + 1
 
         # Status: pending at launch, success after the passing report.
         states = [s[1] for s in gh_ctx["statuses"]]
