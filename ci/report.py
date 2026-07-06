@@ -336,12 +336,19 @@ def wait_for_groups(
     expect_each: int,
     timeout_seconds: int,
     poll_seconds: int = 120,
+    pod_ids: Optional[list[str]] = None,
 ) -> None:
-    """Block until both W&B groups have `expect_each` finished runs (or the
-    timeout passes — the report is then built from whatever exists)."""
+    """Block until both W&B groups have `expect_each` finished runs.
+
+    Ends early when every launched pod is gone (pass `pod_ids`): a vanished
+    pod can never add a run, so whatever exists at that point is final — one
+    grace poll for W&B to settle, then report. Falls back to the timeout when
+    pods can't be checked.
+    """
     import wandb
 
     deadline = time.time() + timeout_seconds
+    pods_all_gone_since = None
     while time.time() < deadline:
         api = wandb.Api()  # fresh client: avoid cached run listings
         path = _project_path(api)
@@ -352,6 +359,27 @@ def wait_for_groups(
         print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
         if all(c >= expect_each for c in counts.values()):
             return
+
+        if pod_ids:
+            try:
+                from ci import runpod_api
+
+                live = {p["id"] for p in runpod_api.list_ci_pods()}
+                alive = sorted(set(pod_ids) & live)
+            except Exception as e:
+                alive = None
+                print(f"could not check pod liveness: {e}", flush=True)
+            if alive == []:
+                if pods_all_gone_since is None:
+                    pods_all_gone_since = time.time()
+                    print("all launched pods are gone; one grace poll for W&B to settle", flush=True)
+                else:
+                    print("pods gone and counts settled; reporting what exists", flush=True)
+                    return
+            elif alive:
+                pods_all_gone_since = None
+                print(f"still waiting on pod(s): {alive}", flush=True)
+
         time.sleep(poll_seconds)
     print(f"wait_for_groups timed out after {timeout_seconds}s; reporting what exists")
 

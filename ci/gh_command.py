@@ -280,6 +280,7 @@ def cmd_compare(args, ctx) -> None:
         test_group=compare_group(ctx["sha"], "test"),
         expect_each=args.seeds,
         timeout_seconds=_compare_wait_seconds(args),
+        pod_ids=[i["pod_id"] for i in infos if i["pod_id"]],
     )
     _post_compare_outcome(ctx, ctx["assertions"])
 
