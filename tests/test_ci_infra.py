@@ -82,34 +82,46 @@ class TestSweepCommand:
         assert sweep_agent_command(job) == ["wandb", "agent", "me/factorion/ab12cd34"]
 
 
-# ── Compare fan-out: one pod per (role, seed) ──────────────────────
+# ── Compare fan-out: one pod per (side, seed) ──────────────────────
 
 
 class TestCompareFanout:
     def test_sft_fanout_shape(self):
-        jobs = compare_fanout("sft", SHA, BASE_SHA, seeds=3, num_samples=1000)
+        jobs = compare_fanout("sft", SHA, BASE_SHA, nonce="ab12", seeds=3, num_samples=1000)
         assert len(jobs) == 6
-        test_side = [j for j in jobs if j.sha == SHA]
-        base_side = [j for j in jobs if j.sha == BASE_SHA]
-        assert len(test_side) == len(base_side) == 3
+        pr_side = [j for j in jobs if j.sha == SHA]
+        main_side = [j for j in jobs if j.sha == BASE_SHA]
+        assert len(pr_side) == len(main_side) == 3
         # Seeds pair up across sides; each side gets its own W&B group.
-        assert sorted(j.seed for j in test_side) == [1, 2, 3]
-        assert {j.group for j in test_side} == {compare_group(SHA, "test")}
-        assert {j.group for j in base_side} == {compare_group(SHA, "base")}
-        # Groups are keyed on the TEST sha for both sides (one compare = one key).
+        assert sorted(j.seed for j in pr_side) == [1, 2, 3]
+        assert {j.group for j in pr_side} == {compare_group(SHA, "sft", "ab12", "pr")}
+        assert {j.group for j in main_side} == {compare_group(SHA, "sft", "ab12", "main")}
+        # Groups are keyed on the PR sha for both sides (one compare = one key).
         assert all(SHA[:7] in (j.group or "") for j in jobs)
 
+    def test_groups_unique_per_launch(self):
+        # Two compares at the same commit (rerun, or sft + ppo back to back)
+        # must NOT share W&B groups — a shared group let one compare's runs
+        # pollute the other's report (seen live on PR #243).
+        a = compare_fanout("sft", SHA, BASE_SHA, nonce="aaaa", seeds=1, num_samples=10)
+        b = compare_fanout("sft", SHA, BASE_SHA, nonce="bbbb", seeds=1, num_samples=10)
+        p = compare_fanout("ppo", SHA, BASE_SHA, nonce="aaaa", seeds=1, start_from="x")
+        assert {j.group for j in a}.isdisjoint({j.group for j in b})
+        assert {j.group for j in a}.isdisjoint({j.group for j in p})
+
     def test_fanout_tags_mark_compare_runs(self):
-        jobs = compare_fanout("sft", SHA, BASE_SHA, seeds=1, num_samples=10, extra_tags=["pr:7"])
+        jobs = compare_fanout(
+            "sft", SHA, BASE_SHA, nonce="ab12", seeds=1, num_samples=10, extra_tags=["pr:7"]
+        )
         for job in jobs:
             assert f"cmp:{SHA[:7]}" in job.extra_tags
             assert "pr:7" in job.extra_tags
-        roles = {t for j in jobs for t in j.extra_tags if t.startswith("cmp-role:")}
-        assert roles == {"cmp-role:test", "cmp-role:base"}
+        sides = {t for j in jobs for t in j.extra_tags if t.startswith("cmp-side:")}
+        assert sides == {"cmp-side:pr", "cmp-side:main"}
 
     def test_ppo_fanout_uses_same_checkpoint_both_sides(self):
         jobs = compare_fanout(
-            "ppo", SHA, BASE_SHA, seeds=2, start_from="j0s5y2mc", total_timesteps=100
+            "ppo", SHA, BASE_SHA, nonce="ab12", seeds=2, start_from="j0s5y2mc", total_timesteps=100
         )
         ppo_jobs = [j for j in jobs if isinstance(j, PpoJob)]
         assert len(ppo_jobs) == len(jobs) == 4
@@ -117,7 +129,7 @@ class TestCompareFanout:
 
     def test_ppo_fanout_requires_start_from(self):
         try:
-            compare_fanout("ppo", SHA, BASE_SHA)
+            compare_fanout("ppo", SHA, BASE_SHA, nonce="ab12")
             assert False, "expected ValueError"
         except ValueError:
             pass
@@ -211,7 +223,9 @@ class TestBudgets:
         assert ppo_budget_seconds(1_000_000) > ppo_budget_seconds(100_000)
 
     def test_compare_pods_budget_like_single_runs(self):
-        (job, *_) = compare_fanout("sft", SHA, BASE_SHA, seeds=1, num_samples=1_000_000)
+        (job, *_) = compare_fanout(
+            "sft", SHA, BASE_SHA, nonce="ab12", seeds=1, num_samples=1_000_000
+        )
         assert job.budget_seconds() == sft_budget_seconds(1_000_000, 1)
 
 

@@ -18,6 +18,7 @@ from ci.config import (
     SftJob,
     SweepJob,
     compare_group,
+    compare_nonce,
     parse_pod_name,
     pod_url,
 )
@@ -140,10 +141,12 @@ def compare(
         dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)
+    nonce = compare_nonce()
     launch_compare(
         algo=algo,
         sha=sha,
         base_sha=resolve_ref(base_ref),
+        nonce=nonce,
         seeds=seeds,
         num_samples=num_samples,
         start_from=start_from,
@@ -152,8 +155,8 @@ def compare(
         dry_run=dry_run,
     )
     print(
-        f"\nRuns land in W&B groups {compare_group(sha, 'test')} / "
-        f"{compare_group(sha, 'base')}; on a PR, /ci compare posts the report."
+        f"\nRuns land in W&B groups {compare_group(sha, algo, nonce, 'pr')} / "
+        f"{compare_group(sha, algo, nonce, 'main')}; on a PR, /ci compare posts the report."
     )
 
 

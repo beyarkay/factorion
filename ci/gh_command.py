@@ -29,6 +29,7 @@ from ci.config import (
     PpoJob,
     SftJob,
     compare_group,
+    compare_nonce,
     pod_url,
     ppo_budget_seconds,
     sft_budget_seconds,
@@ -177,13 +178,17 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
     return "\n".join(lines)
 
 
+def _post(ctx, body: str) -> None:
+    github_api.post_pr_comment(ctx["pr"], body)
+
+
 def cmd_sft(args, ctx) -> None:
     job = SftJob(
         sha=ctx["sha"], num_samples=args.num_samples, extra_tags=[f"pr:{ctx['pr']}"]
     )
     info = launch(job, args.gpu_type, wait=False)
-    github_api.post_pr_comment(
-        ctx["pr"],
+    _post(
+        ctx,
         _launched_comment(
             f"SFT run launched at {_commit_link(ctx['sha'])}",
             [info],
@@ -200,8 +205,8 @@ def cmd_ppo(args, ctx) -> None:
         extra_tags=[f"pr:{ctx['pr']}"],
     )
     info = launch(job, args.gpu_type, wait=False)
-    github_api.post_pr_comment(
-        ctx["pr"],
+    _post(
+        ctx,
         _launched_comment(
             f"PPO run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
             [info],
@@ -261,16 +266,20 @@ def _missing_run_warnings(infos: list[dict]) -> str:
 
 
 def _post_compare_outcome(
-    ctx, assertions: list[str], infos: Optional[list[dict]] = None
+    ctx,
+    assertions: list[str],
+    main_group: str,
+    pr_group: str,
+    infos: Optional[list[dict]] = None,
 ) -> None:
     from ci.report import compare_report
 
     md, ok = compare_report(
-        base_group=compare_group(ctx["sha"], "base"),
-        test_group=compare_group(ctx["sha"], "test"),
+        main_group=main_group,
+        pr_group=pr_group,
         assertions=assertions,
     )
-    github_api.post_pr_comment(ctx["pr"], _missing_run_warnings(infos or []) + md)
+    _post(ctx, _missing_run_warnings(infos or []) + md)
     state = "success" if ok else "failure"
     description = (
         "all assertions passed"
@@ -285,10 +294,14 @@ def _post_compare_outcome(
 
 
 def cmd_compare(args, ctx) -> None:
+    nonce = compare_nonce()
+    pr_group = compare_group(ctx["sha"], args.algo, nonce, "pr")
+    main_group = compare_group(ctx["sha"], args.algo, nonce, "main")
     infos = launch_compare(
         algo=args.algo,
         sha=ctx["sha"],
         base_sha=resolve_ref(args.base_ref),
+        nonce=nonce,
         seeds=args.seeds,
         num_samples=args.num_samples,
         start_from=args.start_from,
@@ -299,15 +312,15 @@ def cmd_compare(args, ctx) -> None:
     assertion_note = (
         "\n".join(f"- `{a}`" for a in ctx["assertions"]) or "_none — report only_"
     )
-    github_api.post_pr_comment(
-        ctx["pr"],
+    _post(
+        ctx,
         _launched_comment(
             f"Compare launched: {_commit_link(ctx['sha'])} vs `{args.base_ref}` "
             f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per run)",
             infos,
             footer=(
-                f"W&B groups: {_group_link(compare_group(ctx['sha'], 'test'))} vs "
-                f"{_group_link(compare_group(ctx['sha'], 'base'))}\n\n"
+                f"W&B groups: {_group_link(pr_group)} vs "
+                f"{_group_link(main_group)}\n\n"
                 f"Assertions:\n{assertion_note}"
             ),
         ),
@@ -319,13 +332,13 @@ def cmd_compare(args, ctx) -> None:
     from ci.report import wait_for_groups
 
     wait_for_groups(
-        base_group=compare_group(ctx["sha"], "base"),
-        test_group=compare_group(ctx["sha"], "test"),
+        main_group=main_group,
+        pr_group=pr_group,
         expect_each=args.seeds,
         timeout_seconds=_compare_wait_seconds(args),
         pod_ids=[i["pod_id"] for i in infos if i["pod_id"]],
     )
-    _post_compare_outcome(ctx, ctx["assertions"], infos=infos)
+    _post_compare_outcome(ctx, ctx["assertions"], main_group, pr_group, infos=infos)
 
 
 def cmd_sweep(args, ctx) -> None:
@@ -349,8 +362,8 @@ def cmd_sweep(args, ctx) -> None:
     entity, project, sweep_id = sweep_path.split("/")
     sweep_url = f"https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}"
     sweep_line = sweep_summary_line(read_sweep_config(algo, ctx["sha"]))
-    github_api.post_pr_comment(
-        ctx["pr"],
+    _post(
+        ctx,
         _launched_comment(
             f"{algo.upper()} sweep launched at {_commit_link(ctx['sha'])} "
             f"({args.pods} pod(s) x {args.agents_per_pod} agents)",
@@ -366,7 +379,7 @@ def cmd_sweep(args, ctx) -> None:
     from ci.report import sweep_report
 
     _wait_for_sweep(sweep_path)
-    github_api.post_pr_comment(ctx["pr"], sweep_report(sweep_path))
+    _post(ctx, sweep_report(sweep_path))
 
 
 def _wait_for_sweep(sweep_path: str, timeout_seconds: int = MAX_WAIT_SECONDS) -> None:
@@ -403,7 +416,7 @@ def cmd_pods(args, ctx) -> None:
 
     ci_pods = runpod_api.list_ci_pods()
     body = _pods_table(ci_pods) if ci_pods else "No CI pods running."
-    github_api.post_pr_comment(ctx["pr"], body)
+    _post(ctx, body)
 
 
 def cmd_kill(args, ctx) -> None:
@@ -417,13 +430,13 @@ def cmd_kill(args, ctx) -> None:
         else []
     )
     if not targets:
-        github_api.post_pr_comment(ctx["pr"], "Nothing to kill: pass a pod id or `--all`.")
+        _post(ctx, "Nothing to kill: pass a pod id or `--all`.")
         return
     lines = []
     for pod in targets:
         runpod_api.terminate_with_retry(pod["id"])
         lines.append(f"- terminated [`{pod['id']}`]({pod_url(pod['id'])})")
-    github_api.post_pr_comment(ctx["pr"], "\n".join(lines))
+    _post(ctx, "\n".join(lines))
 
 
 def cmd_watchdog(args, ctx) -> None:
@@ -443,7 +456,7 @@ def cmd_watchdog(args, ctx) -> None:
             runpod_api.terminate_with_retry(pod["id"])
     if not doomed:
         lines.append("Nothing to reap.")
-    github_api.post_pr_comment(ctx["pr"], "\n".join(lines))
+    _post(ctx, "\n".join(lines))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -500,14 +513,14 @@ def main() -> None:
     ctx["assertions"] = assertions
 
     if not tokens or tokens[0] == "help":
-        github_api.post_pr_comment(ctx["pr"], HELP)
+        _post(ctx, HELP)
         return
 
     try:
         args = build_parser().parse_args(tokens)
     except SystemExit:
-        github_api.post_pr_comment(
-            ctx["pr"],
+        _post(
+            ctx,
             f"## &#x274C; could not parse `/ci {' '.join(tokens)}`\n\n{HELP}",
         )
         raise
@@ -526,8 +539,8 @@ def main() -> None:
     except SystemExit:
         raise
     except Exception:
-        github_api.post_pr_comment(
-            ctx["pr"],
+        _post(
+            ctx,
             "## &#x274C; `/ci` command failed\n\n"
             f"```\n{traceback.format_exc()[-3000:]}\n```",
         )

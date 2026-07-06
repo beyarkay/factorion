@@ -110,8 +110,8 @@ class TestCompareDispatch:
         )
         reports = []
 
-        def fake_compare_report(base_group, test_group, assertions=None):
-            reports.append((base_group, test_group, assertions))
+        def fake_compare_report(main_group, pr_group, assertions=None):
+            reports.append((main_group, pr_group, assertions))
             return "REPORT-MD", True
 
         monkeypatch.setattr("ci.report.compare_report", fake_compare_report)
@@ -140,7 +140,7 @@ class TestCompareDispatch:
         monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
         monkeypatch.setattr(
             "ci.report.compare_report",
-            lambda base_group, test_group, assertions=None: ("BAD-MD", False),
+            lambda main_group, pr_group, assertions=None: ("BAD-MD", False),
         )
         with pytest.raises(SystemExit) as exc:
             gh_command.main()
@@ -164,7 +164,7 @@ class TestComparePpoDispatch:
         monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
         monkeypatch.setattr(
             "ci.report.compare_report",
-            lambda base_group, test_group, assertions=None: ("MD", True),
+            lambda main_group, pr_group, assertions=None: ("MD", True),
         )
         gh_command.main()
 

@@ -66,11 +66,13 @@ the intended path.
 4. The pod **terminates itself** when the job ends, however it ends.
 
 A `compare` fans out into 2 × seeds pods — **one training run per pod**, so
-seeds never compete for CPU — grouped in W&B by role (`cmp-<sha7>-test` /
-`cmp-<sha7>-base`); the report is assembled from W&B afterwards.
+seeds never compete for CPU — grouped in W&B by side
+(`cmp-<sha7>-<algo>-<nonce>-pr` / `…-main`; the per-launch nonce keeps a
+rerun or a second compare at the same commit from polluting the groups);
+the report is assembled from W&B afterwards.
 
 W&B runs are tagged `ci`, `kind:<sft|ppo>`, `sha:<sha7>`, `pr:<num>` (and
-`cmp:<sha7>` + `cmp-role:<test|base>` for compare runs). Raw logs are in the
+`cmp:<sha7>` + `cmp-side:<pr|main>` for compare runs). Raw logs are in the
 RunPod console (the pod's container logs; the job also tees to
 `/workspace/job.log`).
 
