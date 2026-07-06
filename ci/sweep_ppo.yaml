@@ -1,83 +1,37 @@
-# ci/sweep_ppo.yaml — PPO hyperparameter sweep
+# ci/sweep_ppo.yaml — PPO step_penalty sweep
 #
 # Launched with: uv run python -m ci sweep ppo --ref <commitish>  (or comment /ci sweep ppo on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
-
-method: bayes
-run_cap: 30
+#
+# Focused sweep: vary ONLY --step-penalty over [0, 0.01]; every other
+# hyperparameter stays at its training_config.py default, which reproduces the
+# collapsed run y324x0d4 (lr 7e-4, ent 0.02041->0.0004576, kl 0.02, cw5,
+# layers 93/69/96) at the step_penalty=0 grid point. Finetunes from the SFT
+# base uju9n8ql (the base that collapsed) so this directly measures whether a
+# per-step length penalty rescues the EOT-head collapse (eot_rate 0.87 -> 0,
+# length -> 123 truncation, thput -> 0).
+method: grid
+run_cap: 5
 metric:
   name: "eval/thput_eot"
   goal: maximize
 
 parameters:
-  ent_coef_start:
-    distribution: log_uniform_values
-    min: 0.005
-    max: 0.2
-
-  ent_coef_end:
-    distribution: log_uniform_values
-    min: 1e-4
-    max: 0.01
-
-  learning_rate:
-    distribution: log_uniform_values
-    min: 5e-5
-    max: 1e-3
-
-  layer1:
-    values: [32, 48, 64]
-
-  layer2:
-    values: [48, 64]
-
-  layer3:
-    values: [48, 64]
-
-  clip_coef:
-    distribution: uniform
-    min: 0.18
-    max: 0.32
-
-  gamma:
-    distribution: uniform
-    min: 0.95
-    max: 0.999
-
-  gae_lambda:
-    distribution: uniform
-    min: 0.8
-    max: 0.975
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  vf_coef:
-    distribution: uniform
-    min: 0.5
-    max: 0.9
-
-  max_grad_norm:
-    distribution: uniform
-    min: 0.75
-    max: 2.5
-
-  adam_epsilon:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 2e-4
+  step_penalty:
+    values: [0.0, 0.0025, 0.005, 0.0075, 0.01]
 
 program: ppo.py
 
 # Plain `python`: on a CI pod deps are installed system-wide; locally, run the
 # agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
+# --start-from uju9n8ql: finetune from the collapsed SFT base (see header).
 command:
   - ${env}
   - python
   - ${program}
+  - --start-from
+  - uju9n8ql
   - --total-timesteps
   - 250_000
   - --track
