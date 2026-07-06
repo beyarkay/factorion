@@ -37,6 +37,7 @@ def gh_ctx(monkeypatch):
 
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
     monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
+    monkeypatch.setattr(gh_command, "_missing_run_warnings", lambda infos: "")
     monkeypatch.setattr(
         gh_command.github_api,
         "post_pr_comment",

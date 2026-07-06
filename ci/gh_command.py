@@ -18,6 +18,7 @@ import shlex
 import sys
 import time
 import traceback
+from typing import Optional
 
 from ci import github_api
 from ci.config import (
@@ -219,7 +220,49 @@ def _compare_wait_seconds(args) -> int:
     return min(budget + 45 * 60, MAX_WAIT_SECONDS)
 
 
-def _post_compare_outcome(ctx, assertions: list[str]) -> None:
+def _missing_run_warnings(infos: list[dict]) -> str:
+    """Name the pods whose pre-assigned W&B run never appeared, so a
+    short-handed report explains itself (pod died, or is still stuck pulling
+    the image — the pod page tells which)."""
+    try:
+        import wandb
+
+        api = wandb.Api()
+        entity = _wandb_entity()
+        if not entity:
+            return ""
+        missing = []
+        for info in infos:
+            run_id = info.get("wandb_run_id")
+            if not run_id:
+                continue
+            try:
+                api.run(f"{entity}/{WANDB_PROJECT}/{run_id}")
+            except Exception:
+                missing.append(info)
+        if not missing:
+            return ""
+        lines = [
+            "> [!WARNING]",
+            "> Pod(s) never produced their W&B run — died, or still stuck "
+            "pulling the image (see the pod page). Rerun the /ci command to "
+            "fill the gap:",
+        ]
+        for info in missing:
+            job = info.get("job", {})
+            lines.append(
+                f"> - pod [`{info['pod_id']}`]({pod_url(info['pod_id'])}) "
+                f"(seed {job.get('seed')}, group `{job.get('group')}`) — "
+                f"run `{info['wandb_run_id']}` never appeared"
+            )
+        return "\n".join(lines) + "\n\n"
+    except Exception:
+        return ""
+
+
+def _post_compare_outcome(
+    ctx, assertions: list[str], infos: Optional[list[dict]] = None
+) -> None:
     from ci.report import compare_report
 
     md, ok = compare_report(
@@ -227,7 +270,7 @@ def _post_compare_outcome(ctx, assertions: list[str]) -> None:
         test_group=compare_group(ctx["sha"], "test"),
         assertions=assertions,
     )
-    github_api.post_pr_comment(ctx["pr"], md)
+    github_api.post_pr_comment(ctx["pr"], _missing_run_warnings(infos or []) + md)
     state = "success" if ok else "failure"
     description = (
         "all assertions passed"
@@ -282,7 +325,7 @@ def cmd_compare(args, ctx) -> None:
         timeout_seconds=_compare_wait_seconds(args),
         pod_ids=[i["pod_id"] for i in infos if i["pod_id"]],
     )
-    _post_compare_outcome(ctx, ctx["assertions"])
+    _post_compare_outcome(ctx, ctx["assertions"], infos=infos)
 
 
 def cmd_sweep(args, ctx) -> None:
