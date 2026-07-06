@@ -1,6 +1,6 @@
 # ci/sweep_ppo.yaml — PPO hyperparameter sweep
 #
-# Launched with: uv run python -m ci sweep-ppo --ref <commitish>
+# Launched with: uv run python -m ci sweep ppo --ref <commitish>  (or comment /ci sweep ppo on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 

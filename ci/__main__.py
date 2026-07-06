@@ -10,8 +10,7 @@ def main() -> None:
         {
             "sft": cli.sft,
             "ppo": cli.ppo,
-            "sweep-sft": cli.sweep_sft,
-            "sweep-ppo": cli.sweep_ppo,
+            "sweep": cli.sweep,
             "compare": cli.compare,
             "pods": cli.pods,
             "kill": cli.kill,

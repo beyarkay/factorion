@@ -108,10 +108,10 @@ uv run python ppo.py \
 
 Run a W&B sweep (creates the sweep from `ci/sweep_ppo.yaml`/`ci/sweep_sft.yaml`
 at the given commit and drains it on self-terminating RunPod pods; or comment
-`/ci sweep-ppo` on a PR):
+`/ci sweep ppo` on a PR):
 
 ```bash
-uv run python -m ci sweep-ppo --ref main
+uv run python -m ci sweep ppo --ref main
 ```
 
 ## Benchmarks

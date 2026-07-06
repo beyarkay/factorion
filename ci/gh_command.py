@@ -3,19 +3,7 @@
 The workflow hands over the comment body plus PR context via env vars; this
 module parses the command, launches pods with the repo's secrets, and posts
 the outcome back to the PR — comments are the backbone of CI reporting.
-
-Comment grammar (first line + optional assert lines):
-
-    /ci sft [--num-samples N]
-    /ci ppo --start-from <wandb_run_id> [--total-timesteps N]
-    /ci compare [--algo sft|ppo] [--seeds N] [--num-samples N]
-                [--start-from ID] [--total-timesteps N]
-    assert pr:val/thput > main:val/thput
-    assert pr:val/acc >= 0.5
-    /ci compare-report            (re-post the compare report for this PR head)
-    /ci sweep-sft [--pods N] [--agents-per-pod N]
-    /ci sweep-ppo [--pods N] [--agents-per-pod N]
-    /ci pods | /ci kill --all | /ci watchdog | /ci help
+`/ci help` posts HELP below, which doubles as the grammar reference.
 
 Env: COMMENT_BODY, PR_NUMBER, HEAD_SHA, GITHUB_TOKEN, GITHUB_REPOSITORY,
 RUNPOD_API_KEY, WANDB_API_KEY.
@@ -51,7 +39,55 @@ COMPARE_STATUS_CONTEXT = "factorion-ci/compare"
 # under the workflow's own timeout.
 MAX_WAIT_SECONDS = 320 * 60
 
-USAGE = __doc__ or ""
+HELP = """\
+## `/ci` — GPU training jobs from PR comments
+
+Every job runs **this PR's head commit** on a self-terminating RunPod pod and
+reports back here as a comment. Hyperparameters come from `training_config.py`;
+the flags below are the entire override surface (see `ci/README.md`).
+
+### Train
+
+- `/ci sft` — SFT from scratch (production-sized: `SftArgs.num_samples`)
+- `/ci sft --num-samples 200000` — quick smoke run (~minutes)
+- `/ci ppo --start-from j0s5y2mc` — PPO from an SFT checkpoint (W&B run id);
+  optional `--total-timesteps N`
+
+The result comment (headline metrics + all metrics) lands when the run
+finishes, however long it takes.
+
+### Compare this branch to main
+
+- `/ci compare sft` — N seeds each of this branch and main (one pod per run),
+  then a seed-paired diff of every logged metric. Options: `--seeds 3`,
+  `--num-samples 5000000`, `--base-ref main`
+- `/ci compare ppo --start-from j0s5y2mc` — same, comparing PPO finetuning
+  from that checkpoint on both commits; optional `--total-timesteps N`
+
+Add `assert` lines to turn the comparison into a pass/fail commit status:
+
+```
+/ci compare sft --seeds 3
+assert pr:val/thput > main:val/thput
+assert pr:val/acc >= 0.5
+```
+
+(`pr:`/`test:` = this branch, `main:`/`base:` = the baseline; bare numbers are
+thresholds.) `/ci compare-report` re-posts the report for this PR head, and
+re-evaluates any `assert` lines on the same comment.
+
+### Sweeps
+
+- `/ci sweep sft` or `/ci sweep ppo` — W&B sweep from this commit's
+  `ci/sweep_<algo>.yaml`. Options: `--pods 1`, `--agents-per-pod 5`
+
+### Pod management
+
+- `/ci pods` — list CI pods (status, cost, deadline)
+- `/ci kill <pod_id>` or `/ci kill --all` — terminate CI pods
+- `/ci watchdog --dry-run` — show what the leaked-pod reaper would do
+- `/ci help` — this message
+"""
 
 
 def parse_comment(body: str) -> tuple[list[str], list[str]]:
@@ -193,7 +229,8 @@ def cmd_compare_report(args, ctx) -> None:
     _post_compare_outcome(ctx, ctx["assertions"])
 
 
-def cmd_sweep(args, ctx, algo: str) -> None:
+def cmd_sweep(args, ctx) -> None:
+    algo = args.algo
     sweep_path = create_sweep(algo, ctx["sha"])
     from ci.config import SweepJob
 
@@ -225,16 +262,21 @@ def cmd_sweep(args, ctx, algo: str) -> None:
     # Wait for the sweep to drain (run_cap from the yaml), then report.
     from ci.report import sweep_report
 
+    _wait_for_sweep(sweep_path)
+    github_api.post_pr_comment(ctx["pr"], sweep_report(sweep_path))
+
+
+def _wait_for_sweep(sweep_path: str, timeout_seconds: int = MAX_WAIT_SECONDS) -> None:
     import wandb
 
-    deadline = time.time() + MAX_WAIT_SECONDS
+    deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         sweep = wandb.Api().sweep(sweep_path)
         if str(sweep.state).upper() in ("FINISHED", "CANCELLED", "CANCELED"):
-            break
+            return
         print(f"sweep state: {sweep.state}", flush=True)
         time.sleep(300)
-    github_api.post_pr_comment(ctx["pr"], sweep_report(sweep_path))
+    print(f"sweep still running after {timeout_seconds}s; posting a partial report")
 
 
 def _captured(fn, *args, **kwargs) -> str:
@@ -282,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     common(sp)
 
     sp = sub.add_parser("compare", add_help=False)
-    sp.add_argument("--algo", choices=("sft", "ppo"), default="sft")
+    sp.add_argument("algo", nargs="?", choices=("sft", "ppo"), default="sft")
     sp.add_argument("--base-ref", default="main")
     sp.add_argument("--seeds", type=int, default=COMPARE_SEEDS_DEFAULT)
     sp.add_argument("--num-samples", type=int, default=COMPARE_NUM_SAMPLES_DEFAULT)
@@ -292,11 +334,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("compare-report", add_help=False)
 
-    for name in ("sweep-sft", "sweep-ppo"):
-        sp = sub.add_parser(name, add_help=False)
-        sp.add_argument("--pods", type=int, default=1)
-        sp.add_argument("--agents-per-pod", type=int, default=5)
-        common(sp)
+    sp = sub.add_parser("sweep", add_help=False)
+    sp.add_argument("algo", choices=("sft", "ppo"))
+    sp.add_argument("--pods", type=int, default=1)
+    sp.add_argument("--agents-per-pod", type=int, default=5)
+    common(sp)
 
     sub.add_parser("pods", add_help=False)
 
@@ -321,7 +363,7 @@ def main() -> None:
     ctx["assertions"] = assertions
 
     if not tokens or tokens[0] == "help":
-        github_api.post_pr_comment(ctx["pr"], f"```\n{USAGE}\n```")
+        github_api.post_pr_comment(ctx["pr"], HELP)
         return
 
     try:
@@ -329,7 +371,7 @@ def main() -> None:
     except SystemExit:
         github_api.post_pr_comment(
             ctx["pr"],
-            f"## &#x274C; could not parse `/ci {' '.join(tokens)}`\n\n```\n{USAGE}\n```",
+            f"## &#x274C; could not parse `/ci {' '.join(tokens)}`\n\n{HELP}",
         )
         raise
 
@@ -339,8 +381,7 @@ def main() -> None:
             "ppo": cmd_ppo,
             "compare": cmd_compare,
             "compare-report": cmd_compare_report,
-            "sweep-sft": lambda a, c: cmd_sweep(a, c, "sft"),
-            "sweep-ppo": lambda a, c: cmd_sweep(a, c, "ppo"),
+            "sweep": cmd_sweep,
             "pods": cmd_pods,
             "kill": cmd_kill,
             "watchdog": cmd_watchdog,

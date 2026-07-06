@@ -140,6 +140,48 @@ class TestCompareDispatch:
         assert gh_ctx["pods"] == []  # compare-report launches nothing
 
 
+class TestComparePpoDispatch:
+    def test_positional_algo_ppo(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv(
+            "COMMENT_BODY", "/ci compare ppo --start-from j0s5y2mc --seeds 1"
+        )
+        monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)
+        monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
+        monkeypatch.setattr(
+            "ci.report.compare_report",
+            lambda base_group, test_group, assertions=None: ("MD", True),
+        )
+        gh_command.main()
+
+        assert len(gh_ctx["pods"]) == 2  # 1 seed x 2 sides
+        specs = [_job_spec(p) for p in gh_ctx["pods"]]
+        assert {s["kind"] for s in specs} == {"ppo"}
+        assert {s["start_from"] for s in specs} == {"j0s5y2mc"}
+
+
+class TestSweepDispatch:
+    def test_positional_algo_sft(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv("COMMENT_BODY", "/ci sweep sft --pods 2")
+        monkeypatch.setattr(
+            gh_command, "create_sweep", lambda algo, sha: f"me/factorion/swp-{algo}"
+        )
+        monkeypatch.setattr(gh_command, "_wait_for_sweep", lambda path: None)
+        monkeypatch.setattr("ci.report.sweep_report", lambda path: "SWEEP-MD")
+        gh_command.main()
+
+        assert len(gh_ctx["pods"]) == 2
+        specs = [_job_spec(p) for p in gh_ctx["pods"]]
+        assert {s["kind"] for s in specs} == {"sweep"}
+        assert {s["sweep_path"] for s in specs} == {"me/factorion/swp-sft"}
+        assert any("SWEEP-MD" in body for _, body in gh_ctx["comments"])
+
+    def test_sweep_requires_algo(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv("COMMENT_BODY", "/ci sweep")
+        with pytest.raises(SystemExit):
+            gh_command.main()
+        assert gh_ctx["pods"] == []
+
+
 class TestBadInput:
     def test_unparseable_command_posts_usage(self, gh_ctx, monkeypatch):
         monkeypatch.setenv("COMMENT_BODY", "/ci frobnicate --hard")
@@ -149,9 +191,20 @@ class TestBadInput:
         assert "could not parse" in body
         assert gh_ctx["pods"] == []
 
-    def test_help(self, gh_ctx, monkeypatch):
+    def test_help_covers_every_command_with_examples(self, gh_ctx, monkeypatch):
         monkeypatch.setenv("COMMENT_BODY", "/ci help")
         gh_command.main()
         ((_, body),) = gh_ctx["comments"]
-        assert "/ci compare" in body
+        for snippet in (
+            "/ci sft --num-samples 200000",  # concrete example, not just grammar
+            "/ci ppo --start-from",
+            "/ci compare sft",
+            "/ci compare ppo --start-from",
+            "assert pr:val/thput > main:val/thput",
+            "/ci sweep sft",
+            "/ci pods",
+            "/ci kill",
+            "/ci watchdog",
+        ):
+            assert snippet in body, f"help is missing {snippet!r}"
         assert gh_ctx["pods"] == []

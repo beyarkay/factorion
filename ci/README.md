@@ -6,17 +6,23 @@ backbone of reporting** — no labels, no babysitting workflows, no 6-hour cap.
 
 ## Triggering jobs: comment `/ci ...` on a PR
 
+`/ci help` posts this grammar with examples. Square brackets mark optional
+flags (don't type the brackets).
+
 ```
-/ci sft [--num-samples N]                 # SFT from scratch at the PR head
-/ci ppo --start-from j0s5y2mc             # PPO from an SFT checkpoint
-/ci compare [--seeds 3] [--num-samples N] # PR head vs main, seed-paired
-assert pr:val/thput > main:val/thput      # optional pass/fail conditions
-assert pr:val/acc >= 0.5                  #   → commit status check
-/ci compare --algo ppo --start-from j0s5y2mc   # PPO compare, same flow
-/ci compare-report                        # re-post the compare report
-/ci sweep-sft [--pods 2] [--agents-per-pod 5]  # W&B sweep (ci/sweep_sft.yaml)
-/ci sweep-ppo                             # ... from ci/sweep_ppo.yaml
-/ci pods | /ci kill --all | /ci watchdog | /ci help
+/ci sft [--num-samples N]                  # SFT from scratch at the PR head
+/ci ppo --start-from j0s5y2mc              # PPO from an SFT checkpoint
+/ci compare sft [--seeds 3] [--num-samples N]   # PR head vs main, seed-paired
+assert pr:val/thput > main:val/thput       # optional pass/fail conditions
+assert pr:val/acc >= 0.5                   #   → commit status check
+/ci compare ppo --start-from j0s5y2mc      # PPO compare, same flow
+/ci compare-report                         # re-post the compare report
+/ci sweep sft [--pods 2] [--agents-per-pod 5]   # W&B sweep (ci/sweep_sft.yaml)
+/ci sweep ppo                              # ... from ci/sweep_ppo.yaml
+/ci pods                                   # list CI pods + cost + deadline
+/ci kill --all                             # terminate CI pods (or: /ci kill <pod_id>)
+/ci watchdog --dry-run                     # preview the leaked-pod reaper
+/ci help                                   # usage + examples
 ```
 
 What comes back as PR comments:
@@ -35,8 +41,9 @@ What comes back as PR comments:
 For jobs not tied to a PR (e.g. a production SFT run from main), use the
 **Launch (manual)** `workflow_dispatch` in the Actions tab — same commands,
 results in the job summary + W&B. The CLI also works locally
-(`uv run python -m ci --help`) if you export `RUNPOD_API_KEY` +
-`WANDB_API_KEY`, but GitHub is the intended path.
+(`uv run python -m ci --help`; e.g. `uv run python -m ci compare sft --ref
+my-branch`) if you export `RUNPOD_API_KEY` + `WANDB_API_KEY`, but GitHub is
+the intended path.
 
 ## How a job runs
 

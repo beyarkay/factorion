@@ -67,7 +67,31 @@ def ppo(
     launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
-def _sweep(algo: str, ref: str, pods: int, agents_per_pod: int, gpu_type: str, dry_run: bool) -> None:
+def sweep(
+    algo: str,
+    /,
+    ref: str = "main",
+    pods: int = 1,
+    agents_per_pod: int = 5,
+    gpu_type: str = DEFAULT_GPU,
+    dry_run: bool = False,
+) -> None:
+    """Run a W&B hyperparameter sweep, e.g. `sweep sft` or `sweep ppo`.
+
+    The sweep config is ci/sweep_<algo>.yaml as it exists AT THE REF, so the
+    sweep is true to the commit being swept.
+
+    Args:
+        algo: "sft" or "ppo".
+        ref: Commitish to sweep; must be pushed to origin.
+        pods: Number of RunPod pods to launch.
+        agents_per_pod: Parallel `wandb agent` processes per pod (GPU
+            time-slicing). Total runs are capped by run_cap in the sweep yaml.
+        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        dry_run: Print what would launch without creating pods or the sweep.
+    """
+    if algo not in ("sft", "ppo"):
+        raise SystemExit(f"error: algo must be 'sft' or 'ppo', got {algo!r}")
     sha = resolve_ref(ref)
     if dry_run:
         sweep_path = f"<entity>/<project>/<sweep-id-for-ci/sweep_{algo}.yaml@{sha[:7]}>"
@@ -80,50 +104,12 @@ def _sweep(algo: str, ref: str, pods: int, agents_per_pod: int, gpu_type: str, d
     print(f"\nWhen done: uv run python -m ci sweep-report --sweep {sweep_path}")
 
 
-def sweep_sft(
-    ref: str = "main",
-    pods: int = 1,
-    agents_per_pod: int = 5,
-    gpu_type: str = DEFAULT_GPU,
-    dry_run: bool = False,
-) -> None:
-    """Run a W&B SFT hyperparameter sweep (config: ci/sweep_sft.yaml at the ref).
-
-    Args:
-        ref: Commitish to sweep; must be pushed to origin.
-        pods: Number of RunPod pods to launch.
-        agents_per_pod: Parallel `wandb agent` processes per pod (GPU
-            time-slicing). Total runs are capped by run_cap in the sweep yaml.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
-        dry_run: Print what would launch without creating pods or the sweep.
-    """
-    _sweep("sft", ref, pods, agents_per_pod, gpu_type, dry_run)
-
-
-def sweep_ppo(
-    ref: str = "main",
-    pods: int = 1,
-    agents_per_pod: int = 5,
-    gpu_type: str = DEFAULT_GPU,
-    dry_run: bool = False,
-) -> None:
-    """Run a W&B PPO hyperparameter sweep (config: ci/sweep_ppo.yaml at the ref).
-
-    Args:
-        ref: Commitish to sweep; must be pushed to origin.
-        pods: Number of RunPod pods to launch.
-        agents_per_pod: Parallel `wandb agent` processes per pod (GPU
-            time-slicing). Total runs are capped by run_cap in the sweep yaml.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
-        dry_run: Print what would launch without creating pods or the sweep.
-    """
-    _sweep("ppo", ref, pods, agents_per_pod, gpu_type, dry_run)
-
-
 def compare(
+    algo: str = "sft",
+    /,
+    *,
     ref: str,
     base_ref: str = "main",
-    algo: str = "sft",
     seeds: int = COMPARE_SEEDS_DEFAULT,
     num_samples: int = COMPARE_NUM_SAMPLES_DEFAULT,
     start_from: Optional[str] = None,
@@ -133,6 +119,7 @@ def compare(
 ) -> None:
     """Compare a commitish against a base (default origin/main), multi-seed.
 
+    Invoked as `compare sft --ref X` or `compare ppo --ref X --start-from ID`.
     Fans out into 2 x seeds pods — one training run per pod, so seeds never
     compete for CPU. Both sides run their own commit's code. When the runs
     finish, `compare-report` diffs every logged metric with seed-paired
@@ -140,14 +127,14 @@ def compare(
     posts the result).
 
     Args:
-        ref: Commitish under test; must be pushed to origin.
-        base_ref: Baseline commitish (default: main).
         algo: "sft" (from scratch) or "ppo" (finetune from --start-from on
             both commits).
+        ref: Commitish under test; must be pushed to origin.
+        base_ref: Baseline commitish (default: main).
         seeds: Seeds per side; runs are seed-paired for the t-test.
         num_samples: SFT samples per run (smaller than a production run so a
-            compare finishes in hours, not days). Ignored for --algo ppo.
-        start_from: W&B SFT run id; required for --algo ppo.
+            compare finishes in hours, not days). Ignored for ppo.
+        start_from: W&B SFT run id; required for ppo.
         total_timesteps: PPO override; default = PpoArgs().total_timesteps.
         gpu_type: RunPod GPU type (falls back through the standard lineup).
         dry_run: Print what would launch without creating pods.

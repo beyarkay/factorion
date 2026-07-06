@@ -9,7 +9,7 @@ name: Launch (manual)
 # Examples:
 #   command: sft --num-samples 45000000
 #   command: ppo --start-from j0s5y2mc
-#   command: sweep-sft --pods 2
+#   command: sweep sft --pods 2
 #   command: pods
 
 on:
@@ -59,7 +59,7 @@ jobs:
           # Word-splitting of CI_COMMAND is intentional (subcommand + flags).
           # Management commands (pods/kill/watchdog/...) take no --ref.
           case "$CI_COMMAND" in
-            sft*|ppo*|sweep-*|compare*)
+            sft*|ppo*|sweep*|compare*)
               python -m ci $CI_COMMAND --ref "$CI_REF" | tee -a "$GITHUB_STEP_SUMMARY" ;;
             *)
               python -m ci $CI_COMMAND | tee -a "$GITHUB_STEP_SUMMARY" ;;

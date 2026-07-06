@@ -1,6 +1,6 @@
 # ci/sweep_sft.yaml — SFT pre-training hyperparameter sweep
 #
-# Launched with: uv run python -m ci sweep-sft --ref <commitish>
+# Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
