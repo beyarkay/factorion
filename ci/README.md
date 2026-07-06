@@ -27,6 +27,10 @@ assert pr:sps == main:sps +- 100           # ~equal within a tolerance
 
 What comes back as PR comments:
 
+- reactions on your comment: **&#x1F440; instantly** (no eyes within ~30s
+  means GitHub dropped the event — repost) and **&#x1F44D; when the command
+  has run to completion** (for `compare`, that includes the report posting
+  and its assertions passing);
 - a **launch comment** immediately (pod ids, W&B links);
 - for `sft`/`ppo`: a **result comment** with headline metrics when the run
   finishes (posted by the reporter cron, so runs longer than GitHub's 6h job

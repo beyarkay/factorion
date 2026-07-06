@@ -71,6 +71,17 @@ jobs:
           export HEAD_SHA
           python -m ci.gh_command
 
+      # Eyes said "seen"; thumbs-up says "done": the command ran to completion
+      # (pods launched, and for blocking commands like compare, the report
+      # posted and its assertions passed).
+      - name: Confirm the command succeeded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=+1
+
       # ci/gh_command.py replies with its own errors; this catches everything
       # BEFORE it (checkout, deps, a PR head with no ci/ directory) so a /ci
       # command can never fail without a trace on the PR.
