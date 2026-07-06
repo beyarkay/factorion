@@ -18,6 +18,7 @@ from ci.config import (
     job_from_dict,
     job_to_dict,
     parse_pod_name,
+    pod_emoji,
     pod_name,
     ppo_budget_seconds,
     sft_budget_seconds,
@@ -179,6 +180,19 @@ class TestPodName:
     def test_foreign_names_rejected(self):
         for name in ("my-dev-pod", "factorion-ci-sft-nonsense", "", "ci-smoke-12345"):
             assert parse_pod_name(name) is None
+
+
+class TestPodEmoji:
+    def test_every_pod_state(self):
+        now = 10_000.0
+        alive = {"name": pod_name("sft", 9_000, 20_000, SHA)}
+        assert pod_emoji(None, now) == "🗑"  # no longer listed
+        assert pod_emoji(alive, now) == "⏳"  # no container yet
+        assert pod_emoji({**alive, "runtime": {"uptimeInSeconds": 5}}, now) == "🚀"
+        overdue = {"name": pod_name("sft", 1_000, 9_999, SHA)}
+        # Past its name deadline the pod is watchdog bait even if "running".
+        assert pod_emoji(overdue, now) == "💀"
+        assert pod_emoji({**overdue, "runtime": {"uptimeInSeconds": 5}}, now) == "💀"
 
 
 class TestWatchdog:

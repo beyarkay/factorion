@@ -11,7 +11,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ci.config import WANDB_PROJECT
 from ci.stats import mean, paired_t_test, stdev, welch_t_test
@@ -354,6 +354,7 @@ def wait_for_groups(
     timeout_seconds: int,
     poll_seconds: int = 120,
     pod_ids: Optional[list[str]] = None,
+    on_poll: Optional[Callable[[], None]] = None,
 ) -> None:
     """Block until both W&B groups have `expect_each` finished runs.
 
@@ -377,6 +378,8 @@ def wait_for_groups(
             runs = api.runs(path, filters={"group": group})
             counts[group] = sum(1 for r in runs if r.state == "finished")
         print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
+        if on_poll is not None:
+            on_poll()  # e.g. refresh the PR launch comment's live statuses
         if all(c >= expect_each for c in counts.values()):
             return
 

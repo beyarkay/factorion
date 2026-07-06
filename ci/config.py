@@ -216,6 +216,20 @@ def pod_url(pod_id: str) -> str:
     return f"https://console.runpod.io/pods?id={pod_id}"
 
 
+def pod_emoji(pod: Optional[dict], now: Optional[float] = None) -> str:
+    """One glanceable state for a RunPod pod dict (None = no longer listed):
+    🗑 terminated, 💀 alive past its name deadline (watchdog bait),
+    🚀 container running, ⏳ no container yet."""
+    if pod is None:
+        return "🗑"
+    meta = parse_pod_name(pod.get("name") or "")
+    if meta is not None and meta.deadline <= (now if now is not None else time.time()):
+        return "💀"
+    if (pod.get("runtime") or {}).get("uptimeInSeconds"):
+        return "🚀"
+    return "⏳"
+
+
 def compare_nonce() -> str:
     """Short random token that makes one compare launch's groups unique."""
     import secrets

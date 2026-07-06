@@ -30,6 +30,7 @@ from ci.config import (
     SftJob,
     compare_group,
     compare_nonce,
+    pod_emoji,
     pod_url,
     ppo_budget_seconds,
     sft_budget_seconds,
@@ -150,20 +151,68 @@ def _project_link(sha7: str) -> str:
     return f"[W&B project]({url}) (runs tagged `sha:{sha7}`)"
 
 
-def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
+PENDING = ("⏳", "⏳")  # (pod, run) states before anything has happened
+_RUN_EMOJI = {"finished": "✅", "crashed": "❌", "failed": "❌", "killed": "❌"}
+_STATUS_LEGEND = (
+    "⏳ pending · 🚀 running · ✅ finished · ❌ crashed · "
+    "💀 pod past deadline · 🗑 pod terminated"
+)
+
+
+def _launch_statuses(infos: list[dict]) -> dict[str, tuple[str, str]]:
+    """Live (pod_emoji, run_emoji) per launched pod, from RunPod + W&B."""
+    from ci import runpod_api
+
+    import wandb
+
+    pods = {p["id"]: p for p in runpod_api.list_ci_pods()}
+    api = wandb.Api()
+    entity = _wandb_entity()
+    out = {}
+    for info in infos:
+        pod_state = pod_emoji(pods.get(info["pod_id"]))
+        run_emoji = "⏳"
+        run_id = info.get("wandb_run_id")
+        if run_id and entity:
+            try:
+                run = api.run(f"{entity}/{WANDB_PROJECT}/{run_id}")
+                run_emoji = _RUN_EMOJI.get(run.state, "🚀")
+            except Exception:
+                run_emoji = "⏳"  # wandb.init hasn't created the run yet
+        out[info["pod_id"]] = (pod_state, run_emoji)
+    return out
+
+
+def _launched_comment(
+    title: str,
+    infos: list[dict],
+    footer: str = "",
+    statuses: Optional[dict[str, tuple[str, str]]] = None,
+) -> str:
+    """statuses: live (pod, run) emoji per pod id — only for comments that
+    something keeps editing (compare); a fire-and-forget launch comment must
+    not show a ⏳ nobody will ever update."""
     lines = [f"## &#x1F440; {title}", ""]
     entity = _wandb_entity() if any(i.get("wandb_run_id") for i in infos) else None
     for info in infos:
-        line = f"- pod [`{info['pod_id']}`]({pod_url(info['pod_id'])}) (`{info['pod_name']}`)"
+        pod_emoji, run_emoji = (
+            statuses.get(info["pod_id"], PENDING) if statuses is not None else ("", "")
+        )
+        line = (
+            f"- {pod_emoji} pod [`{info['pod_id']}`]({pod_url(info['pod_id'])}) "
+            f"(`{info['pod_name']}`)"
+        )
         run_id = info.get("wandb_run_id")
         if run_id and entity:
             line += (
-                f" &rarr; [W&B run `{run_id}`]"
+                f" &rarr; {run_emoji} [W&B run `{run_id}`]"
                 f"(https://wandb.ai/{entity}/{WANDB_PROJECT}/runs/{run_id})"
             )
         elif run_id:
-            line += f" &rarr; W&B run `{run_id}`"
-        lines.append(line)
+            line += f" &rarr; {run_emoji} W&B run `{run_id}`"
+        lines.append(line.replace("  ", " "))
+    if statuses is not None:
+        lines += ["", f"_{_STATUS_LEGEND}_"]
     spec = {k: v for k, v in infos[0]["job"].items() if k != "extra_tags"}
     lines += [
         "",
@@ -178,13 +227,17 @@ def _launched_comment(title: str, infos: list[dict], footer: str = "") -> str:
     return "\n".join(lines)
 
 
-def _post(ctx, body: str) -> None:
-    """Post a PR comment, appending a link back to the /ci comment that
-    triggered it — PRs accumulate many CI comments and the trail matters."""
+def _with_trigger_footer(ctx, body: str) -> str:
+    """Every CI comment links back to the /ci comment that triggered it —
+    PRs accumulate many CI comments and the trail matters."""
     url = ctx.get("comment_url")
     if url:
-        body = f"{body.rstrip()}\n\n_Originally triggered by [this comment]({url})_"
-    github_api.post_pr_comment(ctx["pr"], body)
+        return f"{body.rstrip()}\n\n_Originally triggered by [this comment]({url})_"
+    return body
+
+
+def _post(ctx, body: str) -> int:
+    return github_api.post_pr_comment(ctx["pr"], _with_trigger_footer(ctx, body))
 
 
 def cmd_sft(args, ctx) -> None:
@@ -317,19 +370,32 @@ def cmd_compare(args, ctx) -> None:
     assertion_note = (
         "\n".join(f"- `{a}`" for a in ctx["assertions"]) or "_none — report only_"
     )
-    _post(
+    title = (
+        f"Compare launched: {_commit_link(ctx['sha'])} vs `{args.base_ref}` "
+        f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per run)"
+    )
+    footer = (
+        f"W&B groups: {_group_link(pr_group)} vs "
+        f"{_group_link(main_group)}\n\n"
+        f"Assertions:\n{assertion_note}"
+    )
+    comment_id = _post(
         ctx,
         _launched_comment(
-            f"Compare launched: {_commit_link(ctx['sha'])} vs `{args.base_ref}` "
-            f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per run)",
-            infos,
-            footer=(
-                f"W&B groups: {_group_link(pr_group)} vs "
-                f"{_group_link(main_group)}\n\n"
-                f"Assertions:\n{assertion_note}"
-            ),
+            title, infos, footer=footer, statuses={i["pod_id"]: PENDING for i in infos}
         ),
     )
+
+    def refresh_launch_comment() -> None:
+        # Best-effort: a failed edit must never take down the compare wait.
+        try:
+            body = _launched_comment(
+                title, infos, footer=footer, statuses=_launch_statuses(infos)
+            )
+            github_api.update_pr_comment(comment_id, _with_trigger_footer(ctx, body))
+        except Exception as e:
+            print(f"could not refresh the launch comment: {e}", flush=True)
+
     github_api.set_commit_status(
         ctx["sha"], "pending", COMPARE_STATUS_CONTEXT, "compare runs in flight"
     )
@@ -342,7 +408,9 @@ def cmd_compare(args, ctx) -> None:
         expect_each=args.seeds,
         timeout_seconds=_compare_wait_seconds(args),
         pod_ids=[i["pod_id"] for i in infos if i["pod_id"]],
+        on_poll=refresh_launch_comment,
     )
+    refresh_launch_comment()  # final ✅/❌/🗑 states next to the report
     _post_compare_outcome(ctx, ctx["assertions"], main_group, pr_group, infos=infos)
 
 

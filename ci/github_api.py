@@ -29,9 +29,21 @@ def _repo() -> str:
     return os.environ["GITHUB_REPOSITORY"]
 
 
-def post_pr_comment(pr_number: int, body: str) -> None:
+def post_pr_comment(pr_number: int, body: str) -> int:
+    """Returns the new comment's id (for later update_pr_comment edits)."""
     r = requests.post(
         f"{API}/repos/{_repo()}/issues/{pr_number}/comments",
+        headers=_headers(),
+        json={"body": body},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return int(r.json()["id"])
+
+
+def update_pr_comment(comment_id: int, body: str) -> None:
+    r = requests.patch(
+        f"{API}/repos/{_repo()}/issues/comments/{comment_id}",
         headers=_headers(),
         json={"body": body},
         timeout=30,
