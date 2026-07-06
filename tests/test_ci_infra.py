@@ -180,6 +180,20 @@ class TestWatchdog:
         doomed = decide_terminations([young, old], now=now)
         assert [p["name"] for p, _ in doomed] == ["factorion-ci-sft-old"]
 
+    def test_reaps_a_pod_stuck_pulling_the_image(self):
+        # A pod wedged in image pull has desiredStatus RUNNING but no runtime;
+        # the deadline in its NAME must be enough to reap it (observed live:
+        # two pods spent 50+ min pulling and sailed past their deadlines).
+        now = time.time()
+        stuck = {
+            "id": "id-stuck",
+            "name": pod_name("sft", int(now - 7200), int(now - 60), SHA),
+            "desiredStatus": "RUNNING",
+            "runtime": None,
+        }
+        doomed = decide_terminations([stuck], now=now)
+        assert [p["id"] for p, _ in doomed] == ["id-stuck"]
+
     def test_absolute_age_cap_beats_a_far_future_deadline(self):
         now = time.time()
         created = int(now - MAX_POD_AGE_SECONDS - 1)

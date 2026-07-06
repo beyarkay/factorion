@@ -171,13 +171,16 @@ def pod_summary(pod: dict, now: Optional[float] = None) -> dict:
         if meta
         else "no deadline (unparseable name)"
     )
+    # desiredStatus says RUNNING even while the host is still pulling the
+    # image; only a live runtime means the container actually started.
+    booting = pod.get("desiredStatus") == "RUNNING" and not uptime
     return {
         "id": pod["id"],
         "url": pod_url(pod["id"]),
         "name": pod.get("name") or "?",
-        "status": pod.get("desiredStatus") or "?",
+        "status": "BOOTING (image pull)" if booting else pod.get("desiredStatus") or "?",
         "gpu": pod.get("machine", {}).get("gpuDisplayName", "?"),
-        "uptime": runpod_api.format_uptime(uptime),
+        "uptime": runpod_api.format_uptime(uptime) if uptime else "-",
         "cost_hr": pod.get("costPerHr", "?"),
         "deadline": deadline,
     }
