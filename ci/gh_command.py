@@ -237,7 +237,15 @@ def _with_trigger_footer(ctx, body: str) -> str:
 
 
 def _post(ctx, body: str) -> int:
-    return github_api.post_pr_comment(ctx["pr"], _with_trigger_footer(ctx, body))
+    comment_id = github_api.post_pr_comment(ctx["pr"], _with_trigger_footer(ctx, body))
+    # Tell the workflow we replied: its dispatch-failure fallback comment is
+    # only for runs that die BEFORE reaching the PR (a deliberate exit 1 — a
+    # failed compare assertion — already reported itself).
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a") as fh:
+            fh.write("replied=true\n")
+    return comment_id
 
 
 def cmd_sft(args, ctx) -> None:
