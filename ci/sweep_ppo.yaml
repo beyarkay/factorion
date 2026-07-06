@@ -37,6 +37,6 @@ command:
   - --start-from
   - uju9n8ql
   - --total-timesteps
-  - 250_000
+  - 500_000
   - --track
   - ${args}
