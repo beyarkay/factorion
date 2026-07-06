@@ -1,0 +1,41 @@
+name: CI reporter
+
+# Long training runs outlive GitHub's 6h job limit, so the workflow that
+# launched them can't wait for the results. This cron posts a PR summary
+# comment for every finished W&B run tagged pr:<N> that doesn't have one yet
+# (idempotent via an invisible marker in each comment). See ci/report.py.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install CI dependencies
+        run: uv pip install --system tyro wandb requests
+
+      - name: Post pending run reports
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: python -m ci post-pending-reports
