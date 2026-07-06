@@ -133,15 +133,41 @@ def compare_metric_rows(
     return rows
 
 
-# Metrics surfaced OUTSIDE the <details> block of a compare comment (the full
-# every-metric table sits inside it). Placeholder set — edit freely.
-HEADLINE_METRICS = [
-    "val/thput",
-    "val/thput_eot",
-    "val/acc",
-    "eval/thput",
-    "eval/thput_eot",
+# Metrics surfaced OUTSIDE the <details> block of a report (the full
+# every-metric table sits inside it). Ordered regexes; a metric is headline
+# when any matches, and headline rows sort by first-matching pattern. Lesson
+# names are matched, never hardcoded (`val/{LESSON}/thput_eot` covers every
+# current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
+# spaces are disjoint, so one list serves both kinds.
+HEADLINE_PATTERNS = [
+    # SFT: throughput first (overall then per-lesson), then accuracies
+    # (overall then per-head; the head names come from the [a-z]+_acc shape,
+    # which deliberately excludes per-lesson accs like val/{LESSON}/acc).
+    r"^val/thput_eot$",
+    r"^val/[A-Z0-9_]+/thput_eot$",
+    r"^val/acc$",
+    r"^val/[a-z]+_acc$",
+    # PPO: the headline progress signal (eval/) overall then per-lesson,
+    # then on-policy rollout health, critic health, exploration, speed.
+    r"^eval/thput_eot$",
+    r"^eval/thput$",
+    r"^eval/[A-Z0-9_]+/thput_eot$",
+    r"^rollout/thput$",
+    r"^rollout/reward$",
+    r"^rollout/eot_rate$",
+    r"^critic/explained_variance$",
+    r"^policy/entropy$",
+    r"^perf/sps$",
 ]
+_HEADLINE_RES = [re.compile(p) for p in HEADLINE_PATTERNS]
+
+
+def select_headline(names) -> list[str]:
+    """Headline subset of metric names, ordered by pattern then name."""
+    out = []
+    for pattern in _HEADLINE_RES:
+        out.extend(sorted(n for n in names if pattern.match(n) and n not in out))
+    return out
 
 
 def _row_line(r: MetricRow, alpha: float) -> str:
@@ -160,14 +186,19 @@ def render_compare_markdown(
     base_label: str,
     test_label: str,
     alpha: float = 0.05,
-    headline: list[str] = HEADLINE_METRICS,
+    headline: Optional[list[str]] = None,
 ) -> str:
-    """Headline metrics up front; the full every-metric table in <details>."""
+    """Headline metrics up front; the full every-metric table in <details>.
+
+    headline: explicit metric names, or None for the HEADLINE_PATTERNS match.
+    """
     header = [
         f"| Metric | {base_label} | {test_label} | Δ | p | |",
         "|---|---|---|---|---|---|",
     ]
     by_name = {r.name: r for r in rows}
+    if headline is None:
+        headline = select_headline(by_name)
     headline_rows = [by_name[m] for m in headline if m in by_name]
 
     lines = [
@@ -494,7 +525,7 @@ def run_summary_markdown(
     kind: str,
     sha7: str,
     summary_flat: dict[str, float],
-    headline: list[str] = HEADLINE_METRICS,
+    headline: Optional[list[str]] = None,
 ) -> str:
     """Summary comment for a single finished CI run."""
     icon = "&#x2705;" if state == "finished" else "&#x274C;"
@@ -507,6 +538,8 @@ def run_summary_markdown(
         + (f" &middot; {int(duration) // 60} min" if duration else ""),
         "",
     ]
+    if headline is None:
+        headline = select_headline(summary_flat)
     shown = [(m, summary_flat[m]) for m in headline if m in summary_flat]
     if shown:
         lines += ["| Metric | Value |", "|---|---|"]
@@ -572,6 +605,8 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
         tags = set(run.tags or [])
         if any(t.startswith("cmp:") for t in tags):
             continue
+        if not any(t.startswith("kind:") for t in tags):
+            continue  # pre-rework runs also carried ci + pr:<N> tags
         pr = next((t.removeprefix("pr:") for t in tags if t.startswith("pr:")), None)
         if pr is None or not pr.isdigit():
             continue

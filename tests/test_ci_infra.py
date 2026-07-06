@@ -32,6 +32,7 @@ from ci.report import (
     metric_direction,
     render_compare_markdown,
     run_summary_markdown,
+    select_headline,
     select_unreported,
 )
 from ci.watchdog import decide_terminations
@@ -371,10 +372,66 @@ class TestReporter:
             url="https://wandb.ai/x/y/runs/abc123",
             kind="sft",
             sha7=SHA[:7],
-            summary_flat={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+            summary_flat={"val/thput_eot": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
         )
         assert "<!-- factorion-ci-run:abc123 -->" in md
         before_details, details = md.split("<details>", 1)
-        assert "val/thput" in before_details
+        assert "val/thput_eot" in before_details
         assert "obscure/x" not in before_details
         assert "obscure/x" in details
+
+
+class TestSelectHeadline:
+    def test_sft_patterns_cover_every_lesson_and_head(self):
+        names = [
+            "val/thput_eot",
+            "val/thput",  # not headline: only the EOT-respecting number leads
+            "val/MOVE_ONE_ITEM/thput_eot",
+            "val/SPLITTER_SPLIT/thput_eot",
+            "val/SOME_FUTURE_LESSON_9/thput_eot",  # lessons matched, not hardcoded
+            "val/MOVE_ONE_ITEM/acc",  # per-lesson acc stays in the long tail
+            "val/acc",
+            "val/tile_acc",
+            "val/eot_acc",
+            "val/eot_pos_recall",  # not an accuracy
+            "train/loss",
+        ]
+        got = select_headline(names)
+        assert got == [
+            "val/thput_eot",
+            "val/MOVE_ONE_ITEM/thput_eot",
+            "val/SOME_FUTURE_LESSON_9/thput_eot",
+            "val/SPLITTER_SPLIT/thput_eot",
+            "val/acc",
+            "val/eot_acc",
+            "val/tile_acc",
+        ]
+
+    def test_ppo_patterns(self):
+        names = [
+            "eval/thput",
+            "eval/thput_eot",
+            "eval/MOVE_ONE_ITEM/thput_eot",
+            "eval/MOVE_ONE_ITEM/thput",  # per-lesson non-EOT stays in the tail
+            "rollout/thput",
+            "rollout/reward",
+            "rollout/eot_rate",
+            "rollout/invalid_frac",
+            "critic/explained_variance",
+            "policy/entropy",
+            "perf/sps",
+            "losses/value",
+            "optim/lr",
+        ]
+        got = select_headline(names)
+        assert got == [
+            "eval/thput_eot",
+            "eval/thput",
+            "eval/MOVE_ONE_ITEM/thput_eot",
+            "rollout/thput",
+            "rollout/reward",
+            "rollout/eot_rate",
+            "critic/explained_variance",
+            "policy/entropy",
+            "perf/sps",
+        ]
