@@ -50,8 +50,45 @@ jobs:
       - name: Launch short SFT run (200k samples, ~5 min)
         run: python -m ci sft --ref "$GITHUB_REF_NAME" --num-samples 200000
 
-      - name: Launch short PPO run (100k steps, ~8 min)
-        run: python -m ci ppo --ref "$GITHUB_REF_NAME" --start-from j0s5y2mc --total-timesteps 100000
+      # PPO continues from the checkpoint the SFT run above just produced —
+      # the real SFT→PPO handoff, and guaranteed architecture-compatible
+      # (pre-existing checkpoints like j0s5y2mc predate the categorical
+      # channel encoding and no longer load).
+      - name: Wait for the SFT run to finish
+        id: sft-run
+        run: |
+          python - << 'PY'
+          import os
+          import sys
+          import time
+
+          import wandb
+
+          sha7 = os.environ["GITHUB_SHA"][:7]
+          deadline = time.time() + 25 * 60
+          while time.time() < deadline:
+              api = wandb.Api()
+              runs = list(
+                  api.runs(f"{api.default_entity}/factorion", filters={"tags": f"sha:{sha7}"})
+              )
+              finished = [r for r in runs if r.state == "finished" and "kind:sft" in r.tags]
+              if finished:
+                  print(f"SFT run finished: {finished[0].id} ({finished[0].name})")
+                  with open("/tmp/sft_run_id", "w") as f:
+                      f.write(finished[0].id)
+                  sys.exit(0)
+              if any("boot-failure" in r.tags for r in runs):
+                  print("::error::SFT pod reported a boot failure")
+                  sys.exit(1)
+              print(f"waiting... {[(r.name, r.state) for r in runs]}")
+              time.sleep(30)
+          print("::error::SFT run did not finish within 25 min")
+          sys.exit(1)
+          PY
+          echo "run_id=$(cat /tmp/sft_run_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Launch short PPO run from that checkpoint (100k steps, ~8 min)
+        run: python -m ci ppo --ref "$GITHUB_REF_NAME" --start-from "${{ steps.sft-run.outputs.run_id }}" --total-timesteps 100000
 
       - name: Wait for both pods to self-terminate
         run: |
