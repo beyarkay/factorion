@@ -147,18 +147,17 @@ HEADLINE_PATTERNS = [
     r"^val/[A-Z0-9_]+/thput_eot$",
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
-    # PPO: the headline progress signal (eval/) overall then per-lesson,
-    # then on-policy rollout health, critic health, exploration, speed.
-    r"^eval/thput_eot$",
-    r"^eval/thput$",
-    r"^eval/[A-Z0-9_]+/thput_eot$",
+    # PPO: on-policy rollout health (overall then per-lesson), then speed.
     r"^rollout/thput$",
     r"^rollout/reward$",
-    r"^rollout/eot_rate$",
-    r"^critic/explained_variance$",
-    r"^policy/entropy$",
+    r"^rollout/length$",
+    r"^rollout/invalid_frac$",
+    r"^rollout/[A-Z0-9_]+/thput$",
+    r"^perf/update_seconds$",
+    r"^perf/rollout_seconds$",
+    r"^perf/eval_seconds$",
     r"^perf/sps$",
-    # Speed tail for both kinds (SFT: train/val seconds; PPO: phase seconds).
+    # Speed tail for SFT (train/val seconds).
     r"^perf/",
 ]
 _HEADLINE_RES = [re.compile(p) for p in HEADLINE_PATTERNS]

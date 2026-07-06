@@ -439,29 +439,35 @@ class TestSelectHeadline:
 
     def test_ppo_patterns(self):
         names = [
-            "eval/thput",
+            "eval/thput",  # eval/ stays in the long tail
             "eval/thput_eot",
-            "eval/MOVE_ONE_ITEM/thput_eot",
-            "eval/MOVE_ONE_ITEM/thput",  # per-lesson non-EOT stays in the tail
             "rollout/thput",
             "rollout/reward",
-            "rollout/eot_rate",
+            "rollout/length",
             "rollout/invalid_frac",
+            "rollout/eot_rate",  # not headline
+            "rollout/MOVE_ONE_ITEM/thput",
+            "rollout/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
+            "rollout/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail
             "critic/explained_variance",
             "policy/entropy",
+            "perf/update_seconds",
+            "perf/rollout_seconds",
+            "perf/eval_seconds",
             "perf/sps",
             "losses/value",
             "optim/lr",
         ]
         got = select_headline(names)
         assert got == [
-            "eval/thput_eot",
-            "eval/thput",
-            "eval/MOVE_ONE_ITEM/thput_eot",
             "rollout/thput",
             "rollout/reward",
-            "rollout/eot_rate",
-            "critic/explained_variance",
-            "policy/entropy",
+            "rollout/length",
+            "rollout/invalid_frac",
+            "rollout/MOVE_ONE_ITEM/thput",
+            "rollout/SOME_FUTURE_LESSON_9/thput",
+            "perf/update_seconds",
+            "perf/rollout_seconds",
+            "perf/eval_seconds",
             "perf/sps",
         ]
