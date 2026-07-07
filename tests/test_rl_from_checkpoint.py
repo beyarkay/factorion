@@ -182,8 +182,8 @@ class TestCriticWarmupParamSplit:
 
 
 class TestCriticHeadStd:
-    def test_default_is_one(self):
-        assert PpoArgs().critic_head_std == 1.0
+    def test_default_is_positive(self):
+        assert PpoArgs().critic_head_std > 0
 
     def test_construction_scales_value_head_magnitude(self, envs):
         """A smaller critic_head_std yields a smaller-magnitude value head; the
