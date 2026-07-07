@@ -90,6 +90,6 @@ command:
   - --start-from
   - uju9n8ql
   - --total-timesteps
-  - 500_000
+  - 200_000
   - --track
   - ${args}
