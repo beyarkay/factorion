@@ -22,7 +22,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env  # noqa: E402
+from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env, layer_init  # noqa: E402
 from helpers import Channel  # noqa: E402
 from factorion import LessonKind  # noqa: E402
 
@@ -194,13 +194,13 @@ class TestCriticHeadStd:
         assert small.critic_head[-1].weight.norm().item() == pytest.approx(0.01, abs=1e-3)
         assert big.critic_head[-1].weight.norm().item() == pytest.approx(1.0, abs=1e-2)
 
-    def test_reinit_replaces_weights_in_place_at_new_std(self, agent):
-        """reinit_critic_head rewrites the value head in place (same tensor
-        object) to the requested std — the post-load path PPO uses so a
-        checkpoint's untrained critic doesn't clobber --critic-head-std."""
+    def test_post_load_reinit_replaces_weights_in_place_at_new_std(self, agent):
+        """The post-load re-init (layer_init on the value head) rewrites it in
+        place to the requested std, so a checkpoint's untrained critic doesn't
+        clobber --critic-head-std."""
         head_weight = agent.critic_head[-1].weight
         before = head_weight.detach().clone()
-        agent.reinit_critic_head(0.02)
+        layer_init(agent.critic_head[-1], std=0.02)
         assert head_weight is agent.critic_head[-1].weight  # in place
         assert not torch.equal(before, head_weight)
         assert head_weight.norm().item() == pytest.approx(0.02, abs=1e-3)

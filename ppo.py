@@ -1254,16 +1254,6 @@ class AgentCNN(nn.Module):
 
         return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
 
-    def reinit_critic_head(self, std: float) -> None:
-        """Re-initialise the value head's weights in place at the given std.
-
-        Used at PPO start after loading an SFT checkpoint: SFT never trains the
-        critic, so the loaded value head is untrained noise. Replacing it with a
-        fresh, controlled-magnitude init sets the size of the initial 'garbage
-        advantages' the --critic-warmup absorbs.
-        """
-        layer_init(self.critic_head[-1], std=std)
-
     def get_value(self, x_BCWH):
         encoded = self.encoder(self._encode_input(x_BCWH))
         value_B = self.critic_head(encoded).squeeze(-1)
@@ -1556,11 +1546,8 @@ if __name__ == "__main__":
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
-        # The loaded critic is untrained (SFT never trains the value head), so
-        # discard it for a fresh init at the configured std — this is what makes
-        # --critic-head-std an effective knob for finetune runs (otherwise the
-        # load above would clobber the construction-time init).
-        agent.reinit_critic_head(args.critic_head_std)
+        # Re-init the loaded (untrained) critic to critic_head_std so the load doesn't clobber the knob.
+        layer_init(agent.critic_head[-1], std=args.critic_head_std)
 
     agent.to(device)
 
