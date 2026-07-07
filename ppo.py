@@ -1120,7 +1120,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0, cat_embed_dim=8):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1197,7 +1197,7 @@ class AgentCNN(nn.Module):
         # Project encoded state to value
         self.critic_head = nn.Sequential(
             nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=1.0)
+            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
         )
 
         # Bias init at -2 so an untrained model defaults to "not finished"
@@ -1525,12 +1525,13 @@ if __name__ == "__main__":
             fe._full_diagnostics = False
 
     encoder_layers = layers_from_args(args)
-    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")
+    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.critic_head_std=}, {args.dropout=} ")
     agent = AgentCNN(
         envs,
         layers=encoder_layers,
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        critic_head_std=args.critic_head_std,
         dropout=args.dropout,
     )
 
@@ -1545,6 +1546,8 @@ if __name__ == "__main__":
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+        # Re-init the loaded (untrained) critic to critic_head_std so the load doesn't clobber the knob.
+        layer_init(agent.critic_head[-1], std=args.critic_head_std)
 
     agent.to(device)
 
