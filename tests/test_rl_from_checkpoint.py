@@ -179,3 +179,28 @@ class TestCriticWarmupParamSplit:
 
         assert all(p.grad is not None for p in critic_params)
         assert all(p.grad is None for p in actor_params)
+
+
+class TestCriticHeadStd:
+    def test_default_is_one(self):
+        assert PpoArgs().critic_head_std == 1.0
+
+    def test_construction_scales_value_head_magnitude(self, envs):
+        """A smaller critic_head_std yields a smaller-magnitude value head; the
+        orthogonal (1, N) init makes the row's L2 norm equal to the std."""
+        small = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=0.01)
+        big = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=1.0)
+        assert small.critic_head[-1].weight.norm().item() < big.critic_head[-1].weight.norm().item()
+        assert small.critic_head[-1].weight.norm().item() == pytest.approx(0.01, abs=1e-3)
+        assert big.critic_head[-1].weight.norm().item() == pytest.approx(1.0, abs=1e-2)
+
+    def test_reinit_replaces_weights_in_place_at_new_std(self, agent):
+        """reinit_critic_head rewrites the value head in place (same tensor
+        object) to the requested std — the post-load path PPO uses so a
+        checkpoint's untrained critic doesn't clobber --critic-head-std."""
+        head_weight = agent.critic_head[-1].weight
+        before = head_weight.detach().clone()
+        agent.reinit_critic_head(0.02)
+        assert head_weight is agent.critic_head[-1].weight  # in place
+        assert not torch.equal(before, head_weight)
+        assert head_weight.norm().item() == pytest.approx(0.02, abs=1e-3)

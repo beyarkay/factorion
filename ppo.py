@@ -1120,7 +1120,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, dropout=0.0, cat_embed_dim=8):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1197,7 +1197,7 @@ class AgentCNN(nn.Module):
         # Project encoded state to value
         self.critic_head = nn.Sequential(
             nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=1.0)
+            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
         )
 
         # Bias init at -2 so an untrained model defaults to "not finished"
@@ -1253,6 +1253,16 @@ class AgentCNN(nn.Module):
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
 
         return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+
+    def reinit_critic_head(self, std: float) -> None:
+        """Re-initialise the value head's weights in place at the given std.
+
+        Used at PPO start after loading an SFT checkpoint: SFT never trains the
+        critic, so the loaded value head is untrained noise. Replacing it with a
+        fresh, controlled-magnitude init sets the size of the initial 'garbage
+        advantages' the --critic-warmup absorbs.
+        """
+        layer_init(self.critic_head[-1], std=std)
 
     def get_value(self, x_BCWH):
         encoded = self.encoder(self._encode_input(x_BCWH))
@@ -1525,12 +1535,13 @@ if __name__ == "__main__":
             fe._full_diagnostics = False
 
     encoder_layers = layers_from_args(args)
-    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.dropout=} ")
+    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.critic_head_std=}, {args.dropout=} ")
     agent = AgentCNN(
         envs,
         layers=encoder_layers,
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
+        critic_head_std=args.critic_head_std,
         dropout=args.dropout,
     )
 
@@ -1545,6 +1556,11 @@ if __name__ == "__main__":
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+        # The loaded critic is untrained (SFT never trains the value head), so
+        # discard it for a fresh init at the configured std — this is what makes
+        # --critic-head-std an effective knob for finetune runs (otherwise the
+        # load above would clobber the construction-time init).
+        agent.reinit_critic_head(args.critic_head_std)
 
     agent.to(device)
 
