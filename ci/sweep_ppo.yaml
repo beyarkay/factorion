@@ -37,6 +37,11 @@ parameters:
     min: 0
     max: 15
 
+  critic_lr_mult:
+    distribution: log_uniform_values
+    min: 1.0
+    max: 8.0
+
   clip_coef:
     distribution: uniform
     min: 0.18
