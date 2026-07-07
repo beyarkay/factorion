@@ -37,15 +37,6 @@ parameters:
     min: 0
     max: 15
 
-  layer1:
-    values: [32, 48, 64]
-
-  layer2:
-    values: [48, 64]
-
-  layer3:
-    values: [48, 64]
-
   clip_coef:
     distribution: uniform
     min: 0.18
