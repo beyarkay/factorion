@@ -162,7 +162,7 @@ impl Misc {
 ///             returns `true` from `is_placeable`. Placeability is decided by
 ///             `is_placeable`, not by id range — the head excludes only the
 ///             last two ids, so a placeable id in the middle is fine.
-///   66..=67 — env-spawned (Sink, Source) — MUST remain the last two
+///   last two — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

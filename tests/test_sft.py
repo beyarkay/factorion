@@ -1277,10 +1277,10 @@ class TestDirectionConfusion:
 class TestDirMismatchVsDistance:
     """source<->sink distance vs direction mismatch. "Mismatch" = argmax(dir)
     disagrees with the demo's direction (a valid alternative routing also
-    counts). Distance is read off the obs ENTITIES channel (source=67,
-    sink=66, never blanked)."""
+    counts). Distance is read off the obs ENTITIES channel (source/sink ids
+    come from the registry, never blanked)."""
 
-    SOURCE, SINK = 67, 66
+    SOURCE, SINK = str2ent("source").value, str2ent("sink").value
 
     def _obs_with(self, src_xy, sink_xy, size=6):
         obs = torch.zeros(1, len(Channel), size, size)
