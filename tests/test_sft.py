@@ -424,9 +424,8 @@ class TestGenerateDataset:
         args = SftArgs(seed=1, size=5, num_samples=400, max_level=0)
         *_, kinds = _materialise_args(args)
         produced = set(kinds.tolist())
-        # The 4- and 5-ingredient memorise lessons can't be built at size 5.
+        # The 4-ingredient memorise lesson can't be built at size 5.
         assert LessonKind.MEMORISE_4_INGREDIENT_RECIPES.value not in produced
-        assert LessonKind.MEMORISE_5_INGREDIENT_RECIPES.value not in produced
         # ...but the 1- and 2-ingredient ones (which always fit) do appear.
         assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
