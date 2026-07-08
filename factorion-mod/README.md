@@ -188,7 +188,8 @@ factory and Factorio-side per-entity diagnostics — belt lane occupancy,
 machine status counts (`item_ingredient_shortage`, `output_full`, …),
 `products_finished` deltas, inserter held fractions — to localise where
 flow stalls, per the diagnosis idea in #261. The exit code is 0 iff every
-sink of every factory matched, so the harness can gate CI eventually.
+sink of every factory matched. This is a local, on-demand tool — it needs
+a licensed Factorio install, so it deliberately does not run in CI.
 
 To watch a run from the GUI: `/c game.player.teleport({5, 5},
 "factorion-parity")` (the grid's top-left tile is at 0,0 on that
