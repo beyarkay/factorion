@@ -93,18 +93,17 @@ class PpoArgs(SharedArgs):
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 7e-4
-    """the learning rate of the optimizer (default = the confirmed SFT->PPO
-    finetune optimum; see tests/benchmarks/EXPERIMENT_LOG.md)"""
+    learning_rate: float = 3.369e-05
+    """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
     num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9857
+    gamma: float = 0.9566
     """the discount factor gamma"""
-    gae_lambda: float = 0.8014
+    gae_lambda: float = 0.9187
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
@@ -112,40 +111,42 @@ class PpoArgs(SharedArgs):
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2746
+    clip_coef: float = 0.1987
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef_start: float = 0.02041
+    ent_coef_start: float = 0.008034
     """entropy coefficient at the start of training (high = more exploration)"""
-    ent_coef_end: float = 0.0004576
+    ent_coef_end: float = 0.0007372
     """entropy coefficient at the end of training (low = more exploitation)"""
-    vf_coef: float = 0.7426
+    vf_coef: float = 0.794
     """coefficient of the value function"""
     throughput_reward_scale: float = 1.0
     """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
     step_penalty: float = 0.0
     """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput_eot)."""
-    max_grad_norm: float = 1.979
+    max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
     """the target KL divergence threshold; early-stops the update's epochs. None
     = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
-    adam_epsilon: float = 6.866e-06
+    adam_epsilon: float = 6.891e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
     """L2 weight decay for the Adam optimiser."""
-    tile_head_std: float = 0.06503
+    tile_head_std: float = 0.03492
     """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
     dropout: float = 0.0
     """Dropout probability in the CNN encoder."""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
-    critic_warmup: int = 5
-    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. Set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze. (Why the default of 5: tests/benchmarks/EXPERIMENT_LOG.md.)"""
-    critic_lr_mult: float = 1.0
+    critic_warmup: int = 9
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. Set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze."""
+    critic_lr_mult: float = 1.497
     """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
+    critic_head_std: float = 0.1169
+    """Initialization std for the value head. Sets the magnitude of the untrained critic's outputs at PPO start, i.e. how large the initial 'garbage advantages' are that --critic-warmup absorbs; smaller = gentler on the SFT policy in the first updates. With --start-from the loaded SFT critic (never trained) is re-initialised to this std at PPO start."""
     eval_every: int = 7
     """Run the greedy held-out eval (eval/thput, eval/thput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12

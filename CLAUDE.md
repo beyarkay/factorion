@@ -116,6 +116,51 @@ at the given commit and drains it on self-terminating RunPod pods; or comment
 uv run python -m ci sweep ppo --ref main
 ```
 
+## GPU training via CI (`/ci` PR comments)
+
+**When asked to "do an SFT/PPO run" or "compare X vs main", use this — never
+launch pods by hand.** GPU jobs run on fire-and-forget, self-terminating
+RunPod pods, triggered by commenting on a PR (the comment runs the **PR's
+head commit**, so the branch must contain the `ci/` directory — merge main
+into stale branches first). Full details: `ci/README.md`; `/ci help` posts
+the grammar.
+
+The workflow: push a branch, open a PR, then comment one of
+
+```
+/ci sft --num-samples 200000              # SFT smoke (~minutes); omit flag for production-sized
+/ci ppo --start-from <sft_run_id> --total-timesteps 100000
+/ci compare ppo --start-from <sft_run_id> --seeds 3 --total-timesteps 250000
+assert pr:rollout/thput > main:rollout/thput
+/ci sweep sft --pods 2
+/ci pods      /ci kill <pod_id>      /ci watchdog --dry-run
+```
+
+`assert` lines under a compare become a `factorion-ci/compare` commit
+status: sides `pr:`/`main:`, ops `< > <= >=` plus `==`/`~=` (approx-equal,
+`+- tol`). Compare runs land in W&B groups
+`cmp-<sha7>-<algo>-<nonce>-{pr,main}`, one pod per (side, seed).
+
+What comes back, and what to relay to the user (always give links):
+
+- **👀 on the comment within ~30s** = event received. No 👀 → GitHub
+  delayed/dropped the `issue_comment` event (observed live) — repost.
+  **👍** = the command ran to completion.
+- A **launch comment** with pod ids (→ RunPod console), pre-assigned W&B
+  run URLs, the job spec, and for compares live ⏳/🚀/✅/❌/💀/🗑 statuses
+  edited in place every ~2 min. Link the user to this comment plus the
+  W&B run/group URLs (`https://wandb.ai/beyarkay/factorion/runs/<id>`).
+- **Results as PR comments**: sft/ppo runs get a headline-metrics comment
+  from the reporter cron (≤30 min after the run finishes); compares post
+  the seed-paired every-metric report + commit status from the waiting
+  workflow itself (~2 min after the last run finishes).
+
+Pods cannot leak (EXIT trap, in-pod deadline timer, hourly watchdog reaping
+by the deadline encoded in the pod name) — never babysit them; `/ci pods`
+to check state. Only whitelisted knobs are overridable (SFT `num_samples`,
+PPO `start_from`/`total_timesteps`, compare `seeds`); everything else comes
+from `training_config.py` at the launched commit.
+
 ## Benchmarks
 
 All speed benchmarks live in **`tests/benchmarks/`** — read
