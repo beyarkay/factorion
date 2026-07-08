@@ -2122,8 +2122,10 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
 /// and drained onto a shared output lane along the other — the classic
 /// lined-up production-row layout. Unlike the MEMORISE lessons (whose
 /// source/sink hug the assembler), the source and sink sit at semi-arbitrary
-/// free cells and are wired to the lane ends by the UG-aware belt router, so
-/// routing distance varies per seed.
+/// free cells on OPPOSITE sides of the row — the row splits the world in two
+/// and the source lands in the input-lane half, the sink in the output-lane
+/// half — wired to the lane ends by the UG-aware belt router, so routing
+/// distance varies per seed.
 ///
 /// Throughput deliberately varies: the assembler count (1..row capacity), the
 /// per-assembler input/output inserter counts (1-3 each) and the recipe's
@@ -2136,9 +2138,10 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
 ///
 /// Built in a canonical orientation — a horizontal assembler row, input lane
 /// north, output lane south — then the whole world is rotated by a random
-/// number of 90° turns. Each lane's flow direction is picked by trying both
-/// and keeping the shorter source/sink route (ties random), the way a player
-/// would feed a lane from whichever end is nearer.
+/// number of 90° turns. All four facings of each marker and both flow
+/// directions of its lane are tried, keeping the combination with the
+/// shortest route (ties random): a player rotates the source/sink and feeds
+/// the lane from whichever end gives the shortest belt line.
 fn build_factory_1_ingredient(
     size: usize,
     rng: &mut Rng,
@@ -2221,142 +2224,161 @@ fn build_factory_1_ingredient(
         reserved.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
         reserved.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
 
-        // Source/sink markers keep off every assembler perimeter (a marker
-        // there reads as feeding/draining the machine directly).
-        let mut marker_excluded = reserved.clone();
-        for &ax in &anchors {
-            marker_excluded.extend(all_perim_set(ax, ay, s));
-        }
-        let available = available_cells(s, &marker_excluded);
-        if available.len() < 2 {
-            continue;
-        }
-        let chosen = rng.sample(&available, 2);
-        let source_pos = chosen[0];
-        let sink_pos = chosen[1];
-        let source_dir = DIRS[rng.choice_index(4)];
-        let sink_dir = DIRS[rng.choice_index(4)];
-        let ds = source_dir.delta();
-        let dk = sink_dir.delta();
-        let source_out = (source_pos.0 + ds.0, source_pos.1 + ds.1);
-        let sink_in = (sink_pos.0 - dk.0, sink_pos.1 - dk.1);
-        let conns = [source_out, sink_in];
-        if conns
+        // Source and sink sit on OPPOSITE sides of the assembler line: the row
+        // splits the world in two and the source is drawn from the input-lane
+        // half (at or beyond the input lane row), the sink from the output-lane
+        // half. The random rotation below spreads the split over left/right as
+        // well as top/bottom. (No assembler-perimeter exclusion is needed:
+        // every perimeter cell lies strictly between the two bands.)
+        let free = available_cells(s, &reserved);
+        let src_band: Vec<Cell> = free
             .iter()
-            .any(|&c| !in_grid(c, s) || reserved.contains(&c))
-        {
+            .copied()
+            .filter(|&(_, y)| y <= in_lane_y)
+            .collect();
+        let snk_band: Vec<Cell> = free
+            .iter()
+            .copied()
+            .filter(|&(_, y)| y >= out_lane_y)
+            .collect();
+        if src_band.is_empty() || snk_band.is_empty() {
             continue;
         }
-        if source_out == sink_in
-            || source_out == sink_pos
-            || sink_in == source_pos
-            || source_pos == sink_pos
-        {
-            continue;
-        }
-        // The cell the sink FACES must stay empty: sinks connect like belts,
-        // so a sink pointing into a belt would FEED it — output items leaking
-        // back toward the input lane close a cycle, which the throughput
-        // engine scores as a dead factory.
-        let sink_face = (sink_pos.0 + dk.0, sink_pos.1 + dk.1);
-        if in_grid(sink_face, s)
-            && (reserved.contains(&sink_face) || sink_face == source_pos || sink_face == source_out)
-        {
-            continue;
-        }
+        let source_pos = src_band[rng.choice_index(src_band.len())];
+        let sink_pos = snk_band[rng.choice_index(snk_band.len())];
 
-        // Fixed obstacles common to both route searches; lane cells are added
+        // Fixed obstacles common to every route search; lane cells are added
         // per direction below (a route-owned head/exit cell must stay open).
         let mut fixed: HashSet<Cell> = asm_tiles.clone();
         fixed.extend(inserters.iter().map(|&(c, _)| c));
-        fixed.extend([source_pos, sink_pos, sink_face]);
+        fixed.extend([source_pos, sink_pos]);
 
         // Route 1: source drop → input lane head, arriving in the lane's flow
         // direction (the source feeds the start head-on, so the route may open
-        // with a tunnel entrance). Both lane directions are tried and the
-        // shorter route wins (ties broken by the shuffle) — a player feeds the
-        // lane from whichever end is nearer the source instead of snaking the
-        // belt around the row.
+        // with a tunnel entrance). All four source facings and both lane flow
+        // directions are tried, keeping the shortest route (ties broken by the
+        // shuffles): a player rotates the source and feeds the lane from
+        // whichever end gives the shortest belt line.
+        //
+        // Route 1 also keeps clear of the sink's whole neighbourhood — the
+        // sink's facing is only chosen during route 2, so any neighbour may
+        // yet become its feed cell (which route 2 needs open) or its faced
+        // cell (which must stay empty: sinks connect like belts, so a sink
+        // pointing into a belt would FEED it, and output items leaking back
+        // close a cycle the throughput engine scores as a dead factory).
+        let mut facing_choices = DIRS;
+        rng.shuffle(&mut facing_choices);
         let mut dir_choices = [Direction::East, Direction::West];
         rng.shuffle(&mut dir_choices);
-        // (in_dir, head, overshoot, route)
-        let mut best1: Option<(Direction, Cell, Cell, Vec<UgPlacement>)> = None;
-        for &d in &dir_choices {
-            let dd = d.delta();
-            let (head, tail) = if d == Direction::East {
-                ((in_lo, in_lane_y), (in_hi, in_lane_y))
-            } else {
-                ((in_hi, in_lane_y), (in_lo, in_lane_y))
-            };
-            // The lane's tail belt points one past the lane (the overshoot
-            // cell): an entity there would siphon the input items off the
-            // lane, so it must stay empty for this direction to be usable.
-            let overshoot = (tail.0 + dd.0, tail.1 + dd.1);
-            if [source_pos, sink_pos, source_out, sink_in, sink_face].contains(&overshoot) {
+        let sink_zone: Vec<Cell> = BFS_DELTAS
+            .iter()
+            .map(|&(dx, dy)| (sink_pos.0 + dx, sink_pos.1 + dy))
+            .collect();
+
+        // (source_dir, in_dir, head, overshoot, route)
+        let mut best1: Option<(Direction, Direction, Cell, Cell, Vec<UgPlacement>)> = None;
+        for &f in &facing_choices {
+            let df = f.delta();
+            let source_out = (source_pos.0 + df.0, source_pos.1 + df.1);
+            if !in_grid(source_out, s) {
                 continue;
             }
-            let mut blocked = fixed.clone();
-            blocked.extend(
-                (in_lo..=in_hi)
-                    .map(|x| (x, in_lane_y))
-                    .filter(|&c| c != head),
-            );
-            blocked.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
-            blocked.extend([overshoot, sink_in]);
-            if let Some(p) = find_belt_path(
-                source_out,
-                head,
-                d,
-                s,
-                &blocked,
-                Underground::On(Some(source_dir)),
-            ) {
-                if best1.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
-                    best1 = Some((d, head, overshoot, p));
+            for &d in &dir_choices {
+                let dd = d.delta();
+                let (head, tail) = if d == Direction::East {
+                    ((in_lo, in_lane_y), (in_hi, in_lane_y))
+                } else {
+                    ((in_hi, in_lane_y), (in_lo, in_lane_y))
+                };
+                // The source may drop straight onto the lane head (the ideal
+                // hookup, a zero-belt feed) but onto no other placed cell.
+                if source_out != head && reserved.contains(&source_out) {
+                    continue;
+                }
+                // The lane's tail belt points one past the lane (the overshoot
+                // cell): an entity there would siphon the input items off the
+                // lane, so it must stay empty for this combination to work.
+                let overshoot = (tail.0 + dd.0, tail.1 + dd.1);
+                if overshoot == source_pos || overshoot == source_out {
+                    continue;
+                }
+                let mut blocked = fixed.clone();
+                blocked.extend(sink_zone.iter().copied());
+                blocked.extend(
+                    (in_lo..=in_hi)
+                        .map(|x| (x, in_lane_y))
+                        .filter(|&c| c != head),
+                );
+                blocked.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
+                blocked.insert(overshoot);
+                if let Some(p) =
+                    find_belt_path(source_out, head, d, s, &blocked, Underground::On(Some(f)))
+                {
+                    if best1.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
+                        best1 = Some((f, d, head, overshoot, p));
+                    }
                 }
             }
         }
-        let Some((in_dir, in_head, overshoot, path1)) = best1 else {
+        let Some((source_dir, in_dir, in_head, overshoot, path1)) = best1 else {
             continue;
         };
         let path1_cells = belt_cell_set(&path1);
 
-        // Route 2: output lane exit → sink input, again keeping the shorter of
-        // the two lane directions. Items arrive on the exit cell travelling
-        // the lane direction (from the lane belt behind it, or dropped by the
-        // inserter above it), which also rules out a 180° reversal.
+        // Route 2: output lane exit → sink input, searching all four sink
+        // facings and both lane directions for the shortest route. Items
+        // arrive on the exit cell travelling the lane direction (from the
+        // lane belt behind it, or dropped by the inserter above it), which
+        // also rules out a 180° reversal.
+        rng.shuffle(&mut facing_choices);
         rng.shuffle(&mut dir_choices);
-        // (out_dir, exit, route)
-        let mut best2: Option<(Direction, Cell, Vec<UgPlacement>)> = None;
-        for &d in &dir_choices {
-            let exit = if d == Direction::East {
-                (out_hi, out_lane_y)
-            } else {
-                (out_lo, out_lane_y)
-            };
-            let mut blocked = fixed.clone();
-            blocked.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
-            blocked.extend(
-                (out_lo..=out_hi)
-                    .map(|x| (x, out_lane_y))
-                    .filter(|&c| c != exit),
-            );
-            blocked.insert(overshoot);
-            blocked.extend(path1_cells.iter().copied());
-            if let Some(p) = find_belt_path(
-                exit,
-                sink_in,
-                sink_dir,
-                s,
-                &blocked,
-                Underground::On(Some(d)),
-            ) {
-                if best2.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
-                    best2 = Some((d, exit, p));
+        // (sink_dir, out_dir, exit, route)
+        let mut best2: Option<(Direction, Direction, Cell, Vec<UgPlacement>)> = None;
+        for &f in &facing_choices {
+            let df = f.delta();
+            let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
+            let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
+            if !in_grid(sink_in, s) || path1_cells.contains(&sink_in) {
+                continue;
+            }
+            // The faced cell must stay empty (see route 1's note); a faced
+            // cell off the grid is fine — there is nothing there to feed.
+            if in_grid(sink_face, s)
+                && (reserved.contains(&sink_face) || path1_cells.contains(&sink_face))
+            {
+                continue;
+            }
+            for &d in &dir_choices {
+                let exit = if d == Direction::East {
+                    (out_hi, out_lane_y)
+                } else {
+                    (out_lo, out_lane_y)
+                };
+                // The sink may pull straight off the lane exit (the ideal
+                // hookup, a zero-belt drain) but off no other placed cell.
+                if sink_in != exit && reserved.contains(&sink_in) {
+                    continue;
+                }
+                let mut blocked = fixed.clone();
+                blocked.insert(sink_face);
+                blocked.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
+                blocked.extend(
+                    (out_lo..=out_hi)
+                        .map(|x| (x, out_lane_y))
+                        .filter(|&c| c != exit),
+                );
+                blocked.insert(overshoot);
+                blocked.extend(path1_cells.iter().copied());
+                if let Some(p) =
+                    find_belt_path(exit, sink_in, f, s, &blocked, Underground::On(Some(d)))
+                {
+                    if best2.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
+                        best2 = Some((f, d, exit, p));
+                    }
                 }
             }
         }
-        let Some((out_dir, out_exit, path2)) = best2 else {
+        let Some((sink_dir, out_dir, out_exit, path2)) = best2 else {
             continue;
         };
 
@@ -2804,6 +2826,32 @@ mod tests {
             assert!(
                 (2 * n_asm..=6 * n_asm).contains(&n_inserter),
                 "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
+            );
+            // The source and sink lie strictly on opposite sides of the
+            // assembler line, along at least one axis.
+            let (mut src, mut snk) = (None, None);
+            let (mut lo, mut hi) = ((i64::MAX, i64::MAX), (i64::MIN, i64::MIN));
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    let c = (x as i64, y as i64);
+                    match f.world.entity_at(x, y) {
+                        Some(Item::Source) => src = Some(c),
+                        Some(Item::Sink) => snk = Some(c),
+                        Some(Item::AssemblingMachine1) => {
+                            lo = (lo.0.min(c.0), lo.1.min(c.1));
+                            hi = (hi.0.max(c.0), hi.1.max(c.1));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let (src, snk) = (src.unwrap(), snk.unwrap());
+            let opposite =
+                |lo: i64, hi: i64, a: i64, b: i64| (a < lo && b > hi) || (b < lo && a > hi);
+            assert!(
+                opposite(lo.0, hi.0, src.0, snk.0) || opposite(lo.1, hi.1, src.1, snk.1),
+                "seed={seed}: source {src:?} and sink {snk:?} not on opposite \
+                 sides of the assembler row {lo:?}..{hi:?}"
             );
         }
         assert!(built > 40, "most seeds should build, got {built}");
