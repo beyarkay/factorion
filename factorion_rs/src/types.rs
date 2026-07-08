@@ -242,11 +242,34 @@ pub enum Item {
     SteamTurbine = 63,
     SteelFurnace = 64,
     StoneFurnace = 65,
+    // Recipe-balance additions (base game 1.1, solid-only recipes): extra
+    // items so the MEMORISE_N_INGREDIENT_RECIPES lessons draw from ~20
+    // recipes each instead of the lopsided 8/18/18/4 they had before.
+    Landfill = 66,
+    FirearmMagazine = 67,
+    StoneWall = 68,
+    SteelChest = 69,
+    HazardConcrete = 70,
+    AutomationSciencePack = 71,
+    Radar = 72,
+    Shotgun = 73,
+    CombatShotgun = 74,
+    TrainStop = 75,
+    AssemblingMachine2 = 76,
+    Centrifuge = 77,
+    Tank = 78,
+    ArtilleryTurret = 79,
+    ProgrammableSpeaker = 80,
+    FlyingRobotFrame = 81,
+    // Electric engine unit has a fluid (lubricant) recipe, so like the other
+    // fluid-recipe items it is an ingredient-only Item with no recipe.
+    ElectricEngineUnit = 82,
+    FluidWagon = 83,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 66,   // named "bulk_inserter"
-    Source = 67, // named "stack_inserter"
+    Sink = 84,   // named "bulk_inserter"
+    Source = 85, // named "stack_inserter"
 }
 
 impl Item {
@@ -319,8 +342,26 @@ impl Item {
             63 => Some(Item::SteamTurbine),
             64 => Some(Item::SteelFurnace),
             65 => Some(Item::StoneFurnace),
-            66 => Some(Item::Sink),
-            67 => Some(Item::Source),
+            66 => Some(Item::Landfill),
+            67 => Some(Item::FirearmMagazine),
+            68 => Some(Item::StoneWall),
+            69 => Some(Item::SteelChest),
+            70 => Some(Item::HazardConcrete),
+            71 => Some(Item::AutomationSciencePack),
+            72 => Some(Item::Radar),
+            73 => Some(Item::Shotgun),
+            74 => Some(Item::CombatShotgun),
+            75 => Some(Item::TrainStop),
+            76 => Some(Item::AssemblingMachine2),
+            77 => Some(Item::Centrifuge),
+            78 => Some(Item::Tank),
+            79 => Some(Item::ArtilleryTurret),
+            80 => Some(Item::ProgrammableSpeaker),
+            81 => Some(Item::FlyingRobotFrame),
+            82 => Some(Item::ElectricEngineUnit),
+            83 => Some(Item::FluidWagon),
+            84 => Some(Item::Sink),
+            85 => Some(Item::Source),
             _ => None,
         }
     }
@@ -405,6 +446,24 @@ impl Item {
             Item::SteamTurbine => "steam_turbine",
             Item::SteelFurnace => "steel_furnace",
             Item::StoneFurnace => "stone_furnace",
+            Item::Landfill => "landfill",
+            Item::FirearmMagazine => "firearm_magazine",
+            Item::StoneWall => "stone_wall",
+            Item::SteelChest => "steel_chest",
+            Item::HazardConcrete => "hazard_concrete",
+            Item::AutomationSciencePack => "automation_science_pack",
+            Item::Radar => "radar",
+            Item::Shotgun => "shotgun",
+            Item::CombatShotgun => "combat_shotgun",
+            Item::TrainStop => "train_stop",
+            Item::AssemblingMachine2 => "assembling_machine_2",
+            Item::Centrifuge => "centrifuge",
+            Item::Tank => "tank",
+            Item::ArtilleryTurret => "artillery_turret",
+            Item::ProgrammableSpeaker => "programmable_speaker",
+            Item::FlyingRobotFrame => "flying_robot_frame",
+            Item::ElectricEngineUnit => "electric_engine_unit",
+            Item::FluidWagon => "fluid_wagon",
         }
     }
 
@@ -516,7 +575,25 @@ impl Item {
             | Item::SteamEngine
             | Item::SteamTurbine
             | Item::SteelFurnace
-            | Item::StoneFurnace => 0.0,
+            | Item::StoneFurnace
+            | Item::Landfill
+            | Item::FirearmMagazine
+            | Item::StoneWall
+            | Item::SteelChest
+            | Item::HazardConcrete
+            | Item::AutomationSciencePack
+            | Item::Radar
+            | Item::Shotgun
+            | Item::CombatShotgun
+            | Item::TrainStop
+            | Item::AssemblingMachine2
+            | Item::Centrifuge
+            | Item::Tank
+            | Item::ArtilleryTurret
+            | Item::ProgrammableSpeaker
+            | Item::FlyingRobotFrame
+            | Item::ElectricEngineUnit
+            | Item::FluidWagon => 0.0,
         }
     }
 
@@ -601,6 +678,24 @@ pub fn all_items() -> &'static [Item] {
         Item::SteamTurbine,
         Item::SteelFurnace,
         Item::StoneFurnace,
+        Item::Landfill,
+        Item::FirearmMagazine,
+        Item::StoneWall,
+        Item::SteelChest,
+        Item::HazardConcrete,
+        Item::AutomationSciencePack,
+        Item::Radar,
+        Item::Shotgun,
+        Item::CombatShotgun,
+        Item::TrainStop,
+        Item::AssemblingMachine2,
+        Item::Centrifuge,
+        Item::Tank,
+        Item::ArtilleryTurret,
+        Item::ProgrammableSpeaker,
+        Item::FlyingRobotFrame,
+        Item::ElectricEngineUnit,
+        Item::FluidWagon,
         // Sink and Source MUST stay last — see test_source_and_sink_are_last_two_ids.
         Item::Sink,
         Item::Source,
