@@ -20,6 +20,9 @@ class RecipeData(TypedDict):
     crafting_time: float
 
 def simulate_throughput(world: NDArray[np.int64]) -> tuple[float, int]: ...
+def py_sink_deliveries(
+    world: NDArray[np.int64],
+) -> list[tuple[int, int, str | None, float]]: ...
 def py_build_graph(
     world: NDArray[np.int64],
 ) -> tuple[list[str], list[tuple[int, int]]]: ...

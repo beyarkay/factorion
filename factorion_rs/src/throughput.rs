@@ -23,6 +23,10 @@ pub const FACTORY_SCORE_P: f64 = 0.5;
 /// multi-item sinks by emitting one delivery per accepted item.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SinkDelivery {
+    /// Anchor tile of the sink entity this delivery belongs to, so callers
+    /// (e.g. the Factorio parity harness) can match per-sink rates by grid
+    /// position rather than relying on iteration order.
+    pub anchor: (usize, usize),
     pub item: Option<Item>,
     pub achieved: f64,
 }
@@ -215,6 +219,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             None => 0.0,
         };
         deliveries.push(SinkDelivery {
+            anchor: graph.nodes[sink_idx].anchor,
             item: expected,
             achieved,
         });
@@ -792,30 +797,36 @@ mod tests {
         // (3.75), and feeding both sinks fully (15) beats both.
         let bypass = [
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 15.0,
             },
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 0.0,
             },
         ];
         let balanced = [
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 7.5,
             },
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 7.5,
             },
         ];
         let full = [
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 15.0,
             },
             SinkDelivery {
+                anchor: (0, 0),
                 item: Some(Item::CopperCable),
                 achieved: 15.0,
             },
