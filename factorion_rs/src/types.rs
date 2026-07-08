@@ -259,11 +259,15 @@ pub enum Item {
     ArtilleryTurret = 79,
     ProgrammableSpeaker = 80,
     FluidWagon = 81,
+    LightArmor = 82,
+    DischargeDefenseRemote = 83,
+    PersonalRoboport = 84,
+    FlamethrowerTurret = 85,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 82,   // named "bulk_inserter"
-    Source = 83, // named "stack_inserter"
+    Sink = 86,   // named "bulk_inserter"
+    Source = 87, // named "stack_inserter"
 }
 
 impl Item {
@@ -352,8 +356,12 @@ impl Item {
             79 => Some(Item::ArtilleryTurret),
             80 => Some(Item::ProgrammableSpeaker),
             81 => Some(Item::FluidWagon),
-            82 => Some(Item::Sink),
-            83 => Some(Item::Source),
+            82 => Some(Item::LightArmor),
+            83 => Some(Item::DischargeDefenseRemote),
+            84 => Some(Item::PersonalRoboport),
+            85 => Some(Item::FlamethrowerTurret),
+            86 => Some(Item::Sink),
+            87 => Some(Item::Source),
             _ => None,
         }
     }
@@ -454,6 +462,10 @@ impl Item {
             Item::ArtilleryTurret => "artillery_turret",
             Item::ProgrammableSpeaker => "programmable_speaker",
             Item::FluidWagon => "fluid_wagon",
+            Item::LightArmor => "light_armor",
+            Item::DischargeDefenseRemote => "discharge_defense_remote",
+            Item::PersonalRoboport => "personal_roboport",
+            Item::FlamethrowerTurret => "flamethrower_turret",
         }
     }
 
@@ -581,7 +593,11 @@ impl Item {
             | Item::Tank
             | Item::ArtilleryTurret
             | Item::ProgrammableSpeaker
-            | Item::FluidWagon => 0.0,
+            | Item::FluidWagon
+            | Item::LightArmor
+            | Item::DischargeDefenseRemote
+            | Item::PersonalRoboport
+            | Item::FlamethrowerTurret => 0.0,
         }
     }
 
@@ -1418,6 +1434,48 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FluidWagon, 1.0)],
                 crafting_time: 1.5,
+            },
+        ),
+        (
+            Item::LightArmor,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 40.0)],
+                produces: nonempty![(Item::LightArmor, 1.0)],
+                crafting_time: 3.0,
+            },
+        ),
+        (
+            Item::DischargeDefenseRemote,
+            Recipe {
+                consumes: nonempty![(Item::ElectronicCircuit, 1.0)],
+                produces: nonempty![(Item::DischargeDefenseRemote, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::PersonalRoboport,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 10.0),
+                    (Item::Battery, 45.0),
+                    (Item::IronGearWheel, 40.0),
+                    (Item::SteelPlate, 20.0)
+                ],
+                produces: nonempty![(Item::PersonalRoboport, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        (
+            Item::FlamethrowerTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 5.0),
+                    (Item::IronGearWheel, 15.0),
+                    (Item::Pipe, 10.0),
+                    (Item::SteelPlate, 30.0)
+                ],
+                produces: nonempty![(Item::FlamethrowerTurret, 1.0)],
+                crafting_time: 20.0,
             },
         ),
     ]
