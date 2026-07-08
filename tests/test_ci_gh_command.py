@@ -234,6 +234,11 @@ class TestSweepDispatch:
         specs = [_job_spec(p) for p in gh_ctx["pods"]]
         assert {s["kind"] for s in specs} == {"sweep"}
         assert {s["sweep_path"] for s in specs} == {"me/factorion/swp-sft"}
+        # Sweep pods carry the pr tag too, so a pod that dies before its agents
+        # start still reports the boot failure to the PR via the reporter cron.
+        for pod in gh_ctx["pods"]:
+            assert "pr:42" in json.loads(pod["env"]["FCI_EXTRA_TAGS"])
+            assert pod["env"]["FCI_KIND"] == "sweep"
         # The launch comment shows what's being swept, not just pod ids.
         launch_body = gh_ctx["comments"][0][1]
         assert "val/acc" in launch_body and "run_cap 30" in launch_body
