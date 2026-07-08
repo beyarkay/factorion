@@ -1,4 +1,5 @@
 use nonempty::{nonempty, NonEmpty};
+use strum::IntoEnumIterator;
 
 /// Channels in the WHC tensor (3rd dimension).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,7 +166,7 @@ impl Misc {
 ///   last two — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Item {
     // Placeable, agent-buildable (1..=5)
     TransportBelt = 1,
@@ -609,97 +610,11 @@ impl Item {
     }
 }
 
-/// Every Item variant. The single source of truth — Python's `items`
-/// dict is built from this via the PyO3 `py_items` binding.
-pub fn all_items() -> &'static [Item] {
-    &[
-        Item::TransportBelt,
-        Item::Inserter,
-        Item::AssemblingMachine1,
-        Item::UndergroundBelt,
-        Item::Splitter,
-        Item::CopperCable,
-        Item::CopperPlate,
-        Item::IronPlate,
-        Item::ElectronicCircuit,
-        Item::IronGearWheel,
-        Item::Wood,
-        Item::Stone,
-        Item::StoneBrick,
-        Item::Concrete,
-        Item::CopperOre,
-        Item::IronOre,
-        Item::IronStick,
-        Item::Barrel,
-        Item::AdvancedCircuit,
-        Item::EngineUnit,
-        Item::SteelPlate,
-        Item::SolidFuel,
-        Item::PlasticBar,
-        Item::Sulfur,
-        Item::Battery,
-        Item::Explosives,
-        Item::WoodenChest,
-        Item::IronChest,
-        Item::StorageTank,
-        Item::FastTransportBelt,
-        Item::FastUndergroundBelt,
-        Item::FastSplitter,
-        Item::BurnerInserter,
-        Item::LongHandedInserter,
-        Item::FastInserter,
-        Item::SmallElectricPole,
-        Item::MediumElectricPole,
-        Item::BigElectricPole,
-        Item::Substation,
-        Item::Pipe,
-        Item::PipeToGround,
-        Item::Pump,
-        Item::Accumulator,
-        Item::Beacon,
-        Item::Boiler,
-        Item::BurnerMiningDrill,
-        Item::ChemicalPlant,
-        Item::EfficiencyModule,
-        Item::ElectricFurnace,
-        Item::HeatExchanger,
-        Item::HeatPipe,
-        Item::Lab,
-        Item::NuclearReactor,
-        Item::OffshorePump,
-        Item::OilRefinery,
-        Item::ProductivityModule,
-        Item::Pumpjack,
-        Item::QualityModule,
-        Item::RepairPack,
-        Item::SolarPanel,
-        Item::SpeedModule,
-        Item::SteamEngine,
-        Item::SteamTurbine,
-        Item::SteelFurnace,
-        Item::StoneFurnace,
-        Item::Landfill,
-        Item::FirearmMagazine,
-        Item::StoneWall,
-        Item::SteelChest,
-        Item::HazardConcrete,
-        Item::AutomationSciencePack,
-        Item::Radar,
-        Item::Shotgun,
-        Item::CombatShotgun,
-        Item::TrainStop,
-        Item::AssemblingMachine2,
-        Item::Centrifuge,
-        Item::Tank,
-        Item::ArtilleryTurret,
-        Item::ProgrammableSpeaker,
-        Item::FlyingRobotFrame,
-        Item::ElectricEngineUnit,
-        Item::FluidWagon,
-        // Sink and Source MUST stay last — see test_source_and_sink_are_last_two_ids.
-        Item::Sink,
-        Item::Source,
-    ]
+/// Every Item variant, in enum declaration order — so Sink/Source come last
+/// (`test_source_and_sink_are_last_two_ids`) and ids stay stable. Python's
+/// `items` dict is built from this via the PyO3 `py_items` binding.
+pub fn all_items() -> Vec<Item> {
+    Item::iter().collect()
 }
 
 /// A signed grid position. Used for multi-tile entity offsets where
@@ -1747,7 +1662,7 @@ mod tests {
     fn test_item_from_name_roundtrips() {
         // Every item's name decodes back to itself — covers the name→variant
         // mapping for all items, so no per-item spot checks are needed.
-        for &item in all_items() {
+        for item in all_items() {
             assert_eq!(Item::from_name(item.name()), Some(item));
         }
         // Unknown names decode to None.

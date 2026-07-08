@@ -144,7 +144,7 @@ fn py_entity_tiles(
 #[pyfunction]
 fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let outer = PyDict::new(py);
-    for &item in all_items() {
+    for item in all_items() {
         let entry = PyDict::new(py);
         let (w, h) = item.size();
         entry.set_item("name", item.name())?;
