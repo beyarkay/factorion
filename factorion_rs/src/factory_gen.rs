@@ -2083,6 +2083,40 @@ fn build_memorise_recipes(
     None
 }
 
+/// Whether any underground tunnel in these routes is severed by a crossing:
+/// the engine pairs an entrance with the FIRST underground tile it meets
+/// ahead — whatever that tile's facing — so any other UG tile strictly inside
+/// a tunnel's span breaks the pair and orphans the downstream side. Relies on
+/// [`find_belt_paths`] emitting each tunnel's Down placement immediately
+/// followed by its Up.
+fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
+    let ug_tiles: HashSet<Cell> = paths
+        .iter()
+        .flat_map(|p| p.iter())
+        .filter(|&&(.., m)| m != Misc::None)
+        .map(|&(x, y, ..)| (x, y))
+        .collect();
+    for path in paths {
+        for pair in path.windows(2) {
+            let (x, y, d, m) = pair[0];
+            if m != Misc::UndergroundDown {
+                continue;
+            }
+            let (ex, ey, ..) = pair[1];
+            let (dx, dy) = d.delta();
+            let (mut cx, mut cy) = (x + dx, y + dy);
+            while (cx, cy) != (ex, ey) {
+                if ug_tiles.contains(&(cx, cy)) {
+                    return true;
+                }
+                cx += dx;
+                cy += dy;
+            }
+        }
+    }
+    false
+}
+
 /// Build a FACTORY_1_INGREDIENT factory: a row of assemblers all crafting the
 /// same 1-in-1-out recipe, fed from a shared input belt lane along one side
 /// and drained onto a shared output lane along the other — the classic
@@ -2095,12 +2129,16 @@ fn build_memorise_recipes(
 /// per-assembler input/output inserter counts (1-3 each) and the recipe's
 /// crafting time combine so a given factory may be input-inserter limited,
 /// recipe-speed limited, or output-inserter limited — giving the critic both
-/// good and bad layouts to rank. Only dead (zero-throughput) or orphan-tile
-/// factories are rejected.
+/// good and bad layouts to rank. Dead or orphan-tile candidates are prevented
+/// constructively (the sink's faced cell stays empty so the sink never feeds
+/// a belt and closes a cycle; crossed tunnels are rejected before placement);
+/// the final throughput/orphan gate remains as a safety net.
 ///
 /// Built in a canonical orientation — a horizontal assembler row, input lane
-/// north, output lane south, each lane flowing a random direction — then the
-/// whole world is rotated by a random number of 90° turns.
+/// north, output lane south — then the whole world is rotated by a random
+/// number of 90° turns. Each lane's flow direction is picked by trying both
+/// and keeping the shorter source/sink route (ties random), the way a player
+/// would feed a lane from whichever end is nearer.
 fn build_factory_1_ingredient(
     size: usize,
     rng: &mut Rng,
@@ -2138,9 +2176,6 @@ fn build_factory_1_ingredient(
         let ay = rng.randint(2, s - 5);
         let in_lane_y = ay - 2;
         let out_lane_y = ay + 4;
-        let lane_dirs = [Direction::East, Direction::West];
-        let in_dir = lane_dirs[rng.choice_index(2)];
-        let out_dir = lane_dirs[rng.choice_index(2)];
 
         // Per assembler: 1-3 input inserters on the north side (facing south,
         // into the machine) and 1-3 output inserters on the south side (facing
@@ -2179,42 +2214,12 @@ fn build_factory_1_ingredient(
         let Some((out_lo, out_hi)) = span(&drop_xs) else {
             continue;
         };
-        let (in_head, in_tail) = if in_dir == Direction::East {
-            ((in_lo, in_lane_y), (in_hi, in_lane_y))
-        } else {
-            ((in_hi, in_lane_y), (in_lo, in_lane_y))
-        };
-        let out_exit = if out_dir == Direction::East {
-            (out_hi, out_lane_y)
-        } else {
-            (out_lo, out_lane_y)
-        };
 
-        // Lane belts, minus the two route-owned cells (head/exit).
-        let mut lane_belts: Vec<UgPlacement> = Vec::new();
-        for x in in_lo..=in_hi {
-            if (x, in_lane_y) != in_head {
-                lane_belts.push((x, in_lane_y, in_dir, Misc::None));
-            }
-        }
-        for x in out_lo..=out_hi {
-            if (x, out_lane_y) != out_exit {
-                lane_belts.push((x, out_lane_y, out_dir, Misc::None));
-            }
-        }
-
-        // Cells no route or marker may take: machines, inserters, both lanes,
-        // and the input lane's overshoot cell (the tail belt points into it —
-        // an entity there would siphon the input items off the lane).
+        // Cells no route or marker may take: machines, inserters, both lanes.
         let mut reserved: HashSet<Cell> = asm_tiles.clone();
         reserved.extend(inserters.iter().map(|&(c, _)| c));
         reserved.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
         reserved.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
-        let in_dd = in_dir.delta();
-        let overshoot = (in_tail.0 + in_dd.0, in_tail.1 + in_dd.1);
-        if in_grid(overshoot, s) {
-            reserved.insert(overshoot);
-        }
 
         // Source/sink markers keep off every assembler perimeter (a marker
         // there reads as feeding/draining the machine directly).
@@ -2249,46 +2254,132 @@ fn build_factory_1_ingredient(
         {
             continue;
         }
+        // The cell the sink FACES must stay empty: sinks connect like belts,
+        // so a sink pointing into a belt would FEED it — output items leaking
+        // back toward the input lane close a cycle, which the throughput
+        // engine scores as a dead factory.
+        let sink_face = (sink_pos.0 + dk.0, sink_pos.1 + dk.1);
+        if in_grid(sink_face, s)
+            && (reserved.contains(&sink_face) || sink_face == source_pos || sink_face == source_out)
+        {
+            continue;
+        }
+
+        // Fixed obstacles common to both route searches; lane cells are added
+        // per direction below (a route-owned head/exit cell must stay open).
+        let mut fixed: HashSet<Cell> = asm_tiles.clone();
+        fixed.extend(inserters.iter().map(|&(c, _)| c));
+        fixed.extend([source_pos, sink_pos, sink_face]);
 
         // Route 1: source drop → input lane head, arriving in the lane's flow
-        // direction. The source feeds the start head-on, so the route may open
-        // with a tunnel entrance there.
-        let placed: HashSet<Cell> = reserved
-            .iter()
-            .copied()
-            .filter(|&c| c != in_head && c != out_exit)
-            .collect();
-        let mut blocked1 = placed.clone();
-        blocked1.extend([out_exit, source_pos, sink_pos, sink_in]);
-        let path1 = match find_belt_path(
-            source_out,
-            in_head,
-            in_dir,
-            s,
-            &blocked1,
-            Underground::On(Some(source_dir)),
-        ) {
-            Some(p) => p,
-            None => continue,
+        // direction (the source feeds the start head-on, so the route may open
+        // with a tunnel entrance). Both lane directions are tried and the
+        // shorter route wins (ties broken by the shuffle) — a player feeds the
+        // lane from whichever end is nearer the source instead of snaking the
+        // belt around the row.
+        let mut dir_choices = [Direction::East, Direction::West];
+        rng.shuffle(&mut dir_choices);
+        // (in_dir, head, overshoot, route)
+        let mut best1: Option<(Direction, Cell, Cell, Vec<UgPlacement>)> = None;
+        for &d in &dir_choices {
+            let dd = d.delta();
+            let (head, tail) = if d == Direction::East {
+                ((in_lo, in_lane_y), (in_hi, in_lane_y))
+            } else {
+                ((in_hi, in_lane_y), (in_lo, in_lane_y))
+            };
+            // The lane's tail belt points one past the lane (the overshoot
+            // cell): an entity there would siphon the input items off the
+            // lane, so it must stay empty for this direction to be usable.
+            let overshoot = (tail.0 + dd.0, tail.1 + dd.1);
+            if [source_pos, sink_pos, source_out, sink_in, sink_face].contains(&overshoot) {
+                continue;
+            }
+            let mut blocked = fixed.clone();
+            blocked.extend(
+                (in_lo..=in_hi)
+                    .map(|x| (x, in_lane_y))
+                    .filter(|&c| c != head),
+            );
+            blocked.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
+            blocked.extend([overshoot, sink_in]);
+            if let Some(p) = find_belt_path(
+                source_out,
+                head,
+                d,
+                s,
+                &blocked,
+                Underground::On(Some(source_dir)),
+            ) {
+                if best1.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
+                    best1 = Some((d, head, overshoot, p));
+                }
+            }
+        }
+        let Some((in_dir, in_head, overshoot, path1)) = best1 else {
+            continue;
+        };
+        let path1_cells = belt_cell_set(&path1);
+
+        // Route 2: output lane exit → sink input, again keeping the shorter of
+        // the two lane directions. Items arrive on the exit cell travelling
+        // the lane direction (from the lane belt behind it, or dropped by the
+        // inserter above it), which also rules out a 180° reversal.
+        rng.shuffle(&mut dir_choices);
+        // (out_dir, exit, route)
+        let mut best2: Option<(Direction, Cell, Vec<UgPlacement>)> = None;
+        for &d in &dir_choices {
+            let exit = if d == Direction::East {
+                (out_hi, out_lane_y)
+            } else {
+                (out_lo, out_lane_y)
+            };
+            let mut blocked = fixed.clone();
+            blocked.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
+            blocked.extend(
+                (out_lo..=out_hi)
+                    .map(|x| (x, out_lane_y))
+                    .filter(|&c| c != exit),
+            );
+            blocked.insert(overshoot);
+            blocked.extend(path1_cells.iter().copied());
+            if let Some(p) = find_belt_path(
+                exit,
+                sink_in,
+                sink_dir,
+                s,
+                &blocked,
+                Underground::On(Some(d)),
+            ) {
+                if best2.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
+                    best2 = Some((d, exit, p));
+                }
+            }
+        }
+        let Some((out_dir, out_exit, path2)) = best2 else {
+            continue;
         };
 
-        // Route 2: output lane exit → sink input. Items arrive on the exit
-        // cell travelling `out_dir` (from the lane belt behind it, or dropped
-        // by the inserter above it), which also rules out a 180° reversal.
-        let mut blocked2 = placed;
-        blocked2.extend(belt_cell_set(&path1));
-        blocked2.extend([in_head, source_pos, sink_pos]);
-        let path2 = match find_belt_path(
-            out_exit,
-            sink_in,
-            sink_dir,
-            s,
-            &blocked2,
-            Underground::On(Some(out_dir)),
-        ) {
-            Some(p) => p,
-            None => continue,
-        };
+        // The two routes are pathed independently, so one's tunnel may pass
+        // under the other's underground tile — which severs the tunnel (the
+        // engine pairs an entrance with the FIRST UG tile ahead, whatever its
+        // facing) and orphans everything downstream. Reject such crossings.
+        if tunnels_crossed(&[&path1, &path2]) {
+            continue;
+        }
+
+        // Lane belts, minus the two route-owned cells (head/exit).
+        let mut lane_belts: Vec<UgPlacement> = Vec::new();
+        for x in in_lo..=in_hi {
+            if (x, in_lane_y) != in_head {
+                lane_belts.push((x, in_lane_y, in_dir, Misc::None));
+            }
+        }
+        for x in out_lo..=out_hi {
+            if (x, out_lane_y) != out_exit {
+                lane_belts.push((x, out_lane_y, out_dir, Misc::None));
+            }
+        }
 
         // Every assembler counts as ONE removable unit (matching
         // blank_entities), as do inserters, lane belts and route placements.
