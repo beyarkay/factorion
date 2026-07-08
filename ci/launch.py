@@ -45,16 +45,32 @@ on_exit() {
     if [ "$rc" -ne 0 ]; then
         echo "[fci] job failed (exit ${rc}); uploading boot log to W&B"
         FCI_RC="$rc" python - << 'PY' || true
+import json
 import os
 
 import wandb
 
+# Carry the same kind:/pr:/... tags the real run would have, so the boot
+# failure flows through the ordinary reporter cron and lands on the PR — a
+# bare boot-failure run is invisible to it (it needs kind: and pr: tags).
+tags = [
+    "ci",
+    "boot-failure",
+    f"kind:{os.environ.get('FCI_KIND', 'unknown')}",
+    f"sha:{os.environ.get('FCI_SHA', 'unknown')[:7]}",
+]
+tags += json.loads(os.environ.get("FCI_EXTRA_TAGS", "[]"))
 run = wandb.init(
     project=os.environ.get("FCI_WANDB_PROJECT", "factorion"),
     name=f"boot-failure-{os.environ.get('RUNPOD_POD_ID', 'unknown')}",
-    tags=["ci", "boot-failure", f"sha:{os.environ.get('FCI_SHA', 'unknown')[:7]}"],
+    tags=tags,
 )
 run.summary["exit_code"] = int(os.environ.get("FCI_RC", "1"))
+try:
+    with open("/workspace/boot.log") as fh:
+        run.summary["boot_log_tail"] = "".join(fh.readlines()[-25:])
+except OSError:
+    pass
 if os.path.exists("/workspace/boot.log"):
     wandb.save("/workspace/boot.log", base_path="/workspace")
 run.finish(exit_code=1)
@@ -68,6 +84,11 @@ echo "[fci] cloning ${FCI_REPO_URL} @ ${FCI_SHA}"
 cd /workspace
 git clone --quiet "${FCI_REPO_URL}" factorion
 cd factorion
+# The head commit can leave every branch tip before the pod boots (PR merged
+# and its branch deleted, or force-pushed), so a plain clone won't contain it.
+# Fetch the exact SHA directly — GitHub still serves it via refs/pull/* — so
+# the checkout succeeds instead of dying with "reference is not a tree".
+git fetch --quiet origin "${FCI_SHA}"
 git checkout --quiet "${FCI_SHA}"
 bash ci/runner.sh
 """
@@ -155,6 +176,10 @@ def launch(
         "FCI_SHA": job.sha,
         "FCI_DEADLINE": str(deadline),
         "FCI_WANDB_PROJECT": WANDB_PROJECT,
+        # For the bootstrap's boot-failure run: the tags the real run would
+        # carry, so a failure that never reaches jobs.py still reports to the PR.
+        "FCI_KIND": job.KIND,
+        "FCI_EXTRA_TAGS": json.dumps(list(getattr(job, "extra_tags", []))),
     }
     if wandb_run_id:
         env["FCI_WANDB_RUN_ID"] = wandb_run_id

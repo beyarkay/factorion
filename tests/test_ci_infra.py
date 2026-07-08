@@ -27,6 +27,7 @@ from ci.gh_command import parse_comment
 from ci.jobs import ppo_command, sft_command, sweep_agent_command
 from ci.report import (
     MetricRow,
+    boot_failure_markdown,
     compare_metric_rows,
     evaluate_assertion,
     flatten_summary,
@@ -417,6 +418,23 @@ class TestReporter:
         candidates = [{"run_id": "aaa"}, {"run_id": "bbb"}]
         bodies = ["intro", "report\n<!-- factorion-ci-run:aaa -->"]
         assert select_unreported(candidates, bodies) == [{"run_id": "bbb"}]
+
+    def test_boot_failure_reports_clearly_with_log_tail(self):
+        # A pod that dies before the run starts (clone/build/setup) still gets
+        # a PR comment — the same marker makes it idempotent for the cron, and
+        # it carries the boot-log tail so the failure is diagnosable in place.
+        md = boot_failure_markdown(
+            run_id="deadb33f",
+            url="https://wandb.ai/x/y/runs/deadb33f",
+            kind="ppo",
+            sha7=SHA[:7],
+            log_tail="[fci] cloning ...\nfatal: reference is not a tree: abc123\n",
+        )
+        assert "<!-- factorion-ci-run:deadb33f -->" in md
+        assert "failed to boot" in md
+        assert "ppo" in md
+        assert "https://wandb.ai/x/y/runs/deadb33f" in md
+        assert "reference is not a tree" in md  # the actual error, in a code block
 
     def test_run_summary_contains_marker_and_headline(self):
         md = run_summary_markdown(

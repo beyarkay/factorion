@@ -88,6 +88,16 @@ class TestSftDispatch:
         assert pod["env"]["FCI_SHA"] == SHA
         assert pod["name"].startswith("factorion-ci-sft-")
 
+        # A boot failure (pod dies before jobs.py) still reports to the PR:
+        # the pod carries the kind + pr tags the reporter cron keys on, and
+        # the bootstrap fetches the exact SHA so a vanished branch tip (merged
+        # + deleted PR branch, or force-push) still checks out.
+        assert pod["env"]["FCI_KIND"] == "sft"
+        assert "pr:42" in json.loads(pod["env"]["FCI_EXTRA_TAGS"])
+        boot = base64.b64decode(pod["env"]["FCI_BOOT_B64"]).decode()
+        assert 'git fetch --quiet origin "${FCI_SHA}"' in boot
+        assert "boot-failure" in boot and "FCI_EXTRA_TAGS" in boot
+
         ((pr, body),) = gh_ctx["comments"]
         assert pr == 42
         assert "pod-1" in body
