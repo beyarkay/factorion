@@ -707,6 +707,85 @@ def run_rollout_eval(
     }
 
 
+def run_asm_item_acc_eval(
+    agent,
+    size: int,
+    max_level: int,
+    seeds_to_kind: dict[int, int],
+    device,
+    batch_size: int = 256,
+) -> dict:
+    """Teacher-forced item-head accuracy on assembler placements, over the given
+    held-out (seed -> LessonKind.value) factories.
+
+    The PPO-side counterpart of SFT's val/asm_item_acc: PPO's greedy eval only
+    measures throughput, so the recipe-pick skill (does the model copy the
+    sink's item tag onto the assembler) is otherwise invisible during RL. Here
+    we rebuild each held-out factory, blank it to `max_level`, and score the
+    item head against the expert recipe on assembler placements only — no env
+    rollout, just a forward pass, so it's cheap next to the throughput eval.
+
+    Returns {overall, per_kind, per_kind_n}: overall/per_kind are asm_item_acc
+    in [0, 1] keyed by LessonKind.name; per_kind_n counts assembler placements
+    scored per kind (kinds with no assemblers never appear).
+    """
+    was_training = agent.training
+    agent.eval()
+
+    # Collect assembler-placement demos across the held-out factories.
+    obs_list, tile_list, item_list, kind_list = [], [], [], []
+    for seed, kind_val in seeds_to_kind.items():
+        kind = LessonKind(kind_val)
+        factory = build_factory(size=size, kind=kind, seed=seed)
+        if factory is None:
+            continue
+        task, _ = blank_entities(factory, num_missing_entities=max_level)
+        for obs, tile, ent, _dir, item, _misc, _mask, eot in extract_expert_actions(
+            factory.world_CWH, task
+        ):
+            if eot == 0 and ent == _ASM_MACHINE_ENT_ID:
+                obs_list.append(obs)
+                tile_list.append(tile)
+                item_list.append(item)
+                kind_list.append(kind.name)
+
+    per_kind_correct: dict[str, int] = {}
+    per_kind_n: dict[str, int] = {}
+    total_correct = 0
+    if not obs_list:
+        if was_training:
+            agent.train()
+        return {"overall": 0.0, "per_kind": {}, "per_kind_n": {}}
+
+    obs_all = torch.stack(obs_list).to(device).float()
+    tile_all = torch.tensor(tile_list, dtype=torch.long, device=device)
+    item_all = torch.tensor(item_list, dtype=torch.long, device=device)
+    with torch.no_grad():
+        for start in range(0, obs_all.shape[0], batch_size):
+            sl = slice(start, start + batch_size)
+            encoded = agent.encoder(agent._encode_input(obs_all[sl]))
+            b = encoded.shape[0]
+            x_b = tile_all[sl] // agent.height
+            y_b = tile_all[sl] % agent.height
+            feats = encoded[torch.arange(b, device=device), :, x_b, y_b]
+            pred = agent.item_head(feats).argmax(dim=1)
+            correct = pred == item_all[sl]
+            total_correct += int(correct.sum().item())
+            for i, k_name in enumerate(kind_list[sl]):
+                per_kind_n[k_name] = per_kind_n.get(k_name, 0) + 1
+                per_kind_correct[k_name] = per_kind_correct.get(k_name, 0) + int(
+                    correct[i].item()
+                )
+
+    if was_training:
+        agent.train()
+    return {
+        "overall": total_correct / len(obs_list),
+        "per_kind": {k: per_kind_correct[k] / per_kind_n[k] for k in per_kind_n},
+        "per_kind_n": per_kind_n,
+    }
+
+
 # Direction classes for the val confusion matrix, ordered by enum value
 # (NONE=0, NORTH=1, EAST=2, SOUTH=3, WEST=4).
 _DIRECTION_NAMES = [d.name for d in sorted(Direction, key=lambda d: d.value)]

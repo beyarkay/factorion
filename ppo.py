@@ -131,7 +131,7 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
     from types import SimpleNamespace
 
-    from sft import run_rollout_eval
+    from sft import run_asm_item_acc_eval, run_rollout_eval
 
     # Duck-typed args shim: run_rollout_eval only reads .size/.seed/.max_level.
     eval_args = SimpleNamespace(size=args.size, seed=args.seed, max_level=0)
@@ -154,6 +154,16 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, thp in roll["per_kind_eot"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput_eot"] = thp
+
+    # Teacher-forced recipe-pick accuracy (assembler placements), mirroring SFT's
+    # val/asm_item_acc so the recipe-pick skill is trackable through RL (#264).
+    asm = run_asm_item_acc_eval(
+        agent, args.size, args.size * args.size, eval_seeds_to_kind, device
+    )
+    if asm["per_kind_n"]:
+        metrics["eval/asm_item_acc"] = asm["overall"]
+        for kn, acc in asm["per_kind"].items():
+            metrics[f"eval/{kn}/asm_item_acc"] = acc
     return metrics
 
 
@@ -1429,10 +1439,12 @@ if __name__ == "__main__":
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="max")
         wandb.define_metric("eval/thput_eot", summary="max")
+        wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
             wandb.define_metric(f"eval/{ln}/thput_eot", summary="max")
+            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable"]:

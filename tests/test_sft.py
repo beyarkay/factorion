@@ -41,6 +41,7 @@ from sft import (
     _steps_per_epoch,
     build_lr_schedule,
     extract_expert_actions,
+    run_asm_item_acc_eval,
     run_rollout_eval,
     train_sft,
 )
@@ -936,6 +937,56 @@ class TestHeldoutRecipes:
         metrics = logged[-1]
         assert "val/asm_item_acc_heldout" not in metrics
         assert "val/asm_item_acc_indist" not in metrics
+
+
+class TestRunAsmItemAccEval:
+    """Teacher-forced recipe-pick accuracy eval used by PPO's eval/ section."""
+
+    def test_returns_per_kind_acc_for_memorise_lessons(self, registered_env):
+        size = 9
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, layers=(16, 16, 16))
+        envs.close()
+
+        # Held-out factories: several MEMORISE seeds (assembler-bearing) plus a
+        # belt-only lesson that must NOT appear in the result.
+        seeds_to_kind = {}
+        for ki, kn in enumerate((
+            LessonKind.MEMORISE_2_INGREDIENT_RECIPES,
+            LessonKind.MEMORISE_3_INGREDIENT_RECIPES,
+        )):
+            found = 0
+            s = 500_000 + ki * 10_000  # disjoint seed range per kind
+            while found < 4:
+                if build_factory(size=size, kind=kn, seed=s) is not None:
+                    seeds_to_kind[s] = kn.value
+                    found += 1
+                s += 1
+        # A belt-only lesson (no assembler) — its key should be absent.
+        seeds_to_kind[900_000] = LessonKind.MOVE_ONE_ITEM.value
+
+        res = run_asm_item_acc_eval(
+            agent, size, size * size, seeds_to_kind, torch.device("cpu")
+        )
+        assert set(res) == {"overall", "per_kind", "per_kind_n"}
+        assert 0.0 <= res["overall"] <= 1.0
+        assert "MEMORISE_2_INGREDIENT_RECIPES" in res["per_kind"]
+        assert "MEMORISE_3_INGREDIENT_RECIPES" in res["per_kind"]
+        # Belt-only lesson placed no assembler → never scored.
+        assert "MOVE_ONE_ITEM" not in res["per_kind"]
+        for acc in res["per_kind"].values():
+            assert 0.0 <= acc <= 1.0
+
+    def test_empty_when_no_assembler_lessons(self, registered_env):
+        size = 9
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, layers=(16, 16, 16))
+        envs.close()
+        seeds_to_kind = {900_001: LessonKind.MOVE_ONE_ITEM.value}
+        res = run_asm_item_acc_eval(
+            agent, size, size * size, seeds_to_kind, torch.device("cpu")
+        )
+        assert res == {"overall": 0.0, "per_kind": {}, "per_kind_n": {}}
 
 
 class TestRunRolloutEval:
