@@ -191,6 +191,15 @@ flow stalls, per the diagnosis idea in #261. The exit code is 0 iff every
 sink of every factory matched. This is a local, on-demand tool — it needs
 a licensed Factorio install, so it deliberately does not run in CI.
 
+Runs narrate themselves in-game: chat messages (`game.print`, which also
+reach the headless server console) announce build errors, warmup→measure
+transitions, periodic progress with live per-sink rates, and the final
+rates; map overlays draw the grid outline, label every source/sink (sink
+labels tick up with the measured rate), and hang a red status tag over
+any machine/inserter that isn't `working` at sample time — so a
+spectator literally watches where flow stalls. The Python side mirrors
+the heartbeat, printing phase + percent lines while it polls.
+
 To watch a run from the GUI: `/c game.player.teleport({5, 5},
 "factorion-parity")` (the grid's top-left tile is at 0,0 on that
 surface). Runs execute on their own surface and force, so they never

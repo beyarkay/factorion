@@ -18,6 +18,7 @@
 --     measure_ticks = 3600,       -- counting window
 --     game_speed = 32,            -- game.speed while the run is active
 --     sample_every = 15,          -- per-entity sampling period (ticks)
+--     progress_every = 1500,      -- chat-progress period (measure ticks)
 --     entities = {                -- model-placed entities (no source/sink)
 --       { name="transport-belt", x=3.5, y=5.5, tile_x=3, tile_y=5,
 --         direction=4, type="input"|"output"|nil, recipe="iron-gear-wheel"|nil },
@@ -64,6 +65,33 @@ end
 
 local function json_decode(s)
   return helpers.json_to_table(s)
+end
+
+local COLOR_ERR = { r = 1.0, g = 0.35, b = 0.35 }
+local COLOR_OK = { r = 0.55, g = 1.0, b = 0.55 }
+local COLOR_SRC = { r = 0.4, g = 0.9, b = 0.4 }
+local COLOR_SNK = { r = 0.4, g = 0.7, b = 1.0 }
+
+-- All human-facing feedback goes through here: game.print reaches the
+-- GUI chat AND the headless server console, log() lands in
+-- factorio-current.log. A spectator (or Claude tailing the console)
+-- sees build errors, phase transitions and live rates without having
+-- to poll RCON.
+local function announce(msg, color)
+  local line = "[Factorion parity] " .. msg
+  game.print(line, color and { color = color } or nil)
+  log(line)
+end
+
+local function draw_label(surface, x, y, text, color, scale)
+  return rendering.draw_text({
+    text = text,
+    surface = surface,
+    target = { x, y },
+    color = color,
+    scale = scale or 1.0,
+    alignment = "center",
+  })
 end
 
 -- defines.entity_status is {name -> int}; results want names.
@@ -313,11 +341,50 @@ local function sample_entities(run)
         if status ~= nil then
           local sname = STATUS_NAMES[status] or tostring(status)
           w.status_counts[sname] = (w.status_counts[sname] or 0) + 1
+          -- Live overlay: a red status tag above any machine/inserter
+          -- that isn't plain "working" right now, so a spectator sees
+          -- *where* flow is stalling as it happens.
+          if status ~= defines.entity_status.working then
+            if w.warn and w.warn.valid then
+              w.warn.text = sname
+            else
+              w.warn = draw_label(e.surface,
+                ORIGIN_X + w.x + 0.5, ORIGIN_Y + w.y + 0.2,
+                sname, COLOR_ERR, 0.7)
+            end
+          elseif w.warn and w.warn.valid then
+            w.warn.destroy()
+            w.warn = nil
+          end
         end
         if w.kind == "inserter" and e.held_stack.valid_for_read then
           w.held_ticks = w.held_ticks + 1
         end
       end
+    end
+  end
+end
+
+-- One line per sink with the rate measured so far, e.g.
+-- "sink(3,5) iron-plate 14.87/s". Used by chat progress + labels.
+local function sink_rate_lines(run, measure_elapsed_ticks)
+  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
+  local lines = {}
+  for _, snk in ipairs(run.sinks) do
+    local count = snk.counts[snk.item] or 0
+    table.insert(lines, string.format(
+      "sink(%d,%d) %s %.2f/s", snk.x, snk.y, snk.item, count / seconds))
+  end
+  return lines
+end
+
+local function update_sink_labels(run, measure_elapsed_ticks)
+  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
+  for _, snk in ipairs(run.sinks) do
+    if snk.label and snk.label.valid then
+      local count = snk.counts[snk.item] or 0
+      snk.label.text = string.format(
+        "sink %s %.2f/s", snk.item, count / seconds)
     end
   end
 end
@@ -392,7 +459,9 @@ local function finish_run(run)
   st.result = json_encode(result)
   st.run = nil
   game.speed = 1.0
-  log("[Factorion] parity run " .. run.run_id .. " done")
+  update_sink_labels(run, run.measure_ticks)
+  announce(string.format("run %s DONE — %s", run.run_id,
+    table.concat(sink_rate_lines(run, run.measure_ticks), ", ")), COLOR_OK)
 end
 
 -- ----------------------------------------------------------------------------
@@ -420,13 +489,23 @@ function M.on_tick()
         w.products_finished_start = w.entity.products_finished
       end
     end
+    announce(string.format(
+      "run %s: warmup done, measuring for %d ticks (%.0f s of game time)",
+      run.run_id, run.measure_ticks, run.measure_ticks / 60.0))
   end
 
   if elapsed < run.warmup_ticks + run.measure_ticks then
     feed_sources(run, true)
     drain_sinks(run, true)
-    if (elapsed - run.warmup_ticks) % run.sample_every == 0 then
+    local measured = elapsed - run.warmup_ticks
+    if measured % run.sample_every == 0 then
       sample_entities(run)
+      update_sink_labels(run, measured)
+    end
+    if measured > 0 and measured % run.progress_every == 0 then
+      announce(string.format("run %s: %d%% — %s", run.run_id,
+        math.floor(100 * measured / run.measure_ticks),
+        table.concat(sink_rate_lines(run, measured), ", ")))
     end
     return
   end
@@ -446,19 +525,47 @@ function M.start(spec_json)
   end
 
   -- Preempt any active run; its partial state is discarded.
+  if st.run then
+    announce("preempting run " .. st.run.run_id, COLOR_ERR)
+  end
   st.run = nil
   st.result = nil
 
   local force = ensure_force()
   local surface = ensure_surface()
-  generate_area(surface, spec.grid_size or 16)
+  local grid_size = spec.grid_size or 16
+  generate_area(surface, grid_size)
   clear_surface(surface)
-  place_power(surface, force, spec.grid_size or 16)
+  rendering.clear(script.mod_name)
+  place_power(surface, force, grid_size)
 
   local watched, sources, sinks, errors = build_factory(surface, force, spec)
   if #errors > 0 then
+    for _, err in ipairs(errors) do
+      announce("BUILD FAILED: " .. err, COLOR_ERR)
+    end
     return json_encode({ status = "error",
       error = table.concat(errors, "; ") })
+  end
+
+  -- Map overlays: grid outline, source/sink labels. Sink labels are
+  -- live-updated with the measured rate as the run progresses.
+  rendering.draw_rectangle({
+    surface = surface,
+    left_top = { ORIGIN_X, ORIGIN_Y },
+    right_bottom = { ORIGIN_X + grid_size, ORIGIN_Y + grid_size },
+    color = { r = 0.5, g = 0.5, b = 0.9, a = 0.6 },
+    width = 2,
+    filled = false,
+  })
+  for _, src in ipairs(sources) do
+    draw_label(surface, ORIGIN_X + src.x + 0.5, ORIGIN_Y + src.y - 0.6,
+      "src " .. src.item, COLOR_SRC, 0.8)
+  end
+  for _, snk in ipairs(sinks) do
+    snk.label = draw_label(surface,
+      ORIGIN_X + snk.x + 0.5, ORIGIN_Y + snk.y - 0.6,
+      "sink " .. snk.item, COLOR_SNK, 0.8)
   end
 
   st.run = {
@@ -467,14 +574,17 @@ function M.start(spec_json)
     warmup_ticks = spec.warmup_ticks or 1800,
     measure_ticks = spec.measure_ticks or 3600,
     sample_every = math.max(spec.sample_every or 15, 1),
+    progress_every = math.max(spec.progress_every or 1500, 60),
     watched = watched,
     sources = sources,
     sinks = sinks,
   }
   game.speed = spec.game_speed or 32
-  log("[Factorion] parity run " .. st.run.run_id .. " started: "
-    .. #watched .. " entities, " .. #sources .. " sources, "
-    .. #sinks .. " sinks")
+  announce(string.format(
+    "run %s: built %d entities, %d sources, %d sinks; warming up for"
+    .. " %d ticks at speed %.0fx",
+    st.run.run_id, #watched, #sources, #sinks,
+    st.run.warmup_ticks, game.speed))
   return json_encode({
     status = "running",
     run_id = st.run.run_id,
@@ -485,10 +595,12 @@ end
 function M.poll()
   local st = ensure_storage()
   if st.run then
+    local elapsed = game.tick - st.run.start_tick
     return json_encode({
       status = "running",
       run_id = st.run.run_id,
-      ticks_done = game.tick - st.run.start_tick,
+      phase = (elapsed < st.run.warmup_ticks) and "warmup" or "measure",
+      ticks_done = elapsed,
       total_ticks = st.run.warmup_ticks + st.run.measure_ticks,
     })
   end
@@ -501,6 +613,9 @@ end
 function M.abort()
   local st = ensure_storage()
   local had = st.run ~= nil
+  if had then
+    announce("run " .. st.run.run_id .. " ABORTED", COLOR_ERR)
+  end
   st.run = nil
   st.result = nil
   game.speed = 1.0

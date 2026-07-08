@@ -9,6 +9,7 @@
     "log",
     "rcon",
     "remote",
+    "rendering",
     "script",
     "settings",
     "storage",

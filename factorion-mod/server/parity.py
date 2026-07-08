@@ -217,6 +217,7 @@ def run_parity(
         raise RuntimeError(f"parity_start failed: {started}")
 
     t0 = time.time()
+    last_progress = None
     while True:
         time.sleep(poll_interval)
         raw = _remote_call(rcon, "parity_poll")
@@ -225,6 +226,16 @@ def run_parity(
             return status
         if status.get("status") == "error":
             raise RuntimeError(f"parity run failed: {status}")
+        if status.get("status") == "running":
+            # Mirror the in-game announcements: one line per phase change
+            # or 25% step, so long runs show a heartbeat on this side too.
+            done = status.get("ticks_done", 0)
+            total = max(status.get("total_ticks", 1), 1)
+            progress = (status.get("phase"), int(4 * done / total))
+            if progress != last_progress:
+                last_progress = progress
+                print(f"  ... {status.get('phase')} "
+                      f"{done}/{total} ticks ({done / total:.0%})")
         if time.time() - t0 > timeout:
             _remote_call(rcon, "parity_abort")
             raise TimeoutError(
