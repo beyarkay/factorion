@@ -19,6 +19,8 @@
 -- No script-output files are involved. The only outbound channel a
 -- vanilla mod has is RCON, and we use it both ways.
 
+local parity = require("parity")
+
 local function get_grid_size()
   return settings.global["factorion-grid-size"].value
 end
@@ -560,6 +562,19 @@ remote.add_interface("factorion", {
       storage.players and table_size(storage.players) or 0)
   end,
 
+  -- Parity harness (server/parity.py): build a factory spec on the
+  -- dedicated lab surface, run it, measure per-sink / per-entity
+  -- throughput. All three return JSON strings for rcon.print().
+  parity_start = function(spec_json)
+    return parity.start(spec_json)
+  end,
+  parity_poll = function()
+    return parity.poll()
+  end,
+  parity_abort = function()
+    return parity.abort()
+  end,
+
   -- Headless / debug: dump full state for a given player (or all players).
   dump_state = function(player_index)
     storage.players = storage.players or {}
@@ -592,6 +607,10 @@ remote.add_interface("factorion", {
     return table.concat(parts, "\n")
   end,
 })
+
+-- Parity runs drive the game every tick while active; the handler
+-- early-outs when no run is in flight, so it's free otherwise.
+script.on_event(defines.events.on_tick, parity.on_tick)
 
 -- ----------------------------------------------------------------------------
 -- migrations
