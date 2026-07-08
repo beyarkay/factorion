@@ -261,16 +261,12 @@ pub enum Item {
     Tank = 78,
     ArtilleryTurret = 79,
     ProgrammableSpeaker = 80,
-    FlyingRobotFrame = 81,
-    // Electric engine unit has a fluid (lubricant) recipe, so like the other
-    // fluid-recipe items it is an ingredient-only Item with no recipe.
-    ElectricEngineUnit = 82,
-    FluidWagon = 83,
+    FluidWagon = 81,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 84,   // named "bulk_inserter"
-    Source = 85, // named "stack_inserter"
+    Sink = 82,   // named "bulk_inserter"
+    Source = 83, // named "stack_inserter"
 }
 
 impl Item {
@@ -358,11 +354,9 @@ impl Item {
             78 => Some(Item::Tank),
             79 => Some(Item::ArtilleryTurret),
             80 => Some(Item::ProgrammableSpeaker),
-            81 => Some(Item::FlyingRobotFrame),
-            82 => Some(Item::ElectricEngineUnit),
-            83 => Some(Item::FluidWagon),
-            84 => Some(Item::Sink),
-            85 => Some(Item::Source),
+            81 => Some(Item::FluidWagon),
+            82 => Some(Item::Sink),
+            83 => Some(Item::Source),
             _ => None,
         }
     }
@@ -462,8 +456,6 @@ impl Item {
             Item::Tank => "tank",
             Item::ArtilleryTurret => "artillery_turret",
             Item::ProgrammableSpeaker => "programmable_speaker",
-            Item::FlyingRobotFrame => "flying_robot_frame",
-            Item::ElectricEngineUnit => "electric_engine_unit",
             Item::FluidWagon => "fluid_wagon",
         }
     }
@@ -592,8 +584,6 @@ impl Item {
             | Item::Tank
             | Item::ArtilleryTurret
             | Item::ProgrammableSpeaker
-            | Item::FlyingRobotFrame
-            | Item::ElectricEngineUnit
             | Item::FluidWagon => 0.0,
         }
     }
@@ -788,16 +778,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::EngineUnit, 1.0)],
                 crafting_time: 10.0,
-            },
-        ),
-        // Smelting
-        // 5 iron_plate -> 1 steel_plate, 16s
-        (
-            Item::SteelPlate,
-            Recipe {
-                consumes: nonempty![(Item::IronPlate, 5.0)],
-                produces: nonempty![(Item::SteelPlate, 1.0)],
-                crafting_time: 16.0,
             },
         ),
         // Storage
@@ -1246,15 +1226,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
         // ===========================================================
 
         // --- 1 ingredient ---
-        // 2 stone -> 1 stone_brick, 3.2s (smelting)
-        (
-            Item::StoneBrick,
-            Recipe {
-                consumes: nonempty![(Item::Stone, 2.0)],
-                produces: nonempty![(Item::StoneBrick, 1.0)],
-                crafting_time: 3.2,
-            },
-        ),
         // 1 steel_plate -> 1 barrel, 1s
         (
             Item::Barrel,
@@ -1466,20 +1437,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::ProgrammableSpeaker, 1.0)],
                 crafting_time: 2.0,
-            },
-        ),
-        // 2 battery + 1 electric_engine_unit + 3 EC + 1 steel_plate -> 1 flying_robot_frame, 20s
-        (
-            Item::FlyingRobotFrame,
-            Recipe {
-                consumes: nonempty![
-                    (Item::Battery, 2.0),
-                    (Item::ElectricEngineUnit, 1.0),
-                    (Item::ElectronicCircuit, 3.0),
-                    (Item::SteelPlate, 1.0)
-                ],
-                produces: nonempty![(Item::FlyingRobotFrame, 1.0)],
-                crafting_time: 20.0,
             },
         ),
         // 10 IGW + 8 pipe + 16 steel_plate + 1 storage_tank -> 1 fluid_wagon, 1.5s
