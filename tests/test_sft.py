@@ -836,6 +836,108 @@ class TestAsmItemAcc:
         assert "val/MOVE_ONE_ITEM/asm_item_acc" not in metrics
 
 
+class TestHeldoutRecipes:
+    """Held-out-recipe split (#264): recipes excluded from training but kept in
+    val, so val/asm_item_acc_{heldout,indist} separate generalization from
+    memorisation."""
+
+    def test_heldout_set_deterministic_and_leaves_one_per_class(self):
+        from sft import _heldout_recipe_ids
+
+        assert sft._heldout_recipe_ids(0.0) == frozenset()
+        assert _heldout_recipe_ids(0.3) == _heldout_recipe_ids(0.3)
+        # The single 5-ingredient recipe (oil_refinery) must never be held out,
+        # else MEMORISE_5 becomes untrainable.
+        oil = str2ent("oil_refinery").value
+        assert oil not in _heldout_recipe_ids(0.9)
+
+    def test_training_excludes_heldout_recipes(self):
+        """A materialised TRAINING set must contain no assembler placement whose
+        recipe was withheld."""
+        from sft import _heldout_recipe_ids, _materialise
+
+        held = _heldout_recipe_ids(0.4)
+        assert held, "test needs a non-empty held-out set"
+        asm_id = str2ent("assembling_machine_1").value
+        data = _materialise(
+            size=9, max_level=81, base_seed=7000, target=4000, heldout_recipe_ids=held
+        )
+        ent, item = data[2], data[4]
+        asm_items = set(item[ent == asm_id].tolist())
+        leaked = asm_items & set(held)
+        assert not leaked, f"held-out recipes leaked into training: {leaked}"
+        # And the split is real: some in-distribution recipes DID train.
+        assert asm_items, "no assembler placements in training set at all"
+
+    def test_val_reports_heldout_and_indist_split(self, monkeypatch, tmp_path):
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: list[dict] = []
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log = lambda d, **k: logged.append(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=7,
+            num_samples=2500,
+            epochs=1,
+            batch_size=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts=False,
+            eval_rollouts_max_seeds=80,
+            heldout_recipe_frac=0.3,
+            checkpoint_path=str(tmp_path / "h.pt"),
+            summary_path=str(tmp_path / "h.json"),
+        )
+        train_sft(args)
+        metrics = logged[-1]
+        assert "val/asm_item_acc_heldout" in metrics
+        assert "val/asm_item_acc_indist" in metrics
+        assert 0.0 <= metrics["val/asm_item_acc_heldout"] <= 1.0
+        assert 0.0 <= metrics["val/asm_item_acc_indist"] <= 1.0
+
+    def test_split_absent_when_disabled(self, monkeypatch, tmp_path):
+        """With frac=0 (default) the split keys must not appear."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: list[dict] = []
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log = lambda d, **k: logged.append(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=7,
+            num_samples=1500,
+            epochs=1,
+            batch_size=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts=False,
+            eval_rollouts_max_seeds=40,
+            checkpoint_path=str(tmp_path / "d.pt"),
+            summary_path=str(tmp_path / "d.json"),
+        )
+        train_sft(args)
+        metrics = logged[-1]
+        assert "val/asm_item_acc_heldout" not in metrics
+        assert "val/asm_item_acc_indist" not in metrics
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
