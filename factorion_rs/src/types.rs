@@ -1323,6 +1323,264 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
+        // ===========================================================
+        // Recipe-balance additions: extra base-game 1.1 solid-only
+        // recipes so each MEMORISE_N_INGREDIENT_RECIPES lesson (N=1..4)
+        // draws from ~20 recipes instead of 8/18/18/4. Quantities are
+        // per-craft wiki values; grouped by ingredient count.
+        // ===========================================================
+
+        // --- 1 ingredient ---
+        // 2 stone -> 1 stone_brick, 3.2s (smelting)
+        (
+            Item::StoneBrick,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 2.0)],
+                produces: nonempty![(Item::StoneBrick, 1.0)],
+                crafting_time: 3.2,
+            },
+        ),
+        // 1 steel_plate -> 1 barrel, 1s
+        (
+            Item::Barrel,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 1.0)],
+                produces: nonempty![(Item::Barrel, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        // 4 iron_plate -> 1 firearm_magazine, 1s
+        (
+            Item::FirearmMagazine,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 4.0)],
+                produces: nonempty![(Item::FirearmMagazine, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        // 5 stone_brick -> 1 stone_wall, 0.5s
+        (
+            Item::StoneWall,
+            Recipe {
+                consumes: nonempty![(Item::StoneBrick, 5.0)],
+                produces: nonempty![(Item::StoneWall, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // 8 steel_plate -> 1 steel_chest, 0.5s
+        (
+            Item::SteelChest,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 8.0)],
+                produces: nonempty![(Item::SteelChest, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // 10 concrete -> 10 hazard_concrete, 0.25s
+        (
+            Item::HazardConcrete,
+            Recipe {
+                consumes: nonempty![(Item::Concrete, 10.0)],
+                produces: nonempty![(Item::HazardConcrete, 10.0)],
+                crafting_time: 0.25,
+            },
+        ),
+        // 50 stone -> 1 landfill, 0.5s
+        (
+            Item::Landfill,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 50.0)],
+                produces: nonempty![(Item::Landfill, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // --- 2 ingredients ---
+        // 10 iron_plate + 5 transport_belt -> 2 underground_belt, 1s
+        (
+            Item::UndergroundBelt,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 10.0), (Item::TransportBelt, 5.0)],
+                produces: nonempty![(Item::UndergroundBelt, 2.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        // 1 copper_plate + 1 IGW -> 1 automation_science_pack, 5s
+        (
+            Item::AutomationSciencePack,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 1.0), (Item::IronGearWheel, 1.0)],
+                produces: nonempty![(Item::AutomationSciencePack, 1.0)],
+                crafting_time: 5.0,
+            },
+        ),
+        // --- 3 ingredients ---
+        // 5 EC + 5 iron_plate + 4 transport_belt -> 1 splitter, 1s
+        (
+            Item::Splitter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronPlate, 5.0),
+                    (Item::TransportBelt, 4.0)
+                ],
+                produces: nonempty![(Item::Splitter, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        // 5 EC + 5 IGW + 10 iron_plate -> 1 radar, 0.5s
+        (
+            Item::Radar,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::IronPlate, 10.0)
+                ],
+                produces: nonempty![(Item::Radar, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // --- 4 ingredients ---
+        // 10 copper_plate + 10 IGW + 5 iron_plate + 15 wood -> 1 shotgun, 10s
+        (
+            Item::Shotgun,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::IronPlate, 5.0),
+                    (Item::Wood, 15.0)
+                ],
+                produces: nonempty![(Item::Shotgun, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        // 10 copper_plate + 10 IGW + 5 steel_plate + 15 wood -> 1 combat_shotgun, 10s
+        (
+            Item::CombatShotgun,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::SteelPlate, 5.0),
+                    (Item::Wood, 15.0)
+                ],
+                produces: nonempty![(Item::CombatShotgun, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        // 5 EC + 6 iron_plate + 6 iron_stick + 3 steel_plate -> 1 train_stop, 0.5s
+        (
+            Item::TrainStop,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronPlate, 6.0),
+                    (Item::IronStick, 6.0),
+                    (Item::SteelPlate, 3.0)
+                ],
+                produces: nonempty![(Item::TrainStop, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // 1 AM1 + 3 EC + 5 IGW + 2 steel_plate -> 1 assembling_machine_2, 0.5s
+        (
+            Item::AssemblingMachine2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AssemblingMachine1, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::SteelPlate, 2.0)
+                ],
+                produces: nonempty![(Item::AssemblingMachine2, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        // 100 advanced + 100 concrete + 100 IGW + 50 steel_plate -> 1 centrifuge, 4s
+        (
+            Item::Centrifuge,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 100.0),
+                    (Item::Concrete, 100.0),
+                    (Item::IronGearWheel, 100.0),
+                    (Item::SteelPlate, 50.0)
+                ],
+                produces: nonempty![(Item::Centrifuge, 1.0)],
+                crafting_time: 4.0,
+            },
+        ),
+        // 10 advanced + 32 engine_unit + 15 IGW + 50 steel_plate -> 1 tank, 5s
+        (
+            Item::Tank,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 10.0),
+                    (Item::EngineUnit, 32.0),
+                    (Item::IronGearWheel, 15.0),
+                    (Item::SteelPlate, 50.0)
+                ],
+                produces: nonempty![(Item::Tank, 1.0)],
+                crafting_time: 5.0,
+            },
+        ),
+        // 20 advanced + 60 concrete + 40 IGW + 60 steel_plate -> 1 artillery_turret, 40s
+        (
+            Item::ArtilleryTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 20.0),
+                    (Item::Concrete, 60.0),
+                    (Item::IronGearWheel, 40.0),
+                    (Item::SteelPlate, 60.0)
+                ],
+                produces: nonempty![(Item::ArtilleryTurret, 1.0)],
+                crafting_time: 40.0,
+            },
+        ),
+        // 5 copper_cable + 4 EC + 3 iron_plate + 4 iron_stick -> 1 programmable_speaker, 2s
+        (
+            Item::ProgrammableSpeaker,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 5.0),
+                    (Item::ElectronicCircuit, 4.0),
+                    (Item::IronPlate, 3.0),
+                    (Item::IronStick, 4.0)
+                ],
+                produces: nonempty![(Item::ProgrammableSpeaker, 1.0)],
+                crafting_time: 2.0,
+            },
+        ),
+        // 2 battery + 1 electric_engine_unit + 3 EC + 1 steel_plate -> 1 flying_robot_frame, 20s
+        (
+            Item::FlyingRobotFrame,
+            Recipe {
+                consumes: nonempty![
+                    (Item::Battery, 2.0),
+                    (Item::ElectricEngineUnit, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::SteelPlate, 1.0)
+                ],
+                produces: nonempty![(Item::FlyingRobotFrame, 1.0)],
+                crafting_time: 20.0,
+            },
+        ),
+        // 10 IGW + 8 pipe + 16 steel_plate + 1 storage_tank -> 1 fluid_wagon, 1.5s
+        (
+            Item::FluidWagon,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 10.0),
+                    (Item::Pipe, 8.0),
+                    (Item::SteelPlate, 16.0),
+                    (Item::StorageTank, 1.0)
+                ],
+                produces: nonempty![(Item::FluidWagon, 1.0)],
+                crafting_time: 1.5,
+            },
+        ),
     ]
 }
 
