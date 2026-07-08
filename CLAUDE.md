@@ -225,6 +225,7 @@ All eight must pass before the work is considered complete.
 - Factory state is represented as 3D tensors with semantic channels.
 - Experiment runs are tracked with Weights & Biases.
 - Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`; set up the env with `uv sync`.
+- **Comments say *why*, never *what* or *when*.** Never leave a comment describing how the code used to be, or narrating a change you just made ("now does X", "removed Y", "was previously Z") — the diff and git history record that. Don't restate what the code plainly says either. A comment earns its place only by explaining *why* the code is the way it is (a non-obvious constraint, tradeoff, or gotcha), and it should be terse.
 
 ## Rust Type System
 

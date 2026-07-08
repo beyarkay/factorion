@@ -243,9 +243,6 @@ pub enum Item {
     SteamTurbine = 63,
     SteelFurnace = 64,
     StoneFurnace = 65,
-    // Recipe-balance additions (base game 1.1, solid-only recipes): extra
-    // items so the MEMORISE_N_INGREDIENT_RECIPES lessons draw from ~20
-    // recipes each instead of the lopsided 8/18/18/4 they had before.
     Landfill = 66,
     FirearmMagazine = 67,
     StoneWall = 68,
@@ -1218,15 +1215,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // ===========================================================
-        // Recipe-balance additions: extra base-game 1.1 solid-only
-        // recipes so each MEMORISE_N_INGREDIENT_RECIPES lesson (N=1..4)
-        // draws from ~20 recipes instead of 8/18/18/4. Quantities are
-        // per-craft wiki values; grouped by ingredient count.
-        // ===========================================================
-
-        // --- 1 ingredient ---
-        // 1 steel_plate -> 1 barrel, 1s
         (
             Item::Barrel,
             Recipe {
@@ -1235,7 +1223,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 1.0,
             },
         ),
-        // 4 iron_plate -> 1 firearm_magazine, 1s
         (
             Item::FirearmMagazine,
             Recipe {
@@ -1244,7 +1231,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 1.0,
             },
         ),
-        // 5 stone_brick -> 1 stone_wall, 0.5s
         (
             Item::StoneWall,
             Recipe {
@@ -1253,7 +1239,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 8 steel_plate -> 1 steel_chest, 0.5s
         (
             Item::SteelChest,
             Recipe {
@@ -1262,7 +1247,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 10 concrete -> 10 hazard_concrete, 0.25s
         (
             Item::HazardConcrete,
             Recipe {
@@ -1271,7 +1255,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.25,
             },
         ),
-        // 50 stone -> 1 landfill, 0.5s
         (
             Item::Landfill,
             Recipe {
@@ -1280,8 +1263,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // --- 2 ingredients ---
-        // 10 iron_plate + 5 transport_belt -> 2 underground_belt, 1s
         (
             Item::UndergroundBelt,
             Recipe {
@@ -1290,7 +1271,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 1.0,
             },
         ),
-        // 1 copper_plate + 1 IGW -> 1 automation_science_pack, 5s
         (
             Item::AutomationSciencePack,
             Recipe {
@@ -1299,8 +1279,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // --- 3 ingredients ---
-        // 5 EC + 5 iron_plate + 4 transport_belt -> 1 splitter, 1s
         (
             Item::Splitter,
             Recipe {
@@ -1313,7 +1291,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 1.0,
             },
         ),
-        // 5 EC + 5 IGW + 10 iron_plate -> 1 radar, 0.5s
         (
             Item::Radar,
             Recipe {
@@ -1326,8 +1303,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // --- 4 ingredients ---
-        // 10 copper_plate + 10 IGW + 5 iron_plate + 15 wood -> 1 shotgun, 10s
         (
             Item::Shotgun,
             Recipe {
@@ -1341,7 +1316,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 10.0,
             },
         ),
-        // 10 copper_plate + 10 IGW + 5 steel_plate + 15 wood -> 1 combat_shotgun, 10s
         (
             Item::CombatShotgun,
             Recipe {
@@ -1355,7 +1329,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 10.0,
             },
         ),
-        // 5 EC + 6 iron_plate + 6 iron_stick + 3 steel_plate -> 1 train_stop, 0.5s
         (
             Item::TrainStop,
             Recipe {
@@ -1369,7 +1342,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 1 AM1 + 3 EC + 5 IGW + 2 steel_plate -> 1 assembling_machine_2, 0.5s
         (
             Item::AssemblingMachine2,
             Recipe {
@@ -1383,7 +1355,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 100 advanced + 100 concrete + 100 IGW + 50 steel_plate -> 1 centrifuge, 4s
         (
             Item::Centrifuge,
             Recipe {
@@ -1397,7 +1368,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 4.0,
             },
         ),
-        // 10 advanced + 32 engine_unit + 15 IGW + 50 steel_plate -> 1 tank, 5s
         (
             Item::Tank,
             Recipe {
@@ -1411,7 +1381,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // 20 advanced + 60 concrete + 40 IGW + 60 steel_plate -> 1 artillery_turret, 40s
         (
             Item::ArtilleryTurret,
             Recipe {
@@ -1425,7 +1394,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 40.0,
             },
         ),
-        // 5 copper_cable + 4 EC + 3 iron_plate + 4 iron_stick -> 1 programmable_speaker, 2s
         (
             Item::ProgrammableSpeaker,
             Recipe {
@@ -1439,7 +1407,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 2.0,
             },
         ),
-        // 10 IGW + 8 pipe + 16 steel_plate + 1 storage_tank -> 1 fluid_wagon, 1.5s
         (
             Item::FluidWagon,
             Recipe {
