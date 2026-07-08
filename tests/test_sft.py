@@ -777,6 +777,65 @@ class TestTrackedArtifact:
         assert captured["name"] == _artifact_name(args)
 
 
+class TestAsmItemAcc:
+    """val/asm_item_acc — item-head accuracy on assembler (recipe) placements,
+    the direct signal for whether the model reads the sink's item tag (#264)."""
+
+    def _run_and_capture_log(self, monkeypatch, tmp_path, **overrides):
+        """Run a tiny tracked train_sft and return the last logged metric dict."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: list[dict] = []
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log = lambda d, **k: logged.append(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=7,  # MEMORISE lessons (the only ones with assemblers) fit here
+            num_samples=2000,
+            epochs=1,
+            batch_size=64,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts=False,
+            eval_rollouts_max_seeds=60,
+            checkpoint_path=str(tmp_path / "asm.pt"),
+            summary_path=str(tmp_path / "asm.json"),
+            **overrides,
+        )
+        train_sft(args)
+        assert logged, "no metrics were logged"
+        return logged[-1]
+
+    def test_global_and_per_kind_asm_item_acc_logged(self, monkeypatch, tmp_path):
+        metrics = self._run_and_capture_log(monkeypatch, tmp_path)
+
+        # Global metric always present.
+        assert "val/asm_item_acc" in metrics
+        assert 0.0 <= metrics["val/asm_item_acc"] <= 1.0
+
+        # Per-kind asm_item_acc appears ONLY for lessons that place assemblers
+        # (the MEMORISE lessons); its presence proves the denominator is real
+        # (assembler placements actually landed in the val split), not 0/1.
+        asm_keys = [k for k in metrics if k.endswith("/asm_item_acc") and "/" in k[4:]]
+        assert asm_keys, "expected at least one per-kind asm_item_acc key"
+        assert all("MEMORISE" in k for k in asm_keys), (
+            f"only MEMORISE lessons place assemblers, got {asm_keys}"
+        )
+
+    def test_belt_only_lessons_have_no_asm_item_acc(self, monkeypatch, tmp_path):
+        metrics = self._run_and_capture_log(monkeypatch, tmp_path)
+        # MOVE_ONE_ITEM never places an assembler, so it must not emit the key.
+        assert "val/MOVE_ONE_ITEM/asm_item_acc" not in metrics
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 

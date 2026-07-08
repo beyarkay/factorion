@@ -47,6 +47,7 @@ from ppo import (  # noqa: E402
     _CH_ENT,
     _CH_FOOTPRINT,
     _EMPTY_ENT_ID,
+    _ASM_MACHINE_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SftArgs  # noqa: E402
@@ -974,6 +975,7 @@ def train_sft(args: SftArgs):
     val_ent_acc = 0.0
     val_dir_acc = 0.0
     val_item_acc = 0.0
+    val_asm_item_acc = 0.0
     val_misc_acc = 0.0
     val_eot_acc = 0.0
     val_eot_pos_recall = 0.0
@@ -1195,6 +1197,12 @@ def train_sft(args: SftArgs):
         val_ent_correct = 0
         val_dir_correct = 0
         val_item_correct = 0
+        # Item-head accuracy restricted to assembler placements — the recipe
+        # pick. It's ~1 action per MEMORISE episode, so it's invisible in the
+        # belt-dominated val_item_acc; broken out here as the direct signal for
+        # "did the model copy the sink's item tag onto the assembler" (#264).
+        val_asm_item_correct = 0
+        val_asm_item_total = 0
         val_misc_correct = 0
         val_eot_correct = 0
         val_eot_pos_correct = 0
@@ -1218,6 +1226,10 @@ def train_sft(args: SftArgs):
         per_kind_ent_correct = {k.name: 0 for k in LessonKind}
         per_kind_dir_correct = {k.name: 0 for k in LessonKind}
         per_kind_item_correct = {k.name: 0 for k in LessonKind}
+        # Assembler-placement item accuracy per kind (only MEMORISE lessons
+        # place assemblers, so the rest stay at 0 total and are skipped below).
+        per_kind_asm_item_correct = {k.name: 0 for k in LessonKind}
+        per_kind_asm_item_total = {k.name: 0 for k in LessonKind}
         per_kind_misc_correct = {k.name: 0 for k in LessonKind}
         per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
         # EOT is scored over EVERY sample of a kind (the placement eot=0 steps
@@ -1340,6 +1352,9 @@ def train_sft(args: SftArgs):
                 val_dir_correct += dir_correct_per[is_place].sum().item()
                 val_item_correct += item_correct_per[is_place].sum().item()
                 val_misc_correct += misc_correct_per[is_place].sum().item()
+                asm_place = is_place & (batch_ent == _ASM_MACHINE_ENT_ID)
+                val_asm_item_correct += int(item_correct_per[asm_place].sum().item())
+                val_asm_item_total += int(asm_place.sum().item())
                 val_total += B
                 val_place_total += int(is_place.sum().item())
 
@@ -1368,6 +1383,11 @@ def train_sft(args: SftArgs):
                     )
                     per_kind_item_correct[k_name] += int(
                         item_correct_per[mask_k].sum().item()
+                    )
+                    mask_k_asm = mask_k & (batch_ent == _ASM_MACHINE_ENT_ID)
+                    per_kind_asm_item_total[k_name] += int(mask_k_asm.sum().item())
+                    per_kind_asm_item_correct[k_name] += int(
+                        item_correct_per[mask_k_asm].sum().item()
                     )
                     per_kind_misc_correct[k_name] += int(
                         misc_correct_per[mask_k].sum().item()
@@ -1403,6 +1423,9 @@ def train_sft(args: SftArgs):
         val_ent_acc = val_ent_correct / place_norm
         val_dir_acc = val_dir_correct / place_norm
         val_item_acc = val_item_correct / place_norm
+        # Denominator is assembler placements only, not all placements — so a
+        # lesson with no assemblers doesn't dilute it toward 1.0.
+        val_asm_item_acc = val_asm_item_correct / max(1, val_asm_item_total)
         val_misc_acc = val_misc_correct / place_norm
         val_eot_acc = val_eot_correct / val_total
         val_eot_pos_recall = (
@@ -1427,6 +1450,13 @@ def train_sft(args: SftArgs):
             per_kind_metrics[f"val/{k.name}/item_acc"] = (
                 per_kind_item_correct[k.name] / n
             )
+            # Only emit asm_item_acc for kinds that actually place assemblers,
+            # so belt-only lessons don't log a meaningless 0/0.
+            asm_n = per_kind_asm_item_total[k.name]
+            if asm_n > 0:
+                per_kind_metrics[f"val/{k.name}/asm_item_acc"] = (
+                    per_kind_asm_item_correct[k.name] / asm_n
+                )
             per_kind_metrics[f"val/{k.name}/misc_acc"] = (
                 per_kind_misc_correct[k.name] / n
             )
@@ -1547,6 +1577,7 @@ def train_sft(args: SftArgs):
                     "val/ent_acc": val_ent_acc,
                     "val/dir_acc": val_dir_acc,
                     "val/item_acc": val_item_acc,
+                    "val/asm_item_acc": val_asm_item_acc,
                     "val/misc_acc": val_misc_acc,
                     "val/eot_acc": val_eot_acc,
                     "val/eot_pos_recall": val_eot_pos_recall,
@@ -1602,6 +1633,7 @@ def train_sft(args: SftArgs):
         "val_ent_acc": round(val_ent_acc, 4),
         "val_dir_acc": round(val_dir_acc, 4),
         "val_item_acc": round(val_item_acc, 4),
+        "val_asm_item_acc": round(val_asm_item_acc, 4),
         "val_misc_acc": round(val_misc_acc, 4),
         "val_eot_acc": round(val_eot_acc, 4),
         "val_eot_pos_recall": round(val_eot_pos_recall, 4),
