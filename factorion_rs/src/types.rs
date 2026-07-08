@@ -1258,7 +1258,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
         (
             Item::Landfill,
             Recipe {
-                consumes: nonempty![(Item::Stone, 50.0)],
+                consumes: nonempty![(Item::Stone, 20.0)],
                 produces: nonempty![(Item::Landfill, 1.0)],
                 crafting_time: 0.5,
             },
