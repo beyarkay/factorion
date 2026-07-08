@@ -233,56 +233,7 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _heldout_recipe_ids(frac: float) -> frozenset[int]:
-    """Produced-item ids of the recipes held out of SFT training.
-
-    A deterministic subset of each ingredient-count class (the class a
-    MEMORISE_N lesson draws from): sort the class's recipes by name and take the
-    first ``floor(frac * class_size)``, always leaving at least one recipe per
-    class so no lesson becomes untrainable (e.g. the single 5-ingredient recipe
-    is never held out). Returns an empty set when ``frac <= 0``.
-
-    The ids are in the same space as the ITEMS channel / SFT item targets, so
-    membership can be tested directly against a factory's assembler recipe or a
-    val batch's item target.
-    """
-    if frac <= 0:
-        return frozenset()
-    from collections import defaultdict
-
-    by_count: dict[int, list[tuple[str, int]]] = defaultdict(list)
-    for name, r in factorion_rs.py_recipes().items():
-        product = next(iter(r["produces"]))
-        by_count[len(r["consumes"])].append((name, str2ent(product).value))
-    held: set[int] = set()
-    for recipes in by_count.values():
-        recipes.sort()  # deterministic, independent of dict iteration order
-        n_held = min(int(frac * len(recipes)), len(recipes) - 1)
-        held.update(item_id for _name, item_id in recipes[:n_held])
-    return frozenset(held)
-
-
-def _factory_recipe_id(factory) -> int | None:
-    """Produced-item id of a factory's assembler (its recipe), or None when the
-    factory has no assembler (every non-MEMORISE lesson)."""
-    world = factory.world_CWH
-    ent = world[Channel.ENTITIES.value]
-    asm = (ent == _ASM_MACHINE_ENT_ID).nonzero(as_tuple=False)
-    if asm.numel() == 0:
-        return None
-    x, y = asm[0].tolist()
-    return int(world[Channel.ITEMS.value, x, y])
-
-
-def _iter_demo_pairs(
-    size,
-    max_level,
-    base_seed,
-    worker_id,
-    num_workers,
-    target=None,
-    heldout_recipe_ids=None,
-):
+def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
@@ -326,14 +277,6 @@ def _iter_demo_pairs(
                     )
             continue
         consecutive_fails[kind.name] = 0
-        # Exclude held-out recipes from training. Only MEMORISE factories carry
-        # an assembler recipe; everything else returns None here and is kept.
-        # Drawing again is cheap and can't starve a kind: at least one recipe
-        # per class is always left un-held (see _heldout_recipe_ids).
-        if heldout_recipe_ids:
-            recipe_id = _factory_recipe_id(factory)
-            if recipe_id is not None and recipe_id in heldout_recipe_ids:
-                continue
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
         for pair in extract_expert_actions(factory.world_CWH, task):
@@ -344,18 +287,14 @@ def _iter_demo_pairs(
                 break
 
 
-def _materialise(
-    size, max_level, base_seed, target=None, n_lessons=None, heldout_recipe_ids=None
-):
+def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
     """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
     item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
     `n_lessons` distinct factories when that is given instead."""
     random.seed(base_seed)
     rows = []
     seeds = set()
-    for row in _iter_demo_pairs(
-        size, max_level, base_seed, 0, 1, target, heldout_recipe_ids
-    ):
+    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target):
         if n_lessons is not None and row[8] not in seeds:
             if len(seeds) >= n_lessons:
                 break
@@ -385,12 +324,11 @@ class StreamingDemoDataset(IterableDataset):
     overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, max_level, base_seed, target, heldout_recipe_ids=None):
+    def __init__(self, size, max_level, base_seed, target):
         self.size = size
         self.max_level = max_level
         self.base_seed = base_seed
         self.target = target
-        self.heldout_recipe_ids = heldout_recipe_ids
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
@@ -400,13 +338,7 @@ class StreamingDemoDataset(IterableDataset):
         base, rem = divmod(self.target, num_workers)
         my_target = base + (1 if worker_id < rem else 0)
         for row in _iter_demo_pairs(
-            self.size,
-            self.max_level,
-            self.base_seed,
-            worker_id,
-            num_workers,
-            my_target,
-            self.heldout_recipe_ids,
+            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
         ):
             # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
             # training only needs the first 8 — seed/kind are val-only metadata.
@@ -969,19 +901,9 @@ def train_sft(args: SftArgs):
     t0 = time.time()
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
 
-    # Recipes withheld from TRAINING (empty unless --heldout-recipe-frac > 0).
-    # Val stays unfiltered so it contains both seen and unseen recipes, which is
-    # what lets val/asm_item_acc_{heldout,indist} measure generalization.
-    heldout_recipe_ids = _heldout_recipe_ids(args.heldout_recipe_frac)
-    if heldout_recipe_ids:
-        print(
-            f"[sft] holding {len(heldout_recipe_ids)} recipe(s) out of training "
-            f"(heldout_recipe_frac={args.heldout_recipe_frac})"
-        )
-
     # Held-out validation: the first eval_rollouts_max_seeds distinct factories
     # from seed `args.seed` upward. The rollout eval replays these same lessons,
-    # so val/acc and val/thput stay directly comparable. Never recipe-filtered.
+    # so val/acc and val/thput stay directly comparable.
     val = _materialise(
         args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
     )
@@ -1003,11 +925,7 @@ def train_sft(args: SftArgs):
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
             cached_train = _materialise(
-                args.size,
-                max_level,
-                train_base,
-                target=args.num_samples,
-                heldout_recipe_ids=heldout_recipe_ids,
+                args.size, max_level, train_base, target=args.num_samples
             )[:8]
             torch.save(cached_train, args.dataset_cache)
             print(f"Cached dataset to {args.dataset_cache}")
@@ -1043,12 +961,6 @@ def train_sft(args: SftArgs):
     assert_device_ok(device)
     agent.to(device)
 
-    # Device tensor of held-out recipe ids, for splitting val assembler
-    # placements into seen (in-distribution) vs unseen (held-out) recipes.
-    heldout_item_tensor = torch.tensor(
-        sorted(heldout_recipe_ids), dtype=torch.long, device=device
-    )
-
     if cached_train is not None:
         # Cached: the whole training set goes GPU-resident once (obs stay uint8,
         # cast to float per-batch), shuffled via a DataLoader over indices so no
@@ -1073,13 +985,7 @@ def train_sft(args: SftArgs):
         # GPU step.
         stream_workers = min(16, os.cpu_count() or 1)
         train_stream_loader = DataLoader(
-            StreamingDemoDataset(
-                args.size,
-                max_level,
-                train_base,
-                args.num_samples,
-                heldout_recipe_ids=heldout_recipe_ids,
-            ),
+            StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
             batch_size=args.batch_size,
             num_workers=stream_workers,
             pin_memory=(device.type == "cuda"),
@@ -1376,13 +1282,6 @@ def train_sft(args: SftArgs):
         # "did the model copy the sink's item tag onto the assembler" (#264).
         val_asm_item_correct = 0
         val_asm_item_total = 0
-        # Same, split by whether the recipe was withheld from training. Only
-        # populated when --heldout-recipe-frac > 0; heldout measures
-        # generalization to unseen recipes, indist measures seen ones (#264).
-        val_asm_item_heldout_correct = 0
-        val_asm_item_heldout_total = 0
-        val_asm_item_indist_correct = 0
-        val_asm_item_indist_total = 0
         val_misc_correct = 0
         val_eot_correct = 0
         val_eot_pos_correct = 0
@@ -1535,18 +1434,6 @@ def train_sft(args: SftArgs):
                 asm_place = is_place & (batch_ent == _ASM_MACHINE_ENT_ID)
                 val_asm_item_correct += int(item_correct_per[asm_place].sum().item())
                 val_asm_item_total += int(asm_place.sum().item())
-                if heldout_item_tensor.numel() > 0:
-                    is_heldout = torch.isin(batch_item, heldout_item_tensor)
-                    asm_held = asm_place & is_heldout
-                    asm_indist = asm_place & ~is_heldout
-                    val_asm_item_heldout_correct += int(
-                        item_correct_per[asm_held].sum().item()
-                    )
-                    val_asm_item_heldout_total += int(asm_held.sum().item())
-                    val_asm_item_indist_correct += int(
-                        item_correct_per[asm_indist].sum().item()
-                    )
-                    val_asm_item_indist_total += int(asm_indist.sum().item())
                 val_total += B
                 val_place_total += int(is_place.sum().item())
 
@@ -1618,17 +1505,6 @@ def train_sft(args: SftArgs):
         # Denominator is assembler placements only, not all placements — so a
         # lesson with no assemblers doesn't dilute it toward 1.0.
         val_asm_item_acc = val_asm_item_correct / max(1, val_asm_item_total)
-        # Held-out vs in-distribution recipe accuracy (only when recipes were
-        # actually withheld; each key is omitted if its split has no samples).
-        asm_split_metrics: dict[str, float] = {}
-        if val_asm_item_heldout_total > 0:
-            asm_split_metrics["val/asm_item_acc_heldout"] = (
-                val_asm_item_heldout_correct / val_asm_item_heldout_total
-            )
-        if val_asm_item_indist_total > 0:
-            asm_split_metrics["val/asm_item_acc_indist"] = (
-                val_asm_item_indist_correct / val_asm_item_indist_total
-            )
         val_misc_acc = val_misc_correct / place_norm
         val_eot_acc = val_eot_correct / val_total
         val_eot_pos_recall = (
@@ -1798,7 +1674,6 @@ def train_sft(args: SftArgs):
                     "perf/train_compute_seconds": train_compute_s,
                     "perf/val_seconds": val_seconds,
                     **per_kind_metrics,
-                    **asm_split_metrics,
                     **_direction_diagnostics(dir_true_eval, dir_pred_eval),
                     **_dir_distance_diagnostics(dist_eval, dir_mismatch_eval),
                 },

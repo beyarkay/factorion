@@ -240,13 +240,6 @@ class SftArgs(SharedArgs):
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
     """EOT-head prob above which we mark the model "would stop" (for val/thput_eot)"""
-    heldout_recipe_frac: float = 0.0
-    """fraction of recipes PER ingredient-count class to hold out of SFT training
-    (0 = disabled). Held-out recipes are excluded from training factories but kept
-    in the (unfiltered) val set, so val/asm_item_acc_heldout measures generalization
-    to unseen recipes vs val/asm_item_acc_indist on seen ones. A conv arch that only
-    memorises recipe priors scores ~0 heldout; an arch that reads the sink's item tag
-    scores ~in-distribution. At least one recipe per class is always kept in training."""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208
