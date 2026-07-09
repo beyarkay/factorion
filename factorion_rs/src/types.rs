@@ -1,4 +1,5 @@
 use nonempty::{nonempty, NonEmpty};
+use std::collections::HashMap;
 use strum::IntoEnumIterator;
 
 /// Channels in the WHC tensor (3rd dimension).
@@ -663,6 +664,27 @@ pub struct Recipe {
     pub consumes: NonEmpty<(Item, f64)>,
     pub produces: NonEmpty<(Item, f64)>,
     pub crafting_time: f64,
+    /// Machines that can craft this recipe (hand-crafting excluded, so the
+    /// list is `NonEmpty` of real entities). Every recipe in this fluid-free
+    /// set is made in assembling machines: tiers 1/2/3 for a `crafting`
+    /// recipe, tiers 2/3 for an `advanced-crafting` one (machine 1 can't).
+    pub produced_by: NonEmpty<Item>,
+}
+
+/// The fully-expanded raw-material cost of one craft of a recipe: every
+/// ingredient reduced recursively through the recipe set until it bottoms
+/// out at items with no recipe (the raws — plates, ore, wood, and the
+/// fluid-gated intermediates the model treats as base), mirroring the
+/// wiki's "Total raw" infobox row.
+///
+/// `time` is the *cumulative* crafting time of the whole tree (summed over
+/// every intermediate craft, at Base-game crafting speed 1), not just the
+/// final recipe's `crafting_time` — so it answers "how much craft-time from
+/// raws" rather than duplicating the recipe's own time.
+#[derive(Debug, Clone)]
+pub struct TotalRaw {
+    pub items: NonEmpty<(Item, f64)>,
+    pub time: f64,
 }
 
 impl Recipe {
@@ -683,6 +705,75 @@ impl Recipe {
             .find(|(i, _)| *i == item)
             .map(|(_, r)| *r)
     }
+
+    /// The total raw cost of one craft of this recipe, expanded through
+    /// `index` (a lookup of produced-item → recipe, e.g. built once from
+    /// [`all_recipes`]). The result is `NonEmpty` because `consumes` is,
+    /// and every ingredient expands to at least one raw.
+    pub fn total_raw(&self, index: &HashMap<Item, Recipe>) -> TotalRaw {
+        let mut time = self.crafting_time;
+        // Seed from the first ingredient so the accumulator is non-empty by
+        // construction; fold the rest in, summing repeated raws.
+        let (head_item, head_qty) = self.consumes.head;
+        let (mut items, seed_time) = raw_expand(head_item, head_qty, index);
+        time += seed_time;
+        for &(ing, qty) in self.consumes.tail.iter() {
+            let (sub, sub_time) = raw_expand(ing, qty, index);
+            time += sub_time;
+            for (raw, amount) in sub {
+                add_raw(&mut items, raw, amount);
+            }
+        }
+        TotalRaw { items, time }
+    }
+}
+
+/// Sum `qty` of `item` into `items`, merging with an existing entry rather
+/// than duplicating it.
+fn add_raw(items: &mut NonEmpty<(Item, f64)>, item: Item, qty: f64) {
+    if let Some(entry) = items.iter_mut().find(|(i, _)| *i == item) {
+        entry.1 += qty;
+        return;
+    }
+    items.push((item, qty));
+}
+
+/// Reduce a demand for `qty` of `item` to its raw components, following
+/// `index` recursively. An item with no recipe is itself raw. Returns the
+/// raws plus the cumulative crafting time spent producing them. The recipe
+/// set is a DAG (no item consumes its own output, directly or transitively),
+/// so the recursion always terminates.
+fn raw_expand(item: Item, qty: f64, index: &HashMap<Item, Recipe>) -> (NonEmpty<(Item, f64)>, f64) {
+    let Some(recipe) = index.get(&item) else {
+        return (NonEmpty::new((item, qty)), 0.0);
+    };
+    // How many crafts yield `qty` of `item` (all recipes list positive
+    // output rates, so the filter only guards against malformed data).
+    let crafts = match recipe.produces_rate(item).filter(|p| *p > 0.0) {
+        Some(per_craft) => qty / per_craft,
+        None => qty,
+    };
+    let mut time = crafts * recipe.crafting_time;
+    let (head_item, head_qty) = recipe.consumes.head;
+    let (mut items, seed_time) = raw_expand(head_item, head_qty * crafts, index);
+    time += seed_time;
+    for &(ing, ing_qty) in recipe.consumes.tail.iter() {
+        let (sub, sub_time) = raw_expand(ing, ing_qty * crafts, index);
+        time += sub_time;
+        for (raw, amount) in sub {
+            add_raw(&mut items, raw, amount);
+        }
+    }
+    (items, time)
+}
+
+/// The total raw cost of a single item's recipe, if it has one. Convenience
+/// wrapper that builds the recipe index from [`all_recipes`]; callers doing
+/// this in bulk should build the index once and call [`Recipe::total_raw`].
+#[allow(dead_code)]
+pub fn total_raw_of(item: Item) -> Option<TotalRaw> {
+    let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+    index.get(&item).map(|recipe| recipe.total_raw(&index))
 }
 
 /// All crafting recipes in the game. The single source of truth — both
@@ -696,6 +787,21 @@ impl Recipe {
 /// MEMORISE_N_INGREDIENT_RECIPES bucket holds an equal 15 recipes; the
 /// parked ones are redundant tier/duplicate variants, kept in source so
 /// they can be restored by deleting the comment markers.
+/// The assembling machines that craft a standard `crafting`-category recipe.
+fn crafting() -> NonEmpty<Item> {
+    nonempty![
+        Item::AssemblingMachine1,
+        Item::AssemblingMachine2,
+        Item::AssemblingMachine3
+    ]
+}
+
+/// The assembling machines that craft an `advanced-crafting` recipe —
+/// assembling machine 1 can't reach it, so only tiers 2 and 3.
+fn advanced_crafting() -> NonEmpty<Item> {
+    nonempty![Item::AssemblingMachine2, Item::AssemblingMachine3]
+}
+
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
     vec![
         // 1 copper plate -> 2 copper cables, 0.5s
@@ -705,6 +811,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::CopperPlate, 1.0)],
                 produces: nonempty![(Item::CopperCable, 2.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 3 copper cable + 1 iron plate -> 1 electronic circuit, 0.5s
@@ -714,6 +821,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::CopperCable, 3.0), (Item::IronPlate, 1.0)],
                 produces: nonempty![(Item::ElectronicCircuit, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 2 iron plates -> 1 iron gear wheel, 0.5s
@@ -723,6 +831,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 2.0)],
                 produces: nonempty![(Item::IronGearWheel, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 1 iron gear wheel + 1 iron plate -> 2 transport belts, 0.5s
@@ -732,6 +841,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 1.0), (Item::IronPlate, 1.0)],
                 produces: nonempty![(Item::TransportBelt, 2.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 1 EC + 1 IGW + 1 iron plate -> 1 inserter, 0.5s
@@ -745,6 +855,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Inserter, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 3 EC + 5 IGW + 9 iron plates -> 1 assembling machine 1, 0.5s
@@ -758,6 +869,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::AssemblingMachine1, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // ===========================================================
@@ -777,6 +889,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 1.0)],
                 produces: nonempty![(Item::IronStick, 2.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 4 cable + 2 EC + 2 plastic -> 1 advanced_circuit, 6s
@@ -790,6 +903,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::AdvancedCircuit, 1.0)],
                 crafting_time: 6.0,
+                produced_by: crafting(),
             },
         ),
         // 1 IGW + 2 pipe + 1 steel_plate -> 1 engine_unit, 10s
@@ -803,6 +917,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::EngineUnit, 1.0)],
                 crafting_time: 10.0,
+                produced_by: advanced_crafting(),
             },
         ),
         // Storage
@@ -813,6 +928,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Wood, 2.0)],
                 produces: nonempty![(Item::WoodenChest, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 8 iron_plate -> 1 iron_chest, 0.5s
@@ -822,6 +938,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 8.0)],
                 produces: nonempty![(Item::IronChest, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 20 iron_plate + 5 steel_plate -> 1 storage_tank, 3s
@@ -831,6 +948,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 20.0), (Item::SteelPlate, 5.0)],
                 produces: nonempty![(Item::StorageTank, 1.0)],
                 crafting_time: 3.0,
+                produced_by: crafting(),
             },
         ),
         // Fast belt tier
@@ -842,6 +960,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 5.0), (Item::TransportBelt, 1.0)],
                 produces: nonempty![(Item::FastTransportBelt, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         */
@@ -853,6 +972,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 40.0), (Item::UndergroundBelt, 2.0)],
                 produces: nonempty![(Item::FastUndergroundBelt, 2.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -868,6 +988,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FastSplitter, 1.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -879,6 +1000,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 1.0), (Item::IronPlate, 1.0)],
                 produces: nonempty![(Item::BurnerInserter, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
@@ -893,6 +1015,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::LongHandedInserter, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         */
@@ -908,6 +1031,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FastInserter, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         */
@@ -919,6 +1043,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::CopperCable, 2.0), (Item::Wood, 1.0)],
                 produces: nonempty![(Item::SmallElectricPole, 2.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 2 cable + 4 iron_stick + 2 steel_plate -> 1 medium_electric_pole, 0.5s
@@ -932,6 +1057,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::MediumElectricPole, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
@@ -946,6 +1072,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::BigElectricPole, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         */
@@ -960,6 +1087,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Substation, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 1 iron_plate -> 1 pipe, 0.5s
@@ -969,6 +1097,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 1.0)],
                 produces: nonempty![(Item::Pipe, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 5 iron_plate + 10 pipe -> 2 pipe_to_ground, 0.5s
@@ -978,6 +1107,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 5.0), (Item::Pipe, 10.0)],
                 produces: nonempty![(Item::PipeToGround, 2.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 1 engine_unit + 1 pipe + 1 steel_plate -> 1 pump, 2s
@@ -991,6 +1121,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Pump, 1.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         // Production buildings + modules
@@ -1001,6 +1132,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Battery, 5.0), (Item::IronPlate, 2.0)],
                 produces: nonempty![(Item::Accumulator, 1.0)],
                 crafting_time: 10.0,
+                produced_by: crafting(),
             },
         ),
         // 20 advanced + 10 cable + 20 EC + 10 steel_plate -> 1 beacon, 15s
@@ -1015,6 +1147,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Beacon, 1.0)],
                 crafting_time: 15.0,
+                produced_by: crafting(),
             },
         ),
         // 4 pipe + 1 stone_furnace -> 1 boiler, 0.5s
@@ -1024,6 +1157,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Pipe, 4.0), (Item::StoneFurnace, 1.0)],
                 produces: nonempty![(Item::Boiler, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 3 IGW + 3 iron_plate + 1 stone_furnace -> 1 burner_mining_drill, 2s
@@ -1037,6 +1171,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::BurnerMiningDrill, 1.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         // 5 EC + 5 IGW + 5 pipe + 5 steel_plate -> 1 chemical_plant, 5s
@@ -1051,6 +1186,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::ChemicalPlant, 1.0)],
                 crafting_time: 5.0,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 5 advanced + 5 EC -> 1 efficiency_module, 15s
@@ -1062,6 +1198,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
                 produces: nonempty![(Item::EfficiencyModule, 1.0)],
                 crafting_time: 15.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -1076,6 +1213,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::ElectricFurnace, 1.0)],
                 crafting_time: 5.0,
+                produced_by: crafting(),
             },
         ),
         // 100 copper_plate + 10 pipe + 10 steel_plate -> 1 heat_exchanger, 3s
@@ -1089,6 +1227,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::HeatExchanger, 1.0)],
                 crafting_time: 3.0,
+                produced_by: crafting(),
             },
         ),
         // 20 copper_plate + 10 steel_plate -> 1 heat_pipe, 1s
@@ -1098,6 +1237,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::CopperPlate, 20.0), (Item::SteelPlate, 10.0)],
                 produces: nonempty![(Item::HeatPipe, 1.0)],
                 crafting_time: 1.0,
+                produced_by: crafting(),
             },
         ),
         // 10 EC + 10 IGW + 4 transport_belt -> 1 lab, 2s
@@ -1111,6 +1251,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Lab, 1.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         // 500 advanced + 500 concrete + 500 copper_plate + 500 steel_plate -> 1 nuclear_reactor, 8s
@@ -1125,6 +1266,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::NuclearReactor, 1.0)],
                 crafting_time: 8.0,
+                produced_by: crafting(),
             },
         ),
         // 2 IGW + 3 pipe -> 1 offshore_pump, 0.5s
@@ -1134,6 +1276,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 2.0), (Item::Pipe, 3.0)],
                 produces: nonempty![(Item::OffshorePump, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 10 EC + 10 IGW + 10 pipe + 15 steel_plate + 10 stone_brick -> 1 oil_refinery, 8s
@@ -1149,6 +1292,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::OilRefinery, 1.0)],
                 crafting_time: 8.0,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 5 advanced + 5 EC -> 1 productivity_module, 15s
@@ -1159,6 +1303,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
                 produces: nonempty![(Item::ProductivityModule, 1.0)],
                 crafting_time: 15.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -1174,6 +1319,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Pumpjack, 1.0)],
                 crafting_time: 5.0,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 5 advanced + 5 EC -> 1 quality_module, 15s
@@ -1184,6 +1330,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
                 produces: nonempty![(Item::QualityModule, 1.0)],
                 crafting_time: 15.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -1194,6 +1341,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::ElectronicCircuit, 2.0), (Item::IronGearWheel, 2.0)],
                 produces: nonempty![(Item::RepairPack, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // 5 copper_plate + 15 EC + 5 steel_plate -> 1 solar_panel, 10s
@@ -1207,6 +1355,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::SolarPanel, 1.0)],
                 crafting_time: 10.0,
+                produced_by: crafting(),
             },
         ),
         // 5 advanced + 5 EC -> 1 speed_module, 15s
@@ -1216,6 +1365,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::AdvancedCircuit, 5.0), (Item::ElectronicCircuit, 5.0)],
                 produces: nonempty![(Item::SpeedModule, 1.0)],
                 crafting_time: 15.0,
+                produced_by: crafting(),
             },
         ),
         // 8 IGW + 10 iron_plate + 5 pipe -> 1 steam_engine, 0.5s
@@ -1229,6 +1379,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::SteamEngine, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         // parked (bucket balance): 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
@@ -1243,6 +1394,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::SteamTurbine, 1.0)],
                 crafting_time: 3.0,
+                produced_by: crafting(),
             },
         ),
         */
@@ -1253,6 +1405,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::SteelPlate, 6.0), (Item::StoneBrick, 10.0)],
                 produces: nonempty![(Item::SteelFurnace, 1.0)],
                 crafting_time: 3.0,
+                produced_by: crafting(),
             },
         ),
         // 5 stone -> 1 stone_furnace, 0.5s
@@ -1262,6 +1415,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Stone, 5.0)],
                 produces: nonempty![(Item::StoneFurnace, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1270,6 +1424,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::SteelPlate, 1.0)],
                 produces: nonempty![(Item::Barrel, 1.0)],
                 crafting_time: 1.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1278,6 +1433,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 4.0)],
                 produces: nonempty![(Item::FirearmMagazine, 1.0)],
                 crafting_time: 1.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1286,6 +1442,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::StoneBrick, 5.0)],
                 produces: nonempty![(Item::StoneWall, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1294,6 +1451,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::SteelPlate, 8.0)],
                 produces: nonempty![(Item::SteelChest, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1302,6 +1460,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Concrete, 10.0)],
                 produces: nonempty![(Item::HazardConcrete, 10.0)],
                 crafting_time: 0.25,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1310,6 +1469,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Stone, 20.0)],
                 produces: nonempty![(Item::Landfill, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1318,6 +1478,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 10.0), (Item::TransportBelt, 5.0)],
                 produces: nonempty![(Item::UndergroundBelt, 2.0)],
                 crafting_time: 1.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1326,6 +1487,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::CopperPlate, 1.0), (Item::IronGearWheel, 1.0)],
                 produces: nonempty![(Item::AutomationSciencePack, 1.0)],
                 crafting_time: 5.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1338,6 +1500,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Splitter, 1.0)],
                 crafting_time: 1.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1350,6 +1513,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Radar, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1363,6 +1527,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Shotgun, 1.0)],
                 crafting_time: 10.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1376,6 +1541,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::CombatShotgun, 1.0)],
                 crafting_time: 10.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1389,6 +1555,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::TrainStop, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1402,6 +1569,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::AssemblingMachine2, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1415,6 +1583,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Centrifuge, 1.0)],
                 crafting_time: 4.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1428,6 +1597,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::Tank, 1.0)],
                 crafting_time: 5.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1441,6 +1611,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::ArtilleryTurret, 1.0)],
                 crafting_time: 40.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1454,6 +1625,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::ProgrammableSpeaker, 1.0)],
                 crafting_time: 2.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1467,6 +1639,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FluidWagon, 1.0)],
                 crafting_time: 1.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1475,6 +1648,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronPlate, 40.0)],
                 produces: nonempty![(Item::LightArmor, 1.0)],
                 crafting_time: 3.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1483,6 +1657,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::ElectronicCircuit, 1.0)],
                 produces: nonempty![(Item::DischargeDefenseRemote, 1.0)],
                 crafting_time: 0.5,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1496,6 +1671,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::PersonalRoboport, 1.0)],
                 crafting_time: 10.0,
+                produced_by: crafting(),
             },
         ),
         (
@@ -1509,6 +1685,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 ],
                 produces: nonempty![(Item::FlamethrowerTurret, 1.0)],
                 crafting_time: 20.0,
+                produced_by: crafting(),
             },
         ),
     ]
@@ -1819,6 +1996,87 @@ mod tests {
 
         assert!(get_recipe(Item::IronPlate).is_none());
         assert!(get_recipe(Item::CopperPlate).is_none());
+    }
+
+    #[test]
+    fn test_produced_by_crafting_vs_advanced() {
+        // A standard `crafting` recipe lists all three assembler tiers.
+        let ec = get_recipe(Item::ElectronicCircuit).unwrap();
+        assert_eq!(
+            ec.produced_by.iter().copied().collect::<Vec<_>>(),
+            vec![
+                Item::AssemblingMachine1,
+                Item::AssemblingMachine2,
+                Item::AssemblingMachine3
+            ]
+        );
+        // The one `advanced-crafting` recipe excludes assembling machine 1.
+        let eu = get_recipe(Item::EngineUnit).unwrap();
+        assert_eq!(
+            eu.produced_by.iter().copied().collect::<Vec<_>>(),
+            vec![Item::AssemblingMachine2, Item::AssemblingMachine3]
+        );
+    }
+
+    #[test]
+    fn test_every_recipe_produced_by_assemblers() {
+        // The whole (fluid-free) set is crafted in assembling machines.
+        let assemblers = [
+            Item::AssemblingMachine1,
+            Item::AssemblingMachine2,
+            Item::AssemblingMachine3,
+        ];
+        for (item, recipe) in all_recipes() {
+            for machine in recipe.produced_by.iter() {
+                assert!(
+                    assemblers.contains(machine),
+                    "{item:?} produced_by non-assembler {machine:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_total_raw_none_for_raw_items() {
+        // Items with no recipe are themselves raw — they have no expansion.
+        assert!(total_raw_of(Item::IronPlate).is_none());
+        assert!(total_raw_of(Item::CopperPlate).is_none());
+        assert!(total_raw_of(Item::SteelPlate).is_none());
+    }
+
+    #[test]
+    fn test_total_raw_copper_cable() {
+        // 1 craft: 1 copper plate -> 2 cables; copper plate is raw.
+        let tr = total_raw_of(Item::CopperCable).unwrap();
+        assert_eq!(tr.items.len(), 1);
+        assert_eq!(tr.items.head, (Item::CopperPlate, 1.0));
+        assert_eq!(tr.time, 0.5);
+    }
+
+    #[test]
+    fn test_total_raw_electronic_circuit() {
+        // 3 cable + 1 iron plate. 3 cables = 1.5 crafts -> 1.5 copper plate,
+        // 0.75s; the circuit itself is 0.5s -> 1.25s total.
+        let tr = total_raw_of(Item::ElectronicCircuit).unwrap();
+        let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
+        assert_eq!(raw.get(&Item::CopperPlate), Some(&1.5));
+        assert_eq!(raw.get(&Item::IronPlate), Some(&1.0));
+        assert_eq!(raw.len(), 2);
+        assert_eq!(tr.time, 1.25);
+    }
+
+    #[test]
+    fn test_total_raw_merges_across_depth() {
+        // Inserter = 1 EC + 1 IGW + 1 iron plate. Iron plate appears at three
+        // depths (raw, via the gear wheel, via the circuit) and must sum:
+        // 1 (direct) + 2 (gear wheel) + 1 (circuit) = 4.
+        let tr = total_raw_of(Item::Inserter).unwrap();
+        let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
+        assert_eq!(raw.get(&Item::IronPlate), Some(&4.0));
+        assert_eq!(raw.get(&Item::CopperPlate), Some(&1.5));
+        assert_eq!(raw.len(), 2);
+        // 0.5 inserter + 1.25 circuit + 0.5 gear wheel = 2.25.
+        assert_eq!(tr.time, 2.25);
     }
 
     #[test]
