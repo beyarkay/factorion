@@ -328,9 +328,10 @@ impl FactoryEntity for Inserter {
 ///
 /// A long-handed inserter is a plain inserter that reaches *two* tiles instead
 /// of one: it picks up from the tile two cells behind it and drops onto the tile
-/// two cells ahead, skipping the cell in between entirely. Everything else —
-/// throughput, the set of entities it can pull from / push to, the flow
-/// transform — is identical to the plain inserter (it just passes `reach = 2`).
+/// two cells ahead, skipping the cell in between entirely. Its connection logic
+/// is identical to the plain inserter (it just passes `reach = 2`); only the
+/// reach and the flow rate differ — it swings faster (432°/s vs 302°/s), so its
+/// throughput is ~1.2 i/s rather than 0.86 (see `Item::flow_rate`).
 pub struct LongHandedInserter;
 
 impl FactoryEntity for LongHandedInserter {
