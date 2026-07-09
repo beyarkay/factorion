@@ -14,11 +14,19 @@
 --   {
 --     run_id = "...",
 --     grid_size = 11,
---     warmup_ticks = 1800,        -- settle time, nothing is counted
---     measure_ticks = 3600,       -- counting window
 --     game_speed = 32,            -- game.speed while the run is active
 --     sample_every = 15,          -- per-entity sampling period (ticks)
---     progress_every = 1500,      -- chat-progress period (measure ticks)
+--     -- Adaptive measurement (all optional; defaults in M.start). Warmup
+--     -- runs until the windowed delivery rate plateaus or warmup_max; then
+--     -- counts reset and measure runs until the cumulative rate plateaus
+--     -- or measure_max. Legacy warmup_ticks/measure_ticks are accepted as
+--     -- warmup_max/measure_max.
+--     warmup_min = 300, warmup_max = 1800,
+--     measure_min = 600, measure_max = 36000,
+--     check_every = 300,          -- convergence-check period (ticks)
+--     converge_rel = 0.02,        -- plateau if rate within 2% across checks
+--     converge_hits = 3,          -- consecutive stable checks to converge
+--     converge_floor = 0.02,      -- abs items/s below which diffs are "stable"
 --     entities = {                -- model-placed entities (no source/sink)
 --       { name="transport-belt", x=3.5, y=5.5, tile_x=3, tile_y=5,
 --         direction=4, type="input"|"output"|nil, recipe="iron-gear-wheel"|nil },
@@ -98,6 +106,19 @@ end
 local STATUS_NAMES = {}
 for name, value in pairs(defines.entity_status) do
   STATUS_NAMES[value] = name
+end
+
+-- Silence Factorio's alert beeps during a run. Parity factories are built
+-- and torn down rapidly and often sit momentarily idle/unpowered, which
+-- would otherwise spam the "no power"/"no input" alert sounds. Disabling
+-- every alert type per player mutes both the icons and their sounds; it's
+-- a persistent per-player setting so it survives across runs.
+local function mute_alerts()
+  for _, p in pairs(game.players) do
+    for _, alert_type in pairs(defines.alert_type) do
+      pcall(function() p.disable_alert(alert_type) end)
+    end
+  end
 end
 
 local function ensure_storage()
@@ -389,17 +410,67 @@ local function update_sink_labels(run, measure_elapsed_ticks)
   end
 end
 
+-- Total items delivered across all sinks (each sink's configured item).
+-- The convergence signal is the aggregate rate, which is stable iff every
+-- sink is stable.
+local function sink_total(run)
+  local total = 0
+  for _, snk in ipairs(run.sinks) do
+    total = total + (snk.counts[snk.item] or 0)
+  end
+  return total
+end
+
+-- Is `cur` within `rel` (relative) of `prev`? Differences at or below
+-- `floor` count as stable regardless, so a near-zero signal doesn't fail
+-- on relative noise. Used to detect a plateaued throughput.
+local function rel_stable(cur, prev, rel, floor)
+  local d = math.abs(cur - prev)
+  if d <= floor then return true end
+  return d / math.max(math.abs(prev), floor) <= rel
+end
+
+-- Reset per-run accumulators at the warmup→measure boundary. Buffers
+-- (assembler output slot, output belt, inserter hand) fill during warmup;
+-- zeroing here means the measured rate counts only steady-state arrivals,
+-- so a one-time buffer flush can't inflate it. This is the measurement
+-- that separates a real engine discrepancy from a settling transient.
+local function begin_measure(run)
+  for _, snk in ipairs(run.sinks) do
+    snk.counts = {}
+  end
+  for _, src in ipairs(run.sources) do
+    src.inserted = 0
+  end
+  for _, w in ipairs(run.watched) do
+    w.line_totals = {}
+    w.status_counts = {}
+    w.held_ticks = 0
+    w.samples = 0
+    if w.kind == "machine" and w.entity.valid then
+      w.products_finished_start = w.entity.products_finished
+    end
+  end
+  run.phase = "measure"
+  run.meas_start_tick = game.tick
+  run.last_check = 0
+  run.prev_meas_rate = -1
+  run.meas_stable = 0
+end
+
 -- ----------------------------------------------------------------------------
 -- result assembly
 -- ----------------------------------------------------------------------------
 
 local function finish_run(run)
-  local measure_seconds = run.measure_ticks / 60.0
+  local measure_ticks = run.measure_ticks_used or 1
+  local measure_seconds = measure_ticks / 60.0
   local result = {
     run_id = run.run_id,
     status = "done",
-    warmup_ticks = run.warmup_ticks,
-    measure_ticks = run.measure_ticks,
+    warmup_ticks = run.warmup_ticks_used or 0,
+    measure_ticks = measure_ticks,
+    converged = run.converged or false,
     surface = SURFACE_NAME,
     sinks = {},
     sources = {},
@@ -459,58 +530,92 @@ local function finish_run(run)
   st.result = json_encode(result)
   st.run = nil
   game.speed = 1.0
-  update_sink_labels(run, run.measure_ticks)
-  announce(string.format("run %s DONE — %s", run.run_id,
-    table.concat(sink_rate_lines(run, run.measure_ticks), ", ")), COLOR_OK)
+  update_sink_labels(run, measure_ticks)
+  announce(string.format(
+    "run %s DONE (%s after %d warmup + %d measure ticks) — %s",
+    run.run_id,
+    run.converged and "converged" or "hit tick cap",
+    run.warmup_ticks_used or 0, measure_ticks,
+    table.concat(sink_rate_lines(run, measure_ticks), ", ")), COLOR_OK)
 end
 
 -- ----------------------------------------------------------------------------
 -- public: tick driver + remote methods
 -- ----------------------------------------------------------------------------
 
+-- Two adaptive phases, both convergence-gated with a hard tick cap:
+--
+--   warmup  — flow items until the *windowed* delivery rate plateaus
+--             (belts/pipelines saturated), or warmup_max ticks. Counts
+--             are then zeroed (begin_measure) so buffer-fill can't leak in.
+--   measure — count deliveries until the *cumulative* rate plateaus, or
+--             measure_max ticks. The plateaued cumulative rate is the
+--             reported steady-state throughput.
+--
+-- Fast factories (belts) converge in a few checks and finish near-instantly;
+-- slow ones (assemblers) rarely satisfy the relative test and run to the cap,
+-- which is exactly the extra measuring time they need for an accurate rate.
 function M.on_tick()
   local st = storage.parity
   if not st or not st.run then return end
   local run = st.run
-  local elapsed = game.tick - run.start_tick
 
-  if elapsed < run.warmup_ticks then
-    -- Warmup: flow items but count nothing.
-    feed_sources(run, false)
-    drain_sinks(run, false)
-    return
-  end
+  -- Items always flow; the phase only decides what we do with the counts.
+  feed_sources(run, true)
+  drain_sinks(run, true)
 
-  if elapsed == run.warmup_ticks then
-    -- Transition into the measuring window: baseline the machine
-    -- counters so products_finished deltas cover only this window.
-    for _, w in ipairs(run.watched) do
-      if w.kind == "machine" and w.entity.valid then
-        w.products_finished_start = w.entity.products_finished
+  if run.phase == "warmup" then
+    local elapsed = game.tick - run.start_tick
+    if elapsed - run.last_check >= run.check_every then
+      local total = sink_total(run)
+      local windowed = (total - run.warm_last_total)
+        / (run.check_every / 60.0)
+      run.warm_last_total = total
+      run.last_check = elapsed
+      if elapsed >= run.warmup_min
+        and rel_stable(windowed, run.prev_warm_rate, run.converge_rel,
+          run.converge_floor) then
+        run.warm_stable = run.warm_stable + 1
+      else
+        run.warm_stable = 0
+      end
+      run.prev_warm_rate = windowed
+      if run.warm_stable >= run.converge_hits or elapsed >= run.warmup_max then
+        run.warmup_ticks_used = elapsed
+        begin_measure(run)
+        announce(string.format(
+          "run %s: saturated after %d warmup ticks; measuring…",
+          run.run_id, elapsed))
       end
     end
-    announce(string.format(
-      "run %s: warmup done, measuring for %d ticks (%.0f s of game time)",
-      run.run_id, run.measure_ticks, run.measure_ticks / 60.0))
-  end
-
-  if elapsed < run.warmup_ticks + run.measure_ticks then
-    feed_sources(run, true)
-    drain_sinks(run, true)
-    local measured = elapsed - run.warmup_ticks
-    if measured % run.sample_every == 0 then
-      sample_entities(run)
-      update_sink_labels(run, measured)
-    end
-    if measured > 0 and measured % run.progress_every == 0 then
-      announce(string.format("run %s: %d%% — %s", run.run_id,
-        math.floor(100 * measured / run.measure_ticks),
-        table.concat(sink_rate_lines(run, measured), ", ")))
-    end
     return
   end
 
-  finish_run(run)
+  -- measure phase
+  local meas = game.tick - run.meas_start_tick
+  if meas % run.sample_every == 0 then
+    sample_entities(run)
+    update_sink_labels(run, meas)
+  end
+  if meas - run.last_check >= run.check_every then
+    run.last_check = meas
+    local rate = sink_total(run) / math.max(meas / 60.0, 1e-9)
+    if meas >= run.measure_min and sink_total(run) > 0
+      and rel_stable(rate, run.prev_meas_rate, run.converge_rel,
+        run.converge_floor) then
+      run.meas_stable = run.meas_stable + 1
+    else
+      run.meas_stable = 0
+    end
+    run.prev_meas_rate = rate
+    announce(string.format("run %s: measuring %d ticks — %s", run.run_id,
+      meas, table.concat(sink_rate_lines(run, meas), ", ")))
+    if run.meas_stable >= run.converge_hits or meas >= run.measure_max then
+      run.measure_ticks_used = meas
+      run.converged = run.meas_stable >= run.converge_hits
+      finish_run(run)
+    end
+  end
 end
 
 function M.start(spec_json)
@@ -568,40 +673,63 @@ function M.start(spec_json)
       "sink " .. snk.item, COLOR_SNK, 0.8)
   end
 
+  mute_alerts()
+
   st.run = {
     run_id = spec.run_id or "unnamed",
     start_tick = game.tick,
-    warmup_ticks = spec.warmup_ticks or 1800,
-    measure_ticks = spec.measure_ticks or 3600,
+    -- Adaptive phases (legacy warmup_ticks/measure_ticks accepted as the
+    -- caps for back-compat).
+    phase = "warmup",
+    warmup_min = spec.warmup_min or 300,
+    warmup_max = spec.warmup_max or spec.warmup_ticks or 1800,
+    measure_min = spec.measure_min or 600,
+    measure_max = spec.measure_max or spec.measure_ticks or 36000,
+    check_every = math.max(spec.check_every or 300, 1),
+    converge_rel = spec.converge_rel or 0.02,
+    converge_hits = math.max(spec.converge_hits or 3, 1),
+    converge_floor = spec.converge_floor or 0.02,
     sample_every = math.max(spec.sample_every or 15, 1),
-    progress_every = math.max(spec.progress_every or 1500, 60),
+    -- warmup convergence trackers
+    last_check = 0,
+    warm_last_total = 0,
+    prev_warm_rate = -1,
+    warm_stable = 0,
     watched = watched,
     sources = sources,
     sinks = sinks,
   }
   game.speed = spec.game_speed or 32
   announce(string.format(
-    "run %s: built %d entities, %d sources, %d sinks; warming up for"
-    .. " %d ticks at speed %.0fx",
+    "run %s: built %d entities, %d sources, %d sinks; auto-warmup"
+    .. " (≤%d) then measure to convergence (≤%d) at speed %.0fx",
     st.run.run_id, #watched, #sources, #sinks,
-    st.run.warmup_ticks, game.speed))
+    st.run.warmup_max, st.run.measure_max, game.speed))
   return json_encode({
     status = "running",
     run_id = st.run.run_id,
-    total_ticks = st.run.warmup_ticks + st.run.measure_ticks,
+    total_ticks = st.run.warmup_max + st.run.measure_max,
   })
 end
 
 function M.poll()
   local st = ensure_storage()
   if st.run then
-    local elapsed = game.tick - st.run.start_tick
+    local run = st.run
+    local ticks_done, total
+    if run.phase == "warmup" then
+      ticks_done = game.tick - run.start_tick
+      total = run.warmup_max
+    else
+      ticks_done = game.tick - run.meas_start_tick
+      total = run.measure_max
+    end
     return json_encode({
       status = "running",
-      run_id = st.run.run_id,
-      phase = (elapsed < st.run.warmup_ticks) and "warmup" or "measure",
-      ticks_done = elapsed,
-      total_ticks = st.run.warmup_ticks + st.run.measure_ticks,
+      run_id = run.run_id,
+      phase = run.phase,
+      ticks_done = ticks_done,
+      total_ticks = total,
     })
   end
   if st.result then
