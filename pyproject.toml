@@ -64,3 +64,10 @@ lint.ignore = [
     "F811",  # redefinition of unused name (duplicate Path import)
     "F401",  # unused import (factorion_rs used at runtime via FFI)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Green-fields masked-encoder PoC (#160): intentional compact research-script
+# style — multiple statements per line and short loop vars. Bug-catching rules
+# (F-codes etc.) still apply.
+"masked_encoder/*" = ["E701", "E702", "E741"]
+"data/*" = ["E701", "E702", "E741"]
