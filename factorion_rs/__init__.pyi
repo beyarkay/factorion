@@ -18,6 +18,9 @@ class RecipeData(TypedDict):
     consumes: dict[str, float]
     produces: dict[str, float]
     crafting_time: float
+    produced_by: list[str]
+    total_raw: dict[str, float]
+    total_raw_time: float
 
 def simulate_throughput(world: NDArray[np.int64]) -> tuple[float, int]: ...
 def py_build_graph(

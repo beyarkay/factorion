@@ -47,9 +47,11 @@ use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
 use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
+use std::collections::HashMap;
+#[cfg(feature = "pyo3-bindings")]
 use throughput::{calc_throughput, factory_score};
 #[cfg(feature = "pyo3-bindings")]
-use types::{all_items, all_recipes, Direction};
+use types::{all_items, all_recipes, Direction, Item, Recipe};
 #[cfg(feature = "pyo3-bindings")]
 use world::World;
 
@@ -161,7 +163,14 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 ///
 /// Shape: `{item_name: {"consumes": {item_name: rate, ...},
 ///                      "produces": {item_name: rate, ...},
-///                      "crafting_time": seconds_per_craft}}`.
+///                      "crafting_time": seconds_per_craft,
+///                      "produced_by": [machine_name, ...],
+///                      "total_raw": {item_name: amount, ...},
+///                      "total_raw_time": cumulative_seconds}}`.
+///
+/// `total_raw` is derived (each ingredient reduced through the recipe set to
+/// items with no recipe); `total_raw_time` is the summed craft time of the
+/// whole tree — see [`types::TotalRaw`].
 ///
 /// This is the single source of truth for recipe data — Python builds its
 /// `recipes` dict from this at module load.
@@ -169,7 +178,10 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[pyfunction]
 fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let outer = PyDict::new(py);
-    for (item, recipe) in all_recipes() {
+    let recipes = all_recipes();
+    // Built once and shared across every recipe's total_raw expansion.
+    let index: HashMap<Item, Recipe> = recipes.iter().cloned().collect();
+    for (item, recipe) in &recipes {
         let entry = PyDict::new(py);
         let consumes = PyDict::new(py);
         for &(i, rate) in recipe.consumes.iter() {
@@ -179,9 +191,18 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
         for &(i, rate) in recipe.produces.iter() {
             produces.set_item(i.name(), rate)?;
         }
+        let total = recipe.total_raw(&index);
+        let total_raw = PyDict::new(py);
+        for &(i, amount) in total.items.iter() {
+            total_raw.set_item(i.name(), amount)?;
+        }
+        let produced_by: Vec<&str> = recipe.produced_by.iter().map(|m| m.name()).collect();
         entry.set_item("consumes", consumes)?;
         entry.set_item("produces", produces)?;
         entry.set_item("crafting_time", recipe.crafting_time)?;
+        entry.set_item("produced_by", produced_by)?;
+        entry.set_item("total_raw", total_raw)?;
+        entry.set_item("total_raw_time", total.time)?;
         outer.set_item(item.name(), entry)?;
     }
     Ok(outer.into())
