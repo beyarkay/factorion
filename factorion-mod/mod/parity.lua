@@ -23,6 +23,7 @@
 --     -- warmup_max/measure_max.
 --     warmup_min = 300, warmup_max = 1800,
 --     measure_min = 600, measure_max = 36000,
+--     measure_min_items = 25,     -- every sink needs >=N items before converging
 --     check_every = 300,          -- convergence-check period (ticks)
 --     converge_rel = 0.02,        -- plateau if rate within 2% across checks
 --     converge_hits = 3,          -- consecutive stable checks to converge
@@ -421,6 +422,19 @@ local function sink_total(run)
   return total
 end
 
+-- Fewest items any single sink has received. The rate's resolution is
+-- 1/count, so a sink with only a couple items gives a coarse rate no
+-- matter how "stable" it looks. Convergence is gated on this reaching
+-- measure_min_items so the slowest sink still resolves to a usable rate.
+local function min_sink_count(run)
+  local m = math.huge
+  for _, snk in ipairs(run.sinks) do
+    m = math.min(m, snk.counts[snk.item] or 0)
+  end
+  if m == math.huge then return 0 end
+  return m
+end
+
 -- Is `cur` within `rel` (relative) of `prev`? Differences at or below
 -- `floor` count as stable regardless, so a near-zero signal doesn't fail
 -- on relative noise. Used to detect a plateaued throughput.
@@ -600,7 +614,12 @@ function M.on_tick()
   if meas - run.last_check >= run.check_every then
     run.last_check = meas
     local rate = sink_total(run) / math.max(meas / 60.0, 1e-9)
-    if meas >= run.measure_min and sink_total(run) > 0
+    -- Converge only once (a) enough game-time has passed, (b) every sink
+    -- has enough items for its rate to be resolved, and (c) the rate has
+    -- plateaued. The item-count gate is what stops a slow assembler from
+    -- "converging" on 2 items and reporting a garbage rate.
+    if meas >= run.measure_min
+      and min_sink_count(run) >= run.measure_min_items
       and rel_stable(rate, run.prev_meas_rate, run.converge_rel,
         run.converge_floor) then
       run.meas_stable = run.meas_stable + 1
@@ -685,6 +704,7 @@ function M.start(spec_json)
     warmup_max = spec.warmup_max or spec.warmup_ticks or 1800,
     measure_min = spec.measure_min or 600,
     measure_max = spec.measure_max or spec.measure_ticks or 36000,
+    measure_min_items = spec.measure_min_items or 25,
     check_every = math.max(spec.check_every or 300, 1),
     converge_rel = spec.converge_rel or 0.02,
     converge_hits = math.max(spec.converge_hits or 3, 1),

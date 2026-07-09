@@ -63,6 +63,7 @@ def world_to_parity_spec(
     measure_max: int = 36000,
     warmup_min: int = 300,
     measure_min: int = 600,
+    measure_min_items: int = 25,
     check_every: int = 300,
     converge_rel: float = 0.02,
     converge_hits: int = 3,
@@ -174,6 +175,7 @@ def world_to_parity_spec(
         "warmup_max": warmup_max,
         "measure_min": measure_min,
         "measure_max": measure_max,
+        "measure_min_items": measure_min_items,
         "check_every": check_every,
         "converge_rel": converge_rel,
         "converge_hits": converge_hits,
@@ -406,6 +408,9 @@ def main():
                     help="Max warmup ticks before forcing the measure phase.")
     ap.add_argument("--measure-max", type=int, default=36000,
                     help="Max measure ticks (cap if the rate never converges).")
+    ap.add_argument("--measure-min-items", type=int, default=25,
+                    help="Every sink needs >=N items before convergence "
+                         "is allowed (rate resolution ~ 1/N).")
     ap.add_argument("--converge-rel", type=float, default=0.02,
                     help="Rate plateau: stop when within this rel. change.")
     ap.add_argument("--converge-hits", type=int, default=3,
@@ -450,6 +455,7 @@ def main():
                 game_speed=args.game_speed,
                 warmup_max=args.warmup_max,
                 measure_max=args.measure_max,
+                measure_min_items=args.measure_min_items,
                 converge_rel=args.converge_rel,
                 converge_hits=args.converge_hits,
             )
