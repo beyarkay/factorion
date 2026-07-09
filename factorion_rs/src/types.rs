@@ -263,11 +263,15 @@ pub enum Item {
     DischargeDefenseRemote = 83,
     PersonalRoboport = 84,
     FlamethrowerTurret = 85,
+    // Higher assembler tiers aren't agent-placeable; they exist as items so
+    // recipes can name them in `produced_by` (a `crafting` recipe is made by
+    // assembling machine 1/2/3, `advanced-crafting` by 2/3 only).
+    AssemblingMachine3 = 86,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 86,   // named "bulk_inserter"
-    Source = 87, // named "stack_inserter"
+    Sink = 87,   // named "bulk_inserter"
+    Source = 88, // named "stack_inserter"
 }
 
 impl Item {
@@ -360,8 +364,9 @@ impl Item {
             83 => Some(Item::DischargeDefenseRemote),
             84 => Some(Item::PersonalRoboport),
             85 => Some(Item::FlamethrowerTurret),
-            86 => Some(Item::Sink),
-            87 => Some(Item::Source),
+            86 => Some(Item::AssemblingMachine3),
+            87 => Some(Item::Sink),
+            88 => Some(Item::Source),
             _ => None,
         }
     }
@@ -466,6 +471,7 @@ impl Item {
             Item::DischargeDefenseRemote => "discharge_defense_remote",
             Item::PersonalRoboport => "personal_roboport",
             Item::FlamethrowerTurret => "flamethrower_turret",
+            Item::AssemblingMachine3 => "assembling_machine_3",
         }
     }
 
@@ -597,7 +603,8 @@ impl Item {
             | Item::LightArmor
             | Item::DischargeDefenseRemote
             | Item::PersonalRoboport
-            | Item::FlamethrowerTurret => 0.0,
+            | Item::FlamethrowerTurret
+            | Item::AssemblingMachine3 => 0.0,
         }
     }
 
