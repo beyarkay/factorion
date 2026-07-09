@@ -458,6 +458,9 @@ def main():
                     help="'all' or comma-separated LessonKind names.")
     ap.add_argument("--seeds", type=int, default=3,
                     help="Seeds 0..N-1 per lesson.")
+    ap.add_argument("--fixtures", type=Path, default=None,
+                    help="Also replay the textual test fixtures dumped to this "
+                         "JSON by factorion_rs' dump_fixtures_for_parity test.")
     ap.add_argument("--size", type=int, default=11)
     ap.add_argument("--batch-size", type=int, default=40,
                     help="Factories built + measured together on one surface "
@@ -514,6 +517,24 @@ def main():
                 "run_id": f"{lesson.name}-s{seed}",
                 "lesson": lesson.name,
                 "seed": seed,
+                "world": world,
+                "expected": expected_sink_rates(world),
+            })
+
+    # Optionally fold in the engine's own textual fixtures (dumped to JSON by
+    # factorion_rs::dump_fixtures_for_parity). Each is treated as one more
+    # factory job — same batching / comparison / reporting as the lessons.
+    if args.fixtures is not None:
+        for fx in json.loads(args.fixtures.read_text()):
+            world = (
+                np.array(fx["world"], dtype=np.int64)
+                .reshape(fx["w"], fx["h"], fx["c"])
+                .transpose(2, 0, 1)  # (W, H, C) → (C, W, H)
+            )
+            jobs.append({
+                "run_id": f'{fx["file"]}#{fx["doc"]}',
+                "lesson": fx["file"],
+                "seed": fx["doc"],
                 "world": world,
                 "expected": expected_sink_rates(world),
             })

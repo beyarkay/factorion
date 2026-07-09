@@ -66,3 +66,20 @@ measure until the cumulative rate converges (counts are zeroed at the
 boundary so buffer-fill can't inflate the rate), with hard tick caps. Crank
 `--game-speed` (100+) to compress wall-clock; slow assembler lessons still
 need many game-seconds to resolve a fractional items/s rate.
+
+## Regression check after an engine change
+
+`scripts/parity_regression.sh` is a thin wrapper (no new logic): it rebuilds
+the engine, dumps the textual fixtures (`dump_fixtures_for_parity`), and runs
+`parity.py --lessons all --seeds N --fixtures …` so one command replays every
+lesson (N seeds each) plus every `tests/factories/*.yaml` fixture through a
+running Factorio and reports any sink that diverges (non-zero exit on
+mismatch). Pass RCON args through:
+
+```bash
+SEEDS=40 factorion-mod/scripts/parity_regression.sh \
+  --rcon-port 64502 --rcon-password <pw>
+```
+
+`parity.py --fixtures <json>` folds the dumped fixtures into a normal run;
+they batch/compare/report exactly like the lesson factories.
