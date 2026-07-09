@@ -1915,13 +1915,17 @@ fn build_memorise_recipes(
     n_ingredients: usize,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
-    // Only recipes with exactly `n_ingredients` inputs are eligible — the
-    // lesson drills memorising recipe identity at a fixed input-arm count. If no
-    // recipe matches (an ingredient count the table never uses) there is nothing
-    // to build, so reject immediately.
+    // Eligible recipes have exactly `n_ingredients` inputs (the lesson drills
+    // memorising recipe identity at a fixed input-arm count) and must be
+    // craftable by the assembling machine 1 this lesson places — otherwise the
+    // machine would be tagged with a recipe it can't make. If nothing matches
+    // (an ingredient count the table never uses) there is nothing to build, so
+    // reject immediately.
     let recipes: Vec<(Item, Recipe)> = all_recipes()
         .into_iter()
-        .filter(|(_, r)| r.consumes.len() == n_ingredients)
+        .filter(|(_, r)| {
+            r.consumes.len() == n_ingredients && r.produced_by.contains(&Item::AssemblingMachine1)
+        })
         .collect();
     if recipes.is_empty() {
         return None;
@@ -2146,9 +2150,15 @@ fn build_factory_1_ingredient(
     if s < 7 {
         return None;
     }
+    // Single-ingredient, single-product recipes the placed assembling machine 1
+    // can actually craft (its `produced_by` lists tier 1).
     let recipes: Vec<(Item, Recipe)> = all_recipes()
         .into_iter()
-        .filter(|(_, r)| r.consumes.len() == 1 && r.produces.len() == 1)
+        .filter(|(_, r)| {
+            r.consumes.len() == 1
+                && r.produces.len() == 1
+                && r.produced_by.contains(&Item::AssemblingMachine1)
+        })
         .collect();
     if recipes.is_empty() {
         return None;
@@ -2781,6 +2791,47 @@ mod tests {
                 }
             }
             assert!(built > 40, "{kind:?}: most seeds should build, got {built}");
+        }
+    }
+
+    #[test]
+    fn test_assembler_recipes_are_am1_craftable() {
+        // Every lesson that places an assembling machine 1 must tag it with a
+        // recipe tier 1 can craft — the `produced_by` filter must exclude
+        // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
+        let kinds = [
+            LessonKind::Memorise1IngredientRecipes,
+            LessonKind::Memorise2IngredientRecipes,
+            LessonKind::Memorise3IngredientRecipes,
+            LessonKind::Memorise4IngredientRecipes,
+            LessonKind::Factory1Ingredient,
+        ];
+        for kind in kinds {
+            let mut checked = 0;
+            for seed in 0..60u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) != Some(Item::AssemblingMachine1) {
+                            continue;
+                        }
+                        let Some(recipe_item) = f.world.item_at(x, y) else {
+                            continue;
+                        };
+                        let recipe = crate::types::get_recipe(recipe_item).unwrap_or_else(|| {
+                            panic!("{kind:?} seed={seed}: {recipe_item:?} has no recipe")
+                        });
+                        assert!(
+                            recipe.produced_by.contains(&Item::AssemblingMachine1),
+                            "{kind:?} seed={seed}: {recipe_item:?} not craftable by AM1"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 0, "{kind:?}: no assembler recipes inspected");
         }
     }
 
