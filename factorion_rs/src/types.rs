@@ -684,6 +684,11 @@ impl Recipe {
 /// Quantities are the canonical wiki recipe values (per craft, not
 /// per-second). Throughput math (`transform_flow`) is scale-invariant
 /// under uniform multiplication of consumes and produces.
+///
+/// A few recipes are block-commented (`/* parked … */`) so that every
+/// MEMORISE_N_INGREDIENT_RECIPES bucket holds an equal 15 recipes; the
+/// parked ones are redundant tier/duplicate variants, kept in source so
+/// they can be restored by deleting the comment markers.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
     vec![
         // 1 copper plate -> 2 copper cables, 0.5s
@@ -822,7 +827,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
             },
         ),
         // Fast belt tier
-        // 5 IGW + 1 transport_belt -> 1 fast_transport_belt, 0.5s
+        // parked (bucket balance): 5 IGW + 1 transport_belt -> 1 fast_transport_belt, 0.5s
+        /*
         (
             Item::FastTransportBelt,
             Recipe {
@@ -831,7 +837,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 40 IGW + 2 underground_belt -> 2 fast_underground_belt, 2s
+        */
+        // parked (bucket balance): 40 IGW + 2 underground_belt -> 2 fast_underground_belt, 2s
+        /*
         (
             Item::FastUndergroundBelt,
             Recipe {
@@ -840,7 +848,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 2.0,
             },
         ),
-        // 10 EC + 10 IGW + 1 splitter -> 1 fast_splitter, 2s
+        */
+        // parked (bucket balance): 10 EC + 10 IGW + 1 splitter -> 1 fast_splitter, 2s
+        /*
         (
             Item::FastSplitter,
             Recipe {
@@ -853,6 +863,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 2.0,
             },
         ),
+        */
         // Inserter variants
         // 1 IGW + 1 iron_plate -> 1 burner_inserter, 0.5s
         (
@@ -863,7 +874,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
+        // parked (bucket balance): 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
+        /*
         (
             Item::LongHandedInserter,
             Recipe {
@@ -876,7 +888,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 2 EC + 1 inserter + 2 iron_plate -> 1 fast_inserter, 0.5s
+        */
+        // parked (bucket balance): 2 EC + 1 inserter + 2 iron_plate -> 1 fast_inserter, 0.5s
+        /*
         (
             Item::FastInserter,
             Recipe {
@@ -889,6 +903,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
+        */
         // Power & pipes
         // 2 cable + 1 wood -> 2 small_electric_pole, 0.5s
         (
@@ -912,7 +927,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
+        // parked (bucket balance): 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
+        /*
         (
             Item::BigElectricPole,
             Recipe {
@@ -925,6 +941,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
+        */
         // 5 advanced + 6 cable + 10 steel_plate -> 1 substation, 0.5s
         (
             Item::Substation,
@@ -1029,7 +1046,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 efficiency_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 efficiency_module, 15s
+        // (same recipe as speed/productivity/quality module; speed_module is kept)
+        /*
         (
             Item::EfficiencyModule,
             Recipe {
@@ -1038,6 +1057,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 5 advanced + 10 steel_plate + 10 stone_brick -> 1 electric_furnace, 5s
         (
             Item::ElectricFurnace,
@@ -1124,7 +1144,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 8.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 productivity_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 productivity_module, 15s
+        /*
         (
             Item::ProductivityModule,
             Recipe {
@@ -1133,6 +1154,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 5 EC + 10 IGW + 10 pipe + 5 steel_plate -> 1 pumpjack, 5s
         (
             Item::Pumpjack,
@@ -1147,7 +1169,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 quality_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 quality_module, 15s
+        /*
         (
             Item::QualityModule,
             Recipe {
@@ -1156,6 +1179,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 2 EC + 2 IGW -> 1 repair_pack, 0.5s
         (
             Item::RepairPack,
@@ -1200,7 +1224,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
+        // parked (bucket balance): 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
+        /*
         (
             Item::SteamTurbine,
             Recipe {
@@ -1213,6 +1238,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 3.0,
             },
         ),
+        */
         // 6 steel_plate + 10 stone_brick -> 1 steel_furnace, 3s
         (
             Item::SteelFurnace,
