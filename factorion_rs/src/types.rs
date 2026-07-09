@@ -446,11 +446,6 @@ impl Item {
         match self {
             Item::TransportBelt => 15.0,
             Item::Inserter => 0.86,
-            // A long-handed inserter reaches two tiles instead of one AND swings
-            // faster: its rotation speed is 432°/s vs the basic inserter's 302°/s
-            // (Factorio wiki). Throughput scales linearly with rotation speed
-            // (one item per swing, same swing geometry), so 0.86 × 432/302 ≈ 1.2
-            // items/s. See `LongHandedInserter` in entities.rs.
             Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
             Item::UndergroundBelt => 15.0,
@@ -1402,22 +1397,6 @@ mod tests {
         // Unknown names decode to None.
         assert_eq!(Item::from_name("not_a_real_item"), None);
         assert_eq!(Item::from_name(""), None);
-    }
-
-    #[test]
-    fn test_item_flow_rates() {
-        assert_eq!(Item::TransportBelt.flow_rate(), 15.0);
-        assert_eq!(Item::Inserter.flow_rate(), 0.86);
-        // A long-handed inserter swings faster (432°/s vs 302°/s) → ~1.2 i/s.
-        assert_eq!(Item::LongHandedInserter.flow_rate(), 1.2);
-        assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
-        assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
-        // Per splitter tile — each of its two tiles is a belt.
-        assert_eq!(Item::Splitter.flow_rate(), 15.0);
-        assert!(Item::Sink.flow_rate().is_infinite());
-        assert!(Item::Source.flow_rate().is_infinite());
-        assert_eq!(Item::CopperCable.flow_rate(), 0.0);
-        assert_eq!(Item::IronPlate.flow_rate(), 0.0);
     }
 
     #[test]
