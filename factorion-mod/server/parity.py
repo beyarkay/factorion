@@ -57,10 +57,16 @@ def world_to_parity_spec(
     world_CWH,
     *,
     run_id: str,
-    warmup_ticks: int = 1800,
-    measure_ticks: int = 3600,
     game_speed: float = 32.0,
     sample_every: int = 15,
+    warmup_max: int = 1800,
+    measure_max: int = 36000,
+    warmup_min: int = 300,
+    measure_min: int = 600,
+    check_every: int = 300,
+    converge_rel: float = 0.02,
+    converge_hits: int = 3,
+    converge_floor: float = 0.02,
 ) -> dict:
     """Convert a (C, W, H) world tensor into the mod's parity spec JSON.
 
@@ -162,10 +168,16 @@ def world_to_parity_spec(
     return {
         "run_id": run_id,
         "grid_size": max(W, H),
-        "warmup_ticks": warmup_ticks,
-        "measure_ticks": measure_ticks,
         "game_speed": game_speed,
         "sample_every": sample_every,
+        "warmup_min": warmup_min,
+        "warmup_max": warmup_max,
+        "measure_min": measure_min,
+        "measure_max": measure_max,
+        "check_every": check_every,
+        "converge_rel": converge_rel,
+        "converge_hits": converge_hits,
+        "converge_floor": converge_floor,
         "entities": spec_entities,
         "sources": sources,
         "sinks": sinks,
@@ -314,6 +326,10 @@ def format_report(report: ParityReport, result: dict | None, world=None) -> str:
     if report.error:
         lines.append(f"  error: {report.error}")
         return "\n".join(lines)
+    if result is not None:
+        conv = "converged" if result.get("converged") else "HIT TICK CAP"
+        lines[0] += (f"  [{conv}, {result.get('warmup_ticks', 0)} warmup"
+                     f" + {result.get('measure_ticks', 0)} measure ticks]")
     for s in report.sinks:
         rel = (
             abs(s.factorio_rate - s.engine_rate)
@@ -386,10 +402,14 @@ def main():
     ap.add_argument("--seeds", type=int, default=3,
                     help="Seeds 0..N-1 per lesson.")
     ap.add_argument("--size", type=int, default=11)
-    ap.add_argument("--warmup-ticks", type=int, default=1800,
-                    help="Settle time before counting (game ticks).")
-    ap.add_argument("--measure-ticks", type=int, default=3600,
-                    help="Counting window (game ticks; 3600 = 60 s).")
+    ap.add_argument("--warmup-max", type=int, default=1800,
+                    help="Max warmup ticks before forcing the measure phase.")
+    ap.add_argument("--measure-max", type=int, default=36000,
+                    help="Max measure ticks (cap if the rate never converges).")
+    ap.add_argument("--converge-rel", type=float, default=0.02,
+                    help="Rate plateau: stop when within this rel. change.")
+    ap.add_argument("--converge-hits", type=int, default=3,
+                    help="Consecutive stable checks required to converge.")
     ap.add_argument("--game-speed", type=float, default=32.0,
                     help="game.speed while a run is active.")
     ap.add_argument("--rel-tol", type=float, default=0.10,
@@ -427,9 +447,11 @@ def main():
             spec = world_to_parity_spec(
                 world,
                 run_id=run_id,
-                warmup_ticks=args.warmup_ticks,
-                measure_ticks=args.measure_ticks,
                 game_speed=args.game_speed,
+                warmup_max=args.warmup_max,
+                measure_max=args.measure_max,
+                converge_rel=args.converge_rel,
+                converge_hits=args.converge_hits,
             )
             expected = expected_sink_rates(world)
 
@@ -476,8 +498,28 @@ def main():
 
     if not args.dry_run:
         n_pass = sum(r.passed for r in reports)
+        # A sink is "exact" only at literally 0 error; anything above is
+        # called out, so a genuinely clean run reads 0 imperfect sinks
+        # rather than hiding small drift inside the pass tolerance.
+        imperfect = [
+            (r.lesson, r.seed, s)
+            for r in reports for s in r.sinks
+            if abs(s.factorio_rate - s.engine_rate) > 1e-9
+        ]
         print(f"\n{n_pass}/{len(reports)} factories match "
               f"(rel_tol={args.rel_tol:.0%}, abs_tol={args.abs_tol})")
+        print(f"{len(imperfect)} sink(s) with >0 error:")
+        for lesson, seed, s in sorted(
+            imperfect,
+            key=lambda t: abs(t[2].factorio_rate - t[2].engine_rate)
+            / max(abs(t[2].engine_rate), 1e-9),
+            reverse=True,
+        ):
+            rel = (abs(s.factorio_rate - s.engine_rate)
+                   / max(abs(s.engine_rate), 1e-9))
+            print(f"  {rel:6.1%}  {lesson} s{seed} sink({s.x},{s.y}) "
+                  f"{s.item}: engine {s.engine_rate:.3f} vs "
+                  f"factorio {s.factorio_rate:.3f}")
         sys.exit(0 if n_pass == len(reports) else 1)
 
 

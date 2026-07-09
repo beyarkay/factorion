@@ -1,0 +1,68 @@
+# CLAUDE.md — factorion-mod
+
+Notes for working on the Factorio mod + parity harness. Read
+`factorion-mod/README.md` for the full picture; this file is just the
+gotchas that bite during development.
+
+## Lua syntax-checking
+
+Factorio's runtime Lua is 5.2-ish, but any `luac` parses the syntax fine.
+On this laptop (macOS, Homebrew) the compiler is:
+
+```bash
+/opt/homebrew/bin/luac -p factorion-mod/mod/parity.lua factorion-mod/mod/control.lua
+```
+
+`luac -p` only parses (no output on success) — a fast syntax gate before
+reloading the mod in-game. `/opt/homebrew/bin/lua` (5.4) is also present.
+There is no `luac5.2` here; don't assume the sandbox's Lua tooling.
+
+The mod also ships `mod/.luarc.json` for lua-language-server (declares the
+Factorio globals: `game`, `storage`, `rendering`, `remote`, …). If you add
+a new engine global, add it there too.
+
+## Reloading the mod after editing
+
+Factorio reads `parity.lua`/`control.lua` from disk only when a **new**
+game is hosted — `game.reload_script()` reloads the *save's* embedded copy,
+not disk (see the root MEMORY notes). So after editing mod Lua:
+
+1. In Factorio: quit to the main menu.
+2. Play → Multiplayer → **Host new game** (a fresh freeplay is fine).
+
+The mod is symlinked into the mods dir by `scripts/install_mod.sh`, so no
+re-copy is needed — just the re-host.
+
+### install_mod.sh is macOS-safe
+
+`scripts/install_mod.sh` parses `info.json` with POSIX `[[:space:]]` (not
+GNU `\s`, which BSD/macOS `sed` treats as a literal `s` and silently
+yields a garbage mod-dir name). Keep it that way.
+
+## RCON to a GUI-hosted game
+
+RCON binds only while Factorio is hosting multiplayer. For the GUI host
+path it comes from `config.ini` `[other]` (`local-rcon-socket` /
+`local-rcon-password`), **not** `--rcon-bind`. On this laptop it's already
+set to `127.0.0.1:64502`. Quick liveness check:
+
+```bash
+uv run python -c "import sys; sys.path.insert(0,'factorion-mod/server'); \
+from rcon import RconClient; \
+print(RconClient('127.0.0.1',64502,'<pw>').__enter__().exec(\
+\"/silent-command rcon.print(remote.call('factorion','ping'))\"))"
+```
+
+## Parity harness quick reference
+
+```bash
+# needs a hosted game with the mod; --dry-run needs neither
+uv run python factorion-mod/server/parity.py \
+  --rcon-port 64502 --rcon-password <pw> --lessons all --seeds 3
+```
+
+Measurement is adaptive: auto-warmup until the delivery rate plateaus, then
+measure until the cumulative rate converges (counts are zeroed at the
+boundary so buffer-fill can't inflate the rate), with hard tick caps. Crank
+`--game-speed` (100+) to compress wall-clock; slow assembler lessons still
+need many game-seconds to resolve a fractional items/s rate.
