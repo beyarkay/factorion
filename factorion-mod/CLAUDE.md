@@ -4,6 +4,63 @@ Notes for working on the Factorio mod + parity harness. Read
 `factorion-mod/README.md` for the full picture; this file is just the
 gotchas that bite during development.
 
+## Running a parity check (runbook)
+
+The parity harness replays engine-generated factories (and the textual test
+fixtures) inside a real Factorio and compares each sink's measured items/s
+against the engine's prediction. Full sequence, from nothing to a report:
+
+1. **One-time setup** (per machine):
+   - Symlink + enable the mod: `bash factorion-mod/scripts/install_mod.sh`
+     (also add `{"name":"factorion","enabled":true}` to the mods dir's
+     `mod-list.json` if it isn't there). See *install_mod.sh is macOS-safe*.
+   - Enable RCON for GUI hosting: add `local-rcon-socket` /
+     `local-rcon-password` under `[other]` in Factorio's `config.ini` (see
+     *RCON to a GUI-hosted game*). On this laptop it's already
+     `127.0.0.1:64502`.
+   - Build the engine + deps from the repo root: `uv sync` then
+     `uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml`.
+
+2. **Start Factorio hosting the game so RCON binds:** launch Factorio, then
+   **Play → Multiplayer → Host new game** (a fresh freeplay is fine — the
+   harness builds on its own private surface). RCON only binds while hosting.
+
+3. **Confirm the mod is live** (the ping check in *RCON to a GUI-hosted
+   game*). If it errors, the mod isn't loaded — re-check step 1 and re-host.
+
+4. **Run a check.** No Factorio needed for `--dry-run` (prints specs +
+   engine expectations only). Against the hosted game:
+
+   ```bash
+   # a quick sweep of every lesson, 3 seeds each
+   uv run python factorion-mod/server/parity.py \
+     --rcon-port 64502 --rcon-password <pw> --lessons all --seeds 3 --game-speed 100
+
+   # one lesson / focused run
+   uv run python factorion-mod/server/parity.py \
+     --rcon-port 64502 --rcon-password <pw> --lessons MEMORISE_1_INGREDIENT_RECIPES --seeds 10
+
+   # full regression (lessons + every YAML fixture) — see the section below
+   SEEDS=40 factorion-mod/scripts/parity_regression.sh \
+     --rcon-port 64502 --rcon-password <pw>
+   ```
+
+   `<pw>` is the `local-rcon-password` from `config.ini`. Add `--json-out
+   results.json` to dump every spec/result for offline analysis.
+
+5. **Read the report.** Each factory prints per-sink `engine X/s, factorio
+   Y/s (err Z%)`; the run ends with a ranked list of every sink with >0
+   error and a pass/fail count (non-zero exit if any factory mismatches
+   beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
+   regression stands out): assembler crafting-time over-count, long-handed
+   inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
+   smelting recipes → 0, and impossible >15/s rates from degenerate
+   sink-loop factories. Transport (belts/splitters/undergrounds) should be
+   exact.
+
+6. **After editing the mod Lua**, re-host to reload it (see *Reloading the
+   mod after editing*) before the next run.
+
 ## Lua syntax-checking
 
 Factorio's runtime Lua is 5.2-ish, but any `luac` parses the syntax fine.
