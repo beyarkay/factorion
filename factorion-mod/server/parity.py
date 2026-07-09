@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -53,23 +54,31 @@ from rcon import RconClient  # noqa: E402
 # Factory tensor → parity spec.
 # --------------------------------------------------------------------------- #
 
-def world_to_parity_spec(
-    world_CWH,
-    *,
-    run_id: str,
-    game_speed: float = 32.0,
-    sample_every: int = 15,
-    warmup_max: int = 1800,
-    measure_max: int = 36000,
-    warmup_min: int = 300,
-    measure_min: int = 600,
-    measure_min_items: int = 25,
-    check_every: int = 300,
-    converge_rel: float = 0.02,
-    converge_hits: int = 3,
-    converge_floor: float = 0.02,
-) -> dict:
-    """Convert a (C, W, H) world tensor into the mod's parity spec JSON.
+# Timing / convergence knobs shared by single and batch specs. Kept in one
+# place so world_to_parity_spec and build_batch_spec can't drift.
+_DEFAULT_TIMING = dict(
+    game_speed=32.0,
+    sample_every=15,
+    warmup_max=1800,
+    measure_max=36000,
+    warmup_min=300,
+    measure_min=600,
+    measure_min_items=25,
+    check_every=300,
+    converge_rel=0.02,
+    converge_hits=3,
+    converge_floor=0.02,
+)
+
+# Substation-grid pitch: a substation supplies an 18x18 area and its wire
+# reaches 18 tiles, so an 18-tile grid of substations both powers and
+# connects everything. Each factory sits centred in one 18x18 cell, clear
+# of the substations at the cell corners.
+_PITCH = 18
+
+
+def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
+    """Tensor → (entities, sources, sinks, grid_size) in factory-local tiles.
 
     Mirrors blueprint.py's conventions: entity positions are Factorio
     centers (1x1 at tile (3,5) → 3.5,5.5; E/W-facing multi-tile entities
@@ -166,24 +175,70 @@ def world_to_parity_spec(
                     if 0 <= tx < W and 0 <= ty < H:
                         seen[tx, ty] = True
 
-    return {
+    return spec_entities, sources, sinks, max(W, H)
+
+
+def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
+    """Single-factory spec (entities/sources/sinks at top level). The mod
+    treats this as a one-factory batch. `timing` overrides `_DEFAULT_TIMING`.
+    """
+    ents, sources, sinks, grid_size = _convert_world(world_CWH)
+    spec = {**_DEFAULT_TIMING, **timing}
+    spec.update({
         "run_id": run_id,
-        "grid_size": max(W, H),
-        "game_speed": game_speed,
-        "sample_every": sample_every,
-        "warmup_min": warmup_min,
-        "warmup_max": warmup_max,
-        "measure_min": measure_min,
-        "measure_max": measure_max,
-        "measure_min_items": measure_min_items,
-        "check_every": check_every,
-        "converge_rel": converge_rel,
-        "converge_hits": converge_hits,
-        "converge_floor": converge_floor,
-        "entities": spec_entities,
+        "grid_size": grid_size,
+        "entities": ents,
         "sources": sources,
         "sinks": sinks,
-    }
+    })
+    return spec
+
+
+def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict:
+    """Assemble many factories into one spec, each tiled in its own cell of
+    an 18-tile substation grid.
+
+    `factory_worlds` is a list of (run_id, world_CWH). Factories are laid
+    out in a near-square col×row grid; factory k sits centred in cell
+    (k%cols, k//cols). Substations are placed on every cell corner (an
+    (cols+1)×(rows+1) grid), which both powers and wires the whole field.
+    Returns a spec whose `factories` list the mod builds and measures in
+    parallel.
+    """
+    n = len(factory_worlds)
+    cols = math.ceil(math.sqrt(n)) if n else 1
+    rows = math.ceil(n / cols) if n else 1
+
+    factories = []
+    for idx, (fid, world) in enumerate(factory_worlds):
+        ents, sources, sinks, grid_size = _convert_world(world)
+        margin = max((_PITCH - grid_size) // 2, 0)
+        col, row = idx % cols, idx // cols
+        factories.append({
+            "run_id": fid,
+            "grid_size": grid_size,
+            "offset_x": col * _PITCH + margin,
+            "offset_y": row * _PITCH + margin,
+            "entities": ents,
+            "sources": sources,
+            "sinks": sinks,
+        })
+
+    substations = [
+        [i * _PITCH, j * _PITCH]
+        for i in range(cols + 1)
+        for j in range(rows + 1)
+    ]
+
+    spec = {**_DEFAULT_TIMING, **timing}
+    spec.update({
+        "run_id": run_id,
+        "extent_x": cols * _PITCH + _PITCH,
+        "extent_y": rows * _PITCH + _PITCH,
+        "substations": substations,
+        "factories": factories,
+    })
+    return spec
 
 
 def expected_sink_rates(world_CWH) -> dict[tuple[int, int], tuple[str | None, float]]:
@@ -404,6 +459,10 @@ def main():
     ap.add_argument("--seeds", type=int, default=3,
                     help="Seeds 0..N-1 per lesson.")
     ap.add_argument("--size", type=int, default=11)
+    ap.add_argument("--batch-size", type=int, default=40,
+                    help="Factories built + measured together on one surface "
+                         "per batch (they run in parallel, so wall-time is "
+                         "the slowest factory, not the sum).")
     ap.add_argument("--warmup-max", type=int, default=1800,
                     help="Max warmup ticks before forcing the measure phase.")
     ap.add_argument("--measure-max", type=int, default=36000,
@@ -432,14 +491,17 @@ def main():
     lessons = _parse_lessons(args.lessons)
     reports: list[ParityReport] = []
     dumps: list[dict] = []
+    timing = dict(
+        game_speed=args.game_speed,
+        warmup_max=args.warmup_max,
+        measure_max=args.measure_max,
+        measure_min_items=args.measure_min_items,
+        converge_rel=args.converge_rel,
+        converge_hits=args.converge_hits,
+    )
 
-    rcon = None
-    if not args.dry_run:
-        rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
-        rcon.connect()
-        ping = _remote_call(rcon, "ping")
-        print(f"mod ping: {ping or '(no response — is the save loaded?)'}")
-
+    # Build every factory up front so we can tile them into batches.
+    jobs: list[dict] = []
     for lesson in lessons:
         for seed in range(args.seeds):
             factory = build_factory(args.size, lesson, seed=seed)
@@ -448,55 +510,74 @@ def main():
                       "(build_factory returned None) ===")
                 continue
             world = factory.world_CWH
-            run_id = f"{lesson.name}-s{seed}"
-            spec = world_to_parity_spec(
-                world,
-                run_id=run_id,
-                game_speed=args.game_speed,
-                warmup_max=args.warmup_max,
-                measure_max=args.measure_max,
-                measure_min_items=args.measure_min_items,
-                converge_rel=args.converge_rel,
-                converge_hits=args.converge_hits,
-            )
-            expected = expected_sink_rates(world)
-
-            if args.dry_run:
-                print(f"=== {lesson.name} seed={seed} (dry run) ===")
-                for row in render_factory(world).splitlines():
-                    print("  " + row)
-                for (x, y), (item, rate) in sorted(expected.items()):
-                    print(f"  engine: sink ({x},{y}) {item} ← {rate:.3f}/s")
-                print(f"  spec: {len(spec['entities'])} entities, "
-                      f"{len(spec['sources'])} sources, "
-                      f"{len(spec['sinks'])} sinks")
-                dumps.append({"run_id": run_id, "spec": spec,
-                              "expected": {f"{k[0]},{k[1]}": v
-                                           for k, v in expected.items()}})
-                continue
-
-            report = ParityReport(lesson=lesson.name, seed=seed)
-            result: dict | None = None
-            try:
-                assert rcon is not None
-                result = run_parity(
-                    rcon, spec, timeout=args.timeout,
-                )
-                report.sinks = compare_sinks(
-                    expected, result.get("sinks", []),
-                    rel_tol=args.rel_tol, abs_tol=args.abs_tol,
-                )
-            except (RuntimeError, TimeoutError, OSError) as e:
-                report.error = str(e)
-            reports.append(report)
-            print(format_report(report, result, world))
-            dumps.append({
-                "run_id": run_id,
-                "spec": spec,
-                "expected": {f"{k[0]},{k[1]}": v for k, v in expected.items()},
-                "result": result,
-                "passed": report.passed,
+            jobs.append({
+                "run_id": f"{lesson.name}-s{seed}",
+                "lesson": lesson.name,
+                "seed": seed,
+                "world": world,
+                "expected": expected_sink_rates(world),
             })
+
+    if args.dry_run:
+        for job in jobs:
+            world = job["world"]
+            ents, srcs, snks, _ = _convert_world(world)
+            print(f"=== {job['run_id']} (dry run) ===")
+            for row in render_factory(world).splitlines():
+                print("  " + row)
+            for (x, y), (item, rate) in sorted(job["expected"].items()):
+                print(f"  engine: sink ({x},{y}) {item} ← {rate:.3f}/s")
+            print(f"  spec: {len(ents)} entities, {len(srcs)} sources, "
+                  f"{len(snks)} sinks")
+            dumps.append({
+                "run_id": job["run_id"],
+                "expected": {f"{k[0]},{k[1]}": v
+                             for k, v in job["expected"].items()},
+            })
+    else:
+        rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
+        rcon.connect()
+        ping = _remote_call(rcon, "ping")
+        print(f"mod ping: {ping or '(no response — is the save loaded?)'}")
+
+        batches = [jobs[i:i + args.batch_size]
+                   for i in range(0, len(jobs), args.batch_size)]
+        for bi, batch in enumerate(batches):
+            print(f"\n--- batch {bi + 1}/{len(batches)} "
+                  f"({len(batch)} factories) ---")
+            spec = build_batch_spec(
+                [(j["run_id"], j["world"]) for j in batch],
+                run_id=f"batch{bi}", **timing,
+            )
+            by_id: dict[str, dict] = {}
+            batch_error: str | None = None
+            try:
+                result = run_parity(rcon, spec, timeout=args.timeout)
+                by_id = {f["run_id"]: f for f in result.get("factories", [])}
+            except (RuntimeError, TimeoutError, OSError) as e:
+                batch_error = str(e)
+
+            for j in batch:
+                report = ParityReport(lesson=j["lesson"], seed=j["seed"])
+                fres = by_id.get(j["run_id"])
+                if batch_error is not None:
+                    report.error = batch_error
+                elif fres is None:
+                    report.error = "factory missing from batch result"
+                else:
+                    report.sinks = compare_sinks(
+                        j["expected"], fres.get("sinks", []),
+                        rel_tol=args.rel_tol, abs_tol=args.abs_tol,
+                    )
+                reports.append(report)
+                print(format_report(report, fres, j["world"]))
+                dumps.append({
+                    "run_id": j["run_id"],
+                    "expected": {f"{k[0]},{k[1]}": v
+                                 for k, v in j["expected"].items()},
+                    "result": fres,
+                    "passed": report.passed,
+                })
 
     if args.json_out is not None:
         args.json_out.write_text(json.dumps(dumps, indent=2))

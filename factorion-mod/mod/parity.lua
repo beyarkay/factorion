@@ -37,6 +37,20 @@
 --     sinks   = { { x=3, y=5, direction=12, item="iron-plate" }, ... },
 --   }
 --
+-- Batch spec (many factories measured in parallel): instead of top-level
+-- entities/sources/sinks, pass a `factories` list, each with its own
+-- run_id, grid_size and (offset_x, offset_y) tile offset on the shared
+-- surface, plus `substations` (list of {x,y} tile centres to power the
+-- field) and `extent_x`/`extent_y` (tiles to generate). The whole batch
+-- shares one warmup→measure→convergence cycle; the result then reports one
+-- bucket per factory. A single-factory spec is just the one-factory case
+-- (normalise_factories wraps it, and place_power falls back to a ring).
+--   { ..timing.., extent_x=90, extent_y=72,
+--     substations = { {0,0}, {18,0}, ... },
+--     factories = { { run_id="MOVE_ONE_ITEM-s0", grid_size=11,
+--                     offset_x=3, offset_y=3, entities={..}, sources={..},
+--                     sinks={..} }, ... } }
+--
 -- Source/sink representation: the Factorion engine models a source as an
 -- infinite item provider and a sink as an infinite consumer, each occupying
 -- one directional tile that belts/inserters connect to like any other
@@ -151,10 +165,14 @@ local function ensure_surface()
   return surface
 end
 
-local function generate_area(surface, grid_size)
+local function generate_area(surface, width, height)
   -- Chunks must exist before create_entity; force_generate blocks until done.
-  local radius_chunks = math.ceil((grid_size + 24) / 32) + 1
-  surface.request_to_generate_chunks({ ORIGIN_X, ORIGIN_Y }, radius_chunks)
+  -- Generate around the centre of the whole batch extent so a wide grid of
+  -- factories is fully covered.
+  local cx = math.floor(width / 2)
+  local cy = math.floor(height / 2)
+  local radius_chunks = math.ceil((math.max(width, height) + 48) / 32) + 1
+  surface.request_to_generate_chunks({ ORIGIN_X + cx, ORIGIN_Y + cy }, radius_chunks)
   surface.force_generate_chunk_requests()
 end
 
@@ -166,20 +184,25 @@ local function clear_surface(surface)
   end
 end
 
-local function place_power(surface, force, grid_size)
-  -- One electric-energy-interface (free infinite power, hidden base
-  -- prototype) next to a ring of substations outside the grid. A
-  -- substation's supply area is 18x18 centred on it, so corners +
-  -- edge-midpoints cover any grid the training sizes use (<= ~26).
-  local margin = 3
-  local lo = -margin
-  local hi = grid_size + margin
-  local mid = math.floor(grid_size / 2)
-  local spots = {
-    { lo, lo }, { hi, lo }, { lo, hi }, { hi, hi },
-    { mid, lo }, { mid, hi }, { lo, mid }, { hi, mid },
-  }
+local function place_power(surface, force, spec, width, height)
+  -- A substation's supply area is 18x18 and its wire reach connects to
+  -- neighbours 18 tiles away, so an 18-tile pitch tiles power coverage
+  -- edge-to-edge. For a batch the Python side already knows the layout, so
+  -- it hands us the exact substation tile positions (chosen to fall in the
+  -- gaps between factories); we just place them. A single-factory spec has
+  -- no such list, so we fall back to a ring around its grid.
   local placed = {}
+  local spots = spec.substations
+  if not spots then
+    local grid_size = spec.grid_size or width or 16
+    local margin = 3
+    local lo, hi = -margin, grid_size + margin
+    local mid = math.floor(grid_size / 2)
+    spots = {
+      { lo, lo }, { hi, lo }, { lo, hi }, { hi, hi },
+      { mid, lo }, { mid, hi }, { lo, mid }, { hi, mid },
+    }
+  end
   for _, s in ipairs(spots) do
     local e = surface.create_entity({
       name = "substation",
@@ -192,7 +215,7 @@ local function place_power(surface, force, grid_size)
   end
   surface.create_entity({
     name = "electric-energy-interface",
-    position = { ORIGIN_X - margin - 3, ORIGIN_Y - margin - 3 },
+    position = { ORIGIN_X - 6, ORIGIN_Y - 6 },
     force = force,
     raise_built = false,
     create_build_effect_smoke = false,
@@ -227,83 +250,112 @@ local function entity_kind(name)
   return "other"
 end
 
-local function build_factory(surface, force, spec)
+-- A "batch" is a list of factories, each tiled at its own (offset_x,
+-- offset_y) on the shared surface. build_all creates every entity and
+-- returns FLAT watched/sources/sinks lists (the per-tick feed/drain/sample
+-- loops and the convergence signal all operate on these flat lists,
+-- unchanged), with each entry tagged `factory` = the factory's 1-based
+-- index. Positions in an entry (x, y) are the factory-LOCAL tile coords so
+-- results map back to the world tensor regardless of the tile offset.
+--
+-- A single-factory spec (top-level entities/sources/sinks) is normalised
+-- into a one-element batch, so both paths share this code.
+local function normalise_factories(spec)
+  if spec.factories then return spec.factories end
+  return { {
+    run_id = spec.run_id,
+    grid_size = spec.grid_size,
+    offset_x = 0,
+    offset_y = 0,
+    entities = spec.entities,
+    sources = spec.sources,
+    sinks = spec.sinks,
+  } }
+end
+
+local function build_all(surface, force, spec)
   local errors = {}
-  local watched = {}
+  local watched, sources, sinks = {}, {}, {}
+  local factories = normalise_factories(spec)
 
-  for _, e in ipairs(spec.entities or {}) do
-    local created = surface.create_entity({
-      name = e.name,
-      position = { ORIGIN_X + e.x, ORIGIN_Y + e.y },
-      direction = e.direction,
-      force = force,
-      type = e.type,
-      recipe = e.recipe,
-      raise_built = false,
-      create_build_effect_smoke = false,
-    })
-    if not created then
-      table.insert(errors, string.format(
-        "create_entity failed: %s at (%s,%s)", e.name,
-        tostring(e.x), tostring(e.y)))
-    else
-      table.insert(watched, {
-        entity = created,
+  for fi, fac in ipairs(factories) do
+    local ox = fac.offset_x or 0
+    local oy = fac.offset_y or 0
+
+    for _, e in ipairs(fac.entities or {}) do
+      local created = surface.create_entity({
         name = e.name,
-        kind = entity_kind(e.name),
-        x = e.tile_x,
-        y = e.tile_y,
-        -- accumulators, filled during the measure phase
-        line_totals = {},
-        status_counts = {},
-        held_ticks = 0,
-        products_finished_start = 0,
-        samples = 0,
+        position = { ORIGIN_X + ox + e.x, ORIGIN_Y + oy + e.y },
+        direction = e.direction,
+        force = force,
+        type = e.type,
+        recipe = e.recipe,
+        raise_built = false,
+        create_build_effect_smoke = false,
       })
+      if not created then
+        table.insert(errors, string.format(
+          "[%s] create_entity failed: %s at (%s,%s)",
+          fac.run_id or fi, e.name, tostring(e.x), tostring(e.y)))
+      else
+        table.insert(watched, {
+          entity = created,
+          factory = fi,
+          name = e.name,
+          kind = entity_kind(e.name),
+          x = e.tile_x,
+          y = e.tile_y,
+          line_totals = {},
+          status_counts = {},
+          held_ticks = 0,
+          products_finished_start = 0,
+          samples = 0,
+        })
+      end
+    end
+
+    for _, s in ipairs(fac.sources or {}) do
+      local belt = surface.create_entity({
+        name = "transport-belt",
+        position = { ORIGIN_X + ox + s.x + 0.5, ORIGIN_Y + oy + s.y + 0.5 },
+        direction = s.direction,
+        force = force,
+        raise_built = false,
+        create_build_effect_smoke = false,
+      })
+      if not belt then
+        table.insert(errors, string.format(
+          "[%s] source belt failed at (%d,%d)", fac.run_id or fi, s.x, s.y))
+      else
+        table.insert(sources, {
+          belt = belt, factory = fi, item = s.item,
+          x = s.x, y = s.y, inserted = 0,
+        })
+      end
+    end
+
+    for _, s in ipairs(fac.sinks or {}) do
+      local belt = surface.create_entity({
+        name = "transport-belt",
+        position = { ORIGIN_X + ox + s.x + 0.5, ORIGIN_Y + oy + s.y + 0.5 },
+        direction = s.direction,
+        force = force,
+        raise_built = false,
+        create_build_effect_smoke = false,
+      })
+      if not belt then
+        table.insert(errors, string.format(
+          "[%s] sink belt failed at (%d,%d)", fac.run_id or fi, s.x, s.y))
+      else
+        table.insert(sinks, {
+          belt = belt, factory = fi, item = s.item,
+          x = s.x, y = s.y, ox = ox, oy = oy, counts = {}, label = nil,
+        })
+      end
     end
   end
 
-  local sources = {}
-  for _, s in ipairs(spec.sources or {}) do
-    local belt = surface.create_entity({
-      name = "transport-belt",
-      position = { ORIGIN_X + s.x + 0.5, ORIGIN_Y + s.y + 0.5 },
-      direction = s.direction,
-      force = force,
-      raise_built = false,
-      create_build_effect_smoke = false,
-    })
-    if not belt then
-      table.insert(errors, string.format(
-        "source belt failed at (%d,%d)", s.x, s.y))
-    else
-      table.insert(sources, {
-        belt = belt, item = s.item, x = s.x, y = s.y, inserted = 0,
-      })
-    end
-  end
-
-  local sinks = {}
-  for _, s in ipairs(spec.sinks or {}) do
-    local belt = surface.create_entity({
-      name = "transport-belt",
-      position = { ORIGIN_X + s.x + 0.5, ORIGIN_Y + s.y + 0.5 },
-      direction = s.direction,
-      force = force,
-      raise_built = false,
-      create_build_effect_smoke = false,
-    })
-    if not belt then
-      table.insert(errors, string.format(
-        "sink belt failed at (%d,%d)", s.x, s.y))
-    else
-      table.insert(sinks, {
-        belt = belt, item = s.item, x = s.x, y = s.y, counts = {},
-      })
-    end
-  end
-
-  return watched, sources, sinks, errors
+  return watched, sources, sinks, errors, factories
 end
 
 -- ----------------------------------------------------------------------------
@@ -370,9 +422,10 @@ local function sample_entities(run)
             if w.warn and w.warn.valid then
               w.warn.text = sname
             else
+              -- Anchor to the entity's real world position (w.x/w.y are
+              -- factory-local, so they'd be wrong for offset factories).
               w.warn = draw_label(e.surface,
-                ORIGIN_X + w.x + 0.5, ORIGIN_Y + w.y + 0.2,
-                sname, COLOR_ERR, 0.7)
+                e.position.x, e.position.y + 0.2, sname, COLOR_ERR, 0.7)
             end
           elseif w.warn and w.warn.valid then
             w.warn.destroy()
@@ -383,30 +436,6 @@ local function sample_entities(run)
           w.held_ticks = w.held_ticks + 1
         end
       end
-    end
-  end
-end
-
--- One line per sink with the rate measured so far, e.g.
--- "sink(3,5) iron-plate 14.87/s". Used by chat progress + labels.
-local function sink_rate_lines(run, measure_elapsed_ticks)
-  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
-  local lines = {}
-  for _, snk in ipairs(run.sinks) do
-    local count = snk.counts[snk.item] or 0
-    table.insert(lines, string.format(
-      "sink(%d,%d) %s %.2f/s", snk.x, snk.y, snk.item, count / seconds))
-  end
-  return lines
-end
-
-local function update_sink_labels(run, measure_elapsed_ticks)
-  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
-  for _, snk in ipairs(run.sinks) do
-    if snk.label and snk.label.valid then
-      local count = snk.counts[snk.item] or 0
-      snk.label.text = string.format(
-        "sink %s %.2f/s", snk.item, count / seconds)
     end
   end
 end
@@ -433,6 +462,35 @@ local function min_sink_count(run)
   end
   if m == math.huge then return 0 end
   return m
+end
+
+-- A compact throughput summary for chat, e.g.
+-- "sink(3,5) iron-plate 14.87/s". Per-sink for small runs; for a big
+-- batch that would flood chat, collapse to totals.
+local function sink_rate_lines(run, measure_elapsed_ticks)
+  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
+  if #run.sinks > 6 then
+    return { string.format("%d sinks, %.1f items/s total, slowest sink %d items",
+      #run.sinks, sink_total(run) / seconds, min_sink_count(run)) }
+  end
+  local lines = {}
+  for _, snk in ipairs(run.sinks) do
+    local count = snk.counts[snk.item] or 0
+    table.insert(lines, string.format(
+      "sink(%d,%d) %s %.2f/s", snk.x, snk.y, snk.item, count / seconds))
+  end
+  return lines
+end
+
+local function update_sink_labels(run, measure_elapsed_ticks)
+  local seconds = math.max(measure_elapsed_ticks, 1) / 60.0
+  for _, snk in ipairs(run.sinks) do
+    if snk.label and snk.label.valid then
+      local count = snk.counts[snk.item] or 0
+      snk.label.text = string.format(
+        "sink %s %.2f/s", snk.item, count / seconds)
+    end
+  end
 end
 
 -- Is `cur` within `rel` (relative) of `prev`? Differences at or below
@@ -479,21 +537,27 @@ end
 local function finish_run(run)
   local measure_ticks = run.measure_ticks_used or 1
   local measure_seconds = measure_ticks / 60.0
-  local result = {
-    run_id = run.run_id,
-    status = "done",
-    warmup_ticks = run.warmup_ticks_used or 0,
-    measure_ticks = measure_ticks,
-    converged = run.converged or false,
-    surface = SURFACE_NAME,
-    sinks = {},
-    sources = {},
-    entities = {},
-  }
+
+  -- One result bucket per factory in the batch. The whole batch shares the
+  -- warmup/measure/convergence phase, so warmup/measure ticks and the
+  -- converged flag are per-batch, echoed into every factory bucket for
+  -- convenience.
+  local factories = {}
+  for fi, fac in ipairs(run.factories) do
+    factories[fi] = {
+      run_id = fac.run_id or tostring(fi),
+      warmup_ticks = run.warmup_ticks_used or 0,
+      measure_ticks = measure_ticks,
+      converged = run.converged or false,
+      sinks = {},
+      sources = {},
+      entities = {},
+    }
+  end
 
   for _, snk in ipairs(run.sinks) do
     local expected_count = snk.counts[snk.item] or 0
-    table.insert(result.sinks, {
+    table.insert(factories[snk.factory].sinks, {
       x = snk.x,
       y = snk.y,
       item = snk.item,
@@ -504,7 +568,7 @@ local function finish_run(run)
   end
 
   for _, src in ipairs(run.sources) do
-    table.insert(result.sources, {
+    table.insert(factories[src.factory].sources, {
       x = src.x,
       y = src.y,
       item = src.item,
@@ -537,8 +601,18 @@ local function finish_run(run)
           w.entity.products_finished - w.products_finished_start
       end
     end
-    table.insert(result.entities, entry)
+    table.insert(factories[w.factory].entities, entry)
   end
+
+  local result = {
+    run_id = run.run_id,
+    status = "done",
+    warmup_ticks = run.warmup_ticks_used or 0,
+    measure_ticks = measure_ticks,
+    converged = run.converged or false,
+    surface = SURFACE_NAME,
+    factories = factories,
+  }
 
   local st = ensure_storage()
   st.result = json_encode(result)
@@ -546,10 +620,10 @@ local function finish_run(run)
   game.speed = 1.0
   update_sink_labels(run, measure_ticks)
   announce(string.format(
-    "run %s DONE (%s after %d warmup + %d measure ticks) — %s",
+    "batch %s DONE (%s after %d warmup + %d measure ticks): %d factories, %s",
     run.run_id,
     run.converged and "converged" or "hit tick cap",
-    run.warmup_ticks_used or 0, measure_ticks,
+    run.warmup_ticks_used or 0, measure_ticks, #run.factories,
     table.concat(sink_rate_lines(run, measure_ticks), ", ")), COLOR_OK)
 end
 
@@ -637,13 +711,46 @@ function M.on_tick()
   end
 end
 
+-- Draw the map overlays for one factory at its (ox, oy) offset: a grid
+-- outline and a run_id caption. For a single-factory run we also add
+-- per-source/sink labels (sink labels tick up with the live rate); for a
+-- big batch that would be thousands of text objects, so it's skipped.
+local function draw_factory_overlay(surface, fac, single)
+  local ox = fac.offset_x or 0
+  local oy = fac.offset_y or 0
+  local gs = fac.grid_size or 11
+  rendering.draw_rectangle({
+    surface = surface,
+    left_top = { ORIGIN_X + ox, ORIGIN_Y + oy },
+    right_bottom = { ORIGIN_X + ox + gs, ORIGIN_Y + oy + gs },
+    color = { r = 0.5, g = 0.5, b = 0.9, a = 0.6 },
+    width = 2,
+    filled = false,
+  })
+  draw_label(surface, ORIGIN_X + ox + gs / 2, ORIGIN_Y + oy - 1.2,
+    fac.run_id or "", { r = 0.8, g = 0.8, b = 0.8 }, 0.7)
+  if single then
+    for _, src in ipairs(fac.sources or {}) do
+      draw_label(surface, ORIGIN_X + ox + src.x + 0.5,
+        ORIGIN_Y + oy + src.y - 0.6, "src " .. src.item, COLOR_SRC, 0.8)
+    end
+  end
+end
+
 function M.start(spec_json)
   local st = ensure_storage()
   local ok, spec = pcall(json_decode, spec_json)
   if not ok or type(spec) ~= "table" then
     return json_encode({ status = "error", error = "bad spec JSON" })
   end
-  if #(spec.sources or {}) == 0 or #(spec.sinks or {}) == 0 then
+
+  local factory_specs = normalise_factories(spec)
+  local n_src, n_snk = 0, 0
+  for _, fac in ipairs(factory_specs) do
+    n_src = n_src + #(fac.sources or {})
+    n_snk = n_snk + #(fac.sinks or {})
+  end
+  if n_src == 0 or n_snk == 0 then
     return json_encode({ status = "error",
       error = "spec needs at least one source and one sink" })
   end
@@ -657,13 +764,15 @@ function M.start(spec_json)
 
   local force = ensure_force()
   local surface = ensure_surface()
-  local grid_size = spec.grid_size or 16
-  generate_area(surface, grid_size)
+  local width = spec.extent_x or spec.grid_size or 16
+  local height = spec.extent_y or spec.grid_size or 16
+  generate_area(surface, width, height)
   clear_surface(surface)
   rendering.clear(script.mod_name)
-  place_power(surface, force, grid_size)
+  place_power(surface, force, spec, width, height)
 
-  local watched, sources, sinks, errors = build_factory(surface, force, spec)
+  local watched, sources, sinks, errors, factories =
+    build_all(surface, force, spec)
   if #errors > 0 then
     for _, err in ipairs(errors) do
       announce("BUILD FAILED: " .. err, COLOR_ERR)
@@ -672,30 +781,25 @@ function M.start(spec_json)
       error = table.concat(errors, "; ") })
   end
 
-  -- Map overlays: grid outline, source/sink labels. Sink labels are
-  -- live-updated with the measured rate as the run progresses.
-  rendering.draw_rectangle({
-    surface = surface,
-    left_top = { ORIGIN_X, ORIGIN_Y },
-    right_bottom = { ORIGIN_X + grid_size, ORIGIN_Y + grid_size },
-    color = { r = 0.5, g = 0.5, b = 0.9, a = 0.6 },
-    width = 2,
-    filled = false,
-  })
-  for _, src in ipairs(sources) do
-    draw_label(surface, ORIGIN_X + src.x + 0.5, ORIGIN_Y + src.y - 0.6,
-      "src " .. src.item, COLOR_SRC, 0.8)
+  -- Map overlays. For a single factory we keep the live per-sink rate
+  -- labels; a batch just gets outlines + captions.
+  local single = #factories == 1
+  for _, fac in ipairs(factories) do
+    draw_factory_overlay(surface, fac, single)
   end
-  for _, snk in ipairs(sinks) do
-    snk.label = draw_label(surface,
-      ORIGIN_X + snk.x + 0.5, ORIGIN_Y + snk.y - 0.6,
-      "sink " .. snk.item, COLOR_SNK, 0.8)
+  if single then
+    for _, snk in ipairs(sinks) do
+      snk.label = draw_label(surface,
+        ORIGIN_X + snk.x + 0.5, ORIGIN_Y + snk.y - 0.6,
+        "sink " .. snk.item, COLOR_SNK, 0.8)
+    end
   end
 
   mute_alerts()
 
   st.run = {
     run_id = spec.run_id or "unnamed",
+    factories = factories,
     start_tick = game.tick,
     -- Adaptive phases (legacy warmup_ticks/measure_ticks accepted as the
     -- caps for back-compat).
@@ -721,9 +825,9 @@ function M.start(spec_json)
   }
   game.speed = spec.game_speed or 32
   announce(string.format(
-    "run %s: built %d entities, %d sources, %d sinks; auto-warmup"
+    "batch %s: %d factories, %d entities, %d sources, %d sinks; auto-warmup"
     .. " (≤%d) then measure to convergence (≤%d) at speed %.0fx",
-    st.run.run_id, #watched, #sources, #sinks,
+    st.run.run_id, #factories, #watched, #sources, #sinks,
     st.run.warmup_max, st.run.measure_max, game.speed))
   return json_encode({
     status = "running",

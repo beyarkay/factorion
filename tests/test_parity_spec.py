@@ -33,6 +33,8 @@ from factorion import (  # noqa: E402
 
 from parity import (  # noqa: E402
     SinkComparison,
+    _PITCH,
+    build_batch_spec,
     compare_sinks,
     expected_sink_rates,
     world_to_parity_spec,
@@ -271,3 +273,73 @@ def test_compare_sinks_notes_unexpected_items():
 def test_sink_comparison_is_dataclass_roundtrippable():
     s = SinkComparison(1, 2, "iron-plate", 15.0, 14.9, True)
     assert s.item == "iron-plate" and s.passed
+
+
+# --------------------------------------------------------------------------- #
+# build_batch_spec layout
+# --------------------------------------------------------------------------- #
+
+def _batch_worlds(n_kinds=4, seeds=3):
+    worlds = []
+    for kind in list(LessonKind)[:n_kinds]:
+        for seed in range(seeds):
+            f = build_factory(SIZE, kind, seed=seed)
+            if f is not None:
+                worlds.append((f"{kind.name}-s{seed}", f.world_CWH))
+    return worlds
+
+
+def _occupied_tiles(spec):
+    occ = set()
+    for fac in spec["factories"]:
+        ox, oy = fac["offset_x"], fac["offset_y"]
+        for e in fac["entities"]:
+            occ.add((ox + e["tile_x"], oy + e["tile_y"]))
+        for s in fac["sources"] + fac["sinks"]:
+            occ.add((ox + s["x"], oy + s["y"]))
+    return occ
+
+
+def test_batch_factories_do_not_overlap():
+    spec = build_batch_spec(_batch_worlds())
+    occ = list(_occupied_tiles(spec))
+    assert len(occ) == len(set(occ)), "two factories share a tile"
+
+
+def test_batch_substations_never_collide_with_factories():
+    spec = build_batch_spec(_batch_worlds())
+    occ = _occupied_tiles(spec)
+    for sx, sy in spec["substations"]:
+        # substation is 2x2 with its top-left at (sx-1, sy-1) .. (sx, sy)
+        for dx in (-1, 0):
+            for dy in (-1, 0):
+                assert (sx + dx, sy + dy) not in occ, (
+                    f"substation at ({sx},{sy}) collides with a factory tile"
+                )
+
+
+def test_batch_every_tile_is_powered():
+    """Every occupied tile must lie within a substation's 18x18 (Chebyshev
+    <= 9) supply area, or inserters/assemblers would sit unpowered and skew
+    the measurement."""
+    spec = build_batch_spec(_batch_worlds())
+    subs = spec["substations"]
+    for tx, ty in _occupied_tiles(spec):
+        assert any(max(abs(tx - sx), abs(ty - sy)) <= 9 for sx, sy in subs), (
+            f"tile ({tx},{ty}) is outside every substation supply area"
+        )
+
+
+def test_batch_offsets_are_on_the_pitch_grid():
+    spec = build_batch_spec(_batch_worlds(n_kinds=2, seeds=2))
+    for fac in spec["factories"]:
+        margin = (_PITCH - fac["grid_size"]) // 2
+        assert (fac["offset_x"] - margin) % _PITCH == 0
+        assert (fac["offset_y"] - margin) % _PITCH == 0
+
+
+def test_batch_preserves_all_factories_and_ids():
+    worlds = _batch_worlds()
+    spec = build_batch_spec(worlds)
+    assert len(spec["factories"]) == len(worlds)
+    assert [f["run_id"] for f in spec["factories"]] == [w[0] for w in worlds]
