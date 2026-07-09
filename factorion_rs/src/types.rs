@@ -1,4 +1,5 @@
 use nonempty::{nonempty, NonEmpty};
+use strum::IntoEnumIterator;
 
 /// Channels in the WHC tensor (3rd dimension).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,10 +163,10 @@ impl Misc {
 ///             returns `true` from `is_placeable`. Placeability is decided by
 ///             `is_placeable`, not by id range — the head excludes only the
 ///             last two ids, so a placeable id in the middle is fine.
-///   66..=67 — env-spawned (Sink, Source) — MUST remain the last two
+///   last two — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Item {
     // Placeable, agent-buildable (1..=5)
     TransportBelt = 1,
@@ -242,11 +243,31 @@ pub enum Item {
     SteamTurbine = 63,
     SteelFurnace = 64,
     StoneFurnace = 65,
+    Landfill = 66,
+    FirearmMagazine = 67,
+    StoneWall = 68,
+    SteelChest = 69,
+    HazardConcrete = 70,
+    AutomationSciencePack = 71,
+    Radar = 72,
+    Shotgun = 73,
+    CombatShotgun = 74,
+    TrainStop = 75,
+    AssemblingMachine2 = 76,
+    Centrifuge = 77,
+    Tank = 78,
+    ArtilleryTurret = 79,
+    ProgrammableSpeaker = 80,
+    FluidWagon = 81,
+    LightArmor = 82,
+    DischargeDefenseRemote = 83,
+    PersonalRoboport = 84,
+    FlamethrowerTurret = 85,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 66,   // named "bulk_inserter"
-    Source = 67, // named "stack_inserter"
+    Sink = 86,   // named "bulk_inserter"
+    Source = 87, // named "stack_inserter"
 }
 
 impl Item {
@@ -319,8 +340,28 @@ impl Item {
             63 => Some(Item::SteamTurbine),
             64 => Some(Item::SteelFurnace),
             65 => Some(Item::StoneFurnace),
-            66 => Some(Item::Sink),
-            67 => Some(Item::Source),
+            66 => Some(Item::Landfill),
+            67 => Some(Item::FirearmMagazine),
+            68 => Some(Item::StoneWall),
+            69 => Some(Item::SteelChest),
+            70 => Some(Item::HazardConcrete),
+            71 => Some(Item::AutomationSciencePack),
+            72 => Some(Item::Radar),
+            73 => Some(Item::Shotgun),
+            74 => Some(Item::CombatShotgun),
+            75 => Some(Item::TrainStop),
+            76 => Some(Item::AssemblingMachine2),
+            77 => Some(Item::Centrifuge),
+            78 => Some(Item::Tank),
+            79 => Some(Item::ArtilleryTurret),
+            80 => Some(Item::ProgrammableSpeaker),
+            81 => Some(Item::FluidWagon),
+            82 => Some(Item::LightArmor),
+            83 => Some(Item::DischargeDefenseRemote),
+            84 => Some(Item::PersonalRoboport),
+            85 => Some(Item::FlamethrowerTurret),
+            86 => Some(Item::Sink),
+            87 => Some(Item::Source),
             _ => None,
         }
     }
@@ -405,6 +446,26 @@ impl Item {
             Item::SteamTurbine => "steam_turbine",
             Item::SteelFurnace => "steel_furnace",
             Item::StoneFurnace => "stone_furnace",
+            Item::Landfill => "landfill",
+            Item::FirearmMagazine => "firearm_magazine",
+            Item::StoneWall => "stone_wall",
+            Item::SteelChest => "steel_chest",
+            Item::HazardConcrete => "hazard_concrete",
+            Item::AutomationSciencePack => "automation_science_pack",
+            Item::Radar => "radar",
+            Item::Shotgun => "shotgun",
+            Item::CombatShotgun => "combat_shotgun",
+            Item::TrainStop => "train_stop",
+            Item::AssemblingMachine2 => "assembling_machine_2",
+            Item::Centrifuge => "centrifuge",
+            Item::Tank => "tank",
+            Item::ArtilleryTurret => "artillery_turret",
+            Item::ProgrammableSpeaker => "programmable_speaker",
+            Item::FluidWagon => "fluid_wagon",
+            Item::LightArmor => "light_armor",
+            Item::DischargeDefenseRemote => "discharge_defense_remote",
+            Item::PersonalRoboport => "personal_roboport",
+            Item::FlamethrowerTurret => "flamethrower_turret",
         }
     }
 
@@ -446,10 +507,7 @@ impl Item {
         match self {
             Item::TransportBelt => 15.0,
             Item::Inserter => 0.86,
-            // A long-handed inserter is functionally identical to a plain
-            // inserter — same throughput — it only reaches two tiles instead
-            // of one. See `LongHandedInserter` in entities.rs.
-            Item::LongHandedInserter => 0.86,
+            Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
@@ -516,7 +574,27 @@ impl Item {
             | Item::SteamEngine
             | Item::SteamTurbine
             | Item::SteelFurnace
-            | Item::StoneFurnace => 0.0,
+            | Item::StoneFurnace
+            | Item::Landfill
+            | Item::FirearmMagazine
+            | Item::StoneWall
+            | Item::SteelChest
+            | Item::HazardConcrete
+            | Item::AutomationSciencePack
+            | Item::Radar
+            | Item::Shotgun
+            | Item::CombatShotgun
+            | Item::TrainStop
+            | Item::AssemblingMachine2
+            | Item::Centrifuge
+            | Item::Tank
+            | Item::ArtilleryTurret
+            | Item::ProgrammableSpeaker
+            | Item::FluidWagon
+            | Item::LightArmor
+            | Item::DischargeDefenseRemote
+            | Item::PersonalRoboport
+            | Item::FlamethrowerTurret => 0.0,
         }
     }
 
@@ -532,79 +610,11 @@ impl Item {
     }
 }
 
-/// Every Item variant. The single source of truth — Python's `items`
-/// dict is built from this via the PyO3 `py_items` binding.
-pub fn all_items() -> &'static [Item] {
-    &[
-        Item::TransportBelt,
-        Item::Inserter,
-        Item::AssemblingMachine1,
-        Item::UndergroundBelt,
-        Item::Splitter,
-        Item::CopperCable,
-        Item::CopperPlate,
-        Item::IronPlate,
-        Item::ElectronicCircuit,
-        Item::IronGearWheel,
-        Item::Wood,
-        Item::Stone,
-        Item::StoneBrick,
-        Item::Concrete,
-        Item::CopperOre,
-        Item::IronOre,
-        Item::IronStick,
-        Item::Barrel,
-        Item::AdvancedCircuit,
-        Item::EngineUnit,
-        Item::SteelPlate,
-        Item::SolidFuel,
-        Item::PlasticBar,
-        Item::Sulfur,
-        Item::Battery,
-        Item::Explosives,
-        Item::WoodenChest,
-        Item::IronChest,
-        Item::StorageTank,
-        Item::FastTransportBelt,
-        Item::FastUndergroundBelt,
-        Item::FastSplitter,
-        Item::BurnerInserter,
-        Item::LongHandedInserter,
-        Item::FastInserter,
-        Item::SmallElectricPole,
-        Item::MediumElectricPole,
-        Item::BigElectricPole,
-        Item::Substation,
-        Item::Pipe,
-        Item::PipeToGround,
-        Item::Pump,
-        Item::Accumulator,
-        Item::Beacon,
-        Item::Boiler,
-        Item::BurnerMiningDrill,
-        Item::ChemicalPlant,
-        Item::EfficiencyModule,
-        Item::ElectricFurnace,
-        Item::HeatExchanger,
-        Item::HeatPipe,
-        Item::Lab,
-        Item::NuclearReactor,
-        Item::OffshorePump,
-        Item::OilRefinery,
-        Item::ProductivityModule,
-        Item::Pumpjack,
-        Item::QualityModule,
-        Item::RepairPack,
-        Item::SolarPanel,
-        Item::SpeedModule,
-        Item::SteamEngine,
-        Item::SteamTurbine,
-        Item::SteelFurnace,
-        Item::StoneFurnace,
-        // Sink and Source MUST stay last — see test_source_and_sink_are_last_two_ids.
-        Item::Sink,
-        Item::Source,
-    ]
+/// Every Item variant, in enum declaration order — so Sink/Source come last
+/// (`test_source_and_sink_are_last_two_ids`) and ids stay stable. Python's
+/// `items` dict is built from this via the PyO3 `py_items` binding.
+pub fn all_items() -> Vec<Item> {
+    Item::iter().collect()
 }
 
 /// A signed grid position. Used for multi-tile entity offsets where
@@ -671,6 +681,11 @@ impl Recipe {
 /// Quantities are the canonical wiki recipe values (per craft, not
 /// per-second). Throughput math (`transform_flow`) is scale-invariant
 /// under uniform multiplication of consumes and produces.
+///
+/// A few recipes are block-commented (`/* parked … */`) so that every
+/// MEMORISE_N_INGREDIENT_RECIPES bucket holds an equal 15 recipes; the
+/// parked ones are redundant tier/duplicate variants, kept in source so
+/// they can be restored by deleting the comment markers.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
     vec![
         // 1 copper plate -> 2 copper cables, 0.5s
@@ -780,16 +795,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 10.0,
             },
         ),
-        // Smelting
-        // 5 iron_plate -> 1 steel_plate, 16s
-        (
-            Item::SteelPlate,
-            Recipe {
-                consumes: nonempty![(Item::IronPlate, 5.0)],
-                produces: nonempty![(Item::SteelPlate, 1.0)],
-                crafting_time: 16.0,
-            },
-        ),
         // Storage
         // 2 wood -> 1 wooden_chest, 0.5s
         (
@@ -819,7 +824,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
             },
         ),
         // Fast belt tier
-        // 5 IGW + 1 transport_belt -> 1 fast_transport_belt, 0.5s
+        // parked (bucket balance): 5 IGW + 1 transport_belt -> 1 fast_transport_belt, 0.5s
+        /*
         (
             Item::FastTransportBelt,
             Recipe {
@@ -828,7 +834,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 40 IGW + 2 underground_belt -> 2 fast_underground_belt, 2s
+        */
+        // parked (bucket balance): 40 IGW + 2 underground_belt -> 2 fast_underground_belt, 2s
+        /*
         (
             Item::FastUndergroundBelt,
             Recipe {
@@ -837,7 +845,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 2.0,
             },
         ),
-        // 10 EC + 10 IGW + 1 splitter -> 1 fast_splitter, 2s
+        */
+        // parked (bucket balance): 10 EC + 10 IGW + 1 splitter -> 1 fast_splitter, 2s
+        /*
         (
             Item::FastSplitter,
             Recipe {
@@ -850,6 +860,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 2.0,
             },
         ),
+        */
         // Inserter variants
         // 1 IGW + 1 iron_plate -> 1 burner_inserter, 0.5s
         (
@@ -860,7 +871,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
+        // parked (bucket balance): 1 inserter + 1 IGW + 1 iron_plate -> 1 long_handed_inserter, 0.5s
+        /*
         (
             Item::LongHandedInserter,
             Recipe {
@@ -873,7 +885,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 2 EC + 1 inserter + 2 iron_plate -> 1 fast_inserter, 0.5s
+        */
+        // parked (bucket balance): 2 EC + 1 inserter + 2 iron_plate -> 1 fast_inserter, 0.5s
+        /*
         (
             Item::FastInserter,
             Recipe {
@@ -886,6 +900,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
+        */
         // Power & pipes
         // 2 cable + 1 wood -> 2 small_electric_pole, 0.5s
         (
@@ -909,7 +924,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
+        // parked (bucket balance): 4 cable + 8 iron_stick + 5 steel_plate -> 1 big_electric_pole, 0.5s
+        /*
         (
             Item::BigElectricPole,
             Recipe {
@@ -922,6 +938,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
+        */
         // 5 advanced + 6 cable + 10 steel_plate -> 1 substation, 0.5s
         (
             Item::Substation,
@@ -1026,7 +1043,9 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 efficiency_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 efficiency_module, 15s
+        // (same recipe as speed/productivity/quality module; speed_module is kept)
+        /*
         (
             Item::EfficiencyModule,
             Recipe {
@@ -1035,6 +1054,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 5 advanced + 10 steel_plate + 10 stone_brick -> 1 electric_furnace, 5s
         (
             Item::ElectricFurnace,
@@ -1121,7 +1141,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 8.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 productivity_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 productivity_module, 15s
+        /*
         (
             Item::ProductivityModule,
             Recipe {
@@ -1130,6 +1151,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 5 EC + 10 IGW + 10 pipe + 5 steel_plate -> 1 pumpjack, 5s
         (
             Item::Pumpjack,
@@ -1144,7 +1166,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 5.0,
             },
         ),
-        // 5 advanced + 5 EC -> 1 quality_module, 15s
+        // parked (bucket balance): 5 advanced + 5 EC -> 1 quality_module, 15s
+        /*
         (
             Item::QualityModule,
             Recipe {
@@ -1153,6 +1176,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 15.0,
             },
         ),
+        */
         // 2 EC + 2 IGW -> 1 repair_pack, 0.5s
         (
             Item::RepairPack,
@@ -1197,7 +1221,8 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 0.5,
             },
         ),
-        // 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
+        // parked (bucket balance): 50 copper_plate + 50 IGW + 20 pipe -> 1 steam_turbine, 3s
+        /*
         (
             Item::SteamTurbine,
             Recipe {
@@ -1210,6 +1235,7 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 crafting_time: 3.0,
             },
         ),
+        */
         // 6 steel_plate + 10 stone_brick -> 1 steel_furnace, 3s
         (
             Item::SteelFurnace,
@@ -1226,6 +1252,253 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::Stone, 5.0)],
                 produces: nonempty![(Item::StoneFurnace, 1.0)],
                 crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::Barrel,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 1.0)],
+                produces: nonempty![(Item::Barrel, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        (
+            Item::FirearmMagazine,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 4.0)],
+                produces: nonempty![(Item::FirearmMagazine, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        (
+            Item::StoneWall,
+            Recipe {
+                consumes: nonempty![(Item::StoneBrick, 5.0)],
+                produces: nonempty![(Item::StoneWall, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::SteelChest,
+            Recipe {
+                consumes: nonempty![(Item::SteelPlate, 8.0)],
+                produces: nonempty![(Item::SteelChest, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::HazardConcrete,
+            Recipe {
+                consumes: nonempty![(Item::Concrete, 10.0)],
+                produces: nonempty![(Item::HazardConcrete, 10.0)],
+                crafting_time: 0.25,
+            },
+        ),
+        (
+            Item::Landfill,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 20.0)],
+                produces: nonempty![(Item::Landfill, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::UndergroundBelt,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 10.0), (Item::TransportBelt, 5.0)],
+                produces: nonempty![(Item::UndergroundBelt, 2.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        (
+            Item::AutomationSciencePack,
+            Recipe {
+                consumes: nonempty![(Item::CopperPlate, 1.0), (Item::IronGearWheel, 1.0)],
+                produces: nonempty![(Item::AutomationSciencePack, 1.0)],
+                crafting_time: 5.0,
+            },
+        ),
+        (
+            Item::Splitter,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronPlate, 5.0),
+                    (Item::TransportBelt, 4.0)
+                ],
+                produces: nonempty![(Item::Splitter, 1.0)],
+                crafting_time: 1.0,
+            },
+        ),
+        (
+            Item::Radar,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::IronPlate, 10.0)
+                ],
+                produces: nonempty![(Item::Radar, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::Shotgun,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::IronPlate, 5.0),
+                    (Item::Wood, 15.0)
+                ],
+                produces: nonempty![(Item::Shotgun, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        (
+            Item::CombatShotgun,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperPlate, 10.0),
+                    (Item::IronGearWheel, 10.0),
+                    (Item::SteelPlate, 5.0),
+                    (Item::Wood, 15.0)
+                ],
+                produces: nonempty![(Item::CombatShotgun, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        (
+            Item::TrainStop,
+            Recipe {
+                consumes: nonempty![
+                    (Item::ElectronicCircuit, 5.0),
+                    (Item::IronPlate, 6.0),
+                    (Item::IronStick, 6.0),
+                    (Item::SteelPlate, 3.0)
+                ],
+                produces: nonempty![(Item::TrainStop, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::AssemblingMachine2,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AssemblingMachine1, 1.0),
+                    (Item::ElectronicCircuit, 3.0),
+                    (Item::IronGearWheel, 5.0),
+                    (Item::SteelPlate, 2.0)
+                ],
+                produces: nonempty![(Item::AssemblingMachine2, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::Centrifuge,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 100.0),
+                    (Item::Concrete, 100.0),
+                    (Item::IronGearWheel, 100.0),
+                    (Item::SteelPlate, 50.0)
+                ],
+                produces: nonempty![(Item::Centrifuge, 1.0)],
+                crafting_time: 4.0,
+            },
+        ),
+        (
+            Item::Tank,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 10.0),
+                    (Item::EngineUnit, 32.0),
+                    (Item::IronGearWheel, 15.0),
+                    (Item::SteelPlate, 50.0)
+                ],
+                produces: nonempty![(Item::Tank, 1.0)],
+                crafting_time: 5.0,
+            },
+        ),
+        (
+            Item::ArtilleryTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 20.0),
+                    (Item::Concrete, 60.0),
+                    (Item::IronGearWheel, 40.0),
+                    (Item::SteelPlate, 60.0)
+                ],
+                produces: nonempty![(Item::ArtilleryTurret, 1.0)],
+                crafting_time: 40.0,
+            },
+        ),
+        (
+            Item::ProgrammableSpeaker,
+            Recipe {
+                consumes: nonempty![
+                    (Item::CopperCable, 5.0),
+                    (Item::ElectronicCircuit, 4.0),
+                    (Item::IronPlate, 3.0),
+                    (Item::IronStick, 4.0)
+                ],
+                produces: nonempty![(Item::ProgrammableSpeaker, 1.0)],
+                crafting_time: 2.0,
+            },
+        ),
+        (
+            Item::FluidWagon,
+            Recipe {
+                consumes: nonempty![
+                    (Item::IronGearWheel, 10.0),
+                    (Item::Pipe, 8.0),
+                    (Item::SteelPlate, 16.0),
+                    (Item::StorageTank, 1.0)
+                ],
+                produces: nonempty![(Item::FluidWagon, 1.0)],
+                crafting_time: 1.5,
+            },
+        ),
+        (
+            Item::LightArmor,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 40.0)],
+                produces: nonempty![(Item::LightArmor, 1.0)],
+                crafting_time: 3.0,
+            },
+        ),
+        (
+            Item::DischargeDefenseRemote,
+            Recipe {
+                consumes: nonempty![(Item::ElectronicCircuit, 1.0)],
+                produces: nonempty![(Item::DischargeDefenseRemote, 1.0)],
+                crafting_time: 0.5,
+            },
+        ),
+        (
+            Item::PersonalRoboport,
+            Recipe {
+                consumes: nonempty![
+                    (Item::AdvancedCircuit, 10.0),
+                    (Item::Battery, 45.0),
+                    (Item::IronGearWheel, 40.0),
+                    (Item::SteelPlate, 20.0)
+                ],
+                produces: nonempty![(Item::PersonalRoboport, 1.0)],
+                crafting_time: 10.0,
+            },
+        ),
+        (
+            Item::FlamethrowerTurret,
+            Recipe {
+                consumes: nonempty![
+                    (Item::EngineUnit, 5.0),
+                    (Item::IronGearWheel, 15.0),
+                    (Item::Pipe, 10.0),
+                    (Item::SteelPlate, 30.0)
+                ],
+                produces: nonempty![(Item::FlamethrowerTurret, 1.0)],
+                crafting_time: 20.0,
             },
         ),
     ]
@@ -1394,28 +1667,12 @@ mod tests {
     fn test_item_from_name_roundtrips() {
         // Every item's name decodes back to itself — covers the name→variant
         // mapping for all items, so no per-item spot checks are needed.
-        for &item in all_items() {
+        for item in all_items() {
             assert_eq!(Item::from_name(item.name()), Some(item));
         }
         // Unknown names decode to None.
         assert_eq!(Item::from_name("not_a_real_item"), None);
         assert_eq!(Item::from_name(""), None);
-    }
-
-    #[test]
-    fn test_item_flow_rates() {
-        assert_eq!(Item::TransportBelt.flow_rate(), 15.0);
-        assert_eq!(Item::Inserter.flow_rate(), 0.86);
-        // A long-handed inserter has the same throughput as a plain inserter.
-        assert_eq!(Item::LongHandedInserter.flow_rate(), 0.86);
-        assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
-        assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
-        // Per splitter tile — each of its two tiles is a belt.
-        assert_eq!(Item::Splitter.flow_rate(), 15.0);
-        assert!(Item::Sink.flow_rate().is_infinite());
-        assert!(Item::Source.flow_rate().is_infinite());
-        assert_eq!(Item::CopperCable.flow_rate(), 0.0);
-        assert_eq!(Item::IronPlate.flow_rate(), 0.0);
     }
 
     #[test]
