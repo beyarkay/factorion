@@ -131,7 +131,7 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
     from types import SimpleNamespace
 
-    from sft import run_asm_item_acc_eval, run_rollout_eval
+    from sft import run_rollout_eval
 
     # Duck-typed args shim: run_rollout_eval only reads .size/.seed/.max_level.
     eval_args = SimpleNamespace(size=args.size, seed=args.seed, max_level=0)
@@ -155,14 +155,15 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput_eot"] = thp
 
-    # Teacher-forced recipe-pick accuracy (assembler placements), mirroring SFT's
-    # val/asm_item_acc so the recipe-pick skill is trackable through RL (#264).
-    asm = run_asm_item_acc_eval(
-        agent, args.size, args.size * args.size, eval_seeds_to_kind, device
-    )
-    if asm["per_kind_n"]:
-        metrics["eval/asm_item_acc"] = asm["overall"]
-        for kn, acc in asm["per_kind"].items():
+    # Recipe-pick accuracy from the same rollout: fraction of assemblers the
+    # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
+    # the recipe-pick skill is trackable through RL (#264). Only surfaces for
+    # factories that have an assembler (MEMORISE today, any future one too).
+    asm_n = roll["per_kind_asm_n"]
+    if sum(asm_n.values()) > 0:
+        metrics["eval/asm_item_acc"] = roll["asm_item_acc"]
+    for kn, acc in roll["per_kind_asm_item_acc"].items():
+        if asm_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/asm_item_acc"] = acc
     return metrics
 

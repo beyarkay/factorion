@@ -400,6 +400,9 @@ class RolloutEval(TypedDict):
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    asm_item_acc: float  # frac of placed assemblers given the correct recipe
+    per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
+    per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
 
 
 def _apply_legal_tile_mask(tile_logits, obs_batch):
@@ -410,6 +413,18 @@ def _apply_legal_tile_mask(tile_logits, obs_batch):
     # legal iff no entity & tile is placeable
     legal = (ent_ch == _EMPTY_ENT_ID) & (foot_ch != _FOOTPRINT_UNAVAILABLE)
     return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
+
+
+def _solved_assembler_recipes(solved_CWH) -> set[int]:
+    """The set of recipes (item ids) carried by assemblers in a solved factory,
+    the ground truth for the rollout's recipe-pick check. Empty for factories
+    with no assembler (every non-MEMORISE lesson today)."""
+    ent = solved_CWH[_CH_ENT]
+    asm_mask = ent == _ASM_MACHINE_ENT_ID
+    if not bool(asm_mask.any()):
+        return set()
+    recipes = solved_CWH[Channel.ITEMS.value][asm_mask]
+    return {int(v) for v in recipes.unique().tolist()}
 
 
 def run_rollout_eval(
@@ -480,6 +495,14 @@ def run_rollout_eval(
     per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
     all_eot_throughputs: list[float] = []
+    # Recipe-pick correctness: every time the greedy agent lands an assembler,
+    # did it choose the right recipe? A wrong recipe is invisible in throughput
+    # (the belt layout can still be perfect), so it's tracked here. Only
+    # factories whose solved form has an assembler are scored (MEMORISE today,
+    # any future assembler lesson automatically), keyed off the entity, not a
+    # hardcoded lesson list.
+    per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
     if not seeds_sorted:
         if was_training:
@@ -492,6 +515,9 @@ def run_rollout_eval(
             "per_kind": zero,
             "per_kind_eot": dict(zero),
             "per_kind_n": per_kind_n,
+            "asm_item_acc": 0.0,
+            "per_kind_asm_item_acc": dict(zero),
+            "per_kind_asm_n": dict(per_kind_n),
         }
 
     # Cap K at the number of seeds — spinning up more envs than work
@@ -512,6 +538,9 @@ def run_rollout_eval(
     # seed this slot is replaying, and the throughput snapshotted when it did.
     eot_fired = [False] * K
     eot_thp = [0.0] * K
+    # Correct recipes for the factory each slot is replaying (from its solved
+    # world). Empty when that factory has no assembler, which skips the check.
+    asm_recipes: list[set[int]] = [set() for _ in range(K)]
     current: list[tuple[int, LessonKind, float]] = [
         (0, LessonKind.MOVE_ONE_ITEM, 0.0)
     ] * K
@@ -528,6 +557,7 @@ def run_rollout_eval(
             },
         )
         current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -577,6 +607,18 @@ def run_rollout_eval(
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
                 current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+
+                # Recipe-pick check: the agent tried to place an assembler in a
+                # factory that has one. Count it iff the assembler actually
+                # landed at the anchor (invalid placements are env no-ops), then
+                # score its recipe against the solved factory's recipes.
+                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
+                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
+                        per_kind_asm_total[k.name] += 1
+                        if action["item"] in asm_recipes[i]:
+                            per_kind_asm_correct[k.name] += 1
+
                 if not (terminated or truncated):
                     obs_batch[i] = torch.as_tensor(
                         next_obs,
@@ -606,6 +648,9 @@ def run_rollout_eval(
                         },
                     )
                     current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                    asm_recipes[i] = _solved_assembler_recipes(
+                        envs[i]._solved_world_CWH
+                    )
                     eot_fired[i] = False
                     eot_thp[i] = 0.0
                     obs_batch[i] = torch.as_tensor(
@@ -628,6 +673,15 @@ def run_rollout_eval(
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
 
+    asm_total_all = sum(per_kind_asm_total.values())
+    asm_item_acc = (
+        sum(per_kind_asm_correct.values()) / asm_total_all if asm_total_all else 0.0
+    )
+    per_kind_asm_item_acc = {
+        kn: (per_kind_asm_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_asm_total.items()
+    }
+
     if was_training:
         agent.train()
     return {
@@ -636,85 +690,9 @@ def run_rollout_eval(
         "per_kind": per_kind,
         "per_kind_eot": per_kind_eot,
         "per_kind_n": per_kind_n,
-    }
-
-
-def run_asm_item_acc_eval(
-    agent,
-    size: int,
-    max_level: int,
-    seeds_to_kind: dict[int, int],
-    device,
-    batch_size: int = 256,
-) -> dict:
-    """Teacher-forced item-head accuracy on assembler placements, over the given
-    held-out (seed -> LessonKind.value) factories.
-
-    The PPO-side counterpart of SFT's val/asm_item_acc: PPO's greedy eval only
-    measures throughput, so the recipe-pick skill (does the model copy the
-    sink's item tag onto the assembler) is otherwise invisible during RL. Here
-    we rebuild each held-out factory, blank it to `max_level`, and score the
-    item head against the expert recipe on assembler placements only — no env
-    rollout, just a forward pass, so it's cheap next to the throughput eval.
-
-    Returns {overall, per_kind, per_kind_n}: overall/per_kind are asm_item_acc
-    in [0, 1] keyed by LessonKind.name; per_kind_n counts assembler placements
-    scored per kind (kinds with no assemblers never appear).
-    """
-    was_training = agent.training
-    agent.eval()
-
-    # Collect assembler-placement demos across the held-out factories.
-    obs_list, tile_list, item_list, kind_list = [], [], [], []
-    for seed, kind_val in seeds_to_kind.items():
-        kind = LessonKind(kind_val)
-        factory = build_factory(size=size, kind=kind, seed=seed)
-        if factory is None:
-            continue
-        task, _ = blank_entities(factory, num_missing_entities=max_level)
-        for obs, tile, ent, _dir, item, _misc, _mask, eot in extract_expert_actions(
-            factory.world_CWH, task
-        ):
-            if eot == 0 and ent == _ASM_MACHINE_ENT_ID:
-                obs_list.append(obs)
-                tile_list.append(tile)
-                item_list.append(item)
-                kind_list.append(kind.name)
-
-    per_kind_correct: dict[str, int] = {}
-    per_kind_n: dict[str, int] = {}
-    total_correct = 0
-    if not obs_list:
-        if was_training:
-            agent.train()
-        return {"overall": 0.0, "per_kind": {}, "per_kind_n": {}}
-
-    obs_all = torch.stack(obs_list).to(device).float()
-    tile_all = torch.tensor(tile_list, dtype=torch.long, device=device)
-    item_all = torch.tensor(item_list, dtype=torch.long, device=device)
-    with torch.no_grad():
-        for start in range(0, obs_all.shape[0], batch_size):
-            sl = slice(start, start + batch_size)
-            encoded = agent.encoder(agent._encode_input(obs_all[sl]))
-            b = encoded.shape[0]
-            x_b = tile_all[sl] // agent.height
-            y_b = tile_all[sl] % agent.height
-            feats = encoded[torch.arange(b, device=device), :, x_b, y_b]
-            pred = agent.item_head(feats).argmax(dim=1)
-            correct = pred == item_all[sl]
-            total_correct += int(correct.sum().item())
-            for i, k_name in enumerate(kind_list[sl]):
-                per_kind_n[k_name] = per_kind_n.get(k_name, 0) + 1
-                per_kind_correct[k_name] = per_kind_correct.get(k_name, 0) + int(
-                    correct[i].item()
-                )
-
-    if was_training:
-        agent.train()
-    return {
-        "overall": total_correct / len(obs_list),
-        "per_kind": {k: per_kind_correct[k] / per_kind_n[k] for k in per_kind_n},
-        "per_kind_n": per_kind_n,
+        "asm_item_acc": asm_item_acc,
+        "per_kind_asm_item_acc": per_kind_asm_item_acc,
+        "per_kind_asm_n": dict(per_kind_asm_total),
     }
 
 
@@ -1054,7 +1032,6 @@ def train_sft(args: SftArgs):
     val_ent_acc = 0.0
     val_dir_acc = 0.0
     val_item_acc = 0.0
-    val_asm_item_acc = 0.0
     val_misc_acc = 0.0
     val_eot_acc = 0.0
     val_eot_pos_recall = 0.0
@@ -1276,12 +1253,6 @@ def train_sft(args: SftArgs):
         val_ent_correct = 0
         val_dir_correct = 0
         val_item_correct = 0
-        # Item-head accuracy restricted to assembler placements — the recipe
-        # pick. It's ~1 action per MEMORISE episode, so it's invisible in the
-        # belt-dominated val_item_acc; broken out here as the direct signal for
-        # "did the model copy the sink's item tag onto the assembler" (#264).
-        val_asm_item_correct = 0
-        val_asm_item_total = 0
         val_misc_correct = 0
         val_eot_correct = 0
         val_eot_pos_correct = 0
@@ -1305,10 +1276,6 @@ def train_sft(args: SftArgs):
         per_kind_ent_correct = {k.name: 0 for k in LessonKind}
         per_kind_dir_correct = {k.name: 0 for k in LessonKind}
         per_kind_item_correct = {k.name: 0 for k in LessonKind}
-        # Assembler-placement item accuracy per kind (only MEMORISE lessons
-        # place assemblers, so the rest stay at 0 total and are skipped below).
-        per_kind_asm_item_correct = {k.name: 0 for k in LessonKind}
-        per_kind_asm_item_total = {k.name: 0 for k in LessonKind}
         per_kind_misc_correct = {k.name: 0 for k in LessonKind}
         per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
         # EOT is scored over EVERY sample of a kind (the placement eot=0 steps
@@ -1431,9 +1398,6 @@ def train_sft(args: SftArgs):
                 val_dir_correct += dir_correct_per[is_place].sum().item()
                 val_item_correct += item_correct_per[is_place].sum().item()
                 val_misc_correct += misc_correct_per[is_place].sum().item()
-                asm_place = is_place & (batch_ent == _ASM_MACHINE_ENT_ID)
-                val_asm_item_correct += int(item_correct_per[asm_place].sum().item())
-                val_asm_item_total += int(asm_place.sum().item())
                 val_total += B
                 val_place_total += int(is_place.sum().item())
 
@@ -1462,11 +1426,6 @@ def train_sft(args: SftArgs):
                     )
                     per_kind_item_correct[k_name] += int(
                         item_correct_per[mask_k].sum().item()
-                    )
-                    mask_k_asm = mask_k & (batch_ent == _ASM_MACHINE_ENT_ID)
-                    per_kind_asm_item_total[k_name] += int(mask_k_asm.sum().item())
-                    per_kind_asm_item_correct[k_name] += int(
-                        item_correct_per[mask_k_asm].sum().item()
                     )
                     per_kind_misc_correct[k_name] += int(
                         misc_correct_per[mask_k].sum().item()
@@ -1502,9 +1461,6 @@ def train_sft(args: SftArgs):
         val_ent_acc = val_ent_correct / place_norm
         val_dir_acc = val_dir_correct / place_norm
         val_item_acc = val_item_correct / place_norm
-        # Denominator is assembler placements only, not all placements — so a
-        # lesson with no assemblers doesn't dilute it toward 1.0.
-        val_asm_item_acc = val_asm_item_correct / max(1, val_asm_item_total)
         val_misc_acc = val_misc_correct / place_norm
         val_eot_acc = val_eot_correct / val_total
         val_eot_pos_recall = (
@@ -1529,13 +1485,6 @@ def train_sft(args: SftArgs):
             per_kind_metrics[f"val/{k.name}/item_acc"] = (
                 per_kind_item_correct[k.name] / n
             )
-            # Only emit asm_item_acc for kinds that actually place assemblers,
-            # so belt-only lessons don't log a meaningless 0/0.
-            asm_n = per_kind_asm_item_total[k.name]
-            if asm_n > 0:
-                per_kind_metrics[f"val/{k.name}/asm_item_acc"] = (
-                    per_kind_asm_item_correct[k.name] / asm_n
-                )
             per_kind_metrics[f"val/{k.name}/misc_acc"] = (
                 per_kind_misc_correct[k.name] / n
             )
@@ -1585,6 +1534,16 @@ def train_sft(args: SftArgs):
             for kn, thp in roll["per_kind_eot"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput_eot"] = thp
+            # Recipe-pick accuracy from the same rollout: fraction of the
+            # assemblers the agent placed that got the right recipe. Only logged
+            # for factories that actually have an assembler (so it appears once
+            # the agent starts placing them, and never for belt-only lessons).
+            per_kind_asm_n = roll["per_kind_asm_n"]
+            if sum(per_kind_asm_n.values()) > 0:
+                per_kind_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
+            for kn, acc in roll["per_kind_asm_item_acc"].items():
+                if per_kind_asm_n[kn] > 0:
+                    per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
         else:
             overall_thp = None
             rollout_seconds = None
@@ -1656,7 +1615,6 @@ def train_sft(args: SftArgs):
                     "val/ent_acc": val_ent_acc,
                     "val/dir_acc": val_dir_acc,
                     "val/item_acc": val_item_acc,
-                    "val/asm_item_acc": val_asm_item_acc,
                     "val/misc_acc": val_misc_acc,
                     "val/eot_acc": val_eot_acc,
                     "val/eot_pos_recall": val_eot_pos_recall,
@@ -1712,7 +1670,6 @@ def train_sft(args: SftArgs):
         "val_ent_acc": round(val_ent_acc, 4),
         "val_dir_acc": round(val_dir_acc, 4),
         "val_item_acc": round(val_item_acc, 4),
-        "val_asm_item_acc": round(val_asm_item_acc, 4),
         "val_misc_acc": round(val_misc_acc, 4),
         "val_eot_acc": round(val_eot_acc, 4),
         "val_eot_pos_recall": round(val_eot_pos_recall, 4),
