@@ -42,7 +42,6 @@ pub enum LessonKind {
     Memorise2IngredientRecipes = 11,
     Memorise3IngredientRecipes = 12,
     Memorise4IngredientRecipes = 13,
-    Memorise5IngredientRecipes = 14,
     Factory1Ingredient = 15,
 }
 
@@ -63,7 +62,6 @@ impl LessonKind {
             11 => Some(LessonKind::Memorise2IngredientRecipes),
             12 => Some(LessonKind::Memorise3IngredientRecipes),
             13 => Some(LessonKind::Memorise4IngredientRecipes),
-            14 => Some(LessonKind::Memorise5IngredientRecipes),
             15 => Some(LessonKind::Factory1Ingredient),
             _ => None,
         }
@@ -85,7 +83,6 @@ impl LessonKind {
             LessonKind::Memorise2IngredientRecipes => "MEMORISE_2_INGREDIENT_RECIPES",
             LessonKind::Memorise3IngredientRecipes => "MEMORISE_3_INGREDIENT_RECIPES",
             LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
-            LessonKind::Memorise5IngredientRecipes => "MEMORISE_5_INGREDIENT_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
@@ -107,7 +104,6 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::Memorise2IngredientRecipes,
         LessonKind::Memorise3IngredientRecipes,
         LessonKind::Memorise4IngredientRecipes,
-        LessonKind::Memorise5IngredientRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
@@ -538,9 +534,6 @@ pub fn build_factory(
         }
         LessonKind::Memorise4IngredientRecipes => {
             build_memorise_recipes(size, &mut rng, max_entities, 4)
-        }
-        LessonKind::Memorise5IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 5)
         }
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
@@ -2741,7 +2734,6 @@ mod tests {
             (LessonKind::Memorise2IngredientRecipes, 2),
             (LessonKind::Memorise3IngredientRecipes, 3),
             (LessonKind::Memorise4IngredientRecipes, 4),
-            (LessonKind::Memorise5IngredientRecipes, 5),
         ];
         for (kind, n_ingredients) in kinds {
             let mut built = 0;

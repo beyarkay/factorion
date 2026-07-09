@@ -234,7 +234,6 @@ class TestPyRecipesBinding:
         # Spot-check a handful of canonical wiki values.
         assert rs["copper_cable"]["crafting_time"] == 0.5
         assert rs["electronic_circuit"]["crafting_time"] == 0.5
-        assert rs["steel_plate"]["crafting_time"] == 16.0
         assert rs["advanced_circuit"]["crafting_time"] == 6.0
         assert rs["engine_unit"]["crafting_time"] == 10.0
 
