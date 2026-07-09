@@ -328,9 +328,7 @@ impl FactoryEntity for Inserter {
 ///
 /// A long-handed inserter is a plain inserter that reaches *two* tiles instead
 /// of one: it picks up from the tile two cells behind it and drops onto the tile
-/// two cells ahead, skipping the cell in between entirely. Everything else —
-/// throughput, the set of entities it can pull from / push to, the flow
-/// transform — is identical to the plain inserter (it just passes `reach = 2`).
+/// two cells ahead, skipping the cell in between entirely. Its connection logic
 pub struct LongHandedInserter;
 
 impl FactoryEntity for LongHandedInserter {

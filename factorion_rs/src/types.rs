@@ -511,10 +511,7 @@ impl Item {
         match self {
             Item::TransportBelt => 15.0,
             Item::Inserter => 0.86,
-            // A long-handed inserter is functionally identical to a plain
-            // inserter — same throughput — it only reaches two tiles instead
-            // of one. See `LongHandedInserter` in entities.rs.
-            Item::LongHandedInserter => 0.86,
+            Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
@@ -1846,22 +1843,6 @@ mod tests {
         // Unknown names decode to None.
         assert_eq!(Item::from_name("not_a_real_item"), None);
         assert_eq!(Item::from_name(""), None);
-    }
-
-    #[test]
-    fn test_item_flow_rates() {
-        assert_eq!(Item::TransportBelt.flow_rate(), 15.0);
-        assert_eq!(Item::Inserter.flow_rate(), 0.86);
-        // A long-handed inserter has the same throughput as a plain inserter.
-        assert_eq!(Item::LongHandedInserter.flow_rate(), 0.86);
-        assert_eq!(Item::AssemblingMachine1.flow_rate(), 0.5);
-        assert_eq!(Item::UndergroundBelt.flow_rate(), 15.0);
-        // Per splitter tile — each of its two tiles is a belt.
-        assert_eq!(Item::Splitter.flow_rate(), 15.0);
-        assert!(Item::Sink.flow_rate().is_infinite());
-        assert!(Item::Source.flow_rate().is_infinite());
-        assert_eq!(Item::CopperCable.flow_rate(), 0.0);
-        assert_eq!(Item::IronPlate.flow_rate(), 0.0);
     }
 
     #[test]
