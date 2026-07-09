@@ -164,12 +164,7 @@ class Recipe:
     consumes: dict[str, float]
     produces: dict[str, float]
     crafting_time: float  # canonical wiki seconds per craft
-    # Machine item-names that can craft this recipe (hand-crafting excluded);
-    # the assembling-machine tiers for this fluid-free set.
     produced_by: list[str]
-    # Fully-expanded raw ingredient cost (each input reduced through the
-    # recipe set to items with no recipe) and the cumulative craft time of
-    # that whole tree. Derived in Rust — see types.rs::TotalRaw.
     total_raw: dict[str, float]
     total_raw_time: float
 
