@@ -73,6 +73,42 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     Ok((factory_score(&deliveries), num_unreachable))
 }
 
+/// Python-facing shape of one sink's delivery: the sink's anchor tile, the
+/// item it is configured to accept (`None` when unset), and the achieved
+/// items/s of that item reaching it.
+#[cfg(feature = "pyo3-bindings")]
+type PySinkDelivery = (usize, usize, Option<String>, f64);
+
+/// Per-sink achieved throughput of a factory represented as a 3D tensor.
+///
+/// Input: numpy array of shape (W, H, C), dtype i64 — the same world tensor
+/// `simulate_throughput` takes.
+///
+/// Returns one `(x, y, item_name, achieved_items_per_sec)` tuple per sink,
+/// keyed by the sink's anchor tile. This is the un-aggregated form of
+/// `simulate_throughput`'s score (which collapses these through
+/// [`factory_score`]) — the Factorio parity harness compares each sink's
+/// rate against the real game individually so a mismatch points at a sink,
+/// not just at the factory.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_sink_deliveries(world: PyReadonlyArray3<i64>) -> PyResult<Vec<PySinkDelivery>> {
+    let world = World::from_numpy(&world);
+    let graph = build_graph(&world);
+    let (deliveries, _) = calc_throughput(&graph);
+    Ok(deliveries
+        .into_iter()
+        .map(|d| {
+            (
+                d.anchor.0,
+                d.anchor.1,
+                d.item.map(|i| i.name().to_string()),
+                d.achieved,
+            )
+        })
+        .collect())
+}
+
 /// Python-facing shape of a built factory graph: the node labels and the
 /// `(src_index, dst_index)` edges indexing into them.
 #[cfg(feature = "pyo3-bindings")]
@@ -279,6 +315,7 @@ fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;

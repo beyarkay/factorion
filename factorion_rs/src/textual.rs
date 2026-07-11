@@ -1439,6 +1439,69 @@ factory: |
         }
     }
 
+    // Tooling (not an assertion): dump every factories/*.yaml fixture — its
+    // world tensor + asserted throughput — as JSON for the Factorio parity
+    // harness to replay (server/parity.py --fixtures). Uses the canonical
+    // parser so the harness never reimplements it. `#[ignore]`d so it only
+    // runs on demand: `cargo test --no-default-features dump_fixtures_for_parity
+    // -- --ignored --nocapture`. Output path via FIXTURE_DUMP_PATH (default
+    // /tmp/factorion_fixtures.json).
+    #[test]
+    #[ignore]
+    fn dump_fixtures_for_parity() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/factories");
+        let out_path = std::env::var("FIXTURE_DUMP_PATH")
+            .unwrap_or_else(|_| "/tmp/factorion_fixtures.json".to_string());
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+            .collect();
+        files.sort();
+
+        let mut records: Vec<String> = Vec::new();
+        for path in &files {
+            let fname = path.file_name().unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(path).unwrap();
+            let specs = match parse_many(&text) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            for (i, spec) in specs.into_iter().enumerate() {
+                if spec.ignored || spec.expected_throughput.is_empty() {
+                    continue;
+                }
+                let thr: Vec<String> = spec
+                    .expected_throughput
+                    .iter()
+                    .map(|d| {
+                        let item = d
+                            .item
+                            .map(|it| format!("\"{}\"", it.name()))
+                            .unwrap_or_else(|| "null".to_string());
+                        format!("[{},{}]", item, d.per_second)
+                    })
+                    .collect();
+                let (data, w, h, c) = spec.world.into_whc();
+                let data_str: Vec<String> = data.iter().map(|v| v.to_string()).collect();
+                records.push(format!(
+                    "{{\"file\":\"{}\",\"doc\":{},\"w\":{},\"h\":{},\"c\":{},\
+                     \"throughput\":[{}],\"world\":[{}]}}",
+                    fname,
+                    i,
+                    w,
+                    h,
+                    c,
+                    thr.join(","),
+                    data_str.join(",")
+                ));
+            }
+        }
+        std::fs::write(&out_path, format!("[{}]", records.join(","))).unwrap();
+        println!("wrote {} fixture factories to {}", records.len(), out_path);
+    }
+
     #[test]
     fn test_parse_many_multiple_documents() {
         // Two factories in one YAML stream, separated by `---`.
