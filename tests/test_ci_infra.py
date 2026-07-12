@@ -344,7 +344,7 @@ class TestAssertions:
 class TestFlattenSummary:
     def test_nested_namespaces_and_stat_dicts(self):
         summary = {
-            "val": {"thput": 0.3, "thput_eot": {"max": 0.2}},
+            "val": {"thput": 0.3, "acc": {"max": 0.2}},
             "loss": 1.5,
             "_runtime": 99,  # W&B internal: skipped
             "note": "text",  # non-numeric: skipped
@@ -353,14 +353,14 @@ class TestFlattenSummary:
         }
         assert flatten_summary(summary) == {
             "val/thput": 0.3,
-            "val/thput_eot": 0.2,
+            "val/acc": 0.2,
             "loss": 1.5,
         }
 
 
 class TestMetricDirection:
     def test_heuristics(self):
-        assert metric_direction("val/thput_eot") == "higher"
+        assert metric_direction("val/thput") == "higher"
         assert metric_direction("val/acc") == "higher"
         assert metric_direction("train/loss") == "lower"
         assert metric_direction("some/unknown_metric") is None
@@ -444,11 +444,11 @@ class TestReporter:
             url="https://wandb.ai/x/y/runs/abc123",
             kind="sft",
             sha7=SHA[:7],
-            summary_flat={"val/thput_eot": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+            summary_flat={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
         )
         assert "<!-- factorion-ci-run:abc123 -->" in md
         before_details, details = md.split("<details>", 1)
-        assert "val/thput_eot" in before_details
+        assert "val/thput" in before_details
         assert "obscure/x" not in before_details
         assert "obscure/x" in details
 
@@ -456,11 +456,10 @@ class TestReporter:
 class TestSelectHeadline:
     def test_sft_patterns_cover_every_lesson_and_head(self):
         names = [
-            "val/thput_eot",
-            "val/thput",  # not headline: only the EOT-respecting number leads
-            "val/MOVE_ONE_ITEM/thput_eot",
-            "val/SPLITTER_SPLIT/thput_eot",
-            "val/SOME_FUTURE_LESSON_9/thput_eot",  # lessons matched, not hardcoded
+            "val/thput",
+            "val/MOVE_ONE_ITEM/thput",
+            "val/SPLITTER_SPLIT/thput",
+            "val/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "val/MOVE_ONE_ITEM/acc",  # per-lesson acc stays in the long tail
             "val/acc",
             "val/tile_acc",
@@ -471,10 +470,10 @@ class TestSelectHeadline:
         ]
         got = select_headline(names)
         assert got == [
-            "val/thput_eot",
-            "val/MOVE_ONE_ITEM/thput_eot",
-            "val/SOME_FUTURE_LESSON_9/thput_eot",
-            "val/SPLITTER_SPLIT/thput_eot",
+            "val/thput",
+            "val/MOVE_ONE_ITEM/thput",
+            "val/SOME_FUTURE_LESSON_9/thput",
+            "val/SPLITTER_SPLIT/thput",
             "val/acc",
             "val/eot_acc",
             "val/tile_acc",
@@ -484,7 +483,6 @@ class TestSelectHeadline:
     def test_ppo_patterns(self):
         names = [
             "eval/thput",  # eval/ stays in the long tail
-            "eval/thput_eot",
             "rollout/thput",
             "rollout/reward",
             "rollout/length",
