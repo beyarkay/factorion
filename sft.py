@@ -45,6 +45,7 @@ from ppo import (  # noqa: E402
     layers_from_args,
     assert_device_ok,
     _CH_ENT,
+    _CH_ITEMS,
     _CH_FOOTPRINT,
     _EMPTY_ENT_ID,
     _ASM_MACHINE_ENT_ID,
@@ -419,12 +420,9 @@ def _solved_assembler_recipes(solved_CWH) -> set[int]:
     """The set of recipes (item ids) carried by assemblers in a solved factory,
     the ground truth for the rollout's recipe-pick check. Empty for factories
     with no assembler (every non-MEMORISE lesson today)."""
-    ent = solved_CWH[_CH_ENT]
-    asm_mask = ent == _ASM_MACHINE_ENT_ID
-    if not bool(asm_mask.any()):
-        return set()
-    recipes = solved_CWH[Channel.ITEMS.value][asm_mask]
-    return {int(v) for v in recipes.unique().tolist()}
+    asm_mask = solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID
+    recipes = solved_CWH[_CH_ITEMS][asm_mask]
+    return set() if not bool(asm_mask.any()) else {int(v) for v in recipes.unique().tolist()}
 
 
 def run_rollout_eval(
@@ -495,12 +493,6 @@ def run_rollout_eval(
     per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
     all_eot_throughputs: list[float] = []
-    # Recipe-pick correctness: every time the greedy agent lands an assembler,
-    # did it choose the right recipe? A wrong recipe is invisible in throughput
-    # (the belt layout can still be perfect), so it's tracked here. Only
-    # factories whose solved form has an assembler are scored (MEMORISE today,
-    # any future assembler lesson automatically), keyed off the entity, not a
-    # hardcoded lesson list.
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
