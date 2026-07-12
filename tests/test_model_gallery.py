@@ -1,0 +1,126 @@
+"""End-to-end tests for the static model-gallery generator (scripts/model_gallery.py).
+
+Uses a freshly-initialised (untrained) AgentCNN saved to a temp .pt so the tests
+exercise the real checkpoint-load + rollout + render path without needing W&B or a
+trained model. We assert on page *structure*, not on what the random model builds.
+"""
+
+import os
+import sys
+
+import gymnasium as gym
+import numpy as np
+import torch
+
+os.environ.setdefault("WANDB_MODE", "disabled")
+os.environ.setdefault("WANDB_DISABLED", "true")
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import model_gallery  # noqa: E402
+from model_gallery import Args, generate_gallery  # noqa: E402
+from ppo import AgentCNN, make_env  # noqa: E402
+
+SIZE = 8
+
+
+def _random_checkpoint(tmp_path) -> str:
+    """Save a random-init AgentCNN sized for SIZE and return its .pt path."""
+    env_id = "factorion/FactorioEnv-v0-galtest"
+    if env_id not in gym.registry:
+        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
+    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, SIZE, "galtest")])
+    try:
+        agent = AgentCNN(envs, layers=(16, 16, 16), kernel_size=3)
+    finally:
+        envs.close()
+    path = str(tmp_path / "rand.pt")
+    torch.save(agent.state_dict(), path)
+    return path
+
+
+def test_generate_gallery_multipage(tmp_path):
+    ckpt = _random_checkpoint(tmp_path)
+    args = Args(
+        checkpoint=ckpt,
+        wandb_run=None,
+        size=SIZE,
+        seeds_per_lesson=2,
+        lessons=["MOVE_ONE_ITEM", "SPLITTER_SPLIT"],
+        output=str(tmp_path / "gallery"),
+    )
+    pages = generate_gallery(args)
+
+    # One index page plus one page per requested lesson.
+    assert set(pages) == {"index.html", "MOVE_ONE_ITEM.html", "SPLITTER_SPLIT.html"}
+
+    index = pages["index.html"]
+    # Index links to each lesson page and carries the per-lesson summary table.
+    assert 'href="MOVE_ONE_ITEM.html"' in index
+    assert 'href="SPLITTER_SPLIT.html"' in index
+    assert "mean thput" in index
+    # The index is the lightweight landing page — no factory grids on it.
+    assert "grid-label" not in index.replace(model_gallery._PAGE_CSS, "")
+
+    lesson = pages["MOVE_ONE_ITEM.html"]
+    # Two factories, each rendered as problem / model build / ground truth.
+    assert lesson.count("PROBLEM".lower()) or 'class="grid-label">problem<' in lesson
+    assert lesson.count('class="grid-label">model build<') == 2
+    assert lesson.count('class="grid-label">ground truth<') == 2
+    assert '<a href="index.html">' in lesson  # back link
+
+
+def test_icons_are_deduped(tmp_path):
+    """The whole point of the dedup pass: no inline PNG survives in the output,
+    every icon is a shared `content: url(...)` CSS rule instead."""
+    ckpt = _random_checkpoint(tmp_path)
+    args = Args(
+        checkpoint=ckpt,
+        wandb_run=None,
+        size=SIZE,
+        seeds_per_lesson=2,
+        lessons=["MOVE_ONE_ITEM"],
+        output=str(tmp_path / "gallery"),
+    )
+    lesson = generate_gallery(args)["MOVE_ONE_ITEM.html"]
+    assert "src='data:image/png;base64," not in lesson  # no inline PNGs left
+    assert "content:url(data:image/png;base64," in lesson  # icons hoisted to CSS
+
+
+def test_pages_are_written_to_disk(tmp_path):
+    ckpt = _random_checkpoint(tmp_path)
+    out = tmp_path / "site"
+    model_gallery.main(
+        Args(
+            checkpoint=ckpt,
+            wandb_run=None,
+            size=SIZE,
+            seeds_per_lesson=1,
+            lessons=["MOVE_ONE_ITEM"],
+            output=str(out),
+        )
+    )
+    assert (out / "index.html").exists()
+    assert (out / "MOVE_ONE_ITEM.html").exists()
+
+
+def test_recipe_label_reads_assembler_recipe():
+    """_recipe_label surfaces the assembler's tagged recipe (or the sink item)."""
+    from factorion import Channel, build_factory
+
+    factory = build_factory(
+        size=11, kind=model_gallery.LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=1
+    )
+    assert factory is not None
+    world_WHC = factory.world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+    label = model_gallery._recipe_label(world_WHC)
+    # This lesson always tags a real recipe on its assembler, so a non-empty,
+    # known item name must come back.
+    assert label
+    assert isinstance(label, str)
+    # Sanity: the returned name is a real item that appears in the ITEMS channel.
+    from factorion import items
+
+    present = {items[v].name for v in np.unique(world_WHC[:, :, Channel.ITEMS.value])}
+    assert label in present
