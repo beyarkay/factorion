@@ -34,12 +34,13 @@ WANDB_PROJECT = SftArgs().wandb_project_name
 # GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
 GPU_FALLBACKS = [
     "NVIDIA RTX 2000 Ada Generation",
+    "NVIDIA RTX A4000",
     "NVIDIA RTX 4000 Ada Generation",
-    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 3090",
     "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA RTX A6000",
-    "NVIDIA A100 80GB PCIe",
-    "NVIDIA A100-SXM4-80GB",
 ]
 
 # Only schedule on hosts whose driver supports a CUDA version new enough for

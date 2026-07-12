@@ -93,10 +93,10 @@ class TestSftDispatch:
         # the bootstrap fetches the exact SHA so a vanished branch tip (merged
         # + deleted PR branch, or force-push) still checks out.
         assert pod["env"]["FCI_KIND"] == "sft"
-        assert "pr:42" in json.loads(pod["env"]["FCI_EXTRA_TAGS"])
+        assert "pr:42" in json.loads(base64.b64decode(pod["env"]["FCI_EXTRA_TAGS_B64"]))
         boot = base64.b64decode(pod["env"]["FCI_BOOT_B64"]).decode()
         assert 'git fetch --quiet origin "${FCI_SHA}"' in boot
-        assert "boot-failure" in boot and "FCI_EXTRA_TAGS" in boot
+        assert "boot-failure" in boot and "FCI_EXTRA_TAGS_B64" in boot
 
         ((pr, body),) = gh_ctx["comments"]
         assert pr == 42
@@ -237,7 +237,7 @@ class TestSweepDispatch:
         # Sweep pods carry the pr tag too, so a pod that dies before its agents
         # start still reports the boot failure to the PR via the reporter cron.
         for pod in gh_ctx["pods"]:
-            assert "pr:42" in json.loads(pod["env"]["FCI_EXTRA_TAGS"])
+            assert "pr:42" in json.loads(base64.b64decode(pod["env"]["FCI_EXTRA_TAGS_B64"]))
             assert pod["env"]["FCI_KIND"] == "sweep"
         # The launch comment shows what's being swept, not just pod ids.
         launch_body = gh_ctx["comments"][0][1]
