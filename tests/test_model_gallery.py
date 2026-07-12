@@ -153,6 +153,44 @@ def test_schema_mismatch_raises_clear_error(tmp_path):
     assert "ent_head" in str(excinfo.value)
 
 
+def test_remap_vocab_rows_preserves_prefix_and_tail():
+    """The append-only remap: old real-item rows land on the same indices, the
+    trailing Source/Sink pair moves to the new tail, and grown rows keep init."""
+    old = torch.arange(5 * 2, dtype=torch.float32).reshape(5, 2)  # 3 real + Sink + Source
+    template = torch.full((8, 2), -1.0)  # 6 real + Sink + Source
+    out = model_gallery._remap_vocab_rows(old, template, has_sink_source=True)
+    assert torch.equal(out[:3], old[:3])       # real items keep their indices
+    assert torch.equal(out[-2], old[3])        # Sink → new tail
+    assert torch.equal(out[-1], old[4])        # Source → new tail
+    assert torch.equal(out[3:6], template[3:6])  # never-seen items keep init
+
+    # No Source/Sink tail (the entity head): pure prefix copy.
+    out2 = model_gallery._remap_vocab_rows(old, template, has_sink_source=False)
+    assert torch.equal(out2[:5], old)
+    assert torch.equal(out2[5:], template[5:])
+
+
+def test_catalog_remap_gate(tmp_path):
+    """A checkpoint with a smaller (append-only) catalog is rejected by default
+    with a hint, and loads when allow_catalog_remap=True."""
+    state = _make_agent().state_dict()
+    # Simulate an older, smaller catalog by dropping interior real-item rows
+    # from every vocab tensor (keeping the trailing Source/Sink pair where present).
+    for key, has_ss in model_gallery._VOCAB_TENSORS.items():
+        t = state[key]
+        if has_ss:
+            state[key] = torch.cat([t[:-4], t[-2:]]).clone()  # drop 2 real rows
+        else:
+            state[key] = t[:-2].clone()
+
+    with pytest.raises(SchemaMismatch) as excinfo:
+        load_agent(state, SIZE, torch.device("cpu"))
+    assert "allow_catalog_remap" in str(excinfo.value)  # the actionable hint
+
+    agent = load_agent(state, SIZE, torch.device("cpu"), allow_catalog_remap=True)
+    assert agent is not None  # remap path loads without raising
+
+
 def test_recipe_label_reads_assembler_recipe():
     """_recipe_label surfaces the assembler's tagged recipe (or the sink item)."""
     from factorion import Channel, build_factory

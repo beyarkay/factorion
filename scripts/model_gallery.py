@@ -90,6 +90,11 @@ class Args:
     (size, kind, seed) combos fail build_factory's rejection sampler)."""
     output: str = "gallery"
     """Directory to write the static site into (index.html + one page per lesson)."""
+    allow_catalog_remap: bool = False
+    """Best-effort load a checkpoint trained on a smaller (append-only) item
+    catalog by remapping its embeddings/heads onto the current catalog. Assumes
+    the catalog only grew (Source/Sink still last); a reordered catalog would
+    misrender, so this is off by default and prints a warning when used."""
 
 
 def _resolve_device() -> torch.device:
@@ -168,7 +173,44 @@ class SchemaMismatch(RuntimeError):
     obvious — as opposed to a raw torch shape-mismatch traceback."""
 
 
-def load_agent(state: dict, size: int, device: torch.device) -> AgentCNN:
+# The vocab-sized parameters and whether their row axis ends in the two
+# env-only Source/Sink catalog entries. The item/entity heads and both
+# embeddings are indexed by the (single) item catalog; `ent_head` covers only
+# the placeable entities (catalog minus the trailing Source/Sink), the rest span
+# the full catalog. Used only by the opt-in catalog remap below.
+_VOCAB_TENSORS = {
+    "ent_embed.weight": True,
+    "item_embed.weight": True,
+    "item_head.weight": True,
+    "item_head.bias": True,
+    "ent_head.weight": False,
+    "ent_head.bias": False,
+}
+
+
+def _remap_vocab_rows(old: torch.Tensor, template: torch.Tensor, has_sink_source: bool) -> torch.Tensor:
+    """Map a smaller-catalog tensor's rows onto the current catalog.
+
+    Relies on the documented append-only catalog invariant: real items keep
+    their indices as the catalog grows, and Source/Sink always sit as the last
+    two entries. So the old real-item rows copy straight onto the current ones,
+    the (optional) trailing Source/Sink rows move to the new tail, and rows for
+    items that didn't exist at training time keep the fresh model's init. Works
+    for weights (2-D) and biases (1-D) alike since only the row axis moves."""
+    new = template.clone()
+    if has_sink_source:
+        r_old = old.shape[0] - 2
+        new[:r_old] = old[:r_old]
+        new[-2] = old[r_old]      # Source/Sink pair → current tail
+        new[-1] = old[r_old + 1]
+    else:
+        new[: old.shape[0]] = old
+    return new
+
+
+def load_agent(
+    state: dict, size: int, device: torch.device, allow_catalog_remap: bool = False
+) -> AgentCNN:
     """Build an AgentCNN matching the checkpoint's architecture and load it.
 
     Architecture hyperparameters (conv widths, depth, kernel size, embedding
@@ -220,17 +262,52 @@ def load_agent(state: dict, size: int, device: torch.device) -> AgentCNN:
         if k in model_sd and tuple(model_sd[k].shape) != tuple(v.shape)
     ]
     if mismatches:
+        # A mismatch is *catalog-remappable* only if it's one of the vocab
+        # tensors, its non-row dims already match (so it's purely a vocab-size
+        # difference, not e.g. the 5→25 input-encoding change), and the current
+        # catalog is a superset (checkpoint has no more rows than we do).
+        remappable, unremappable = [], []
+        for k, ckpt_shape, cur_shape in mismatches:
+            if (
+                k in _VOCAB_TENSORS
+                and ckpt_shape[1:] == cur_shape[1:]
+                and ckpt_shape[0] <= cur_shape[0]
+            ):
+                remappable.append(k)
+            else:
+                unremappable.append((k, ckpt_shape, cur_shape))
+
         details = "\n".join(
             f"  {k}: checkpoint {ckpt} vs current model {cur}"
             for k, ckpt, cur in mismatches
         )
-        raise SchemaMismatch(
-            "checkpoint was trained against a different environment schema than "
-            "the current code — architecture hyperparameters are inferred "
-            "automatically, but catalog/observation-encoding changes can't be "
-            "reconciled (loading anyway would misrender). Retrain on the current "
-            f"code to visualise it. Diverging tensors:\n{details}"
+        if not allow_catalog_remap or unremappable:
+            hint = (
+                " Pass allow_catalog_remap=True (--allow-catalog-remap) to best-"
+                "effort remap the catalog-sized tensors."
+                if remappable and not unremappable
+                else ""
+            )
+            raise SchemaMismatch(
+                "checkpoint was trained against a different environment schema "
+                "than the current code — architecture hyperparameters are "
+                "inferred automatically, but catalog/observation-encoding "
+                "changes can't be reconciled this way (loading anyway would "
+                f"misrender). Retrain on the current code to visualise it.{hint} "
+                f"Diverging tensors:\n{details}"
+            )
+
+        # Best-effort catalog remap: assumes the catalog stayed strictly
+        # append-only with Source/Sink last (see _remap_vocab_rows). Loud
+        # warning because a reordered catalog would silently misrender.
+        print(
+            "[warn] best-effort catalog remap applied — assumes an append-only "
+            "catalog (Source/Sink last). Sanity-check the render against the "
+            "ground-truth column.",
+            file=sys.stderr,
         )
+        for k in remappable:
+            filtered[k] = _remap_vocab_rows(filtered[k], model_sd[k], _VOCAB_TENSORS[k])
 
     agent.load_state_dict(filtered, strict=False)
     return agent.to(device).eval()
@@ -528,7 +605,7 @@ def generate_gallery(args: Args) -> dict[str, str]:
     index.html plus one page per lesson)."""
     device = _resolve_device()
     state, source = resolve_checkpoint(args)
-    agent = load_agent(state, args.size, device)
+    agent = load_agent(state, args.size, device, allow_catalog_remap=args.allow_catalog_remap)
 
     if args.lessons:
         kinds = [LessonKind[name] for name in args.lessons]
