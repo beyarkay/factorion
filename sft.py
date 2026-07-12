@@ -571,6 +571,8 @@ def run_rollout_eval(
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size
             tile_features = encoded[batch_idx_K, :, x_K, y_K]
+            if agent.global_feat_dim > 0:
+                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
 
             ent_K = agent.ent_head(tile_features).argmax(dim=1)
             dir_K = agent.dir_head(tile_features).argmax(dim=1)
@@ -1126,6 +1128,8 @@ def train_sft(args: SftArgs):
             y_B = batch_tile % agent.height
             batch_idx = torch.arange(B, device=device)
             tile_features = encoded[batch_idx, :, x_B, y_B]
+            if agent.global_feat_dim > 0:
+                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
@@ -1315,6 +1319,8 @@ def train_sft(args: SftArgs):
                 y_B = batch_tile % agent.height
                 batch_idx = torch.arange(B, device=device)
                 tile_features = encoded[batch_idx, :, x_B, y_B]
+                if agent.global_feat_dim > 0:
+                    tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
 
                 ent_logits = agent.ent_head(tile_features)
                 dir_logits = agent.dir_head(tile_features)
