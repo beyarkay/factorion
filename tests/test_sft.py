@@ -994,9 +994,7 @@ class TestRunRolloutEval:
         )
         assert set(roll) == {
             "overall",
-            "overall_eot",
             "per_kind",
-            "per_kind_eot",
             "per_kind_n",
             "asm_item_acc",
             "per_kind_asm_item_acc",
@@ -1009,7 +1007,6 @@ class TestRunRolloutEval:
         )
 
         assert 0.0 <= overall <= 1.5, f"overall throughput out of range: {overall}"
-        assert 0.0 <= roll["overall_eot"] <= 1.5
         total_n = sum(per_kind_n.values())
         assert total_n == len(val_seeds_to_kind), (
             f"per-kind n totals {total_n}, expected {len(val_seeds_to_kind)}"
@@ -1105,15 +1102,15 @@ class TestRunRolloutEval:
             device=torch.device("cpu"),
         )
         assert roll["overall"] == 0.0
-        assert roll["overall_eot"] == 0.0
         assert sum(roll["per_kind_n"].values()) == 0
 
     def test_eot_threshold_controls_eot_metric(self, registered_env):
-        """One rollout yields two throughputs: `overall` ignores the EOT head
-        (steps to env-done), `overall_eot` snapshots throughput at the first
-        EOT fire. A threshold above 1 means the head never fires, so
-        overall_eot == overall; a threshold below 0 means it fires before any
-        step, snapshotting the reset throughput (0) for every seed."""
+        """`overall` is the throughput at the moment the EOT head fires. A
+        threshold above 1 means the head never fires, so the rollout steps to
+        env-done; a threshold below 0 means it fires before any step, so every
+        seed snapshots its reset throughput (0). Stopping early can only lower
+        throughput, so the never-fire run must score at least the always-fire
+        run."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
         agent = AgentCNN(envs, layers=(16, 16, 16))
@@ -1139,9 +1136,7 @@ class TestRunRolloutEval:
             eot_threshold=10.0,
             max_seeds=len(val_seeds_to_kind),
         )
-        assert never["overall_eot"] == pytest.approx(never["overall"]), (
-            "EOT never fires -> EOT-respecting throughput must equal ignore-EOT"
-        )
+        assert 0.0 <= never["overall"] <= 1.5
 
         # sigmoid(logit) > 0 always, so threshold -1 -> EOT fires before the
         # first step, snapshotting the reset throughput (0).
@@ -1153,10 +1148,12 @@ class TestRunRolloutEval:
             eot_threshold=-1.0,
             max_seeds=len(val_seeds_to_kind),
         )
-        assert always["overall_eot"] == 0.0, (
+        assert always["overall"] == 0.0, (
             "EOT firing before the first step must snapshot reset throughput (0)"
         )
-        assert 0.0 <= always["overall"] <= 1.5
+        assert never["overall"] >= always["overall"], (
+            "stopping early can only lower throughput"
+        )
 
     def _run_with_recorded_proposals(self, monkeypatch):
         """Run a greedy rollout eval with a FactorioEnv that records, for every

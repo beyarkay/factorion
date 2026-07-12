@@ -396,10 +396,8 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
 class RolloutEval(TypedDict):
     """Return shape of :func:`run_rollout_eval`."""
 
-    overall: float  # mean throughput ignoring the EOT head
-    overall_eot: float  # mean throughput respecting the EOT head
+    overall: float  # mean throughput at the moment the EOT head fires
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
-    per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
@@ -442,21 +440,16 @@ def run_rollout_eval(
     Envs are refilled from the seed queue as they finish, so all K slots
     stay busy until the queue drains.
 
-    For each held-out (seed, kind) we greedy-argmax every head and step
-    until the env finishes (throughput==1.0 or max_steps) — we do NOT
-    let the EOT head stop us. Throughput is the last `info['thput_normed']`
-    the env reported: raw items/sec divided by the per-factory max, in
-    [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of its
-    absolute belt speed (the env already calls the Rust solver every step,
-    so we don't re-run it). This `overall` number is the model's true
-    build skill independent of its stop head.
-
-    In the same single rollout we also track the throughput the model
-    *would* have produced if it trusted its EOT head: the first time the
-    EOT prob crosses `eot_threshold` for a slot we snapshot that slot's
-    current throughput. If the EOT head never fires, the model would have
-    built all the way to env-done, so its EOT-respecting value equals the
-    final throughput. The mean of those snapshots is `overall_eot`.
+    For each held-out (seed, kind) we greedy-argmax every head and step,
+    stopping the moment the EOT prob crosses `eot_threshold` (the model
+    declaring the factory done) or the env finishes on its own
+    (throughput==1.0 or max_steps) — whichever comes first. We never keep
+    placing past EOT. Throughput is the last `info['thput_normed']` the env
+    reported at that stopping point: raw items/sec divided by the
+    per-factory max, in [0, 1], so a perfectly-rebuilt factory scores 1.0
+    regardless of its absolute belt speed (the env already calls the Rust
+    solver every step, so we don't re-run it). This `overall` number is the
+    factory's throughput at the moment the model decides it's done.
 
     The (seed, kind) pairs are exactly the val_accuracy set — so a rise
     in `val/thput` over training is directly comparable to the
@@ -467,8 +460,8 @@ def run_rollout_eval(
     keeps rejecting. Eval-only; training is untouched.
 
     Returns a dict with:
-        overall, overall_eot — mean throughput ignoring / respecting EOT;
-        per_kind, per_kind_eot — same, keyed by LessonKind.name;
+        overall — mean throughput at the moment the EOT head fires;
+        per_kind — same, keyed by LessonKind.name;
         per_kind_n — sample count per kind in the eval.
     """
     was_training = agent.training
@@ -490,9 +483,7 @@ def run_rollout_eval(
     seeds_sorted = seeds_sorted[:max_seeds]
 
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
-    per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
-    all_eot_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
@@ -503,9 +494,7 @@ def run_rollout_eval(
         per_kind_n = {kn: 0 for kn in per_kind_throughputs}
         return {
             "overall": 0.0,
-            "overall_eot": 0.0,
             "per_kind": zero,
-            "per_kind_eot": dict(zero),
             "per_kind_n": per_kind_n,
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
@@ -526,10 +515,6 @@ def run_rollout_eval(
     # work and should be skipped.
     queue = list(seeds_sorted)
     active = [True] * K
-    # Per-slot EOT bookkeeping: whether the EOT head has fired yet for the
-    # seed this slot is replaying, and the throughput snapshotted when it did.
-    eot_fired = [False] * K
-    eot_thp = [0.0] * K
     # Correct recipes for the factory each slot is replaying (from its solved
     # world). Empty when that factory has no assembler, which skips the check.
     asm_recipes: list[set[int]] = [set() for _ in range(K)]
@@ -583,51 +568,57 @@ def run_rollout_eval(
 
                 s, k, cur_thp = current[i]
 
-                # Snapshot the EOT-respecting throughput the first time the
-                # head crosses threshold — but keep stepping regardless, so
-                # `overall` reflects true build skill (EOT ignored).
-                if not eot_fired[i] and float(eot_probs[i]) > eot_threshold:
-                    eot_fired[i] = True
-                    eot_thp[i] = cur_thp
+                # The build for this factory ends at whichever comes first: the
+                # EOT head crossing threshold (the model declaring "done") or the
+                # env terminating on its own (throughput 1.0 or max_steps). We
+                # never keep placing past EOT, so `final_thp` is the throughput
+                # snapshotted at that stopping point.
+                finished = False
+                if float(eot_probs[i]) > eot_threshold:
+                    finished = True
+                    final_thp = cur_thp
+                else:
+                    action = {
+                        "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                        "entity": int(ent_K[i]),
+                        "direction": int(dir_K[i]),
+                        "item": int(item_K[i]),
+                        "misc": int(misc_K[i]),
+                    }
+                    next_obs, _r, terminated, truncated, info = envs[i].step(action)
+                    cur_thp = float(info.get("thput_normed", 0.0))
+                    current[i] = (s, k, cur_thp)
 
-                action = {
-                    "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
-                    "entity": int(ent_K[i]),
-                    "direction": int(dir_K[i]),
-                    "item": int(item_K[i]),
-                    "misc": int(misc_K[i]),
-                }
-                next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                    # Recipe-pick check: the agent tried to place an assembler in
+                    # a factory that has one. Count it iff the assembler actually
+                    # landed at the anchor (invalid placements are env no-ops),
+                    # then score its recipe against the solved factory's recipes.
+                    if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                        ax, ay = int(action["xy"][0]), int(action["xy"][1])
+                        if (
+                            int(envs[i]._world_CWH[_CH_ENT, ax, ay])
+                            == _ASM_MACHINE_ENT_ID
+                        ):
+                            per_kind_asm_total[k.name] += 1
+                            if action["item"] in asm_recipes[i]:
+                                per_kind_asm_correct[k.name] += 1
 
-                # Recipe-pick check: the agent tried to place an assembler in a
-                # factory that has one. Count it iff the assembler actually
-                # landed at the anchor (invalid placements are env no-ops), then
-                # score its recipe against the solved factory's recipes.
-                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
-                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
-                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
-                        per_kind_asm_total[k.name] += 1
-                        if action["item"] in asm_recipes[i]:
-                            per_kind_asm_correct[k.name] += 1
+                    if terminated or truncated:
+                        finished = True
+                        final_thp = cur_thp
+                    else:
+                        obs_batch[i] = torch.as_tensor(
+                            next_obs,
+                            dtype=torch.float32,
+                            device=device,
+                        )
 
-                if not (terminated or truncated):
-                    obs_batch[i] = torch.as_tensor(
-                        next_obs,
-                        dtype=torch.float32,
-                        device=device,
-                    )
+                if not finished:
                     continue
 
-                # Slot is finished — harvest both metrics, refill or deactivate.
-                s, k, last_thp = current[i]
-                all_throughputs.append(last_thp)
-                per_kind_throughputs[k.name].append(last_thp)
-                # EOT never fired → model would have built to env-done, so its
-                # EOT-respecting value is the same final throughput.
-                eot_value = eot_thp[i] if eot_fired[i] else last_thp
-                all_eot_throughputs.append(eot_value)
-                per_kind_eot_throughputs[k.name].append(eot_value)
+                # Slot is finished — harvest the throughput, refill or deactivate.
+                all_throughputs.append(final_thp)
+                per_kind_throughputs[k.name].append(final_thp)
 
                 if queue:
                     s = queue.pop(0)
@@ -643,8 +634,6 @@ def run_rollout_eval(
                     asm_recipes[i] = _solved_assembler_recipes(
                         envs[i]._solved_world_CWH
                     )
-                    eot_fired[i] = False
-                    eot_thp[i] = 0.0
                     obs_batch[i] = torch.as_tensor(
                         obs,
                         dtype=torch.float32,
@@ -654,14 +643,9 @@ def run_rollout_eval(
                     active[i] = False
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
-    overall_eot = float(np.mean(all_eot_throughputs)) if all_eot_throughputs else 0.0
     per_kind = {
         kn: (float(np.mean(ts)) if ts else 0.0)
         for kn, ts in per_kind_throughputs.items()
-    }
-    per_kind_eot = {
-        kn: (float(np.mean(ts)) if ts else 0.0)
-        for kn, ts in per_kind_eot_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
 
@@ -678,9 +662,7 @@ def run_rollout_eval(
         agent.train()
     return {
         "overall": overall,
-        "overall_eot": overall_eot,
         "per_kind": per_kind,
-        "per_kind_eot": per_kind_eot,
         "per_kind_n": per_kind_n,
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
@@ -1495,9 +1477,9 @@ def train_sft(args: SftArgs):
 
         val_seconds = time.time() - t_val
 
-        # Rollout eval: greedy-play the held-out factories and record final
-        # throughput. Same lessons as val accuracy, so val/thput is directly
-        # comparable to val/acc curves. Runs on every eval window unless
+        # Rollout eval: greedy-play the held-out factories and record the
+        # throughput at the EOT fire. Same lessons as val accuracy, so val/thput
+        # is directly comparable to val/acc curves. Runs on every eval window unless
         # disabled (it's the slow part of an eval).
         do_rollout = args.eval_rollouts
         if do_rollout and len(val_seeds_to_kind) > 0:
@@ -1514,18 +1496,14 @@ def train_sft(args: SftArgs):
             rollout_seconds = time.time() - t_rollout
             overall_thp = roll["overall"]
             per_kind_thp_n = roll["per_kind_n"]
-            # val/thput ignores the EOT head (true build skill, and the
-            # default checkpoint-selection metric); val/thput_eot stops
-            # at the first EOT fire (what the model's own stop head produces).
+            # val/thput is the throughput at the moment the model's EOT head
+            # fires (or env-done if it never does) — the metric we select the
+            # checkpoint on.
             per_kind_metrics["val/thput"] = overall_thp
-            per_kind_metrics["val/thput_eot"] = roll["overall_eot"]
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput"] = thp
-            for kn, thp in roll["per_kind_eot"].items():
-                if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/thput_eot"] = thp
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once
@@ -1635,8 +1613,8 @@ def train_sft(args: SftArgs):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
 
-        # Default checkpoint-selection metric: greedy throughput (EOT ignored).
-        # overall_thp is None on evals where no rollout ran.
+        # Default checkpoint-selection metric: greedy throughput at the moment
+        # the EOT head fires. overall_thp is None on evals where no rollout ran.
         if overall_thp is not None and overall_thp >= best_val_throughput:
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)
