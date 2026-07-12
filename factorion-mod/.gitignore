@@ -8,11 +8,15 @@ __pycache__/
 # Local server state
 server/state/
 server/logs/
+checkpoints/
 *.log
 
 # Factorio mod build artefacts
 mod/*.zip
 mod/dist/
+# The repository-wide *.png rule excludes generated training renders; these
+# three hand-curated runtime icons are shipped as part of the mod.
+!mod/graphics/icons/*.png
 
 # Editor / OS
 .DS_Store

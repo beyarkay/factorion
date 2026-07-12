@@ -3,6 +3,7 @@
   "runtime.version": "Lua 5.2",
   "diagnostics.globals": [
     "data",
+    "commands",
     "defines",
     "game",
     "helpers",
