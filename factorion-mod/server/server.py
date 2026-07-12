@@ -142,6 +142,8 @@ def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
         x_B = tile_idx // agent.height
         y_B = tile_idx % agent.height
         feat = encoded[torch.arange(B), :, x_B, y_B]
+        if agent.global_feat_dim > 0:
+            feat = torch.cat([feat, agent._global_feat(encoded)], dim=1)
         ent = agent.ent_head(feat).argmax(dim=-1)
         dir_ = agent.dir_head(feat).argmax(dim=-1)
         item = agent.item_head(feat).argmax(dim=-1)
