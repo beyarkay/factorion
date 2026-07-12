@@ -1295,7 +1295,7 @@ class AgentCNN(nn.Module):
         lower it if the model rambles, raise it if it stops short."""
         return self.eot_prob(x_BCWH) > threshold
 
-    def get_action_and_value(self, x_BCWH, action=None):
+    def get_action_and_value(self, x_BCWH, action=None, tile_illegal_BN=None):
         # Encode input once and reuse for both action and value heads
         encoded_BCWH = self.encoder(self._encode_input(x_BCWH))  # (B, chan3, W, H)
         value_B = self.critic_head(encoded_BCWH).squeeze(-1)
@@ -1304,9 +1304,15 @@ class AgentCNN(nn.Module):
 
         # --- Tile selection: joint (x, y) via 1x1 conv ---
         tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
-        # Mask illegal tiles so we never place where FactorioEnv.step would reject.
+        # Mask illegal tiles so we never place where FactorioEnv.step would
+        # reject. Deriving the mask (channel compares) is ~80% of its cost and
+        # is a pure function of the obs, so a caller that reuses the same obs —
+        # the PPO update, once per minibatch across every epoch — passes it in
+        # precomputed. `None` derives it here (rollout / eval / standalone).
+        if tile_illegal_BN is None:
+            tile_illegal_BN = ~_legal_tile_mask(x_BCWH)
         tile_logits_BN = tile_logits_B1WH.reshape(B, -1).masked_fill(
-            ~_legal_tile_mask(x_BCWH), _TILE_MASK_FILL
+            tile_illegal_BN, _TILE_MASK_FILL
         )
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
@@ -1890,6 +1896,11 @@ if __name__ == "__main__":
             returns_SE = advantages_SE + values_SE
 
         obs_B = obs_SECWH.reshape((-1,) + obs_shape)
+        # Derive the illegal-tile mask once for the whole batch instead of
+        # re-deriving it inside every minibatch forward across all update epochs
+        # (num_minibatches * update_epochs times) — the derivation dominates the
+        # mask cost, and it's a pure function of the (unchanging) rollout obs.
+        tile_illegal_B = ~_legal_tile_mask(obs_B)
         logprobs_B = logprobs_SE.reshape(-1)
         # NOTE: maybe have to convert back to tuple of batches
         actions_B = actions_SEA.reshape((-1,) + ACTION_SPACE_SHAPE)
@@ -1916,7 +1927,8 @@ if __name__ == "__main__":
                 with amp_ctx():
                     _action_BA, newlogprobs_B, entropy_B, newvalue_B = update_act(
                         obs_B[idxs],
-                        actions_B.long()[idxs]
+                        actions_B.long()[idxs],
+                        tile_illegal_BN=tile_illegal_B[idxs],
                     )
                 newlogprobs_B = newlogprobs_B.reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)

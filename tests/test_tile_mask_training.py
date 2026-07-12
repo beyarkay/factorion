@@ -145,3 +145,25 @@ class TestMaskedSampling:
         _, logp, entropy, _ = agent.get_action_and_value(obs)
         assert torch.isfinite(logp).all()
         assert torch.isfinite(entropy).all()
+
+    def test_precomputed_mask_matches_derived(self, agent):
+        """Passing a precomputed illegal mask (the PPO update's fast path, which
+        derives it once per batch) must give byte-identical log-probs/entropy to
+        deriving it inside — indexing commutes with the elementwise derivation,
+        so this is a pure speedup with no behaviour change."""
+        torch.manual_seed(3)
+        obs = _empty_obs(4, 5)
+        obs[0, Channel.ENTITIES.value, 1, 1] = str2ent("transport_belt").value
+        obs[2, Channel.FOOTPRINT.value, 0, 4] = Footprint.UNAVAILABLE.value
+
+        # A fixed action so both calls score the same choice.
+        action, _, _, _ = agent.get_action_and_value(obs)
+        action_BA = _stack_action(action)
+
+        _, logp_derived, ent_derived, _ = agent.get_action_and_value(obs, action_BA)
+        illegal = ~_legal_tile_mask(obs)
+        _, logp_passed, ent_passed, _ = agent.get_action_and_value(
+            obs, action_BA, tile_illegal_BN=illegal
+        )
+        torch.testing.assert_close(logp_derived, logp_passed)
+        torch.testing.assert_close(ent_derived, ent_passed)
