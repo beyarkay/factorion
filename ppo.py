@@ -1131,7 +1131,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1221,15 +1221,30 @@ class AgentCNN(nn.Module):
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
 
+        # The per-tile heads read a single feature column encoded[:, :, x, y],
+        # so their receptive field is capped at the conv stack's window. Recipe
+        # choice, UG-span, and "which way is the sink" are grid-global questions
+        # that window can't answer. Concatenate a pooled summary of the whole
+        # encoded map (mean+max over space, projected to global_feat_dim) onto
+        # the tile features so every head sees global context. global_feat_dim=0
+        # disables it, recovering the window-only heads.
+        self.global_feat_dim = global_feat_dim
+        if global_feat_dim > 0:
+            self.global_proj = nn.Sequential(
+                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
+                nn.ReLU(),
+            )
+        head_in = last_chan + global_feat_dim
+
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
         # consistently — e.g. an underground_belt placement must carry
         # misc=UNDERGROUND_DOWN/UP, and an assembling_machine_1 placement
         # must carry a recipe in `item`.
-        self.ent_head = layer_init(nn.Linear(last_chan, self.num_entities))
-        self.dir_head = layer_init(nn.Linear(last_chan, self.num_directions))
-        self.item_head = layer_init(nn.Linear(last_chan, self.num_items))
-        self.misc_head = layer_init(nn.Linear(last_chan, self.num_misc))
+        self.ent_head = layer_init(nn.Linear(head_in, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(head_in, self.num_directions))
+        self.item_head = layer_init(nn.Linear(head_in, self.num_items))
+        self.misc_head = layer_init(nn.Linear(head_in, self.num_misc))
 
         # Bias every head toward its "empty / NONE" slot (value 0) so a
         # freshly-initialised policy mostly proposes no-ops, matching the
@@ -1264,6 +1279,14 @@ class AgentCNN(nn.Module):
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
 
         return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+
+    def _global_feat(self, encoded_BCWH):
+        """Pool the whole encoded map into a per-batch global-context vector
+        (mean+max over the W,H axes, projected to global_feat_dim). Feeds the
+        per-tile heads the grid-wide information their windowed features lack."""
+        mean_BC = encoded_BCWH.mean(dim=(2, 3))
+        max_BC = encoded_BCWH.amax(dim=(2, 3))
+        return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
 
     def get_value(self, x_BCWH):
         encoded = self.encoder(self._encode_input(x_BCWH))
@@ -1315,6 +1338,9 @@ class AgentCNN(nn.Module):
         # torch.compile folds it into the graph.
         batch_idx = torch.arange(B, device=encoded_BCWH.device)
         tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
+        if self.global_feat_dim > 0:
+            global_BG = self._global_feat(encoded_BCWH)          # (B, global_feat_dim)
+            tile_features_BC = torch.cat([tile_features_BC, global_BG], dim=1)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)

@@ -635,6 +635,8 @@ class TestSFTLossConvergence:
             y_B = tiles % agent.height
             batch_idx = torch.arange(B)
             tile_features = encoded[batch_idx, :, x_B, y_B]
+            if agent.global_feat_dim > 0:
+                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
