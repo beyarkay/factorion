@@ -39,7 +39,7 @@ What comes back as PR comments:
   the full table (100s of metrics, seed-paired t-tests, sorted by p-value)
   inside a `<details>` block — plus a `factorion-ci/compare` **commit
   status** that passes/fails your `assert` lines. Headline metrics are the
-  `HEADLINE_PATTERNS` regexes in `ci/report.py` (thput_eot overall + per
+  `HEADLINE_PATTERNS` regexes in `ci/report.py` (thput overall + per
   lesson, overall + per-head accuracies for SFT; eval/rollout/critic
   headliners for PPO) — edit freely;
 - for sweeps: the ranked **sweep report** when the sweep drains its run_cap.
