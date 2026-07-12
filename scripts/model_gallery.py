@@ -100,10 +100,27 @@ def _resolve_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _encoder_arch(state: dict) -> tuple[list[int], int]:
-    """Infer (per-layer channel widths, kernel size) from a checkpoint's conv
-    weights — same shape-based reconstruction the factory_builder uses, so any
-    depth/kernel loads without a sidecar."""
+@dataclasses.dataclass
+class _Arch:
+    """The AgentCNN architecture hyperparameters recovered from a checkpoint's
+    tensor shapes — everything needed to rebuild the exact same network without
+    a sidecar, so tuning widths/depth/kernel/embedding dim between runs stays
+    transparent to this loader."""
+
+    layers: list[int]        # per-conv-layer channel widths (depth = len)
+    kernel_size: int         # conv kernel size (square)
+    cat_embed_dim: int       # entity/item embedding width (0 = no embeddings)
+    in_channels: int         # channels the first conv consumes (the encoder input)
+
+
+def _infer_arch(state: dict) -> _Arch:
+    """Recover the full AgentCNN architecture from a checkpoint's shapes.
+
+    Conv layers are located by 4-D weight shape and sorted by index (robust to
+    interleaved Dropout2d shifting encoder.0/2/4 → 0/3/6). The embedding width
+    comes from `ent_embed.weight`; the first conv's in-channels tells us what
+    input encoding it was trained for (raw channels vs the categorical
+    expansion), which is how we later detect an incompatible obs schema."""
     conv_keys = sorted(
         (
             k
@@ -116,7 +133,10 @@ def _encoder_arch(state: dict) -> tuple[list[int], int]:
         raise ValueError("no encoder conv weights found in checkpoint")
     layers = [int(state[k].shape[0]) for k in conv_keys]
     kernel_size = int(state[conv_keys[0]].shape[-1])
-    return layers, kernel_size
+    in_channels = int(state[conv_keys[0]].shape[1])
+    embed = state.get("ent_embed.weight")
+    cat_embed_dim = int(embed.shape[1]) if embed is not None else 0
+    return _Arch(layers, kernel_size, cat_embed_dim, in_channels)
 
 
 def resolve_checkpoint(args: Args) -> tuple[dict, dict]:
@@ -140,29 +160,78 @@ def resolve_checkpoint(args: Args) -> tuple[dict, dict]:
     return state, source
 
 
+class SchemaMismatch(RuntimeError):
+    """A checkpoint that can't be faithfully loaded because it was trained
+    against a different *environment* schema (item/entity catalog or input
+    encoding), not merely different architecture hyperparameters. The message
+    names exactly what diverged so the fix ('retrain on current code') is
+    obvious — as opposed to a raw torch shape-mismatch traceback."""
+
+
 def load_agent(state: dict, size: int, device: torch.device) -> AgentCNN:
-    """Build an AgentCNN sized for `size` and load the action heads from `state`.
+    """Build an AgentCNN matching the checkpoint's architecture and load it.
+
+    Architecture hyperparameters (conv widths, depth, kernel size, embedding
+    dim) are inferred from the checkpoint via `_infer_arch`, so tuning them
+    between runs needs no changes here — hand it a run id and it self-configures.
+
+    What inference *can't* fix is an environment-schema change: the item/entity
+    catalog growing (embedding/head vocab sizes) or the observation encoding
+    changing (first-conv in-channels). Those shift what each learned index
+    *means*, so loading anyway would render a faithful-looking but wrong gallery.
+    We detect that case and raise SchemaMismatch instead.
 
     The critic head is never used at inference and its flat dim depends on W*H,
     so it's dropped; the eot head is kept only when its saved shape matches this
     grid size (we rely on it to report where the model signals 'done')."""
-    layers, kernel_size = _encoder_arch(state)
+    arch = _infer_arch(state)
     env_id = "factorion/FactorioEnv-v0-gallery"
     if env_id not in gym.registry:
         gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "gallery")])
     try:
-        agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
+        agent = AgentCNN(
+            envs,
+            layers=arch.layers,
+            kernel_size=arch.kernel_size,
+            cat_embed_dim=arch.cat_embed_dim or 8,
+        )
     finally:
         envs.close()
 
-    expected_flat = layers[-1] * size * size
+    # critic_head / eot_head flat dims depend on W*H, so they legitimately
+    # mismatch when the gallery grid size differs from training — drop those
+    # (critic always: unused at inference; eot only on a genuine size mismatch).
+    expected_flat = arch.layers[-1] * size * size
     saved_eot_w = state.get("eot_head.1.weight")
     keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
     drop_prefixes: tuple[str, ...] = ("critic_head.",)
     if not keep_eot:
         drop_prefixes = drop_prefixes + ("eot_head.",)
     filtered = {k: v for k, v in state.items() if not k.startswith(drop_prefixes)}
+
+    # Any *remaining* shape mismatch is a schema divergence inference can't
+    # bridge (catalog vocab or obs encoding), so surface it clearly rather than
+    # letting load_state_dict throw a wall of per-tensor size errors.
+    model_sd = agent.state_dict()
+    mismatches = [
+        (k, tuple(v.shape), tuple(model_sd[k].shape))
+        for k, v in filtered.items()
+        if k in model_sd and tuple(model_sd[k].shape) != tuple(v.shape)
+    ]
+    if mismatches:
+        details = "\n".join(
+            f"  {k}: checkpoint {ckpt} vs current model {cur}"
+            for k, ckpt, cur in mismatches
+        )
+        raise SchemaMismatch(
+            "checkpoint was trained against a different environment schema than "
+            "the current code — architecture hyperparameters are inferred "
+            "automatically, but catalog/observation-encoding changes can't be "
+            "reconciled (loading anyway would misrender). Retrain on the current "
+            f"code to visualise it. Diverging tensors:\n{details}"
+        )
+
     agent.load_state_dict(filtered, strict=False)
     return agent.to(device).eval()
 
@@ -488,7 +557,11 @@ def generate_gallery(args: Args) -> dict[str, str]:
 
 
 def main(args: Args) -> None:
-    pages = generate_gallery(args)
+    try:
+        pages = generate_gallery(args)
+    except SchemaMismatch as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(1)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
     total = 0

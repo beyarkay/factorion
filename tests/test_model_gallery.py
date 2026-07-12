@@ -18,25 +18,32 @@ os.environ.setdefault("WANDB_DISABLED", "true")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest  # noqa: E402
+
 import model_gallery  # noqa: E402
-from model_gallery import Args, generate_gallery  # noqa: E402
+from model_gallery import Args, SchemaMismatch, generate_gallery, load_agent  # noqa: E402
 from ppo import AgentCNN, make_env  # noqa: E402
 
 SIZE = 8
 
 
-def _random_checkpoint(tmp_path) -> str:
-    """Save a random-init AgentCNN sized for SIZE and return its .pt path."""
+def _make_agent(layers=(16, 16, 16), kernel_size=3, cat_embed_dim=8) -> AgentCNN:
     env_id = "factorion/FactorioEnv-v0-galtest"
     if env_id not in gym.registry:
         gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, SIZE, "galtest")])
     try:
-        agent = AgentCNN(envs, layers=(16, 16, 16), kernel_size=3)
+        return AgentCNN(
+            envs, layers=layers, kernel_size=kernel_size, cat_embed_dim=cat_embed_dim
+        )
     finally:
         envs.close()
+
+
+def _random_checkpoint(tmp_path) -> str:
+    """Save a random-init AgentCNN sized for SIZE and return its .pt path."""
     path = str(tmp_path / "rand.pt")
-    torch.save(agent.state_dict(), path)
+    torch.save(_make_agent().state_dict(), path)
     return path
 
 
@@ -103,6 +110,47 @@ def test_pages_are_written_to_disk(tmp_path):
     )
     assert (out / "index.html").exists()
     assert (out / "MOVE_ONE_ITEM.html").exists()
+
+
+def test_nondefault_arch_is_inferred(tmp_path):
+    """A checkpoint with non-default arch hyperparameters (depth, widths,
+    kernel, embedding dim) loads without being told them — load_agent recovers
+    the whole architecture from the tensor shapes."""
+    agent = _make_agent(layers=(24, 32), kernel_size=5, cat_embed_dim=4)
+    ckpt = str(tmp_path / "arch.pt")
+    torch.save(agent.state_dict(), ckpt)
+
+    arch = model_gallery._infer_arch(agent.state_dict())
+    assert arch.layers == [24, 32]
+    assert arch.kernel_size == 5
+    assert arch.cat_embed_dim == 4
+
+    # And it round-trips through the full generator (no arch args passed).
+    pages = generate_gallery(
+        Args(
+            checkpoint=ckpt,
+            wandb_run=None,
+            size=SIZE,
+            seeds_per_lesson=1,
+            lessons=["MOVE_ONE_ITEM"],
+            output=str(tmp_path / "g"),
+        )
+    )
+    assert "MOVE_ONE_ITEM.html" in pages
+
+
+def test_schema_mismatch_raises_clear_error(tmp_path):
+    """A checkpoint whose catalog-sized tensors don't match the current env
+    (simulated by shrinking the entity head) raises SchemaMismatch naming the
+    diverging tensor — not a raw torch shape-error."""
+    state = _make_agent().state_dict()
+    # Chop the entity head down as if trained on a smaller entity catalog.
+    state["ent_head.weight"] = state["ent_head.weight"][:-3].clone()
+    state["ent_head.bias"] = state["ent_head.bias"][:-3].clone()
+
+    with pytest.raises(SchemaMismatch) as excinfo:
+        load_agent(state, SIZE, torch.device("cpu"))
+    assert "ent_head" in str(excinfo.value)
 
 
 def test_recipe_label_reads_assembler_recipe():
