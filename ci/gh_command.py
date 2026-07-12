@@ -434,6 +434,7 @@ def cmd_sweep(args, ctx) -> None:
                 algo=algo,
                 sweep_path=sweep_path,
                 agents_per_pod=args.agents_per_pod,
+                extra_tags=[f"pr:{ctx['pr']}"],
             ),
             args.gpu_type,
             wait=False,

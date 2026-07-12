@@ -635,6 +635,40 @@ def run_summary_markdown(
     return "\n".join(lines)
 
 
+def boot_failure_markdown(
+    run_id: str,
+    url: str,
+    kind: str,
+    sha7: str,
+    log_tail: str = "",
+) -> str:
+    """PR comment for a pod that died before it could start the run.
+
+    Boot failures never reach the training command (no metrics to report), so
+    this is a purpose-built message: what happened, the likely cause, and the
+    tail of the boot log for immediate diagnosis.
+    """
+    import os
+
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    commit = f"[`{sha7}`](https://github.com/{repo}/commit/{sha7})" if repo else f"`{sha7}`"
+    lines = [
+        RUN_MARKER_TEMPLATE.format(run_id=run_id),
+        f"## &#x274C; CI {kind} pod failed to boot",
+        "",
+        f"The pod for commit {commit} never started the run — it failed while "
+        "cloning the repo, building the Rust extension, or during setup, so no "
+        "training happened.",
+        "",
+        f"[Boot log on W&B]({url}) &middot; a common cause is the commit having "
+        "left every branch (PR merged and its branch deleted, or force-pushed) "
+        "after the pod was launched.",
+    ]
+    if log_tail.strip():
+        lines += ["", "```", log_tail.strip()[-1500:], "```"]
+    return "\n".join(lines)
+
+
 def select_unreported(
     candidates: list[dict], existing_bodies: list[str]
 ) -> list[dict]:
@@ -699,6 +733,8 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
                     (t.removeprefix("sha:") for t in tags if t.startswith("sha:")), "?"
                 ),
                 "summary_flat": flat,
+                "boot_failure": "boot-failure" in tags,
+                "boot_log_tail": str(summary.get("boot_log_tail", "")),
             }
         )
 
@@ -706,7 +742,24 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
     for pr_number, candidates in by_pr.items():
         bodies = github_api.list_pr_comment_bodies(pr_number)
         for c in select_unreported(candidates, bodies):
-            md = run_summary_markdown(**c)
+            if c["boot_failure"]:
+                md = boot_failure_markdown(
+                    run_id=c["run_id"],
+                    url=c["url"],
+                    kind=c["kind"],
+                    sha7=c["sha7"],
+                    log_tail=c["boot_log_tail"],
+                )
+            else:
+                md = run_summary_markdown(
+                    run_id=c["run_id"],
+                    name=c["name"],
+                    state=c["state"],
+                    url=c["url"],
+                    kind=c["kind"],
+                    sha7=c["sha7"],
+                    summary_flat=c["summary_flat"],
+                )
             if dry_run:
                 print(f"[dry-run] would comment on PR #{pr_number} for run {c['run_id']}")
             else:

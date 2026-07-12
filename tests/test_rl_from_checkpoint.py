@@ -11,6 +11,7 @@ sensible RL fine-tuning run rather than RL-from-scratch:
 
 import os
 import sys
+from typing import cast
 
 import numpy as np
 import pytest
@@ -190,9 +191,11 @@ class TestCriticHeadStd:
         orthogonal (1, N) init makes the row's L2 norm equal to the std."""
         small = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=0.01)
         big = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=1.0)
-        assert small.critic_head[-1].weight.norm().item() < big.critic_head[-1].weight.norm().item()
-        assert small.critic_head[-1].weight.norm().item() == pytest.approx(0.01, abs=1e-3)
-        assert big.critic_head[-1].weight.norm().item() == pytest.approx(1.0, abs=1e-2)
+        small_weight = cast(torch.Tensor, small.critic_head[-1].weight)
+        big_weight = cast(torch.Tensor, big.critic_head[-1].weight)
+        assert small_weight.norm().item() < big_weight.norm().item()
+        assert small_weight.norm().item() == pytest.approx(0.01, abs=1e-3)
+        assert big_weight.norm().item() == pytest.approx(1.0, abs=1e-2)
 
     def test_post_load_reinit_replaces_weights_in_place_at_new_std(self, agent):
         """The post-load re-init (layer_init on the value head) rewrites it in

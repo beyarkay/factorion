@@ -180,6 +180,7 @@ class SweepJob:
     algo: str  # "sft" | "ppo"
     sweep_path: str  # entity/project/sweep_id
     agents_per_pod: int = 5
+    extra_tags: list[str] = field(default_factory=list)  # e.g. pr:<N>, for boot-failure reporting
 
     KIND: ClassVar[str] = "sweep"
 
