@@ -71,16 +71,20 @@ factorion-mod/
 │   ├── info.json
 │   ├── .luarc.json           ← lua-language-server config (Factorio globals)
 │   ├── control.lua           ← event handlers, RCON interface, combinator auto-detect
+│   ├── parity.lua            ← engine-parity runner (build spec, measure throughput)
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← footprint + marker selection tools, hotkey definitions
-├── server/                   ← local inference daemon
+├── server/                   ← local inference daemon + parity harness
 │   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
+│   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
+│   ├── rcon.py               ← shared minimal Source-RCON client
 │   ├── blueprint.py          ← obs tensor → Factorio blueprint b64 (combinator markers)
 │   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
-    └── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
+    ├── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
+    └── parity_launch.sh      ← headless Factorio + parity harness, one command
 ```
 
 ## Quick start
@@ -133,11 +137,106 @@ factorion-mod/
    - `Ctrl+R` — clear footprint, sources and sinks
    - `Ctrl+T` — re-grant selection tools
 
+## Engine parity harness (issue #261)
+
+The mod doubles as a measurement rig for checking that the Factorion
+engine's throughput simulation matches real Factorio. The harness builds
+known-good factories with `factorion.build_factory`, asks the engine what
+each sink should receive (`factorion_rs.py_sink_deliveries`), replays the
+same factory inside the game, and compares measured per-sink items/s.
+
+```
+   Python (parity.py)                      Factorio (parity.lua)
+   ──────────────────                      ─────────────────────
+   build_factory(lesson, seed)
+   world → spec JSON        ──ᴿᶜᴼᴺ──►      parity_start(spec):
+   py_sink_deliveries(world)                 lab-tiles surface, own force,
+                                             EEI+substation power, entities
+   poll parity_poll()       ◄──ᴿᶜᴼᴺ──       warmup → measure at game.speed≫1
+   compare per-sink rates                    per-sink counts + diagnostics
+```
+
+Sources/sinks are placed as real transport-belts scripted every tick
+(source lanes kept full, sink lanes counted then cleared), so the grid
+stays 1:1 with the engine's tile model and lane semantics — side-loading,
+curves, inserter drop lanes — come from the real game.
+
+One command (headless, tears itself down when done):
+
+```bash
+bash factorion-mod/scripts/parity_launch.sh --lessons all --seeds 3 --size 11
+```
+
+Or against an already-running instance (headless or GUI host, same RCON
+setup as above):
+
+```bash
+uv run python factorion-mod/server/parity.py \
+  --rcon-port 64502 --rcon-password <pw> \
+  --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 11
+```
+
+Useful flags: `--dry-run` (print specs + engine expectations, no Factorio
+needed), `--json-out results.json` (full dump for offline analysis),
+`--rel-tol/--abs-tol` (pass thresholds on per-sink items/s),
+`--warmup-ticks/--measure-ticks/--game-speed` (run shape; defaults
+1800/3600/32 — a 30 s settle plus a 60 s counting window, sped up 32×).
+
+Each factory prints one line per sink (`engine 15.000/s, factorio
+14.870/s (err 0.9%) ok`); a mismatch additionally prints the rendered
+factory and Factorio-side per-entity diagnostics — belt lane occupancy,
+machine status counts (`item_ingredient_shortage`, `output_full`, …),
+`products_finished` deltas, inserter held fractions — to localise where
+flow stalls, per the diagnosis idea in #261. The exit code is 0 iff every
+sink of every factory matched. This is a local, on-demand tool — it needs
+a licensed Factorio install, so it deliberately does not run in CI.
+
+Runs narrate themselves in-game: chat messages (`game.print`, which also
+reach the headless server console) announce build errors, warmup→measure
+transitions, periodic progress with live per-sink rates, and the final
+rates; map overlays draw the grid outline, label every source/sink (sink
+labels tick up with the measured rate), and hang a red status tag over
+any machine/inserter that isn't `working` at sample time — so a
+spectator literally watches where flow stalls. The Python side mirrors
+the heartbeat, printing phase + percent lines while it polls.
+
+To watch a run from the GUI: `/c game.player.teleport({5, 5},
+"factorion-parity")` (the grid's top-left tile is at 0,0 on that
+surface). Runs execute on their own surface and force, so they never
+touch the hosting save's world; `game.speed` is restored to 1.0 when the
+run ends or `parity_abort` is called.
+
+### Parity status: what's verified vs. needs a live game
+
+Verified without Factorio: Lua syntax (`luac -p`), the tensor→spec
+conversion across every `LessonKind` (`tests/test_parity_spec.py` —
+prototype names, direction conversion incl. the inserter flip, splitter
+centers, UG types, recipes, RCON-safe JSON), and that
+`py_sink_deliveries` aggregates back to `simulate_throughput`'s score.
+
+To check on the first live run (in rough order):
+
+1. `remote.call('factorion','parity_start', …)` round trip:
+   `bash factorion-mod/scripts/parity_launch.sh --lessons MOVE_ONE_ITEM --seeds 1`
+   — a pure belt line, engine says 15.0/s. Expect ~15/s measured.
+2. Scripted source/sink belts actually saturate/drain (sources feed
+   ~15/s in the result's `sources[].rate`).
+3. `create_entity` direction semantics for inserters match blueprint
+   import (the +8 flip) — MEMORISE lessons stall at 0/s if wrong.
+4. Power: machines/inserters show `working`, not `no_power`, in
+   `status_counts` (substation ring + electric-energy-interface).
+5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
+   (MEMORISE_3.._5 lessons).
+6. `game.speed` actually reached (wall-clock per run ≈
+   (warmup+measure)/60/speed seconds, CPU permitting).
+
 ## Debug interfaces (RCON)
 
 Server-callable remote methods exposed by the mod:
 
 - `ping()` — round-trip check
+- `parity_start(spec_json)` / `parity_poll()` / `parity_abort()` — the
+  engine-parity runner (see above; driven by `server/parity.py`)
 - `introspect()` — outbox depth, pending requests, players known
 - `dump_state(player_index?)` — full footprint + sources + sinks dump
 - `inject_request(json, deliver_to_player_index)` — synthesise a request

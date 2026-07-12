@@ -1,0 +1,46 @@
+# FAILING FIXTURE — documents an engine bug (issue #261 parity harness).
+#
+# The engine gives a long-handed inserter the SAME throughput as a regular
+# inserter (types.rs `flow_rate`: both `Inserter` and `LongHandedInserter`
+# return 0.86, with a comment claiming they are "functionally identical …
+# same throughput"). They are not: a long-handed inserter's hand rotates
+# faster (432 deg/s vs the regular inserter's 302 deg/s), so it moves items
+# proportionally faster.
+#
+# Real Factorio measures a long-handed-inserter-bottlenecked line at 1.2/s
+# (parity harness, belt->LHI->belt and belt-line, both 1.2, converged over
+# 200+ items). The rotation-scaled value consistent with the engine's own
+# regular-inserter constant is 0.86 * 432/302 ≈ 1.2.
+#
+# These fixtures assert 1.2, so `test_all_yamls_in_factories_dir` FAILS
+# until LongHandedInserter gets its own (higher) flow_rate. The engine
+# already models the LHI's 2-tile REACH correctly (entities.rs
+# inserter_connections(..., 2)); only the throughput constant is wrong.
+#
+# NB when fixing: pick the exact LHI flow_rate and align this assertion to
+# it; the EXISTING fixtures long_handed_inserter_throughput.yaml and the LHI
+# case in long_handed_inserter_assembler_block.yaml also assert 0.86 and
+# must be updated to the new value in the same change.
+description: |
+  source -> long-handed inserter -> sink (belt to belt). The LHI is the sole
+  bottleneck, so the sink rate is the LHI's throughput: 1.2/s, NOT the
+  regular inserter's 0.86.
+items:
+- { x: 0, y: 0, item: copper_cable }
+- { x: 4, y: 0, item: copper_cable }
+throughput:
+- { item: copper_cable, per_second: 1.2 }
+factory: |
+  S> .. l> .. K>
+---
+description: |
+  A long-handed inserter caps a full-speed (15/s) belt line: source -> belt,
+  LHI reaches two tiles past the belt's end into the sink. Throttled to the
+  LHI throughput 1.2/s (the engine wrongly reports 0.86).
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 1.2 }
+factory: |
+  S> b> .. l> .. K>

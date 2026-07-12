@@ -200,7 +200,7 @@ mod tests {
     /// renderer would otherwise silently produce an unparseable `?`.
     #[test]
     fn test_entity_registry_matches_placeable_items() {
-        for &item in crate::types::all_items() {
+        for item in crate::types::all_items() {
             if item.is_placeable() {
                 assert!(
                     ENTITY_CHARS.iter().any(|(_, i, _)| *i == item),

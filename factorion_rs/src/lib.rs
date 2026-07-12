@@ -47,9 +47,11 @@ use graph::build_graph;
 #[cfg(feature = "pyo3-bindings")]
 use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
+use std::collections::HashMap;
+#[cfg(feature = "pyo3-bindings")]
 use throughput::{calc_throughput, factory_score};
 #[cfg(feature = "pyo3-bindings")]
-use types::{all_items, all_recipes, Direction};
+use types::{all_items, all_recipes, Direction, Item, Recipe};
 #[cfg(feature = "pyo3-bindings")]
 use world::World;
 
@@ -69,6 +71,42 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
     let graph = build_graph(&world);
     let (deliveries, num_unreachable) = calc_throughput(&graph);
     Ok((factory_score(&deliveries), num_unreachable))
+}
+
+/// Python-facing shape of one sink's delivery: the sink's anchor tile, the
+/// item it is configured to accept (`None` when unset), and the achieved
+/// items/s of that item reaching it.
+#[cfg(feature = "pyo3-bindings")]
+type PySinkDelivery = (usize, usize, Option<String>, f64);
+
+/// Per-sink achieved throughput of a factory represented as a 3D tensor.
+///
+/// Input: numpy array of shape (W, H, C), dtype i64 — the same world tensor
+/// `simulate_throughput` takes.
+///
+/// Returns one `(x, y, item_name, achieved_items_per_sec)` tuple per sink,
+/// keyed by the sink's anchor tile. This is the un-aggregated form of
+/// `simulate_throughput`'s score (which collapses these through
+/// [`factory_score`]) — the Factorio parity harness compares each sink's
+/// rate against the real game individually so a mismatch points at a sink,
+/// not just at the factory.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_sink_deliveries(world: PyReadonlyArray3<i64>) -> PyResult<Vec<PySinkDelivery>> {
+    let world = World::from_numpy(&world);
+    let graph = build_graph(&world);
+    let (deliveries, _) = calc_throughput(&graph);
+    Ok(deliveries
+        .into_iter()
+        .map(|d| {
+            (
+                d.anchor.0,
+                d.anchor.1,
+                d.item.map(|i| i.name().to_string()),
+                d.achieved,
+            )
+        })
+        .collect())
 }
 
 /// Python-facing shape of a built factory graph: the node labels and the
@@ -144,7 +182,7 @@ fn py_entity_tiles(
 #[pyfunction]
 fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let outer = PyDict::new(py);
-    for &item in all_items() {
+    for item in all_items() {
         let entry = PyDict::new(py);
         let (w, h) = item.size();
         entry.set_item("name", item.name())?;
@@ -161,7 +199,14 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 ///
 /// Shape: `{item_name: {"consumes": {item_name: rate, ...},
 ///                      "produces": {item_name: rate, ...},
-///                      "crafting_time": seconds_per_craft}}`.
+///                      "crafting_time": seconds_per_craft,
+///                      "produced_by": [machine_name, ...],
+///                      "total_raw": {item_name: amount, ...},
+///                      "total_raw_time": cumulative_seconds}}`.
+///
+/// `total_raw` is derived (each ingredient reduced through the recipe set to
+/// items with no recipe); `total_raw_time` is the summed craft time of the
+/// whole tree — see [`types::TotalRaw`].
 ///
 /// This is the single source of truth for recipe data — Python builds its
 /// `recipes` dict from this at module load.
@@ -169,7 +214,10 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[pyfunction]
 fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let outer = PyDict::new(py);
-    for (item, recipe) in all_recipes() {
+    let recipes = all_recipes();
+    // Built once and shared across every recipe's total_raw expansion.
+    let index: HashMap<Item, Recipe> = recipes.iter().cloned().collect();
+    for (item, recipe) in &recipes {
         let entry = PyDict::new(py);
         let consumes = PyDict::new(py);
         for &(i, rate) in recipe.consumes.iter() {
@@ -179,9 +227,18 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
         for &(i, rate) in recipe.produces.iter() {
             produces.set_item(i.name(), rate)?;
         }
+        let total = recipe.total_raw(&index);
+        let total_raw = PyDict::new(py);
+        for &(i, amount) in total.items.iter() {
+            total_raw.set_item(i.name(), amount)?;
+        }
+        let produced_by: Vec<&str> = recipe.produced_by.iter().map(|m| m.name()).collect();
         entry.set_item("consumes", consumes)?;
         entry.set_item("produces", produces)?;
         entry.set_item("crafting_time", recipe.crafting_time)?;
+        entry.set_item("produced_by", produced_by)?;
+        entry.set_item("total_raw", total_raw)?;
+        entry.set_item("total_raw_time", total.time)?;
         outer.set_item(item.name(), entry)?;
     }
     Ok(outer.into())
@@ -258,6 +315,7 @@ fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;

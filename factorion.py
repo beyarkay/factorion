@@ -164,6 +164,9 @@ class Recipe:
     consumes: dict[str, float]
     produces: dict[str, float]
     crafting_time: float  # canonical wiki seconds per craft
+    produced_by: list[str]
+    total_raw: dict[str, float]
+    total_raw_time: float
 
 
 # Recipes are defined in Rust (factorion_rs/src/types.rs::all_recipes)
@@ -174,6 +177,9 @@ recipes = {
         consumes=dict(data["consumes"]),
         produces=dict(data["produces"]),
         crafting_time=data["crafting_time"],
+        produced_by=list(data["produced_by"]),
+        total_raw=dict(data["total_raw"]),
+        total_raw_time=data["total_raw_time"],
     )
     for name, data in factorion_rs.py_recipes().items()
 }

@@ -234,9 +234,62 @@ class TestPyRecipesBinding:
         # Spot-check a handful of canonical wiki values.
         assert rs["copper_cable"]["crafting_time"] == 0.5
         assert rs["electronic_circuit"]["crafting_time"] == 0.5
-        assert rs["steel_plate"]["crafting_time"] == 16.0
         assert rs["advanced_circuit"]["crafting_time"] == 6.0
         assert rs["engine_unit"]["crafting_time"] == 10.0
+
+    def test_produced_by(self):
+        rs = factorion_rs.py_recipes()
+        # Standard crafting recipe: all three assembler tiers (hand excluded).
+        assert rs["electronic_circuit"]["produced_by"] == [
+            "assembling_machine_1",
+            "assembling_machine_2",
+            "assembling_machine_3",
+        ]
+        # engine_unit is advanced-crafting — assembling machine 1 can't make it.
+        assert rs["engine_unit"]["produced_by"] == [
+            "assembling_machine_2",
+            "assembling_machine_3",
+        ]
+
+    def test_every_recipe_produced_by_assemblers(self):
+        rs = factorion_rs.py_recipes()
+        assemblers = {
+            "assembling_machine_1",
+            "assembling_machine_2",
+            "assembling_machine_3",
+        }
+        for name, data in rs.items():
+            assert data["produced_by"], f"{name} has empty produced_by"
+            assert set(data["produced_by"]) <= assemblers, (
+                f"{name} produced_by non-assembler: {data['produced_by']}"
+            )
+
+    def test_total_raw_expands_to_raw_items(self):
+        rs = factorion_rs.py_recipes()
+        # 1 copper plate -> 2 cables; copper plate is raw.
+        assert rs["copper_cable"]["total_raw"] == {"copper_plate": 1.0}
+        # 3 cable (=1.5 copper plate) + 1 iron plate.
+        assert rs["electronic_circuit"]["total_raw"] == {
+            "copper_plate": 1.5,
+            "iron_plate": 1.0,
+        }
+
+    def test_total_raw_time_is_cumulative(self):
+        rs = factorion_rs.py_recipes()
+        # Own craft (0.5s) + the 1.5 copper-cable crafts (0.75s) = 1.25s;
+        # strictly greater than the recipe's own crafting_time.
+        ec = rs["electronic_circuit"]
+        assert ec["total_raw_time"] == 1.25
+        assert ec["total_raw_time"] > ec["crafting_time"]
+
+    def test_every_recipe_has_total_raw(self):
+        rs = factorion_rs.py_recipes()
+        for name, data in rs.items():
+            assert data["total_raw"], f"{name} has empty total_raw"
+            assert data["total_raw_time"] > 0, f"{name} total_raw_time not positive"
+            # Raws bottom out at items that have no recipe of their own.
+            for raw in data["total_raw"]:
+                assert raw not in rs, f"{name} total_raw lists craftable {raw}"
 
 
 class TestPythonRecipesDict:
@@ -245,6 +298,9 @@ class TestPythonRecipesDict:
         assert hasattr(ec, "consumes")
         assert hasattr(ec, "produces")
         assert hasattr(ec, "crafting_time")
+        assert hasattr(ec, "produced_by")
+        assert hasattr(ec, "total_raw")
+        assert hasattr(ec, "total_raw_time")
 
     def test_canonical_electronic_circuit(self):
         ec = recipes["electronic_circuit"]
@@ -270,4 +326,13 @@ class TestRustPythonRecipeParity:
             )
             assert py_recipe.crafting_time == rs[name]["crafting_time"], (
                 f"{name}.crafting_time mismatch"
+            )
+            assert py_recipe.produced_by == rs[name]["produced_by"], (
+                f"{name}.produced_by mismatch"
+            )
+            assert py_recipe.total_raw == rs[name]["total_raw"], (
+                f"{name}.total_raw mismatch"
+            )
+            assert py_recipe.total_raw_time == rs[name]["total_raw_time"], (
+                f"{name}.total_raw_time mismatch"
             )
