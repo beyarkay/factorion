@@ -45,6 +45,7 @@ on_exit() {
     if [ "$rc" -ne 0 ]; then
         echo "[fci] job failed (exit ${rc}); uploading boot log to W&B"
         FCI_RC="$rc" python - << 'PY' || true
+import base64
 import json
 import os
 
@@ -59,7 +60,7 @@ tags = [
     f"kind:{os.environ.get('FCI_KIND', 'unknown')}",
     f"sha:{os.environ.get('FCI_SHA', 'unknown')[:7]}",
 ]
-tags += json.loads(os.environ.get("FCI_EXTRA_TAGS", "[]"))
+tags += json.loads(base64.b64decode(os.environ.get("FCI_EXTRA_TAGS_B64", "")) or b"[]")
 run = wandb.init(
     project=os.environ.get("FCI_WANDB_PROJECT", "factorion"),
     name=f"boot-failure-{os.environ.get('RUNPOD_POD_ID', 'unknown')}",
@@ -179,7 +180,12 @@ def launch(
         # For the bootstrap's boot-failure run: the tags the real run would
         # carry, so a failure that never reaches jobs.py still reports to the PR.
         "FCI_KIND": job.KIND,
-        "FCI_EXTRA_TAGS": json.dumps(list(getattr(job, "extra_tags", []))),
+        # base64 like the other FCI_*_B64 payloads: the raw JSON carries double
+        # quotes, which RunPod splices unescaped into its GraphQL env mutation
+        # and breaks it (Syntax Error: Expected Name, found String).
+        "FCI_EXTRA_TAGS_B64": base64.b64encode(
+            json.dumps(list(getattr(job, "extra_tags", []))).encode()
+        ).decode(),
     }
     if wandb_run_id:
         env["FCI_WANDB_RUN_ID"] = wandb_run_id
