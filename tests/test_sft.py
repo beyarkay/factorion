@@ -39,6 +39,7 @@ from sft import (
     _point_biserial,
     _source_sink_distance,
     _steps_per_epoch,
+    _solved_assembler_recipes,
     build_lr_schedule,
     extract_expert_actions,
     run_rollout_eval,
@@ -776,6 +777,162 @@ class TestTrackedArtifact:
         assert captured["name"] == _artifact_name(args)
 
 
+class TestSolvedAssemblerRecipes:
+    """_solved_assembler_recipes — the ground truth the rollout scores against."""
+
+    def test_memorise_factory_yields_its_recipe(self):
+        f = build_factory(
+            size=9, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=3
+        )
+        assert f is not None
+        asm_id = str2ent("assembling_machine_1").value
+        recipes = _solved_assembler_recipes(f.world_CWH)
+        # Exactly one assembler → exactly one recipe, and it matches the ITEMS
+        # tag on the assembler tile.
+        assert len(recipes) == 1
+        ent = f.world_CWH[Channel.ENTITIES.value]
+        item = f.world_CWH[Channel.ITEMS.value]
+        asm_items = {int(v) for v in item[ent == asm_id].tolist()}
+        assert recipes == asm_items
+
+    def test_belt_factory_has_no_recipe(self):
+        f = build_factory(size=9, kind=LessonKind.MOVE_ONE_ITEM, seed=3)
+        assert f is not None
+        assert _solved_assembler_recipes(f.world_CWH) == set()
+
+
+class TestRolloutAsmItemAcc:
+    """Recipe-pick accuracy inlined into run_rollout_eval: of the assemblers the
+    greedy agent actually places, how many got the right recipe (#264)."""
+
+    def _forced_agent(self, size, item_id):
+        """An agent whose entity head always places an assembler (with NONE
+        dir/misc), whose item head always picks `item_id`, and whose tile head
+        prefers central tiles. Zeroing the head weights makes the sculpted bias
+        the sole determinant of every argmax; the central tile bias makes the
+        first placement land where the blanked assembler used to sit (empty, so
+        the 3x3 footprint always fits) — otherwise a random tile argmax can loop
+        forever on a corner where the footprint runs off-grid and place nothing.
+        """
+        asm_id = str2ent("assembling_machine_1").value
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, layers=(16, 16, 16))
+        envs.close()
+        with torch.no_grad():
+            for head, idx in (
+                (agent.ent_head, asm_id),
+                (agent.item_head, item_id),
+                (agent.dir_head, 0),   # Direction.NONE
+                (agent.misc_head, 0),  # Misc.NONE
+            ):
+                head.weight.zero_()
+                head.bias.fill_(-100.0)
+                head.bias[idx] = 100.0
+
+        # Center-weighted tile logits (highest at the grid center), so the legal
+        # argmax lands on the most central buildable tile. Wrapped in a Module
+        # because nn.Module forbids replacing a submodule with a bare function.
+        yy, xx = torch.meshgrid(
+            torch.arange(size), torch.arange(size), indexing="ij"
+        )
+        center = size // 2
+        tile_map = (-((xx - center) ** 2 + (yy - center) ** 2)).float().reshape(
+            1, 1, size, size
+        )
+
+        class _FixedTile(torch.nn.Module):
+            def forward(self, encoded):
+                return tile_map.expand(encoded.shape[0], 1, size, size)
+
+        agent.tile_logits = _FixedTile()
+        agent.eval()
+        return agent
+
+    def _seeds_with_recipe(self, size, recipe_id, n, start=600_000):
+        """`n` MEMORISE_1 seeds whose (single) assembler recipe is `recipe_id`."""
+        out = {}
+        s = start
+        while len(out) < n and s < start + 20_000:
+            f = build_factory(
+                size=size, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=s
+            )
+            if f is not None and _solved_assembler_recipes(f.world_CWH) == {recipe_id}:
+                out[s] = LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value
+            s += 1
+        return out
+
+    def _two_recipes(self, size):
+        """Two distinct MEMORISE_1 recipe ids that both occur at this size."""
+        seen = []
+        s = 600_000
+        while len(seen) < 2 and s < 620_000:
+            f = build_factory(
+                size=size, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=s
+            )
+            if f is not None:
+                r = _solved_assembler_recipes(f.world_CWH)
+                if r and next(iter(r)) not in seen:
+                    seen.append(next(iter(r)))
+            s += 1
+        assert len(seen) == 2
+        return seen[0], seen[1]
+
+    def test_return_has_asm_keys(self, registered_env):
+        """Shape contract used by both SFT val/ and PPO eval/ logging."""
+        size = 9
+        agent = self._forced_agent(size, item_id=6)  # copper_cable-ish id
+        seeds = {s: LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value
+                 for s in list(self._seeds_with_recipe(size, self._two_recipes(size)[0], 2))}
+        roll = run_rollout_eval(
+            agent, SftArgs(seed=1, size=size), seeds, torch.device("cpu"), max_seeds=2
+        )
+        assert {"asm_item_acc", "per_kind_asm_item_acc", "per_kind_asm_n"} <= set(roll)
+        assert 0.0 <= roll["asm_item_acc"] <= 1.0
+
+    def test_correct_recipe_scores_one_wrong_scores_zero(self, registered_env):
+        size = 9
+        recipe, other = self._two_recipes(size)
+        seeds = self._seeds_with_recipe(size, recipe, n=8)
+        assert len(seeds) >= 4, "need several matching-recipe factories"
+        args = SftArgs(seed=1, size=size)
+
+        # Agent always places an assembler with the CORRECT recipe.
+        good = run_rollout_eval(
+            self._forced_agent(size, item_id=recipe), args, seeds,
+            torch.device("cpu"), max_seeds=len(seeds),
+        )
+        placed = good["per_kind_asm_n"]["MEMORISE_1_INGREDIENT_RECIPES"]
+        assert placed > 0, "forced agent should land at least one assembler"
+        assert good["asm_item_acc"] == 1.0
+        assert good["per_kind_asm_item_acc"]["MEMORISE_1_INGREDIENT_RECIPES"] == 1.0
+
+        # Same factories, but the agent always picks a DIFFERENT recipe.
+        bad = run_rollout_eval(
+            self._forced_agent(size, item_id=other), args, seeds,
+            torch.device("cpu"), max_seeds=len(seeds),
+        )
+        assert bad["per_kind_asm_n"]["MEMORISE_1_INGREDIENT_RECIPES"] > 0
+        assert bad["asm_item_acc"] == 0.0
+
+    def test_belt_only_lesson_never_scored(self, registered_env):
+        """A factory with no assembler contributes no assembler placements, even
+        when the agent tries to place assemblers everywhere."""
+        size = 9
+        seed = next(
+            s for s in range(700_000, 700_500)
+            if build_factory(size=size, kind=LessonKind.MOVE_ONE_ITEM, seed=s)
+            is not None
+        )
+        roll = run_rollout_eval(
+            self._forced_agent(size, item_id=6),
+            SftArgs(seed=1, size=size),
+            {seed: LessonKind.MOVE_ONE_ITEM.value},
+            torch.device("cpu"),
+            max_seeds=1,
+        )
+        assert roll["per_kind_asm_n"]["MOVE_ONE_ITEM"] == 0
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
@@ -841,6 +998,9 @@ class TestRunRolloutEval:
             "per_kind",
             "per_kind_eot",
             "per_kind_n",
+            "asm_item_acc",
+            "per_kind_asm_item_acc",
+            "per_kind_asm_n",
         }
         overall, per_kind, per_kind_n = (
             roll["overall"],
