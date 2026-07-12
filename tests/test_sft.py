@@ -547,6 +547,63 @@ class TestSFTCheckpointLoading:
 
         envs.close()
 
+    def test_train_sft_start_from_loads_checkpoint_weights(
+        self, registered_env, tmp_path
+    ):
+        """train_sft(--start-from ckpt) resumes a prior run: it loads that
+        checkpoint's full state dict into the agent before training, rather than
+        starting from a fresh init. Marks one head's bias with a sentinel in the
+        checkpoint and asserts it reaches the agent via load_state_dict."""
+        import sft as sft_mod
+
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
+        ref = AgentCNN(envs, layers=(16, 16, 16))
+        envs.close()
+        with torch.no_grad():
+            ref.ent_head.bias.fill_(4.2)
+        ckpt = str(tmp_path / "resume_from.pt")
+        torch.save(ref.state_dict(), ckpt)
+
+        # Spy on the constructed agent's load_state_dict so we capture the
+        # tensors actually loaded (training mutates them afterwards, so the
+        # load is the only clean observation point).
+        captured = {}
+        real_cls = sft_mod.AgentCNN
+
+        def spy(*a, **kw):
+            agent = real_cls(*a, **kw)
+            orig_load = agent.load_state_dict
+
+            def load(state_dict, *la, **lkw):
+                captured["ent_bias"] = state_dict["ent_head.bias"].clone()
+                return orig_load(state_dict, *la, **lkw)
+
+            agent.load_state_dict = load
+            return agent
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(sft_mod, "AgentCNN", spy)
+            args = SftArgs(
+                seed=1,
+                size=5,
+                num_samples=100,
+                max_level=2,
+                epochs=1,
+                batch_size=32,
+                layer1=16,
+                layer2=16,
+                layer3=16,
+                start_from=ckpt,
+                checkpoint_path=str(tmp_path / "resumed.pt"),
+                summary_path=str(tmp_path / "resumed.json"),
+            )
+            train_sft(args)
+
+        assert "ent_bias" in captured, "--start-from must trigger a state-dict load"
+        assert torch.allclose(
+            captured["ent_bias"], torch.full_like(captured["ent_bias"], 4.2)
+        ), "the resumed checkpoint's weights must be the ones loaded"
+
 
 class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):

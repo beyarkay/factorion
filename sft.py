@@ -44,6 +44,7 @@ from ppo import (  # noqa: E402
     make_env,
     layers_from_args,
     assert_device_ok,
+    _resolve_start_from,
     _CH_ENT,
     _CH_ITEMS,
     _CH_FOOTPRINT,
@@ -929,6 +930,17 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
+
+    if args.start_from is not None:
+        print(f"Loading model weights from {args.start_from}")
+        ckpt_path = _resolve_start_from(
+            args.start_from, args.wandb_project_name, args.wandb_entity
+        )
+        # Load to CPU first; the checkpoint may hold CUDA tensors (saved on a
+        # GPU pod) and the agent is moved onto `device` just below, so this
+        # keeps --start-from working on CPU/MPS boxes too.
+        agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+
     agent.to(device)
 
     if cached_train is not None:
@@ -1005,6 +1017,8 @@ def train_sft(args: SftArgs):
         import wandb
 
         sft_tags = ["sft"] + (args.tags or [])
+        if args.start_from is not None:
+            sft_tags.append(f"start_from:{args.start_from}")
         run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
