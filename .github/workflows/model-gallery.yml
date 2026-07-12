@@ -1,0 +1,89 @@
+name: Model gallery
+
+# Renders a trained model's factory completions to a static HTML site and
+# deploys it to GitHub Pages. Inference runs here (this runner has the compute);
+# Pages only serves the finished, self-contained HTML — no server at view time.
+#
+# Requires a WANDB_API_KEY repo secret so the run's checkpoint artifact can be
+# downloaded. Trigger from the Actions tab (or the GitHub mobile app) with a
+# W&B run id, then open the Pages URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      wandb_run:
+        description: "W&B run id to visualise (e.g. j0s5y2mc)"
+        required: true
+        default: "j0s5y2mc"
+      size:
+        description: "Grid size (must match the checkpoint's training size)"
+        required: false
+        default: "11"
+      seeds_per_lesson:
+        description: "Factories to show per lesson"
+        required: false
+        default: "5"
+      lessons:
+        description: "Space-separated LessonKind subset (blank = all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one gallery deploy at a time; a newer run supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: factorion_rs
+      - name: Install dependencies
+        run: |
+          uv pip install --system maturin
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system numpy gymnasium networkx tyro tqdm matplotlib plotly wandb runpod requests
+      - name: Build and install factorion_rs
+        run: cd factorion_rs && maturin build --release --out dist && uv pip install --system dist/*.whl
+      - name: Generate gallery
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          python scripts/model_gallery.py \
+            --wandb-run "${{ github.event.inputs.wandb_run }}" \
+            --size "${{ github.event.inputs.size }}" \
+            --seeds-per-lesson "${{ github.event.inputs.seeds_per_lesson }}" \
+            ${{ github.event.inputs.lessons && format('--lessons {0}', github.event.inputs.lessons) || '' }} \
+            --output ./gallery
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./gallery
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
