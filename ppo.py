@@ -473,6 +473,10 @@ def _resolve_wandb_checkpoint(
             "run_url": run.url,
             "run_name": run.name,
             "artifact": art.name,
+            # Consumers such as the in-game mod server need the exact grid and
+            # encoder shape to reconstruct AgentCNN.  Keeping the run config
+            # with the provenance avoids a second W&B API round trip.
+            "config": dict(getattr(run, "config", {})),
         }
         return path, source
     finally:

@@ -12,8 +12,8 @@ against the engine's prediction. Full sequence, from nothing to a report:
 
 1. **One-time setup** (per machine):
    - Symlink + enable the mod: `bash factorion-mod/scripts/install_mod.sh`
-     (also add `{"name":"factorion","enabled":true}` to the mods dir's
-     `mod-list.json` if it isn't there). See *install_mod.sh is macOS-safe*.
+     (the script updates `mod-list.json` idempotently). See *install_mod.sh is
+     macOS-safe*.
    - Enable RCON for GUI hosting: add `local-rcon-socket` /
      `local-rcon-password` under `[other]` in Factorio's `config.ini` (see
      *RCON to a GUI-hosted game*). On this laptop it's already

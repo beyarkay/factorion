@@ -1,17 +1,18 @@
 # Factorion server
 
-Loads a trained Factorion `AgentCNN` checkpoint, polls a running
+Loads a trained Factorion `AgentCNN` checkpoint (local or directly from a W&B
+run), polls a running
 Factorio instance over RCON for prediction requests, runs iterative
 greedy inference, and pushes the resulting blueprint back via the same
 RCON connection.
 
 ## Run
 
-Easiest path: use the launcher in `scripts/`, which spawns Factorio +
-server together with auto-generated RCON port/password:
+Easiest GUI path: use `serve.sh`. It installs/enables the mod, reads Factorio's
+GUI RCON config, downloads the W&B model, and waits for a hosted game:
 
 ```bash
-bash factorion-mod/scripts/launch.sh path/to/agent.pt
+bash factorion-mod/scripts/serve.sh 38vza7tf
 ```
 
 Manual path:
@@ -19,7 +20,7 @@ Manual path:
 ```bash
 # from the repo root, so `factorion` and `factorion_rs` import cleanly
 uv run python factorion-mod/server/server.py \
-  --checkpoint path/to/agent.pt \
+  --checkpoint 38vza7tf \
   --rcon-host 127.0.0.1 \
   --rcon-port 27015 \
   --rcon-password factorion
@@ -33,19 +34,26 @@ factorio --rcon-bind 127.0.0.1:27015 --rcon-password factorion
 
 Required flags for the server:
 
-- `--checkpoint` — the `torch.save(agent.state_dict(), ...)` file from
-  PPO (`runs/<run>/agent.pt`) or SFT (`sft_runs/<run>/agent.pt`).
+- `--checkpoint` — a local `torch.save(agent.state_dict(), ...)` file, W&B run
+  id, `entity/project/id`, or normal W&B run URL. W&B runs supply grid and
+  architecture metadata automatically.
 - `--rcon-port` / `--rcon-password` — must match what Factorio was
   launched with.
 
-Architecture knobs (must match how the checkpoint was trained):
+Architecture overrides (normally only needed for old local checkpoints with no
+sidecar metadata):
 
-- `--grid-size 8` (default 8)
-- `--chan1 32 --chan2 64 --chan3 64`
+- `--grid-size 11`
+- `--layers 93,69,96 --kernel-size 3`
 
 If you put a sidecar JSON next to the checkpoint named `agent.hp.json`
-with `{"grid_size": 8, "chan1": 32, ...}`, the server reads it
-automatically (CLI flags override only when explicitly non-default).
+with `{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}`, the
+server reads it automatically (explicit CLI flags override metadata).
+
+While the server is running, `/model <path-or-wandb-id>` in Factorio hot-swaps
+the in-memory checkpoint. A failed load leaves the previous model active. W&B
+models report their direct run URL in chat, and every prediction queue message
+names the active model.
 
 ## Protocol
 

@@ -29,8 +29,15 @@ channel for an external process is RCON.
 
 ## Source / sink representation
 
-The mod uses **constant-combinators** as source/sink markers. Place one
-in your footprint and configure its first section with three filters:
+The normal workflow uses separate green **source** and orange **sink** tools.
+Click a tile and a dialog opens; choose what that endpoint provides or receives
+and the direction items flow. The tool places a real constant-combinator on the
+tile with the item, role, and arrow signals, plus a floating colored label such
+as `SOURCE for iron-plate →`. Mining the combinator removes the endpoint.
+
+Configured **constant-combinators** remain available as an advanced/legacy
+alternative. Place one in the region and configure its first section with
+three filters:
 
 | filter | purpose         | values                                                                  |
 | ------ | --------------- | ----------------------------------------------------------------------- |
@@ -83,11 +90,12 @@ factorion-mod/
 │   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
+    ├── serve.sh              ← one-command GUI setup + W&B/local model server
     ├── launch.sh             ← spawn Factorio with auto-RCON + start server (headless)
     └── parity_launch.sh      ← headless Factorio + parity harness, one command
 ```
 
-## Quick start
+## Quick start (GUI)
 
 1. Build the project's Rust extension and install deps (one-time, from
    the repo root):
@@ -97,37 +105,41 @@ factorion-mod/
    uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
    ```
 
-2. Symlink the mod into Factorio:
+2. Configure GUI-host RCON once in `config.ini` as described above. Then run
+   the all-in-one command with either a local checkpoint or a W&B run id/URL:
 
    ```bash
-   bash factorion-mod/scripts/install_mod.sh
+   bash factorion-mod/scripts/serve.sh 38vza7tf
    ```
 
-3. Set `mod settings → Factorion grid size` to match what your checkpoint
-   was trained on (default 8; the included `0g9hfjna` checkpoint is 11).
+   This installs and enables the mod, downloads the run's latest model artifact,
+   reads the exact grid/encoder architecture from W&B, and waits for Factorio.
 
-4. Enable RCON. Either headless (use `scripts/launch.sh`) or GUI host
-   mode (edit `config.ini` per above).
+3. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
+   region brush and run `38vza7tf` both use a fixed 11×11 grid; checkpoints
+   trained at another size are rejected with a clear error.
 
-5. Start the server pointed at your checkpoint:
+For a manual or headless setup, start the server directly. `--checkpoint`
+accepts a local `.pt`, bare W&B run id, `entity/project/id`, or run URL:
 
-   ```bash
-   uv run python factorion-mod/server/server.py \
-     --checkpoint path/to/agent.pt \
-     --rcon-port 64502 --rcon-password <pw>
-   ```
+```bash
+uv run python factorion-mod/server/server.py \
+  --checkpoint 38vza7tf \
+  --rcon-port 64502 --rcon-password <pw>
+```
 
-   A sidecar `agent.hp.json` next to the `.pt` with `{"grid_size": N, "chan1": …}`
-   is read automatically.
+For local files, an `agent.hp.json` sidecar with
+`{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}` is read
+automatically.
 
-6. In Factorio:
-   - Place one or more **constant-combinators** in the area you want
-     the factory built. Configure each per the table above.
-   - Take the **Factorion footprint tool** (granted on first join; or
-     `Ctrl+T` to re-grant).
-   - Drag-select the rectangular footprint over your combinators. The
-     mod auto-fires a prediction as soon as the area is valid (≥1 source
-     + ≥1 sink detected). If you add combinators later, press `Ctrl+P`.
+4. In Factorio:
+   - Press `Ctrl+T` to receive the three custom tools.
+   - Click once with the blue **region tool**. It stamps an 11×11 region
+     centered on that tile—there is no size-sensitive drag.
+   - Click inside it with the green **source tool**, then choose the supplied
+     item and flow direction. Do the same with the orange **sink tool**. Each
+     endpoint becomes a labeled constant-combinator on the map.
+   - Press `Ctrl+P` to request a prediction.
    - A blueprint titled `Factorion: N entities (M placed + K markers)`
      lands in your cursor. Description has a per-step trace with item
      icons. Paste to materialise.
@@ -136,6 +148,16 @@ factorion-mod/
    - `Ctrl+P` — request prediction
    - `Ctrl+R` — clear footprint, sources and sinks
    - `Ctrl+T` — re-grant selection tools
+
+   Change checkpoints without restarting the game or Python server:
+
+   ```text
+   /model 38vza7tf
+   /model /absolute/path/to/agent.pt
+   ```
+
+   The server reports success or the load error in chat. Models not trained on
+   an 11×11 grid are rejected because the in-game brush is intentionally fixed.
 
 ## Engine parity harness (issue #261)
 
