@@ -191,6 +191,13 @@ class PpoArgs(SharedArgs):
 
 @dataclass
 class SftArgs(SharedArgs):
+    start_from: Optional[str] = None
+    """Checkpoint to resume training from instead of a fresh model: either a
+    local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74', whose
+    model artifact is downloaded automatically). Loads the full AgentCNN state
+    dict so a long run can be continued rather than restarted. Pair with
+    --wandb-run-id to also log into the same W&B run."""
+
     # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
     num_samples: int = 45_000_000
     """(state, action) pairs streamed per epoch. Generated on the fly by
