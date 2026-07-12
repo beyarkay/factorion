@@ -46,6 +46,12 @@ from ppo import (  # noqa: E402
     assert_device_ok,
     _legal_tile_mask,
     _TILE_MASK_FILL,
+    _CH_ENT,
+    _CH_ITEMS,
+    _CH_FOOTPRINT,
+    _EMPTY_ENT_ID,
+    _ASM_MACHINE_ENT_ID,
+    _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SftArgs  # noqa: E402
 
@@ -397,6 +403,18 @@ class RolloutEval(TypedDict):
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    asm_item_acc: float  # frac of placed assemblers given the correct recipe
+    per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
+    per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
+
+
+def _solved_assembler_recipes(solved_CWH) -> set[int]:
+    """The set of recipes (item ids) carried by assemblers in a solved factory,
+    the ground truth for the rollout's recipe-pick check. Empty for factories
+    with no assembler (every non-MEMORISE lesson today)."""
+    asm_mask = solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID
+    recipes = solved_CWH[_CH_ITEMS][asm_mask]
+    return set() if not bool(asm_mask.any()) else {int(v) for v in recipes.unique().tolist()}
 
 
 def run_rollout_eval(
@@ -467,6 +485,8 @@ def run_rollout_eval(
     per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     all_throughputs: list[float] = []
     all_eot_throughputs: list[float] = []
+    per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
     if not seeds_sorted:
         if was_training:
@@ -479,6 +499,9 @@ def run_rollout_eval(
             "per_kind": zero,
             "per_kind_eot": dict(zero),
             "per_kind_n": per_kind_n,
+            "asm_item_acc": 0.0,
+            "per_kind_asm_item_acc": dict(zero),
+            "per_kind_asm_n": dict(per_kind_n),
         }
 
     # Cap K at the number of seeds — spinning up more envs than work
@@ -499,6 +522,9 @@ def run_rollout_eval(
     # seed this slot is replaying, and the throughput snapshotted when it did.
     eot_fired = [False] * K
     eot_thp = [0.0] * K
+    # Correct recipes for the factory each slot is replaying (from its solved
+    # world). Empty when that factory has no assembler, which skips the check.
+    asm_recipes: list[set[int]] = [set() for _ in range(K)]
     current: list[tuple[int, LessonKind, float]] = [
         (0, LessonKind.MOVE_ONE_ITEM, 0.0)
     ] * K
@@ -515,6 +541,7 @@ def run_rollout_eval(
             },
         )
         current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -565,6 +592,18 @@ def run_rollout_eval(
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
                 current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+
+                # Recipe-pick check: the agent tried to place an assembler in a
+                # factory that has one. Count it iff the assembler actually
+                # landed at the anchor (invalid placements are env no-ops), then
+                # score its recipe against the solved factory's recipes.
+                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
+                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
+                        per_kind_asm_total[k.name] += 1
+                        if action["item"] in asm_recipes[i]:
+                            per_kind_asm_correct[k.name] += 1
+
                 if not (terminated or truncated):
                     obs_batch[i] = torch.as_tensor(
                         next_obs,
@@ -594,6 +633,9 @@ def run_rollout_eval(
                         },
                     )
                     current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                    asm_recipes[i] = _solved_assembler_recipes(
+                        envs[i]._solved_world_CWH
+                    )
                     eot_fired[i] = False
                     eot_thp[i] = 0.0
                     obs_batch[i] = torch.as_tensor(
@@ -616,6 +658,15 @@ def run_rollout_eval(
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
 
+    asm_total_all = sum(per_kind_asm_total.values())
+    asm_item_acc = (
+        sum(per_kind_asm_correct.values()) / asm_total_all if asm_total_all else 0.0
+    )
+    per_kind_asm_item_acc = {
+        kn: (per_kind_asm_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_asm_total.items()
+    }
+
     if was_training:
         agent.train()
     return {
@@ -624,6 +675,9 @@ def run_rollout_eval(
         "per_kind": per_kind,
         "per_kind_eot": per_kind_eot,
         "per_kind_n": per_kind_n,
+        "asm_item_acc": asm_item_acc,
+        "per_kind_asm_item_acc": per_kind_asm_item_acc,
+        "per_kind_asm_n": dict(per_kind_asm_total),
     }
 
 
@@ -1465,6 +1519,16 @@ def train_sft(args: SftArgs):
             for kn, thp in roll["per_kind_eot"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput_eot"] = thp
+            # Recipe-pick accuracy from the same rollout: fraction of the
+            # assemblers the agent placed that got the right recipe. Only logged
+            # for factories that actually have an assembler (so it appears once
+            # the agent starts placing them, and never for belt-only lessons).
+            per_kind_asm_n = roll["per_kind_asm_n"]
+            if sum(per_kind_asm_n.values()) > 0:
+                per_kind_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
+            for kn, acc in roll["per_kind_asm_item_acc"].items():
+                if per_kind_asm_n[kn] > 0:
+                    per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
         else:
             overall_thp = None
             rollout_seconds = None
