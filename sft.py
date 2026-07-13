@@ -1046,9 +1046,6 @@ def train_sft(args: SftArgs):
     val_misc_acc = 0.0
     val_eot_acc = 0.0
     val_eot_pos_recall = 0.0
-    # Placement heads whose plain accuracy is inflated by a dominant NONE class,
-    # so not-none accuracy scores only their real-target samples (EOT: its rare
-    # positive class, so it reuses the positive-class recall under "eot").
     nn_heads = ("ent", "dir", "item", "misc")
     val_not_none_acc = {h: 0.0 for h in (*nn_heads, "eot")}
     # Cumulative optimisation pressure, used as the wandb x-axis (see the
