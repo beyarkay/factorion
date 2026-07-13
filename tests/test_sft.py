@@ -1479,6 +1479,107 @@ class TestPerKindEotMetrics:
         assert {k.split("/")[1] for k in acc_keys} == place_kinds
 
 
+class TestNotNoneHeadAccuracy:
+    """val/not_none_<HEAD>_acc and val/<LESSON>/not_none_<HEAD>_acc — per-head
+    accuracy restricted to samples whose target is a real (non-NONE) option, so
+    the dominant NONE class stops inflating the plain *_acc metrics."""
+
+    _HEADS = ["ent", "dir", "item", "misc", "eot"]
+
+    def test_not_none_metrics_logged(self, monkeypatch, tmp_path):
+        """train_sft must log the global val/not_none_<HEAD>_acc for every head
+        and the per-kind val/<LESSON>/not_none_<HEAD>_acc for kinds that
+        exercise a non-NONE target, each in [0, 1]."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: dict = {}
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=5,
+            num_samples=400,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts=False,  # skip the slow greedy rollout
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+
+        # Every head gets a global not-none metric, always in [0, 1].
+        for head in self._HEADS:
+            key = f"val/not_none_{head}_acc"
+            assert key in logged, f"expected global {key} to be logged"
+            assert 0.0 <= logged[key] <= 1.0, f"{key}={logged[key]} out of [0, 1]"
+
+        # Entity/direction have a non-NONE target on essentially every
+        # placement, so their per-kind not-none metric must appear for the
+        # kinds that get a placement /acc.
+        place_kinds = {
+            k.split("/")[1]
+            for k in logged
+            if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
+        }
+        for head in ("ent", "dir"):
+            kinds = {
+                k.split("/")[1]
+                for k in logged
+                if k.endswith(f"/not_none_{head}_acc") and k.count("/") == 2
+            }
+            assert kinds, f"expected per-kind val/<LESSON>/not_none_{head}_acc"
+            assert kinds <= place_kinds
+
+        # Any per-kind not-none metric that surfaced must be a valid fraction.
+        for k, v in logged.items():
+            if "/not_none_" in k and k.endswith("_acc") and k.count("/") == 2:
+                assert 0.0 <= v <= 1.0, f"{k}={v} out of [0, 1]"
+
+    def test_not_none_eot_acc_equals_pos_recall(self, monkeypatch, tmp_path):
+        """EOT's not-none option is the positive (stop) class, so its not-none
+        accuracy is exactly the positive-class recall already logged."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: dict = {}
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=5,
+            num_samples=400,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            layer1=16,
+            layer2=16,
+            layer3=16,
+            track=True,
+            eval_rollouts=False,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+
+        assert logged["val/not_none_eot_acc"] == logged["val/eot_pos_recall"]
+
+
 class TestDirectionConfusion:
     """Direction confusion matrix diagnostic. Direction values:
     NONE=0, NORTH=1, EAST=2, SOUTH=3, WEST=4."""

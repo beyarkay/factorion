@@ -49,6 +49,9 @@ from ppo import (  # noqa: E402
     _CH_ITEMS,
     _CH_FOOTPRINT,
     _EMPTY_ENT_ID,
+    _EMPTY_ITEM_VAL,
+    _DIR_NONE_VAL,
+    _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
@@ -1043,6 +1046,8 @@ def train_sft(args: SftArgs):
     val_misc_acc = 0.0
     val_eot_acc = 0.0
     val_eot_pos_recall = 0.0
+    nn_heads = ("ent", "dir", "item", "misc")
+    val_not_none_acc = {h: 0.0 for h in (*nn_heads, "eot")}
     # Cumulative optimisation pressure, used as the wandb x-axis (see the
     # define_metric calls above). global_step counts optimiser updates;
     # samples_seen counts training pairs the model has been updated on.
@@ -1267,6 +1272,8 @@ def train_sft(args: SftArgs):
         val_eot_correct = 0
         val_eot_pos_correct = 0
         val_eot_pos_total = 0
+        val_nn_correct = {h: 0 for h in nn_heads}
+        val_nn_total = {h: 0 for h in nn_heads}
         val_total = 0
         val_place_total = 0
         # Direction (target, pred) over placement samples, for the confusion
@@ -1296,6 +1303,8 @@ def train_sft(args: SftArgs):
         per_kind_eot_total = {k.name: 0 for k in LessonKind}
         per_kind_eot_pos_correct = {k.name: 0 for k in LessonKind}
         per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
+        per_kind_nn_correct = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
+        per_kind_nn_total = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
 
         with torch.no_grad():
             for (idx_cpu,) in val_index_loader:
@@ -1413,6 +1422,17 @@ def train_sft(args: SftArgs):
                 val_total += B
                 val_place_total += int(is_place.sum().item())
 
+                # Per head: (correctness, "target is a real non-NONE option" mask).
+                nn_masks = {
+                    "ent": (ent_correct_per, is_place & (batch_ent != _EMPTY_ENT_ID)),
+                    "dir": (dir_correct_per, is_place & (batch_dir != _DIR_NONE_VAL)),
+                    "item": (item_correct_per, is_place & (batch_item != _EMPTY_ITEM_VAL)),
+                    "misc": (misc_correct_per, is_place & (batch_misc != _MISC_NONE_VAL)),
+                }
+                for h, (correct, m) in nn_masks.items():
+                    val_nn_correct[h] += int((correct & m).sum().item())
+                    val_nn_total[h] += int(m.sum().item())
+
                 val_eot_correct += int(eot_correct_per.sum().item())
                 is_pos = batch_eot > 0.5
                 val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
@@ -1442,6 +1462,10 @@ def train_sft(args: SftArgs):
                     per_kind_misc_correct[k_name] += int(
                         misc_correct_per[mask_k].sum().item()
                     )
+                    for h, (correct, m) in nn_masks.items():
+                        mk = m & mask_k
+                        per_kind_nn_correct[h][k_name] += int((correct & mk).sum().item())
+                        per_kind_nn_total[h][k_name] += int(mk.sum().item())
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
                     # EOT spans the whole kind (placement + terminal), so use
                     # the full kind mask here, not the placement-only mask_k.
@@ -1478,6 +1502,13 @@ def train_sft(args: SftArgs):
         val_eot_pos_recall = (
             val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
         )
+        # 0.0 when a head saw no non-NONE target this window (e.g. no recipe
+        # placements → no item targets); EOT reuses its positive-class recall.
+        val_not_none_acc = {
+            h: (val_nn_correct[h] / val_nn_total[h] if val_nn_total[h] > 0 else 0.0)
+            for h in nn_heads
+        }
+        val_not_none_acc["eot"] = val_eot_pos_recall
 
         # Build per-kind metric dict for both stdout and wandb. Skip kinds
         # absent from the val split (e.g. small datasets where some kinds
@@ -1512,6 +1543,19 @@ def train_sft(args: SftArgs):
             per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
                 per_kind_eot_pos_correct[k.name] / eot_pos_n if eot_pos_n > 0 else 0.0
             )
+
+            # Guarded per head so a metric only surfaces for kinds that actually
+            # exercise a non-NONE target for it (else the ratio is meaningless).
+            for h in nn_heads:
+                nn_n = per_kind_nn_total[h][k.name]
+                if nn_n > 0:
+                    per_kind_metrics[f"val/{k.name}/not_none_{h}_acc"] = (
+                        per_kind_nn_correct[h][k.name] / nn_n
+                    )
+            if eot_pos_n > 0:
+                per_kind_metrics[f"val/{k.name}/not_none_eot_acc"] = (
+                    per_kind_eot_pos_correct[k.name] / eot_pos_n
+                )
 
         val_seconds = time.time() - t_val
 
@@ -1630,6 +1674,10 @@ def train_sft(args: SftArgs):
                     "val/misc_acc": val_misc_acc,
                     "val/eot_acc": val_eot_acc,
                     "val/eot_pos_recall": val_eot_pos_recall,
+                    **{
+                        f"val/not_none_{h}_acc": acc
+                        for h, acc in val_not_none_acc.items()
+                    },
                     "train/epoch": epoch,
                     "train/samples_seen": samples_seen,
                     "train/global_step": global_step,
@@ -1685,6 +1733,10 @@ def train_sft(args: SftArgs):
         "val_misc_acc": round(val_misc_acc, 4),
         "val_eot_acc": round(val_eot_acc, 4),
         "val_eot_pos_recall": round(val_eot_pos_recall, 4),
+        **{
+            f"val_not_none_{h}_acc": round(acc, 4)
+            for h, acc in val_not_none_acc.items()
+        },
         "val_loss": round(val_loss, 4),
         "num_samples": args.num_samples,
         "epochs": args.epochs,
