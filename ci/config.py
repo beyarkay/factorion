@@ -31,14 +31,14 @@ WANDB_PROJECT = SftArgs().wandb_project_name
 # Preferred first, then availability fallbacks (each pricier/bigger). The
 # default is the RTX 2000 Ada — the GPU the speed benchmarks were tuned on;
 # these models are tiny and the workload is single-core-CPU-bound, so a bigger
-# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md).
+# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md). GeForce cards
+# (3090/4090) omitted: their community hosts hand out busy GPUs → the job
+# crashes at its first .to(device) with cudaErrorDevicesUnavailable (PR #290).
 GPU_FALLBACKS = [
     "NVIDIA RTX 2000 Ada Generation",
     "NVIDIA RTX A4000",
     "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA RTX A5000",
-    "NVIDIA GeForce RTX 3090",
-    "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA RTX A6000",
 ]
