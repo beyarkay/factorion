@@ -408,6 +408,12 @@ class RolloutEval(TypedDict):
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
+    eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
+    eot_pos_recall: float  # frac of done states where the EOT head actually fired
+    per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
+    per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
+    per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
+    per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
 
 
 def _apply_legal_tile_mask(tile_logits, obs_batch):
@@ -470,10 +476,23 @@ def run_rollout_eval(
     tiles, so it can't livelock re-proposing an occupied tile the env
     keeps rejecting. Eval-only; training is untouched.
 
+    In the same rollout we also score the EOT *head* against ground truth,
+    mirroring SFT's teacher-forced val/eot_acc but measured on-rollout so PPO
+    (which has no expert-labelled val set) can track it. Ground truth per step
+    is the SFT terminal-sample idea: a state is a should-stop positive iff the
+    factory is already complete (`thput_normed >= 1.0`). Because `eot_prob` and
+    `cur_thp` are both read off the *same* pre-action state, they line up: a
+    build step (throughput < 1.0) should have the head silent, and a finished
+    factory should have it firing. `eot_acc` is the fraction of steps whose
+    prediction (`prob > eot_threshold`) matches that label; `eot_pos_recall` is
+    the fraction of done states the head correctly fired on.
+
     Returns a dict with:
         overall, overall_eot — mean throughput ignoring / respecting EOT;
         per_kind, per_kind_eot — same, keyed by LessonKind.name;
-        per_kind_n — sample count per kind in the eval.
+        per_kind_n — sample count per kind in the eval;
+        eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
+        per_kind_eot_acc, per_kind_eot_pos_recall — same, keyed by kind.
     """
     was_training = agent.training
     agent.eval()
@@ -499,6 +518,12 @@ def run_rollout_eval(
     all_eot_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    # EOT-head scoring: every scored step counts toward *_step; done states
+    # (should-stop positives) also count toward *_pos.
+    per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
     if not seeds_sorted:
         if was_training:
@@ -514,6 +539,12 @@ def run_rollout_eval(
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
             "per_kind_asm_n": dict(per_kind_n),
+            "eot_acc": 0.0,
+            "eot_pos_recall": 0.0,
+            "per_kind_eot_acc": dict(zero),
+            "per_kind_eot_pos_recall": dict(zero),
+            "per_kind_eot_step_n": dict(per_kind_n),
+            "per_kind_eot_pos_n": dict(per_kind_n),
         }
 
     # Cap K at the number of seeds — spinning up more envs than work
@@ -592,9 +623,20 @@ def run_rollout_eval(
                 # Snapshot the EOT-respecting throughput the first time the
                 # head crosses threshold — but keep stepping regardless, so
                 # `overall` reflects true build skill (EOT ignored).
-                if not eot_fired[i] and float(eot_probs[i]) > eot_threshold:
+                pred_stop = float(eot_probs[i]) > eot_threshold
+                if not eot_fired[i] and pred_stop:
                     eot_fired[i] = True
                     eot_thp[i] = cur_thp
+
+                # Score the head against ground truth on this pre-action state:
+                # it should fire iff the factory is already complete. `cur_thp`
+                # and `eot_probs[i]` are both this same state, so they align.
+                is_done = cur_thp >= 1.0
+                per_kind_eot_step_total[k.name] += 1
+                per_kind_eot_correct[k.name] += int(pred_stop == is_done)
+                if is_done:
+                    per_kind_eot_pos_total[k.name] += 1
+                    per_kind_eot_pos_correct[k.name] += int(pred_stop)
 
                 action = {
                     "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
@@ -680,6 +722,21 @@ def run_rollout_eval(
         for kn, n in per_kind_asm_total.items()
     }
 
+    eot_step_all = sum(per_kind_eot_step_total.values())
+    eot_pos_all = sum(per_kind_eot_pos_total.values())
+    eot_acc = sum(per_kind_eot_correct.values()) / eot_step_all if eot_step_all else 0.0
+    eot_pos_recall = (
+        sum(per_kind_eot_pos_correct.values()) / eot_pos_all if eot_pos_all else 0.0
+    )
+    per_kind_eot_acc = {
+        kn: (per_kind_eot_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_step_total.items()
+    }
+    per_kind_eot_pos_recall = {
+        kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_pos_total.items()
+    }
+
     if was_training:
         agent.train()
     return {
@@ -691,6 +748,12 @@ def run_rollout_eval(
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
         "per_kind_asm_n": dict(per_kind_asm_total),
+        "eot_acc": eot_acc,
+        "eot_pos_recall": eot_pos_recall,
+        "per_kind_eot_acc": per_kind_eot_acc,
+        "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
+        "per_kind_eot_step_n": dict(per_kind_eot_step_total),
+        "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
     }
 
 
