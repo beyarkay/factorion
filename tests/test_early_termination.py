@@ -94,8 +94,9 @@ class TestEarlyTermination:
 
 
 class TestReward:
-    """Reward = throughput_reward_scale * throughput - step_penalty * num_steps:
-    a per-step penalty plus the terminal throughput reward when the episode
+    """Reward = throughput_reward_scale * throughput - step_penalty * num_steps
+    - entity_penalty_scale * num_entities: a per-step penalty plus the terminal
+    throughput reward (less the per-entity frugality penalty) when the episode
     ends (solve / eot / max_steps)."""
 
     def test_solved_factory_with_eot_pays_full_reward(self):
@@ -110,7 +111,9 @@ class TestReward:
 
         assert terminated is True
         assert info["thput_normed"] >= 1.0
-        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        expected = (env.throughput_reward_scale * info["thput_normed"]
+                    - env.step_penalty
+                    - env.entity_penalty_scale * info["num_entities"])
         assert reward == pytest.approx(expected)
 
     def test_step_penalty_only_mid_episode(self):
@@ -136,7 +139,9 @@ class TestReward:
 
         assert truncated is True
         assert terminated is False
-        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        expected = (env.throughput_reward_scale * info["thput_normed"]
+                    - env.step_penalty
+                    - env.entity_penalty_scale * info["num_entities"])
         assert reward == pytest.approx(expected)
 
     def test_eot_action_terminates_episode(self):
@@ -152,8 +157,30 @@ class TestReward:
         assert terminated is True, "eot=1 should terminate the episode"
         assert truncated is False
         assert info["thput_normed"] < 1.0  # ended early, not a full solve
-        expected = env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        expected = (env.throughput_reward_scale * info["thput_normed"]
+                    - env.step_penalty
+                    - env.entity_penalty_scale * info["num_entities"])
         assert reward == pytest.approx(expected)
+
+    def test_entity_penalty_scales_with_entity_count(self):
+        """The terminal reward drops by entity_penalty_scale per non-empty
+        entity, so a wasteful factory is penalised more than a frugal one."""
+        env = _make_env(size=5, max_steps=10)
+        env.entity_penalty_scale = 0.01
+        env.reset(seed=42, options={"num_missing_entities": 0})
+
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
+
+        assert terminated is True
+        expected = (env.throughput_reward_scale * info["thput_normed"]
+                    - env.step_penalty
+                    - env.entity_penalty_scale * info["num_entities"])
+        assert reward == pytest.approx(expected)
+        # A non-zero penalty must actually pull the reward below the penalty-free value.
+        assert info["num_entities"] > 0
+        assert reward < env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
 
 
 class TestStepsTaken:
