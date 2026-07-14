@@ -165,6 +165,21 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, acc in roll["per_kind_asm_item_acc"].items():
         if asm_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/asm_item_acc"] = acc
+
+    # EOT-head accuracy/recall from the same rollout. PPO has no expert-labelled
+    # val set, so this on-rollout score is the only per-lesson EOT-head signal it
+    # gets (mirrors SFT's val/{kind}/eot_acc + eot_pos_recall). Per-lesson
+    # positive recall only surfaces once a lesson actually reaches a done state.
+    metrics["eval/eot_acc"] = roll["eot_acc"]
+    metrics["eval/eot_pos_recall"] = roll["eot_pos_recall"]
+    eot_step_n = roll["per_kind_eot_step_n"]
+    eot_pos_n = roll["per_kind_eot_pos_n"]
+    for kn, acc in roll["per_kind_eot_acc"].items():
+        if eot_step_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/eot_acc"] = acc
+    for kn, rec in roll["per_kind_eot_pos_recall"].items():
+        if eot_pos_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/eot_pos_recall"] = rec
     return metrics
 
 
@@ -1467,11 +1482,15 @@ if __name__ == "__main__":
         wandb.define_metric("eval/thput", summary="max")
         wandb.define_metric("eval/thput_eot", summary="max")
         wandb.define_metric("eval/asm_item_acc", summary="max")
+        wandb.define_metric("eval/eot_acc", summary="max")
+        wandb.define_metric("eval/eot_pos_recall", summary="max")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
             wandb.define_metric(f"eval/{ln}/thput_eot", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
+            wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
+            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable"]:
