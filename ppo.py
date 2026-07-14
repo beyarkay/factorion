@@ -365,12 +365,13 @@ def _resolve_start_from(
     return path
 
 
-def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=PpoArgs.throughput_reward_scale, step_penalty=PpoArgs.step_penalty):
+def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=PpoArgs.throughput_reward_scale, step_penalty=PpoArgs.step_penalty, entity_penalty_scale=PpoArgs.entity_penalty_scale):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'throughput_reward_scale': throughput_reward_scale,
-                       'step_penalty': step_penalty})
+                       'step_penalty': step_penalty,
+                       'entity_penalty_scale': entity_penalty_scale})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -437,10 +438,12 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         throughput_reward_scale: float = PpoArgs.throughput_reward_scale,
         step_penalty: float = PpoArgs.step_penalty,
+        entity_penalty_scale: float = PpoArgs.entity_penalty_scale,
     ):
         super().__init__()
         self.throughput_reward_scale = throughput_reward_scale
         self.step_penalty = step_penalty
+        self.entity_penalty_scale = entity_penalty_scale
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -880,6 +883,9 @@ class FactorioEnv(gym.Env):
         reward = -self.step_penalty
         if terminated or truncated:
             reward += self.throughput_reward_scale * thput_normed
+            # Frugality penalty: discourage wasteful factories (too many belts,
+            # inserters, etc.) by subtracting a small cost per non-empty entity.
+            reward -= self.entity_penalty_scale * num_entities
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1559,7 +1565,7 @@ if __name__ == "__main__":
         print("AMP: bf16 autocast enabled for forward passes")
 
     print(f"Setting up envs with {args}")
-    env_thunks = [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(args.num_envs)]
+    env_thunks = [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty, args.entity_penalty_scale) for i in range(args.num_envs)]
     # Per-env attributes (see comments below). Set in-process for SyncVectorEnv,
     # via set_attr (which marshals to the workers) for AsyncVectorEnv.
     # _train_seed: fresh factory every episode — env i sweeps args.seed+i,
@@ -2123,7 +2129,7 @@ if __name__ == "__main__":
         if args.capture_video and ((iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations):
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
-            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name, args.throughput_reward_scale, args.step_penalty) for i in range(num_render_envs)])
+            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name, args.throughput_reward_scale, args.step_penalty, args.entity_penalty_scale) for i in range(num_render_envs)])
             next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': float('inf')})
 
             temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]

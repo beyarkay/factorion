@@ -126,6 +126,8 @@ class PpoArgs(SharedArgs):
     """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
     step_penalty: float = 0.0
     """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput_eot)."""
+    entity_penalty_scale: float = 0.001
+    """per-entity penalty subtracted from the terminal reward: (# non-empty entities) * this. Nudges the policy toward frugal factories (fewer belts/inserters/etc.) rather than wasteful ones. A crude proxy for material cost; a future version may sum per-entity recipe costs instead."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
