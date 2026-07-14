@@ -476,17 +476,6 @@ def run_rollout_eval(
     tiles, so it can't livelock re-proposing an occupied tile the env
     keeps rejecting. Eval-only; training is untouched.
 
-    In the same rollout we also score the EOT *head* against ground truth,
-    mirroring SFT's teacher-forced val/eot_acc but measured on-rollout so PPO
-    (which has no expert-labelled val set) can track it. Ground truth per step
-    is the SFT terminal-sample idea: a state is a should-stop positive iff the
-    factory is already complete (`thput_normed >= 1.0`). Because `eot_prob` and
-    `cur_thp` are both read off the *same* pre-action state, they line up: a
-    build step (throughput < 1.0) should have the head silent, and a finished
-    factory should have it firing. `eot_acc` is the fraction of steps whose
-    prediction (`prob > eot_threshold`) matches that label; `eot_pos_recall` is
-    the fraction of done states the head correctly fired on.
-
     Returns a dict with:
         overall, overall_eot — mean throughput ignoring / respecting EOT;
         per_kind, per_kind_eot — same, keyed by LessonKind.name;
