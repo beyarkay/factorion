@@ -14,6 +14,7 @@ Recipe quantities are the canonical Factorio wiki values (per craft).
 """
 
 import factorion_rs
+import pytest
 
 from helpers import items, recipes
 
@@ -251,35 +252,64 @@ class TestPyRecipesBinding:
             "assembling_machine_3",
         ]
 
-    def test_every_recipe_produced_by_assemblers(self):
+    def test_every_recipe_produced_by_known_machines(self):
         rs = factorion_rs.py_recipes()
-        assemblers = {
+        machines = {
             "assembling_machine_1",
             "assembling_machine_2",
             "assembling_machine_3",
+            "stone_furnace",
         }
         for name, data in rs.items():
             assert data["produced_by"], f"{name} has empty produced_by"
-            assert set(data["produced_by"]) <= assemblers, (
-                f"{name} produced_by non-assembler: {data['produced_by']}"
+            assert set(data["produced_by"]) <= machines, (
+                f"{name} produced_by unknown machine: {data['produced_by']}"
             )
+
+    def test_smelting_recipes(self):
+        """Smelting runs in furnaces only; coal is the folded-in fuel cost
+        at the true burn ratio (90 kW × 3.2 s ÷ 4 MJ = 0.072 coal/smelt)."""
+        rs = factorion_rs.py_recipes()
+        ip = rs["iron_plate"]
+        assert ip["consumes"] == {"iron_ore": 1.0, "coal": pytest.approx(0.072)}
+        assert ip["produces"] == {"iron_plate": 1.0}
+        assert ip["crafting_time"] == 3.2
+        assert ip["produced_by"] == ["stone_furnace"]
+
+        cp = rs["copper_plate"]
+        assert cp["consumes"] == {"copper_ore": 1.0, "coal": pytest.approx(0.072)}
+        assert cp["produced_by"] == ["stone_furnace"]
+
+        sb = rs["stone_brick"]
+        assert sb["consumes"] == {"stone": 2.0, "coal": pytest.approx(0.072)}
+
+        # A 16s steel craft burns 5× the coal of a 3.2s smelt.
+        sp = rs["steel_plate"]
+        assert sp["consumes"] == {"iron_plate": 5.0, "coal": pytest.approx(0.36)}
+        assert sp["crafting_time"] == 16.0
 
     def test_total_raw_expands_to_raw_items(self):
         rs = factorion_rs.py_recipes()
-        # 1 copper plate -> 2 cables; copper plate is raw.
-        assert rs["copper_cable"]["total_raw"] == {"copper_plate": 1.0}
-        # 3 cable (=1.5 copper plate) + 1 iron plate.
+        # 1 copper plate -> 2 cables; with smelting modeled the plate
+        # expands to 1 copper ore + the coal for one smelt.
+        assert rs["copper_cable"]["total_raw"] == {
+            "copper_ore": 1.0,
+            "coal": pytest.approx(0.072),
+        }
+        # 3 cable (=1.5 copper plate) + 1 iron plate = 2.5 smelts.
         assert rs["electronic_circuit"]["total_raw"] == {
-            "copper_plate": 1.5,
-            "iron_plate": 1.0,
+            "copper_ore": 1.5,
+            "iron_ore": 1.0,
+            "coal": pytest.approx(2.5 * 0.072),
         }
 
     def test_total_raw_time_is_cumulative(self):
         rs = factorion_rs.py_recipes()
-        # Own craft (0.5s) + the 1.5 copper-cable crafts (0.75s) = 1.25s;
-        # strictly greater than the recipe's own crafting_time.
+        # Own craft (0.5s) + the 1.5 copper-cable crafts (0.75s) + the 2.5
+        # smelts (2.5 × 3.2s) = 9.25s; strictly greater than the recipe's
+        # own crafting_time.
         ec = rs["electronic_circuit"]
-        assert ec["total_raw_time"] == 1.25
+        assert ec["total_raw_time"] == pytest.approx(9.25)
         assert ec["total_raw_time"] > ec["crafting_time"]
 
     def test_every_recipe_has_total_raw(self):
