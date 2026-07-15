@@ -22,7 +22,7 @@ from helpers import (
     build_factory,
     str2ent,
 )
-from factorion import Footprint
+from factorion import LESSON_IS_TRIAL, Footprint
 import sft
 from sft import (
     SftArgs,
@@ -405,7 +405,10 @@ class TestGenerateDataset:
         args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
         *_, kinds = _materialise_args(args)
         vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
-        assert len(vals) == len(LessonKind), "every kind should contribute pairs"
+        n_teachable = sum(1 for k in LessonKind if not LESSON_IS_TRIAL[k])
+        assert len(vals) == n_teachable, (
+            "every non-trial kind should contribute pairs"
+        )
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
 
     def test_obs_uint8_masks_bool(self):

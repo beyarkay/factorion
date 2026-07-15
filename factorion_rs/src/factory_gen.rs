@@ -43,6 +43,9 @@ pub enum LessonKind {
     Memorise3IngredientRecipes = 12,
     Memorise4IngredientRecipes = 13,
     Factory1Ingredient = 15,
+    TrialRecipeTreeDepth1 = 16,
+    TrialRecipeTreeDepth2 = 17,
+    TrialRecipeTreeDepth3 = 18,
 }
 
 impl LessonKind {
@@ -63,6 +66,9 @@ impl LessonKind {
             12 => Some(LessonKind::Memorise3IngredientRecipes),
             13 => Some(LessonKind::Memorise4IngredientRecipes),
             15 => Some(LessonKind::Factory1Ingredient),
+            16 => Some(LessonKind::TrialRecipeTreeDepth1),
+            17 => Some(LessonKind::TrialRecipeTreeDepth2),
+            18 => Some(LessonKind::TrialRecipeTreeDepth3),
             _ => None,
         }
     }
@@ -74,7 +80,12 @@ impl LessonKind {
     /// its `max_throughput` is an analytic ceiling rather than the simulated
     /// rate of a reference solution.
     pub fn is_trial(self) -> bool {
-        false
+        matches!(
+            self,
+            LessonKind::TrialRecipeTreeDepth1
+                | LessonKind::TrialRecipeTreeDepth2
+                | LessonKind::TrialRecipeTreeDepth3
+        )
     }
 
     /// The canonical SCREAMING_SNAKE_CASE name — the identifier the Python
@@ -96,6 +107,9 @@ impl LessonKind {
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
+            LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
+            LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
+            LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
         }
     }
 }
@@ -117,6 +131,9 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
+        LessonKind::TrialRecipeTreeDepth1,
+        LessonKind::TrialRecipeTreeDepth2,
+        LessonKind::TrialRecipeTreeDepth3,
     ]
 }
 
@@ -555,6 +572,9 @@ pub fn build_factory(
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
+        LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
+        LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
         _ => None,
     }
 }
@@ -2711,6 +2731,182 @@ fn build_cross_under_belt(
     None
 }
 
+/// The recipes a TRIAL_RECIPE_TREE expansion may descend through: item →
+/// recipe for every recipe an assembling machine 1 (the only assembler the
+/// agent can place) can craft. Keyed for O(1) lookup during the tree walk;
+/// candidate iteration must use `all_recipes()` order, never this map's.
+fn am1_recipe_index() -> HashMap<Item, Recipe> {
+    all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.produced_by.contains(&Item::AssemblingMachine1))
+        .collect()
+}
+
+/// Longest expandable chain below `item`: 0 when `item` has no AM1-craftable
+/// recipe (nothing to expand), else 1 + the deepest of its ingredients. A
+/// sink can yield a depth-`d` frontier iff its chain is at least `d` long.
+fn recipe_tree_depth(item: Item, index: &HashMap<Item, Recipe>) -> usize {
+    match index.get(&item) {
+        None => 0,
+        Some(r) => {
+            1 + r
+                .consumes
+                .iter()
+                .map(|&(i, _)| recipe_tree_depth(i, index))
+                .max()
+                .unwrap_or(0)
+        }
+    }
+}
+
+/// Walk `recipe`'s ingredient tree: every expandable ingredient occurrence
+/// (one with an AM1-craftable recipe) above the depth `cap` flips a coin to
+/// be replaced by its own sub-ingredients; occurrences at the cap always stay
+/// leaves. Unexpanded leaves accumulate into `frontier` (deduped, discovery
+/// order — one source marker per unique item) and `deepest` tracks the
+/// deepest leaf level, so the caller can insist the draw actually reached its
+/// target depth. `level` is the depth of this recipe's ingredients (the
+/// sink's direct ingredients sit at level 1).
+fn walk_recipe_frontier(
+    recipe: &Recipe,
+    level: usize,
+    cap: usize,
+    rng: &mut Rng,
+    index: &HashMap<Item, Recipe>,
+    frontier: &mut Vec<Item>,
+    deepest: &mut usize,
+) {
+    for &(ing, _) in recipe.consumes.iter() {
+        let sub = index.get(&ing);
+        if let Some(sub_recipe) = sub {
+            if level < cap && rng.choice_index(2) == 0 {
+                walk_recipe_frontier(sub_recipe, level + 1, cap, rng, index, frontier, deepest);
+                continue;
+            }
+        }
+        *deepest = (*deepest).max(level);
+        if !frontier.contains(&ing) {
+            frontier.push(ing);
+        }
+    }
+}
+
+/// Build a TRIAL_RECIPE_TREE_DEPTH_`depth` trial: an RL-only scenario with no
+/// reference solution (see [`LessonKind::is_trial`]). A random AM1-craftable
+/// item whose recipe tree is at least `depth` deep becomes the sink; its
+/// ingredient tree is walked with [`walk_recipe_frontier`] (capped at
+/// `depth`, rejected unless the deepest leaf lands exactly on `depth`, so
+/// each kind is a distinct difficulty rung), and each unique frontier item
+/// becomes a source. Nothing else is placed — the factory in between is the
+/// agent's to invent, so `total_entities == 0`.
+///
+/// Every marker reserves a dedicated in-grid "working" cell (the tile a
+/// source drops onto / a sink pulls from) that no other marker may take, so
+/// the agent always has somewhere to build against every marker.
+///
+/// `max_throughput` is analytic: one fully-fed assembler's output rate of the
+/// sink recipe (`produces_rate`). `transform_flow` scales `produces` by input
+/// sufficiency and never beyond 1×, so this is the engine's single-machine
+/// ceiling — a clean chain that saturates one final assembler scores 1.0.
+fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let index = am1_recipe_index();
+    // Deterministic candidate order: filter all_recipes() rather than
+    // iterating the index (HashMap order varies run to run).
+    let sinks: Vec<Item> = all_recipes()
+        .iter()
+        .filter(|(_, r)| r.produced_by.contains(&Item::AssemblingMachine1))
+        .map(|(i, _)| *i)
+        .filter(|&i| recipe_tree_depth(i, &index) >= depth)
+        .collect();
+    if sinks.is_empty() {
+        return None;
+    }
+
+    let mut count = (500).max(size * size * 16);
+    while count > 0 {
+        count -= 1;
+
+        let sink_item = sinks[rng.choice_index(sinks.len())];
+        let recipe = index.get(&sink_item)?;
+        let max_throughput = match recipe.produces_rate(sink_item) {
+            Some(r) if r > 0.0 => r,
+            _ => return None,
+        };
+
+        let mut frontier: Vec<Item> = Vec::new();
+        let mut deepest = 0;
+        walk_recipe_frontier(recipe, 1, depth, rng, &index, &mut frontier, &mut deepest);
+        if deepest != depth {
+            continue;
+        }
+
+        // Sink first, then one source per frontier item, each on its own
+        // random tile with a free in-grid working cell; both cells are
+        // reserved so markers never sit on (or share) each other's access.
+        let mut occupied: HashSet<Cell> = HashSet::new();
+        // (position, facing, carried item, is_source)
+        let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::new();
+        let mut ok = true;
+        for (item, is_source) in
+            std::iter::once((sink_item, false)).chain(frontier.iter().map(|&i| (i, true)))
+        {
+            let mut placed = false;
+            for _ in 0..20 {
+                let cell = (rng.randint(0, s - 1), rng.randint(0, s - 1));
+                if occupied.contains(&cell) {
+                    continue;
+                }
+                let dir = DIRS[rng.choice_index(DIRS.len())];
+                let (dx, dy) = dir.delta();
+                // A source drops onto the cell it faces; a sink pulls from
+                // the cell behind it.
+                let work = if is_source {
+                    (cell.0 + dx, cell.1 + dy)
+                } else {
+                    (cell.0 - dx, cell.1 - dy)
+                };
+                if !in_grid(work, s) || occupied.contains(&work) {
+                    continue;
+                }
+                occupied.insert(cell);
+                occupied.insert(work);
+                markers.push((cell, dir, item as i64, is_source));
+                placed = true;
+                break;
+            }
+            if !placed {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &(pos, dir, item_value, is_source) in &markers {
+            let ent = if is_source { Item::Source } else { Item::Sink };
+            place_marker(&mut world, pos, ent, dir, item_value);
+        }
+
+        // Not via finish(): there is no solved world to simulate a reference
+        // from — the ceiling is the analytic one computed above. The budget
+        // convention matches finish(): a success on the attempt that drove
+        // count to 0 is discarded.
+        if count == 0 {
+            return None;
+        }
+        return Some(BuiltFactory {
+            world,
+            total_entities: 0,
+            protected_positions: vec![],
+            max_throughput,
+        });
+    }
+    None
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -2917,6 +3113,151 @@ mod tests {
         }
         assert!(built > 40, "most seeds should build, got {built}");
         assert!(asm_counts.len() > 1, "assembler count never varied");
+    }
+
+    /// Every ingredient of `item`'s recipe either is a source or is itself
+    /// craftable from the sources, recursively — i.e. `sources` really is a
+    /// frontier of `item`'s ingredient tree.
+    fn frontier_covers(item: Item, sources: &HashSet<Item>, index: &HashMap<Item, Recipe>) -> bool {
+        match index.get(&item) {
+            None => false,
+            Some(r) => r
+                .consumes
+                .iter()
+                .all(|&(ing, _)| sources.contains(&ing) || frontier_covers(ing, sources, index)),
+        }
+    }
+
+    /// Some expansion chain of exactly `depth` crafting stages runs from
+    /// `item` down to a source: every intermediate is AM1-craftable and the
+    /// last hop lands on a source item.
+    fn chain_reaches(
+        item: Item,
+        depth: usize,
+        sources: &HashSet<Item>,
+        index: &HashMap<Item, Recipe>,
+    ) -> bool {
+        let Some(r) = index.get(&item) else {
+            return false;
+        };
+        r.consumes.iter().any(|&(ing, _)| {
+            if depth == 1 {
+                sources.contains(&ing)
+            } else {
+                chain_reaches(ing, depth - 1, sources, index)
+            }
+        })
+    }
+
+    #[test]
+    fn test_recipe_tree_trial_smoke() {
+        let index = am1_recipe_index();
+        for (kind, depth) in [
+            (LessonKind::TrialRecipeTreeDepth1, 1usize),
+            (LessonKind::TrialRecipeTreeDepth2, 2),
+            (LessonKind::TrialRecipeTreeDepth3, 3),
+        ] {
+            let mut built = 0;
+            let mut expansion_seen = false;
+            for seed in 0..50u64 {
+                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                built += 1;
+                // Nothing to blank, nothing extra protected (markers are
+                // protected unconditionally by the blanking code).
+                assert_eq!(f.total_entities, 0, "{kind:?} seed={seed}");
+                assert!(f.protected_positions.is_empty(), "{kind:?} seed={seed}");
+
+                // The world holds ONLY markers: one sink, ≥1 sources, each
+                // with a free in-grid working cell to build against.
+                let mut sink: Option<Item> = None;
+                let mut sources: Vec<Item> = Vec::new();
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let dir = f.world.direction_at(x, y);
+                        let (dx, dy) = dir.delta();
+                        match f.world.entity_at(x, y) {
+                            None => {}
+                            Some(Item::Source) => {
+                                sources.push(f.world.item_at(x, y).unwrap());
+                                let work = (x as i64 + dx, y as i64 + dy);
+                                assert!(
+                                    in_grid(work, 12),
+                                    "{kind:?} seed={seed}: source faces off-grid"
+                                );
+                                assert!(
+                                    f.world
+                                        .entity_at(work.0 as usize, work.1 as usize)
+                                        .is_none(),
+                                    "{kind:?} seed={seed}: source's working cell occupied"
+                                );
+                            }
+                            Some(Item::Sink) => {
+                                assert!(sink.is_none(), "{kind:?} seed={seed}: two sinks");
+                                sink = Some(f.world.item_at(x, y).unwrap());
+                                let work = (x as i64 - dx, y as i64 - dy);
+                                assert!(
+                                    in_grid(work, 12),
+                                    "{kind:?} seed={seed}: sink pulls from off-grid"
+                                );
+                                assert!(
+                                    f.world
+                                        .entity_at(work.0 as usize, work.1 as usize)
+                                        .is_none(),
+                                    "{kind:?} seed={seed}: sink's working cell occupied"
+                                );
+                            }
+                            Some(other) => {
+                                panic!("{kind:?} seed={seed}: unexpected entity {other:?}")
+                            }
+                        }
+                    }
+                }
+                let sink_item = sink.unwrap_or_else(|| panic!("{kind:?} seed={seed}: no sink"));
+                assert!(!sources.is_empty(), "{kind:?} seed={seed}: no sources");
+                let src_set: HashSet<Item> = sources.iter().copied().collect();
+                assert_eq!(
+                    src_set.len(),
+                    sources.len(),
+                    "{kind:?} seed={seed}: duplicate source items"
+                );
+
+                // The ceiling is one fully-fed assembler's output of the sink.
+                let recipe = index
+                    .get(&sink_item)
+                    .unwrap_or_else(|| panic!("{kind:?} seed={seed}: sink not AM1-craftable"));
+                assert_eq!(
+                    f.max_throughput,
+                    recipe.produces_rate(sink_item).unwrap(),
+                    "{kind:?} seed={seed}"
+                );
+
+                // The sources are a real frontier of the sink's ingredient
+                // tree, and its deepest chain hits the kind's target depth.
+                assert!(
+                    frontier_covers(sink_item, &src_set, &index),
+                    "{kind:?} seed={seed}: sources {src_set:?} don't resolve {sink_item:?}"
+                );
+                assert!(
+                    chain_reaches(sink_item, depth, &src_set, &index),
+                    "{kind:?} seed={seed}: no depth-{depth} chain to a source"
+                );
+                let direct: HashSet<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+                if depth == 1 {
+                    assert_eq!(
+                        src_set, direct,
+                        "{kind:?} seed={seed}: depth 1 must use the direct ingredients"
+                    );
+                } else {
+                    expansion_seen |= src_set != direct;
+                }
+            }
+            assert!(built > 40, "{kind:?}: most seeds should build, got {built}");
+            if depth >= 2 {
+                assert!(expansion_seen, "{kind:?}: no seed ever expanded the tree");
+            }
+        }
     }
 
     #[test]
@@ -3423,6 +3764,11 @@ mod tests {
     fn test_no_orphan_tiles_every_lesson() {
         // No lesson's solved factory may contain orphan tiles (unreachable == 0).
         for &kind in all_lesson_kinds() {
+            // A trial's built world is only the unconnected markers — every
+            // marker is off any source→sink path until the agent builds.
+            if kind.is_trial() {
+                continue;
+            }
             let mut checked = 0;
             for seed in 0..20u64 {
                 let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
