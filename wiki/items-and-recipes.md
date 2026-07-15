@@ -31,9 +31,9 @@ and rebuild the wheel — Python sees it automatically.
 | Inserter | `Item::Inserter = 7` | No | The inserter entity, as an inventory item |
 | Assembling Machine 1 | `Item::AssemblingMachine1 = 8` | No | The assembler entity, as an inventory item |
 
-Copper plate and iron plate remain `Source`-spawnable (so assembler
-lessons can feed on them directly), but the smelting step (ore → plate)
-is also modeled: see "Smelting" below.
+Copper plate and iron plate are `Source`-spawnable (so assembler
+lessons can feed on them directly) and smeltable from ore + coal in a
+stone furnace: see "Smelting" below.
 
 **Item-vs-entity name overlap.** Three items share their string name with
 an entity (`transport_belt`, `inserter`, `assembling_machine_1`). They

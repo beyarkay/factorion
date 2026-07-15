@@ -211,8 +211,7 @@ pub enum EntityEnum {
     TransportBelt(TransportBelt),
     Inserter(Inserter),
     LongHandedInserter(LongHandedInserter),
-    AssemblingMachine(AssemblingMachine),
-    Furnace(Furnace),
+    CraftingMachine(CraftingMachine),
     UndergroundBelt(UndergroundBelt),
     Sink(Sink),
     Source(Source),
@@ -228,10 +227,10 @@ impl EntityEnum {
             Item::TransportBelt => Self::TransportBelt(TransportBelt),
             Item::Inserter => Self::Inserter(Inserter),
             Item::LongHandedInserter => Self::LongHandedInserter(LongHandedInserter),
-            Item::AssemblingMachine1 => {
-                Self::AssemblingMachine(AssemblingMachine { recipe_item: item })
-            }
-            Item::StoneFurnace => Self::Furnace(Furnace { recipe_item: item }),
+            k if k.is_crafting_machine() => Self::CraftingMachine(CraftingMachine {
+                kind: k,
+                recipe_item: item,
+            }),
             Item::UndergroundBelt => Self::UndergroundBelt(UndergroundBelt { misc }),
             Item::Sink => Self::Sink(Sink),
             Item::Source => Self::Source(Source { item }),
@@ -247,8 +246,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.kind(),
             Self::Inserter(e) => e.kind(),
             Self::LongHandedInserter(e) => e.kind(),
-            Self::AssemblingMachine(e) => e.kind(),
-            Self::Furnace(e) => e.kind(),
+            Self::CraftingMachine(e) => e.kind(),
             Self::UndergroundBelt(e) => e.kind(),
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
@@ -261,8 +259,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.connections(pos, dir, world),
             Self::Inserter(e) => e.connections(pos, dir, world),
             Self::LongHandedInserter(e) => e.connections(pos, dir, world),
-            Self::AssemblingMachine(e) => e.connections(pos, dir, world),
-            Self::Furnace(e) => e.connections(pos, dir, world),
+            Self::CraftingMachine(e) => e.connections(pos, dir, world),
             Self::UndergroundBelt(e) => e.connections(pos, dir, world),
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
@@ -275,8 +272,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.transform_flow(input),
             Self::Inserter(e) => e.transform_flow(input),
             Self::LongHandedInserter(e) => e.transform_flow(input),
-            Self::AssemblingMachine(e) => e.transform_flow(input),
-            Self::Furnace(e) => e.transform_flow(input),
+            Self::CraftingMachine(e) => e.transform_flow(input),
             Self::UndergroundBelt(e) => e.transform_flow(input),
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
@@ -353,19 +349,25 @@ impl FactoryEntity for LongHandedInserter {
     }
 }
 
-// ── Assembling Machine ──────────────────────────────────────────────────────
+// ── Crafting Machines (assembler, furnace) ──────────────────────────────────
+//
+// One behavior covers every square crafting machine: recipe-tagged,
+// inserter-fed through its perimeter, min-ratio recipe flow. The furnace
+// runs the smelting recipes, whose folded-in coal ingredient stands in for
+// fuel.
 
-pub struct AssemblingMachine {
+pub struct CraftingMachine {
+    kind: Item,
     recipe_item: Option<Item>,
 }
 
-impl FactoryEntity for AssemblingMachine {
+impl FactoryEntity for CraftingMachine {
     fn kind(&self) -> Item {
-        Item::AssemblingMachine1
+        self.kind
     }
 
     fn connections(&self, pos: (usize, usize), _dir: Direction, world: &World) -> Vec<Edge> {
-        machine_connections(Item::AssemblingMachine1, pos, world)
+        machine_connections(self.kind, pos, world)
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
@@ -373,10 +375,10 @@ impl FactoryEntity for AssemblingMachine {
     }
 }
 
-/// Perimeter-scan connections shared by the square crafting machines
-/// (3×3 assembler, 2×2 furnace): every non-corner ring cell around the body
-/// may hold an inserter-like neighbor that feeds or drains the machine.
-/// The anchor is the top-left corner.
+/// Perimeter-scan connections for a square crafting machine (3×3 assembler,
+/// 2×2 furnace): every non-corner ring cell around the body may hold an
+/// inserter-like neighbor that feeds or drains the machine. The anchor is
+/// the top-left corner.
 fn machine_connections(self_kind: Item, pos: (usize, usize), world: &World) -> Vec<Edge> {
     let mut edges = Vec::new();
     let (x, y) = pos;
@@ -472,30 +474,6 @@ fn recipe_transform_flow(
         .iter()
         .map(|&(item, rate)| (item, rate * min_ratio))
         .collect()
-}
-
-// ── Stone Furnace ───────────────────────────────────────────────────────────
-//
-// A 2×2 crafting machine: the same inserter-fed perimeter model as the
-// assembler, but it runs the smelting recipes (whose folded-in coal
-// ingredient stands in for fuel).
-
-pub struct Furnace {
-    recipe_item: Option<Item>,
-}
-
-impl FactoryEntity for Furnace {
-    fn kind(&self) -> Item {
-        Item::StoneFurnace
-    }
-
-    fn connections(&self, pos: (usize, usize), _dir: Direction, world: &World) -> Vec<Edge> {
-        machine_connections(Item::StoneFurnace, pos, world)
-    }
-
-    fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        recipe_transform_flow(self.recipe_item, input)
-    }
 }
 
 // ── Underground Belt ────────────────────────────────────────────────────────
@@ -750,15 +728,11 @@ fn inserter_connections(
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            let src_is_pickable = matches!(
-                src_entity,
-                Item::Source
-                    | Item::Sink
-                    | Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-                    | Item::StoneFurnace
-            );
+            let src_is_pickable = src_entity.is_crafting_machine()
+                || matches!(
+                    src_entity,
+                    Item::Source | Item::Sink | Item::TransportBelt | Item::UndergroundBelt
+                );
             if src_is_pickable {
                 edges.extend(calc_lane_aware_edges(
                     src_entity,
@@ -784,15 +758,11 @@ fn inserter_connections(
         let dx_u = dst_x as usize;
         let dy_u = dst_y as usize;
         if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
-            let dst_is_insertable = matches!(
-                dst_entity,
-                Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-                    | Item::StoneFurnace
-                    | Item::Source
-                    | Item::Sink
-            );
+            let dst_is_insertable = dst_entity.is_crafting_machine()
+                || matches!(
+                    dst_entity,
+                    Item::TransportBelt | Item::UndergroundBelt | Item::Source | Item::Sink
+                );
             if dst_is_insertable {
                 if dst_entity.is_lane_aware() {
                     let dst_dir = world.direction_at(dx_u, dy_u);
@@ -1330,7 +1300,8 @@ mod tests {
         // Inserter at (4,2) facing east → taking from assembler (facing away)
         w.place(4, 2, Item::Inserter, Direction::East, None);
 
-        let asm = AssemblingMachine {
+        let asm = CraftingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
         let edges = asm.connections((1, 1), Direction::None, &w);
@@ -1349,7 +1320,8 @@ mod tests {
 
     #[test]
     fn test_assembler_transform_flow() {
-        let asm = AssemblingMachine {
+        let asm = CraftingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
 

@@ -39,7 +39,7 @@ from sft import (
     _point_biserial,
     _source_sink_distance,
     _steps_per_epoch,
-    _solved_assembler_recipes,
+    _solved_machine_recipes,
     build_lr_schedule,
     extract_expert_actions,
     run_rollout_eval,
@@ -837,7 +837,7 @@ class TestTrackedArtifact:
 
 
 class TestSolvedAssemblerRecipes:
-    """_solved_assembler_recipes — the ground truth the rollout scores against."""
+    """_solved_machine_recipes — the ground truth the rollout scores against."""
 
     def test_assemble_factory_yields_its_recipe(self):
         f = build_factory(
@@ -845,7 +845,7 @@ class TestSolvedAssemblerRecipes:
         )
         assert f is not None
         asm_id = str2ent("assembling_machine_1").value
-        recipes = _solved_assembler_recipes(f.world_CWH)
+        recipes = _solved_machine_recipes(f.world_CWH)
         # Exactly one assembler → exactly one recipe, and it matches the ITEMS
         # tag on the assembler tile.
         assert len(recipes) == 1
@@ -857,7 +857,7 @@ class TestSolvedAssemblerRecipes:
     def test_belt_factory_has_no_recipe(self):
         f = build_factory(size=9, kind=LessonKind.MOVE_ONE_ITEM, seed=3)
         assert f is not None
-        assert _solved_assembler_recipes(f.world_CWH) == set()
+        assert _solved_machine_recipes(f.world_CWH) == set()
 
 
 class TestRolloutAsmItemAcc:
@@ -915,7 +915,7 @@ class TestRolloutAsmItemAcc:
             f = build_factory(
                 size=size, kind=LessonKind.ASSEMBLE_1_INGREDIENT, seed=s
             )
-            if f is not None and _solved_assembler_recipes(f.world_CWH) == {recipe_id}:
+            if f is not None and _solved_machine_recipes(f.world_CWH) == {recipe_id}:
                 out[s] = LessonKind.ASSEMBLE_1_INGREDIENT.value
             s += 1
         return out
@@ -929,7 +929,7 @@ class TestRolloutAsmItemAcc:
                 size=size, kind=LessonKind.ASSEMBLE_1_INGREDIENT, seed=s
             )
             if f is not None:
-                r = _solved_assembler_recipes(f.world_CWH)
+                r = _solved_machine_recipes(f.world_CWH)
                 if r and next(iter(r)) not in seen:
                     seen.append(next(iter(r)))
             s += 1

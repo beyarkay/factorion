@@ -291,8 +291,8 @@ class TestPyRecipesBinding:
 
     def test_total_raw_expands_to_raw_items(self):
         rs = factorion_rs.py_recipes()
-        # 1 copper plate -> 2 cables; with smelting modeled the plate
-        # expands to 1 copper ore + the coal for one smelt.
+        # 1 copper plate -> 2 cables; the plate expands to 1 copper ore +
+        # the coal for one smelt.
         assert rs["copper_cable"]["total_raw"] == {
             "copper_ore": 1.0,
             "coal": pytest.approx(0.072),

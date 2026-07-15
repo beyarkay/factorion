@@ -173,10 +173,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                     entity_kind,
                     item,
                     misc,
-                    recipe_item: if matches!(
-                        entity_kind,
-                        Item::AssemblingMachine1 | Item::StoneFurnace
-                    ) {
+                    recipe_item: if entity_kind.is_crafting_machine() {
                         item
                     } else {
                         None

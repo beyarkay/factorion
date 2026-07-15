@@ -2036,7 +2036,7 @@ fn build_machine_recipes(
             .filter(|&c| in_grid(c, s))
             .collect();
 
-        let slots = rng.sample(slots, n_arms);
+        let chosen = rng.sample(slots, n_arms);
 
         // Plan every arm, reserving cells as we go so arms can't overlap. Any
         // arm that can't be placed rejects the whole candidate.
@@ -2047,7 +2047,7 @@ fn build_machine_recipes(
         let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
 
         let mut ok = true;
-        for (idx, &(off_x, off_y, in_dir, out_dir)) in slots.iter().enumerate() {
+        for (idx, &(off_x, off_y, in_dir, out_dir)) in chosen.iter().enumerate() {
             let is_input = idx < n_in;
             let inserter_pos = (ax + off_x, ay + off_y);
             // Inserter faces INTO the machine for inputs, OUT for outputs.

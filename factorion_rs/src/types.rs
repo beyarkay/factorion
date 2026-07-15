@@ -497,6 +497,13 @@ impl Item {
         )
     }
 
+    /// The square crafting machines (3×3 assembler, 2×2 furnace): placeable,
+    /// recipe-tagged via the ITEMS channel, inserter-fed through their
+    /// perimeter, and a single lane-less graph node.
+    pub fn is_crafting_machine(self) -> bool {
+        matches!(self, Item::AssemblingMachine1 | Item::StoneFurnace)
+    }
+
     /// Whether this entity's tiles carry two independent belt lanes.
     /// Lane-aware entities get one graph node per (tile, lane) pair —
     /// including EACH tile of a splitter (a splitter is a left belt and a
@@ -2095,8 +2102,6 @@ mod tests {
     #[test]
     fn test_total_raw_none_for_raw_items() {
         // Items with no recipe are themselves raw — they have no expansion.
-        // With smelting modeled, plates are craftable and the raws are the
-        // ores plus coal.
         assert!(total_raw_of(Item::IronOre).is_none());
         assert!(total_raw_of(Item::CopperOre).is_none());
         assert!(total_raw_of(Item::Coal).is_none());

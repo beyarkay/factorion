@@ -427,7 +427,7 @@ def _apply_legal_tile_mask(tile_logits, obs_batch):
     return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
 
 
-def _solved_assembler_recipes(solved_CWH) -> set[int]:
+def _solved_machine_recipes(solved_CWH) -> set[int]:
     """The set of recipes (item ids) carried by crafting machines (assemblers
     and furnaces) in a solved factory, the ground truth for the rollout's
     recipe-pick check. Empty for factories with no machine."""
@@ -576,7 +576,7 @@ def run_rollout_eval(
             },
         )
         current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
+        asm_recipes[i] = _solved_machine_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -684,7 +684,7 @@ def run_rollout_eval(
                         },
                     )
                     current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-                    asm_recipes[i] = _solved_assembler_recipes(
+                    asm_recipes[i] = _solved_machine_recipes(
                         envs[i]._solved_world_CWH
                     )
                     eot_fired[i] = False
