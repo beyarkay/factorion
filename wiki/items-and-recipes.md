@@ -23,17 +23,17 @@ and rebuild the wheel — Python sees it automatically.
 |---|---|---|---|
 | Empty | `Item::Empty = 0` | — | Sentinel "no item" value |
 | Copper Cable | `Item::CopperCable = 1` | No | Crafted from copper plates |
-| Copper Plate | `Item::CopperPlate = 2` | Yes | Smelted from copper ore (smelting not modeled) |
-| Iron Plate | `Item::IronPlate = 3` | Yes | Smelted from iron ore (smelting not modeled) |
+| Copper Plate | `Item::CopperPlate = 2` | Yes | Smelted from copper ore + coal in a stone furnace |
+| Iron Plate | `Item::IronPlate = 3` | Yes | Smelted from iron ore + coal in a stone furnace |
 | Electronic Circuit | `Item::ElectronicCircuit = 4` | No | Crafted from copper cable + iron plate |
 | Iron Gear Wheel | `Item::IronGearWheel = 5` | No | Crafted from iron plate; gates several build recipes |
 | Transport Belt | `Item::TransportBelt = 6` | No | The belt entity, as an inventory item |
 | Inserter | `Item::Inserter = 7` | No | The inserter entity, as an inventory item |
 | Assembling Machine 1 | `Item::AssemblingMachine1 = 8` | No | The assembler entity, as an inventory item |
 
-Copper plate and iron plate are treated as **raw inputs** in Factorion —
-they appear from `Source` entities. The smelting step (ore → plate) is
-not modeled.
+Copper plate and iron plate remain `Source`-spawnable (so assembler
+lessons can feed on them directly), but the smelting step (ore → plate)
+is also modeled: see "Smelting" below.
 
 **Item-vs-entity name overlap.** Three items share their string name with
 an entity (`transport_belt`, `inserter`, `assembling_machine_1`). They
@@ -95,6 +95,27 @@ transport-belt items on a belt.
 
 The 3:5:9 ratio is awkward and unlikely to be the focus of a single
 lesson; mostly recorded for completeness.
+
+## Smelting
+
+Smelting runs in the **stone furnace** (`Item::StoneFurnace`), a
+placeable 2×2 crafting machine that behaves exactly like an assembler in
+the throughput model (inserter-fed, recipe min-ratio flow, no
+crafting-speed cap). The engine has no fuel/energy mechanic, so the
+furnace's coal burn is folded into its recipes as an ordinary
+ingredient at the true Base-game ratio: a stone furnace draws 90 kW and
+coal holds 4 MJ, so a 3.2 s smelt burns `90e3 × 3.2 / 4e6 = 0.072` coal
+(a 16 s steel craft burns 5×, i.e. 0.36).
+
+| Inputs | Output | Craft time |
+|---|---|---|
+| 1 iron ore + 0.072 coal | 1 iron plate | 3.2s |
+| 1 copper ore + 0.072 coal | 1 copper plate | 3.2s |
+| 2 stone + 0.072 coal | 1 stone brick | 3.2s |
+| 5 iron plates + 0.36 coal | 1 steel plate | 16s |
+
+These recipes list `produced_by = [stone_furnace]` only — assemblers
+can't smelt, and the furnace can't run assembler recipes.
 
 ## The Green Circuit Factory
 
