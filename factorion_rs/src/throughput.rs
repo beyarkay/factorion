@@ -157,7 +157,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             node_inputs[node_idx] = accumulated_input.clone();
 
             // Compute output using stack-allocated enum dispatch (no heap allocation)
-            let item = if entity_kind == Item::AssemblingMachine1 {
+            let item = if matches!(entity_kind, Item::AssemblingMachine1 | Item::StoneFurnace) {
                 graph.nodes[node_idx].recipe_item
             } else {
                 graph.nodes[node_idx].item
@@ -688,6 +688,78 @@ mod tests {
             output
         );
         assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_furnace_smelt_scores_inserter_rate() {
+        // A 2×2 stone furnace smelting iron plate: ore and coal arms feed
+        // it through inserters, an output inserter + belt hand the plates
+        // to the sink. Like the assembler, throughput is inserter-limited
+        // (0.86) — the scarcest input is the ore at 0.86/1.0 per craft
+        // (coal at 0.86/0.072 is nowhere near binding).
+        //
+        //   Source(IronOre) → Inserter → Furnace(→IronPlate)
+        //   Source(Coal)    → Inserter ↗        → Inserter → Belt → Sink(IronPlate)
+        let mut w = World::empty(8, 4);
+        w.place(1, 1, Item::Source, Direction::East, Some(Item::IronOre));
+        w.place(2, 1, Item::Inserter, Direction::East, None);
+        w.place(1, 2, Item::Source, Direction::East, Some(Item::Coal));
+        w.place(2, 2, Item::Inserter, Direction::East, None);
+        // 2x2 furnace, anchor (3,1), recipe keyed by its output item.
+        w.place_multi_tile(
+            3,
+            1,
+            Item::StoneFurnace,
+            Direction::North,
+            Some(Item::IronPlate),
+            2,
+            2,
+        );
+        w.place(5, 1, Item::Inserter, Direction::East, None);
+        w.place(6, 1, Item::TransportBelt, Direction::East, None);
+        w.place(7, 1, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        let g = build_graph(&w);
+        let (output, unreachable) = calc_throughput(&g);
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].item, Some(Item::IronPlate));
+        assert!(
+            (output[0].achieved - 0.86).abs() < 1e-9,
+            "Expected inserter-limited 0.86 IronPlate, got {:?}",
+            output
+        );
+        assert_eq!(unreachable, 0);
+    }
+
+    #[test]
+    fn test_furnace_without_coal_scores_zero() {
+        // Coal is a genuine ingredient of the smelting recipes: a furnace
+        // fed only ore produces nothing.
+        let mut w = World::empty(8, 4);
+        w.place(1, 1, Item::Source, Direction::East, Some(Item::IronOre));
+        w.place(2, 1, Item::Inserter, Direction::East, None);
+        w.place_multi_tile(
+            3,
+            1,
+            Item::StoneFurnace,
+            Direction::North,
+            Some(Item::IronPlate),
+            2,
+            2,
+        );
+        w.place(5, 1, Item::Inserter, Direction::East, None);
+        w.place(6, 1, Item::TransportBelt, Direction::East, None);
+        w.place(7, 1, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        let g = build_graph(&w);
+        let (output, _) = calc_throughput(&g);
+        assert_eq!(output.len(), 1);
+        assert_eq!(
+            output[0].achieved, 0.0,
+            "No coal → no smelt, got {:?}",
+            output
+        );
     }
 
     /// Two-item belt for the pickup-priority tests: iron sideloaded onto the

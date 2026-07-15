@@ -16,6 +16,7 @@ ENTITY_CHAR = {
     "transport_belt": "b",
     "inserter": "i",
     "assembling_machine_1": "a",
+    "stone_furnace": "f",
     "splitter": "Y",
     "underground_belt": "d",  # down; up renders as 'u' (handled via misc below)
     "stack_inserter": "S",  # source
@@ -65,8 +66,12 @@ class TestRenderFactoryContent:
                 if v == 0:
                     continue
                 name = entities[v].name
-                # Multi-tile entities (assembler) have their own box rendering.
-                if name not in ENTITY_CHAR or name == "assembling_machine_1":
+                # Multi-tile entities (assembler, furnace) have their own
+                # box rendering.
+                if name not in ENTITY_CHAR or name in (
+                    "assembling_machine_1",
+                    "stone_furnace",
+                ):
                     continue
                 c0 = rows[y][3 * x]
                 c1 = rows[y][3 * x + 1]

@@ -75,9 +75,10 @@ class TestPyItemsBinding:
         # reaches two tiles instead of one). Placeability is decided per-item,
         # not by id range, so it sits in the placeable set despite its id.
         lhi_id = next(v for v in ids if rs[v]["name"] == "long_handed_inserter")
-        # Placeable: agent-buildable (1..5) + the long-handed inserter +
-        # env-spawned source/sink (last two).
-        placeable = {1, 2, 3, 4, 5, lhi_id, sink_id, source_id}
+        furnace_id = next(v for v in ids if rs[v]["name"] == "stone_furnace")
+        # Placeable: agent-buildable (1..5) + the long-handed inserter + the
+        # stone furnace + env-spawned source/sink (last two).
+        placeable = {1, 2, 3, 4, 5, lhi_id, furnace_id, sink_id, source_id}
         for value in placeable:
             assert rs[value]["is_placeable"] is True, f"id {value} should be placeable"
         # Everything else (non-placeable items) — recipe ingredients,

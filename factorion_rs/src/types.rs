@@ -156,14 +156,15 @@ impl Misc {
 ///
 /// Integer-id layout:
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
-///   6..=65  — mostly non-placeable items (recipe ingredients / products /
+///   6..=87  — mostly non-placeable items (recipe ingredients / products /
 ///             raw materials / non-modeled buildings exposed only as items).
-///             The one exception is `LongHandedInserter` (34): it carries a
-///             recipe like the others but is *also* a placeable entity (an
-///             inserter variant that reaches two tiles instead of one), so it
-///             returns `true` from `is_placeable`. Placeability is decided by
-///             `is_placeable`, not by id range — the head excludes only the
-///             last two ids, so a placeable id in the middle is fine.
+///             The exceptions are `LongHandedInserter` (34, an inserter
+///             variant that reaches two tiles) and `StoneFurnace` (65, the
+///             2×2 smelting machine): both carry a recipe like the others
+///             but are *also* placeable entities, so they return `true` from
+///             `is_placeable`. Placeability is decided by `is_placeable`,
+///             not by id range — the head excludes only the last two ids, so
+///             a placeable id in the middle is fine.
 ///   last two — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
@@ -488,6 +489,7 @@ impl Item {
                 | Item::Inserter
                 | Item::LongHandedInserter
                 | Item::AssemblingMachine1
+                | Item::StoneFurnace
                 | Item::UndergroundBelt
                 | Item::Sink
                 | Item::Source
@@ -518,6 +520,8 @@ impl Item {
             Item::Inserter => 0.86,
             Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
+            // Crafting speed 1.0, mirroring the AM1 convention above.
+            Item::StoneFurnace => 1.0,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
@@ -583,7 +587,6 @@ impl Item {
             | Item::SteamEngine
             | Item::SteamTurbine
             | Item::SteelFurnace
-            | Item::StoneFurnace
             | Item::Landfill
             | Item::FirearmMagazine
             | Item::StoneWall
@@ -615,6 +618,7 @@ impl Item {
     pub fn size(self) -> (usize, usize) {
         match self {
             Item::AssemblingMachine1 => (3, 3),
+            Item::StoneFurnace => (2, 2),
             Item::Splitter => (2, 1),
             _ => (1, 1),
         }
@@ -1914,6 +1918,7 @@ mod tests {
             Item::Inserter,
             Item::LongHandedInserter,
             Item::AssemblingMachine1,
+            Item::StoneFurnace,
             Item::UndergroundBelt,
             Item::Sink,
             Item::Source,
