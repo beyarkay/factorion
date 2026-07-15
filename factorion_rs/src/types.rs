@@ -795,7 +795,7 @@ const COAL_PER_SMELT: f64 = 0.072;
 /// under uniform multiplication of consumes and produces.
 ///
 /// A few recipes are block-commented (`/* parked … */`) so that every
-/// MEMORISE_N_INGREDIENT_RECIPES bucket holds an equal 15 recipes; the
+/// ASSEMBLE_N_INGREDIENT bucket holds an equal 15 recipes; the
 /// parked ones are redundant tier/duplicate variants, kept in source so
 /// they can be restored by deleting the comment markers.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {

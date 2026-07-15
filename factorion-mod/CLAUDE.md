@@ -38,7 +38,7 @@ against the engine's prediction. Full sequence, from nothing to a report:
 
    # one lesson / focused run
    uv run python factorion-mod/server/parity.py \
-     --rcon-port 64502 --rcon-password <pw> --lessons MEMORISE_1_INGREDIENT_RECIPES --seeds 10
+     --rcon-port 64502 --rcon-password <pw> --lessons ASSEMBLE_1_INGREDIENT --seeds 10
 
    # full regression (lessons + every YAML fixture) — see the section below
    SEEDS=40 factorion-mod/scripts/parity_regression.sh \

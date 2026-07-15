@@ -222,11 +222,11 @@ To check on the first live run (in rough order):
 2. Scripted source/sink belts actually saturate/drain (sources feed
    ~15/s in the result's `sources[].rate`).
 3. `create_entity` direction semantics for inserters match blueprint
-   import (the +8 flip) — MEMORISE lessons stall at 0/s if wrong.
+   import (the +8 flip) — ASSEMBLE lessons stall at 0/s if wrong.
 4. Power: machines/inserters show `working`, not `no_power`, in
    `status_counts` (substation ring + electric-energy-interface).
 5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
-   (MEMORISE_3.._5 lessons).
+   (ASSEMBLE_3.._4 lessons).
 6. `game.speed` actually reached (wall-clock per run ≈
    (warmup+measure)/60/speed seconds, CPU permitting).
 

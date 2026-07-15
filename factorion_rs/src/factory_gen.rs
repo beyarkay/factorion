@@ -36,12 +36,12 @@ pub enum LessonKind {
     MoveViaUgBelt = 6,
     #[deprecated]
     Assemble2In1Out = 7,
-    Memorise1IngredientRecipes = 8,
+    Assemble1Ingredient = 8,
     MoveOneItemChaos = 9,
     CrossUnderBelt = 10,
-    Memorise2IngredientRecipes = 11,
-    Memorise3IngredientRecipes = 12,
-    Memorise4IngredientRecipes = 13,
+    Assemble2Ingredient = 11,
+    Assemble3Ingredient = 12,
+    Assemble4Ingredient = 13,
     Factory1Ingredient = 15,
 }
 
@@ -56,12 +56,12 @@ impl LessonKind {
             6 => Some(LessonKind::MoveViaUgBelt),
             #[allow(deprecated)]
             7 => Some(LessonKind::Assemble2In1Out),
-            8 => Some(LessonKind::Memorise1IngredientRecipes),
+            8 => Some(LessonKind::Assemble1Ingredient),
             9 => Some(LessonKind::MoveOneItemChaos),
             10 => Some(LessonKind::CrossUnderBelt),
-            11 => Some(LessonKind::Memorise2IngredientRecipes),
-            12 => Some(LessonKind::Memorise3IngredientRecipes),
-            13 => Some(LessonKind::Memorise4IngredientRecipes),
+            11 => Some(LessonKind::Assemble2Ingredient),
+            12 => Some(LessonKind::Assemble3Ingredient),
+            13 => Some(LessonKind::Assemble4Ingredient),
             15 => Some(LessonKind::Factory1Ingredient),
             _ => None,
         }
@@ -79,10 +79,10 @@ impl LessonKind {
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
             #[allow(deprecated)]
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
-            LessonKind::Memorise1IngredientRecipes => "MEMORISE_1_INGREDIENT_RECIPES",
-            LessonKind::Memorise2IngredientRecipes => "MEMORISE_2_INGREDIENT_RECIPES",
-            LessonKind::Memorise3IngredientRecipes => "MEMORISE_3_INGREDIENT_RECIPES",
-            LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
+            LessonKind::Assemble1Ingredient => "ASSEMBLE_1_INGREDIENT",
+            LessonKind::Assemble2Ingredient => "ASSEMBLE_2_INGREDIENT",
+            LessonKind::Assemble3Ingredient => "ASSEMBLE_3_INGREDIENT",
+            LessonKind::Assemble4Ingredient => "ASSEMBLE_4_INGREDIENT",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
@@ -100,10 +100,10 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
         // LessonKind::Assemble2In1Out,
-        LessonKind::Memorise1IngredientRecipes,
-        LessonKind::Memorise2IngredientRecipes,
-        LessonKind::Memorise3IngredientRecipes,
-        LessonKind::Memorise4IngredientRecipes,
+        LessonKind::Assemble1Ingredient,
+        LessonKind::Assemble2Ingredient,
+        LessonKind::Assemble3Ingredient,
+        LessonKind::Assemble4Ingredient,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
@@ -523,18 +523,10 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
-        LessonKind::Memorise1IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 1)
-        }
-        LessonKind::Memorise2IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 2)
-        }
-        LessonKind::Memorise3IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 3)
-        }
-        LessonKind::Memorise4IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 4)
-        }
+        LessonKind::Assemble1Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 1),
+        LessonKind::Assemble2Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 2),
+        LessonKind::Assemble3Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 3),
+        LessonKind::Assemble4Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 4),
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
@@ -1891,7 +1883,7 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
     None
 }
 
-/// Build a MEMORISE_`N`_INGREDIENT_RECIPES factory: a single assembler fed and
+/// Build an ASSEMBLE_`N`_INGREDIENT factory: a single assembler fed and
 /// drained by the most compact possible arms — every ingredient and product
 /// travels `source → belt → inserter → assembler → inserter → belt → sink` with
 /// **exactly one** belt between a source/sink and its inserter. The recipe is
@@ -1902,13 +1894,13 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
 /// the source/sink hangs off a randomly-chosen free neighbour of that arm's
 /// belt. The assembler anchor itself is random.
 ///
-/// Splitting the memorise lesson by ingredient count lets each lesson drill a
+/// Splitting the assemble lesson by ingredient count lets each lesson drill a
 /// fixed input-arm count in isolation. The lesson teaches the policy to
 /// *memorise* which items a recipe consumes and produces (and the assembler's
 /// recipe tag), stripped of any long-belt routing — the routing is fixed at one
 /// tile, so only the recipe identity and the immediate inserter/belt geometry
 /// vary.
-fn build_memorise_recipes(
+fn build_assemble_recipes(
     size: usize,
     rng: &mut Rng,
     max_entities: f64,
@@ -2117,7 +2109,7 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
 /// Build a FACTORY_1_INGREDIENT factory: a row of assemblers all crafting the
 /// same 1-in-1-out recipe, fed from a shared input belt lane along one side
 /// and drained onto a shared output lane along the other — the classic
-/// lined-up production-row layout. Unlike the MEMORISE lessons (whose
+/// lined-up production-row layout. Unlike the ASSEMBLE lessons (whose
 /// source/sink hug the assembler), the source and sink sit at semi-arbitrary
 /// free cells on OPPOSITE sides of the row — the row splits the world in two
 /// and the source lands in the input-lane half, the sink in the output-lane
@@ -2734,16 +2726,16 @@ mod tests {
     }
 
     #[test]
-    fn test_memorise_recipes_smoke() {
-        // Each per-ingredient-count memorise lesson should produce
+    fn test_assemble_recipes_smoke() {
+        // Each per-ingredient-count assemble lesson should produce
         // positive-throughput factories with one belt per arm (belts ==
         // inserters), exactly one assembler unit, one sink, and exactly
         // `n_ingredients` sources (one input arm per ingredient).
         let kinds = [
-            (LessonKind::Memorise1IngredientRecipes, 1),
-            (LessonKind::Memorise2IngredientRecipes, 2),
-            (LessonKind::Memorise3IngredientRecipes, 3),
-            (LessonKind::Memorise4IngredientRecipes, 4),
+            (LessonKind::Assemble1Ingredient, 1),
+            (LessonKind::Assemble2Ingredient, 2),
+            (LessonKind::Assemble3Ingredient, 3),
+            (LessonKind::Assemble4Ingredient, 4),
         ];
         for (kind, n_ingredients) in kinds {
             let mut built = 0;
@@ -2800,10 +2792,10 @@ mod tests {
         // recipe tier 1 can craft — the `produced_by` filter must exclude
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
         let kinds = [
-            LessonKind::Memorise1IngredientRecipes,
-            LessonKind::Memorise2IngredientRecipes,
-            LessonKind::Memorise3IngredientRecipes,
-            LessonKind::Memorise4IngredientRecipes,
+            LessonKind::Assemble1Ingredient,
+            LessonKind::Assemble2Ingredient,
+            LessonKind::Assemble3Ingredient,
+            LessonKind::Assemble4Ingredient,
             LessonKind::Factory1Ingredient,
         ];
         for kind in kinds {

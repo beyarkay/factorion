@@ -421,15 +421,15 @@ class TestGenerateDataset:
         """A lesson kind that can't fit the grid (a 3x3 assembler with 4-5
         ingredient arms doesn't fit at size 5) must be dropped from the sampler,
         not retried forever. Generation completes and simply omits those kinds;
-        the buildable memorise lessons still appear."""
+        the buildable assemble lessons still appear."""
         args = SftArgs(seed=1, size=5, num_samples=400, max_level=0)
         *_, kinds = _materialise_args(args)
         produced = set(kinds.tolist())
-        # The 4-ingredient memorise lesson can't be built at size 5.
-        assert LessonKind.MEMORISE_4_INGREDIENT_RECIPES.value not in produced
+        # The 4-ingredient assemble lesson can't be built at size 5.
+        assert LessonKind.ASSEMBLE_4_INGREDIENT.value not in produced
         # ...but the 1- and 2-ingredient ones (which always fit) do appear.
-        assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
-        assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
+        assert LessonKind.ASSEMBLE_1_INGREDIENT.value in produced
+        assert LessonKind.ASSEMBLE_2_INGREDIENT.value in produced
 
 
 class TestStreamingDemoDataset:
@@ -839,9 +839,9 @@ class TestTrackedArtifact:
 class TestSolvedAssemblerRecipes:
     """_solved_assembler_recipes — the ground truth the rollout scores against."""
 
-    def test_memorise_factory_yields_its_recipe(self):
+    def test_assemble_factory_yields_its_recipe(self):
         f = build_factory(
-            size=9, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=3
+            size=9, kind=LessonKind.ASSEMBLE_1_INGREDIENT, seed=3
         )
         assert f is not None
         asm_id = str2ent("assembling_machine_1").value
@@ -908,25 +908,25 @@ class TestRolloutAsmItemAcc:
         return agent
 
     def _seeds_with_recipe(self, size, recipe_id, n, start=600_000):
-        """`n` MEMORISE_1 seeds whose (single) assembler recipe is `recipe_id`."""
+        """`n` ASSEMBLE_1 seeds whose (single) assembler recipe is `recipe_id`."""
         out = {}
         s = start
         while len(out) < n and s < start + 20_000:
             f = build_factory(
-                size=size, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=s
+                size=size, kind=LessonKind.ASSEMBLE_1_INGREDIENT, seed=s
             )
             if f is not None and _solved_assembler_recipes(f.world_CWH) == {recipe_id}:
-                out[s] = LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value
+                out[s] = LessonKind.ASSEMBLE_1_INGREDIENT.value
             s += 1
         return out
 
     def _two_recipes(self, size):
-        """Two distinct MEMORISE_1 recipe ids that both occur at this size."""
+        """Two distinct ASSEMBLE_1 recipe ids that both occur at this size."""
         seen = []
         s = 600_000
         while len(seen) < 2 and s < 620_000:
             f = build_factory(
-                size=size, kind=LessonKind.MEMORISE_1_INGREDIENT_RECIPES, seed=s
+                size=size, kind=LessonKind.ASSEMBLE_1_INGREDIENT, seed=s
             )
             if f is not None:
                 r = _solved_assembler_recipes(f.world_CWH)
@@ -940,7 +940,7 @@ class TestRolloutAsmItemAcc:
         """Shape contract used by both SFT val/ and PPO eval/ logging."""
         size = 9
         agent = self._forced_agent(size, item_id=6)  # copper_cable-ish id
-        seeds = {s: LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value
+        seeds = {s: LessonKind.ASSEMBLE_1_INGREDIENT.value
                  for s in list(self._seeds_with_recipe(size, self._two_recipes(size)[0], 2))}
         roll = run_rollout_eval(
             agent, SftArgs(seed=1, size=size), seeds, torch.device("cpu"), max_seeds=2
@@ -960,17 +960,17 @@ class TestRolloutAsmItemAcc:
             self._forced_agent(size, item_id=recipe), args, seeds,
             torch.device("cpu"), max_seeds=len(seeds),
         )
-        placed = good["per_kind_asm_n"]["MEMORISE_1_INGREDIENT_RECIPES"]
+        placed = good["per_kind_asm_n"]["ASSEMBLE_1_INGREDIENT"]
         assert placed > 0, "forced agent should land at least one assembler"
         assert good["asm_item_acc"] == 1.0
-        assert good["per_kind_asm_item_acc"]["MEMORISE_1_INGREDIENT_RECIPES"] == 1.0
+        assert good["per_kind_asm_item_acc"]["ASSEMBLE_1_INGREDIENT"] == 1.0
 
         # Same factories, but the agent always picks a DIFFERENT recipe.
         bad = run_rollout_eval(
             self._forced_agent(size, item_id=other), args, seeds,
             torch.device("cpu"), max_seeds=len(seeds),
         )
-        assert bad["per_kind_asm_n"]["MEMORISE_1_INGREDIENT_RECIPES"] > 0
+        assert bad["per_kind_asm_n"]["ASSEMBLE_1_INGREDIENT"] > 0
         assert bad["asm_item_acc"] == 0.0
 
     def test_belt_only_lesson_never_scored(self, registered_env):

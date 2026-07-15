@@ -159,7 +159,7 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
     # the recipe-pick skill is trackable through RL (#264). Only surfaces for
-    # factories that have an assembler (MEMORISE today, any future one too).
+    # factories that have an assembler (ASSEMBLE today, any future one too).
     asm_n = roll["per_kind_asm_n"]
     if sum(asm_n.values()) > 0:
         metrics["eval/asm_item_acc"] = roll["asm_item_acc"]
