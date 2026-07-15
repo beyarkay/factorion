@@ -45,6 +45,7 @@ from training_config import NUM_LAYER_SLOTS, PpoArgs
 # iteration). Resolve them once at import; the values never change.
 _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
+_FURNACE_ENT_ID = str2ent("stone_furnace").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
 _EMPTY_ITEM_VAL = str2item("empty").value
@@ -702,11 +703,11 @@ class FactorioEnv(gym.Env):
             # agent tried to place a source or sink
             invalid_reason_key = 'placed_source_or_sink'
             action_is_invalid = True
-        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
-            # Model is trying to place an assembling machine without a recipe
+        elif entity_id in (_ASM_MACHINE_ENT_ID, _FURNACE_ENT_ID) and item_id == _EMPTY_ITEM_VAL:
+            # Model is trying to place a crafting machine without a recipe
             invalid_reason_key = 'place_asm_mach_wo_recipe'
             action_is_invalid = True
-        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == _DIR_NONE_VAL:
+        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID, _FURNACE_ENT_ID) and direc == _DIR_NONE_VAL:
             # Model is trying to put a thing without giving a direction
             invalid_reason_key = 'placement_wo_direction'
             action_is_invalid = True
@@ -1260,8 +1261,8 @@ class AgentCNN(nn.Module):
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
         # consistently — e.g. an underground_belt placement must carry
-        # misc=UNDERGROUND_DOWN/UP, and an assembling_machine_1 placement
-        # must carry a recipe in `item`.
+        # misc=UNDERGROUND_DOWN/UP, and a crafting-machine (assembler or
+        # furnace) placement must carry a recipe in `item`.
         self.ent_head = layer_init(nn.Linear(head_in, self.num_entities))
         self.dir_head = layer_init(nn.Linear(head_in, self.num_directions))
         self.item_head = layer_init(nn.Linear(head_in, self.num_items))
