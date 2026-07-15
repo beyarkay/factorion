@@ -1,6 +1,6 @@
 """TRIAL_RECIPE_TREE_DEPTH_* — trial kinds: scenarios with no known solution.
 
-A trial's built "factory" is only the markers: a random AM1-craftable sink
+A trial's built "factory" is only the markers: a random craftable sink
 item plus one source per item of a randomly-expanded frontier of its
 ingredient tree (DEPTH_N = the deepest expanded chain is exactly N crafting
 stages long). There is nothing to imitate — trials yield no SFT pairs and are
@@ -64,17 +64,10 @@ def _markers(factory):
     return sink, sources
 
 
-def _am1_recipe(item_name):
-    r = recipes.get(item_name)
-    if r is not None and "assembling_machine_1" in r.produced_by:
-        return r
-    return None
-
-
 def _covers(item_name, source_names):
     """`source_names` is a valid frontier of `item_name`'s ingredient tree:
     every ingredient is either a source or itself craftable from the sources."""
-    r = _am1_recipe(item_name)
+    r = recipes.get(item_name)
     if r is None:
         return False
     return all(
