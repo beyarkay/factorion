@@ -154,10 +154,11 @@ for _val, _props in factorion_rs.py_items().items():
 # `entities` is an alias for `items` for backwards compatibility.
 # Post-unification, every grid-placeable entity is also an Item, so
 # `entities[v]` returns the same dataclass as `items[v]`. The Rust
-# binding hands us the canonical ordering: 1..5 = agent-placeable
-# (TB, Inserter, AM1, UB, Splitter), 6..7 = env-spawned (Sink,
-# Source — placed last so the policy head can exclude them via
-# len(entities)-2), 8..12 = non-placeable items.
+# binding hands us the canonical ordering: low ids = agent-placeable
+# (TB, Inserter, AM1, UB, Splitter; more placeables sit mid-range),
+# then mostly non-placeable items, with the env-spawned Sink/Source
+# always the LAST two ids so the policy head can exclude them via
+# len(entities)-2.
 entities = items
 # Backwards-compat alias for the now-unified Item dataclass.
 Entity = Item

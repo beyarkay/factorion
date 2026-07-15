@@ -27,6 +27,7 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('l', Item::LongHandedInserter, Misc::None),
     ('a', Item::AssemblingMachine1, Misc::None),
     ('Y', Item::Splitter, Misc::None),
+    ('m', Item::ElectricMiningDrill, Misc::None),
     ('d', Item::UndergroundBelt, Misc::UndergroundDown),
     ('u', Item::UndergroundBelt, Misc::UndergroundUp),
     ('S', Item::Source, Misc::None),

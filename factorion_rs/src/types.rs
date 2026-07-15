@@ -269,11 +269,16 @@ pub enum Item {
     PersonalRoboport = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
+    // Placeable: mines the ore terrain (ORES channel) under its 5x5 area
+    // and outputs onto the belt-like tile in front of its facing edge.
+    ElectricMiningDrill = 87,
+    // Raw material (mined, no recipe)
+    Coal = 88,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 87,   // named "bulk_inserter"
-    Source = 88, // named "stack_inserter"
+    Sink = 89,   // named "bulk_inserter"
+    Source = 90, // named "stack_inserter"
 }
 
 impl Item {
@@ -367,8 +372,10 @@ impl Item {
             84 => Some(Item::PersonalRoboport),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
-            87 => Some(Item::Sink),
-            88 => Some(Item::Source),
+            87 => Some(Item::ElectricMiningDrill),
+            88 => Some(Item::Coal),
+            89 => Some(Item::Sink),
+            90 => Some(Item::Source),
             _ => None,
         }
     }
@@ -474,6 +481,8 @@ impl Item {
             Item::PersonalRoboport => "personal_roboport",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
+            Item::ElectricMiningDrill => "electric_mining_drill",
+            Item::Coal => "coal",
         }
     }
 
@@ -491,6 +500,7 @@ impl Item {
                 | Item::Sink
                 | Item::Source
                 | Item::Splitter
+                | Item::ElectricMiningDrill
         )
     }
 
@@ -523,6 +533,10 @@ impl Item {
             // Per constituent belt: a splitter is two belts side by side,
             // each a full 15 i/s tile (4 lane pools × 7.5 = 30 total).
             Item::Splitter => 15.0,
+            // Wiki: mining speed 0.5 / mining time 1 for every modeled ore
+            // (copper, iron, coal, stone) — 0.5 items/s per drill, whole
+            // entity, independent of how many ore tiles it covers.
+            Item::ElectricMiningDrill => 0.5,
             // Non-placeable: cannot transfer flow on its own.
             Item::CopperCable
             | Item::CopperPlate
@@ -603,7 +617,8 @@ impl Item {
             | Item::DischargeDefenseRemote
             | Item::PersonalRoboport
             | Item::FlamethrowerTurret
-            | Item::AssemblingMachine3 => 0.0,
+            | Item::AssemblingMachine3
+            | Item::Coal => 0.0,
         }
     }
 
@@ -612,7 +627,7 @@ impl Item {
     /// Non-placeable items return (1, 1).
     pub fn size(self) -> (usize, usize) {
         match self {
-            Item::AssemblingMachine1 => (3, 3),
+            Item::AssemblingMachine1 | Item::ElectricMiningDrill => (3, 3),
             Item::Splitter => (2, 1),
             _ => (1, 1),
         }
