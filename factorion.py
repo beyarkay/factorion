@@ -456,8 +456,13 @@ def world2html(world_WHC, highlights=None):
                 world_WHC[x, y, Channel.FOOTPRINT.value]
                 == Footprint.AVAILABLE.value
             )
+            ore = items[world_WHC[x, y, Channel.ORES.value]]
             if highlights and (x, y) in highlights:
                 bg_style = f"background: {highlights[(x, y)]};"
+            elif ore.name != "empty":
+                # Warm ground tint marks ore terrain; the ore icon is added
+                # bottom-left below, under any entity icon.
+                bg_style = "background: #f3e8d2;"
             elif not available:
                 # Subtle grey cross-hatch (two stacked diagonals) marks
                 # UNAVAILABLE tiles. Low opacity so it sits behind any
@@ -504,9 +509,17 @@ def world2html(world_WHC, highlights=None):
             td_border_css = _border_css("td", "black")
             div_border_css = _border_css("div", "grey")
 
+            ore_img = (
+                f"<img src='{item_str2b64img(ore.name)}' style=' position: absolute;"
+                " bottom: 2%; left: 2%; width: 25%; height: 25%; opacity: 90%;'>"
+                if ore.name != "empty"
+                else ""
+            )
+
             xy_str = f"{x},{y}"
             cell_content = f"""
            <div style='position: relative; width: 50px; height: 50px; {bg_style}; {div_border_css};'>
+    {ore_img}
     <img src='{entity_icon}' style=' position: absolute; top: 10%;   left: 10%;  width: 60%; height: 60%; '>
     {ghost_imgs}
     <img src='{item_icon}' style=' position: absolute; bottom: 5%;  right: 5%;  width: 20%; height: 20%; '>

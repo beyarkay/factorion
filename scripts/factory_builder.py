@@ -75,6 +75,7 @@ PLACEABLE_ENTITIES = [
     "stack_inserter",
     "bulk_inserter",
     "assembling_machine_1",
+    "electric_mining_drill",
 ]
 NON_PLACEABLE_ITEMS = [
     "copper_cable",
@@ -82,7 +83,13 @@ NON_PLACEABLE_ITEMS = [
     "iron_plate",
     "electronic_circuit",
     "iron_gear_wheel",
+    "copper_ore",
+    "iron_ore",
+    "coal",
+    "stone",
 ]
+# The ore terrain types the ORES channel may carry (editor dropdown order).
+ORE_ITEMS = ["copper_ore", "iron_ore", "coal", "stone"]
 # 10-slot hotbar mapped to keys 1..9,0 (key '0' is the last slot).
 # `None` means the slot is unbound and pressing that key is a no-op.
 # "empty" is the eraser.
@@ -95,7 +102,7 @@ HOTBAR = [
     "bulk_inserter",
     "assembling_machine_1",
     "long_handed_inserter",
-    None,
+    "electric_mining_drill",
     "empty",
 ]
 # Display labels for slots whose canonical entity name differs from how
@@ -147,7 +154,7 @@ class Args:
 
 def build_world(grid: list[list[dict]]) -> torch.Tensor:
     """Convert a JSON grid (rows of {entity, direction, item, misc,
-    footprint} dicts) into a world tensor in WHC layout."""
+    footprint, ore} dicts) into a world tensor in WHC layout."""
     h = len(grid)
     w = len(grid[0]) if h else 0
     if w != h:
@@ -170,13 +177,17 @@ def build_world(grid: list[list[dict]]) -> torch.Tensor:
             world[x, y, Channel.MISC.value] = Misc[cell.get("misc", "NONE")].value
             footprint = cell.get("footprint", "AVAILABLE")
             world[x, y, Channel.FOOTPRINT.value] = Footprint[footprint].value
+            ore_name = cell.get("ore") or "empty"
+            world[x, y, Channel.ORES.value] = name_to_value.get(
+                ore_name, name_to_value["empty"]
+            )
     return torch.tensor(world)
 
 
 def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
     """Inverse of :func:`build_world`: convert a (C, W, H) world tensor
     into the JSON grid format the JS frontend uses
-    (``grid[y][x] = {entity, direction, item, misc, footprint}``)."""
+    (``grid[y][x] = {entity, direction, item, misc, footprint, ore}``)."""
     _, W, H = world_CWH.shape
     name_for_value = {it.value: it.name for it in items.values()}
     dir_for_value = {d.value: d.name for d in Direction}
@@ -191,12 +202,14 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
             item_v = int(world_CWH[Channel.ITEMS.value, x, y].item())
             misc_v = int(world_CWH[Channel.MISC.value, x, y].item())
             foot_v = int(world_CWH[Channel.FOOTPRINT.value, x, y].item())
+            ore_v = int(world_CWH[Channel.ORES.value, x, y].item())
             row.append({
                 "entity": name_for_value.get(ent_v, "empty"),
                 "direction": dir_for_value.get(dir_v, "NONE"),
                 "item": name_for_value.get(item_v, "empty"),
                 "misc": misc_for_value.get(misc_v, "NONE"),
                 "footprint": footprint_for_value.get(foot_v, "AVAILABLE"),
+                "ore": name_for_value.get(ore_v, "empty"),
             })
         rows.append(row)
     return rows
@@ -665,6 +678,9 @@ def render_index(default_size: int) -> str:
     misc_options = "".join(
         f'<option value="{m}">{m}</option>' for m in MISC_VALUES
     )
+    ore_options = "".join(
+        f'<option value="{n}">{n}</option>' for n in (["empty"] + ORE_ITEMS)
+    )
     lesson_options = "".join(
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
@@ -772,6 +788,13 @@ def render_index(default_size: int) -> str:
       repeating-linear-gradient(-45deg,
         rgba(80,80,80,0.12), rgba(80,80,80,0.12) 2px,
         transparent 2px, transparent 8px);
+  }}
+  /* Ore terrain: a warm ground tint plus a small ore icon bottom-left.
+     Entities render on top — ore is under them, exactly like in-game. */
+  table.grid td.ore {{ background: #f3e8d2; }}
+  .cell-inner img.ore-icon {{
+    position: absolute; bottom: 2%; left: 2%; width: 28%; height: 28%;
+    opacity: 0.9;
   }}
   .cell-inner {{ position: relative; width: 100%; height: 100%; }}
   .cell-inner img.ent {{ position: absolute; top: 10%; left: 10%; width: 60%; height: 60%; }}
@@ -918,6 +941,9 @@ def render_index(default_size: int) -> str:
         <option value="UNAVAILABLE">UNAVAILABLE</option>
       </select>
     </label>
+    <label>ore (terrain)
+      <select id="ed-ore">{ore_options}</select>
+    </label>
     <button id="clear-cell" style="margin-top:0.6em;">clear cell</button>
 
     {model_panel_html}
@@ -946,8 +972,16 @@ let prediction = null;   // last /predict response (or null)
 function emptyCell() {{
   return {{
     entity: 'empty', direction: 'NONE', item: 'empty',
-    misc: 'NONE', footprint: 'AVAILABLE',
+    misc: 'NONE', footprint: 'AVAILABLE', ore: 'empty',
   }};
+}}
+
+// Reset a cell's entity state but keep its terrain (ore, footprint) —
+// erasing an entity never strips the ground it stood on. Removing ore is
+// an explicit editor action.
+function clearCellKeepTerrain(x, y) {{
+  const kept = {{ ore: grid[y][x].ore, footprint: grid[y][x].footprint }};
+  grid[y][x] = Object.assign(emptyCell(), kept);
 }}
 
 function newGrid(n) {{
@@ -997,6 +1031,7 @@ function renderGrid() {{
       td.dataset.x = x; td.dataset.y = y;
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
+      if (c.ore && c.ore !== 'empty') td.classList.add('ore');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
       // The blue argmax border tracks the same suppression rule as the
       // ghost overlays: if the model says it's done (eot > 0.5), don't
@@ -1009,6 +1044,8 @@ function renderGrid() {{
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
       let html = `<div class="xy">${{x}},${{y}}</div>`;
+      if (c.ore && c.ore !== 'empty')
+        html += `<img class="ore-icon" src="${{iconFor(c.ore)}}" title="${{c.ore}}">`;
       if (c.entity && c.entity !== 'empty')
         html += `<img class="ent" src="${{iconFor(c.entity)}}">`;
       if (c.item && c.item !== 'empty')
@@ -1072,7 +1109,7 @@ function renderGrid() {{
       }});
       td.addEventListener('contextmenu', (ev) => {{
         ev.preventDefault();
-        grid[y][x] = emptyCell();
+        clearCellKeepTerrain(x, y);
         renderGrid();
         if (selected && selected.x === x && selected.y === y) syncEditor();
         scheduleCompute();
@@ -1103,8 +1140,11 @@ function renderGrid() {{
         }} else if (payload.kind === 'tile') {{
           const fx = payload.from.x, fy = payload.from.y;
           if (fx === x && fy === y) return;
-          grid[y][x] = Object.assign({{}}, grid[fy][fx]);
-          grid[fy][fx] = emptyCell();
+          // The entity state moves; each tile keeps its own terrain.
+          grid[y][x] = Object.assign({{}}, grid[fy][fx], {{
+            ore: grid[y][x].ore, footprint: grid[y][x].footprint,
+          }});
+          clearCellKeepTerrain(fx, fy);
           selected = {{ x, y }};
           renderGrid(); syncEditor();
           scheduleCompute();
@@ -1127,12 +1167,14 @@ function syncEditor() {{
   document.getElementById('ed-item').value = c.item;
   document.getElementById('ed-misc').value = c.misc;
   document.getElementById('ed-footprint').value = c.footprint;
+  document.getElementById('ed-ore').value = c.ore || 'empty';
 }}
 
 function bindEditor() {{
   const map = {{
     'ed-entity': 'entity', 'ed-direction': 'direction',
     'ed-item': 'item', 'ed-misc': 'misc', 'ed-footprint': 'footprint',
+    'ed-ore': 'ore',
   }};
   for (const [id, field] of Object.entries(map)) {{
     document.getElementById(id).addEventListener('change', (ev) => {{
@@ -1144,7 +1186,7 @@ function bindEditor() {{
   }}
   document.getElementById('clear-cell').addEventListener('click', () => {{
     if (!selected) return;
-    grid[selected.y][selected.x] = emptyCell();
+    clearCellKeepTerrain(selected.x, selected.y);
     renderGrid(); syncEditor();
     scheduleCompute();
   }});
@@ -1179,7 +1221,7 @@ function bindHotbar() {{
 
 function placeEntity(x, y, ent) {{
   if (ent === 'empty') {{
-    grid[y][x] = emptyCell();
+    clearCellKeepTerrain(x, y);
   }} else {{
     grid[y][x].entity = ent;
     if (grid[y][x].direction === 'NONE') grid[y][x].direction = 'EAST';
@@ -1306,7 +1348,8 @@ async function computePrediction() {{
 function applyCandidate(cand) {{
   const {{ x, y, entity, direction, item, misc }} = cand;
   grid[y][x] = {{
-    entity, direction, item, misc, footprint: grid[y][x].footprint,
+    entity, direction, item, misc,
+    footprint: grid[y][x].footprint, ore: grid[y][x].ore,
   }};
   selected = {{ x, y }};
   prediction = null;
