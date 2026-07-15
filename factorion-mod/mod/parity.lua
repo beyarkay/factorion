@@ -247,6 +247,7 @@ local function entity_kind(name)
   if BELT_LIKE[name] then return "belt" end
   if INSERTER_LIKE[name] then return "inserter" end
   if string.find(name, "assembling%-machine") then return "machine" end
+  if string.find(name, "furnace") then return "machine" end
   return "other"
 end
 

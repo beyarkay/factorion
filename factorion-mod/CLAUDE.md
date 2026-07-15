@@ -52,8 +52,11 @@ against the engine's prediction. Full sequence, from nothing to a report:
    Y/s (err Z%)`; the run ends with a ranked list of every sink with >0
    error and a pass/fail count (non-zero exit if any factory mismatches
    beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
-   regression stands out): assembler crafting-time over-count, long-handed
-   inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
+   regression stands out): assembler crafting-time over-count, the stone
+   furnace's crafting-time over-count (same class — the engine has no
+   crafting-speed cap, so it predicts the inserter-limited 0.86 items/s
+   where the real furnace smelts at 0.3125/s), long-handed inserter
+   (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
    smelting recipes → 0, and impossible >15/s rates from degenerate
    sink-loop factories. Transport (belts/splitters/undergrounds) should be
    exact.

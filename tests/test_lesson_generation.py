@@ -3122,3 +3122,55 @@ class TestAssembleRecipesMissingEntities:
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("source").value).sum().item() == n_src_full
         assert (ent == str2ent("sink").value).sum().item() == 1
+
+
+# ── SMELT_1_INGREDIENT tests ────────────────────────────────────────
+#
+# The furnace counterpart of the ASSEMBLE lessons: a single 2×2 stone
+# furnace tagged with a smelting recipe, fed by two input arms (the real
+# ingredient + coal, the folded-in fuel) and drained by one output arm.
+
+
+class TestSmeltRecipes:
+    @pytest.mark.parametrize("seed", range(10))
+    def test_layout_and_throughput(self, seed):
+        f = build_factory(size=10, kind=LessonKind.SMELT_1_INGREDIENT, seed=seed)
+        assert f is not None
+        world, _ = blank_entities(f, num_missing_entities=0)
+        ent = world[Channel.ENTITIES.value]
+        assert (ent == str2ent("stone_furnace").value).sum().item() == 4
+        assert (ent == str2ent("sink").value).sum().item() == 1
+        assert (ent == str2ent("source").value).sum().item() == 2
+        # One belt and one inserter per arm.
+        n_belt = (ent == str2ent("transport_belt").value).sum().item()
+        n_ins = (ent == str2ent("inserter").value).sum().item()
+        assert n_belt == n_ins == 3
+        tp, _ = rs_throughput(world.permute(1, 2, 0))
+        assert tp > 0, f"seed={seed}: throughput is {tp}"
+
+    @pytest.mark.parametrize("seed", range(10))
+    def test_one_source_carries_coal(self, seed):
+        f = build_factory(size=10, kind=LessonKind.SMELT_1_INGREDIENT, seed=seed)
+        assert f is not None
+        world = f.world_CWH
+        item_ch = world[Channel.ITEMS.value]
+        src_items = {
+            item_ch[x, y].item() for x, y in _markers(world, "source")
+        }
+        assert str2item("coal").value in src_items
+
+    def test_furnace_recipe_is_smeltable(self):
+        f = build_factory(size=10, kind=LessonKind.SMELT_1_INGREDIENT, seed=42)
+        assert f is not None
+        world = f.world_CWH
+        ent = world[Channel.ENTITIES.value]
+        fx, fy = (ent == str2ent("stone_furnace").value).nonzero(as_tuple=False)[0]
+        recipe_name = items[world[Channel.ITEMS.value, fx, fy].item()].name
+        assert "stone_furnace" in recipes[recipe_name].produced_by
+
+    @pytest.mark.parametrize("seed", [0, 1, 7, 42, 100])
+    def test_same_seed_same_world(self, seed):
+        f1 = build_factory(size=10, kind=LessonKind.SMELT_1_INGREDIENT, seed=seed)
+        f2 = build_factory(size=10, kind=LessonKind.SMELT_1_INGREDIENT, seed=seed)
+        assert f1 is not None and f2 is not None
+        assert torch.equal(f1.world_CWH, f2.world_CWH)
