@@ -245,17 +245,18 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
 }
 
 /// Python-facing shape of a built factory: the world tensor, the count of
-/// removable entity units, and the protected (never-blanked) positions.
+/// removable entity units, the protected (never-blanked) positions, and the
+/// items/s reference throughput is normalized by.
 #[cfg(feature = "pyo3-bindings")]
-type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>);
+type PyFactory = (Py<numpy::PyArray3<i64>>, usize, Vec<(usize, usize)>, f64);
 
 /// Build a complete, valid factory of the given lesson `kind` (an integer
 /// `LessonKind` value) on a `size × size` grid, seeded from `seed`.
 ///
-/// Returns `(world, total_entities, protected_positions)` where `world` is
-/// a `(W, H, C)` int64 array (the same shape `simulate_throughput` takes),
-/// or `None` when rejection sampling is exhausted. Raises `ValueError` for an
-/// unknown lesson kind.
+/// Returns `(world, total_entities, protected_positions, max_throughput)`
+/// where `world` is a `(W, H, C)` int64 array (the same shape
+/// `simulate_throughput` takes), or `None` when rejection sampling is
+/// exhausted. Raises `ValueError` for an unknown lesson kind.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 #[pyo3(signature = (size, kind, seed, random_item=true, max_entities=f64::INFINITY))]
@@ -276,10 +277,16 @@ fn build_factory(
     };
     let total = built.total_entities;
     let protected = built.protected_positions.clone();
+    let max_throughput = built.max_throughput;
     let (data, w, h, c) = built.world.into_whc();
     let arr = numpy::ndarray::Array3::from_shape_vec((w, h, c), data)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    Ok(Some((arr.into_pyarray(py).unbind(), total, protected)))
+    Ok(Some((
+        arr.into_pyarray(py).unbind(),
+        total,
+        protected,
+        max_throughput,
+    )))
 }
 
 /// Render a factory world tensor into the two-character ASCII grid format.
@@ -311,6 +318,20 @@ fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(d.into())
 }
 
+/// Return `{NAME: bool}` — whether each lesson kind is a *trial* (no known
+/// solution: the built world holds only source/sink markers, so it yields no
+/// imitation pairs and is RL-only). Keys and insertion order match
+/// `py_lesson_kinds`; Python builds its `LESSON_IS_TRIAL` map from this.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_lesson_is_trial(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    for &kind in all_lesson_kinds() {
+        d.set_item(kind.name(), kind.is_trial())?;
+    }
+    Ok(d.into())
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -321,6 +342,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lesson_is_trial, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     m.add_function(wrap_pyfunction!(render_factory, m)?)?;
     Ok(())

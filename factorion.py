@@ -15,7 +15,7 @@ import zlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
@@ -189,6 +189,15 @@ recipes = {
 # set can't drift — the single-source-of-truth pattern `items`/`recipes` use.
 LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 
+# Which kinds are *trials*: scenarios with no known solution. A trial's built
+# "factory" is only the source/sink markers — there is nothing to imitate, so
+# trials yield no SFT pairs (the agent is put in the scenario and must figure
+# it out through RL reward alone). Owned by Rust (LessonKind::is_trial).
+LESSON_IS_TRIAL: Dict["LessonKind", bool] = {
+    LessonKind[name]: is_trial
+    for name, is_trial in factorion_rs.py_lesson_is_trial().items()
+}
+
 
 @dataclass(frozen=True)
 class Factory:
@@ -210,10 +219,16 @@ class Factory:
             agent cannot reconstruct (recipe channel on the assembler,
             splitter geometry). Source/sink are protected unconditionally
             inside :func:`_remove_entities` and need not appear here.
+        max_throughput: the items/s reference the training loop normalizes
+            achieved throughput by (a "perfect" build scores 1.0): the
+            simulated rate of the solved world for kinds with a known
+            solution, an analytic ceiling for trial kinds (which have no
+            reference solution to simulate — see ``LESSON_IS_TRIAL``).
     """
 
     world_CWH: torch.Tensor
     total_entities: int
+    max_throughput: float
     protected_positions: frozenset = frozenset()
 
 
@@ -1159,7 +1174,7 @@ def build_factory(
     )
     if result is None:
         return None
-    world_WHC, total_entities, protected = result
+    world_WHC, total_entities, protected, max_throughput = result
     # Rust returns (W, H, C); the Factory carries (C, W, H).
     world_CWH = torch.from_numpy(
         np.ascontiguousarray(np.transpose(world_WHC, (2, 0, 1)))
@@ -1167,6 +1182,7 @@ def build_factory(
     return Factory(
         world_CWH=world_CWH,
         total_entities=total_entities,
+        max_throughput=max_throughput,
         protected_positions=frozenset(map(tuple, protected)),
     )
 

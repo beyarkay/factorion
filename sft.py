@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, IterableDataset, TensorDataset
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
+    LESSON_IS_TRIAL,
     Channel,
     Direction,
     LessonKind,
@@ -248,7 +249,11 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     until `target` pairs are produced, or forever when `target` is None. Callers
     own their own RNG seeding.
     """
-    kinds = list(LessonKind)
+    # Trial kinds have no known solution, so they can never emit an expert
+    # pair — left in the pool they'd stay at 0 samples forever and the
+    # fewest-pairs draw below would redraw them until the heat death of the
+    # universe. Trials are RL-only; PPO samples them directly.
+    kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for

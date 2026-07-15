@@ -67,6 +67,16 @@ impl LessonKind {
         }
     }
 
+    /// Whether this kind is a *trial*: a scenario with no known solution.
+    /// A trial's built world holds only the source/sink markers — the layout
+    /// in between is the agent's to discover through RL reward, never to
+    /// imitate — so `total_entities == 0`, it contributes no SFT pairs, and
+    /// its `max_throughput` is an analytic ceiling rather than the simulated
+    /// rate of a reference solution.
+    pub fn is_trial(self) -> bool {
+        false
+    }
+
     /// The canonical SCREAMING_SNAKE_CASE name — the identifier the Python
     /// `LessonKind` enum member takes.
     pub fn name(self) -> &'static str {
@@ -475,6 +485,12 @@ pub struct BuiltFactory {
     pub world: World,
     pub total_entities: usize,
     pub protected_positions: Vec<(usize, usize)>,
+    /// The items/s reference the training loop normalizes achieved throughput
+    /// by (so a "perfect" build scores 1.0): the simulated rate of the solved
+    /// world for kinds with a known solution, an analytic ceiling for trial
+    /// kinds (which have no reference solution to simulate — see
+    /// [`LessonKind::is_trial`]).
+    pub max_throughput: f64,
 }
 
 /// Lay a route into `world`: plain belts, and underground tunnel ends for any
@@ -2707,10 +2723,12 @@ fn finish(
     if count == 0 {
         return None;
     }
+    let max_throughput = world_throughput(&world);
     Some(BuiltFactory {
         world,
         total_entities,
         protected_positions,
+        max_throughput,
     })
 }
 
