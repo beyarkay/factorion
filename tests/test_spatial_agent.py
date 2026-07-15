@@ -270,16 +270,16 @@ class TestRegularisation:
 
 
 class TestCategoricalInputEncoding:
-    """The nominal observation channels (entity/item/direction/misc) are
-    encoded categorically before the conv — embeddings for the two wide
+    """The nominal observation channels (entity/item/ore/direction/misc) are
+    encoded categorically before the conv — embeddings for the wide
     vocabularies, one-hots for the two narrow ones, footprint left scalar —
     rather than fed as raw ordinal id floats."""
 
     def test_encoded_shape(self, agent):
         """_encode_input expands len(Channel) into the conv's input channels:
-        two embeddings + two one-hots + footprint."""
+        three embeddings + two one-hots + footprint."""
         d = agent.cat_embed_dim
-        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1
+        assert agent.input_channels == 3 * d + agent.num_directions + agent.num_misc + 1
         enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert enc.shape == (2, agent.input_channels, 5, 5)
 
@@ -289,7 +289,7 @@ class TestCategoricalInputEncoding:
         obs = torch.zeros(1, NUM_CHANNELS, 3, 3)
         obs[0, Channel.DIRECTION.value, 1, 1] = 2.0
         d = agent.cat_embed_dim
-        dir_slice = agent._encode_input(obs)[0, 2 * d : 2 * d + agent.num_directions, 1, 1]
+        dir_slice = agent._encode_input(obs)[0, 3 * d : 3 * d + agent.num_directions, 1, 1]
         assert dir_slice.argmax().item() == 2
         assert dir_slice.sum().item() == pytest.approx(1.0)
 

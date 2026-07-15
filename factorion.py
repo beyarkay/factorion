@@ -90,6 +90,10 @@ class Channel(Enum):
     MISC = 3
     # 1 if you can build there, 0 if you can't
     FOOTPRINT = 4
+    # Ore terrain: the Item id of the ore on this tile (copper/iron ore,
+    # coal, stone), 0 = no ore. Terrain, not an entity — buildable-over
+    # and never cleared by blanking.
+    ORES = 5
 
 
 class Footprint(Enum):

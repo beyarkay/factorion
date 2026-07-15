@@ -10,9 +10,13 @@ pub enum Channel {
     Items = 2,
     Misc = 3,
     Footprint = 4,
+    /// Ore terrain: the Item id of the ore on this tile (copper/iron ore,
+    /// coal, stone), 0 = no ore. Terrain, not an entity — entities can be
+    /// built on top of it and blanking never clears it.
+    Ores = 5,
 }
 
-pub const NUM_CHANNELS: usize = 5;
+pub const NUM_CHANNELS: usize = 6;
 
 impl Channel {
     pub fn index(self) -> usize {

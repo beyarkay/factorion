@@ -58,7 +58,7 @@ use world::World;
 /// Calculate the throughput score of a factory represented as a 3D tensor.
 ///
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
-///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
+///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint, 5: ores
 ///
 /// Returns: (score, num_unreachable).
 /// The score is the power mean (see [`factory_score`]) of each sink's
