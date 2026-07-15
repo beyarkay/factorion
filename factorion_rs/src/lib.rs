@@ -288,9 +288,11 @@ fn build_factory(
 /// `simulate_throughput` takes. Returns the multi-line grid string (geometry
 /// only; item/recipe bindings live in the tensor, not the grid), where each
 /// tile is two characters — an entity char (`b`=belt, `i`=inserter, `a`=
-/// assembler, `Y`=splitter, `d`/`u`=underground down/up, `S`=source, `K`=sink)
-/// plus a direction marker (`^>v<`), or `..` for an empty tile. Multi-tile
-/// entities draw their body across the footprint with a blank interior.
+/// assembler, `Y`=splitter, `m`=mining drill, `d`/`u`=underground down/up,
+/// `S`=source, `K`=sink) plus a direction marker (`^>v<`), or `..` for an
+/// empty tile. Multi-tile entities draw their body across the footprint with
+/// a blank interior; a directional square entity (the drill) shows its facing
+/// as one marker on the fore-edge-center body tile.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn render_factory(world: PyReadonlyArray3<i64>) -> PyResult<String> {

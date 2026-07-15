@@ -216,6 +216,7 @@ pub enum EntityEnum {
     Sink(Sink),
     Source(Source),
     Splitter(Splitter),
+    ElectricMiningDrill(ElectricMiningDrill),
 }
 
 impl EntityEnum {
@@ -234,6 +235,7 @@ impl EntityEnum {
             Item::Sink => Self::Sink(Sink),
             Item::Source => Self::Source(Source { item }),
             Item::Splitter => Self::Splitter(Splitter),
+            Item::ElectricMiningDrill => Self::ElectricMiningDrill(ElectricMiningDrill),
             _ => return None,
         })
     }
@@ -250,6 +252,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
             Self::Splitter(e) => e.kind(),
+            Self::ElectricMiningDrill(e) => e.kind(),
         }
     }
 
@@ -263,6 +266,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
             Self::Splitter(e) => e.connections(pos, dir, world),
+            Self::ElectricMiningDrill(e) => e.connections(pos, dir, world),
         }
     }
 
@@ -276,6 +280,7 @@ impl FactoryEntity for EntityEnum {
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
             Self::Splitter(e) => e.transform_flow(input),
+            Self::ElectricMiningDrill(e) => e.transform_flow(input),
         }
     }
 }
@@ -592,6 +597,108 @@ impl FactoryEntity for Sink {
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
         // Sinks pass through everything (infinite capacity)
         input.clone()
+    }
+}
+
+// ── Electric Mining Drill ───────────────────────────────────────────────────
+//
+// A 3x3 machine that mines the ore terrain (ORES channel) under its 5x5
+// mining area — the body extended one tile on every side, so neighbouring
+// drills' areas may overlap. It produces a flat `flow_rate()` (0.5 items/s)
+// whenever at least one ore tile is covered, split across ore types in
+// proportion to their covered tile counts (Factorio mines every resource
+// under a mixed patch simultaneously). Its output goes to exactly ONE tile
+// — one step beyond the middle of the facing edge — and only onto a
+// belt-like receiver (belt / underground belt / splitter / sink-as-chest);
+// inserters can never pull from a drill and it never feeds machines.
+//
+// Like a Source, its output is pre-seeded onto the graph node at build time
+// (`build_graph` calls [`ElectricMiningDrill::mining_output`]) and it acts
+// as a BFS root in `calc_throughput` — unlike a Source, the rate is finite.
+
+pub struct ElectricMiningDrill;
+
+impl ElectricMiningDrill {
+    /// Per-item mining output of a drill anchored (top-left) at `anchor`:
+    /// zero when no ore tile lies in the 5x5 mining area, otherwise the
+    /// drill's flat `flow_rate()` split across covered ore types in
+    /// proportion to their tile counts. Non-ore values in the ORES channel
+    /// (a data error) are ignored.
+    pub fn mining_output(world: &World, anchor: (usize, usize)) -> HashMap<Item, f64> {
+        let (ax, ay) = (anchor.0 as i64, anchor.1 as i64);
+        let mut counts: HashMap<Item, usize> = HashMap::new();
+        for x in (ax - 1)..=(ax + 3) {
+            for y in (ay - 1)..=(ay + 3) {
+                if !world.in_bounds(x, y) {
+                    continue;
+                }
+                if let Some(ore) = world.ore_at(x as usize, y as usize) {
+                    if ore.is_ore() {
+                        *counts.entry(ore).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        let total: usize = counts.values().sum();
+        if total == 0 {
+            return HashMap::new();
+        }
+        let rate = Item::ElectricMiningDrill.flow_rate();
+        counts
+            .into_iter()
+            .map(|(ore, n)| (ore, rate * n as f64 / total as f64))
+            .collect()
+    }
+}
+
+impl FactoryEntity for ElectricMiningDrill {
+    fn kind(&self) -> Item {
+        Item::ElectricMiningDrill
+    }
+
+    fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge> {
+        let (x, y) = pos;
+        if dir == Direction::None {
+            return Vec::new();
+        }
+        let (dx, dy) = dir.delta();
+        // The single output tile: one step beyond the middle of the facing
+        // edge — the body center (anchor + (1,1)) plus two steps forward.
+        let (ox, oy) = (x as i64 + 1 + 2 * dx, y as i64 + 1 + 2 * dy);
+        if !world.in_bounds(ox, oy) {
+            return Vec::new();
+        }
+        let (ou, ov) = (ox as usize, oy as usize);
+        let Some(dst) = world.entity_at(ou, ov) else {
+            return Vec::new();
+        };
+        // Belt-like receivers only. A sink counts (a drill may output into
+        // a chest); machines and inserters never do.
+        let droppable = matches!(
+            dst,
+            Item::TransportBelt | Item::UndergroundBelt | Item::Splitter | Item::Sink
+        );
+        if !droppable {
+            return Vec::new();
+        }
+        let self_id = NodeId::new(Item::ElectricMiningDrill, x, y, None);
+        if dst.is_lane_aware() {
+            // Same one-lane drop rule as an inserter: the FAR lane when the
+            // receiver runs perpendicular to the drill's facing, its RIGHT
+            // lane when parallel or anti-parallel.
+            let dst_dir = world.direction_at(ou, ov);
+            let lane = Lane::on_side(dst_dir, dir).unwrap_or(Lane::Right);
+            vec![(self_id, NodeId::new(dst, ou, ov, Some(lane)))]
+        } else {
+            vec![(self_id, NodeId::new(dst, ou, ov, None))]
+        }
+    }
+
+    fn transform_flow(&self, _input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
+        // Output is pre-seeded at graph-build time (it depends on the ore
+        // terrain, which transform_flow can't see) and a drill has no
+        // predecessors, so this only runs for a zero-ore drill: nothing.
+        HashMap::new()
     }
 }
 
@@ -1643,5 +1750,163 @@ mod tests {
         assert!(EntityEnum::new(Item::CopperCable, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::IronGearWheel, None, Misc::None).is_none());
         assert!(EntityEnum::new(Item::TransportBelt, None, Misc::None).is_some());
+        assert!(EntityEnum::new(Item::ElectricMiningDrill, None, Misc::None).is_some());
+        // Ores are terrain, not placeable entities.
+        assert!(EntityEnum::new(Item::Coal, None, Misc::None).is_none());
+    }
+
+    // ── Electric mining drill ────────────────────────────────────────────
+
+    use crate::types::Channel;
+
+    /// 9x9 world with a drill anchored at (3,3) — its 5x5 mining area spans
+    /// (2,2)..=(6,6) — facing `dir`.
+    fn drill_world(dir: Direction) -> World {
+        let mut w = World::empty(9, 9);
+        assert!(w.place_multi_tile(3, 3, Item::ElectricMiningDrill, dir, None, 3, 3));
+        w
+    }
+
+    #[test]
+    fn test_drill_mining_rate_is_flat() {
+        // One covered ore tile and full 5x5 coverage both mine at the flat
+        // rate — coverage gates operation, it does not scale speed.
+        let mut w = drill_world(Direction::East);
+        w.set(2, 2, Channel::Ores, Item::IronOre as i64);
+        let out = ElectricMiningDrill::mining_output(&w, (3, 3));
+        assert_eq!(out.len(), 1);
+        assert!((out[&Item::IronOre] - 0.5).abs() < 1e-9);
+
+        for x in 2..=6 {
+            for y in 2..=6 {
+                w.set(x, y, Channel::Ores, Item::IronOre as i64);
+            }
+        }
+        let out = ElectricMiningDrill::mining_output(&w, (3, 3));
+        assert!((out[&Item::IronOre] - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_drill_ignores_ore_outside_mining_area() {
+        let mut w = drill_world(Direction::East);
+        // Ring just outside the 5x5: corners and edge midpoints at range 3.
+        for (x, y) in [(1, 1), (7, 7), (1, 4), (7, 4), (4, 1), (4, 7)] {
+            w.set(x, y, Channel::Ores, Item::Coal as i64);
+        }
+        assert!(ElectricMiningDrill::mining_output(&w, (3, 3)).is_empty());
+    }
+
+    #[test]
+    fn test_drill_mixed_patch_splits_by_tile_count() {
+        // 3 iron + 1 copper covered → 0.375 + 0.125 (flat 0.5 split by count).
+        let mut w = drill_world(Direction::East);
+        w.set(2, 2, Channel::Ores, Item::IronOre as i64);
+        w.set(3, 2, Channel::Ores, Item::IronOre as i64);
+        w.set(4, 2, Channel::Ores, Item::IronOre as i64);
+        w.set(2, 3, Channel::Ores, Item::CopperOre as i64);
+        let out = ElectricMiningDrill::mining_output(&w, (3, 3));
+        assert!((out[&Item::IronOre] - 0.375).abs() < 1e-9);
+        assert!((out[&Item::CopperOre] - 0.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_drill_output_tile_per_direction() {
+        // The single output tile sits one step beyond the middle of the
+        // facing edge (body (3,3)..=(5,5), center (4,4)).
+        let cases = [
+            (Direction::North, (4, 2)),
+            (Direction::East, (6, 4)),
+            (Direction::South, (4, 6)),
+            (Direction::West, (2, 4)),
+        ];
+        for (dir, (ox, oy)) in cases {
+            let mut w = drill_world(dir);
+            w.place(ox, oy, Item::TransportBelt, dir, None);
+            let edges = ElectricMiningDrill.connections((3, 3), dir, &w);
+            // In-line belt → the belt's RIGHT lane, like an inserter drop.
+            assert_eq!(
+                edges,
+                vec![(
+                    NodeId::new(Item::ElectricMiningDrill, 3, 3, None),
+                    NodeId::new(Item::TransportBelt, ox, oy, Some(Lane::Right)),
+                )],
+                "facing {dir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drill_drop_lane_matrix() {
+        // Same one-lane rule as an inserter: FAR lane when the receiver is
+        // perpendicular, RIGHT lane when parallel/anti-parallel. East-facing
+        // drill, output tile (6,4), approached from the west.
+        let cases = [
+            (Direction::North, Lane::Right), // north-facing: east side = right
+            (Direction::South, Lane::Left),  // south-facing: east side = left
+            (Direction::East, Lane::Right),
+            (Direction::West, Lane::Right),
+        ];
+        for (belt_dir, want) in cases {
+            let mut w = drill_world(Direction::East);
+            w.place(6, 4, Item::TransportBelt, belt_dir, None);
+            let edges = ElectricMiningDrill.connections((3, 3), Direction::East, &w);
+            assert_eq!(
+                edges,
+                vec![(
+                    NodeId::new(Item::ElectricMiningDrill, 3, 3, None),
+                    NodeId::new(Item::TransportBelt, 6, 4, Some(want)),
+                )],
+                "belt facing {belt_dir:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drill_only_drops_onto_belt_like() {
+        // A sink at the output tile connects (chest-style)…
+        let mut w = drill_world(Direction::East);
+        w.place(6, 4, Item::Sink, Direction::East, Some(Item::IronOre));
+        let edges = ElectricMiningDrill.connections((3, 3), Direction::East, &w);
+        assert_eq!(
+            edges,
+            vec![(
+                NodeId::new(Item::ElectricMiningDrill, 3, 3, None),
+                NodeId::new(Item::Sink, 6, 4, None),
+            )]
+        );
+
+        // …but inserters, assemblers, and empty tiles do not.
+        for build in [
+            Some(Item::Inserter),
+            Some(Item::AssemblingMachine1),
+            None::<Item>,
+        ] {
+            let mut w = drill_world(Direction::East);
+            if let Some(item) = build {
+                let (bw, bh) = item.size();
+                assert!(w.place_multi_tile(6, 4, item, Direction::West, None, bw, bh));
+            }
+            let edges = ElectricMiningDrill.connections((3, 3), Direction::East, &w);
+            assert!(edges.is_empty(), "output onto {build:?} got: {edges:?}");
+        }
+    }
+
+    #[test]
+    fn test_drill_output_out_of_bounds() {
+        // Drill hugging the east edge: output tile is off-grid → no edges.
+        let mut w = World::empty(5, 5);
+        assert!(w.place_multi_tile(2, 1, Item::ElectricMiningDrill, Direction::East, None, 3, 3));
+        let edges = ElectricMiningDrill.connections((2, 1), Direction::East, &w);
+        assert!(edges.is_empty(), "got: {edges:?}");
+    }
+
+    #[test]
+    fn test_drill_inserter_cannot_pick_up_from_drill() {
+        // An inserter whose pickup cell is a drill body tile gets no edge —
+        // drills only ever output onto their own output tile.
+        let mut w = drill_world(Direction::North);
+        w.place(6, 3, Item::Inserter, Direction::East, None); // pickup (5,3) = body
+        let edges = Inserter.connections((6, 3), Direction::East, &w);
+        assert!(edges.is_empty(), "got: {edges:?}");
     }
 }

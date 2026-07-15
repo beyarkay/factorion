@@ -80,6 +80,23 @@ pub(crate) fn on_perimeter(p: Pos, (min_x, min_y, max_x, max_y): (i64, i64, i64,
     p.x == min_x || p.x == max_x || p.y == min_y || p.y == max_y
 }
 
+/// The fore-edge-center body tile of a square multi-tile entity anchored
+/// (top-left) at `(ax, ay)` with side length `side`, facing `dir` — where a
+/// directional square entity (see [`Item::square_facing_matters`]) carries
+/// its single direction marker in the grid format. For the drill this is
+/// the body tile adjacent to its output tile. `None` for `Direction::None`.
+pub(crate) fn facing_marker_tile(ax: usize, ay: usize, side: usize, dir: Direction) -> Option<Pos> {
+    if dir == Direction::None {
+        return None;
+    }
+    let half = (side as i64 - 1) / 2;
+    let (dx, dy) = dir.delta();
+    Some(Pos::new(
+        ax as i64 + half + dx * half,
+        ay as i64 + half + dy * half,
+    ))
+}
+
 /// Render a [`World`] back into the grid format (geometry only — item bindings
 /// live in the header, not the grid). The inverse of `parse_grid` for the
 /// shapes the format supports, so `parse_grid(render(w))` round-trips geometry.
@@ -187,6 +204,15 @@ fn render_multi(
             if right != ' ' && right == next_left {
                 buf[ty][3 * tx + 2] = right;
             }
+        }
+    }
+
+    // A directional square entity (drill) shows its facing as one marker on
+    // the fore-edge-center body tile — stamped after the filler pass so the
+    // box keeps its solid look (e.g. `mmmm^mmm`, `mm    m>`).
+    if item.square_facing_matters() && ew == eh {
+        if let Some(m) = facing_marker_tile(ax, ay, ew, dir) {
+            buf[m.y as usize][3 * m.x as usize + 1] = dch;
         }
     }
 }

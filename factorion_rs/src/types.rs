@@ -504,6 +504,23 @@ impl Item {
         )
     }
 
+    /// The mineable ore terrain types — the only values the ORES channel
+    /// may carry (besides 0 = no ore).
+    pub fn is_ore(self) -> bool {
+        matches!(
+            self,
+            Item::CopperOre | Item::IronOre | Item::Coal | Item::Stone
+        )
+    }
+
+    /// Whether a square multi-tile entity's facing is semantic. A 3x3
+    /// assembler ignores rotation, but the drill's output tile depends on
+    /// it — the grid renderer/parser carry a direction marker for these
+    /// (one marker on the fore-edge-center body tile).
+    pub fn square_facing_matters(self) -> bool {
+        matches!(self, Item::ElectricMiningDrill)
+    }
+
     /// Whether this entity's tiles carry two independent belt lanes.
     /// Lane-aware entities get one graph node per (tile, lane) pair —
     /// including EACH tile of a splitter (a splitter is a left belt and a

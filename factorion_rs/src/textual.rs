@@ -69,6 +69,23 @@
 //!
 //! The first body tile in reading order is the anchor (top-left), matching how
 //! `build_graph` re-derives multi-tile entities.
+//!
+//! A DIRECTIONAL square entity (the mining drill — see
+//! [`Item::square_facing_matters`]) carries its facing as exactly one marker
+//! on the fore-edge-center body tile, the tile adjacent to its output tile:
+//!
+//! ```text
+//!   north:  mmmm^mmm    east:  mmmmmmmm
+//!           mm    mm           mm    m>
+//!           mmmmmmmm           mmmmmmmm
+//! ```
+//!
+//! ## Ore terrain
+//!
+//! An `ores:` block paints ore rectangles onto the ORES channel —
+//! `- { x, y, item, w, h }` (`w`/`h` default 1). Ore is terrain, not an
+//! entity: it never appears in the grid, and a rectangle may lie under
+//! entities and empty ground alike.
 
 use std::collections::HashSet;
 
@@ -76,9 +93,11 @@ use serde::Deserialize;
 
 use crate::entities::entity_tiles;
 use crate::graph::build_graph;
-use crate::render::{bbox, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS};
+use crate::render::{
+    bbox, facing_marker_tile, on_perimeter, render, render_char, DIR_CHARS, ENTITY_CHARS,
+};
 use crate::throughput::calc_throughput;
-use crate::types::{Channel, Direction, Item, Lane, Misc, NodeId};
+use crate::types::{Channel, Direction, Item, Lane, Misc, NodeId, Pos};
 use crate::world::World;
 
 /// Float tolerance for throughput comparisons.
@@ -239,10 +258,14 @@ fn place_multi(
     // Square entities are rotation-independent and carry no direction; linear
     // entities must show their facing on every footprint tile. Either way every
     // tile's direction must agree, so a stray marker (e.g. `a>`) is rejected.
+    // The exception: a DIRECTIONAL square entity (the drill) carries its
+    // facing as exactly one marker, on the fore-edge-center body tile.
+    let directional_square = square && item.square_facing_matters();
     let expected_dir = if square { Direction::None } else { dir };
 
     let grid_h = rows.len() as i64;
     let grid_w = rows[0].len() as i64;
+    let mut marker: Option<(Pos, Direction)> = None;
     let mut placed = Vec::with_capacity(tiles.len());
     for p in &tiles {
         if p.x < 0 || p.y < 0 || p.x >= grid_w || p.y >= grid_h {
@@ -266,6 +289,19 @@ fn place_multi(
                 dir: cell_dir,
                 ..
             } if cell_item == item && cell_dir == expected_dir => {}
+            // A directional square entity's single facing marker.
+            Cell::Entity {
+                item: cell_item,
+                dir: cell_dir,
+                ..
+            } if cell_item == item && directional_square && cell_dir != Direction::None => {
+                if marker.is_some() {
+                    return Err(format!(
+                        "{item:?} at ({ax},{ay}): more than one direction marker"
+                    ));
+                }
+                marker = Some((*p, cell_dir));
+            }
             // A blank interior tile is fine, but only in the interior.
             Cell::Interior if !perimeter => {}
             _ => {
@@ -277,9 +313,32 @@ fn place_multi(
                 ));
             }
         }
-        write_tile(world, tx, ty, item, dir, misc);
         claimed[ty][tx] = true;
         placed.push((tx, ty));
+    }
+
+    // Resolve the facing: a directional square entity takes it from its
+    // marker, which must sit on the fore-edge-center tile so the format
+    // round-trips with the renderer; everything else keeps the caller's dir.
+    let dir = if directional_square {
+        match marker {
+            Some((mp, md)) => {
+                if facing_marker_tile(ax, ay, w, md) != Some(mp) {
+                    return Err(format!(
+                        "{item:?} at ({ax},{ay}): direction marker at ({},{}) must sit \
+                         on the fore-edge-center tile",
+                        mp.x, mp.y
+                    ));
+                }
+                md
+            }
+            None => Direction::None,
+        }
+    } else {
+        dir
+    };
+    for &(tx, ty) in &placed {
+        write_tile(world, tx, ty, item, dir, misc);
     }
     Ok(placed)
 }
@@ -364,6 +423,12 @@ struct Header {
     /// footprint.
     #[serde(default)]
     items: Vec<ItemBinding>,
+    /// Ore terrain bindings, written to the ORES channel. Each entry paints a
+    /// `w × h` rectangle (default 1×1) of one ore type anchored at `(x, y)` —
+    /// terrain, not entities, so a rectangle may lie under entities and empty
+    /// ground alike.
+    #[serde(default)]
+    ores: Vec<OreBinding>,
     /// Expected per-sink deliveries, asserted by [`assert_throughput`].
     #[serde(default)]
     throughput: Vec<ThroughputEntry>,
@@ -380,6 +445,22 @@ struct ItemBinding {
     x: usize,
     y: usize,
     item: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OreBinding {
+    x: usize,
+    y: usize,
+    item: String,
+    #[serde(default = "one")]
+    w: usize,
+    #[serde(default = "one")]
+    h: usize,
+}
+
+fn one() -> usize {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -436,10 +517,36 @@ fn apply_items(parsed: &mut ParsedGrid, bindings: &[ItemBinding]) -> Result<(), 
     Ok(())
 }
 
+/// Paint the header's ore rectangles onto the ORES channel. Ore is terrain,
+/// not an entity — coordinates are raw tiles, with no footprint resolution.
+fn apply_ores(parsed: &mut ParsedGrid, bindings: &[OreBinding]) -> Result<(), String> {
+    for b in bindings {
+        let item =
+            Item::from_name(&b.item).ok_or_else(|| format!("ores: unknown item '{}'", b.item))?;
+        if !item.is_ore() {
+            return Err(format!("ores: '{}' is not an ore", b.item));
+        }
+        for x in b.x..b.x + b.w {
+            for y in b.y..b.y + b.h {
+                if x >= parsed.world.width() || y >= parsed.world.height() {
+                    return Err(format!(
+                        "ores: tile ({x},{y}) is outside the {}x{} grid",
+                        parsed.world.width(),
+                        parsed.world.height()
+                    ));
+                }
+                parsed.world.set(x, y, Channel::Ores, item as i64);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Turn one deserialized [`Header`] into a [`FactorySpec`].
 fn header_to_spec(header: Header) -> Result<FactorySpec, String> {
     let mut parsed = parse_grid(&header.factory)?;
     apply_items(&mut parsed, &header.items)?;
+    apply_ores(&mut parsed, &header.ores)?;
 
     let expected_throughput = header
         .throughput
@@ -1364,6 +1471,76 @@ factory: |
             ",
         );
         assert_eq!(render(&assembler), "aaaaaaaa\naa    aa\naaaaaaaa");
+    }
+
+    #[test]
+    fn test_drill_marker_round_trips_every_facing() {
+        // A drill is a DIRECTIONAL square entity: its facing rides on one
+        // marker at the fore-edge-center body tile, and render/parse agree
+        // byte-for-byte in all four facings.
+        let cases = [
+            (Direction::North, "mmmm^mmm\nmm    mm\nmmmmmmmm"),
+            (Direction::East, "mmmmmmmm\nmm    m>\nmmmmmmmm"),
+            (Direction::South, "mmmmmmmm\nmm    mm\nmmmmvmmm"),
+            (Direction::West, "mmmmmmmm\nm<    mm\nmmmmmmmm"),
+        ];
+        for (dir, text) in cases {
+            let w = grid(text);
+            for y in 0..3 {
+                for x in 0..3 {
+                    assert_eq!(
+                        w.entity_at(x, y),
+                        Some(Item::ElectricMiningDrill),
+                        "({x},{y}) {dir:?}"
+                    );
+                    assert_eq!(w.direction_at(x, y), dir, "({x},{y}) {dir:?}");
+                }
+            }
+            assert_eq!(render(&w), text, "{dir:?}");
+        }
+
+        // No marker at all is a facing-less drill (inert but representable).
+        let w = grid("mmmmmmmm\nmm    mm\nmmmmmmmm");
+        assert_eq!(w.direction_at(0, 0), Direction::None);
+        assert_eq!(render(&w), "mmmmmmmm\nmm    mm\nmmmmmmmm");
+    }
+
+    #[test]
+    fn test_drill_marker_errors() {
+        // Marker off the fore-edge-center tile (east marker on the top-right
+        // corner instead of the middle-right tile).
+        assert!(parse_grid("mmmmmmm>\nmm    mm\nmmmmmmmm").is_err());
+        // Two markers.
+        assert!(parse_grid("mmmm^mmm\nmm    m>\nmmmmmmmm").is_err());
+        // A marker on a non-directional square entity (assembler) stays
+        // rejected.
+        assert!(parse_grid("aaaa^aaa\naa    aa\naaaaaaaa").is_err());
+    }
+
+    #[test]
+    fn test_ores_block_paints_terrain() {
+        let spec = parse(
+            "
+ores:
+- { x: 0, y: 0, item: iron_ore, w: 2, h: 2 }
+- { x: 2, y: 0, item: coal }
+factory: |
+  S> b> K>
+  .. .. ..
+",
+        )
+        .unwrap();
+        // Rectangle painted, terrain co-exists with entities on the same tile.
+        assert_eq!(spec.world.ore_at(0, 0), Some(Item::IronOre));
+        assert_eq!(spec.world.ore_at(0, 1), Some(Item::IronOre));
+        assert_eq!(spec.world.ore_at(1, 1), Some(Item::IronOre));
+        assert_eq!(spec.world.ore_at(2, 0), Some(Item::Coal));
+        assert_eq!(spec.world.ore_at(2, 1), None);
+        assert_eq!(spec.world.entity_at(2, 0), Some(Item::Sink));
+
+        // Non-ore items and out-of-bounds rectangles are rejected.
+        assert!(parse("ores:\n- { x: 0, y: 0, item: iron_plate }\nfactory: |\n  S>").is_err());
+        assert!(parse("ores:\n- { x: 0, y: 0, item: coal, w: 2 }\nfactory: |\n  S>").is_err());
     }
 
     // ── Directory sweep ──────────────────────────────────────────────────────

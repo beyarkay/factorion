@@ -1,0 +1,126 @@
+description: |
+  A fully-covered iron-ore drill fills a belt into a sink at its flat
+  0.5 items/s mining rate. The drill's single output tile is one step
+  beyond the middle of its facing edge.
+ores:
+- { x: 0, y: 0, item: iron_ore, w: 3, h: 3 }
+items:
+- { x: 4, y: 1, item: iron_ore }
+throughput:
+- { item: iron_ore, per_second: 0.5 }
+graph: |
+  m@0,0 -> b@3,1
+  b@3,1 -> K@4,1
+factory: |
+  mmmmmmmm .. ..
+  mm    m> b> K>
+  mmmmmmmm .. ..
+---
+description: |
+  Coverage gates operation but does not scale speed: a single covered
+  ore tile still mines at the flat 0.5 items/s.
+ores:
+- { x: 2, y: 1, item: iron_ore }
+items:
+- { x: 4, y: 1, item: iron_ore }
+throughput:
+- { item: iron_ore, per_second: 0.5 }
+factory: |
+  mmmmmmmm .. ..
+  mm    m> b> K>
+  mmmmmmmm .. ..
+---
+description: |
+  A mixed patch (3 iron ore tiles + 1 copper ore tile) splits the flat
+  rate in proportion to tile counts: 0.375 iron + 0.125 copper. The sink
+  only counts its configured iron ore.
+ores:
+- { x: 1, y: 0, item: iron_ore, w: 3, h: 1 }
+- { x: 1, y: 2, item: copper_ore }
+items:
+- { x: 4, y: 1, item: iron_ore }
+throughput:
+- { item: iron_ore, per_second: 0.375 }
+factory: |
+  mmmmmmmm .. ..
+  mm    m> b> K>
+  mmmmmmmm .. ..
+---
+description: |
+  A drill with no ore anywhere in its 5x5 mining area produces nothing.
+items:
+- { x: 4, y: 1, item: iron_ore }
+throughput:
+- { item: iron_ore, per_second: 0 }
+factory: |
+  mmmmmmmm .. ..
+  mm    m> b> K>
+  mmmmmmmm .. ..
+---
+description: |
+  The drill drops like an inserter: onto the FAR lane of a perpendicular
+  belt. A north-facing belt approached from the west receives on its
+  right (east) lane.
+ores:
+- { x: 0, y: 0, item: coal, w: 3, h: 3 }
+items:
+- { x: 3, y: 0, item: coal }
+throughput:
+- { item: coal, per_second: 0.5 }
+graph: |
+  m@0,0 -> b@3,1:R
+  b@3,1:L -> K@3,0
+  b@3,1:R -> K@3,0
+factory: |
+  mmmmmmmm K^
+  mm    m> b^
+  mmmmmmmm ..
+---
+description: |
+  An inserter cannot pull from a drill: with an inserter on the output
+  tile nothing flows, and the only edge in the factory is the inserter
+  dropping onto the sink.
+ores:
+- { x: 0, y: 0, item: stone, w: 3, h: 3 }
+items:
+- { x: 4, y: 1, item: stone }
+throughput:
+- { item: stone, per_second: 0 }
+graph: |
+  i@3,1 -> K@4,1
+factory: |
+  mmmmmmmm .. ..
+  mm    m> i> K>
+  mmmmmmmm .. ..
+---
+description: |
+  A drill may output straight into a sink (chest-style) — no belt needed.
+ores:
+- { x: 2, y: 2, item: copper_ore, w: 2, h: 1 }
+items:
+- { x: 3, y: 1, item: copper_ore }
+throughput:
+- { item: copper_ore, per_second: 0.5 }
+factory: |
+  mmmmmmmm ..
+  mm    m> K>
+  mmmmmmmm ..
+---
+description: |
+  North-facing drill: the marker sits on the fore-edge-center tile and
+  the output lands on the belt directly above the body's middle column.
+ores:
+- { x: 0, y: 4, item: iron_ore, w: 2, h: 1 }
+items:
+- { x: 1, y: 0, item: iron_ore }
+throughput:
+- { item: iron_ore, per_second: 0.5 }
+graph: |
+  m@0,2 -> b@1,1
+  b@1,1 -> K@1,0
+factory: |
+  .. K^ ..
+  .. b^ ..
+  mmmm^mmm
+  mm    mm
+  mmmmmmmm
