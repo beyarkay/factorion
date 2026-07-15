@@ -2758,6 +2758,25 @@ fn recipe_tree_depth(item: Item, index: &HashMap<Item, Recipe>) -> usize {
     }
 }
 
+/// The inward wall normal(s) of the wall(s) `cell` lies on: one direction
+/// for an edge cell, two for a corner, empty for an interior cell.
+fn inward_normals(cell: Cell, s: i64) -> Vec<Direction> {
+    let mut dirs = Vec::new();
+    if cell.0 == 0 {
+        dirs.push(Direction::East);
+    }
+    if cell.0 == s - 1 {
+        dirs.push(Direction::West);
+    }
+    if cell.1 == 0 {
+        dirs.push(Direction::South);
+    }
+    if cell.1 == s - 1 {
+        dirs.push(Direction::North);
+    }
+    dirs
+}
+
 /// Walk `recipe`'s ingredient tree: every expandable ingredient occurrence
 /// (one with a recipe) above the depth `cap` flips a coin to
 /// be replaced by its own sub-ingredients; occurrences at the cap always stay
@@ -2799,9 +2818,12 @@ fn walk_recipe_frontier(
 /// becomes a source. Nothing else is placed — the factory in between is the
 /// agent's to invent, so `total_entities == 0`.
 ///
-/// Every marker reserves a dedicated in-grid "working" cell (the tile a
-/// source drops onto / a sink pulls from) that no other marker may take, so
-/// the agent always has somewhere to build against every marker.
+/// Markers always sit on the grid edge working inward: a source faces an
+/// inward wall normal (dropping onto the interior) and the sink faces the
+/// outward normal (it pulls from the cell behind it, so its belt side is
+/// interior). Every marker reserves that in-grid "working" cell and no other
+/// marker may take it, so the agent always has somewhere to build against
+/// every marker.
 ///
 /// `max_throughput` is analytic: one fully-fed assembler's output rate of the
 /// sink recipe (`produces_rate`). `transform_flow` scales `produces` by input
@@ -2820,6 +2842,10 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
     if sinks.is_empty() {
         return None;
     }
+    let edge_cells: Vec<Cell> = available_cells(s, &HashSet::new())
+        .into_iter()
+        .filter(|&(x, y)| x == 0 || x == s - 1 || y == 0 || y == s - 1)
+        .collect();
 
     let mut count = (500).max(size * size * 16);
     while count > 0 {
@@ -2840,7 +2866,7 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
         }
 
         // Sink first, then one source per frontier item, each on its own
-        // random tile with a free in-grid working cell; both cells are
+        // random edge tile with a free inward working cell; both cells are
         // reserved so markers never sit on (or share) each other's access.
         let mut occupied: HashSet<Cell> = HashSet::new();
         // (position, facing, carried item, is_source)
@@ -2851,22 +2877,21 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
         {
             let mut placed = false;
             for _ in 0..20 {
-                let cell = (rng.randint(0, s - 1), rng.randint(0, s - 1));
+                let cell = edge_cells[rng.choice_index(edge_cells.len())];
                 if occupied.contains(&cell) {
                     continue;
                 }
-                let dir = DIRS[rng.choice_index(DIRS.len())];
-                let (dx, dy) = dir.delta();
-                // A source drops onto the cell it faces; a sink pulls from
-                // the cell behind it.
-                let work = if is_source {
-                    (cell.0 + dx, cell.1 + dy)
-                } else {
-                    (cell.0 - dx, cell.1 - dy)
-                };
+                let normals = inward_normals(cell, s);
+                let inward = normals[rng.choice_index(normals.len())];
+                let (dx, dy) = inward.delta();
+                let work = (cell.0 + dx, cell.1 + dy);
                 if !in_grid(work, s) || occupied.contains(&work) {
                     continue;
                 }
+                // A source drops onto the cell it faces; a sink pulls from
+                // the cell behind it — so the source faces inward, the sink
+                // outward, both working the same interior neighbour.
+                let dir = if is_source { inward } else { inward.opposite() };
                 occupied.insert(cell);
                 occupied.insert(work);
                 markers.push((cell, dir, item as i64, is_source));
@@ -3179,6 +3204,10 @@ mod tests {
                             None => {}
                             Some(Item::Source) => {
                                 sources.push(f.world.item_at(x, y).unwrap());
+                                assert!(
+                                    inward_normals((x as i64, y as i64), 12).contains(&dir),
+                                    "{kind:?} seed={seed}: source not on the edge facing inward"
+                                );
                                 let work = (x as i64 + dx, y as i64 + dy);
                                 assert!(
                                     in_grid(work, 12),
@@ -3194,6 +3223,11 @@ mod tests {
                             Some(Item::Sink) => {
                                 assert!(sink.is_none(), "{kind:?} seed={seed}: two sinks");
                                 sink = Some(f.world.item_at(x, y).unwrap());
+                                assert!(
+                                    inward_normals((x as i64, y as i64), 12)
+                                        .contains(&dir.opposite()),
+                                    "{kind:?} seed={seed}: sink not on the edge pulling inward"
+                                );
                                 let work = (x as i64 - dx, y as i64 - dy);
                                 assert!(
                                     in_grid(work, 12),

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
+    Direction,
     LessonKind,
     blank_entities,
     build_factory,
@@ -102,6 +103,46 @@ class TestTrialFactory:
         assert f is not None
         sink, _ = _markers(f)
         assert f.max_throughput == recipes[sink].produces[sink] > 0
+
+    @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
+    def test_markers_sit_on_the_edge_working_inward(self, kind):
+        """Sources face their wall's inward normal; the sink faces outward
+        (it pulls from the cell behind it, so its belt side is interior)."""
+
+        def inward_normals(x, y):
+            out = []
+            if x == 0:
+                out.append(Direction.EAST)
+            if x == SIZE - 1:
+                out.append(Direction.WEST)
+            if y == 0:
+                out.append(Direction.SOUTH)
+            if y == SIZE - 1:
+                out.append(Direction.NORTH)
+            return out
+
+        opposite = {
+            Direction.NORTH: Direction.SOUTH,
+            Direction.SOUTH: Direction.NORTH,
+            Direction.EAST: Direction.WEST,
+            Direction.WEST: Direction.EAST,
+        }
+        for seed in range(10):
+            f = build_factory(size=SIZE, kind=kind, seed=seed)
+            if f is None:
+                continue
+            ent = f.world_CWH[Channel.ENTITIES.value]
+            dirs = f.world_CWH[Channel.DIRECTION.value]
+            for x, y in zip(*np.nonzero(ent.numpy())):
+                d = Direction(int(dirs[x, y]))
+                normals = inward_normals(int(x), int(y))
+                assert normals, f"seed={seed}: marker at ({x},{y}) not on the edge"
+                if int(ent[x, y]) == _SRC_ID:
+                    assert d in normals, f"seed={seed}: source not facing inward"
+                else:
+                    assert opposite[d] in normals, (
+                        f"seed={seed}: sink not pulling from the interior"
+                    )
 
     @pytest.mark.parametrize("kind,depth", list(TRIAL_KINDS.items()))
     def test_sources_are_a_frontier_of_the_sink_tree(self, kind, depth):
