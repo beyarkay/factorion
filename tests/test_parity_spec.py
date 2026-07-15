@@ -52,7 +52,11 @@ KNOWN_PROTOTYPES = {
     "inserter",
     "long-handed-inserter",
     "assembling-machine-1",
+    "electric-mining-drill",
 }
+
+# Vanilla resource-entity prototypes the spec's `resources` list may name.
+KNOWN_RESOURCES = {"iron-ore", "copper-ore", "coal", "stone"}
 
 
 def _specs(num_seeds=3):
@@ -164,11 +168,34 @@ def test_spec_assembler_recipes_exist():
 
 def test_spec_sources_and_sinks_carry_items():
     for kind, seed, _, spec in _specs():
-        assert len(spec["sources"]) >= 1, (kind.name, seed)
+        # Every factory has a flow root: a source marker, or a mining drill
+        # (which mines the spec's resources instead of emitting from thin air).
+        has_drill = any(
+            e["name"] == "electric-mining-drill" for e in spec["entities"]
+        )
+        assert len(spec["sources"]) >= 1 or has_drill, (kind.name, seed)
         assert len(spec["sinks"]) >= 1, (kind.name, seed)
         for s in spec["sources"] + spec["sinks"]:
             assert s["item"], (kind.name, seed, s)
             assert "_" not in s["item"], "item names must be hyphenated"
+
+
+def test_spec_resources_are_known_and_in_grid():
+    """The `resources` list mirrors the ORES channel: known vanilla resource
+    prototypes on in-grid tiles, present whenever a drill is in the spec."""
+    for kind, seed, world, spec in _specs():
+        ores_ch = np.asarray(world[Channel.ORES.value])
+        assert len(spec["resources"]) == int((ores_ch != 0).sum()), (
+            kind.name,
+            seed,
+        )
+        for r in spec["resources"]:
+            assert r["name"] in KNOWN_RESOURCES, (kind.name, seed, r)
+            assert 0 <= r["x"] < SIZE and 0 <= r["y"] < SIZE, (kind.name, seed, r)
+        if any(e["name"] == "electric-mining-drill" for e in spec["entities"]):
+            assert spec["resources"], (
+                f"{kind.name} seed={seed}: a drill factory must carry ore"
+            )
 
 
 def test_spec_json_is_rcon_safe():

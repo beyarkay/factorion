@@ -77,15 +77,19 @@ _DEFAULT_TIMING = dict(
 _PITCH = 18
 
 
-def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
-    """Tensor → (entities, sources, sinks, grid_size) in factory-local tiles.
+def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], list[dict], int]:
+    """Tensor → (entities, sources, sinks, resources, grid_size) in
+    factory-local tiles.
 
     Mirrors blueprint.py's conventions: entity positions are Factorio
     centers (1x1 at tile (3,5) → 3.5,5.5; E/W-facing multi-tile entities
     swap their width/height), blueprint direction is the 16-step enum, and
     inserters get the model→blueprint +8 pickup/drop flip. Source and sink
     tiles are emitted as separate lists (the mod places scripted belts on
-    them), with their tile coordinates and the flowing item.
+    them), with their tile coordinates and the flowing item. Resources are
+    the ORES-channel terrain tiles — vanilla resource prototype names
+    (`iron-ore`, `coal`, …) the mod must spawn under mining drills before
+    building the factory.
     """
     world = np.asarray(world_CWH)
     assert world.ndim == 3, f"expected (C, W, H), got {world.shape}"
@@ -95,6 +99,7 @@ def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
     dir_ch = world[Channel.DIRECTION.value]
     item_ch = world[Channel.ITEMS.value]
     misc_ch = world[Channel.MISC.value]
+    ores_ch = world[Channel.ORES.value]
 
     src_id = str2ent("source").value
     snk_id = str2ent("sink").value
@@ -175,14 +180,21 @@ def _convert_world(world_CWH) -> tuple[list[dict], list[dict], list[dict], int]:
                     if 0 <= tx < W and 0 <= ty < H:
                         seen[tx, ty] = True
 
-    return spec_entities, sources, sinks, max(W, H)
+    resources = [
+        {"x": x, "y": y, "name": _hyphenate(items[int(ores_ch[x, y])].name)}
+        for x in range(W)
+        for y in range(H)
+        if int(ores_ch[x, y]) != 0
+    ]
+
+    return spec_entities, sources, sinks, resources, max(W, H)
 
 
 def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
     """Single-factory spec (entities/sources/sinks at top level). The mod
     treats this as a one-factory batch. `timing` overrides `_DEFAULT_TIMING`.
     """
-    ents, sources, sinks, grid_size = _convert_world(world_CWH)
+    ents, sources, sinks, resources, grid_size = _convert_world(world_CWH)
     spec = {**_DEFAULT_TIMING, **timing}
     spec.update({
         "run_id": run_id,
@@ -190,6 +202,7 @@ def world_to_parity_spec(world_CWH, *, run_id: str, **timing) -> dict:
         "entities": ents,
         "sources": sources,
         "sinks": sinks,
+        "resources": resources,
     })
     return spec
 
@@ -211,7 +224,7 @@ def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict
 
     factories = []
     for idx, (fid, world) in enumerate(factory_worlds):
-        ents, sources, sinks, grid_size = _convert_world(world)
+        ents, sources, sinks, resources, grid_size = _convert_world(world)
         margin = max((_PITCH - grid_size) // 2, 0)
         col, row = idx % cols, idx // cols
         factories.append({
@@ -222,6 +235,7 @@ def build_batch_spec(factory_worlds, *, run_id: str = "batch", **timing) -> dict
             "entities": ents,
             "sources": sources,
             "sinks": sinks,
+            "resources": resources,
         })
 
     substations = [
@@ -542,14 +556,14 @@ def main():
     if args.dry_run:
         for job in jobs:
             world = job["world"]
-            ents, srcs, snks, _ = _convert_world(world)
+            ents, srcs, snks, resources, _ = _convert_world(world)
             print(f"=== {job['run_id']} (dry run) ===")
             for row in render_factory(world).splitlines():
                 print("  " + row)
             for (x, y), (item, rate) in sorted(job["expected"].items()):
                 print(f"  engine: sink ({x},{y}) {item} ← {rate:.3f}/s")
             print(f"  spec: {len(ents)} entities, {len(srcs)} sources, "
-                  f"{len(snks)} sinks")
+                  f"{len(snks)} sinks, {len(resources)} resource tiles")
             dumps.append({
                 "run_id": job["run_id"],
                 "expected": {f"{k[0]},{k[1]}": v

@@ -43,6 +43,7 @@ pub enum LessonKind {
     Memorise3IngredientRecipes = 12,
     Memorise4IngredientRecipes = 13,
     Factory1Ingredient = 15,
+    MineOre = 16,
 }
 
 impl LessonKind {
@@ -63,6 +64,7 @@ impl LessonKind {
             12 => Some(LessonKind::Memorise3IngredientRecipes),
             13 => Some(LessonKind::Memorise4IngredientRecipes),
             15 => Some(LessonKind::Factory1Ingredient),
+            16 => Some(LessonKind::MineOre),
             _ => None,
         }
     }
@@ -86,6 +88,7 @@ impl LessonKind {
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
+            LessonKind::MineOre => "MINE_ORE",
         }
     }
 }
@@ -107,6 +110,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
+        LessonKind::MineOre,
     ]
 }
 
@@ -539,6 +543,7 @@ pub fn build_factory(
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::MineOre => build_mine_ore(size, &mut rng, random_item, max_entities),
         _ => None,
     }
 }
@@ -2695,6 +2700,115 @@ fn build_cross_under_belt(
     None
 }
 
+/// The mineable ore types, in `Item` id order (the sampler indexes into it).
+const ORE_TYPES: [Item; 4] = [Item::Stone, Item::CopperOre, Item::IronOre, Item::Coal];
+
+/// MINE_ORE: an electric mining drill sits on a random single-type ore patch
+/// and its output is routed over belts to a sink (or straight into it when
+/// the sink lands on the output tile). The ore patch is terrain — the lesson's
+/// "given", never blanked — so the removable entities are the drill plus the
+/// belt run. Throughput is always drill-limited (flat 0.5 items/s: belts and
+/// the sink are far faster), so a solved factory scores exactly the drill
+/// rate.
+fn build_mine_ore(
+    size: usize,
+    rng: &mut Rng,
+    random_item: bool,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // 3x3 body + the output tile + a sink need at least a 4-cell span.
+    if size < 4 {
+        return None;
+    }
+    let mut count = (500).max(size * size * 4);
+    while count > 0 {
+        count -= 1;
+
+        // Drill anchor (body must fit) and facing; the output tile — one step
+        // beyond the middle of the facing edge — must be in bounds.
+        let ax = rng.randrange((size - 2) as u64) as i64;
+        let ay = rng.randrange((size - 2) as u64) as i64;
+        let dir = DIRS[rng.choice_index(4)];
+        let (dx, dy) = dir.delta();
+        let out = (ax + 1 + 2 * dx, ay + 1 + 2 * dy);
+        if !in_grid(out, s) {
+            continue;
+        }
+
+        // Single-type ore patch: a random non-empty subset of the 5x5 mining
+        // area (clipped to the grid), so coverage varies from one tile to full.
+        let ore = if random_item {
+            ORE_TYPES[rng.choice_index(4)]
+        } else {
+            Item::IronOre
+        };
+        let mut area: Vec<Cell> = Vec::new();
+        for x in (ax - 1)..=(ax + 3) {
+            for y in (ay - 1)..=(ay + 3) {
+                if in_grid((x, y), s) {
+                    area.push((x, y));
+                }
+            }
+        }
+        let n_ore = 1 + rng.randrange(area.len() as u64) as usize;
+        rng.shuffle(&mut area);
+
+        // Sink: any free cell outside the drill body (the output tile itself
+        // is allowed — the drill then feeds it chest-style, no belts).
+        let body: HashSet<Cell> = (ax..ax + 3)
+            .flat_map(|x| (ay..ay + 3).map(move |y| (x, y)))
+            .collect();
+        let available = available_cells(s, &body);
+        let sink_wh = available[rng.choice_index(available.len())];
+        let sink_dir = DIRS[rng.choice_index(4)];
+
+        let mut world = World::empty(size, size);
+        if !world.place_multi_tile(
+            ax as usize,
+            ay as usize,
+            Item::ElectricMiningDrill,
+            dir,
+            None,
+            3,
+            3,
+        ) {
+            continue;
+        }
+        for &(x, y) in area.iter().take(n_ore) {
+            world.set(x as usize, y as usize, Channel::Ores, ore as i64);
+        }
+        place_marker(&mut world, sink_wh, Item::Sink, sink_dir, ore as i64);
+
+        // Wire output tile → sink input cell (belts may cross ore terrain,
+        // never the drill body or the sink), unless the sink IS the output.
+        let belts = if sink_wh == out {
+            Vec::new()
+        } else {
+            let (dr_k, dc_k) = sink_dir.delta();
+            let end = (sink_wh.0 - dr_k, sink_wh.1 - dc_k);
+            let mut blocked = body.clone();
+            blocked.insert(sink_wh);
+            let mut paths = find_belt_paths(out, end, sink_dir, s, &blocked, Underground::Off, -1);
+            paths.retain(|p| 1.0 + p.len() as f64 <= max_entities);
+            if paths.is_empty() {
+                continue;
+            }
+            rng.shuffle(&mut paths);
+            paths.swap_remove(0)
+        };
+        place_belts(&mut world, &belts);
+
+        if world_throughput(&world) <= 0.0 {
+            continue;
+        }
+
+        let total_entities = 1 + belts.len();
+        return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -2729,6 +2843,51 @@ mod tests {
                 assert!(f.total_entities >= 1);
                 built += 1;
             }
+        }
+        assert!(built > 40, "most seeds should build, got {built}");
+    }
+
+    #[test]
+    fn test_mine_ore_smoke() {
+        // Solved MINE_ORE factories are always drill-limited: exactly one
+        // drill on a single-type ore patch, one sink expecting that ore, and
+        // the flat 0.5 items/s arriving at it.
+        let mut built = 0;
+        for seed in 0..50u64 {
+            let Some(f) = build_factory(10, LessonKind::MineOre, seed, true, f64::INFINITY) else {
+                continue;
+            };
+            built += 1;
+            let tp = world_throughput(&f.world);
+            assert!(
+                (tp - 0.5).abs() < 1e-9,
+                "seed={seed}: want drill-limited 0.5, got {tp}"
+            );
+
+            let mut drill_tiles = 0;
+            let mut n_belt = 0;
+            let mut ore_types = HashSet::new();
+            let mut sink_item = None;
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    match f.world.entity_at(x, y) {
+                        Some(Item::ElectricMiningDrill) => drill_tiles += 1,
+                        Some(Item::TransportBelt) => n_belt += 1,
+                        Some(Item::Sink) => sink_item = f.world.item_at(x, y),
+                        _ => {}
+                    }
+                    if let Some(ore) = f.world.ore_at(x, y) {
+                        ore_types.insert(ore);
+                    }
+                }
+            }
+            assert_eq!(drill_tiles, 9, "seed={seed}: exactly one 3x3 drill");
+            assert_eq!(ore_types.len(), 1, "seed={seed}: single-type patch");
+            let ore = *ore_types.iter().next().unwrap();
+            assert!(ore.is_ore(), "seed={seed}: {ore:?}");
+            assert_eq!(sink_item, Some(ore), "seed={seed}: sink expects the ore");
+            // The drill is one removable unit; belts are the rest.
+            assert_eq!(f.total_entities, 1 + n_belt, "seed={seed}");
         }
         assert!(built > 40, "most seeds should build, got {built}");
     }
