@@ -251,8 +251,8 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     """
     # Trial kinds have no known solution, so they can never emit an expert
     # pair — left in the pool they'd stay at 0 samples forever and the
-    # fewest-pairs draw below would redraw them until the heat death of the
-    # universe. Trials are RL-only; PPO samples them directly.
+    # fewest-pairs draw below would redraw them every time. Trials are
+    # RL-only; PPO samples them directly.
     kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of

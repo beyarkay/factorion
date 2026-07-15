@@ -15,7 +15,7 @@ import zlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
@@ -193,7 +193,7 @@ LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 # "factory" is only the source/sink markers — there is nothing to imitate, so
 # trials yield no SFT pairs (the agent is put in the scenario and must figure
 # it out through RL reward alone). Owned by Rust (LessonKind::is_trial).
-LESSON_IS_TRIAL: Dict["LessonKind", bool] = {
+LESSON_IS_TRIAL: dict["LessonKind", bool] = {
     LessonKind[name]: is_trial
     for name, is_trial in factorion_rs.py_lesson_is_trial().items()
 }

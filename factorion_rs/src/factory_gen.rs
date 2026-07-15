@@ -2795,8 +2795,7 @@ fn walk_recipe_frontier(
     deepest: &mut usize,
 ) {
     for &(ing, _) in recipe.consumes.iter() {
-        let sub = index.get(&ing);
-        if let Some(sub_recipe) = sub {
+        if let Some(sub_recipe) = index.get(&ing) {
             if level < cap && rng.choice_index(2) == 0 {
                 walk_recipe_frontier(sub_recipe, level + 1, cap, rng, index, frontier, deepest);
                 continue;
@@ -2853,10 +2852,7 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 
         let sink_item = sinks[rng.choice_index(sinks.len())];
         let recipe = index.get(&sink_item)?;
-        let max_throughput = match recipe.produces_rate(sink_item) {
-            Some(r) if r > 0.0 => r,
-            _ => return None,
-        };
+        let max_throughput = recipe.produces_rate(sink_item).filter(|&r| r > 0.0)?;
 
         let mut frontier: Vec<Item> = Vec::new();
         let mut deepest = 0;
