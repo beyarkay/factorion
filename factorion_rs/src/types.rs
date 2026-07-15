@@ -265,11 +265,14 @@ pub enum Item {
     PersonalRoboport = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
+    // Furnace fuel. Modeled as an ordinary recipe ingredient of the smelting
+    // recipes (at the true burn ratio), not as a separate fuel mechanic.
+    Coal = 87,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 87,   // named "bulk_inserter"
-    Source = 88, // named "stack_inserter"
+    Sink = 88,   // named "bulk_inserter"
+    Source = 89, // named "stack_inserter"
 }
 
 impl Item {
@@ -363,8 +366,9 @@ impl Item {
             84 => Some(Item::PersonalRoboport),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
-            87 => Some(Item::Sink),
-            88 => Some(Item::Source),
+            87 => Some(Item::Coal),
+            88 => Some(Item::Sink),
+            89 => Some(Item::Source),
             _ => None,
         }
     }
@@ -470,6 +474,7 @@ impl Item {
             Item::PersonalRoboport => "personal_roboport",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
+            Item::Coal => "coal",
         }
     }
 
@@ -599,7 +604,8 @@ impl Item {
             | Item::DischargeDefenseRemote
             | Item::PersonalRoboport
             | Item::FlamethrowerTurret
-            | Item::AssemblingMachine3 => 0.0,
+            | Item::AssemblingMachine3
+            | Item::Coal => 0.0,
         }
     }
 
