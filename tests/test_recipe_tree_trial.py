@@ -44,25 +44,60 @@ _SRC_ID = str2ent("source").value
 _SNK_ID = str2ent("sink").value
 
 
+_OPPOSITE = {
+    Direction.NORTH: Direction.SOUTH,
+    Direction.SOUTH: Direction.NORTH,
+    Direction.EAST: Direction.WEST,
+    Direction.WEST: Direction.EAST,
+}
+
+
+def _inward_normals(x, y):
+    """The inward normal(s) of the wall(s) cell (x, y) lies on; empty for an
+    interior cell."""
+    out = []
+    if x == 0:
+        out.append(Direction.EAST)
+    if x == SIZE - 1:
+        out.append(Direction.WEST)
+    if y == 0:
+        out.append(Direction.SOUTH)
+    if y == SIZE - 1:
+        out.append(Direction.NORTH)
+    return out
+
+
+def _scan_markers(factory):
+    """Every entity of a trial world as (x, y, direction, item_name,
+    is_source), asserting each one is a source or sink marker."""
+    ent = factory.world_CWH[Channel.ENTITIES.value]
+    itm = factory.world_CWH[Channel.ITEMS.value]
+    dirs = factory.world_CWH[Channel.DIRECTION.value]
+    out = []
+    for x, y in zip(*np.nonzero(ent.numpy())):
+        e = int(ent[x, y])
+        assert e in (_SRC_ID, _SNK_ID), (
+            f"unexpected entity {items[e].name} at ({x},{y})"
+        )
+        out.append((
+            int(x),
+            int(y),
+            Direction(int(dirs[x, y])),
+            items[int(itm[x, y])].name,
+            e == _SRC_ID,
+        ))
+    return out
+
+
 def _markers(factory):
     """(sink_item_name, [source_item_names]) of a trial factory, asserting the
     world contains nothing but one sink and its sources."""
-    ent = factory.world_CWH[Channel.ENTITIES.value]
-    itm = factory.world_CWH[Channel.ITEMS.value]
-    sink = None
-    sources = []
-    for x, y in zip(*np.nonzero(ent.numpy())):
-        e = int(ent[x, y])
-        name = items[int(itm[x, y])].name
-        if e == _SRC_ID:
-            sources.append(name)
-        elif e == _SNK_ID:
-            assert sink is None, "trial must have exactly one sink"
-            sink = name
-        else:
-            raise AssertionError(f"unexpected entity {items[e].name} at ({x},{y})")
-    assert sink is not None and sources
-    return sink, sources
+    scan = _scan_markers(factory)
+    sinks = [name for *_, name, is_source in scan if not is_source]
+    sources = [name for *_, name, is_source in scan if is_source]
+    assert len(sinks) == 1, "trial must have exactly one sink"
+    assert sources
+    return sinks[0], sources
 
 
 def _covers(item_name, source_names):
@@ -102,47 +137,25 @@ class TestTrialFactory:
         f = build_factory(size=SIZE, kind=kind, seed=0)
         assert f is not None
         sink, _ = _markers(f)
-        assert f.max_throughput == recipes[sink].produces[sink] > 0
+        assert f.max_throughput > 0
+        assert f.max_throughput == recipes[sink].produces[sink]
 
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_markers_sit_on_the_edge_working_inward(self, kind):
         """Sources face their wall's inward normal; the sink faces outward
         (it pulls from the cell behind it, so its belt side is interior)."""
-
-        def inward_normals(x, y):
-            out = []
-            if x == 0:
-                out.append(Direction.EAST)
-            if x == SIZE - 1:
-                out.append(Direction.WEST)
-            if y == 0:
-                out.append(Direction.SOUTH)
-            if y == SIZE - 1:
-                out.append(Direction.NORTH)
-            return out
-
-        opposite = {
-            Direction.NORTH: Direction.SOUTH,
-            Direction.SOUTH: Direction.NORTH,
-            Direction.EAST: Direction.WEST,
-            Direction.WEST: Direction.EAST,
-        }
         for seed in range(10):
             f = build_factory(size=SIZE, kind=kind, seed=seed)
             if f is None:
                 continue
-            ent = f.world_CWH[Channel.ENTITIES.value]
-            dirs = f.world_CWH[Channel.DIRECTION.value]
-            for x, y in zip(*np.nonzero(ent.numpy())):
-                d = Direction(int(dirs[x, y]))
-                normals = inward_normals(int(x), int(y))
+            for x, y, d, _name, is_source in _scan_markers(f):
+                normals = _inward_normals(x, y)
                 assert normals, f"seed={seed}: marker at ({x},{y}) not on the edge"
-                if int(ent[x, y]) == _SRC_ID:
-                    assert d in normals, f"seed={seed}: source not facing inward"
-                else:
-                    assert opposite[d] in normals, (
-                        f"seed={seed}: sink not pulling from the interior"
-                    )
+                inward = d if is_source else _OPPOSITE[d]
+                what = "source" if is_source else "sink"
+                assert inward in normals, (
+                    f"seed={seed}: {what} at ({x},{y}) not working inward"
+                )
 
     @pytest.mark.parametrize("kind,depth", list(TRIAL_KINDS.items()))
     def test_sources_are_a_frontier_of_the_sink_tree(self, kind, depth):

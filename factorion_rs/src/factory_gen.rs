@@ -2838,7 +2838,8 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
         .map(|(i, _)| *i)
         .filter(|&i| recipe_tree_depth(i, &index) >= depth)
         .collect();
-    if sinks.is_empty() {
+    // Below 2×2 an edge marker has no in-grid working cell.
+    if sinks.is_empty() || s < 2 {
         return None;
     }
     let edge_cells: Vec<Cell> = available_cells(s, &HashSet::new())
@@ -2881,7 +2882,7 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
                 let inward = normals[rng.choice_index(normals.len())];
                 let (dx, dy) = inward.delta();
                 let work = (cell.0 + dx, cell.1 + dy);
-                if !in_grid(work, s) || occupied.contains(&work) {
+                if occupied.contains(&work) {
                     continue;
                 }
                 // A source drops onto the cell it faces; a sink pulls from
@@ -3188,53 +3189,43 @@ mod tests {
                 assert_eq!(f.total_entities, 0, "{kind:?} seed={seed}");
                 assert!(f.protected_positions.is_empty(), "{kind:?} seed={seed}");
 
-                // The world holds ONLY markers: one sink, ≥1 sources, each
-                // with a free in-grid working cell to build against.
+                // The world holds ONLY markers: one sink, ≥1 sources, each on
+                // the edge with a free interior working cell reached along
+                // `inward` (a source faces it; a sink pulls from it).
+                let check_edge_marker = |cell: Cell, inward: Direction, what: &str| {
+                    assert!(
+                        inward_normals(cell, 12).contains(&inward),
+                        "{kind:?} seed={seed}: {what} not on the edge working inward"
+                    );
+                    let (dx, dy) = inward.delta();
+                    let work = (cell.0 + dx, cell.1 + dy);
+                    assert!(
+                        in_grid(work, 12),
+                        "{kind:?} seed={seed}: {what} works off-grid"
+                    );
+                    assert!(
+                        f.world
+                            .entity_at(work.0 as usize, work.1 as usize)
+                            .is_none(),
+                        "{kind:?} seed={seed}: {what}'s working cell occupied"
+                    );
+                };
                 let mut sink: Option<Item> = None;
                 let mut sources: Vec<Item> = Vec::new();
                 for x in 0..f.world.width() {
                     for y in 0..f.world.height() {
                         let dir = f.world.direction_at(x, y);
-                        let (dx, dy) = dir.delta();
+                        let cell = (x as i64, y as i64);
                         match f.world.entity_at(x, y) {
                             None => {}
                             Some(Item::Source) => {
                                 sources.push(f.world.item_at(x, y).unwrap());
-                                assert!(
-                                    inward_normals((x as i64, y as i64), 12).contains(&dir),
-                                    "{kind:?} seed={seed}: source not on the edge facing inward"
-                                );
-                                let work = (x as i64 + dx, y as i64 + dy);
-                                assert!(
-                                    in_grid(work, 12),
-                                    "{kind:?} seed={seed}: source faces off-grid"
-                                );
-                                assert!(
-                                    f.world
-                                        .entity_at(work.0 as usize, work.1 as usize)
-                                        .is_none(),
-                                    "{kind:?} seed={seed}: source's working cell occupied"
-                                );
+                                check_edge_marker(cell, dir, "source");
                             }
                             Some(Item::Sink) => {
                                 assert!(sink.is_none(), "{kind:?} seed={seed}: two sinks");
                                 sink = Some(f.world.item_at(x, y).unwrap());
-                                assert!(
-                                    inward_normals((x as i64, y as i64), 12)
-                                        .contains(&dir.opposite()),
-                                    "{kind:?} seed={seed}: sink not on the edge pulling inward"
-                                );
-                                let work = (x as i64 - dx, y as i64 - dy);
-                                assert!(
-                                    in_grid(work, 12),
-                                    "{kind:?} seed={seed}: sink pulls from off-grid"
-                                );
-                                assert!(
-                                    f.world
-                                        .entity_at(work.0 as usize, work.1 as usize)
-                                        .is_none(),
-                                    "{kind:?} seed={seed}: sink's working cell occupied"
-                                );
+                                check_edge_marker(cell, dir.opposite(), "sink");
                             }
                             Some(other) => {
                                 panic!("{kind:?} seed={seed}: unexpected entity {other:?}")
