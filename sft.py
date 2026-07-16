@@ -248,7 +248,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     until `target` pairs are produced, or forever when `target` is None. Callers
     own their own RNG seeding.
     """
-    kinds = list(LessonKind)
+    kinds = [LessonKind.FACTORY_1_INGREDIENT]  # HACK: SFT on FACTORY_1_INGREDIENT only
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
