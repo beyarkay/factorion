@@ -250,7 +250,27 @@ fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usiz
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::{Direction, Misc};
+    use crate::rng::Rng;
+    use crate::throughput::calc_throughput;
+    use crate::types::{Channel, Direction, Misc};
+
+    /// Run the full throughput pipeline (the exact path `simulate_throughput`
+    /// takes). Panics — the failure mode these robustness tests exist to catch
+    /// — abort the test.
+    fn sim_no_panic(w: &World) {
+        let g = build_graph(w);
+        let _ = calc_throughput(&g);
+    }
+
+    /// Set a single tile's entity/direction/misc channels directly, bypassing
+    /// the multi-tile placement helpers — the point is to synthesise the
+    /// *partial* entities (a lone tile of a splitter/assembler) that a
+    /// single-tile delete leaves behind.
+    fn set_lone_tile(w: &mut World, x: usize, y: usize, ent: Item, dir: Direction, misc: Misc) {
+        w.set(x, y, Channel::Entities, ent as i64);
+        w.set(x, y, Channel::Direction, dir as i64);
+        w.set(x, y, Channel::Misc, misc as i64);
+    }
 
     /// 1x1 entity configs exercised by the exhaustive connectivity checks.
     /// (Multi-tile assembler/splitter handled separately.)
@@ -534,6 +554,136 @@ mod tests {
                 .unwrap();
             assert!(g.successors[belt0].contains(&ug_down));
         }
+    }
+
+    #[test]
+    fn build_graph_never_panics_on_lone_entity_tile_anywhere() {
+        // The OOB crash came from a *single* leftover tile of a multi-tile
+        // entity (a splitter whose anchor was deleted) sitting at the grid
+        // edge: build_graph treats it as a fresh anchor and recomputes its
+        // footprint off-grid. Guard the whole class exhaustively — a lone tile
+        // of ANY placeable entity, in ANY direction/misc, at EVERY cell (edges
+        // and corners included), ringed by belts so the feeder/receiver
+        // fan-out actually runs — must never index out of bounds.
+        let placeable = [
+            Item::TransportBelt,
+            Item::Inserter,
+            Item::LongHandedInserter,
+            Item::AssemblingMachine1,
+            Item::UndergroundBelt,
+            Item::Splitter,
+            Item::Sink,
+            Item::Source,
+        ];
+        let dirs = [
+            Direction::North,
+            Direction::East,
+            Direction::South,
+            Direction::West,
+        ];
+        let miscs = [Misc::None, Misc::UndergroundDown, Misc::UndergroundUp];
+        // Small grids maximise edge/corner adjacency, where off-grid reads bite.
+        for size in [1usize, 2, 3, 5] {
+            for &ent in &placeable {
+                for &dir in &dirs {
+                    for &misc in &miscs {
+                        for x in 0..size {
+                            for y in 0..size {
+                                let mut w = World::empty(size, size);
+                                set_lone_tile(&mut w, x, y, ent, dir, misc);
+                                // A belt on each orthogonal neighbour, all
+                                // facing the tile's own direction. The one
+                                // ahead is a receiver the tile drops onto (the
+                                // input to the splitter fan-out that recomputes
+                                // an off-grid footprint tile), the one behind is
+                                // a feeder — so both connection sides run.
+                                for (nx, ny) in [
+                                    (x as i64 - 1, y as i64),
+                                    (x as i64 + 1, y as i64),
+                                    (x as i64, y as i64 - 1),
+                                    (x as i64, y as i64 + 1),
+                                ] {
+                                    if w.in_bounds(nx, ny) {
+                                        let (nx, ny) = (nx as usize, ny as usize);
+                                        if w.entity_at(nx, ny).is_none() {
+                                            set_lone_tile(
+                                                &mut w,
+                                                nx,
+                                                ny,
+                                                Item::TransportBelt,
+                                                dir,
+                                                Misc::None,
+                                            );
+                                        }
+                                    }
+                                }
+                                sim_no_panic(&w);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn build_graph_never_panics_on_random_worlds() {
+        // Broad adversarial coverage: random cells drawn from the value space
+        // the env can actually write (empty or any placeable entity, any
+        // direction/item/misc), across many small grids. Catches OOB / unwrap
+        // panics from partial multi-tile entities, opposing belts, stray items,
+        // and other combinations the structured tests don't enumerate.
+        let entity_choices = [
+            0, // empty
+            Item::TransportBelt as i64,
+            Item::Inserter as i64,
+            Item::LongHandedInserter as i64,
+            Item::AssemblingMachine1 as i64,
+            Item::UndergroundBelt as i64,
+            Item::Splitter as i64,
+            Item::Sink as i64,
+            Item::Source as i64,
+        ];
+        let mut rng = Rng::seeded(0xF00D);
+        for size in [2usize, 3, 4, 5, 11] {
+            for _ in 0..600 {
+                let mut w = World::empty(size, size);
+                for x in 0..size {
+                    for y in 0..size {
+                        let ent = entity_choices[rng.choice_index(entity_choices.len())];
+                        if ent == 0 {
+                            continue;
+                        }
+                        w.set(x, y, Channel::Entities, ent);
+                        w.set(x, y, Channel::Direction, rng.randint(0, 4)); // None..=West
+                        w.set(x, y, Channel::Items, rng.randint(0, 10)); // 0..=raw items
+                        w.set(x, y, Channel::Misc, rng.randint(0, 2)); // None/down/up
+                    }
+                }
+                sim_no_panic(&w);
+            }
+        }
+    }
+
+    #[test]
+    fn test_partial_splitter_at_edge_does_not_panic() {
+        // A single-tile delete can leave one tile of a splitter behind. The
+        // graph builder then treats that lone tile as a fresh anchor, and its
+        // 2-wide footprint extends off the grid edge. Building the graph (and
+        // the connection fan-out onto the receiver ahead) must not index out
+        // of bounds.
+        let mut w = World::empty(4, 4);
+        // North-facing splitter anchored at (2,2): tiles (2,2) and (3,2).
+        w.place_splitter(2, 2, Direction::North, None);
+        // A receiver ahead of the (3,2) tile, so the fan-out has an edge to emit.
+        w.place(3, 1, Item::TransportBelt, Direction::North, None);
+        // Delete the anchor tile only, leaving a partial splitter at (3,2)
+        // whose recomputed footprint reaches the off-grid column x=4.
+        w.set(2, 2, crate::types::Channel::Entities, 0);
+        w.set(2, 2, crate::types::Channel::Direction, 0);
+
+        // Must not panic.
+        let _ = build_graph(&w);
     }
 
     #[test]
