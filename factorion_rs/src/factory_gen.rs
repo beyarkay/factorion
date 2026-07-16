@@ -2731,16 +2731,6 @@ fn build_cross_under_belt(
     None
 }
 
-/// The recipes a TRIAL_RECIPE_TREE expansion may descend through: item →
-/// recipe for every recipe, whatever assembler tier crafts it. The throughput
-/// engine's AssemblingMachine crafts any tagged recipe (it never checks
-/// `produced_by`), so AM2/AM3-only recipes like engine_unit are fair game.
-/// Keyed for O(1) lookup during the tree walk; candidate iteration must use
-/// `all_recipes()` order, never this map's.
-fn assembler_recipe_index() -> HashMap<Item, Recipe> {
-    all_recipes().into_iter().collect()
-}
-
 /// Longest expandable chain below `item`: 0 when `item` has no recipe
 /// (nothing to expand), else 1 + the deepest of its ingredients. A
 /// sink can yield a depth-`d` frontier iff its chain is at least `d` long.
@@ -2830,7 +2820,10 @@ fn walk_recipe_frontier(
 /// ceiling — a clean chain that saturates one final assembler scores 1.0.
 fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<BuiltFactory> {
     let s = size as i64;
-    let index = assembler_recipe_index();
+    // Every recipe is expandable regardless of assembler tier: the engine's
+    // AssemblingMachine crafts any tagged recipe (it never checks
+    // `produced_by`), so AM2/AM3-only recipes like engine_unit are fair game.
+    let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
     // Deterministic candidate order: filter all_recipes() rather than
     // iterating the index (HashMap order varies run to run).
     let sinks: Vec<Item> = all_recipes()
@@ -3171,7 +3164,7 @@ mod tests {
 
     #[test]
     fn test_recipe_tree_trial_smoke() {
-        let index = assembler_recipe_index();
+        let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
         for (kind, depth) in [
             (LessonKind::TrialRecipeTreeDepth1, 1usize),
             (LessonKind::TrialRecipeTreeDepth2, 2),

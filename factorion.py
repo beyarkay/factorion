@@ -189,10 +189,6 @@ recipes = {
 # set can't drift — the single-source-of-truth pattern `items`/`recipes` use.
 LessonKind = Enum("LessonKind", factorion_rs.py_lesson_kinds())
 
-# Which kinds are *trials*: scenarios with no known solution. A trial's built
-# "factory" is only the source/sink markers — there is nothing to imitate, so
-# trials yield no SFT pairs (the agent is put in the scenario and must figure
-# it out through RL reward alone). Owned by Rust (LessonKind::is_trial).
 LESSON_IS_TRIAL: dict["LessonKind", bool] = {
     LessonKind[name]: is_trial
     for name, is_trial in factorion_rs.py_lesson_is_trial().items()
