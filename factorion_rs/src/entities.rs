@@ -936,10 +936,17 @@ impl FactoryEntity for Splitter {
         let (x, y) = pos;
         let (dx, dy) = dir.delta();
 
-        let tiles = match entity_tiles(x, y, dir, 2, 1) {
+        // A single-tile delete can leave one tile of a splitter behind; the
+        // graph builder then treats that lone tile as a fresh anchor, and its
+        // 2-wide footprint can extend off-grid. Drop out-of-bounds tiles so the
+        // fan-out below never indexes past the world edge.
+        let tiles: Vec<Pos> = match entity_tiles(x, y, dir, 2, 1) {
             Some(t) => t,
             None => return edges,
-        };
+        }
+        .into_iter()
+        .filter(|t| world.in_bounds(t.x, t.y))
+        .collect();
         let tile_set: std::collections::HashSet<Pos> = tiles.iter().copied().collect();
 
         // Receivers ahead of each tile, collected first: every splitter
