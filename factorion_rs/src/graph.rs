@@ -536,6 +536,27 @@ mod tests {
     }
 
     #[test]
+    fn test_partial_splitter_at_edge_does_not_panic() {
+        // A single-tile delete can leave one tile of a splitter behind. The
+        // graph builder then treats that lone tile as a fresh anchor, and its
+        // 2-wide footprint extends off the grid edge. Building the graph (and
+        // the connection fan-out onto the receiver ahead) must not index out
+        // of bounds.
+        let mut w = World::empty(4, 4);
+        // North-facing splitter anchored at (2,2): tiles (2,2) and (3,2).
+        w.place_splitter(2, 2, Direction::North, None);
+        // A receiver ahead of the (3,2) tile, so the fan-out has an edge to emit.
+        w.place(3, 1, Item::TransportBelt, Direction::North, None);
+        // Delete the anchor tile only, leaving a partial splitter at (3,2)
+        // whose recomputed footprint reaches the off-grid column x=4.
+        w.set(2, 2, crate::types::Channel::Entities, 0);
+        w.set(2, 2, crate::types::Channel::Direction, 0);
+
+        // Must not panic.
+        let _ = build_graph(&w);
+    }
+
+    #[test]
     fn test_splitter_four_lane_nodes() {
         // A splitter is two belts side by side, each with two lanes: four
         // nodes, all sharing the anchor for entity-unit grouping.
