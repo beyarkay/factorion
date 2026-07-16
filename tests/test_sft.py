@@ -578,7 +578,7 @@ class TestSFTCheckpointLoading:
                 captured["ent_bias"] = state_dict["ent_head.bias"].clone()
                 return orig_load(state_dict, *la, **lkw)
 
-            agent.load_state_dict = load
+            agent.load_state_dict = load  # ty: ignore[invalid-assignment]
             return agent
 
         with pytest.MonkeyPatch.context() as mp:
@@ -1248,15 +1248,24 @@ class TestRunRolloutEval:
             layer3=16,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
-        common = dict(
-            device=torch.device("cpu"), max_seeds=len(val_seeds_to_kind)
-        )
+        device = torch.device("cpu")
+        max_seeds = len(val_seeds_to_kind)
 
         never = run_rollout_eval(
-            agent, args, val_seeds_to_kind, eot_threshold=10.0, **common
+            agent,
+            args,
+            val_seeds_to_kind,
+            device,
+            max_seeds=max_seeds,
+            eot_threshold=10.0,
         )
         always = run_rollout_eval(
-            agent, args, val_seeds_to_kind, eot_threshold=-1.0, **common
+            agent,
+            args,
+            val_seeds_to_kind,
+            device,
+            max_seeds=max_seeds,
+            eot_threshold=-1.0,
         )
 
         for roll in (never, always):
