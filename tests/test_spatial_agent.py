@@ -326,6 +326,7 @@ ARCH_VARIANTS = [
     {"global_feat_dim": 16},
     {"global_broadcast": 1},
     {"global_feat_dim": 0, "global_broadcast": 1},  # degrades to baseline
+    {"coord_channels": 1},
 ]
 
 
@@ -396,3 +397,18 @@ class TestArchVariants:
         # The broadcast channels are constant over space and equal g.
         torch.testing.assert_close(enc[:, 16:, 3, 1], g)
         torch.testing.assert_close(enc[:, 16:, 0, 4], g)
+
+    def test_coord_channels_carry_normalized_position(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), coord_channels=1)
+        base = AgentCNN(envs, layers=(16, 16, 16))
+        assert agent.input_channels == base.input_channels + 2
+        enc = agent._encode_input(torch.zeros(1, NUM_CHANNELS, 5, 5))
+        assert enc.shape == (1, agent.input_channels, 5, 5)
+        x_plane, y_plane = enc[0, -2], enc[0, -1]
+        assert x_plane[0, 0].item() == pytest.approx(-1.0)
+        assert x_plane[4, 0].item() == pytest.approx(1.0)
+        assert y_plane[0, 0].item() == pytest.approx(-1.0)
+        assert y_plane[0, 4].item() == pytest.approx(1.0)
+        # x varies along W only, y along H only.
+        torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
+        torch.testing.assert_close(y_plane[0, :], y_plane[4, :])

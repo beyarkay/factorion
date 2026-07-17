@@ -62,6 +62,10 @@ class SharedArgs:
     global context too (not just the per-tile heads). 0 = per-tile-head concat
     only. Int not bool so a W&B sweep can pass --global_broadcast=1. Inert when
     global_feat_dim=0."""
+    coord_channels: int = 0
+    """1 = append two normalized x/y coordinate channels to the encoder input
+    (CoordConv, Liu et al. 2018), letting the otherwise translation-equivariant
+    conv stack express absolute position. Int not bool for W&B sweeps."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

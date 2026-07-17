@@ -1152,7 +1152,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1184,9 +1184,22 @@ class AgentCNN(nn.Module):
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
+        # CoordConv (Liu et al. 2018): two constant channels carrying each
+        # cell's normalized (x, y). A conv stack is translation-equivariant,
+        # so without these it cannot express absolute position ("near the
+        # east edge") no matter how large its receptive field.
+        self.coord_channels = bool(coord_channels)
+        self.coord_grid: torch.Tensor
+        if self.coord_channels:
+            xs = torch.linspace(-1.0, 1.0, self.width).view(self.width, 1).expand(self.width, self.height)
+            ys = torch.linspace(-1.0, 1.0, self.height).view(1, self.height).expand(self.width, self.height)
+            self.register_buffer("coord_grid", torch.stack([xs, ys], dim=0))
         # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
+        # two one-hots + the scalar footprint (+ the two coordinate channels).
+        self.input_channels = (
+            2 * cat_embed_dim + self.num_directions + self.num_misc + 1
+            + (2 if self.coord_channels else 0)
+        )
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1310,7 +1323,10 @@ class AgentCNN(nn.Module):
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
 
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+        planes = [ent_e, item_e, dir_oh, misc_oh, footprint]
+        if self.coord_channels:
+            planes.append(self.coord_grid.expand(x_BCWH.shape[0], -1, -1, -1))
+        return torch.cat(planes, dim=1)
 
     def _global_feat(self, encoded_BCWH):
         """Pool the whole encoded map into a per-batch global-context vector
@@ -1640,6 +1656,7 @@ if __name__ == "__main__":
         dropout=args.dropout,
         global_feat_dim=args.global_feat_dim,
         global_broadcast=args.global_broadcast,
+        coord_channels=args.coord_channels,
     )
 
     if args.start_from is not None:
