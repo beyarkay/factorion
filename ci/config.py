@@ -112,7 +112,11 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 # clone + rust build — cold hosts have been observed to take ~20 min just to
 # pull the image, so the slack must comfortably exceed that.
 SETUP_SLACK_SECONDS = 2700
-SWEEP_BUDGET_SECONDS = 8 * 3600  # sweeps run until run_cap (from the yaml)
+# Sweep pods exit as soon as the sweep drains (run_cap hit or cancelled), so
+# this deadline is a wedge-guard, not the expected runtime. Sized for the
+# 1-agent-per-pod default: one agent completes ~2 SFT sweep runs/hour, so a
+# small --pods count can still drain a run_cap-60 sweep before the backstop.
+SWEEP_BUDGET_SECONDS = 24 * 3600
 
 
 def sft_budget_seconds(num_samples: int, epochs: int) -> int:
