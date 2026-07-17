@@ -75,7 +75,7 @@ def sweep(
     /,
     ref: str = "main",
     pods: int = 1,
-    agents_per_pod: int = 5,
+    agents_per_pod: int = 1,
     gpu_type: str = DEFAULT_GPU,
     dry_run: bool = False,
 ) -> None:
@@ -88,8 +88,13 @@ def sweep(
         algo: "sft" or "ppo".
         ref: Commitish to sweep; must be pushed to origin.
         pods: Number of RunPod pods to launch.
-        agents_per_pod: Parallel `wandb agent` processes per pod (GPU
-            time-slicing). Total runs are capped by run_cap in the sweep yaml.
+        agents_per_pod: Parallel `wandb agent` processes per pod. >1
+            time-slices the GPU fine (the models are tiny) but every
+            simultaneous run-start spawns agents*(1+DataLoader workers)
+            processes at once, which OOM-kills workers and burns run_cap on
+            crashed runs (sweep 4j3g90a4 lost 16/24 runs this way), and the
+            CPU-bound rollout eval contends to ~half speed per run. Total
+            runs are capped by run_cap in the sweep yaml.
         gpu_type: RunPod GPU type (falls back through the standard lineup).
         dry_run: Print what would launch without creating pods or the sweep.
     """
