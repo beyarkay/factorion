@@ -531,11 +531,11 @@ def _predict(grid: list[list[dict]]) -> dict:
     H = obs_CWH.shape[3]
 
     with torch.no_grad():
-        encoded_BCWH = agent.encoder(agent._encode_input(obs_CWH))
+        encoded_BCWH, g_1G = agent.encode(obs_CWH)
         # End-of-turn probability — sigmoid of the eot head's single
         # logit. Surfaced in the side panel so the user can see when
         # the model thinks the factory is finished.
-        eot_prob = float(torch.sigmoid(agent.eot_head(encoded_BCWH).squeeze(-1)).item())
+        eot_prob = float(torch.sigmoid(agent.eot_logit(encoded_BCWH, g_1G)).item())
         tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
         tile_probs = F.softmax(tile_logits, dim=-1)[0]
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
@@ -546,9 +546,8 @@ def _predict(grid: list[list[dict]]) -> dict:
         tile_idx = int(tile_probs.argmax().item())
         x, y = tile_idx // H, tile_idx % H
 
-        feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
-        if agent.global_feat_dim > 0:
-            feats = torch.cat([feats, agent._global_feat(encoded_BCWH)], dim=1)
+        zero = torch.zeros(1, dtype=torch.long, device=encoded_BCWH.device)
+        feats = agent.tile_features(encoded_BCWH, g_1G, zero, x, y)
         ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
         dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
         item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
@@ -557,8 +556,8 @@ def _predict(grid: list[list[dict]]) -> dict:
         # Per-tile argmax for ent/dir/item/misc — one matmul per head
         # against the whole spatial map, reshaped to (W*H, chan3).
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        if agent.global_feat_dim > 0:
-            feats_all = torch.cat([feats_all, agent._global_feat(encoded_BCWH).expand(W * H, -1)], dim=1)
+        if g_1G is not None:
+            feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
         item_pick = agent.item_head(feats_all).argmax(dim=-1)

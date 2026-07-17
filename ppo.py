@@ -1309,10 +1309,36 @@ class AgentCNN(nn.Module):
         max_BC = encoded_BCWH.amax(dim=(2, 3))
         return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
 
-    def get_value(self, x_BCWH):
+    # Every consumer of the network — PPO, the SFT train/val/rollout paths,
+    # the factory-builder UI, the mod inference server — goes through these
+    # four helpers rather than composing encoder/global/head calls by hand,
+    # so an architecture variant only has to change the helpers.
+
+    def encode(self, x_BCWH):
+        """Encoder forward + global-context vector. Returns (map, g) where
+        map is (B, C', W, H) and g is (B, global_feat_dim) or None when the
+        global pathway is disabled."""
         encoded = self.encoder(self._encode_input(x_BCWH))
-        value_B = self.critic_head(encoded).squeeze(-1)
-        return value_B
+        g = self._global_feat(encoded) if self.global_feat_dim > 0 else None
+        return encoded, g
+
+    def tile_features(self, encoded_BCWH, g_BG, batch_idx_B, x_B, y_B):
+        """Input row for the ent/dir/item/misc heads: the encoded feature
+        column at (x, y) plus the global-context vector."""
+        feats = encoded_BCWH[batch_idx_B, :, x_B, y_B]
+        if g_BG is not None:
+            feats = torch.cat([feats, g_BG], dim=1)
+        return feats
+
+    def critic_value(self, encoded_BCWH, g_BG):
+        return self.critic_head(encoded_BCWH).squeeze(-1)
+
+    def eot_logit(self, encoded_BCWH, g_BG):
+        return self.eot_head(encoded_BCWH).squeeze(-1)
+
+    def get_value(self, x_BCWH):
+        encoded, g = self.encode(x_BCWH)
+        return self.critic_value(encoded, g)
 
     def eot_prob(self, x_BCWH):
         """End-of-turn probability per observation, in [0, 1].
@@ -1322,8 +1348,8 @@ class AgentCNN(nn.Module):
         this from inference rollouts to decide whether the agent thinks
         the factory is finished.
         """
-        encoded = self.encoder(self._encode_input(x_BCWH))
-        return torch.sigmoid(self.eot_head(encoded).squeeze(-1))
+        encoded, g = self.encode(x_BCWH)
+        return torch.sigmoid(self.eot_logit(encoded, g))
 
     def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
         """Boolean stop signal per observation. Threshold defaults to 0.5;
@@ -1332,8 +1358,8 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH = self.encoder(self._encode_input(x_BCWH))  # (B, chan3, W, H)
-        value_B = self.critic_head(encoded_BCWH).squeeze(-1)
+        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, chan3, W, H), (B, G)|None
+        value_B = self.critic_value(encoded_BCWH, g_BG)
 
         B = encoded_BCWH.shape[0]
 
@@ -1358,10 +1384,7 @@ class AgentCNN(nn.Module):
         # overwritten on the next replay; recreating it is trivially cheap and
         # torch.compile folds it into the graph.
         batch_idx = torch.arange(B, device=encoded_BCWH.device)
-        tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
-        if self.global_feat_dim > 0:
-            global_BG = self._global_feat(encoded_BCWH)          # (B, global_feat_dim)
-            tile_features_BC = torch.cat([tile_features_BC, global_BG], dim=1)
+        tile_features_BC = self.tile_features(encoded_BCWH, g_BG, batch_idx, x_B, y_B)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)
@@ -1373,7 +1396,7 @@ class AgentCNN(nn.Module):
         i_logp_all_BI = F.log_softmax(logits_i_BI, dim=-1)
         m_logp_all_BM = F.log_softmax(logits_m_BM, dim=-1)
 
-        eot_logit_B = self.eot_head(encoded_BCWH).squeeze(-1)
+        eot_logit_B = self.eot_logit(encoded_BCWH, g_BG)
 
         if action is None:
             ent_B = _categorical_sample(e_logp_all_BE)
