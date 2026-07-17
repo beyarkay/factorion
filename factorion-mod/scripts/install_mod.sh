@@ -28,6 +28,15 @@ fi
 
 TARGET="$MODS_DIR/${NAME}_${VERSION}"
 
+# Remove older development symlinks for this same source tree when the mod
+# version changes. Published zip installs are left alone.
+for EXISTING in "$MODS_DIR/${NAME}_"*; do
+  if [[ -L "$EXISTING" && "$(readlink "$EXISTING")" == "$MOD_SRC" ]]; then
+    echo "Removing old development link $EXISTING"
+    rm "$EXISTING"
+  fi
+done
+
 if [[ -L "$TARGET" || -e "$TARGET" ]]; then
   echo "Removing existing $TARGET"
   rm -rf "$TARGET"
@@ -36,14 +45,38 @@ fi
 ln -s "$MOD_SRC" "$TARGET"
 echo "Linked $MOD_SRC -> $TARGET"
 
-# Make sure mod-list.json enables the mod (idempotent).
+# Make sure mod-list.json enables the mod (idempotent). Factorio's JSON is
+# structured, so use the system Python rather than brittle sed replacement.
 MOD_LIST="$MODS_DIR/mod-list.json"
 if [[ -f "$MOD_LIST" ]]; then
-  if ! grep -q "\"$NAME\"" "$MOD_LIST"; then
-    echo "Note: '$NAME' is not in mod-list.json yet. Enable it from the in-game Mods menu."
-  fi
+  python3 - "$MOD_LIST" "$NAME" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+path, name = sys.argv[1:]
+with open(path) as f:
+    data = json.load(f)
+mods = data.setdefault("mods", [])
+entry = next((mod for mod in mods if mod.get("name") == name), None)
+if entry is None:
+    mods.append({"name": name, "enabled": True})
+else:
+    entry["enabled"] = True
+fd, tmp = tempfile.mkstemp(prefix="mod-list.", suffix=".json", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+print(f"Enabled '{name}' in {path}")
+PY
 else
   echo "Note: mod-list.json missing — Factorio will create one on next launch."
 fi
 
-echo "Done. Launch Factorio and enable the mod from the Mods menu if it isn't already."
+echo "Done. Restart Factorio so it loads the linked mod."
