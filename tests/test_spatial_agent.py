@@ -327,6 +327,7 @@ ARCH_VARIANTS = [
     {"global_broadcast": 1},
     {"global_feat_dim": 0, "global_broadcast": 1},  # degrades to baseline
     {"coord_channels": 1},
+    {"dilation_growth": 2},
 ]
 
 
@@ -412,3 +413,10 @@ class TestArchVariants:
         # x varies along W only, y along H only.
         torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
         torch.testing.assert_close(y_plane[0, :], y_plane[4, :])
+
+    def test_dilation_grows_per_layer_and_preserves_grid_size(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), dilation_growth=2)
+        convs = [m for m in agent.encoder if isinstance(m, torch.nn.Conv2d)]
+        assert [c.dilation[0] for c in convs] == [1, 2, 4]
+        enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert enc.shape[-2:] == (5, 5)

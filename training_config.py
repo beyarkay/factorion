@@ -66,6 +66,10 @@ class SharedArgs:
     """1 = append two normalized x/y coordinate channels to the encoder input
     (CoordConv, Liu et al. 2018), letting the otherwise translation-equivariant
     conv stack express absolute position. Int not bool for W&B sweeps."""
+    dilation_growth: int = 1
+    """conv layer i uses dilation dilation_growth**i (capped at size-1), growing
+    the receptive field exponentially with depth at zero parameter cost
+    (Yu & Koltun 2016). 1 = plain convs."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

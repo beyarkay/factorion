@@ -1152,7 +1152,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0, dilation_growth=1):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1217,12 +1217,25 @@ class AgentCNN(nn.Module):
             raise ValueError(f"kernel_size must be odd, got {kernel_size}")
         if len(layers) == 0:
             raise ValueError("layers must contain at least one conv layer")
-        padding = kernel_size // 2
+        if dilation_growth < 1:
+            raise ValueError(f"dilation_growth must be >= 1, got {dilation_growth}")
         conv_stack = []
         in_ch = self.input_channels
-        for ch in layers:
+        for i, ch in enumerate(layers):
+            # Exponential per-layer dilation (Yu & Koltun 2016): layer i taps
+            # every dilation_growth**i-th cell, so the receptive field grows
+            # exponentially with depth at zero parameter cost. Capped at
+            # width-1 so a kernel's taps still span at most the grid; padding
+            # scales with dilation to keep the "same"-size invariant the
+            # heads rely on. dilation_growth=1 is the plain conv stack.
+            dilation = min(dilation_growth**i, max(1, self.width - 1))
             conv_stack.append(
-                layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=padding))
+                layer_init(
+                    nn.Conv2d(
+                        in_ch, ch, kernel_size=kernel_size,
+                        padding=dilation * (kernel_size // 2), dilation=dilation,
+                    )
+                )
             )
             conv_stack.append(nn.ReLU())
             conv_stack.append(nn.Dropout2d(dropout))
@@ -1657,6 +1670,7 @@ if __name__ == "__main__":
         global_feat_dim=args.global_feat_dim,
         global_broadcast=args.global_broadcast,
         coord_channels=args.coord_channels,
+        dilation_growth=args.dilation_growth,
     )
 
     if args.start_from is not None:
