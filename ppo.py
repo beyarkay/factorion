@@ -1309,6 +1309,24 @@ class AgentCNN(nn.Module):
         max_BC = encoded_BCWH.amax(dim=(2, 3))
         return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
 
+    def tile_features_at(self, encoded_BCWH, x_B, y_B):
+        """Gather the per-tile feature column at each row's (x, y), appended
+        with the global-context vector when global_feat_dim>0. This is the
+        exact input the entity/direction/item/misc heads consume, shared by the
+        policy forward, the SFT train/val loops, and the greedy rollout eval so
+        those paths stay in lockstep (they run literally the same network).
+
+        The batch index is rebuilt fresh each call on purpose: a cached arange
+        would be captured into the CUDA-graph memory pool under reduce-overhead
+        and overwritten on the next replay; recreating it is trivially cheap and
+        torch.compile folds it into the graph."""
+        B = encoded_BCWH.shape[0]
+        batch_idx = torch.arange(B, device=encoded_BCWH.device)
+        tile_features = encoded_BCWH[batch_idx, :, x_B, y_B]
+        if self.global_feat_dim > 0:
+            tile_features = torch.cat([tile_features, self._global_feat(encoded_BCWH)], dim=1)
+        return tile_features
+
     def get_value(self, x_BCWH):
         encoded = self.encoder(self._encode_input(x_BCWH))
         value_B = self.critic_head(encoded).squeeze(-1)
@@ -1353,15 +1371,7 @@ class AgentCNN(nn.Module):
         y_B = tile_idx_B % self.height
 
         # --- Extract per-tile features at selected (x, y) ---
-        # Build the batch index fresh each call. A cached arange would be
-        # captured into the CUDA-graph memory pool under reduce-overhead and get
-        # overwritten on the next replay; recreating it is trivially cheap and
-        # torch.compile folds it into the graph.
-        batch_idx = torch.arange(B, device=encoded_BCWH.device)
-        tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
-        if self.global_feat_dim > 0:
-            global_BG = self._global_feat(encoded_BCWH)          # (B, global_feat_dim)
-            tile_features_BC = torch.cat([tile_features_BC, global_BG], dim=1)
+        tile_features_BC = self.tile_features_at(encoded_BCWH, x_B, y_B)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)

@@ -577,7 +577,6 @@ def run_rollout_eval(
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
-    batch_idx_K = torch.arange(K, device=device)
 
     with torch.no_grad():
         while any(active):
@@ -594,9 +593,7 @@ def run_rollout_eval(
             tile_idx_K = tile_logits.argmax(dim=1)
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size
-            tile_features = encoded[batch_idx_K, :, x_K, y_K]
-            if agent.global_feat_dim > 0:
-                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+            tile_features = agent.tile_features_at(encoded, x_K, y_K)
 
             ent_K = agent.ent_head(tile_features).argmax(dim=1)
             dir_K = agent.dir_head(tile_features).argmax(dim=1)
@@ -1197,10 +1194,8 @@ def train_sft(args: SftArgs):
             # Extract features at target tile for entity/direction/item/misc heads
             x_B = batch_tile // agent.height
             y_B = batch_tile % agent.height
-            batch_idx = torch.arange(B, device=device)
-            tile_features = encoded[batch_idx, :, x_B, y_B]
-            if agent.global_feat_dim > 0:
-                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+            batch_idx = torch.arange(B, device=device)  # reused by tile_hit below
+            tile_features = agent.tile_features_at(encoded, x_B, y_B)
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
@@ -1392,10 +1387,8 @@ def train_sft(args: SftArgs):
 
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height
-                batch_idx = torch.arange(B, device=device)
-                tile_features = encoded[batch_idx, :, x_B, y_B]
-                if agent.global_feat_dim > 0:
-                    tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+                batch_idx = torch.arange(B, device=device)  # reused by tile_hit below
+                tile_features = agent.tile_features_at(encoded, x_B, y_B)
 
                 ent_logits = agent.ent_head(tile_features)
                 dir_logits = agent.dir_head(tile_features)
