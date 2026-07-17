@@ -56,6 +56,12 @@ class SharedArgs:
     global_feat_dim: int = 32
     """dim of the pooled (mean+max over space) global-context vector concatenated
     onto the per-tile head inputs; 0 disables the global pathway entirely"""
+    global_broadcast: int = 0
+    """1 = append the global vector as constant channels on every cell of the
+    encoded map, so the tile head and the flatten-based critic/eot heads see
+    global context too (not just the per-tile heads). 0 = per-tile-head concat
+    only. Int not bool so a W&B sweep can pass --global_broadcast=1. Inert when
+    global_feat_dim=0."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

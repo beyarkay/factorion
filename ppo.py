@@ -1152,7 +1152,7 @@ def _categorical_entropy(logp_all_BN):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1224,7 +1224,33 @@ class AgentCNN(nn.Module):
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
 
-        flat_dim = last_chan * self.width * self.height
+        # The per-tile heads read a single feature column encoded[:, :, x, y],
+        # so their receptive field is capped at the conv stack's window. Recipe
+        # choice, UG-span, and "which way is the sink" are grid-global questions
+        # that window can't answer. Concatenate a pooled summary of the whole
+        # encoded map (mean+max over space, projected to global_feat_dim) onto
+        # the tile features so every head sees global context. global_feat_dim=0
+        # disables it, recovering the window-only heads.
+        self.global_feat_dim = global_feat_dim
+        if global_feat_dim > 0:
+            self.global_proj = nn.Sequential(
+                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
+                nn.ReLU(),
+            )
+        # global_broadcast appends the global vector as constant channels on
+        # every cell of the encoded map instead of concatenating it only at
+        # the per-tile heads. The per-tile heads see the identical input
+        # either way (feature column ⊕ g); what broadcast adds is the TILE
+        # head (and the flatten-based critic/eot) seeing global context —
+        # without it, "where to act" is decided from window-only features.
+        # Meaningless without a global vector, so it silently degrades to
+        # off when global_feat_dim == 0 (keeps that sweep combo runnable as
+        # a baseline instead of crashing the run).
+        self.global_broadcast = bool(global_broadcast) and global_feat_dim > 0
+        self.map_channels = last_chan + (global_feat_dim if self.global_broadcast else 0)
+        head_in = last_chan + global_feat_dim
+
+        flat_dim = self.map_channels * self.width * self.height
 
         # Project encoded state to value
         self.critic_head = nn.Sequential(
@@ -1240,22 +1266,7 @@ class AgentCNN(nn.Module):
         )
 
         # Tile selection: 1x1 conv producing one logit per spatial position
-        self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
-
-        # The per-tile heads read a single feature column encoded[:, :, x, y],
-        # so their receptive field is capped at the conv stack's window. Recipe
-        # choice, UG-span, and "which way is the sink" are grid-global questions
-        # that window can't answer. Concatenate a pooled summary of the whole
-        # encoded map (mean+max over space, projected to global_feat_dim) onto
-        # the tile features so every head sees global context. global_feat_dim=0
-        # disables it, recovering the window-only heads.
-        self.global_feat_dim = global_feat_dim
-        if global_feat_dim > 0:
-            self.global_proj = nn.Sequential(
-                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
-                nn.ReLU(),
-            )
-        head_in = last_chan + global_feat_dim
+        self.tile_logits = layer_init(nn.Conv2d(self.map_channels, 1, kernel_size=1), std=tile_head_std)
 
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
@@ -1316,17 +1327,24 @@ class AgentCNN(nn.Module):
 
     def encode(self, x_BCWH):
         """Encoder forward + global-context vector. Returns (map, g) where
-        map is (B, C', W, H) and g is (B, global_feat_dim) or None when the
-        global pathway is disabled."""
+        map is (B, map_channels, W, H) and g is (B, global_feat_dim) or None
+        when the global pathway is disabled. Under global_broadcast the map
+        carries g appended as constant channels on every cell."""
         encoded = self.encoder(self._encode_input(x_BCWH))
         g = self._global_feat(encoded) if self.global_feat_dim > 0 else None
+        if self.global_broadcast:
+            assert g is not None  # ctor forces broadcast off when global_feat_dim == 0
+            g_map = g[:, :, None, None].expand(-1, -1, self.width, self.height)
+            encoded = torch.cat([encoded, g_map], dim=1)
         return encoded, g
 
     def tile_features(self, encoded_BCWH, g_BG, batch_idx_B, x_B, y_B):
         """Input row for the ent/dir/item/misc heads: the encoded feature
-        column at (x, y) plus the global-context vector."""
+        column at (x, y) plus the global-context vector. Under
+        global_broadcast the column already ends in g, so concatenating
+        again would double it up."""
         feats = encoded_BCWH[batch_idx_B, :, x_B, y_B]
-        if g_BG is not None:
+        if g_BG is not None and not self.global_broadcast:
             feats = torch.cat([feats, g_BG], dim=1)
         return feats
 
@@ -1621,6 +1639,7 @@ if __name__ == "__main__":
         critic_head_std=args.critic_head_std,
         dropout=args.dropout,
         global_feat_dim=args.global_feat_dim,
+        global_broadcast=args.global_broadcast,
     )
 
     if args.start_from is not None:

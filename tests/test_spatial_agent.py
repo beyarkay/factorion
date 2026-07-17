@@ -315,3 +315,84 @@ class TestCategoricalInputEncoding:
         (logp_B.mean() + value_B.mean()).backward()
         assert agent.ent_embed.weight.grad is not None
         assert agent.item_embed.weight.grad is not None
+
+
+# Architecture-variant knobs (the arch-sweep surface). Each entry must
+# construct, run the full PPO forward (sample + stored-action recompute),
+# and round-trip through a state dict into a fresh same-config model.
+ARCH_VARIANTS = [
+    {},
+    {"global_feat_dim": 0},
+    {"global_feat_dim": 16},
+    {"global_broadcast": 1},
+    {"global_feat_dim": 0, "global_broadcast": 1},  # degrades to baseline
+]
+
+
+class TestArchVariants:
+    @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
+    def test_forward_and_stored_action_recompute(self, envs, kwargs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        obs = torch.zeros(4, NUM_CHANNELS, 5, 5)
+        action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
+        assert logp_B.shape == entropy_B.shape == value_B.shape == (4,)
+        assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
+        # PPO-update path: recompute log-probs for the sampled action.
+        stored = torch.cat(
+            [
+                action_out["xy"],
+                action_out["entity"][:, None],
+                action_out["direction"][:, None],
+                action_out["item"][:, None],
+                action_out["misc"][:, None],
+                action_out["eot"][:, None].long(),
+            ],
+            dim=1,
+        )
+        _, logp2_B, _, _ = agent.get_action_and_value(obs, action=stored)
+        torch.testing.assert_close(logp_B, logp2_B)
+
+    @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
+    def test_state_dict_roundtrip(self, envs, kwargs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        clone = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        clone.load_state_dict(agent.state_dict())
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        torch.manual_seed(0)
+        _, logp_a, _, val_a = agent.get_action_and_value(obs)
+        torch.manual_seed(0)
+        _, logp_b, _, val_b = clone.get_action_and_value(obs)
+        torch.testing.assert_close(logp_a, logp_b)
+        torch.testing.assert_close(val_a, val_b)
+
+    def test_broadcast_matches_head_concat_for_per_tile_heads(self, envs):
+        """Broadcasting g onto the map then indexing a column must equal the
+        head-side concat — the two modes differ only in what the tile head
+        and critic/eot see, never in the per-tile head inputs."""
+        concat = AgentCNN(envs, layers=(16, 16, 16), global_broadcast=0)
+        bcast = AgentCNN(envs, layers=(16, 16, 16), global_broadcast=1)
+        bcast.encoder.load_state_dict(concat.encoder.state_dict())
+        bcast.global_proj.load_state_dict(concat.global_proj.state_dict())
+        bcast.ent_embed.load_state_dict(concat.ent_embed.state_dict())
+        bcast.item_embed.load_state_dict(concat.item_embed.state_dict())
+
+        obs = torch.zeros(3, NUM_CHANNELS, 5, 5)
+        obs[:, Channel.ENTITIES.value, 2, 2] = 1.0
+        batch_idx = torch.arange(3)
+        xs = torch.tensor([0, 2, 4])
+        ys = torch.tensor([1, 2, 3])
+        enc_a, g_a = concat.encode(obs)
+        enc_b, g_b = bcast.encode(obs)
+        feats_a = concat.tile_features(enc_a, g_a, batch_idx, xs, ys)
+        feats_b = bcast.tile_features(enc_b, g_b, batch_idx, xs, ys)
+        torch.testing.assert_close(feats_a, feats_b)
+
+    def test_broadcast_widens_tile_and_flatten_heads(self, envs):
+        bcast = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=8, global_broadcast=1)
+        assert bcast.map_channels == 16 + 8
+        assert bcast.tile_logits.in_channels == 16 + 8
+        enc, g = bcast.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert enc.shape == (2, 16 + 8, 5, 5)
+        # The broadcast channels are constant over space and equal g.
+        torch.testing.assert_close(enc[:, 16:, 3, 1], g)
+        torch.testing.assert_close(enc[:, 16:, 0, 4], g)

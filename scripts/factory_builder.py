@@ -556,7 +556,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         # Per-tile argmax for ent/dir/item/misc — one matmul per head
         # against the whole spatial map, reshaped to (W*H, chan3).
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        if g_1G is not None:
+        if g_1G is not None and not agent.global_broadcast:
             feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
