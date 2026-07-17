@@ -53,6 +53,9 @@ class SharedArgs:
     layer8: int = 0
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
+    global_feat_dim: int = 32
+    """dim of the pooled (mean+max over space) global-context vector concatenated
+    onto the per-tile head inputs; 0 disables the global pathway entirely"""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

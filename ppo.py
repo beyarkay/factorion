@@ -1597,6 +1597,7 @@ if __name__ == "__main__":
         tile_head_std=args.tile_head_std,
         critic_head_std=args.critic_head_std,
         dropout=args.dropout,
+        global_feat_dim=args.global_feat_dim,
     )
 
     if args.start_from is not None:
