@@ -328,6 +328,7 @@ ARCH_VARIANTS = [
     {"global_feat_dim": 0, "global_broadcast": 1},  # degrades to baseline
     {"coord_channels": 1},
     {"dilation_growth": 2},
+    {"se_ratio": 4},
 ]
 
 
@@ -413,6 +414,22 @@ class TestArchVariants:
         # x varies along W only, y along H only.
         torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
         torch.testing.assert_close(y_plane[0, :], y_plane[4, :])
+
+    def test_se_blocks_gate_but_preserve_shape(self, envs):
+        from ppo import _SEBlock
+
+        agent = AgentCNN(envs, layers=(16, 16, 16), se_ratio=4)
+        ses = [m for m in agent.encoder if isinstance(m, _SEBlock)]
+        assert len(ses) == 3
+        enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert enc.shape == (2, 16, 5, 5)
+        # SE fc weights are 2-D, so factory_builder's conv-shape-based arch
+        # inference still sees exactly the three 4-D conv weights.
+        conv_keys = [
+            k for k, v in agent.state_dict().items()
+            if k.startswith("encoder.") and k.endswith(".weight") and v.dim() == 4
+        ]
+        assert len(conv_keys) == 3
 
     def test_dilation_grows_per_layer_and_preserves_grid_size(self, envs):
         agent = AgentCNN(envs, layers=(16, 16, 16), dilation_growth=2)

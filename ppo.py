@@ -1151,8 +1151,28 @@ def _categorical_entropy(logp_all_BN):
     return -(logp_all_BN.exp() * logp_all_BN).sum(-1)
 
 
+class _SEBlock(nn.Module):
+    """Squeeze-and-Excitation (Hu et al. 2018): rescale each channel by a
+    sigmoid gate computed from the spatially-pooled map, giving every encoder
+    layer a global modulation path the conv window alone can't provide."""
+
+    def __init__(self, channels, ratio):
+        super().__init__()
+        hidden = max(1, channels // ratio)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x_BCWH):
+        scale_BC = self.fc(x_BCWH.mean(dim=(2, 3)))
+        return x_BCWH * scale_BC[:, :, None, None]
+
+
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0, dilation_growth=1):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0, dilation_growth=1, se_ratio=0):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1238,6 +1258,8 @@ class AgentCNN(nn.Module):
                 )
             )
             conv_stack.append(nn.ReLU())
+            if se_ratio > 0:
+                conv_stack.append(_SEBlock(ch, se_ratio))
             conv_stack.append(nn.Dropout2d(dropout))
             in_ch = ch
         self.encoder = nn.Sequential(*conv_stack)
@@ -1671,6 +1693,7 @@ if __name__ == "__main__":
         global_broadcast=args.global_broadcast,
         coord_channels=args.coord_channels,
         dilation_growth=args.dilation_growth,
+        se_ratio=args.se_ratio,
     )
 
     if args.start_from is not None:

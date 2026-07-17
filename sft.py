@@ -978,6 +978,7 @@ def train_sft(args: SftArgs):
         global_broadcast=args.global_broadcast,
         coord_channels=args.coord_channels,
         dilation_growth=args.dilation_growth,
+        se_ratio=args.se_ratio,
     )
     envs.close()
 

@@ -70,6 +70,10 @@ class SharedArgs:
     """conv layer i uses dilation dilation_growth**i (capped at size-1), growing
     the receptive field exponentially with depth at zero parameter cost
     (Yu & Koltun 2016). 1 = plain convs."""
+    se_ratio: int = 0
+    """squeeze-and-excitation reduction ratio (Hu et al. 2018): after each conv
+    layer, rescale channels by a gate computed from the spatially-pooled map,
+    giving every layer a global modulation path. 0 disables."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
