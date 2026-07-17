@@ -329,6 +329,9 @@ ARCH_VARIANTS = [
     {"coord_channels": 1},
     {"dilation_growth": 2},
     {"se_ratio": 4},
+    {"global_critic": 1},
+    {"global_feat_dim": 16, "global_broadcast": 1, "coord_channels": 1,
+     "dilation_growth": 2, "se_ratio": 4, "global_critic": 1},  # everything on
 ]
 
 
@@ -414,6 +417,18 @@ class TestArchVariants:
         # x varies along W only, y along H only.
         torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
         torch.testing.assert_close(y_plane[0, :], y_plane[4, :])
+
+    def test_global_critic_heads_read_only_g(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=8, global_critic=1)
+        assert sum(p.numel() for p in agent.critic_head.parameters()) == 8 + 1
+        assert sum(p.numel() for p in agent.eot_head.parameters()) == 8 + 1
+        # `head[-1]` must reach the Linear in both modes — ppo.py's
+        # --start-from critic re-init depends on it.
+        assert isinstance(agent.critic_head[-1], torch.nn.Linear)
+        flat = AgentCNN(envs, layers=(16, 16, 16), global_critic=0)
+        assert isinstance(flat.critic_head[-1], torch.nn.Linear)
+        _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert value_B.shape == (2,)
 
     def test_se_blocks_gate_but_preserve_shape(self, envs):
         from ppo import _SEBlock

@@ -74,6 +74,10 @@ class SharedArgs:
     """squeeze-and-excitation reduction ratio (Hu et al. 2018): after each conv
     layer, rescale channels by a gate computed from the spatially-pooled map,
     giving every layer a global modulation path. 0 disables."""
+    global_critic: int = 0
+    """1 = the critic and EOT heads read the pooled global vector instead of the
+    flattened encoded map (far fewer params; the global pathway gets gradient
+    from the value/eot losses too). Inert when global_feat_dim=0."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

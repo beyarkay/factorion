@@ -1172,7 +1172,7 @@ class _SEBlock(nn.Module):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0, dilation_growth=1, se_ratio=0):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32, global_broadcast=0, coord_channels=0, dilation_growth=1, se_ratio=0, global_critic=0):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1300,18 +1300,30 @@ class AgentCNN(nn.Module):
 
         flat_dim = self.map_channels * self.width * self.height
 
-        # Project encoded state to value
-        self.critic_head = nn.Sequential(
-            nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
-        )
-
-        # Bias init at -2 so an untrained model defaults to "not finished"
-        # (sigmoid(-2) ≈ 0.12).
-        self.eot_head = nn.Sequential(
-            nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=1.0, bias_const=-2.0),
-        )
+        # Both heads stay nn.Sequential in both modes so `head[-1]` reaches
+        # the Linear regardless (the --start-from critic re-init relies on
+        # that). Bias init at -2 on the eot head so an untrained model
+        # defaults to "not finished" (sigmoid(-2) ≈ 0.12).
+        self.global_critic = bool(global_critic) and global_feat_dim > 0
+        if self.global_critic:
+            # Critic/eot read the pooled global vector instead of the
+            # flattened map: far fewer params, and the global pathway gets
+            # gradient from the value/eot losses, not just the policy heads.
+            self.critic_head = nn.Sequential(
+                layer_init(nn.Linear(global_feat_dim, 1), std=critic_head_std)
+            )
+            self.eot_head = nn.Sequential(
+                layer_init(nn.Linear(global_feat_dim, 1), std=1.0, bias_const=-2.0)
+            )
+        else:
+            self.critic_head = nn.Sequential(
+                nn.Flatten(),
+                layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
+            )
+            self.eot_head = nn.Sequential(
+                nn.Flatten(),
+                layer_init(nn.Linear(flat_dim, 1), std=1.0, bias_const=-2.0),
+            )
 
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(self.map_channels, 1, kernel_size=1), std=tile_head_std)
@@ -1400,9 +1412,15 @@ class AgentCNN(nn.Module):
         return feats
 
     def critic_value(self, encoded_BCWH, g_BG):
+        if self.global_critic:
+            assert g_BG is not None  # ctor forces global_critic off when global_feat_dim == 0
+            return self.critic_head(g_BG).squeeze(-1)
         return self.critic_head(encoded_BCWH).squeeze(-1)
 
     def eot_logit(self, encoded_BCWH, g_BG):
+        if self.global_critic:
+            assert g_BG is not None
+            return self.eot_head(g_BG).squeeze(-1)
         return self.eot_head(encoded_BCWH).squeeze(-1)
 
     def get_value(self, x_BCWH):
@@ -1694,6 +1712,7 @@ if __name__ == "__main__":
         coord_channels=args.coord_channels,
         dilation_growth=args.dilation_growth,
         se_ratio=args.se_ratio,
+        global_critic=args.global_critic,
     )
 
     if args.start_from is not None:
