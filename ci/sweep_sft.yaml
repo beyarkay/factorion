@@ -40,17 +40,15 @@ parameters:
   max_level:
     value: 0  # auto = 2*size = 22 entities blanked
 
-  # Settled by sweep 6y0658g2 (pinned so the run budget concentrates on
-  # the unresolved dims): coord_channels=1 and kernel_size=5 dominated
-  # every top run; dilation_growth=2 and a 5th conv layer clearly hurt
-  # (both dropped — absent knobs fall through to defaults, dilation 1 /
-  # layer5 0); se_ratio 0 and global_feat_dim 0 clearly hurt (0 removed
-  # from both, which also kills the inert broadcast/critic-with-no-G
-  # combos that wasted runs).
+  # Settled by sweep 6y0658g2 (pinned/dropped so the run budget
+  # concentrates on the unresolved dims): coord_channels=1 dominated every
+  # top run; dilation_growth=2 and a 5th conv layer clearly hurt (both
+  # dropped — absent knobs fall through to defaults, dilation 1 / layer5
+  # 0); se_ratio 0 and global_feat_dim 0 clearly hurt (0 removed from
+  # both, which also kills the inert broadcast/critic-with-no-G combos
+  # that wasted runs).
   coord_channels:
     value: 1
-  kernel_size:
-    value: 5
 
   # ── LR (the one training hpar that moves with the arch) ──────────
   # Top runs hugged the previous 3e-3 ceiling; extended upward.
@@ -59,23 +57,31 @@ parameters:
     min: 5e-4
     max: 8e-3
 
-  # ── Encoder shape (RF = 1 + n_layers*4 with k=5) ─────────────────
+  # ── Boundary-pick expansions ─────────────────────────────────────
+  # Sweep 1's Bayes concentrated at the LIMIT of these ranges, so each
+  # gets headroom: kernel 5 (26/28 runs; was the max of [3,5]),
+  # layer1 96 (22/28), global_feat_dim 64 (21/28, 9 of top 10),
+  # se_ratio 8 (17/28, best mean). Depth won at its FLOOR (3-layer mean
+  # 0.502 vs 0.399/0.352 at 4/5), so layer3: 0 makes depth-2 stacks
+  # reachable — viable with k=7, whose RF 13 covers the grid at depth 2.
+  kernel_size:
+    values: [5, 7]
   layer1:
-    values: [64, 96]
+    values: [64, 96, 128]
   layer2:
-    values: [64, 96]
+    values: [64, 96, 128]
   layer3:
-    values: [48, 64, 96]
+    values: [0, 48, 64, 96]
   layer4:
     values: [0, 48, 64]
 
   # ── Global-context mechanisms, unresolved by sweep 1 ─────────────
   global_feat_dim:
-    values: [32, 64]
+    values: [32, 64, 128]
   global_broadcast:
     values: [0, 1]
   se_ratio:
-    values: [4, 8]
+    values: [4, 8, 16]
   global_critic:
     values: [0, 1]
 
