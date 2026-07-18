@@ -19,11 +19,11 @@
 method: bayes
 run_cap: 60
 metric:
-  # val/thput, not val/acc: PR #290 showed per-head accuracy can sit high
-  # (val/item_acc 0.87) while built-factory throughput is ~0.05 — the
-  # rollout throughput is the honest arch signal, and it is also the
-  # checkpoint-selection metric.
-  name: "val/thput"
+  # val/thput_eot, not val/thput: sweep 6y0658g2 measured Spearman 0.38
+  # between them — near-independent objectives. thput_eot (throughput at
+  # the moment the EOT head fires) is the deliverable: forcing builds to
+  # max_steps wrecks factories the model would have stopped at ~0.4.
+  name: "val/thput_eot"
   goal: maximize
 
 parameters:
@@ -40,40 +40,42 @@ parameters:
   max_level:
     value: 0  # auto = 2*size = 22 entities blanked
 
+  # Settled by sweep 6y0658g2 (pinned so the run budget concentrates on
+  # the unresolved dims): coord_channels=1 and kernel_size=5 dominated
+  # every top run; dilation_growth=2 and a 5th conv layer clearly hurt
+  # (both dropped — absent knobs fall through to defaults, dilation 1 /
+  # layer5 0); se_ratio 0 and global_feat_dim 0 clearly hurt (0 removed
+  # from both, which also kills the inert broadcast/critic-with-no-G
+  # combos that wasted runs).
+  coord_channels:
+    value: 1
+  kernel_size:
+    value: 5
+
   # ── LR (the one training hpar that moves with the arch) ──────────
+  # Top runs hugged the previous 3e-3 ceiling; extended upward.
   lr:
     distribution: log_uniform_values
-    min: 1e-4
-    max: 3e-3
+    min: 5e-4
+    max: 8e-3
 
-  # ── Encoder shape ────────────────────────────────────────────────
-  # Depth via zero-off width slots: layer4/layer5 at 0 drop the layer.
-  # RF = 1 + n_layers * (kernel_size - 1) per dilation_growth=1; the
-  # default 3-layer k=3 stack (RF 7) cannot see across the 11x11 grid.
+  # ── Encoder shape (RF = 1 + n_layers*4 with k=5) ─────────────────
   layer1:
-    values: [48, 64, 96]
+    values: [64, 96]
   layer2:
-    values: [48, 64, 96]
+    values: [64, 96]
   layer3:
     values: [48, 64, 96]
   layer4:
     values: [0, 48, 64]
-  layer5:
-    values: [0, 64]
-  kernel_size:
-    values: [3, 5]
 
-  # ── Global-context mechanisms (all zero-off, all composable) ─────
+  # ── Global-context mechanisms, unresolved by sweep 1 ─────────────
   global_feat_dim:
-    values: [0, 16, 32, 64]
+    values: [32, 64]
   global_broadcast:
     values: [0, 1]
-  coord_channels:
-    values: [0, 1]
-  dilation_growth:
-    values: [1, 2]
   se_ratio:
-    values: [0, 4, 8]
+    values: [4, 8]
   global_critic:
     values: [0, 1]
 
