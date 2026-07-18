@@ -45,8 +45,11 @@ GPU_FALLBACKS = [
 
 # Only schedule on hosts whose driver supports a CUDA version new enough for
 # our torch build. uv.lock pins torch 2.12.x+cu130, which needs a CUDA 13.0
-# runtime (host driver >= 580). Keep in sync with the torch cuXXX build.
-ALLOWED_CUDA_VERSIONS = ["13.0"]
+# runtime (host driver >= 580); any newer 13.x driver is back-compatible, and
+# RunPod's filter is an exact match per entry, so list the whole family — a
+# bare ["13.0"] excludes upgraded hosts and shrinks the eligible pool.
+# Keep in sync with the torch cuXXX build.
+ALLOWED_CUDA_VERSIONS = ["13.0", "13.1", "13.2", "13.3"]
 
 # ── Pod naming ─────────────────────────────────────────────────────
 # Every CI pod encodes its own creation time and kill-by deadline in its name,
