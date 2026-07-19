@@ -135,15 +135,13 @@ def request_to_obs(req: dict) -> np.ndarray:
 def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
-        encoded = agent.encoder(x)
+        encoded, g = agent.encode(x)
         B = encoded.shape[0]
         tile_logits = agent.tile_logits(encoded).reshape(B, -1)
         tile_idx = tile_logits.argmax(dim=-1)
         x_B = tile_idx // agent.height
         y_B = tile_idx % agent.height
-        feat = encoded[torch.arange(B), :, x_B, y_B]
-        if agent.global_feat_dim > 0:
-            feat = torch.cat([feat, agent._global_feat(encoded)], dim=1)
+        feat = agent.tile_features(encoded, g, torch.arange(B), x_B, y_B)
         ent = agent.ent_head(feat).argmax(dim=-1)
         dir_ = agent.dir_head(feat).argmax(dim=-1)
         item = agent.item_head(feat).argmax(dim=-1)

@@ -430,26 +430,33 @@ def _get_agent(size: int) -> AgentCNN:
         agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
     finally:
         envs.close()
-    # critic_head and eot_head are both Linear(flat_dim, 1) where
-    # flat_dim = layers[-1] * W * H, so their saved weights are the wrong
-    # shape whenever the UI grid size != the training size. strict=False
-    # would *not* save us here — it ignores missing/unexpected keys but
-    # still raises on shape mismatches, so we filter explicitly.
+    # Several tensors are grid-size-dependent, so their saved shapes are wrong
+    # whenever the UI grid size != the training size. strict=False would *not*
+    # save us — it ignores missing/unexpected keys but still raises on shape
+    # mismatches, so we filter explicitly.
     #
-    # critic_head: always dropped (the critic isn't called during
-    # inference, so loading it is wasted work even on a size match).
+    # critic_head: always dropped (the critic isn't called during inference,
+    # so loading it is wasted work even on a size match).
     #
-    # eot_head: dropped on size mismatch (random init is fine because
-    # the UI doesn't act on the eot signal), kept on size match so the
-    # UI's eot panel shows the real trained prediction. Pre-#103
-    # checkpoints have no eot_head keys at all → load_state_dict
-    # (strict=False) leaves the freshly-initialised head in place.
+    # coord_grid: a deterministic (2, W, H) buffer the ctor already rebuilt for
+    # this grid size, so it is never loaded from the checkpoint.
+    #
+    # eot_head (Linear(layers[-1]*W*H, 1)) and attn.pos_embed
+    # ((1, W*H, attn_dim)): dropped on size mismatch (random init is fine —
+    # the UI doesn't act on the eot signal), kept on a size match so the UI's
+    # eot panel shows the real trained prediction. Pre-#103 checkpoints have no
+    # eot_head keys at all → load_state_dict (strict=False) leaves the
+    # freshly-initialised head in place.
     expected_flat = layers[-1] * size * size
     saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
     keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
-    drop_prefixes: tuple[str, ...] = ("critic_head.",)
+    saved_pos = _CHECKPOINT_STATE.get("attn.pos_embed")
+    keep_pos = saved_pos is not None and saved_pos.shape[1] == size * size
+    drop_prefixes: tuple[str, ...] = ("critic_head.", "coord_grid")
     if not keep_eot:
         drop_prefixes = drop_prefixes + ("eot_head.",)
+    if not keep_pos:
+        drop_prefixes = drop_prefixes + ("attn.pos_embed",)
     filtered = {
         k: v for k, v in _CHECKPOINT_STATE.items()
         if not k.startswith(drop_prefixes)
@@ -458,6 +465,7 @@ def _get_agent(size: int) -> AgentCNN:
     ignorable = {
         "critic_head.1.weight", "critic_head.1.bias",
         "eot_head.1.weight", "eot_head.1.bias",
+        "coord_grid", "attn.pos_embed",
     }
     real_missing = [k for k in missing if k not in ignorable]
     real_unexpected = [k for k in unexpected if k not in ignorable]
@@ -531,11 +539,11 @@ def _predict(grid: list[list[dict]]) -> dict:
     H = obs_CWH.shape[3]
 
     with torch.no_grad():
-        encoded_BCWH = agent.encoder(agent._encode_input(obs_CWH))
+        encoded_BCWH, g_1G = agent.encode(obs_CWH)
         # End-of-turn probability — sigmoid of the eot head's single
         # logit. Surfaced in the side panel so the user can see when
         # the model thinks the factory is finished.
-        eot_prob = float(torch.sigmoid(agent.eot_head(encoded_BCWH).squeeze(-1)).item())
+        eot_prob = float(torch.sigmoid(agent.eot_logit(encoded_BCWH, g_1G)).item())
         tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
         tile_probs = F.softmax(tile_logits, dim=-1)[0]
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
@@ -546,9 +554,8 @@ def _predict(grid: list[list[dict]]) -> dict:
         tile_idx = int(tile_probs.argmax().item())
         x, y = tile_idx // H, tile_idx % H
 
-        feats = encoded_BCWH[0, :, x, y].unsqueeze(0)
-        if agent.global_feat_dim > 0:
-            feats = torch.cat([feats, agent._global_feat(encoded_BCWH)], dim=1)
+        zero = torch.zeros(1, dtype=torch.long, device=encoded_BCWH.device)
+        feats = agent.tile_features(encoded_BCWH, g_1G, zero, x, y)
         ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
         dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
         item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
@@ -557,8 +564,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         # Per-tile argmax for ent/dir/item/misc — one matmul per head
         # against the whole spatial map, reshaped to (W*H, chan3).
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        if agent.global_feat_dim > 0:
-            feats_all = torch.cat([feats_all, agent._global_feat(encoded_BCWH).expand(W * H, -1)], dim=1)
+        feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
         item_pick = agent.item_head(feats_all).argmax(dim=-1)

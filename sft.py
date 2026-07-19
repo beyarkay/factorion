@@ -585,8 +585,8 @@ def run_rollout_eval(
             # outputs are discarded; the per-eval cost of K-1 stale
             # forwards at the tail is negligible compared to the
             # batching win earlier in the queue.
-            encoded = agent.encoder(agent._encode_input(obs_batch))
-            eot_probs = torch.sigmoid(agent.eot_head(encoded).squeeze(-1))
+            encoded, g_K = agent.encode(obs_batch)
+            eot_probs = torch.sigmoid(agent.eot_logit(encoded, g_K))
 
             tile_logits = _apply_legal_tile_mask(
                 agent.tile_logits(encoded).reshape(K, -1), obs_batch
@@ -594,9 +594,7 @@ def run_rollout_eval(
             tile_idx_K = tile_logits.argmax(dim=1)
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size
-            tile_features = encoded[batch_idx_K, :, x_K, y_K]
-            if agent.global_feat_dim > 0:
-                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+            tile_features = agent.tile_features(encoded, g_K, batch_idx_K, x_K, y_K)
 
             ent_K = agent.ent_head(tile_features).argmax(dim=1)
             dir_K = agent.dir_head(tile_features).argmax(dim=1)
@@ -976,6 +974,7 @@ def train_sft(args: SftArgs):
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
         dropout=args.dropout,
+        attn_dim=args.attn_dim,
     )
     envs.close()
 
@@ -1174,7 +1173,7 @@ def train_sft(args: SftArgs):
                 batch_item, batch_misc, batch_mask, batch_eot,
             ) = batch
 
-            encoded = agent.encoder(agent._encode_input(batch_obs))
+            encoded, g_B = agent.encode(batch_obs)
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
             # eot=1 samples carry sentinel placement targets. Normalise by
@@ -1184,7 +1183,7 @@ def train_sft(args: SftArgs):
             n_place = placement_mask.sum().clamp(min=1.0)
 
             # EOT head — BCE on every sample.
-            eot_logits = agent.eot_head(encoded).squeeze(-1)
+            eot_logits = agent.eot_logit(encoded, g_B)
             loss_eot = bce_eot(eot_logits, batch_eot)
 
             # Tile logits — use BCE with multi-label mask so ALL valid
@@ -1198,9 +1197,7 @@ def train_sft(args: SftArgs):
             x_B = batch_tile // agent.height
             y_B = batch_tile % agent.height
             batch_idx = torch.arange(B, device=device)
-            tile_features = encoded[batch_idx, :, x_B, y_B]
-            if agent.global_feat_dim > 0:
-                tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+            tile_features = agent.tile_features(encoded, g_B, batch_idx, x_B, y_B)
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
@@ -1371,12 +1368,12 @@ def train_sft(args: SftArgs):
                 batch_eot = va_eot[idx]
                 batch_kind = va_kind[idx]
 
-                encoded = agent.encoder(agent._encode_input(batch_obs))
+                encoded, g_B = agent.encode(batch_obs)
                 B = encoded.shape[0]
                 placement_mask = (batch_eot < 0.5).float()
                 is_place = placement_mask.bool()
 
-                eot_logits = agent.eot_head(encoded).squeeze(-1)
+                eot_logits = agent.eot_logit(encoded, g_B)
                 loss_eot_per = bce_loss_none(eot_logits, batch_eot)
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
@@ -1393,9 +1390,7 @@ def train_sft(args: SftArgs):
                 x_B = batch_tile // agent.height
                 y_B = batch_tile % agent.height
                 batch_idx = torch.arange(B, device=device)
-                tile_features = encoded[batch_idx, :, x_B, y_B]
-                if agent.global_feat_dim > 0:
-                    tile_features = torch.cat([tile_features, agent._global_feat(encoded)], dim=1)
+                tile_features = agent.tile_features(encoded, g_B, batch_idx, x_B, y_B)
 
                 ent_logits = agent.ent_head(tile_features)
                 dir_logits = agent.dir_head(tile_features)

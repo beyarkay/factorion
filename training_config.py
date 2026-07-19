@@ -43,8 +43,8 @@ class SharedArgs:
     # per-layer width as independent numeric slots (rather than one categorical
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 93
-    layer2: int = 69
+    layer1: int = 96
+    layer2: int = 96
     layer3: int = 96
     layer4: int = 0
     layer5: int = 0
@@ -53,6 +53,16 @@ class SharedArgs:
     layer8: int = 0
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
+    attn_dim: int = 128
+    """model dim of the self-attention stage over the encoded map (the 121 grid
+    cells become tokens, so full attention is cheap and every head gets
+    grid-global information in one hop). The SFT arch sweep (sn7fd8l8) found
+    this the dominant win; 128 was the best value. 0 disables the stage,
+    recovering a conv-only ablation baseline. Int not bool for W&B sweeps.
+    The head count, layer count, positional embedding, CoordConv channels and
+    pooled global vector are all fixed at their swept-winning values in
+    AgentCNN rather than exposed as knobs — the sweep showed they don't move
+    the metric or belong on in every top run."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
