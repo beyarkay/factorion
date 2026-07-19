@@ -317,8 +317,8 @@ class TestCategoricalInputEncoding:
         assert agent.item_embed.weight.grad is not None
 
 
-# The one remaining architecture dial is `attn_dim` (0 = conv-only ablation
-# baseline; positive = attention capacity). Each entry must construct, run the
+# The only architecture dial is `attn_dim` (0 = conv-only ablation baseline;
+# positive = attention capacity). Each entry must construct, run the
 # full PPO forward (sample + stored-action recompute), and round-trip through
 # a state dict into a fresh same-config model.
 ARCH_VARIANTS = [

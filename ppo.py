@@ -1175,7 +1175,6 @@ class _SelfAttnStack(nn.Module):
         while dim % heads != 0 and heads > 1:
             heads -= 1
         self.in_proj = layer_init(nn.Linear(channels, dim))
-        # Zero-init the out projection -> the residual is identity at init.
         self.out_proj = layer_init(nn.Linear(dim, channels), std=0.0, bias_const=0.0)
         self.pos_embed = (
             nn.Parameter(torch.zeros(1, num_tokens, dim)) if pos_embed else None
@@ -1203,16 +1202,9 @@ class _SelfAttnStack(nn.Module):
         return x_BCWH + refined_BCWH
 
 
-# The 60-run SFT arch sweep (sn7fd8l8) settled the shape of the global
-# pathway: the pooled mean+max global vector (dim 32) feeding the per-tile
-# heads, CoordConv position channels, and a learned positional embedding on
-# the attention tokens all belong on in every top run; the attention head
-# count and depth did not move the metric within the winning region. They are
-# fixed here rather than exposed as knobs. The one attention dial that mattered
-# — capacity — stays sweepable as `attn_dim` (0 disables the stage for an
-# ablation baseline). Everything the sweep found dead (SE gating, dilated
-# convs, broadcasting the global vector onto the map, a global-vector critic)
-# is gone.
+# Fixed at the values the SFT arch sweep (sn7fd8l8) settled on: attention head
+# count and depth didn't move the metric, so only attn_dim (capacity) stays a
+# sweepable knob.
 GLOBAL_FEAT_DIM = 32
 ATTN_HEADS = 8
 ATTN_LAYERS = 2
@@ -1251,11 +1243,9 @@ class AgentCNN(nn.Module):
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
-        # CoordConv (Liu et al. 2018): two constant channels carrying each
-        # cell's normalized (x, y). A conv stack is translation-equivariant,
-        # so without these it cannot express absolute position ("near the
-        # east edge") no matter how large its receptive field. Always on — the
-        # sweep pinned it and it dominated every top run.
+        # CoordConv (Liu et al. 2018): two constant normalized-(x, y) channels
+        # so the translation-equivariant conv stack can express absolute
+        # position (which no receptive field alone can). Always on.
         self.coord_grid: torch.Tensor
         xs = torch.linspace(-1.0, 1.0, self.width).view(self.width, 1).expand(self.width, self.height)
         ys = torch.linspace(-1.0, 1.0, self.height).view(1, self.height).expand(self.width, self.height)
@@ -1294,11 +1284,9 @@ class AgentCNN(nn.Module):
         self.kernel_size = kernel_size
         last_chan = layers[-1]  # encoder output channels — feeds every head
 
-        # Self-attention stage over the encoded map: shape-preserving, so it
-        # slots between the conv encoder and every head (see encode()). This is
-        # the win the arch sweep found — full grid-global mixing over the 121
-        # cells. attn_dim is the one sweepable attention dial (capacity);
-        # attn_dim=0 disables the stage for a conv-only ablation baseline.
+        # Self-attention over the encoded map (shape-preserving; see encode()):
+        # the grid-global mixing the arch sweep found decisive. attn_dim=0
+        # disables it for a conv-only ablation baseline.
         self.attn_dim = attn_dim
         if attn_dim > 0:
             self.attn = _SelfAttnStack(
@@ -1315,12 +1303,9 @@ class AgentCNN(nn.Module):
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
 
-        # The per-tile heads read a single feature column encoded[:, :, x, y],
-        # so their receptive field is capped at the conv+attention stack.
-        # Concatenate a pooled summary of the whole encoded map (mean+max over
-        # space, projected to GLOBAL_FEAT_DIM) onto the tile features so every
-        # head also sees a grid-global summary (the #290 pathway; on in every
-        # top sweep run).
+        # A pooled mean+max summary of the whole map, concatenated onto each
+        # per-tile feature column so the windowed heads also see grid-global
+        # context (the #290 pathway).
         self.global_feat_dim = GLOBAL_FEAT_DIM
         self.global_proj = nn.Sequential(
             layer_init(nn.Linear(2 * last_chan, GLOBAL_FEAT_DIM)),
@@ -1399,10 +1384,8 @@ class AgentCNN(nn.Module):
         max_BC = encoded_BCWH.amax(dim=(2, 3))
         return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
 
-    # Every consumer of the network — PPO, the SFT train/val/rollout paths,
-    # the factory-builder UI, the mod inference server — goes through these
-    # four helpers rather than composing encoder/global/head calls by hand,
-    # so an architecture variant only has to change the helpers.
+    # All consumers (PPO, SFT, the builder UI, the mod server) go through these
+    # four helpers, so an architecture change lands in one place.
 
     def encode(self, x_BCWH):
         """Encoder forward + global-context vector. Returns (map, g) where
@@ -1448,7 +1431,7 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, chan3, W, H), (B, G)|None
+        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)
         value_B = self.critic_value(encoded_BCWH, g_BG)
 
         B = encoded_BCWH.shape[0]
