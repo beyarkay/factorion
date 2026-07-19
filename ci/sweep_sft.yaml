@@ -1,31 +1,32 @@
-# ci/sweep_sft.yaml — SFT pre-training hyperparameter sweep
+# ci/sweep_sft.yaml — SFT sweep over the self-attention architecture.
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Compute-budget knobs that are monotonic-ish in val/acc (num_samples,
-# epochs, layer{1,2,3}) are pinned to the smoketest production config so
-# Bayes can't trivially saturate them and every run is directly
-# comparable to the prod checkpoint. The sweep instead optimises knobs
-# with a genuine interior optimum:
-#   - cosine LR schedule (issue #101): lr, warmup_frac, min_lr_ratio
-#   - regularisation: weight_decay, max_grad_norm
-#   - per-head loss weights (5 placement heads + EOT): lw_*
-#   - data-shape tradeoffs: batch_size, max_level, tile_head_std
+# The 60-run sweep sn7fd8l8 settled the architecture: a self-attention stage
+# over the 121-cell encoded map (attn_dim=128, fixed 8 heads / 2 layers /
+# learned positional embedding), CoordConv position channels, and the pooled
+# mean+max global vector — best val/thput_eot 0.85 vs the ~0.51 conv-only
+# baseline. kernel_size=5 never produced a good run; SE gating, dilated convs,
+# global-vector broadcast and a global-vector critic were all dead and have
+# been removed from the model. What is left to sweep is the handful of dials
+# that actually moved the metric: attention capacity, conv width, kernel size,
+# and lr.
 
 method: bayes
-run_cap: 30
+run_cap: 40
 metric:
-  name: "val/acc"
+  # val/thput_eot (throughput at the moment the EOT head fires) is the
+  # deliverable and the checkpoint-selection metric; it rank-correlates only
+  # ~0.38 with val/thput.
+  name: "val/thput_eot"
   goal: maximize
 
 parameters:
-  # Pinned because val/acc is monotonic in these: more data, more epochs,
-  # and a lower max_level all make the val task trivially easier and
-  # Bayes would just saturate them. Encoder widths are NOT pinned —
-  # bigger encoders can overfit a fixed dataset, so there's a real
-  # interior optimum.
+  # Pinned: monotonic in the metric (more data / epochs / lower max_level just
+  # make the task easier), so Bayes would only saturate them. Pinning
+  # num_samples also keeps every run comparable to the prod checkpoint.
   size:
     value: 11
   num_samples:
@@ -35,76 +36,27 @@ parameters:
   max_level:
     value: 0  # auto = 2*size = 22 entities blanked
 
-  # ── LR schedule (issue #101) ─────────────────────────────────────
+  # ── Attention capacity — the dominant dial (128 > 64 >> 0) ────────
+  # 0 keeps the conv-only baseline in the running set as an ablation.
+  attn_dim:
+    values: [0, 64, 128]
+
+  # ── lr (moves with the arch; the winning region sat ~1.3e-3..2.6e-3) ──
   lr:
     distribution: log_uniform_values
-    min: 1e-4
+    min: 5e-4
     max: 3e-3
-  warmup_frac:
-    values: [0.0, 0.02, 0.05, 0.1]
-  min_lr_ratio:
-    distribution: log_uniform_values
-    min: 1e-3
-    max: 1e-1
 
-  # ── Regularisation ────────────────────────────────────────────────
-  weight_decay:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 1e-2
-  max_grad_norm:
-    distribution: uniform
-    min: 0.5
-    max: 3.0
-
-  # ── Data-shape tradeoffs ──────────────────────────────────────────
-  batch_size:
-    values: [256, 512, 1024]
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  # ── Encoder capacity ──────────────────────────────────────────────
-  # Bigger encoders can overfit the fixed SFT dataset, so there's a
-  # genuine interior optimum.
+  # ── Conv trunk (kept modest; the point is attention substitutes for
+  # giant kernels — kernel 5 never won) ────────────────────────────
+  kernel_size:
+    values: [3, 5]
   layer1:
-    values: [32, 48, 64]
+    values: [64, 96]
   layer2:
-    values: [48, 64]
+    values: [64, 96]
   layer3:
-    values: [48, 64]
-
-  # ── Per-head loss weights ─────────────────────────────────────────
-  # With 6 losses summed, equal weighting (= 1.0 each) implicitly
-  # assumes each head's gradient signal is equally informative — almost
-  # certainly wrong now that recipe/item and EOT heads exist alongside
-  # entity/direction. Log-uniform around 1.0 lets Bayes search find a
-  # useful re-balancing without blowing up scale.
-  lw_tile:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_ent:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_dir:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_item:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_misc:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_eot:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
+    values: [64, 96]
 
 program: sft.py
 
