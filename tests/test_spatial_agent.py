@@ -277,16 +277,16 @@ class TestCategoricalInputEncoding:
 
     def test_encoded_shape(self, agent):
         """_encode_input expands len(Channel) into the conv's input channels:
-        two embeddings + two one-hots + footprint."""
+        two embeddings + two one-hots + footprint + two coordinate planes."""
         d = agent.cat_embed_dim
-        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1
+        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1 + 2
         enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert enc.shape == (2, agent.input_channels, 5, 5)
 
     def test_direction_channel_is_one_hot(self, agent):
         """A direction id lands as a one-hot in the direction slice, not a
         scalar magnitude."""
-        obs = torch.zeros(1, NUM_CHANNELS, 3, 3)
+        obs = torch.zeros(1, NUM_CHANNELS, 5, 5)
         obs[0, Channel.DIRECTION.value, 1, 1] = 2.0
         d = agent.cat_embed_dim
         dir_slice = agent._encode_input(obs)[0, 2 * d : 2 * d + agent.num_directions, 1, 1]
@@ -296,8 +296,8 @@ class TestCategoricalInputEncoding:
     def test_distinct_entities_get_independent_encodings(self, agent):
         """The whole point: two different entity ids map to independent
         embeddings, not scalar multiples as the old float channel implied."""
-        obs1 = torch.zeros(1, NUM_CHANNELS, 3, 3)
-        obs2 = torch.zeros(1, NUM_CHANNELS, 3, 3)
+        obs1 = torch.zeros(1, NUM_CHANNELS, 5, 5)
+        obs2 = torch.zeros(1, NUM_CHANNELS, 5, 5)
         obs1[0, Channel.ENTITIES.value, 1, 1] = 1.0
         obs2[0, Channel.ENTITIES.value, 1, 1] = 3.0
         d = agent.cat_embed_dim
@@ -315,3 +315,115 @@ class TestCategoricalInputEncoding:
         (logp_B.mean() + value_B.mean()).backward()
         assert agent.ent_embed.weight.grad is not None
         assert agent.item_embed.weight.grad is not None
+
+
+# The one remaining architecture dial is `attn_dim` (0 = conv-only ablation
+# baseline; positive = attention capacity). Each entry must construct, run the
+# full PPO forward (sample + stored-action recompute), and round-trip through
+# a state dict into a fresh same-config model.
+ARCH_VARIANTS = [
+    {},              # default: attention on at the ctor default dim
+    {"attn_dim": 0},   # conv-only ablation baseline
+    {"attn_dim": 16},
+    {"attn_dim": 32},
+]
+
+
+class TestArchVariants:
+    @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
+    def test_forward_and_stored_action_recompute(self, envs, kwargs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        obs = torch.zeros(4, NUM_CHANNELS, 5, 5)
+        action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
+        assert logp_B.shape == entropy_B.shape == value_B.shape == (4,)
+        assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
+        # PPO-update path: recompute log-probs for the sampled action.
+        stored = torch.cat(
+            [
+                action_out["xy"],
+                action_out["entity"][:, None],
+                action_out["direction"][:, None],
+                action_out["item"][:, None],
+                action_out["misc"][:, None],
+                action_out["eot"][:, None].long(),
+            ],
+            dim=1,
+        )
+        _, logp2_B, _, _ = agent.get_action_and_value(obs, action=stored)
+        torch.testing.assert_close(logp_B, logp2_B)
+
+    @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
+    def test_state_dict_roundtrip(self, envs, kwargs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        clone = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        clone.load_state_dict(agent.state_dict())
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        torch.manual_seed(0)
+        _, logp_a, _, val_a = agent.get_action_and_value(obs)
+        torch.manual_seed(0)
+        _, logp_b, _, val_b = clone.get_action_and_value(obs)
+        torch.testing.assert_close(logp_a, logp_b)
+        torch.testing.assert_close(val_a, val_b)
+
+    def test_coord_channels_always_present(self, envs):
+        """CoordConv is fixed on: two extra normalized x/y planes are always
+        appended to the encoder input."""
+        agent = AgentCNN(envs, layers=(16, 16, 16))
+        enc = agent._encode_input(torch.zeros(1, NUM_CHANNELS, 5, 5))
+        assert enc.shape == (1, agent.input_channels, 5, 5)
+        x_plane, y_plane = enc[0, -2], enc[0, -1]
+        assert x_plane[0, 0].item() == pytest.approx(-1.0)
+        assert x_plane[4, 0].item() == pytest.approx(1.0)
+        assert y_plane[0, 0].item() == pytest.approx(-1.0)
+        assert y_plane[0, 4].item() == pytest.approx(1.0)
+        # x varies along W only, y along H only.
+        torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
+        torch.testing.assert_close(y_plane[0, :], y_plane[4, :])
+
+    def test_critic_and_eot_heads_flatten_the_map(self, envs):
+        """Both value/eot heads are Flatten -> Linear, and `head[-1]` reaches
+        the Linear (ppo.py's --start-from critic re-init depends on it)."""
+        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
+        assert isinstance(agent.critic_head[-1], torch.nn.Linear)
+        assert isinstance(agent.eot_head[-1], torch.nn.Linear)
+        assert agent.critic_head[-1].in_features == 16 * 5 * 5
+        _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert value_B.shape == (2,)
+
+    def test_attn_on_by_default_off_when_zero(self, envs):
+        from ppo import ATTN_HEADS, ATTN_LAYERS
+
+        on = AgentCNN(envs, layers=(16, 16, 16))
+        assert on.attn_dim > 0 and hasattr(on, "attn")
+        # Head count and depth are fixed at the swept-winning values.
+        assert len(on.attn.transformer.layers) == ATTN_LAYERS
+        assert on.attn.transformer.layers[0].self_attn.num_heads == ATTN_HEADS
+        # Positional embedding is fixed on (one learned vector per grid cell).
+        assert on.attn.pos_embed is not None
+        assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)
+
+        off = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
+        assert off.attn_dim == 0 and not hasattr(off, "attn")
+
+    def test_attn_is_identity_at_init(self, envs):
+        """The out projection is zero-initialised, so the residual attention
+        stage is exactly identity at init — the trunk starts as the plain
+        conv encoder and only leans on attention as training moves it."""
+        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=16)
+        x = torch.randn(3, 16, 5, 5)
+        torch.testing.assert_close(agent.attn(x), x)
+
+    def test_attn_preserves_channels_and_grid_size(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=32)
+        enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        # Attention is shape-preserving, so the per-tile heads still index a
+        # last_chan-wide column at every one of the 5x5 cells.
+        assert enc.shape == (2, 16, 5, 5)
+        assert agent.tile_logits.in_channels == 16
+
+    def test_attn_heads_snap_to_divisor(self, envs):
+        """A small attn_dim not divisible by the fixed head count must still
+        construct — heads snap down to the largest divisor."""
+        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=4)
+        num_heads = agent.attn.transformer.layers[0].self_attn.num_heads
+        assert 4 % num_heads == 0 and num_heads == 4
