@@ -29,15 +29,10 @@ from sft import (
     StreamingDemoDataset,
     _apply_legal_tile_mask,
     _artifact_name,
-    _dir_distance_diagnostics,
-    _dir_mismatch_by_distance,
-    _direction_diagnostics,
     _humanize_count,
     _humanize_lr,
     _iter_demo_pairs,
     _materialise,
-    _point_biserial,
-    _source_sink_distance,
     _steps_per_epoch,
     _solved_assembler_recipes,
     build_lr_schedule,
@@ -1649,86 +1644,6 @@ class TestNotNoneHeadAccuracy:
         train_sft(args)
 
         assert logged["val/not_none_eot_acc"] == logged["val/eot_pos_recall"]
-
-
-class TestDirectionConfusion:
-    """Direction confusion matrix diagnostic. Direction values:
-    NONE=0, NORTH=1, EAST=2, SOUTH=3, WEST=4."""
-
-    def test_diagnostics_payload(self):
-        N, S = 1, 3
-        payload = _direction_diagnostics([N, N, S], [N, S, S])
-        # The confusion-matrix chart object must be present for wandb to plot.
-        assert payload["val/dir_confusion"] is not None
-
-    def test_diagnostics_empty_is_noop(self):
-        assert _direction_diagnostics([], []) == {}
-
-
-class TestDirMismatchVsDistance:
-    """source<->sink distance vs direction mismatch. "Mismatch" = argmax(dir)
-    disagrees with the demo's direction (a valid alternative routing also
-    counts). Distance is read off the obs ENTITIES channel (source/sink ids
-    come from the registry, never blanked)."""
-
-    SOURCE, SINK = str2ent("source").value, str2ent("sink").value
-
-    def _obs_with(self, src_xy, sink_xy, size=6):
-        obs = torch.zeros(1, len(Channel), size, size)
-        ent = Channel.ENTITIES.value
-        if src_xy is not None:
-            obs[0, ent, src_xy[0], src_xy[1]] = self.SOURCE
-        if sink_xy is not None:
-            obs[0, ent, sink_xy[0], sink_xy[1]] = self.SINK
-        return obs
-
-    def test_distance_is_manhattan_between_endpoints(self):
-        obs = self._obs_with((1, 1), (4, 3))  # |1-4| + |1-3| = 5
-        assert _source_sink_distance(obs)[0].item() == pytest.approx(5.0)
-
-    def test_distance_centroid_for_multiple_sinks(self):
-        # one source at (0,0), two sinks at (4,0) and (0,4): sink centroid
-        # (2,2) -> Manhattan |0-2| + |0-2| = 4.
-        obs = torch.zeros(1, len(Channel), 6, 6)
-        ent = Channel.ENTITIES.value
-        obs[0, ent, 0, 0] = self.SOURCE
-        obs[0, ent, 4, 0] = self.SINK
-        obs[0, ent, 0, 4] = self.SINK
-        assert _source_sink_distance(obs)[0].item() == pytest.approx(4.0)
-
-    def test_distance_minus_one_when_endpoint_missing(self):
-        assert _source_sink_distance(self._obs_with((1, 1), None))[0].item() == -1.0
-
-    def test_mismatch_by_distance_buckets(self):
-        # dist 1 -> [0,0] (0%); dist 2 -> [1,1] (100%); dist 3 -> [0,1] (50%)
-        xs, rates, counts = _dir_mismatch_by_distance(
-            [1, 1, 2, 2, 3, 3], [0, 0, 1, 1, 0, 1]
-        )
-        assert xs == [1, 2, 3]
-        assert rates == pytest.approx([0.0, 1.0, 0.5])
-        assert counts == [2, 2, 2]
-
-    def test_point_biserial_sign_and_magnitude(self):
-        # mismatches rise with distance -> strong positive correlation.
-        assert _point_biserial([1, 2, 3, 4], [0, 0, 1, 1]) == pytest.approx(
-            0.894, abs=0.01
-        )
-        # mirror-image -> strong negative.
-        assert _point_biserial([1, 2, 3, 4], [1, 1, 0, 0]) == pytest.approx(
-            -0.894, abs=0.01
-        )
-        # no mismatch variance -> 0 (degenerate, not NaN).
-        assert _point_biserial([1, 2, 3, 4], [0, 0, 0, 0]) == 0.0
-
-    def test_distance_diagnostics_payload(self):
-        payload = _dir_distance_diagnostics([1, 2, 3, 4], [0, 0, 1, 1])
-        assert payload["val/dir/mismatch_distance_corr"] == pytest.approx(
-            0.894, abs=0.01
-        )
-        assert payload["val/dir_mismatch_vs_distance"] is not None
-
-    def test_distance_diagnostics_empty_is_noop(self):
-        assert _dir_distance_diagnostics([], []) == {}
 
 
 class TestArtifactNameHelpers:
