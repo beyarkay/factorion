@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::entities::{entity_tiles, is_curved_belt, EntityEnum, FactoryEntity};
+use crate::entities::{
+    entity_tiles, is_curved_belt, ElectricMiningDrill, EntityEnum, FactoryEntity,
+};
 use crate::types::{Direction, Item, Lane, Misc, NodeId};
 use crate::world::World;
 use strum::IntoEnumIterator;
@@ -163,6 +165,11 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                         m.insert(i, f64::INFINITY);
                     }
                     m
+                } else if entity_kind == Item::ElectricMiningDrill {
+                    // A drill's output depends on the ore terrain under its
+                    // mining area, which transform_flow can't see — so it is
+                    // pre-seeded here, exactly like a Source (but finite).
+                    ElectricMiningDrill::mining_output(world, (x, y))
                 } else {
                     HashMap::new()
                 };

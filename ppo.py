@@ -73,6 +73,7 @@ _CH_DIR = Channel.DIRECTION.value
 _CH_ITEMS = Channel.ITEMS.value
 _CH_MISC = Channel.MISC.value
 _CH_FOOTPRINT = Channel.FOOTPRINT.value
+_CH_ORES = Channel.ORES.value
 # Footprint is two-valued (UNAVAILABLE / AVAILABLE) and exhaustive, so
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
@@ -1192,22 +1193,24 @@ class AgentCNN(nn.Module):
         self.num_misc = len(Misc)
 
         # --- Input encoding for the nominal (categorical) channels ---
-        # The observation's ENTITIES/DIRECTION/ITEMS/MISC channels hold raw
-        # category ids as floats. Feeding those straight into the conv treats
-        # them as ordinal magnitudes (belt=1, assembler=3, splitter=5), which
-        # is meaningless — the ids are nominal labels. Instead we encode each
-        # channel categorically before the conv: a learned embedding for the
-        # two wide vocabularies (entity/item, ~68 each) and a one-hot for the
-        # two narrow ones (direction=5, misc=3). FOOTPRINT is genuinely binary,
-        # so it stays a scalar channel. The embedding vocab covers the *full*
-        # catalog (len(entities)/len(items)) — the input can carry the env-only
-        # source/sink ids even though the entity head never emits them.
+        # The observation's ENTITIES/DIRECTION/ITEMS/MISC/ORES channels hold
+        # raw category ids as floats. Feeding those straight into the conv
+        # treats them as ordinal magnitudes (belt=1, assembler=3, splitter=5),
+        # which is meaningless — the ids are nominal labels. Instead we encode
+        # each channel categorically before the conv: a learned embedding for
+        # the wide vocabularies (entity/item/ore, all drawn from the Item
+        # catalog; ORES shares the item embedding since ore values ARE Item
+        # ids) and a one-hot for the two narrow ones (direction=5, misc=3).
+        # FOOTPRINT is genuinely binary, so it stays a scalar channel. The
+        # embedding vocab covers the *full* catalog (len(entities)/len(items))
+        # — the input can carry the env-only source/sink ids even though the
+        # entity head never emits them.
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
-        # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
+        # Encoder input channels after categorical expansion: three embeddings
+        # (entity, item, ore) + two one-hots + the scalar footprint.
+        self.input_channels = 3 * cat_embed_dim + self.num_directions + self.num_misc + 1
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1299,8 +1302,8 @@ class AgentCNN(nn.Module):
     def _encode_input(self, x_BCWH):
         """Expand the raw (B, len(Channel), W, H) observation into the conv's
         input by encoding the nominal channels categorically: learned
-        embeddings for entity/item, one-hots for direction/misc, and the raw
-        footprint scalar. Returns (B, self.input_channels, W, H).
+        embeddings for entity/item/ore, one-hots for direction/misc, and the
+        raw footprint scalar. Returns (B, self.input_channels, W, H).
 
         The channels carry category ids as floats; we cast to long to index.
         The clamp is a defensive no-op on valid observations (ids are bounded
@@ -1309,18 +1312,21 @@ class AgentCNN(nn.Module):
         """
         ent_idx = x_BCWH[:, _CH_ENT].long().clamp_(0, self.ent_embed.num_embeddings - 1)
         item_idx = x_BCWH[:, _CH_ITEMS].long().clamp_(0, self.item_embed.num_embeddings - 1)
+        ore_idx = x_BCWH[:, _CH_ORES].long().clamp_(0, self.item_embed.num_embeddings - 1)
         dir_idx = x_BCWH[:, _CH_DIR].long().clamp_(0, self.num_directions - 1)
         misc_idx = x_BCWH[:, _CH_MISC].long().clamp_(0, self.num_misc - 1)
 
-        # Embeddings: (B, W, H, d) -> (B, d, W, H)
+        # Embeddings: (B, W, H, d) -> (B, d, W, H). Ore values are Item ids,
+        # so the ORES channel reuses item_embed rather than a new vocabulary.
         ent_e = self.ent_embed(ent_idx).permute(0, 3, 1, 2)
         item_e = self.item_embed(item_idx).permute(0, 3, 1, 2)
+        ore_e = self.item_embed(ore_idx).permute(0, 3, 1, 2)
         # One-hots: (B, W, H, n) -> (B, n, W, H)
         dir_oh = F.one_hot(dir_idx, self.num_directions).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
 
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+        return torch.cat([ent_e, item_e, ore_e, dir_oh, misc_oh, footprint], dim=1)
 
     def _global_feat(self, encoded_BCWH):
         """Pool the whole encoded map into a per-batch global-context vector

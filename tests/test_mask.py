@@ -49,11 +49,11 @@ class TestFootprintChannel:
         assert hasattr(Channel, "FOOTPRINT")
         assert Channel.FOOTPRINT.value == 4
 
-    def test_world_has_five_channels(self):
-        """new_world creates tensors with 5 channels."""
+    def test_world_has_six_channels(self):
+        """new_world creates tensors with 6 channels."""
         world = make_world(5)
         assert world.shape[2] == len(Channel)
-        assert world.shape[2] == 5
+        assert world.shape[2] == 6
 
     def test_default_lesson_footprint_is_all_available(self, env):
         """MOVE_ONE_ITEM lessons must NOT touch FOOTPRINT — every cell
@@ -75,7 +75,7 @@ class TestFootprintChannel:
         )
 
     def test_observation_space_shape(self, env):
-        """Observation space should have 5 channels."""
+        """Observation space should have len(Channel) channels."""
         assert env.observation_space.shape[0] == len(Channel)
 
 

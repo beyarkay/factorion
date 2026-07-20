@@ -82,8 +82,16 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         return (Vec::new(), 0);
     }
 
+    // Flow roots: sources and mining drills — both carry a pre-seeded
+    // output (infinite for a source, the finite mined rate for a drill)
+    // and no meaningful predecessors.
     let sources: Vec<usize> = (0..graph.node_count())
-        .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
+        .filter(|&i| {
+            matches!(
+                graph.nodes[i].entity_kind,
+                Item::Source | Item::ElectricMiningDrill
+            )
+        })
         .collect();
     let sinks: Vec<usize> = (0..graph.node_count())
         .filter(|&i| graph.nodes[i].entity_kind == Item::Sink)

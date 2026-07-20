@@ -58,7 +58,7 @@ use world::World;
 /// Calculate the throughput score of a factory represented as a 3D tensor.
 ///
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
-///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
+///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint, 5: ores
 ///
 /// Returns: (score, num_unreachable).
 /// The score is the power mean (see [`factory_score`]) of each sink's
@@ -288,9 +288,11 @@ fn build_factory(
 /// `simulate_throughput` takes. Returns the multi-line grid string (geometry
 /// only; item/recipe bindings live in the tensor, not the grid), where each
 /// tile is two characters — an entity char (`b`=belt, `i`=inserter, `a`=
-/// assembler, `Y`=splitter, `d`/`u`=underground down/up, `S`=source, `K`=sink)
-/// plus a direction marker (`^>v<`), or `..` for an empty tile. Multi-tile
-/// entities draw their body across the footprint with a blank interior.
+/// assembler, `Y`=splitter, `m`=mining drill, `d`/`u`=underground down/up,
+/// `S`=source, `K`=sink) plus a direction marker (`^>v<`), or `..` for an
+/// empty tile. Multi-tile entities draw their body across the footprint with
+/// a blank interior; a directional square entity (the drill) shows its facing
+/// as one marker on the fore-edge-center body tile.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
 fn render_factory(world: PyReadonlyArray3<i64>) -> PyResult<String> {

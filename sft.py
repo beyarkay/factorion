@@ -593,6 +593,9 @@ def run_rollout_eval(
                 agent.tile_logits(encoded).reshape(K, -1), obs_batch
             )
             tile_idx_K = tile_logits.argmax(dim=1)
+            # Slots whose board has no legal tile at all: every masked logit
+            # is -inf, so the argmax above is an arbitrary occupied tile.
+            no_legal_K = torch.isneginf(tile_logits).all(dim=1)
             x_K = tile_idx_K // args.size
             y_K = tile_idx_K % args.size
             tile_features = encoded[batch_idx_K, :, x_K, y_K]
@@ -628,26 +631,33 @@ def run_rollout_eval(
                     per_kind_eot_pos_total[k.name] += 1
                     per_kind_eot_pos_correct[k.name] += int(pred_stop)
 
-                action = {
-                    "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
-                    "entity": int(ent_K[i]),
-                    "direction": int(dir_K[i]),
-                    "item": int(item_K[i]),
-                    "misc": int(misc_K[i]),
-                }
-                next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                if bool(no_legal_K[i]):
+                    # No legal placement remains on this board, so every
+                    # further step is a rejected no-op until max_steps —
+                    # finish the slot now with its current throughput.
+                    terminated, truncated = True, False
+                else:
+                    action = {
+                        "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                        "entity": int(ent_K[i]),
+                        "direction": int(dir_K[i]),
+                        "item": int(item_K[i]),
+                        "misc": int(misc_K[i]),
+                    }
+                    next_obs, _r, terminated, truncated, info = envs[i].step(action)
+                    current[i] = (s, k, float(info.get("thput_normed", 0.0)))
 
-                # Recipe-pick check: the agent tried to place an assembler in a
-                # factory that has one. Count it iff the assembler actually
-                # landed at the anchor (invalid placements are env no-ops), then
-                # score its recipe against the solved factory's recipes.
-                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
-                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
-                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
-                        per_kind_asm_total[k.name] += 1
-                        if action["item"] in asm_recipes[i]:
-                            per_kind_asm_correct[k.name] += 1
+                    # Recipe-pick check: the agent tried to place an assembler
+                    # in a factory that has one. Count it iff the assembler
+                    # actually landed at the anchor (invalid placements are env
+                    # no-ops), then score its recipe against the solved
+                    # factory's recipes.
+                    if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                        ax, ay = int(action["xy"][0]), int(action["xy"][1])
+                        if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
+                            per_kind_asm_total[k.name] += 1
+                            if action["item"] in asm_recipes[i]:
+                                per_kind_asm_correct[k.name] += 1
 
                 if not (terminated or truncated):
                     obs_batch[i] = torch.as_tensor(

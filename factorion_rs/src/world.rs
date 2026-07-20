@@ -5,7 +5,7 @@ use crate::types::{Channel, Direction, Item, Misc, NUM_CHANNELS};
 /// The world has dimensions W × H × C where:
 /// - W is width (x axis)
 /// - H is height (y axis)
-/// - C is channels (entity, direction, item, misc, footprint)
+/// - C is channels (entity, direction, item, misc, footprint, ores)
 ///
 /// Data is stored as a flat Vec indexed as [x][y][c].
 #[derive(Debug, Clone)]
@@ -195,6 +195,12 @@ impl World {
     /// Get the misc flags at (x, y).
     pub fn misc_at(&self, x: usize, y: usize) -> Misc {
         Misc::from_i64(self.get(x, y, Channel::Misc))
+    }
+
+    /// Get the ore terrain at (x, y). Returns `None` for cells with no ore.
+    #[allow(dead_code)]
+    pub fn ore_at(&self, x: usize, y: usize) -> Option<Item> {
+        Item::from_i64(self.get(x, y, Channel::Ores))
     }
 
     /// Check if coordinates are within bounds.
