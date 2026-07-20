@@ -17,7 +17,7 @@ assert pr:val/thput > main:val/thput       # optional pass/fail conditions
 assert pr:val/acc >= 0.5                   #   → commit status check
 assert pr:sps == main:sps +- 100           # ~equal within a tolerance
 /ci compare ppo --start-from j0s5y2mc      # PPO compare, same flow
-/ci sweep sft [--pods 2] [--agents-per-pod 5]   # W&B sweep (ci/sweep_sft.yaml)
+/ci sweep sft [--pods 2] [--agents-per-pod 1]   # W&B sweep (ci/sweep_sft.yaml)
 /ci sweep ppo                              # ... from ci/sweep_ppo.yaml
 /ci pods                                   # list CI pods + cost + deadline
 /ci kill --all                             # terminate CI pods (or: /ci kill <pod_id>)

@@ -11,6 +11,7 @@ import time
 from typing import Optional
 
 from ci.config import (
+    AGENTS_PER_POD_DEFAULT,
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
     GPU_FALLBACKS,
@@ -75,7 +76,7 @@ def sweep(
     /,
     ref: str = "main",
     pods: int = 1,
-    agents_per_pod: int = 5,
+    agents_per_pod: int = AGENTS_PER_POD_DEFAULT,
     gpu_type: str = DEFAULT_GPU,
     dry_run: bool = False,
 ) -> None:

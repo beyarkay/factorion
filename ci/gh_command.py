@@ -22,6 +22,7 @@ from typing import Optional
 
 from ci import github_api
 from ci.config import (
+    AGENTS_PER_POD_DEFAULT,
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
     GPU_FALLBACKS,
@@ -91,7 +92,7 @@ metric or unparseable line fails the check.)
 ### Sweeps
 
 - `/ci sweep sft` or `/ci sweep ppo` — W&B sweep from this commit's
-  `ci/sweep_<algo>.yaml`. Options: `--pods 1`, `--agents-per-pod 5`
+  `ci/sweep_<algo>.yaml`. Options: `--pods 1`, `--agents-per-pod 1`
 
 ### Pod management
 
@@ -569,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("sweep", add_help=False)
     sp.add_argument("algo", choices=("sft", "ppo"))
     sp.add_argument("--pods", type=int, default=1)
-    sp.add_argument("--agents-per-pod", type=int, default=5)
+    sp.add_argument("--agents-per-pod", type=int, default=AGENTS_PER_POD_DEFAULT)
     common(sp)
 
     sub.add_parser("pods", add_help=False)
