@@ -22,10 +22,31 @@ permissions:
   statuses: write
 
 jobs:
+  # `/ci help` is just static text — skip checkout/python/uv entirely and post
+  # ci/HELP.md straight from the GitHub API so it lands in seconds, not minutes.
+  help:
+    if: >-
+      github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/ci help')
+      && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                  github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the cheatsheet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="$(gh api "repos/${{ github.repository }}/contents/ci/HELP.md" \
+            --jq '.content' | base64 -d)"
+          gh api --method POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            -f body="$BODY"
+
   ci-command:
     if: >-
       github.event.issue.pull_request
       && startsWith(github.event.comment.body, '/ci')
+      && !startsWith(github.event.comment.body, '/ci help')
       && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
                   github.event.comment.author_association)
     runs-on: ubuntu-latest
