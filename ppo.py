@@ -1139,12 +1139,9 @@ def cuda_env_info() -> dict[str, str]:
         return info
     info["env/gpu_name"] = torch.cuda.get_device_name(0)
     info["env/gpu_capability"] = "%d.%d" % torch.cuda.get_device_capability(0)
-    # Private, but the only torch API that reports the *host driver's* CUDA
-    # version — the number RunPod filters on, and the one that has to be >= the
-    # wheel's build for the run to start at all.
-    raw = getattr(torch._C, "_cuda_getDriverVersion", lambda: 0)()
-    if raw:
-        info["env/cuda_driver"] = f"{raw // 1000}.{raw % 1000 // 10}"
+    # The host driver's CUDA version — the number RunPod filters on — is not
+    # exposed by any torch API; read it off the run's W&B metadata
+    # (`cudaVersion`), which wandb populates from NVML.
     return info
 
 
