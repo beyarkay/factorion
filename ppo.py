@@ -1152,20 +1152,10 @@ def _categorical_entropy(logp_all_BN):
 
 
 class _SelfAttnStack(nn.Module):
-    """Full self-attention over the encoded map. The conv trunk's per-tile
-    features only see a local window (RF = 1 + n_layers*(kernel-1)); recipe
-    choice, "which way is the sink", and UG spans are grid-global questions
-    that window can't answer. With only 11x11 = 121 cells, full attention is
-    cheap and lets every cell exchange information with every other in one hop.
-
-    Each cell is a token: project the `channels`-wide feature column to
-    `dim`, run `layers` transformer-encoder blocks (multi-head attention +
-    FFN, pre-norm), project back to `channels`, and add as a residual so the
-    stage refines rather than replaces the conv features. The out-projection
-    is zero-initialised, so the stage is exactly identity at init and the
-    trunk starts as the plain conv encoder, learning to lean on attention
-    only as it helps. Shape in == shape out, so the grid-sized-feature-map
-    invariant the tile/per-tile heads rely on is preserved."""
+    """Self-attention over the 121-cell encoded map so every cell sees every
+    other in one hop. Each cell's feature column is a token; the residual
+    out-projection is zero-init, so the stage is identity at init and
+    shape-preserving (grid-sized in == grid-sized out)."""
 
     def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed):
         super().__init__()
@@ -1202,16 +1192,8 @@ class _SelfAttnStack(nn.Module):
         return x_BCWH + refined_BCWH
 
 
-# Fixed at the values the SFT arch sweep (sn7fd8l8) settled on: attention head
-# count and depth didn't move the metric, so only attn_dim (capacity) stays a
-# sweepable knob.
-GLOBAL_FEAT_DIM = 32
-ATTN_HEADS = 8
-ATTN_LAYERS = 2
-
-
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=128):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=128, attn_heads=8, attn_layers=2, attn_pos_embed=1, global_feat_dim=32):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1292,10 +1274,10 @@ class AgentCNN(nn.Module):
             self.attn = _SelfAttnStack(
                 channels=last_chan,
                 dim=attn_dim,
-                heads=ATTN_HEADS,
-                layers=ATTN_LAYERS,
+                heads=attn_heads,
+                layers=attn_layers,
                 num_tokens=self.width * self.height,
-                pos_embed=True,
+                pos_embed=bool(attn_pos_embed),
             )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(
@@ -1305,24 +1287,25 @@ class AgentCNN(nn.Module):
 
         # A pooled mean+max summary of the whole map, concatenated onto each
         # per-tile feature column so the windowed heads also see grid-global
-        # context (the #290 pathway).
-        self.global_feat_dim = GLOBAL_FEAT_DIM
-        self.global_proj = nn.Sequential(
-            layer_init(nn.Linear(2 * last_chan, GLOBAL_FEAT_DIM)),
-            nn.ReLU(),
-        )
-        head_in = last_chan + GLOBAL_FEAT_DIM
+        # context (the #290 pathway). 0 disables it.
+        self.global_feat_dim = global_feat_dim
+        if global_feat_dim > 0:
+            self.global_proj = nn.Sequential(
+                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
+                nn.ReLU(),
+            )
+        head_in = last_chan + global_feat_dim
 
         flat_dim = last_chan * self.width * self.height
 
-        # Heads stay nn.Sequential so `head[-1]` reaches the Linear (the
-        # --start-from critic re-init relies on that). Bias init at -2 on the
-        # eot head so an untrained model defaults to "not finished"
-        # (sigmoid(-2) ≈ 0.12).
+        # Project encoded state to value
         self.critic_head = nn.Sequential(
             nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std),
+            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
         )
+
+        # Bias init at -2 so an untrained model defaults to "not finished"
+        # (sigmoid(-2) ≈ 0.12).
         self.eot_head = nn.Sequential(
             nn.Flatten(),
             layer_init(nn.Linear(flat_dim, 1), std=1.0, bias_const=-2.0),
@@ -1378,7 +1361,7 @@ class AgentCNN(nn.Module):
 
     def _global_feat(self, encoded_BCWH):
         """Pool the whole encoded map into a per-batch global-context vector
-        (mean+max over the W,H axes, projected to GLOBAL_FEAT_DIM). Feeds the
+        (mean+max over the W,H axes, projected to global_feat_dim). Feeds the
         per-tile heads the grid-wide information their windowed features lack."""
         mean_BC = encoded_BCWH.mean(dim=(2, 3))
         max_BC = encoded_BCWH.amax(dim=(2, 3))
@@ -1389,19 +1372,24 @@ class AgentCNN(nn.Module):
 
     def encode(self, x_BCWH):
         """Encoder forward + global-context vector. Returns (map, g) where
-        map is (B, last_chan, W, H) and g is the pooled (B, GLOBAL_FEAT_DIM)
-        global vector. The optional attention stage refines the map in place
-        (shape-preserving), so g summarises the attention-refined features."""
+        map is (B, last_chan, W, H) and g is the pooled (B, global_feat_dim)
+        global vector, or None when global_feat_dim=0. The optional attention
+        stage refines the map in place (shape-preserving), so g summarises the
+        attention-refined features."""
         encoded = self.encoder(self._encode_input(x_BCWH))
         if self.attn_dim > 0:
             encoded = self.attn(encoded)
-        g = self._global_feat(encoded)
+        g = self._global_feat(encoded) if self.global_feat_dim > 0 else None
         return encoded, g
 
     def tile_features(self, encoded_BCWH, g_BG, batch_idx_B, x_B, y_B):
         """Input row for the ent/dir/item/misc heads: the encoded feature
-        column at (x, y) concatenated with the global-context vector."""
-        return torch.cat([encoded_BCWH[batch_idx_B, :, x_B, y_B], g_BG], dim=1)
+        column at (x, y), concatenated with the global-context vector when
+        one exists (global_feat_dim>0)."""
+        feats = encoded_BCWH[batch_idx_B, :, x_B, y_B]
+        if g_BG is not None:
+            feats = torch.cat([feats, g_BG], dim=1)
+        return feats
 
     def critic_value(self, encoded_BCWH, g_BG):
         return self.critic_head(encoded_BCWH).squeeze(-1)
@@ -1431,7 +1419,7 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)
+        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
         value_B = self.critic_value(encoded_BCWH, g_BG)
 
         B = encoded_BCWH.shape[0]
@@ -1694,6 +1682,10 @@ if __name__ == "__main__":
         critic_head_std=args.critic_head_std,
         dropout=args.dropout,
         attn_dim=args.attn_dim,
+        attn_heads=args.attn_heads,
+        attn_layers=args.attn_layers,
+        attn_pos_embed=args.attn_pos_embed,
+        global_feat_dim=args.global_feat_dim,
     )
 
     if args.start_from is not None:

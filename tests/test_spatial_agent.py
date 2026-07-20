@@ -317,15 +317,19 @@ class TestCategoricalInputEncoding:
         assert agent.item_embed.weight.grad is not None
 
 
-# The only architecture dial is `attn_dim` (0 = conv-only ablation baseline;
-# positive = attention capacity). Each entry must construct, run the
-# full PPO forward (sample + stored-action recompute), and round-trip through
-# a state dict into a fresh same-config model.
+# `attn_dim` is the swept dial (0 = conv-only ablation); the rest are knobs
+# fixed at their winning defaults but still overridable. Each entry must
+# construct, run the full PPO forward (sample + stored-action recompute), and
+# round-trip through a state dict into a fresh same-config model.
 ARCH_VARIANTS = [
     {},              # default: attention on at the ctor default dim
     {"attn_dim": 0},   # conv-only ablation baseline
     {"attn_dim": 16},
     {"attn_dim": 32},
+    {"global_feat_dim": 0},   # no pooled global vector
+    {"attn_pos_embed": 0},    # attention without positional embedding
+    {"attn_dim": 24, "attn_heads": 4, "attn_layers": 1},
+    {"attn_dim": 0, "global_feat_dim": 0},  # pure conv, window-only heads
 ]
 
 
@@ -391,19 +395,27 @@ class TestArchVariants:
         assert value_B.shape == (2,)
 
     def test_attn_on_by_default_off_when_zero(self, envs):
-        from ppo import ATTN_HEADS, ATTN_LAYERS
-
         on = AgentCNN(envs, layers=(16, 16, 16))
         assert on.attn_dim > 0 and hasattr(on, "attn")
-        # Head count and depth are fixed at the swept-winning values.
-        assert len(on.attn.transformer.layers) == ATTN_LAYERS
-        assert on.attn.transformer.layers[0].self_attn.num_heads == ATTN_HEADS
-        # Positional embedding is fixed on (one learned vector per grid cell).
+        # Head count and depth default to the swept-winning values (8, 2).
+        assert len(on.attn.transformer.layers) == 2
+        assert on.attn.transformer.layers[0].self_attn.num_heads == 8
+        # Positional embedding defaults on (one learned vector per grid cell).
         assert on.attn.pos_embed is not None
         assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)
 
         off = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
         assert off.attn_dim == 0 and not hasattr(off, "attn")
+
+    def test_global_feat_dim_zero_disables_global_vector(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=0)
+        assert not hasattr(agent, "global_proj")
+        enc, g = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert g is None
+        # Per-tile heads then read just the last_chan-wide column.
+        assert agent.ent_head.in_features == 16
+        _, logp_B, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
 
     def test_attn_is_identity_at_init(self, envs):
         """The out projection is zero-initialised, so the residual attention

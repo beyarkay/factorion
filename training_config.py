@@ -58,11 +58,22 @@ class SharedArgs:
     cells become tokens, so full attention is cheap and every head gets
     grid-global information in one hop). The SFT arch sweep (sn7fd8l8) found
     this the dominant win; 128 was the best value. 0 disables the stage,
-    recovering a conv-only ablation baseline. Int not bool for W&B sweeps.
-    The head count, layer count, positional embedding, CoordConv channels and
-    pooled global vector are all fixed at their swept-winning values in
-    AgentCNN rather than exposed as knobs — the sweep showed they don't move
-    the metric or belong on in every top run."""
+    recovering a conv-only ablation baseline. Int not bool for W&B sweeps."""
+    attn_heads: int = 8
+    """self-attention head count (snapped down to a divisor of attn_dim).
+    Fixed at the swept-winning value — not in the sweep, but a knob."""
+    attn_layers: int = 2
+    """number of stacked transformer-encoder blocks in the attention stage.
+    Fixed at the swept-winning value — not in the sweep, but a knob."""
+    attn_pos_embed: int = 1
+    """1 = add a learned per-cell positional embedding to the attention tokens
+    (self-attention is otherwise permutation-invariant). Int not bool for W&B
+    sweeps. Fixed at the swept-winning value — not in the sweep, but a knob."""
+    global_feat_dim: int = 32
+    """dim of the pooled (mean+max over space) global-context vector
+    concatenated onto the per-tile head inputs; 0 disables the global pathway.
+    Not in the sweep, but a knob (e.g. to ablate it now that attention also
+    provides grid-global mixing)."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

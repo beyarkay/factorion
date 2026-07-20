@@ -975,6 +975,10 @@ def train_sft(args: SftArgs):
         tile_head_std=args.tile_head_std,
         dropout=args.dropout,
         attn_dim=args.attn_dim,
+        attn_heads=args.attn_heads,
+        attn_layers=args.attn_layers,
+        attn_pos_embed=args.attn_pos_embed,
+        global_feat_dim=args.global_feat_dim,
     )
     envs.close()
 
