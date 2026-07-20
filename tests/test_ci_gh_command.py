@@ -265,7 +265,7 @@ class TestBadInput:
         gh_command.main()
         ((_, body),) = gh_ctx["comments"]
         for snippet in (
-            "/ci sft --num-samples 200000",  # concrete example, not just grammar
+            "/ci sft --num-samples 5000000",  # concrete example, not just grammar
             "/ci ppo --start-from",
             "/ci compare sft",
             "/ci compare ppo --start-from",
