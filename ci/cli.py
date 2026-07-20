@@ -75,7 +75,7 @@ def sweep(
     /,
     ref: str = "main",
     pods: int = 1,
-    agents_per_pod: int = 5,
+    agents_per_pod: int = 1,
     gpu_type: str = DEFAULT_GPU,
     dry_run: bool = False,
 ) -> None:

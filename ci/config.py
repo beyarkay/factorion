@@ -45,8 +45,11 @@ GPU_FALLBACKS = [
 
 # Only schedule on hosts whose driver supports a CUDA version new enough for
 # our torch build. uv.lock pins torch 2.12.x+cu130, which needs a CUDA 13.0
-# runtime (host driver >= 580). Keep in sync with the torch cuXXX build.
-ALLOWED_CUDA_VERSIONS = ["13.0"]
+# runtime (host driver >= 580); any newer 13.x driver is back-compatible, and
+# RunPod's filter is an exact match per entry, so list the whole family — a
+# bare ["13.0"] excludes upgraded hosts and shrinks the eligible pool.
+# Keep in sync with the torch cuXXX build.
+ALLOWED_CUDA_VERSIONS = ["13.0", "13.1", "13.2", "13.3"]
 
 # ── Pod naming ─────────────────────────────────────────────────────
 # Every CI pod encodes its own creation time and kill-by deadline in its name,
@@ -112,7 +115,7 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 # clone + rust build — cold hosts have been observed to take ~20 min just to
 # pull the image, so the slack must comfortably exceed that.
 SETUP_SLACK_SECONDS = 2700
-SWEEP_BUDGET_SECONDS = 8 * 3600  # sweeps run until run_cap (from the yaml)
+SWEEP_BUDGET_SECONDS = 24 * 3600  # sweeps run until run_cap (from the yaml)
 
 
 def sft_budget_seconds(num_samples: int, epochs: int) -> int:
@@ -180,7 +183,7 @@ class SweepJob:
     sha: str
     algo: str  # "sft" | "ppo"
     sweep_path: str  # entity/project/sweep_id
-    agents_per_pod: int = 5
+    agents_per_pod: int = 1
     extra_tags: list[str] = field(default_factory=list)  # e.g. pr:<N>, for boot-failure reporting
 
     KIND: ClassVar[str] = "sweep"
