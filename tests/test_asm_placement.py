@@ -233,3 +233,62 @@ class TestAsmPlacementValidity:
         _, _, _, _, info = env.step(action)
         assert not any(info["invalid_reason"].values())
         assert env._world_CWH[ENT].numpy().astype(int)[0, 1] == EMPTY
+
+
+FURNACE = str2ent("stone_furnace").value
+SMELT_RECIPE = str2ent("iron_plate").value  # a valid furnace recipe
+
+
+def _place_furnace(env, x, y, direction=Direction.NONE.value, item=SMELT_RECIPE):
+    action = {
+        "xy": np.array([x, y]),
+        "entity": FURNACE,
+        "direction": direction,
+        "item": item,
+        "misc": 0,
+        "eot": 0,
+    }
+    return env.step(action)
+
+
+# The four tiles a 2x2 furnace anchored at (0, 3) occupies.
+FURNACE_FOOTPRINT = tuple((x, y) for x in (0, 1) for y in (3, 4))
+
+
+class TestFurnacePlacement:
+    """The 2x2 stone furnace goes through the same multi-tile placement path
+    as the assembler: footprint fan-out, recipe mirroring, and the
+    machine-without-recipe validity rule."""
+
+    def test_footprint_is_four_tiles(self):
+        tiles = factorion_rs.py_entity_tiles(0, 3, Direction.NONE.value, 2, 2)
+        assert tiles is not None
+        assert set(map(tuple, tiles)) == set(FURNACE_FOOTPRINT)
+
+    def test_entity_and_recipe_written_to_all_four_tiles(self, env):
+        _, _, _, _, info = _place_furnace(env, 0, 3)
+        assert not any(info["invalid_reason"].values())
+        ent = env._world_CWH[ENT].numpy().astype(int)
+        it = env._world_CWH[ITEMS].numpy().astype(int)
+        for tx, ty in FURNACE_FOOTPRINT:
+            assert ent[tx, ty] == FURNACE, f"tile ({tx},{ty}) is {ent[tx, ty]}"
+            assert it[tx, ty] == SMELT_RECIPE
+
+    def test_furnace_without_recipe_is_invalid_and_world_unchanged(self, env):
+        before = env._world_CWH[ENT].numpy().astype(int).copy()
+        _, _, _, _, info = _place_furnace(env, 0, 3, item=EMPTY)
+        assert info["invalid_reason"]["place_asm_mach_wo_recipe"]
+        np.testing.assert_array_equal(
+            env._world_CWH[ENT].numpy().astype(int), before
+        )
+
+    def test_furnace_accepts_direction_none(self, env):
+        """Like the assembler, the square furnace is direction-agnostic —
+        Direction.NONE is a valid placement."""
+        _, _, _, _, info = _place_furnace(env, 0, 3, direction=Direction.NONE.value)
+        assert not any(info["invalid_reason"].values())
+
+    def test_placement_counts_as_one_entity(self, env):
+        before = env._num_placed_entities
+        _place_furnace(env, 0, 3)
+        assert env._num_placed_entities == before + 1

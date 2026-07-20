@@ -75,6 +75,7 @@ PLACEABLE_ENTITIES = [
     "stack_inserter",
     "bulk_inserter",
     "assembling_machine_1",
+    "stone_furnace",
 ]
 NON_PLACEABLE_ITEMS = [
     "copper_cable",
@@ -82,6 +83,9 @@ NON_PLACEABLE_ITEMS = [
     "iron_plate",
     "electronic_circuit",
     "iron_gear_wheel",
+    "iron_ore",
+    "copper_ore",
+    "coal",
 ]
 # 10-slot hotbar mapped to keys 1..9,0 (key '0' is the last slot).
 # `None` means the slot is unbound and pressing that key is a no-op.
@@ -95,7 +99,7 @@ HOTBAR = [
     "bulk_inserter",
     "assembling_machine_1",
     "long_handed_inserter",
-    None,
+    "stone_furnace",
     "empty",
 ]
 # Display labels for slots whose canonical entity name differs from how

@@ -52,6 +52,7 @@ KNOWN_PROTOTYPES = {
     "inserter",
     "long-handed-inserter",
     "assembling-machine-1",
+    "stone-furnace",
 }
 
 

@@ -14,8 +14,9 @@ pub struct GraphNode {
     /// means the items channel was 0 (no item set).
     pub item: Option<Item>,
     pub misc: Misc,
-    /// Recipe for assembling machines (determines what they craft).
-    /// `None` for non-assemblers and assemblers with no recipe set.
+    /// Recipe for crafting machines — assemblers and furnaces (determines
+    /// what they craft). `None` for other entities and machines with no
+    /// recipe set.
     pub recipe_item: Option<Item>,
     /// Anchor tile of the entity unit this node belongs to. Nodes are no
     /// longer 1:1 with entities (a belt tile owns two lane nodes, a splitter
@@ -172,7 +173,7 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                     entity_kind,
                     item,
                     misc,
-                    recipe_item: if entity_kind == Item::AssemblingMachine1 {
+                    recipe_item: if entity_kind.is_crafting_machine() {
                         item
                     } else {
                         None

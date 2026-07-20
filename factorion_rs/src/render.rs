@@ -26,6 +26,7 @@ pub(crate) const ENTITY_CHARS: &[(char, Item, Misc)] = &[
     ('i', Item::Inserter, Misc::None),
     ('l', Item::LongHandedInserter, Misc::None),
     ('a', Item::AssemblingMachine1, Misc::None),
+    ('f', Item::StoneFurnace, Misc::None),
     ('Y', Item::Splitter, Misc::None),
     ('d', Item::UndergroundBelt, Misc::UndergroundDown),
     ('u', Item::UndergroundBelt, Misc::UndergroundUp),
@@ -237,6 +238,22 @@ mod tests {
             Some(Item::ElectronicCircuit),
         );
         assert_eq!(render(&w), "aaaaaaaa\naa    aa\naaaaaaaa");
+    }
+
+    #[test]
+    fn test_render_furnace_box() {
+        // A 2x2 furnace is all perimeter: a solid box, no interior.
+        let mut w = World::empty(2, 2);
+        w.place_multi_tile(
+            0,
+            0,
+            Item::StoneFurnace,
+            Direction::North,
+            Some(Item::IronPlate),
+            2,
+            2,
+        );
+        assert_eq!(render(&w), "fffff\nfffff");
     }
 
     /// The on-disk grid a fixture author wrote, canonicalized the same way the

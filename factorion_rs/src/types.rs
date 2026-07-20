@@ -156,14 +156,15 @@ impl Misc {
 ///
 /// Integer-id layout:
 ///   1..=5   — agent-placeable entities (TB, Inserter, AM1, UB, Splitter)
-///   6..=65  — mostly non-placeable items (recipe ingredients / products /
+///   6..=87  — mostly non-placeable items (recipe ingredients / products /
 ///             raw materials / non-modeled buildings exposed only as items).
-///             The one exception is `LongHandedInserter` (34): it carries a
-///             recipe like the others but is *also* a placeable entity (an
-///             inserter variant that reaches two tiles instead of one), so it
-///             returns `true` from `is_placeable`. Placeability is decided by
-///             `is_placeable`, not by id range — the head excludes only the
-///             last two ids, so a placeable id in the middle is fine.
+///             The exceptions are `LongHandedInserter` (34, an inserter
+///             variant that reaches two tiles) and `StoneFurnace` (65, the
+///             2×2 smelting machine): both carry a recipe like the others
+///             but are *also* placeable entities, so they return `true` from
+///             `is_placeable`. Placeability is decided by `is_placeable`,
+///             not by id range — the head excludes only the last two ids, so
+///             a placeable id in the middle is fine.
 ///   last two — env-spawned (Sink, Source) — MUST remain the last two
 ///             ids; ppo.py sizes its entity head to `len(items)-2` to
 ///             structurally exclude them. See `test_source_and_sink_are_last_two_ids`.
@@ -265,11 +266,14 @@ pub enum Item {
     PersonalRoboport = 84,
     FlamethrowerTurret = 85,
     AssemblingMachine3 = 86,
+    // Furnace fuel. Modeled as an ordinary recipe ingredient of the smelting
+    // recipes (at the true burn ratio), not as a separate fuel mechanic.
+    Coal = 87,
     // Env-spawned, not agent-placeable — must remain the LAST two ids so
     // the policy's entity head can be sized to `len(items) - 2` and
     // structurally exclude them from sampling (see ppo.py).
-    Sink = 87,   // named "bulk_inserter"
-    Source = 88, // named "stack_inserter"
+    Sink = 88,   // named "bulk_inserter"
+    Source = 89, // named "stack_inserter"
 }
 
 impl Item {
@@ -363,8 +367,9 @@ impl Item {
             84 => Some(Item::PersonalRoboport),
             85 => Some(Item::FlamethrowerTurret),
             86 => Some(Item::AssemblingMachine3),
-            87 => Some(Item::Sink),
-            88 => Some(Item::Source),
+            87 => Some(Item::Coal),
+            88 => Some(Item::Sink),
+            89 => Some(Item::Source),
             _ => None,
         }
     }
@@ -470,6 +475,7 @@ impl Item {
             Item::PersonalRoboport => "personal_roboport",
             Item::FlamethrowerTurret => "flamethrower_turret",
             Item::AssemblingMachine3 => "assembling_machine_3",
+            Item::Coal => "coal",
         }
     }
 
@@ -483,11 +489,19 @@ impl Item {
                 | Item::Inserter
                 | Item::LongHandedInserter
                 | Item::AssemblingMachine1
+                | Item::StoneFurnace
                 | Item::UndergroundBelt
                 | Item::Sink
                 | Item::Source
                 | Item::Splitter
         )
+    }
+
+    /// The square crafting machines (3×3 assembler, 2×2 furnace): placeable,
+    /// recipe-tagged via the ITEMS channel, inserter-fed through their
+    /// perimeter, and a single lane-less graph node.
+    pub fn is_crafting_machine(self) -> bool {
+        matches!(self, Item::AssemblingMachine1 | Item::StoneFurnace)
     }
 
     /// Whether this entity's tiles carry two independent belt lanes.
@@ -513,6 +527,8 @@ impl Item {
             Item::Inserter => 0.86,
             Item::LongHandedInserter => 1.2,
             Item::AssemblingMachine1 => 0.5,
+            // Crafting speed 1.0, mirroring the AM1 convention above.
+            Item::StoneFurnace => 1.0,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
@@ -578,7 +594,6 @@ impl Item {
             | Item::SteamEngine
             | Item::SteamTurbine
             | Item::SteelFurnace
-            | Item::StoneFurnace
             | Item::Landfill
             | Item::FirearmMagazine
             | Item::StoneWall
@@ -599,7 +614,8 @@ impl Item {
             | Item::DischargeDefenseRemote
             | Item::PersonalRoboport
             | Item::FlamethrowerTurret
-            | Item::AssemblingMachine3 => 0.0,
+            | Item::AssemblingMachine3
+            | Item::Coal => 0.0,
         }
     }
 
@@ -609,6 +625,7 @@ impl Item {
     pub fn size(self) -> (usize, usize) {
         match self {
             Item::AssemblingMachine1 => (3, 3),
+            Item::StoneFurnace => (2, 2),
             Item::Splitter => (2, 1),
             _ => (1, 1),
         }
@@ -663,7 +680,7 @@ pub struct Recipe {
 
 /// The fully-expanded raw-material cost of one craft of a recipe: every
 /// ingredient reduced recursively through the recipe set until it bottoms
-/// out at items with no recipe (the raws — plates, ore, wood, and the
+/// out at items with no recipe (the raws — ore, coal, wood, and the
 /// fluid-gated intermediates the model treats as base), mirroring the
 /// wiki's "Total raw" infobox row.
 ///
@@ -766,6 +783,17 @@ const ASSEMBLING_MACHINES: &[Item] = &[
     Item::AssemblingMachine3,
 ];
 
+/// The furnaces that smelt. Only the stone furnace is a modeled (placeable)
+/// machine so far; the steel/electric tiers exist only as inventory items.
+const FURNACES: &[Item] = &[Item::StoneFurnace];
+
+/// Coal consumed per smelting craft. The engine has no fuel mechanic, so a
+/// furnace's coal burn is folded into its recipes as an ordinary ingredient
+/// at the true Base-game ratio: a stone furnace draws 90 kW and coal holds
+/// 4 MJ, so a 3.2 s smelt burns `90e3 * 3.2 / 4e6 = 0.072` coal (a 16 s
+/// steel craft burns 5× that).
+const COAL_PER_SMELT: f64 = 0.072;
+
 /// All crafting recipes in the game. The single source of truth — both
 /// `get_recipe` and the Python-facing PyO3 binding read from this.
 ///
@@ -774,7 +802,7 @@ const ASSEMBLING_MACHINES: &[Item] = &[
 /// under uniform multiplication of consumes and produces.
 ///
 /// A few recipes are block-commented (`/* parked … */`) so that every
-/// MEMORISE_N_INGREDIENT_RECIPES bucket holds an equal 15 recipes; the
+/// ASSEMBLE_N_INGREDIENT bucket holds an equal 15 recipes; the
 /// parked ones are redundant tier/duplicate variants, kept in source so
 /// they can be restored by deleting the comment markers.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
@@ -1663,6 +1691,51 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 produced_by: ASSEMBLING_MACHINES,
             },
         ),
+        // ===========================================================
+        // Smelting recipes (https://wiki.factorio.com/Stone_furnace).
+        // Crafted only by furnaces; coal is the folded-in fuel cost
+        // (see COAL_PER_SMELT).
+        // ===========================================================
+        // 1 iron_ore + coal -> 1 iron_plate, 3.2s
+        (
+            Item::IronPlate,
+            Recipe {
+                consumes: nonempty![(Item::IronOre, 1.0), (Item::Coal, COAL_PER_SMELT)],
+                produces: nonempty![(Item::IronPlate, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
+        // 1 copper_ore + coal -> 1 copper_plate, 3.2s
+        (
+            Item::CopperPlate,
+            Recipe {
+                consumes: nonempty![(Item::CopperOre, 1.0), (Item::Coal, COAL_PER_SMELT)],
+                produces: nonempty![(Item::CopperPlate, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
+        // 2 stone + coal -> 1 stone_brick, 3.2s
+        (
+            Item::StoneBrick,
+            Recipe {
+                consumes: nonempty![(Item::Stone, 2.0), (Item::Coal, COAL_PER_SMELT)],
+                produces: nonempty![(Item::StoneBrick, 1.0)],
+                crafting_time: 3.2,
+                produced_by: FURNACES,
+            },
+        ),
+        // 5 iron_plate + coal -> 1 steel_plate, 16s (5× the 3.2s burn)
+        (
+            Item::SteelPlate,
+            Recipe {
+                consumes: nonempty![(Item::IronPlate, 5.0), (Item::Coal, 5.0 * COAL_PER_SMELT)],
+                produces: nonempty![(Item::SteelPlate, 1.0)],
+                crafting_time: 16.0,
+                produced_by: FURNACES,
+            },
+        ),
     ]
 }
 
@@ -1852,6 +1925,7 @@ mod tests {
             Item::Inserter,
             Item::LongHandedInserter,
             Item::AssemblingMachine1,
+            Item::StoneFurnace,
             Item::UndergroundBelt,
             Item::Sink,
             Item::Source,
@@ -1961,8 +2035,21 @@ mod tests {
         assert_eq!(am1.consumes_rate(Item::IronPlate), Some(9.0));
         assert_eq!(am1.produces_rate(Item::AssemblingMachine1), Some(1.0));
 
-        assert!(get_recipe(Item::IronPlate).is_none());
-        assert!(get_recipe(Item::CopperPlate).is_none());
+        // Smelting: plates are furnace-craftable from ore + coal.
+        let ip = get_recipe(Item::IronPlate).unwrap();
+        assert_eq!(ip.consumes_rate(Item::IronOre), Some(1.0));
+        assert_eq!(ip.consumes_rate(Item::Coal), Some(COAL_PER_SMELT));
+        assert_eq!(ip.produces_rate(Item::IronPlate), Some(1.0));
+        assert_eq!(ip.produced_by, FURNACES);
+
+        let sp = get_recipe(Item::SteelPlate).unwrap();
+        assert_eq!(sp.consumes_rate(Item::IronPlate), Some(5.0));
+        assert_eq!(sp.consumes_rate(Item::Coal), Some(5.0 * COAL_PER_SMELT));
+
+        // Ores and coal are the raws smelting bottoms out at.
+        assert!(get_recipe(Item::IronOre).is_none());
+        assert!(get_recipe(Item::CopperOre).is_none());
+        assert!(get_recipe(Item::Coal).is_none());
     }
 
     #[test]
@@ -1986,64 +2073,81 @@ mod tests {
     }
 
     #[test]
-    fn test_every_recipe_produced_by_assemblers() {
-        // The whole (fluid-free) set is crafted in assembling machines.
-        let assemblers = [
+    fn test_every_recipe_produced_by_known_machines() {
+        // The whole (fluid-free) set is crafted in assembling machines or
+        // furnaces — the only machine kinds the engine models.
+        let machines = [
             Item::AssemblingMachine1,
             Item::AssemblingMachine2,
             Item::AssemblingMachine3,
+            Item::StoneFurnace,
         ];
         for (item, recipe) in all_recipes() {
             for machine in recipe.produced_by.iter() {
                 assert!(
-                    assemblers.contains(machine),
-                    "{item:?} produced_by non-assembler {machine:?}"
+                    machines.contains(machine),
+                    "{item:?} produced_by unknown machine {machine:?}"
                 );
             }
         }
     }
 
+    /// Float compare for total_raw sums: coal quantities are per-smelt
+    /// fractions accumulated across recipe depths, so exact `==` is too
+    /// strict.
+    fn assert_approx(got: f64, want: f64) {
+        assert!((got - want).abs() < 1e-9, "got {got}, want {want}");
+    }
+
     #[test]
     fn test_total_raw_none_for_raw_items() {
         // Items with no recipe are themselves raw — they have no expansion.
-        assert!(total_raw_of(Item::IronPlate).is_none());
-        assert!(total_raw_of(Item::CopperPlate).is_none());
-        assert!(total_raw_of(Item::SteelPlate).is_none());
+        assert!(total_raw_of(Item::IronOre).is_none());
+        assert!(total_raw_of(Item::CopperOre).is_none());
+        assert!(total_raw_of(Item::Coal).is_none());
+        assert!(total_raw_of(Item::Wood).is_none());
     }
 
     #[test]
     fn test_total_raw_copper_cable() {
-        // 1 craft: 1 copper plate -> 2 cables; copper plate is raw.
+        // 1 craft: 1 copper plate -> 2 cables; the plate smelts from
+        // 1 copper ore + 0.072 coal in 3.2s, plus the cable's own 0.5s.
         let tr = total_raw_of(Item::CopperCable).unwrap();
-        assert_eq!(tr.items.len(), 1);
-        assert_eq!(tr.items.head, (Item::CopperPlate, 1.0));
-        assert_eq!(tr.time, 0.5);
+        let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
+        assert_eq!(raw.get(&Item::CopperOre), Some(&1.0));
+        assert_approx(raw[&Item::Coal], 0.072);
+        assert_eq!(raw.len(), 2);
+        assert_approx(tr.time, 3.7);
     }
 
     #[test]
     fn test_total_raw_electronic_circuit() {
-        // 3 cable + 1 iron plate. 3 cables = 1.5 crafts -> 1.5 copper plate,
-        // 0.75s; the circuit itself is 0.5s -> 1.25s total.
+        // 3 cable + 1 iron plate -> 1.5 copper ore + 1 iron ore + the coal
+        // for 2.5 smelts. Time: 0.5 (EC) + 0.75 (1.5 cable crafts) + 2.5×3.2
+        // (smelts) = 9.25s.
         let tr = total_raw_of(Item::ElectronicCircuit).unwrap();
         let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
-        assert_eq!(raw.get(&Item::CopperPlate), Some(&1.5));
-        assert_eq!(raw.get(&Item::IronPlate), Some(&1.0));
-        assert_eq!(raw.len(), 2);
-        assert_eq!(tr.time, 1.25);
+        assert_eq!(raw.get(&Item::CopperOre), Some(&1.5));
+        assert_eq!(raw.get(&Item::IronOre), Some(&1.0));
+        assert_approx(raw[&Item::Coal], 2.5 * 0.072);
+        assert_eq!(raw.len(), 3);
+        assert_approx(tr.time, 9.25);
     }
 
     #[test]
     fn test_total_raw_merges_across_depth() {
         // Inserter = 1 EC + 1 IGW + 1 iron plate. Iron plate appears at three
-        // depths (raw, via the gear wheel, via the circuit) and must sum:
-        // 1 (direct) + 2 (gear wheel) + 1 (circuit) = 4.
+        // depths (direct, via the gear wheel, via the circuit) and must sum:
+        // 1 (direct) + 2 (gear wheel) + 1 (circuit) = 4, all smelted from ore.
         let tr = total_raw_of(Item::Inserter).unwrap();
         let raw: HashMap<Item, f64> = tr.items.iter().copied().collect();
-        assert_eq!(raw.get(&Item::IronPlate), Some(&4.0));
-        assert_eq!(raw.get(&Item::CopperPlate), Some(&1.5));
-        assert_eq!(raw.len(), 2);
-        // 0.5 inserter + 1.25 circuit + 0.5 gear wheel = 2.25.
-        assert_eq!(tr.time, 2.25);
+        assert_eq!(raw.get(&Item::IronOre), Some(&4.0));
+        assert_eq!(raw.get(&Item::CopperOre), Some(&1.5));
+        // 5.5 smelts (4 iron + 1.5 copper) worth of coal.
+        assert_approx(raw[&Item::Coal], 5.5 * 0.072);
+        assert_eq!(raw.len(), 3);
+        // 0.5 inserter + 1.25 circuit + 0.5 gear wheel + 5.5×3.2 smelting.
+        assert_approx(tr.time, 19.85);
     }
 
     #[test]

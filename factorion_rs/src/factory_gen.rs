@@ -36,13 +36,14 @@ pub enum LessonKind {
     MoveViaUgBelt = 6,
     #[deprecated]
     Assemble2In1Out = 7,
-    Memorise1IngredientRecipes = 8,
+    Assemble1Ingredient = 8,
     MoveOneItemChaos = 9,
     CrossUnderBelt = 10,
-    Memorise2IngredientRecipes = 11,
-    Memorise3IngredientRecipes = 12,
-    Memorise4IngredientRecipes = 13,
+    Assemble2Ingredient = 11,
+    Assemble3Ingredient = 12,
+    Assemble4Ingredient = 13,
     Factory1Ingredient = 15,
+    Smelt1Ingredient = 16,
 }
 
 impl LessonKind {
@@ -56,13 +57,14 @@ impl LessonKind {
             6 => Some(LessonKind::MoveViaUgBelt),
             #[allow(deprecated)]
             7 => Some(LessonKind::Assemble2In1Out),
-            8 => Some(LessonKind::Memorise1IngredientRecipes),
+            8 => Some(LessonKind::Assemble1Ingredient),
             9 => Some(LessonKind::MoveOneItemChaos),
             10 => Some(LessonKind::CrossUnderBelt),
-            11 => Some(LessonKind::Memorise2IngredientRecipes),
-            12 => Some(LessonKind::Memorise3IngredientRecipes),
-            13 => Some(LessonKind::Memorise4IngredientRecipes),
+            11 => Some(LessonKind::Assemble2Ingredient),
+            12 => Some(LessonKind::Assemble3Ingredient),
+            13 => Some(LessonKind::Assemble4Ingredient),
             15 => Some(LessonKind::Factory1Ingredient),
+            16 => Some(LessonKind::Smelt1Ingredient),
             _ => None,
         }
     }
@@ -79,13 +81,14 @@ impl LessonKind {
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
             #[allow(deprecated)]
             LessonKind::Assemble2In1Out => "ASSEMBLE_2IN_1OUT",
-            LessonKind::Memorise1IngredientRecipes => "MEMORISE_1_INGREDIENT_RECIPES",
-            LessonKind::Memorise2IngredientRecipes => "MEMORISE_2_INGREDIENT_RECIPES",
-            LessonKind::Memorise3IngredientRecipes => "MEMORISE_3_INGREDIENT_RECIPES",
-            LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
+            LessonKind::Assemble1Ingredient => "ASSEMBLE_1_INGREDIENT",
+            LessonKind::Assemble2Ingredient => "ASSEMBLE_2_INGREDIENT",
+            LessonKind::Assemble3Ingredient => "ASSEMBLE_3_INGREDIENT",
+            LessonKind::Assemble4Ingredient => "ASSEMBLE_4_INGREDIENT",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
+            LessonKind::Smelt1Ingredient => "SMELT_1_INGREDIENT",
         }
     }
 }
@@ -100,13 +103,14 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
         // LessonKind::Assemble2In1Out,
-        LessonKind::Memorise1IngredientRecipes,
-        LessonKind::Memorise2IngredientRecipes,
-        LessonKind::Memorise3IngredientRecipes,
-        LessonKind::Memorise4IngredientRecipes,
+        LessonKind::Assemble1Ingredient,
+        LessonKind::Assemble2Ingredient,
+        LessonKind::Assemble3Ingredient,
+        LessonKind::Assemble4Ingredient,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
+        LessonKind::Smelt1Ingredient,
     ]
 }
 
@@ -164,6 +168,24 @@ const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
     (3, 0, Direction::West, Direction::East),
     (3, 1, Direction::West, Direction::East),
     (3, 2, Direction::West, Direction::East),
+];
+
+/// The 8 non-corner perimeter slots around a 2×2 furnace anchored at
+/// `(ax, ay)` — the furnace counterpart of [`PERIM_SLOTS`], same ordering
+/// convention (and the same load-bearing order caveat).
+const FURNACE_PERIM_SLOTS: [(i64, i64, Direction, Direction); 8] = [
+    // North side (ddy = -1)
+    (0, -1, Direction::South, Direction::North),
+    (1, -1, Direction::South, Direction::North),
+    // South side (ddy = 2)
+    (0, 2, Direction::North, Direction::South),
+    (1, 2, Direction::North, Direction::South),
+    // West side (ddx = -1)
+    (-1, 0, Direction::East, Direction::West),
+    (-1, 1, Direction::East, Direction::West),
+    // East side (ddx = 2)
+    (2, 0, Direction::West, Direction::East),
+    (2, 1, Direction::West, Direction::East),
 ];
 
 /// Throughput score of a fully-placed world: build its flow graph and return
@@ -523,22 +545,15 @@ pub fn build_factory(
             build_move_via_ug_belt(size, &mut rng, random_item, max_entities)
         }
         // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
-        LessonKind::Memorise1IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 1)
-        }
-        LessonKind::Memorise2IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 2)
-        }
-        LessonKind::Memorise3IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 3)
-        }
-        LessonKind::Memorise4IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 4)
-        }
+        LessonKind::Assemble1Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 1),
+        LessonKind::Assemble2Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 2),
+        LessonKind::Assemble3Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 3),
+        LessonKind::Assemble4Ingredient => build_assemble_recipes(size, &mut rng, max_entities, 4),
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::Smelt1Ingredient => build_smelt_recipes(size, &mut rng, max_entities),
         _ => None,
     }
 }
@@ -640,10 +655,17 @@ fn place_marker(world: &mut World, pos: Cell, ent: Item, dir: Direction, item_va
 /// Place a 3×3 assembler anchored at `(ax, ay)`, every tile facing North and
 /// tagged with the recipe item.
 fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) {
-    for dx in 0..3 {
-        for dy in 0..3 {
+    place_machine(world, Item::AssemblingMachine1, ax, ay, recipe_item_value);
+}
+
+/// Place a square crafting machine (assembler, furnace) anchored at
+/// `(ax, ay)`, every tile facing North and tagged with the recipe item.
+fn place_machine(world: &mut World, machine: Item, ax: i64, ay: i64, recipe_item_value: i64) {
+    let body = machine.size().0 as i64;
+    for dx in 0..body {
+        for dy in 0..body {
             let (x, y) = ((ax + dx) as usize, (ay + dy) as usize);
-            world.set(x, y, Channel::Entities, Item::AssemblingMachine1 as i64);
+            world.set(x, y, Channel::Entities, machine as i64);
             world.set(x, y, Channel::Direction, Direction::North as i64);
             world.set(x, y, Channel::Items, recipe_item_value);
         }
@@ -1891,7 +1913,7 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
     None
 }
 
-/// Build a MEMORISE_`N`_INGREDIENT_RECIPES factory: a single assembler fed and
+/// Build an ASSEMBLE_`N`_INGREDIENT factory: a single assembler fed and
 /// drained by the most compact possible arms — every ingredient and product
 /// travels `source → belt → inserter → assembler → inserter → belt → sink` with
 /// **exactly one** belt between a source/sink and its inserter. The recipe is
@@ -1902,19 +1924,18 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
 /// the source/sink hangs off a randomly-chosen free neighbour of that arm's
 /// belt. The assembler anchor itself is random.
 ///
-/// Splitting the memorise lesson by ingredient count lets each lesson drill a
+/// Splitting the assemble lesson by ingredient count lets each lesson drill a
 /// fixed input-arm count in isolation. The lesson teaches the policy to
 /// *memorise* which items a recipe consumes and produces (and the assembler's
 /// recipe tag), stripped of any long-belt routing — the routing is fixed at one
 /// tile, so only the recipe identity and the immediate inserter/belt geometry
 /// vary.
-fn build_memorise_recipes(
+fn build_assemble_recipes(
     size: usize,
     rng: &mut Rng,
     max_entities: f64,
     n_ingredients: usize,
 ) -> Option<BuiltFactory> {
-    let s = size as i64;
     // Eligible recipes have exactly `n_ingredients` inputs (the lesson drills
     // memorising recipe identity at a fixed input-arm count) and must be
     // craftable by the assembling machine 1 this lesson places — otherwise the
@@ -1927,7 +1948,56 @@ fn build_memorise_recipes(
             r.consumes.len() == n_ingredients && r.produced_by.contains(&Item::AssemblingMachine1)
         })
         .collect();
-    if recipes.is_empty() {
+    build_machine_recipes(
+        size,
+        rng,
+        max_entities,
+        Item::AssemblingMachine1,
+        &PERIM_SLOTS,
+        recipes,
+    )
+}
+
+/// Build a SMELT_1_INGREDIENT factory: the furnace counterpart of
+/// [`build_assemble_recipes`] — a single 2×2 stone furnace fed and drained by
+/// one-belt arms. Every smelting recipe consumes one real ingredient plus
+/// coal (the folded-in fuel), so the lesson always has exactly two input arms
+/// and one output arm.
+fn build_smelt_recipes(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+    // Furnace-craftable recipes with one real ingredient + coal. The
+    // ingredient-count filter keeps the lesson's name honest if wider furnace
+    // recipes ever appear.
+    let recipes: Vec<(Item, Recipe)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| r.produced_by.contains(&Item::StoneFurnace) && r.consumes.len() == 2)
+        .collect();
+    build_machine_recipes(
+        size,
+        rng,
+        max_entities,
+        Item::StoneFurnace,
+        &FURNACE_PERIM_SLOTS,
+        recipes,
+    )
+}
+
+/// The shared machine-recipe lesson builder: a single square crafting
+/// `machine` (assembler or furnace) fed and drained by the most compact
+/// possible arms, one inserter per arm on a randomly-sampled entry of
+/// `slots` (the machine's non-corner perimeter slots). See
+/// [`build_assemble_recipes`] for the full layout description.
+fn build_machine_recipes(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    machine: Item,
+    slots: &[(i64, i64, Direction, Direction)],
+    recipes: Vec<(Item, Recipe)>,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Square machines only: width == height.
+    let body = machine.size().0 as i64;
+    if recipes.is_empty() || s < body {
         return None;
     }
     let mut count = (500).max(size * size * 16);
@@ -1946,38 +2016,41 @@ fn build_memorise_recipes(
         let n_in = input_items.len();
         let n_arms = n_in + output_items.len();
 
-        // Need one distinct perimeter slot per arm. With at most 5 ingredients
-        // + 1 product this is always <= 12 = PERIM_SLOTS.len(), but guard
-        // anyway so a future many-input recipe rejects cleanly.
-        if n_arms > PERIM_SLOTS.len() {
+        // Need one distinct perimeter slot per arm; guard so a many-input
+        // recipe rejects cleanly rather than panicking in `sample`.
+        if n_arms > slots.len() {
             continue;
         }
 
-        let ax = rng.randint(0, s - 3);
-        let ay = rng.randint(0, s - 3);
-        let asm_tiles: HashSet<Cell> = (0..3)
-            .flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+        let ax = rng.randint(0, s - body);
+        let ay = rng.randint(0, s - body);
+        let machine_tiles: HashSet<Cell> = (0..body)
+            .flat_map(|dx| (0..body).map(move |dy| (ax + dx, ay + dy)))
             .collect();
-        // Source/sink markers must never sit on the assembler perimeter: a
+        // Source/sink markers must never sit on the machine perimeter: a
         // source/sink there would be read as an inserter feeding/draining the
-        // assembler directly, bypassing this arm's belt+inserter.
-        let perim = all_perim_set(ax, ay, s);
+        // machine directly, bypassing this arm's belt+inserter.
+        let perim: HashSet<Cell> = slots
+            .iter()
+            .map(|&(ddx, ddy, _, _)| (ax + ddx, ay + ddy))
+            .filter(|&c| in_grid(c, s))
+            .collect();
 
-        let slots = rng.sample(&PERIM_SLOTS, n_arms);
+        let chosen = rng.sample(slots, n_arms);
 
         // Plan every arm, reserving cells as we go so arms can't overlap. Any
         // arm that can't be placed rejects the whole candidate.
-        let mut occupied: HashSet<Cell> = asm_tiles.clone();
+        let mut occupied: HashSet<Cell> = machine_tiles.clone();
         let mut inserters: Vec<(Cell, Direction)> = Vec::with_capacity(n_arms);
         let mut belts: Vec<UgPlacement> = Vec::with_capacity(n_arms);
         // (position, direction, carried-item, is_source)
         let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
 
         let mut ok = true;
-        for (idx, &(off_x, off_y, in_dir, out_dir)) in slots.iter().enumerate() {
+        for (idx, &(off_x, off_y, in_dir, out_dir)) in chosen.iter().enumerate() {
             let is_input = idx < n_in;
             let inserter_pos = (ax + off_x, ay + off_y);
-            // Inserter faces INTO the assembler for inputs, OUT for outputs.
+            // Inserter faces INTO the machine for inputs, OUT for outputs.
             let inserter_dir = if is_input { in_dir } else { out_dir };
             if !in_grid(inserter_pos, s) || occupied.contains(&inserter_pos) {
                 ok = false;
@@ -2053,7 +2126,7 @@ fn build_memorise_recipes(
             continue;
         }
 
-        // Removable units: belts + inserters + the assembler (sources/sinks
+        // Removable units: belts + inserters + the machine (sources/sinks
         // are env-spawned and never blanked, so they don't count).
         let total_entities = inserters.len() + belts.len() + 1;
         if (total_entities as f64) > max_entities {
@@ -2061,7 +2134,7 @@ fn build_memorise_recipes(
         }
 
         let mut world = World::empty(size, size);
-        place_assembler(&mut world, ax, ay, recipe_item_value);
+        place_machine(&mut world, machine, ax, ay, recipe_item_value);
         for &(pos, dir) in &inserters {
             place_inserter(&mut world, pos, dir);
         }
@@ -2117,7 +2190,7 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
 /// Build a FACTORY_1_INGREDIENT factory: a row of assemblers all crafting the
 /// same 1-in-1-out recipe, fed from a shared input belt lane along one side
 /// and drained onto a shared output lane along the other — the classic
-/// lined-up production-row layout. Unlike the MEMORISE lessons (whose
+/// lined-up production-row layout. Unlike the ASSEMBLE lessons (whose
 /// source/sink hug the assembler), the source and sink sit at semi-arbitrary
 /// free cells on OPPOSITE sides of the row — the row splits the world in two
 /// and the source lands in the input-lane half, the sink in the output-lane
@@ -2734,16 +2807,16 @@ mod tests {
     }
 
     #[test]
-    fn test_memorise_recipes_smoke() {
-        // Each per-ingredient-count memorise lesson should produce
+    fn test_assemble_recipes_smoke() {
+        // Each per-ingredient-count assemble lesson should produce
         // positive-throughput factories with one belt per arm (belts ==
         // inserters), exactly one assembler unit, one sink, and exactly
         // `n_ingredients` sources (one input arm per ingredient).
         let kinds = [
-            (LessonKind::Memorise1IngredientRecipes, 1),
-            (LessonKind::Memorise2IngredientRecipes, 2),
-            (LessonKind::Memorise3IngredientRecipes, 3),
-            (LessonKind::Memorise4IngredientRecipes, 4),
+            (LessonKind::Assemble1Ingredient, 1),
+            (LessonKind::Assemble2Ingredient, 2),
+            (LessonKind::Assemble3Ingredient, 3),
+            (LessonKind::Assemble4Ingredient, 4),
         ];
         for (kind, n_ingredients) in kinds {
             let mut built = 0;
@@ -2795,15 +2868,77 @@ mod tests {
     }
 
     #[test]
+    fn test_smelt_recipes_smoke() {
+        // The furnace lesson: positive throughput, one 2×2 furnace tagged
+        // with a furnace-craftable recipe, one belt per arm, exactly two
+        // sources (the real ingredient + coal) and one sink.
+        let mut built = 0;
+        for seed in 0..50u64 {
+            let Some(f) =
+                build_factory(11, LessonKind::Smelt1Ingredient, seed, true, f64::INFINITY)
+            else {
+                continue;
+            };
+            assert!(world_throughput(&f.world) > 0.0, "seed={seed}");
+
+            let mut n_belt = 0;
+            let mut n_inserter = 0;
+            let mut n_furnace = 0;
+            let mut n_source = 0;
+            let mut n_sink = 0;
+            let mut coal_sources = 0;
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    match f.world.entity_at(x, y) {
+                        Some(Item::TransportBelt) => n_belt += 1,
+                        Some(Item::Inserter) => n_inserter += 1,
+                        Some(Item::StoneFurnace) => {
+                            n_furnace += 1;
+                            let recipe_item = f.world.item_at(x, y).unwrap_or_else(|| {
+                                panic!("seed={seed}: furnace tile ({x},{y}) has no recipe")
+                            });
+                            let recipe =
+                                crate::types::get_recipe(recipe_item).unwrap_or_else(|| {
+                                    panic!("seed={seed}: {recipe_item:?} has no recipe")
+                                });
+                            assert!(
+                                recipe.produced_by.contains(&Item::StoneFurnace),
+                                "seed={seed}: {recipe_item:?} not smeltable in a stone furnace"
+                            );
+                        }
+                        Some(Item::Source) => {
+                            n_source += 1;
+                            if f.world.item_at(x, y) == Some(Item::Coal) {
+                                coal_sources += 1;
+                            }
+                        }
+                        Some(Item::Sink) => n_sink += 1,
+                        _ => {}
+                    }
+                }
+            }
+            assert_eq!(n_furnace, 4, "seed={seed}: furnace not 2x2");
+            assert_eq!(n_belt, n_inserter, "seed={seed}: belts != inserters");
+            // Two input arms (ingredient + coal) and one output arm.
+            assert_eq!(n_source, 2, "seed={seed}: expected 2 sources");
+            assert_eq!(coal_sources, 1, "seed={seed}: expected a coal source");
+            assert_eq!(n_sink, 1, "seed={seed}: expected exactly one sink");
+            assert_eq!(n_inserter, 3, "seed={seed}: expected 3 arms");
+            built += 1;
+        }
+        assert!(built > 40, "most seeds should build, got {built}");
+    }
+
+    #[test]
     fn test_assembler_recipes_are_am1_craftable() {
         // Every lesson that places an assembling machine 1 must tag it with a
         // recipe tier 1 can craft — the `produced_by` filter must exclude
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
         let kinds = [
-            LessonKind::Memorise1IngredientRecipes,
-            LessonKind::Memorise2IngredientRecipes,
-            LessonKind::Memorise3IngredientRecipes,
-            LessonKind::Memorise4IngredientRecipes,
+            LessonKind::Assemble1Ingredient,
+            LessonKind::Assemble2Ingredient,
+            LessonKind::Assemble3Ingredient,
+            LessonKind::Assemble4Ingredient,
             LessonKind::Factory1Ingredient,
         ];
         for kind in kinds {

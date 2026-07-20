@@ -53,6 +53,7 @@ from ppo import (  # noqa: E402
     _DIR_NONE_VAL,
     _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
+    _FURNACE_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SftArgs  # noqa: E402
@@ -65,8 +66,8 @@ def extract_expert_actions(solved_CWH, task_CWH):
     misc_id, valid_tile_mask, eot) tuples. The agent's action covers all
     four placement channels because the env (ppo.py FactorioEnv.step)
     rejects placements with mismatched channels — e.g. an underground belt
-    without misc=DOWN/UP, or an assembling_machine_1 without an item
-    (= recipe).
+    without misc=DOWN/UP, or a crafting machine (assembler / furnace)
+    without an item (= recipe).
 
     The valid_tile_mask is a flat binary tensor marking ALL tiles that still
     need entities at this step — not just the one chosen. This allows
@@ -426,11 +427,13 @@ def _apply_legal_tile_mask(tile_logits, obs_batch):
     return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
 
 
-def _solved_assembler_recipes(solved_CWH) -> set[int]:
-    """The set of recipes (item ids) carried by assemblers in a solved factory,
-    the ground truth for the rollout's recipe-pick check. Empty for factories
-    with no assembler (every non-MEMORISE lesson today)."""
-    asm_mask = solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID
+def _solved_machine_recipes(solved_CWH) -> set[int]:
+    """The set of recipes (item ids) carried by crafting machines (assemblers
+    and furnaces) in a solved factory, the ground truth for the rollout's
+    recipe-pick check. Empty for factories with no machine."""
+    asm_mask = (solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID) | (
+        solved_CWH[_CH_ENT] == _FURNACE_ENT_ID
+    )
     recipes = solved_CWH[_CH_ITEMS][asm_mask]
     return set() if not bool(asm_mask.any()) else {int(v) for v in recipes.unique().tolist()}
 
@@ -573,7 +576,7 @@ def run_rollout_eval(
             },
         )
         current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
+        asm_recipes[i] = _solved_machine_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
@@ -637,13 +640,17 @@ def run_rollout_eval(
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
                 current[i] = (s, k, float(info.get("thput_normed", 0.0)))
 
-                # Recipe-pick check: the agent tried to place an assembler in a
-                # factory that has one. Count it iff the assembler actually
-                # landed at the anchor (invalid placements are env no-ops), then
-                # score its recipe against the solved factory's recipes.
-                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                # Recipe-pick check: the agent tried to place a crafting
+                # machine (assembler or furnace) in a factory that has one.
+                # Count it iff the machine actually landed at the anchor
+                # (invalid placements are env no-ops), then score its recipe
+                # against the solved factory's recipes.
+                if asm_recipes[i] and action["entity"] in (
+                    _ASM_MACHINE_ENT_ID,
+                    _FURNACE_ENT_ID,
+                ):
                     ax, ay = int(action["xy"][0]), int(action["xy"][1])
-                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
+                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == action["entity"]:
                         per_kind_asm_total[k.name] += 1
                         if action["item"] in asm_recipes[i]:
                             per_kind_asm_correct[k.name] += 1
@@ -677,7 +684,7 @@ def run_rollout_eval(
                         },
                     )
                     current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-                    asm_recipes[i] = _solved_assembler_recipes(
+                    asm_recipes[i] = _solved_machine_recipes(
                         envs[i]._solved_world_CWH
                     )
                     eot_fired[i] = False

@@ -211,7 +211,7 @@ pub enum EntityEnum {
     TransportBelt(TransportBelt),
     Inserter(Inserter),
     LongHandedInserter(LongHandedInserter),
-    AssemblingMachine(AssemblingMachine),
+    CraftingMachine(CraftingMachine),
     UndergroundBelt(UndergroundBelt),
     Sink(Sink),
     Source(Source),
@@ -227,9 +227,10 @@ impl EntityEnum {
             Item::TransportBelt => Self::TransportBelt(TransportBelt),
             Item::Inserter => Self::Inserter(Inserter),
             Item::LongHandedInserter => Self::LongHandedInserter(LongHandedInserter),
-            Item::AssemblingMachine1 => {
-                Self::AssemblingMachine(AssemblingMachine { recipe_item: item })
-            }
+            k if k.is_crafting_machine() => Self::CraftingMachine(CraftingMachine {
+                kind: k,
+                recipe_item: item,
+            }),
             Item::UndergroundBelt => Self::UndergroundBelt(UndergroundBelt { misc }),
             Item::Sink => Self::Sink(Sink),
             Item::Source => Self::Source(Source { item }),
@@ -245,7 +246,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.kind(),
             Self::Inserter(e) => e.kind(),
             Self::LongHandedInserter(e) => e.kind(),
-            Self::AssemblingMachine(e) => e.kind(),
+            Self::CraftingMachine(e) => e.kind(),
             Self::UndergroundBelt(e) => e.kind(),
             Self::Sink(e) => e.kind(),
             Self::Source(e) => e.kind(),
@@ -258,7 +259,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.connections(pos, dir, world),
             Self::Inserter(e) => e.connections(pos, dir, world),
             Self::LongHandedInserter(e) => e.connections(pos, dir, world),
-            Self::AssemblingMachine(e) => e.connections(pos, dir, world),
+            Self::CraftingMachine(e) => e.connections(pos, dir, world),
             Self::UndergroundBelt(e) => e.connections(pos, dir, world),
             Self::Sink(e) => e.connections(pos, dir, world),
             Self::Source(e) => e.connections(pos, dir, world),
@@ -271,7 +272,7 @@ impl FactoryEntity for EntityEnum {
             Self::TransportBelt(e) => e.transform_flow(input),
             Self::Inserter(e) => e.transform_flow(input),
             Self::LongHandedInserter(e) => e.transform_flow(input),
-            Self::AssemblingMachine(e) => e.transform_flow(input),
+            Self::CraftingMachine(e) => e.transform_flow(input),
             Self::UndergroundBelt(e) => e.transform_flow(input),
             Self::Sink(e) => e.transform_flow(input),
             Self::Source(e) => e.transform_flow(input),
@@ -348,107 +349,131 @@ impl FactoryEntity for LongHandedInserter {
     }
 }
 
-// ── Assembling Machine ──────────────────────────────────────────────────────
+// ── Crafting Machines (assembler, furnace) ──────────────────────────────────
+//
+// One behavior covers every square crafting machine: recipe-tagged,
+// inserter-fed through its perimeter, min-ratio recipe flow. The furnace
+// runs the smelting recipes, whose folded-in coal ingredient stands in for
+// fuel.
 
-pub struct AssemblingMachine {
+pub struct CraftingMachine {
+    kind: Item,
     recipe_item: Option<Item>,
 }
 
-impl FactoryEntity for AssemblingMachine {
+impl FactoryEntity for CraftingMachine {
     fn kind(&self) -> Item {
-        Item::AssemblingMachine1
+        self.kind
     }
 
     fn connections(&self, pos: (usize, usize), _dir: Direction, world: &World) -> Vec<Edge> {
-        let mut edges = Vec::new();
-        let (x, y) = pos;
-        let self_id = NodeId::new(Item::AssemblingMachine1, x, y, None);
-
-        // Assembling machines are 3x3. The anchor is the top-left corner.
-        // Search the perimeter (ring around the 3x3) for inserters.
-        for ddx in -1i64..=3 {
-            let nx = x as i64 + ddx;
-            if nx < 0 || nx >= world.width() as i64 {
-                continue;
-            }
-            for ddy in -1i64..=3 {
-                let ny = y as i64 + ddy;
-                if ny < 0 || ny >= world.height() as i64 {
-                    continue;
-                }
-                // Skip tiles inside the 3x3 assembler body
-                if (0..3).contains(&ddx) && (0..3).contains(&ddy) {
-                    continue;
-                }
-                // Skip corners: only the orthogonal perimeter slots can hold an
-                // inserter that reaches into the assembler body.
-                if (ddx == -1 || ddx == 3) && (ddy == -1 || ddy == 3) {
-                    continue;
-                }
-
-                let nx_u = nx as usize;
-                let ny_u = ny as usize;
-                let other_entity = match world.entity_at(nx_u, ny_u) {
-                    Some(e) => e,
-                    None => continue,
-                };
-
-                // Only inserter-like entities can interact with assembling
-                // machines. The Source and Sink markers count too: they insert
-                // into / pull from the assembler exactly like a plain inserter.
-                if !matches!(other_entity, Item::Inserter | Item::Source | Item::Sink) {
-                    continue;
-                }
-
-                let other_dir = world.direction_at(nx_u, ny_u);
-                let other_id = NodeId::new(other_entity, nx_u, ny_u, None);
-
-                // Determine edge direction between assembler and the adjacent inserter-like entity.
-                // When the entity's facing direction points away from the assembler body
-                // (e.g. entity is above assembler and faces north), items flow OUT of the
-                // assembler: assembler → entity. Otherwise, items flow IN: entity → assembler.
-                let assembler_outputs_to_entity = (other_dir == Direction::North && ddy < 0)
-                    || (other_dir == Direction::South && ddy > 0)
-                    || (other_dir == Direction::West && ddx < 0)
-                    || (other_dir == Direction::East && ddx > 0);
-
-                if assembler_outputs_to_entity {
-                    edges.push((self_id.clone(), other_id));
-                } else {
-                    edges.push((other_id, self_id.clone()));
-                }
-            }
-        }
-
-        edges
+        machine_connections(self.kind, pos, world)
     }
 
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64> {
-        let recipe_item = match self.recipe_item {
-            Some(i) => i,
-            None => return HashMap::new(),
-        };
-
-        let recipe = match get_recipe(recipe_item) {
-            Some(r) => r,
-            None => return HashMap::new(),
-        };
-
-        // Find the minimum ratio of available input to required input
-        let mut min_ratio: f64 = 1.0;
-        for &(item, required) in recipe.consumes.iter() {
-            let available = input.get(&item).copied().unwrap_or(0.0);
-            let ratio = available / required;
-            min_ratio = min_ratio.min(ratio);
-        }
-
-        // Produce outputs scaled by the minimum ratio
-        recipe
-            .produces
-            .iter()
-            .map(|&(item, rate)| (item, rate * min_ratio))
-            .collect()
+        recipe_transform_flow(self.recipe_item, input)
     }
+}
+
+/// Perimeter-scan connections for a square crafting machine (3×3 assembler,
+/// 2×2 furnace): every non-corner ring cell around the body may hold an
+/// inserter-like neighbor that feeds or drains the machine. The anchor is
+/// the top-left corner.
+fn machine_connections(self_kind: Item, pos: (usize, usize), world: &World) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let (x, y) = pos;
+    // Square machines only: width == height.
+    let body = self_kind.size().0 as i64;
+    let self_id = NodeId::new(self_kind, x, y, None);
+
+    for ddx in -1i64..=body {
+        let nx = x as i64 + ddx;
+        if nx < 0 || nx >= world.width() as i64 {
+            continue;
+        }
+        for ddy in -1i64..=body {
+            let ny = y as i64 + ddy;
+            if ny < 0 || ny >= world.height() as i64 {
+                continue;
+            }
+            // Skip tiles inside the machine body
+            if (0..body).contains(&ddx) && (0..body).contains(&ddy) {
+                continue;
+            }
+            // Skip corners: only the orthogonal perimeter slots can hold an
+            // inserter that reaches into the machine body.
+            if (ddx == -1 || ddx == body) && (ddy == -1 || ddy == body) {
+                continue;
+            }
+
+            let nx_u = nx as usize;
+            let ny_u = ny as usize;
+            let other_entity = match world.entity_at(nx_u, ny_u) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // Only inserter-like entities can interact with crafting
+            // machines. The Source and Sink markers count too: they insert
+            // into / pull from the machine exactly like a plain inserter.
+            if !matches!(other_entity, Item::Inserter | Item::Source | Item::Sink) {
+                continue;
+            }
+
+            let other_dir = world.direction_at(nx_u, ny_u);
+            let other_id = NodeId::new(other_entity, nx_u, ny_u, None);
+
+            // Determine edge direction between machine and the adjacent inserter-like entity.
+            // When the entity's facing direction points away from the machine body
+            // (e.g. entity is above the machine and faces north), items flow OUT of the
+            // machine: machine → entity. Otherwise, items flow IN: entity → machine.
+            let machine_outputs_to_entity = (other_dir == Direction::North && ddy < 0)
+                || (other_dir == Direction::South && ddy > 0)
+                || (other_dir == Direction::West && ddx < 0)
+                || (other_dir == Direction::East && ddx > 0);
+
+            if machine_outputs_to_entity {
+                edges.push((self_id.clone(), other_id));
+            } else {
+                edges.push((other_id, self_id.clone()));
+            }
+        }
+    }
+
+    edges
+}
+
+/// Recipe flow shared by the crafting machines: outputs scale by the
+/// scarcest input's availability ratio. Deliberately no crafting-speed cap —
+/// machine throughput is bounded by its inserters, not by `crafting_time`.
+fn recipe_transform_flow(
+    recipe_item: Option<Item>,
+    input: &HashMap<Item, f64>,
+) -> HashMap<Item, f64> {
+    let recipe_item = match recipe_item {
+        Some(i) => i,
+        None => return HashMap::new(),
+    };
+
+    let recipe = match get_recipe(recipe_item) {
+        Some(r) => r,
+        None => return HashMap::new(),
+    };
+
+    // Find the minimum ratio of available input to required input
+    let mut min_ratio: f64 = 1.0;
+    for &(item, required) in recipe.consumes.iter() {
+        let available = input.get(&item).copied().unwrap_or(0.0);
+        let ratio = available / required;
+        min_ratio = min_ratio.min(ratio);
+    }
+
+    // Produce outputs scaled by the minimum ratio
+    recipe
+        .produces
+        .iter()
+        .map(|&(item, rate)| (item, rate * min_ratio))
+        .collect()
 }
 
 // ── Underground Belt ────────────────────────────────────────────────────────
@@ -703,14 +728,11 @@ fn inserter_connections(
         let sx = src_x as usize;
         let sy = src_y as usize;
         if let Some(src_entity) = world.entity_at(sx, sy) {
-            let src_is_pickable = matches!(
-                src_entity,
-                Item::Source
-                    | Item::Sink
-                    | Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-            );
+            let src_is_pickable = src_entity.is_crafting_machine()
+                || matches!(
+                    src_entity,
+                    Item::Source | Item::Sink | Item::TransportBelt | Item::UndergroundBelt
+                );
             if src_is_pickable {
                 edges.extend(calc_lane_aware_edges(
                     src_entity,
@@ -736,14 +758,11 @@ fn inserter_connections(
         let dx_u = dst_x as usize;
         let dy_u = dst_y as usize;
         if let Some(dst_entity) = world.entity_at(dx_u, dy_u) {
-            let dst_is_insertable = matches!(
-                dst_entity,
-                Item::TransportBelt
-                    | Item::UndergroundBelt
-                    | Item::AssemblingMachine1
-                    | Item::Source
-                    | Item::Sink
-            );
+            let dst_is_insertable = dst_entity.is_crafting_machine()
+                || matches!(
+                    dst_entity,
+                    Item::TransportBelt | Item::UndergroundBelt | Item::Source | Item::Sink
+                );
             if dst_is_insertable {
                 if dst_entity.is_lane_aware() {
                     let dst_dir = world.direction_at(dx_u, dy_u);
@@ -1288,7 +1307,8 @@ mod tests {
         // Inserter at (4,2) facing east → taking from assembler (facing away)
         w.place(4, 2, Item::Inserter, Direction::East, None);
 
-        let asm = AssemblingMachine {
+        let asm = CraftingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
         let edges = asm.connections((1, 1), Direction::None, &w);
@@ -1307,7 +1327,8 @@ mod tests {
 
     #[test]
     fn test_assembler_transform_flow() {
-        let asm = AssemblingMachine {
+        let asm = CraftingMachine {
+            kind: Item::AssemblingMachine1,
             recipe_item: Some(Item::ElectronicCircuit),
         };
 
