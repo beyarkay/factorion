@@ -3,7 +3,7 @@
 The workflow hands over the comment body plus PR context via env vars; this
 module parses the command, launches pods with the repo's secrets, and posts
 the outcome back to the PR — comments are the backbone of CI reporting.
-`/ci help` posts HELP below, which doubles as the grammar reference.
+`/ci help` posts `ci/HELP.md`, which doubles as the grammar reference.
 
 Env: COMMENT_BODY, COMMENT_URL, PR_NUMBER, HEAD_SHA, GITHUB_TOKEN,
 GITHUB_REPOSITORY, RUNPOD_API_KEY, WANDB_API_KEY.
@@ -50,57 +50,8 @@ COMPARE_STATUS_CONTEXT = "factorion-ci/compare"
 # under the workflow's own timeout.
 MAX_WAIT_SECONDS = 320 * 60
 
-HELP = """\
-## `/ci` — GPU training jobs from PR comments
-
-Every job runs **this PR's head commit** on a self-terminating RunPod pod and
-reports back here as a comment. Hyperparameters come from `training_config.py`;
-the flags below are the entire override surface (see `ci/README.md`).
-
-### Train
-
-- `/ci sft` — SFT from scratch (production-sized: `SftArgs.num_samples`)
-- `/ci sft --num-samples 200000` — quick smoke run (~minutes)
-- `/ci ppo --start-from j0s5y2mc` — PPO from an SFT checkpoint (W&B run id);
-  optional `--total-timesteps N`
-
-The result comment (headline metrics + all metrics) lands when the run
-finishes, however long it takes.
-
-### Compare this branch to main
-
-- `/ci compare sft` — N seeds each of this branch and main (one pod per run),
-  then a seed-paired diff of every logged metric. Options: `--seeds 3`,
-  `--num-samples 5000000`, `--base-ref main`
-- `/ci compare ppo --start-from j0s5y2mc` — same, comparing PPO finetuning
-  from that checkpoint on both commits; optional `--total-timesteps N`
-
-Add `assert` lines to turn the comparison into a pass/fail commit status:
-
-```
-/ci compare sft --seeds 3
-assert pr:val/thput > main:val/thput
-assert pr:val/acc >= 0.5
-```
-
-(`pr:`/`test:` = this branch, `main:`/`base:` = the baseline; bare numbers
-are thresholds. Comparators on group means: `<` `>` `<=` `>=`, plus `==` /
-`~=` meaning approximately equal — |lhs − rhs| <= 1e-3 by default, or append
-a tolerance like `assert pr:val/acc == main:val/acc +- 0.01`. A missing
-metric or unparseable line fails the check.)
-
-### Sweeps
-
-- `/ci sweep sft` or `/ci sweep ppo` — W&B sweep from this commit's
-  `ci/sweep_<algo>.yaml`. Options: `--pods 1`, `--agents-per-pod 1`
-
-### Pod management
-
-- `/ci pods` — list CI pods (status, cost, deadline)
-- `/ci kill <pod_id>` or `/ci kill --all` — terminate CI pods
-- `/ci watchdog --dry-run` — show what the leaked-pod reaper would do
-- `/ci help` — this message
-"""
+with open(os.path.join(os.path.dirname(__file__), "HELP.md")) as _help_file:
+    HELP = _help_file.read()
 
 
 def parse_comment(body: str) -> tuple[list[str], list[str]]:
