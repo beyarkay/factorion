@@ -117,6 +117,10 @@ def parse_pod_name(name: str) -> Optional[PodMeta]:
 SETUP_SLACK_SECONDS = 2700
 SWEEP_BUDGET_SECONDS = 24 * 3600  # sweeps run until run_cap (from the yaml)
 
+# Single source of truth for the sweep agents-per-pod default; the CLI and the
+# `/ci` comment parser both reference this so their defaults can't drift.
+AGENTS_PER_POD_DEFAULT = 1
+
 
 def sft_budget_seconds(num_samples: int, epochs: int) -> int:
     return int(num_samples * epochs / 1000 * 1.5) + SETUP_SLACK_SECONDS
@@ -183,7 +187,7 @@ class SweepJob:
     sha: str
     algo: str  # "sft" | "ppo"
     sweep_path: str  # entity/project/sweep_id
-    agents_per_pod: int = 1
+    agents_per_pod: int = AGENTS_PER_POD_DEFAULT
     extra_tags: list[str] = field(default_factory=list)  # e.g. pr:<N>, for boot-failure reporting
 
     KIND: ClassVar[str] = "sweep"
