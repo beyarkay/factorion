@@ -1,8 +1,6 @@
-# GPU image for RunPod CI/training. Build + push by hand when deps change (no CI job).
-# Tag by CUDA build rather than :latest, so ci/config.py's DOCKER_IMAGE names an
-# image that can't drift underneath a commit that was tested against it:
-#   docker build --platform linux/amd64 -f Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:cu126 . \
-#     && docker push beyarkay/factorion-ci-gpu:cu126
+# GPU image for RunPod CI/training. Build + push by hand when deps change (no CI job):
+#   docker build --platform linux/amd64 -f Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:latest . \
+#     && docker push beyarkay/factorion-ci-gpu:latest
 #
 # Slim base (python:3.11-slim, ~150 MB) instead of runpod/pytorch's CUDA-devel
 # image: torch 2.12.x+cu126 (pinned in uv.lock) bundles its own CUDA 12.6 runtime,
@@ -41,6 +39,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         -r requirements.txt && \
     cd / && rm -rf /tmp/lock
 
+# The cu12 check is deliberately strict: if the cu126 index config ever breaks,
+# torch silently resolves from PyPI as a cu130 build, and ci/config.py's 12.x
+# entries then schedule pods onto hosts that crash at their first .to(device).
+# Raising the CUDA floor means editing ALLOWED_CUDA_VERSIONS and this line together.
 RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__; assert torch.version.cuda.startswith('12.'), torch.version.cuda"
 
 RUN mkdir -p /workspace

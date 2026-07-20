@@ -23,7 +23,7 @@ from typing import ClassVar, Optional
 
 from training_config import PpoArgs, SftArgs
 
-DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:cu126"
+DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
 CONTAINER_DISK_GB = 40
 REPO_URL = "https://github.com/beyarkay/factorion"
 WANDB_PROJECT = SftArgs().wandb_project_name
