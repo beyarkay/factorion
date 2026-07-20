@@ -6,7 +6,10 @@ requires-python = ">=3.11"
 # mod server. The compiled `factorion_rs` extension is built separately with
 # `maturin develop` (see `factorion_rs/`), not resolved from PyPI.
 dependencies = [
-    "torch",
+    # Pinned so the cu126 index (below) can only change torch's CUDA build, not
+    # its version: that index carries 2.13.0, which PyPI does not, so an
+    # unpinned resolve would put Linux on a torch macOS can't install.
+    "torch==2.12.1",
     "numpy",
     "gymnasium",
     "networkx",
@@ -39,6 +42,20 @@ dev = [
 # torch resolves from PyPI: CPU-only on macOS, CUDA-capable on Linux (so GPU
 # boxes work). CI installs CPU-only torch separately for its smoke tests.
 package = false
+
+# PyPI's default torch wheel is the +cu130 build, which bundles a CUDA 13
+# runtime and so needs host driver >= 580 — a minority of RunPod hosts, which
+# starved the CI GPU pool. cu126 runs on any 12.x driver (>= 525) via CUDA
+# minor-version compatibility, at the same torch version. Every GPU in
+# ci/config.py's fallback chain is Ampere/Ada (sm_86/sm_89), all covered by
+# CUDA 12.6; a Blackwell card would need cu129+.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 
 [tool.ty.environment]
 # First-party modules imported flat by their siblings (tests do `import helpers`,
