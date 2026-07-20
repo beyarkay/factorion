@@ -44,6 +44,7 @@ from ppo import (  # noqa: E402
     make_env,
     layers_from_args,
     assert_device_ok,
+    cuda_env_info,
     _resolve_start_from,
     _CH_ENT,
     _CH_ITEMS,
@@ -1079,7 +1080,7 @@ def train_sft(args: SftArgs):
         run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            config=vars(args),
+            config={**vars(args), **cuda_env_info()},
             name=_artifact_name(args),
             group=args.wandb_group,
             tags=sft_tags,
