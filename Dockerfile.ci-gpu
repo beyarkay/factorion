@@ -1,9 +1,11 @@
-# GPU image for RunPod CI/training. Build + push by hand when deps change (no CI job):
-#   docker build --platform linux/amd64 -f Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:latest . \
-#     && docker push beyarkay/factorion-ci-gpu:latest
+# GPU image for RunPod CI/training. Build + push by hand when deps change (no CI job).
+# Tag by CUDA build rather than :latest, so ci/config.py's DOCKER_IMAGE names an
+# image that can't drift underneath a commit that was tested against it:
+#   docker build --platform linux/amd64 -f Dockerfile.ci-gpu -t beyarkay/factorion-ci-gpu:cu126 . \
+#     && docker push beyarkay/factorion-ci-gpu:cu126
 #
 # Slim base (python:3.11-slim, ~150 MB) instead of runpod/pytorch's CUDA-devel
-# image: torch 2.12.x+cu130 (pinned in uv.lock) bundles its own CUDA 13 runtime,
+# image: torch 2.12.x+cu126 (pinned in uv.lock) bundles its own CUDA 12.6 runtime,
 # so the base needs no CUDA toolchain — the RunPod host injects the GPU driver at
 # run time. runpod_start.sh replicates RunPod's SSH bring-up so direct-SSH CI
 # keeps working. --platform pins amd64 so a build from an arm64 Mac still targets
@@ -24,12 +26,22 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock .python-version /tmp/lock/
-RUN cd /tmp/lock && \
+# `uv export` drops index URLs, so torch's +cu126 local version has to be
+# findable here or it resolves against PyPI (which has no such version) and
+# fails; best-match is required for uv to look past PyPI's plain `torch`.
+# The PyTorch index farms the multi-hundred-MB nvidia-* wheels out to
+# pypi.nvidia.com, which routinely stalls past uv's default 30s timeout; the
+# cache mount keeps a retry from re-downloading several GB.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /tmp/lock && \
     uv export --frozen --no-emit-project --no-hashes -o requirements.txt && \
-    uv pip install --system --break-system-packages -r requirements.txt && \
+    UV_HTTP_TIMEOUT=300 uv pip install --system --break-system-packages \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        --index-strategy unsafe-best-match \
+        -r requirements.txt && \
     cd / && rm -rf /tmp/lock
 
-RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__"
+RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__; assert torch.version.cuda.startswith('12.'), torch.version.cuda"
 
 RUN mkdir -p /workspace
 COPY runpod_start.sh /start.sh
