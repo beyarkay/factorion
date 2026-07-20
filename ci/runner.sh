@@ -32,7 +32,7 @@ PY
     echo ">>> Deadline watchdog armed (epoch ${FCI_DEADLINE})"
 fi
 
-echo ">>> GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2> /dev/null || echo unknown)"
+echo ">>> GPU: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2> /dev/null || echo unknown)"
 echo ">>> Building factorion_rs..."
 (cd factorion_rs && maturin build --release --out dist && pip install --force-reinstall dist/*.whl)
 

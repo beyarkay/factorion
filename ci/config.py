@@ -23,7 +23,7 @@ from typing import ClassVar, Optional
 
 from training_config import PpoArgs, SftArgs
 
-DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:latest"
+DOCKER_IMAGE = "beyarkay/factorion-ci-gpu:cu126"
 CONTAINER_DISK_GB = 40
 REPO_URL = "https://github.com/beyarkay/factorion"
 WANDB_PROJECT = SftArgs().wandb_project_name
@@ -44,12 +44,27 @@ GPU_FALLBACKS = [
 ]
 
 # Only schedule on hosts whose driver supports a CUDA version new enough for
-# our torch build. uv.lock pins torch 2.12.x+cu130, which needs a CUDA 13.0
-# runtime (host driver >= 580); any newer 13.x driver is back-compatible, and
-# RunPod's filter is an exact match per entry, so list the whole family — a
-# bare ["13.0"] excludes upgraded hosts and shrinks the eligible pool.
-# Keep in sync with the torch cuXXX build.
-ALLOWED_CUDA_VERSIONS = ["13.0", "13.1", "13.2", "13.3"]
+# our torch build. uv.lock pins torch 2.12.x+cu126, which CUDA minor-version
+# compatibility runs on any 12.x driver, and drivers are forward-compatible
+# with older runtimes, so 13.x hosts work too. RunPod's filter is an exact
+# match per entry, so list every family member — omitting one silently shrinks
+# the eligible pool. Keep in sync with the torch cuXXX build.
+ALLOWED_CUDA_VERSIONS = [
+    "12.0",
+    "12.1",
+    "12.2",
+    "12.3",
+    "12.4",
+    "12.5",
+    "12.6",
+    "12.7",
+    "12.8",
+    "12.9",
+    "13.0",
+    "13.1",
+    "13.2",
+    "13.3",
+]
 
 # ── Pod naming ─────────────────────────────────────────────────────
 # Every CI pod encodes its own creation time and kill-by deadline in its name,
