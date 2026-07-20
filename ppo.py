@@ -1119,9 +1119,30 @@ def assert_device_ok(device) -> None:
     raise RuntimeError(
         f"Refusing to train on '{device.type}': no CUDA GPU was found. This "
         "usually means the host NVIDIA driver is too old for the installed torch "
-        "CUDA build (torch 2.12 ships CUDA 13, which needs driver >= 580). Fix the "
-        "host/driver, or pick a GPU+host that supports CUDA 13."
+        f"CUDA build (this wheel ships CUDA {torch.version.cuda}). Fix the "
+        "host/driver, or pick a GPU+host that supports it."
     )
+
+
+def cuda_env_info() -> dict[str, str]:
+    """Wheel CUDA build + host driver, recorded in every run's W&B config.
+
+    CI schedules across whatever driver versions RunPod has free, so a failure
+    that only reproduces on some hosts is otherwise untraceable after the pod
+    is gone.
+    """
+    info = {
+        "env/torch_version": torch.__version__,
+        "env/torch_cuda_build": torch.version.cuda or "none",
+    }
+    if not torch.cuda.is_available():
+        return info
+    info["env/gpu_name"] = torch.cuda.get_device_name(0)
+    info["env/gpu_capability"] = "%d.%d" % torch.cuda.get_device_capability(0)
+    # The host driver's CUDA version — the number RunPod filters on — is not
+    # exposed by any torch API; read it off the run's W&B metadata
+    # (`cudaVersion`), which wandb populates from NVML.
+    return info
 
 
 # --- Fused categorical / bernoulli ops --------------------------------------
@@ -1456,7 +1477,7 @@ if __name__ == "__main__":
         run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            config=vars(args),
+            config={**vars(args), **cuda_env_info()},
             name=run_name,
             group=args.wandb_group,
             save_code=True,

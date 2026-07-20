@@ -3,7 +3,7 @@
 #     && docker push beyarkay/factorion-ci-gpu:latest
 #
 # Slim base (python:3.11-slim, ~150 MB) instead of runpod/pytorch's CUDA-devel
-# image: torch 2.12.x+cu130 (pinned in uv.lock) bundles its own CUDA 13 runtime,
+# image: torch 2.12.x+cu126 (pinned in uv.lock) bundles its own CUDA 12.6 runtime,
 # so the base needs no CUDA toolchain — the RunPod host injects the GPU driver at
 # run time. runpod_start.sh replicates RunPod's SSH bring-up so direct-SSH CI
 # keeps working. --platform pins amd64 so a build from an arm64 Mac still targets
@@ -24,12 +24,26 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock .python-version /tmp/lock/
-RUN cd /tmp/lock && \
+# `uv export` drops index URLs, so torch's +cu126 local version has to be
+# findable here or it resolves against PyPI (which has no such version) and
+# fails; best-match is required for uv to look past PyPI's plain `torch`.
+# The PyTorch index farms the multi-hundred-MB nvidia-* wheels out to
+# pypi.nvidia.com, which routinely stalls past uv's default 30s timeout; the
+# cache mount keeps a retry from re-downloading several GB.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /tmp/lock && \
     uv export --frozen --no-emit-project --no-hashes -o requirements.txt && \
-    uv pip install --system --break-system-packages -r requirements.txt && \
+    UV_HTTP_TIMEOUT=300 uv pip install --system --break-system-packages \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        --index-strategy unsafe-best-match \
+        -r requirements.txt && \
     cd / && rm -rf /tmp/lock
 
-RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__"
+# The cu12 check is deliberately strict: if the cu126 index config ever breaks,
+# torch silently resolves from PyPI as a cu130 build, and ci/config.py's 12.x
+# entries then schedule pods onto hosts that crash at their first .to(device).
+# Raising the CUDA floor means editing ALLOWED_CUDA_VERSIONS and this line together.
+RUN python -c "import torch; assert torch.__version__.startswith('2.12'), torch.__version__; assert torch.version.cuda.startswith('12.'), torch.version.cuda"
 
 RUN mkdir -p /workspace
 COPY runpod_start.sh /start.sh
