@@ -1,31 +1,35 @@
-# ci/sweep_sft.yaml — SFT pre-training hyperparameter sweep
+# ci/sweep_sft.yaml — SFT sweep over the self-attention architecture (round 2).
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Compute-budget knobs that are monotonic-ish in val/acc (num_samples,
-# epochs, layer{1,2,3}) are pinned to the smoketest production config so
-# Bayes can't trivially saturate them and every run is directly
-# comparable to the prod checkpoint. The sweep instead optimises knobs
-# with a genuine interior optimum:
-#   - cosine LR schedule (issue #101): lr, warmup_frac, min_lr_ratio
-#   - regularisation: weight_decay, max_grad_norm
-#   - per-head loss weights (5 placement heads + EOT): lw_*
-#   - data-shape tradeoffs: batch_size, max_level, tile_head_std
+# Round 1 (sn7fd8l8) found the shape but hugged several range limits and left
+# some axes unexplored. This round:
+#   - lr: round 1's good runs spanned ~8e-4..2.9e-3 — kept as the search range.
+#   - kernel_size {1, 3}: 3 = local conv (won round 1); 1 = a purely per-cell
+#     1x1 projection with no spatial mixing, a no-CNN proxy (5 dropped — never
+#     produced a good run).
+#   - attn_dim {128,192,256} and attn_heads {8,12,16}: both topped out in round
+#     1 (heads snap to a divisor of attn_dim in AgentCNN, so every pair runs).
+#   - attn_layers {2,3,4}.
+#   - conv widths: layer1 is always positive (>=1 conv layer); layer2/3/4 may be
+#     0, so encoder depth ranges 1..4. Widths widened past the 64/96 band the
+#     round-1 good runs spread evenly across.
+#   - global_feat_dim {0,16,32,64,128}: never swept WITH attention (round 1
+#     pinned it at 32; the pre-attention #313 sweeps that varied it had no other
+#     source of grid-global info, so their "0 hurts" doesn't transfer). Tests
+#     whether the pooled global vector is still needed given attention.
+#   - attn_pos_embed left out -> default 1 (on in every round-1 good run).
 
 method: bayes
-run_cap: 30
+run_cap: 80
 metric:
-  name: "val/acc"
+  name: "val/thput_eot"
   goal: maximize
 
 parameters:
-  # Pinned because val/acc is monotonic in these: more data, more epochs,
-  # and a lower max_level all make the val task trivially easier and
-  # Bayes would just saturate them. Encoder widths are NOT pinned —
-  # bigger encoders can overfit a fixed dataset, so there's a real
-  # interior optimum.
+  # Pinned: monotonic in the metric, so Bayes would only saturate them.
   size:
     value: 11
   num_samples:
@@ -35,76 +39,35 @@ parameters:
   max_level:
     value: 0  # auto = 2*size = 22 entities blanked
 
-  # ── LR schedule (issue #101) ─────────────────────────────────────
+  # ── Conv trunk ───────────────────────────────────────────────────
+  kernel_size:
+    values: [1, 3]
+  layer1:
+    values: [48, 64, 96, 128]         # always >=1 conv layer
+  layer2:
+    values: [0, 48, 64, 96, 128]
+  layer3:
+    values: [0, 48, 64, 96, 128]
+  layer4:
+    values: [0, 48, 64, 96, 128]
+
+  # ── Attention ────────────────────────────────────────────────────
+  attn_dim:
+    values: [128, 192, 256]
+  attn_heads:
+    values: [4, 8, 12, 16]
+  attn_layers:
+    values: [1, 2, 3, 4]
+
+  # ── Pooled global vector (never swept with attention before) ─────
+  global_feat_dim:
+    values: [0, 16, 32, 64, 128]
+
+  # ── lr (the round-1 good band) ───────────────────────────────────
   lr:
     distribution: log_uniform_values
-    min: 1e-4
+    min: 8e-4
     max: 3e-3
-  warmup_frac:
-    values: [0.0, 0.02, 0.05, 0.1]
-  min_lr_ratio:
-    distribution: log_uniform_values
-    min: 1e-3
-    max: 1e-1
-
-  # ── Regularisation ────────────────────────────────────────────────
-  weight_decay:
-    distribution: log_uniform_values
-    min: 1e-6
-    max: 1e-2
-  max_grad_norm:
-    distribution: uniform
-    min: 0.5
-    max: 3.0
-
-  # ── Data-shape tradeoffs ──────────────────────────────────────────
-  batch_size:
-    values: [256, 512, 1024]
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.1
-
-  # ── Encoder capacity ──────────────────────────────────────────────
-  # Bigger encoders can overfit the fixed SFT dataset, so there's a
-  # genuine interior optimum.
-  layer1:
-    values: [32, 48, 64]
-  layer2:
-    values: [48, 64]
-  layer3:
-    values: [48, 64]
-
-  # ── Per-head loss weights ─────────────────────────────────────────
-  # With 6 losses summed, equal weighting (= 1.0 each) implicitly
-  # assumes each head's gradient signal is equally informative — almost
-  # certainly wrong now that recipe/item and EOT heads exist alongside
-  # entity/direction. Log-uniform around 1.0 lets Bayes search find a
-  # useful re-balancing without blowing up scale.
-  lw_tile:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_ent:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_dir:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_item:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_misc:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_eot:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
 
 program: sft.py
 

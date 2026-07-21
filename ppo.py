@@ -37,7 +37,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PpoArgs
+from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -1172,8 +1172,66 @@ def _categorical_entropy(logp_all_BN):
     return -(logp_all_BN.exp() * logp_all_BN).sum(-1)
 
 
+class _SelfAttnStack(nn.Module):
+    """Self-attention over the encoded map so every cell sees every other in
+    one hop. Each cell's feature column is a token; the residual out-projection
+    is zero-init, so the stage is identity at init and shape-preserving
+    (grid-sized in == grid-sized out)."""
+
+    def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed):
+        super().__init__()
+        # MultiheadAttention needs dim % heads == 0; snap heads down to the
+        # largest divisor <= the requested count so any (dim, heads) the sweep
+        # samples is runnable rather than crashing the run.
+        while dim % heads != 0 and heads > 1:
+            heads -= 1
+        self.in_proj = layer_init(nn.Linear(channels, dim))
+        self.out_proj = layer_init(nn.Linear(dim, channels), std=0.0, bias_const=0.0)
+        self.pos_embed = (
+            nn.Parameter(torch.zeros(1, num_tokens, dim)) if pos_embed else None
+        )
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=dim,
+            nhead=heads,
+            dim_feedforward=2 * dim,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            enc_layer, num_layers=layers, enable_nested_tensor=False
+        )
+
+    def forward(self, x_BCWH):
+        B, C, W, H = x_BCWH.shape
+        tokens_BNC = x_BCWH.flatten(2).transpose(1, 2)  # (B, W*H, C)
+        t = self.in_proj(tokens_BNC)
+        if self.pos_embed is not None:
+            t = t + self.pos_embed
+        t = self.transformer(t)
+        refined_BNC = self.out_proj(t)  # (B, W*H, C)
+        refined_BCWH = refined_BNC.transpose(1, 2).reshape(B, C, W, H)
+        return x_BCWH + refined_BCWH
+
+
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, global_feat_dim=32):
+    # Arch-shape defaults are sourced from SharedArgs so the winning config is
+    # written once; the per-loop knobs (tile/critic std, dropout) differ between
+    # PPO and SFT and stay as network fallbacks.
+    def __init__(
+        self,
+        envs,
+        layers=tuple(layers_from_args(SharedArgs)),
+        kernel_size=SharedArgs.kernel_size,
+        tile_head_std=0.01,
+        critic_head_std=1.0,
+        dropout=0.0,
+        cat_embed_dim=8,
+        attn_dim=SharedArgs.attn_dim,
+        attn_heads=SharedArgs.attn_heads,
+        attn_layers=SharedArgs.attn_layers,
+        attn_pos_embed=SharedArgs.attn_pos_embed,
+        global_feat_dim=SharedArgs.global_feat_dim,
+    ):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
@@ -1205,9 +1263,16 @@ class AgentCNN(nn.Module):
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
+        # CoordConv (Liu et al. 2018): two constant normalized-(x, y) channels
+        # so the translation-equivariant conv stack can express absolute
+        # position (which no receptive field alone can). Always on.
+        self.coord_grid: torch.Tensor
+        xs = torch.linspace(-1.0, 1.0, self.width).view(self.width, 1).expand(self.width, self.height)
+        ys = torch.linspace(-1.0, 1.0, self.height).view(1, self.height).expand(self.width, self.height)
+        self.register_buffer("coord_grid", torch.stack([xs, ys], dim=0))
         # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
+        # two one-hots + the scalar footprint + the two coordinate channels.
+        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1 + 2
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1225,12 +1290,11 @@ class AgentCNN(nn.Module):
             raise ValueError(f"kernel_size must be odd, got {kernel_size}")
         if len(layers) == 0:
             raise ValueError("layers must contain at least one conv layer")
-        padding = kernel_size // 2
         conv_stack = []
         in_ch = self.input_channels
         for ch in layers:
             conv_stack.append(
-                layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=padding))
+                layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=kernel_size // 2))
             )
             conv_stack.append(nn.ReLU())
             conv_stack.append(nn.Dropout2d(dropout))
@@ -1239,11 +1303,36 @@ class AgentCNN(nn.Module):
         self.layers = tuple(layers)
         self.kernel_size = kernel_size
         last_chan = layers[-1]  # encoder output channels — feeds every head
+
+        # Self-attention over the encoded map (shape-preserving; see encode()):
+        # the grid-global mixing the arch sweep found decisive. attn_dim=0
+        # disables it for a conv-only ablation baseline.
+        self.attn_dim = attn_dim
+        if attn_dim > 0:
+            self.attn = _SelfAttnStack(
+                channels=last_chan,
+                dim=attn_dim,
+                heads=attn_heads,
+                layers=attn_layers,
+                num_tokens=self.width * self.height,
+                pos_embed=bool(attn_pos_embed),
+            )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(
             f"Encoder has {num_params_encoder} params "
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
+
+        # A pooled mean+max summary of the whole map, concatenated onto each
+        # per-tile feature column so the windowed heads also see grid-global
+        # context (the #290 pathway). 0 disables it.
+        self.global_feat_dim = global_feat_dim
+        if global_feat_dim > 0:
+            self.global_proj = nn.Sequential(
+                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
+                nn.ReLU(),
+            )
+        head_in = last_chan + global_feat_dim
 
         flat_dim = last_chan * self.width * self.height
 
@@ -1262,21 +1351,6 @@ class AgentCNN(nn.Module):
 
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
-
-        # The per-tile heads read a single feature column encoded[:, :, x, y],
-        # so their receptive field is capped at the conv stack's window. Recipe
-        # choice, UG-span, and "which way is the sink" are grid-global questions
-        # that window can't answer. Concatenate a pooled summary of the whole
-        # encoded map (mean+max over space, projected to global_feat_dim) onto
-        # the tile features so every head sees global context. global_feat_dim=0
-        # disables it, recovering the window-only heads.
-        self.global_feat_dim = global_feat_dim
-        if global_feat_dim > 0:
-            self.global_proj = nn.Sequential(
-                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
-                nn.ReLU(),
-            )
-        head_in = last_chan + global_feat_dim
 
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
@@ -1320,7 +1394,8 @@ class AgentCNN(nn.Module):
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
 
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
+        coords = self.coord_grid.expand(x_BCWH.shape[0], -1, -1, -1)
+        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint, coords], dim=1)
 
     def _global_feat(self, encoded_BCWH):
         """Pool the whole encoded map into a per-batch global-context vector
@@ -1330,10 +1405,39 @@ class AgentCNN(nn.Module):
         max_BC = encoded_BCWH.amax(dim=(2, 3))
         return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
 
-    def get_value(self, x_BCWH):
+    # All consumers (PPO, SFT, the builder UI, the mod server) go through these
+    # four helpers, so an architecture change lands in one place.
+
+    def encode(self, x_BCWH):
+        """Encoder forward + global-context vector. Returns (map, g) where
+        map is (B, last_chan, W, H) and g is the pooled (B, global_feat_dim)
+        global vector, or None when global_feat_dim=0. The optional attention
+        stage refines the map in place (shape-preserving), so g summarises the
+        attention-refined features."""
         encoded = self.encoder(self._encode_input(x_BCWH))
-        value_B = self.critic_head(encoded).squeeze(-1)
-        return value_B
+        if self.attn_dim > 0:
+            encoded = self.attn(encoded)
+        g = self._global_feat(encoded) if self.global_feat_dim > 0 else None
+        return encoded, g
+
+    def tile_features(self, encoded_BCWH, g_BG, batch_idx_B, x_B, y_B):
+        """Input row for the ent/dir/item/misc heads: the encoded feature
+        column at (x, y), concatenated with the global-context vector when
+        one exists (global_feat_dim>0)."""
+        feats = encoded_BCWH[batch_idx_B, :, x_B, y_B]
+        if g_BG is not None:
+            feats = torch.cat([feats, g_BG], dim=1)
+        return feats
+
+    def critic_value(self, encoded_BCWH, g_BG):
+        return self.critic_head(encoded_BCWH).squeeze(-1)
+
+    def eot_logit(self, encoded_BCWH, g_BG):
+        return self.eot_head(encoded_BCWH).squeeze(-1)
+
+    def get_value(self, x_BCWH):
+        encoded, g = self.encode(x_BCWH)
+        return self.critic_value(encoded, g)
 
     def eot_prob(self, x_BCWH):
         """End-of-turn probability per observation, in [0, 1].
@@ -1343,8 +1447,8 @@ class AgentCNN(nn.Module):
         this from inference rollouts to decide whether the agent thinks
         the factory is finished.
         """
-        encoded = self.encoder(self._encode_input(x_BCWH))
-        return torch.sigmoid(self.eot_head(encoded).squeeze(-1))
+        encoded, g = self.encode(x_BCWH)
+        return torch.sigmoid(self.eot_logit(encoded, g))
 
     def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
         """Boolean stop signal per observation. Threshold defaults to 0.5;
@@ -1353,8 +1457,8 @@ class AgentCNN(nn.Module):
 
     def get_action_and_value(self, x_BCWH, action=None):
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH = self.encoder(self._encode_input(x_BCWH))  # (B, chan3, W, H)
-        value_B = self.critic_head(encoded_BCWH).squeeze(-1)
+        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
+        value_B = self.critic_value(encoded_BCWH, g_BG)
 
         B = encoded_BCWH.shape[0]
 
@@ -1379,10 +1483,7 @@ class AgentCNN(nn.Module):
         # overwritten on the next replay; recreating it is trivially cheap and
         # torch.compile folds it into the graph.
         batch_idx = torch.arange(B, device=encoded_BCWH.device)
-        tile_features_BC = encoded_BCWH[batch_idx, :, x_B, y_B]  # (B, chan3)
-        if self.global_feat_dim > 0:
-            global_BG = self._global_feat(encoded_BCWH)          # (B, global_feat_dim)
-            tile_features_BC = torch.cat([tile_features_BC, global_BG], dim=1)
+        tile_features_BC = self.tile_features(encoded_BCWH, g_BG, batch_idx, x_B, y_B)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)
@@ -1394,7 +1495,7 @@ class AgentCNN(nn.Module):
         i_logp_all_BI = F.log_softmax(logits_i_BI, dim=-1)
         m_logp_all_BM = F.log_softmax(logits_m_BM, dim=-1)
 
-        eot_logit_B = self.eot_head(encoded_BCWH).squeeze(-1)
+        eot_logit_B = self.eot_logit(encoded_BCWH, g_BG)
 
         if action is None:
             ent_B = _categorical_sample(e_logp_all_BE)
@@ -1618,6 +1719,11 @@ if __name__ == "__main__":
         tile_head_std=args.tile_head_std,
         critic_head_std=args.critic_head_std,
         dropout=args.dropout,
+        attn_dim=args.attn_dim,
+        attn_heads=args.attn_heads,
+        attn_layers=args.attn_layers,
+        attn_pos_embed=args.attn_pos_embed,
+        global_feat_dim=args.global_feat_dim,
     )
 
     if args.start_from is not None:

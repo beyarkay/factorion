@@ -43,9 +43,9 @@ class SharedArgs:
     # per-layer width as independent numeric slots (rather than one categorical
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 93
-    layer2: int = 69
-    layer3: int = 96
+    layer1: int = 128
+    layer2: int = 128
+    layer3: int = 128
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0
@@ -53,6 +53,26 @@ class SharedArgs:
     layer8: int = 0
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
+    attn_dim: int = 192
+    """model dim of the self-attention stage over the encoded map (the 121 grid
+    cells become tokens, so full attention is cheap and every head gets
+    grid-global information in one hop). The dominant win in the SFT arch
+    sweeps; the second sweep (91w8vyea) preferred 192-256 over 128. 0 disables
+    the stage, recovering a conv-only ablation baseline. Int not bool for W&B
+    sweeps."""
+    attn_heads: int = 12
+    """self-attention head count (snapped down to a divisor of attn_dim)."""
+    attn_layers: int = 4
+    """number of stacked transformer-encoder blocks in the attention stage."""
+    attn_pos_embed: int = 1
+    """1 = add a learned per-cell positional embedding to the attention tokens
+    (self-attention is otherwise permutation-invariant). Int not bool for W&B
+    sweeps."""
+    global_feat_dim: int = 64
+    """dim of the pooled (mean+max over space) global-context vector
+    concatenated onto the per-tile head inputs; 0 disables the global pathway.
+    Sweep 91w8vyea showed it is not made redundant by attention — 0 was the
+    worst setting and the metric peaked around 64."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
