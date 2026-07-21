@@ -397,9 +397,9 @@ class TestArchVariants:
     def test_attn_on_by_default_off_when_zero(self, envs):
         on = AgentCNN(envs, layers=(16, 16, 16))
         assert on.attn_dim > 0 and hasattr(on, "attn")
-        # Head count and depth default to the swept-winning values (8, 2).
-        assert len(on.attn.transformer.layers) == 2
-        assert on.attn.transformer.layers[0].self_attn.num_heads == 8
+        # Head count and depth default to the swept-winning values (12, 4).
+        assert len(on.attn.transformer.layers) == 4
+        assert on.attn.transformer.layers[0].self_attn.num_heads == 12
         # Positional embedding defaults on (one learned vector per grid cell).
         assert on.attn.pos_embed is not None
         assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)

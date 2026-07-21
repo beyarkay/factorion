@@ -1193,7 +1193,7 @@ class _SelfAttnStack(nn.Module):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=128, attn_heads=8, attn_layers=2, attn_pos_embed=1, global_feat_dim=32):
+    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=192, attn_heads=12, attn_layers=4, attn_pos_embed=1, global_feat_dim=64):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
