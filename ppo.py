@@ -1152,10 +1152,10 @@ def _categorical_entropy(logp_all_BN):
 
 
 class _SelfAttnStack(nn.Module):
-    """Self-attention over the 121-cell encoded map so every cell sees every
-    other in one hop. Each cell's feature column is a token; the residual
-    out-projection is zero-init, so the stage is identity at init and
-    shape-preserving (grid-sized in == grid-sized out)."""
+    """Self-attention over the encoded map so every cell sees every other in
+    one hop. Each cell's feature column is a token; the residual out-projection
+    is zero-init, so the stage is identity at init and shape-preserving
+    (grid-sized in == grid-sized out)."""
 
     def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed):
         super().__init__()
@@ -1196,7 +1196,21 @@ class AgentCNN(nn.Module):
     # Arch-shape defaults are sourced from SharedArgs so the winning config is
     # written once; the per-loop knobs (tile/critic std, dropout) differ between
     # PPO and SFT and stay as network fallbacks.
-    def __init__(self, envs, layers=tuple(layers_from_args(SharedArgs)), kernel_size=SharedArgs.kernel_size, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=SharedArgs.attn_dim, attn_heads=SharedArgs.attn_heads, attn_layers=SharedArgs.attn_layers, attn_pos_embed=SharedArgs.attn_pos_embed, global_feat_dim=SharedArgs.global_feat_dim):
+    def __init__(
+        self,
+        envs,
+        layers=tuple(layers_from_args(SharedArgs)),
+        kernel_size=SharedArgs.kernel_size,
+        tile_head_std=0.01,
+        critic_head_std=1.0,
+        dropout=0.0,
+        cat_embed_dim=8,
+        attn_dim=SharedArgs.attn_dim,
+        attn_heads=SharedArgs.attn_heads,
+        attn_layers=SharedArgs.attn_layers,
+        attn_pos_embed=SharedArgs.attn_pos_embed,
+        global_feat_dim=SharedArgs.global_feat_dim,
+    ):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
