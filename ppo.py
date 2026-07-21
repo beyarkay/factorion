@@ -37,7 +37,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PpoArgs
+from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -1193,7 +1193,10 @@ class _SelfAttnStack(nn.Module):
 
 
 class AgentCNN(nn.Module):
-    def __init__(self, envs, layers=(48, 48, 64), kernel_size=3, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=192, attn_heads=12, attn_layers=4, attn_pos_embed=1, global_feat_dim=64):
+    # Arch-shape defaults are sourced from SharedArgs so the winning config is
+    # written once; the per-loop knobs (tile/critic std, dropout) differ between
+    # PPO and SFT and stay as network fallbacks.
+    def __init__(self, envs, layers=tuple(layers_from_args(SharedArgs)), kernel_size=SharedArgs.kernel_size, tile_head_std=0.01, critic_head_std=1.0, dropout=0.0, cat_embed_dim=8, attn_dim=SharedArgs.attn_dim, attn_heads=SharedArgs.attn_heads, attn_layers=SharedArgs.attn_layers, attn_pos_embed=SharedArgs.attn_pos_embed, global_feat_dim=SharedArgs.global_feat_dim):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv

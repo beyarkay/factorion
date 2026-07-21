@@ -13,6 +13,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env  # noqa: E402
+from training_config import SharedArgs  # noqa: E402
 from helpers import Channel  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -397,9 +398,9 @@ class TestArchVariants:
     def test_attn_on_by_default_off_when_zero(self, envs):
         on = AgentCNN(envs, layers=(16, 16, 16))
         assert on.attn_dim > 0 and hasattr(on, "attn")
-        # Head count and depth default to the swept-winning values (12, 4).
-        assert len(on.attn.transformer.layers) == 4
-        assert on.attn.transformer.layers[0].self_attn.num_heads == 12
+        # Head count and depth default to the SharedArgs (swept-winning) values.
+        assert len(on.attn.transformer.layers) == SharedArgs.attn_layers
+        assert on.attn.transformer.layers[0].self_attn.num_heads == SharedArgs.attn_heads
         # Positional embedding defaults on (one learned vector per grid cell).
         assert on.attn.pos_embed is not None
         assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)
