@@ -1149,14 +1149,6 @@ fn canonical_split(
     })
 }
 
-/// Lay one belt run: the cells as-is, ending in `end_dir` (corner facings are
-/// recomputed from the path sequence).
-fn place_run(world: &mut World, cells: &[Cell], end_dir: Direction) -> Option<()> {
-    let run = path_to_placements(cells, end_dir)?;
-    place_belts(world, &run);
-    Some(())
-}
-
 /// Realise a [`SplitterYPlan`] as a SPLITTER_SPLIT factory: the base source
 /// feeds a north-facing splitter, which feeds the two prong sinks.
 fn place_plan(plan: &SplitterYPlan, size: usize) -> Option<World> {
@@ -1184,9 +1176,20 @@ fn place_plan(plan: &SplitterYPlan, size: usize) -> Option<World> {
     );
     place_splitter(&mut world, &plan.tiles, Direction::North);
 
-    place_run(&mut world, &plan.stem, Direction::North)?;
-    place_run(&mut world, &plan.arm1, plan.prong1_dir_split)?;
-    place_run(&mut world, &plan.arm2, plan.prong2_dir_split)?;
+    // Lay each belt run as-is, ending in the given direction (corner facings
+    // are recomputed from the path sequence by `path_to_placements`).
+    place_belts(
+        &mut world,
+        &path_to_placements(&plan.stem, Direction::North)?,
+    );
+    place_belts(
+        &mut world,
+        &path_to_placements(&plan.arm1, plan.prong1_dir_split)?,
+    );
+    place_belts(
+        &mut world,
+        &path_to_placements(&plan.arm2, plan.prong2_dir_split)?,
+    );
     Some(world)
 }
 
