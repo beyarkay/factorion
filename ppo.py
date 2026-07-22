@@ -1173,12 +1173,10 @@ def _categorical_entropy(logp_all_BN):
 
 
 def _select_action(logp_all_BN, temperature):
-    """Choose one category per row from log-probabilities: argmax when
-    temperature==0 (greedy/deterministic), else sample from the
-    temperature-scaled distribution (temperature==1 reproduces the on-policy
-    Categorical(logits).sample()). log_softmax is invariant to a per-row
-    additive shift, so scaling the stored log-probs by 1/T yields
-    softmax(logits/T) without re-deriving the raw logits."""
+    """Pick one category per row: argmax at temperature==0 (greedy), else
+    sample the temperature-scaled distribution (==1 is the on-policy sample).
+    log_softmax is shift-invariant, so scaling log-probs by 1/T == softmax(
+    logits/T)."""
     if temperature == 0.0:
         return logp_all_BN.argmax(dim=-1)
     if temperature == 1.0:
@@ -1187,10 +1185,9 @@ def _select_action(logp_all_BN, temperature):
 
 
 def _legal_tile_mask(x_BCWH):
-    """Boolean (B, W*H) mask, True where a tile is a legal placement (empty
-    entity AND buildable footprint). Greedy consumers pass legal_mask=True so
-    an argmax can't re-propose an occupied or walled cell; PPO leaves it off
-    and learns legality from the step penalty."""
+    """Boolean (B, W*H), True where a tile is empty AND buildable — the
+    legal-placement mask the greedy eval's argmax needs so it can't re-propose
+    an occupied or walled cell."""
     ent_BWH = x_BCWH[:, _CH_ENT]
     foot_BWH = x_BCWH[:, _CH_FOOTPRINT]
     legal_BWH = (ent_BWH == _EMPTY_ENT_ID) & (foot_BWH != _FOOTPRINT_UNAVAILABLE)
@@ -1490,27 +1487,13 @@ class AgentCNN(nn.Module):
         action=None,
         compute_value: bool = True,
     ):
-        """Single source of truth for turning an observation into an action.
-
-        Every consumer routes here, so a change to how the model is sampled —
-        or to the head layout it samples from — lands in exactly one place:
-
-          * PPO on-policy rollout / update — ``temperature=1`` (stochastic),
-            ``legal_mask`` off, value computed, eot ~ Bernoulli(p). Passing
-            ``action`` replays a stored action to recompute its log-prob for
-            the update instead of sampling a fresh one.
-          * greedy consumers (SFT/PPO eval, mod server, builder UI) —
-            ``temperature=0`` (argmax every head), eot fires when
-            ``p > eot_threshold``; eval also passes ``legal_mask=True`` to
-            skip occupied / walled tiles.
-
-        Returns a dict with the sampled ``action`` (a dict of tensors), the
-        summed ``logp`` and joint ``entropy`` of that action, the critic
-        ``value`` (None when ``compute_value=False``), the per-head
-        ``eot_prob``, and the per-head log-prob tensors in ``logp_heads``
-        (tile / entity / direction / item / misc) so callers that visualise
-        the distribution don't re-derive it.
-        """
+        """The one sampler every consumer routes through. temperature=1 is the
+        stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
+        (eot fires at p>eot_threshold) for eval / mod server / builder UI.
+        legal_mask restricts the tile pick to empty+buildable cells; `action`
+        replays a stored action to recompute its log-prob. Returns a dict of
+        action / logp / entropy / value (None if not compute_value) / eot_prob
+        / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
         encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
         value_B = self.critic_value(encoded_BCWH, g_BG) if compute_value else None
@@ -1562,12 +1545,11 @@ class AgentCNN(nn.Module):
             dir_B = _select_action(d_logp_all_BD, temperature)
             item_B = _select_action(i_logp_all_BI, temperature)
             misc_B = _select_action(m_logp_all_BM, temperature)
-            # Greedy eot is a threshold on p; stochastic eot is a Bernoulli
-            # draw — the same argmax-vs-sample split the categorical heads use.
-            if temperature == 0.0:
-                eot_B = (p_eot_B > eot_threshold).float()
-            else:
-                eot_B = torch.bernoulli(p_eot_B)
+            eot_B = (
+                (p_eot_B > eot_threshold).float()
+                if temperature == 0.0
+                else torch.bernoulli(p_eot_B)
+            )
         else:
             ent_B = action[:, 2]
             dir_B = action[:, 3]
@@ -1636,9 +1618,8 @@ class AgentCNN(nn.Module):
         }
 
     def get_action_and_value(self, x_BCWH, action=None):
-        """On-policy PPO sampling: a thin wrapper over :meth:`sample_action`
-        at temperature 1. Kept as a 4-tuple (action, logp, entropy, value) so
-        the ~20 rollout/update/test callsites don't have to change."""
+        """sample_action at temperature 1, projected to the (action, logp,
+        entropy, value) 4-tuple the ~20 PPO/test callsites already unpack."""
         out = self.sample_action(x_BCWH, temperature=1.0, action=action)
         return out["action"], out["logp"], out["entropy"], out["value"]
 

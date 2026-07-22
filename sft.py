@@ -571,10 +571,8 @@ def run_rollout_eval(
             # outputs are discarded; the per-eval cost of K-1 stale
             # forwards at the tail is negligible compared to the
             # batching win earlier in the queue.
-            # Greedy pick through the one shared sampler: temperature=0 is
-            # argmax on every head, legal_mask keeps the tile pick on empty +
-            # buildable cells so it can't livelock on a rejected tile. The
-            # critic is unused here, so skip it.
+            # Greedy pick via the shared sampler; legal_mask keeps argmax off
+            # occupied/walled tiles, and the critic is unused here.
             out = agent.sample_action(
                 obs_batch, temperature=0.0, legal_mask=True, compute_value=False
             )

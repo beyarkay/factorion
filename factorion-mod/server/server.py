@@ -135,9 +135,7 @@ def request_to_obs(req: dict) -> np.ndarray:
 def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
-        # temperature=0 is the shared sampler's greedy (argmax) mode — the
-        # same code path PPO/SFT and the builder UI use, so an architecture
-        # change never has to be mirrored here.
+        # temperature=0 = the shared sampler's greedy (argmax) mode.
         act = agent.sample_action(x, temperature=0.0, compute_value=False)["action"]
     return {
         "xy": (int(act["xy"][0, 0]), int(act["xy"][0, 1])),
