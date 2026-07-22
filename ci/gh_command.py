@@ -26,6 +26,7 @@ from ci.config import (
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
     GPU_FALLBACKS,
+    SETUP_SLACK_SECONDS,
     WANDB_PROJECT,
     PpoJob,
     SftJob,
@@ -169,7 +170,7 @@ def _launched_comment(
     lines += [
         "",
         "Job spec (every other hyperparameter comes from `training_config.py` "
-        "at this commit; for compares, `seed` varies per pod):",
+        "at this commit; for compares, each pod runs the listed `seeds` in turn):",
         "```json",
         json.dumps(spec, indent=2),
         "```",
@@ -235,12 +236,15 @@ def cmd_ppo(args, ctx) -> None:
 
 def _compare_wait_seconds(args) -> int:
     if args.algo == "sft":
-        budget = sft_budget_seconds(args.num_samples, 1)
+        per = sft_budget_seconds(args.num_samples, 1)
     else:
         from training_config import PpoArgs
 
-        budget = ppo_budget_seconds(args.total_timesteps or PpoArgs().total_timesteps)
-    return min(budget + 45 * 60, MAX_WAIT_SECONDS)
+        per = ppo_budget_seconds(args.total_timesteps or PpoArgs().total_timesteps)
+    # One pod runs all seeds back-to-back, so the wall-clock scales with seeds;
+    # the setup slack (baked into `per`) is paid once, not per seed.
+    total = SETUP_SLACK_SECONDS + args.seeds * (per - SETUP_SLACK_SECONDS)
+    return min(total + 45 * 60, MAX_WAIT_SECONDS)
 
 
 def _missing_run_warnings(infos: list[dict]) -> str:
@@ -332,7 +336,8 @@ def cmd_compare(args, ctx) -> None:
     )
     title = (
         f"Compare launched: {_commit_link(ctx['sha'])} vs `{args.base_ref}` "
-        f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per run)"
+        f"({args.algo}, {args.seeds} seeds x 2 sides, one pod per side "
+        f"running its seeds sequentially)"
     )
     footer = (
         f"W&B groups: {_group_link(pr_group)} vs "

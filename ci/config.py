@@ -211,7 +211,47 @@ class SweepJob:
         return SWEEP_BUDGET_SECONDS
 
 
-Job = SftJob | PpoJob | SweepJob
+@dataclass
+class CompareJob:
+    """One side of a compare: runs `seeds` training runs back-to-back on a
+    single pod, so a compare needs only 2 pods total instead of 2 x seeds.
+
+    Pods are the scarce resource — six at once often can't be scheduled — so
+    the seeds share one pod and run sequentially. Each seed is still its own
+    W&B run (distinct `seed` in the same `group`), so the seed-paired report is
+    unchanged. `algo` picks which per-seed command runs; the sft/ppo fields are
+    the same whitelisted overrides the single-run jobs carry.
+    """
+
+    sha: str
+    algo: str  # "sft" | "ppo"
+    seeds: list[int]
+    group: str  # W&B group (one per side)
+    num_samples: Optional[int] = None  # sft; None = SftArgs default
+    start_from: Optional[str] = None  # ppo
+    total_timesteps: Optional[int] = None  # ppo; None = PpoArgs default
+    extra_tags: list[str] = field(default_factory=list)
+
+    KIND: ClassVar[str] = "compare"
+
+    def budget_seconds(self) -> int:
+        if self.algo == "sft":
+            defaults = SftArgs()
+            n = self.num_samples if self.num_samples is not None else defaults.num_samples
+            per = sft_budget_seconds(n, defaults.epochs)
+        else:
+            t = (
+                self.total_timesteps
+                if self.total_timesteps is not None
+                else PpoArgs().total_timesteps
+            )
+            per = ppo_budget_seconds(t)
+        # Seeds run sequentially and share a single pod setup, so charge the
+        # setup slack once and the per-seed training time once per seed.
+        return SETUP_SLACK_SECONDS + len(self.seeds) * (per - SETUP_SLACK_SECONDS)
+
+
+Job = SftJob | PpoJob | SweepJob | CompareJob
 
 
 def job_to_dict(job: Job) -> dict:
@@ -219,7 +259,7 @@ def job_to_dict(job: Job) -> dict:
 
 
 def job_from_dict(d: dict) -> Job:
-    kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob)}
+    kinds = {cls.KIND: cls for cls in (SftJob, PpoJob, SweepJob, CompareJob)}
     d = dict(d)
     cls = kinds[d.pop("kind")]
     known = {f.name for f in dataclasses.fields(cls)}
@@ -227,9 +267,9 @@ def job_from_dict(d: dict) -> Job:
 
 
 # ── Compare fan-out ────────────────────────────────────────────────
-# A compare is not a pod-side job kind: it fans out into 2 x seeds ordinary
-# single-run pods (one run per pod so seeds never compete for CPU), grouped in
-# W&B by role. The report is assembled from W&B afterwards.
+# A compare is not a pod-side training kind: it fans out into exactly 2 pods
+# (one per side), each running its seeds sequentially, grouped in W&B by role.
+# The report is assembled from W&B afterwards.
 
 COMPARE_SEEDS_DEFAULT = 3
 COMPARE_NUM_SAMPLES_DEFAULT = 5_000_000  # hours, not days, per compare
@@ -283,8 +323,9 @@ def compare_fanout(
     start_from: Optional[str] = None,
     total_timesteps: Optional[int] = None,
     extra_tags: Optional[list[str]] = None,
-) -> list[SftJob | PpoJob]:
-    """Build the 2 x seeds single-run job specs for a compare.
+) -> list[CompareJob]:
+    """Build the 2 job specs for a compare — one per side, each running all
+    `seeds` seeds sequentially on its own pod.
 
     algo "sft" compares from-scratch SFT; algo "ppo" compares PPO finetuning
     from the same start_from checkpoint on both commits.
@@ -294,30 +335,20 @@ def compare_fanout(
     if algo == "ppo" and not start_from:
         raise ValueError("PPO compare needs --start-from (a W&B SFT run id)")
 
-    jobs: list[SftJob | PpoJob] = []
+    seed_list = list(range(1, seeds + 1))
+    jobs: list[CompareJob] = []
     for side, side_sha in (("pr", sha), ("main", base_sha)):
-        for seed in range(1, seeds + 1):
-            tags = [f"cmp:{sha[:7]}", f"cmp-side:{side}", *(extra_tags or [])]
-            if algo == "sft":
-                jobs.append(
-                    SftJob(
-                        sha=side_sha,
-                        num_samples=num_samples,
-                        seed=seed,
-                        group=compare_group(sha, algo, nonce, side),
-                        extra_tags=tags,
-                    )
-                )
-            else:
-                assert start_from is not None
-                jobs.append(
-                    PpoJob(
-                        sha=side_sha,
-                        start_from=start_from,
-                        total_timesteps=total_timesteps,
-                        seed=seed,
-                        group=compare_group(sha, algo, nonce, side),
-                        extra_tags=tags,
-                    )
-                )
+        tags = [f"cmp:{sha[:7]}", f"cmp-side:{side}", *(extra_tags or [])]
+        jobs.append(
+            CompareJob(
+                sha=side_sha,
+                algo=algo,
+                seeds=seed_list,
+                group=compare_group(sha, algo, nonce, side),
+                num_samples=num_samples if algo == "sft" else None,
+                start_from=start_from,
+                total_timesteps=total_timesteps,
+                extra_tags=tags,
+            )
+        )
     return jobs
