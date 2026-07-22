@@ -33,7 +33,6 @@ import gymnasium as gym  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
-import torch.nn.functional as F  # noqa: E402
 import tyro  # noqa: E402
 
 os.environ.setdefault("WANDB_MODE", "disabled")
@@ -539,32 +538,40 @@ def _predict(grid: list[list[dict]]) -> dict:
     H = obs_CWH.shape[3]
 
     with torch.no_grad():
-        encoded_BCWH, g_1G = agent.encode(obs_CWH)
-        # End-of-turn probability — sigmoid of the eot head's single
-        # logit. Surfaced in the side panel so the user can see when
-        # the model thinks the factory is finished.
-        eot_prob = float(torch.sigmoid(agent.eot_logit(encoded_BCWH, g_1G)).item())
-        tile_logits = agent.tile_logits(encoded_BCWH).reshape(1, -1)
-        tile_probs = F.softmax(tile_logits, dim=-1)[0]
+        # Greedy prediction through the one shared sampler (temperature=0) —
+        # the exact tile / entity / direction / item / misc argmax + eot the
+        # model would act on, identical to PPO/SFT eval and the mod server, so
+        # an architecture change never has to be re-applied here. The critic
+        # is unused in the UI, so skip it. The per-head log-probs come back in
+        # `logp_heads` and drive the side-panel top-p distributions.
+        out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
+        heads = out["logp_heads"]
+
+        # End-of-turn probability — surfaced in the side panel so the user can
+        # see when the model thinks the factory is finished.
+        eot_prob = float(out["eot_prob"][0].item())
+
+        tile_probs = heads["tile"].exp()[0]
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
 
-        # Argmax — used both as the "Apply" target and to condition the
-        # side-panel per-head distributions on the same tile the top
-        # distribution favours.
-        tile_idx = int(tile_probs.argmax().item())
-        x, y = tile_idx // H, tile_idx % H
+        # The sampler's argmax tile: both the "Apply" target and the tile the
+        # side-panel per-head distributions are conditioned on.
+        x = int(out["action"]["xy"][0, 0].item())
+        y = int(out["action"]["xy"][0, 1].item())
 
-        zero = torch.zeros(1, dtype=torch.long, device=encoded_BCWH.device)
-        feats = agent.tile_features(encoded_BCWH, g_1G, zero, x, y)
-        ent_top, ent_rest = _top_p_named(F.softmax(agent.ent_head(feats), dim=-1)[0], _ENT_NAMES)
-        dir_top, dir_rest = _top_p_named(F.softmax(agent.dir_head(feats), dim=-1)[0], _DIR_NAMES)
-        item_top, item_rest = _top_p_named(F.softmax(agent.item_head(feats), dim=-1)[0], _ITEM_NAMES)
-        misc_top, misc_rest = _top_p_named(F.softmax(agent.misc_head(feats), dim=-1)[0], _MISC_NAMES)
+        ent_top, ent_rest = _top_p_named(heads["entity"].exp()[0], _ENT_NAMES)
+        dir_top, dir_rest = _top_p_named(heads["direction"].exp()[0], _DIR_NAMES)
+        item_top, item_rest = _top_p_named(heads["item"].exp()[0], _ITEM_NAMES)
+        misc_top, misc_rest = _top_p_named(heads["misc"].exp()[0], _MISC_NAMES)
 
-        # Per-tile argmax for ent/dir/item/misc — one matmul per head
-        # against the whole spatial map, reshaped to (W*H, chan3).
+        # Ghost overlays: the greedy per-head pick at EVERY tile (not just the
+        # sampled one) — a whole-grid visualisation layered on the shared
+        # heads, so it re-encodes and runs one batched matmul per head against
+        # the full spatial map, reshaped to (W*H, chan).
+        encoded_BCWH, g_1G = agent.encode(obs_CWH)
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
+        if g_1G is not None:
+            feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
         item_pick = agent.item_head(feats_all).argmax(dim=-1)
