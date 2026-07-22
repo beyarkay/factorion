@@ -1,13 +1,23 @@
 name: CI reporter
 
 # Long training runs outlive GitHub's 6h job limit, so the workflow that
-# launched them can't wait for the results. This cron posts a PR summary
-# comment for every finished W&B run tagged pr:<N> that doesn't have one yet
-# (idempotent via an invisible marker in each comment). See ci/report.py.
+# launched them can't wait for the results. This job posts (or edits into the
+# run's launch comment) a PR summary for every terminal W&B run tagged pr:<N>
+# that doesn't have one yet — including crashed/failed runs, so a W&B failure
+# always surfaces on the PR (idempotent via an invisible marker; see
+# ci/report.py).
+#
+# Delivery is deliberately over-triggered: GitHub silently drops scheduled
+# cron ticks under load, and a dropped tick is exactly what once left a failed
+# run unreported. So we also run whenever a /ci command finishes — any PR
+# activity flushes the backlog — on top of a tightened schedule.
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/15 * * * *"
+  workflow_run:
+    workflows: ["CI command"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
