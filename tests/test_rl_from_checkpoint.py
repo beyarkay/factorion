@@ -51,11 +51,14 @@ def agent(envs):
 class TestFullBlankDefault:
     def test_reset_without_option_fully_blanks(self, registered_env):
         """Omitting num_missing_entities blanks the whole factory (inf),
-        identical to passing inf explicitly, and removes ≥1 entity."""
+        identical to passing inf explicitly, and removes ≥1 entity. The kind
+        is pinned to a scripted lesson: a randomly-sampled kind could be a
+        trial, which has no entities to blank."""
         env = FactorioEnv(size=8)
-        env.reset(seed=3, options={"num_missing_entities": float("inf")})
+        kind = LessonKind.MOVE_ONE_ITEM
+        env.reset(seed=3, options={"kind": kind, "num_missing_entities": float("inf")})
         removed_inf = env.min_entities_required
-        env.reset(seed=3, options={})  # no num_missing_entities -> default inf
+        env.reset(seed=3, options={"kind": kind})  # no num_missing_entities -> default inf
         removed_default = env.min_entities_required
         assert removed_default == removed_inf
         assert removed_default > 0

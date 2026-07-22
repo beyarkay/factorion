@@ -518,8 +518,8 @@ class FactorioEnv(gym.Env):
             # by LessonKind(int).name.
             'kind': self._kind.value,
             # thput_raw: raw items/second (reference-free). thput_normed:
-            # raw / per-factory max, clamped to [0, 1] (1.0 == reproduced the
-            # reference factory's throughput). See FIXME(#161) in step().
+            # raw / per-factory max, clamped to [0, 1] (1.0 == matched the
+            # factory's reference throughput).
             'thput_raw': self._thput_raw,
             'thput_normed': self._thput_normed,
             'frac_reachable': self._frac_reachable,
@@ -651,18 +651,13 @@ class FactorioEnv(gym.Env):
         # Cache the episode-constant pieces of the per-step solution-match
         # diagnostic now that the solved world is known.
         self._cache_solution_match()
-        # Per-factory maximum throughput: the raw items/second the complete,
-        # correct factory carries. We normalize the agent's raw throughput by
-        # this so a perfectly-rebuilt factory scores 1.0 regardless of its
-        # absolute speed (different lessons/layouts have very different maxima;
-        # the old fixed /15.0 mislabeled any factory whose max was < 15).
-        # FIXME(#161): this depends on having the full scripted solution to
-        # compute the max. Fine while every episode is a scripted lesson, but
-        # arbitrary RL rollouts won't have a reference factory — see GH #161.
-        max_tp, _ = factorion_rs.simulate_throughput(
-            self._solved_world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
-        )
-        self._max_throughput = float(max_tp)
+        # Per-factory maximum throughput: the items/s reference we normalize
+        # the agent's raw throughput by, so a perfect build scores 1.0
+        # regardless of its absolute speed. The generator supplies it: the
+        # solved world's simulated rate for scripted lessons, an analytic
+        # ceiling for trial kinds (no reference solution to simulate).
+        # GH #161 tracks rollouts with no generator-built factory at all.
+        self._max_throughput = float(factory.max_throughput)
         self._world_CWH, min_entities_required = blank_entities(
             factory, num_missing_entities=self._num_missing_entities
         )
@@ -816,8 +811,7 @@ class FactorioEnv(gym.Env):
         if terminated or truncated or self._full_diagnostics:
             # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
             # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
-            # FIXME(#161): thput_normed/termination/reward depend on
-            # self._max_throughput, which needs the scripted solution.
+            # self._max_throughput comes from the factory generator — see reset().
             thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
             thput_normed = (
                 min(1.0, thput_raw / self._max_throughput)
