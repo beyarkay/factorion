@@ -1355,46 +1355,34 @@ fn build_splitter_merge_sideloaded(
         let mut world = World::empty(size, size);
 
         // North-facing splitter: 2 tiles side by side, inputs on the south
-        // edge, one output belt + sink to the north.
+        // edge, two candidate output tiles on the north edge. The output is
+        // wired from whichever candidate reaches the sink in fewer belts.
         let sx = rng.randint(1, s - 3);
         let sy = rng.randint(3, s - 3);
         let tiles = [(sx, sy), (sx + 1, sy)];
         let inputs = [(sx, sy + 1), (sx + 1, sy + 1)];
-        let out_side = rng.choice_index(2) as i64;
-        let out_cell = (sx + out_side, sy - 1);
-        let sink_pos = (sx + out_side, sy - 2);
+        let outputs = [(sx, sy - 1), (sx + 1, sy - 1)];
 
         place_splitter(&mut world, &tiles, Direction::North);
-        place_marker(
-            &mut world,
-            sink_pos,
-            Item::Sink,
-            Direction::North,
-            item_value,
-        );
-        place_belts(
-            &mut world,
-            &[(out_cell.0, out_cell.1, Direction::North, Misc::None)],
-        );
 
-        // Reserve the fixed core so gadgets/arms can't overwrite it.
+        // Reserve the fixed core so gadgets/arms can't overwrite it. Both
+        // output tiles are reserved; the unused one stays clear so all 15 i/s
+        // flows to the wired output.
         let mut reserved: HashSet<Cell> = tiles.iter().copied().collect();
         reserved.extend(inputs);
-        reserved.insert(out_cell);
-        reserved.insert(sink_pos);
+        reserved.extend(outputs);
 
-        // Two side-load gadgets in the region south of the splitter, each
-        // routed up into one splitter input.
-        let mut belts = 1; // the output belt
-        let mut decoys: Vec<Cell> = Vec::new();
-        let mut sources: Vec<Cell> = Vec::new();
+        // Place both side-load gadgets in the region south of the splitter;
+        // their positions don't depend on which splitter input they feed.
+        let mut belts = 0;
+        let mut gadgets: Vec<SideloadGadget> = Vec::new();
         let mut ok = true;
-        for &input_cell in inputs.iter() {
+        for _ in 0..2 {
             let layout = rng.choice_index(2);
             let source_side = if rng.choice_index(2) == 0 { -1 } else { 1 };
             let tx = rng.randint(1, s - 2);
             let ty = rng.randint(sy + 2, s - 2);
-            let gadget = match place_sideload_gadget(
+            match place_sideload_gadget(
                 &mut world,
                 (tx, ty),
                 source_side,
@@ -1403,42 +1391,110 @@ fn build_splitter_merge_sideloaded(
                 s,
                 &reserved,
             ) {
-                Some(g) => g,
+                Some(g) => {
+                    reserved.extend(g.cells.iter().copied());
+                    belts += g.belts;
+                    gadgets.push(g);
+                }
                 None => {
                     ok = false;
                     break;
                 }
-            };
-            // Route the gadget's 7.5 output up into the splitter input. Belts
-            // only (no tunnels) so the two arms stay simple and independent.
-            let mut blocked = reserved.clone();
-            blocked.extend(gadget.cells.iter().copied());
-            blocked.remove(&gadget.out_cell); // the path starts here
-            blocked.remove(&input_cell); // and ends here
-            let path = match find_belt_path(
-                gadget.out_cell,
-                input_cell,
-                Direction::North,
-                s,
-                &blocked,
-                Underground::Off,
-            ) {
-                Some(p) => p,
-                None => {
-                    ok = false;
-                    break;
-                }
-            };
-            place_belts(&mut world, &path);
-            belts += gadget.belts + path.len();
-            reserved.extend(gadget.cells.iter().copied());
-            reserved.extend(belt_cell_set(&path));
-            decoys.push(gadget.decoy);
-            sources.push(gadget.source);
+            }
         }
         if !ok {
             continue;
         }
+
+        // Route the two 7.5 arms up into the splitter inputs. Try both
+        // source→input assignments and keep whichever uses fewer belts, so
+        // neither arm takes a needless roundabout path. Belts only (no tunnels)
+        // so the arms stay simple and independent (the second is routed around
+        // the first).
+        let mut best_arms: Option<(usize, Vec<UgPlacement>, Vec<UgPlacement>)> = None;
+        for &(a, b) in &[(0usize, 1usize), (1usize, 0usize)] {
+            let mut b0 = reserved.clone();
+            b0.remove(&gadgets[0].out_cell);
+            b0.remove(&inputs[a]);
+            let Some(p0) = find_belt_path(
+                gadgets[0].out_cell,
+                inputs[a],
+                Direction::North,
+                s,
+                &b0,
+                Underground::Off,
+            ) else {
+                continue;
+            };
+            let mut b1 = reserved.clone();
+            b1.extend(belt_cell_set(&p0));
+            b1.remove(&gadgets[1].out_cell);
+            b1.remove(&inputs[b]);
+            let Some(p1) = find_belt_path(
+                gadgets[1].out_cell,
+                inputs[b],
+                Direction::North,
+                s,
+                &b1,
+                Underground::Off,
+            ) else {
+                continue;
+            };
+            let total = p0.len() + p1.len();
+            if best_arms.as_ref().is_none_or(|(bt, ..)| total < *bt) {
+                best_arms = Some((total, p0, p1));
+            }
+        }
+        let Some((_, arm0, arm1)) = best_arms else {
+            continue;
+        };
+        place_belts(&mut world, &arm0);
+        place_belts(&mut world, &arm1);
+        belts += arm0.len() + arm1.len();
+        reserved.extend(belt_cell_set(&arm0));
+        reserved.extend(belt_cell_set(&arm1));
+        let decoys: Vec<Cell> = gadgets.iter().map(|g| g.decoy).collect();
+        let sources: Vec<Cell> = gadgets.iter().map(|g| g.source).collect();
+
+        // Wire the splitter output to a sink in the half-plane in FRONT of the
+        // splitter (north of it, pre-rotation), facing away, at a random
+        // location. The two sources sit in the half behind the splitter, so a
+        // line through the splitter cleanly separates sources from sink and the
+        // whole factory reads as one forward Y (sources → splitter → sink)
+        // rather than doubling back. Route from whichever of the two splitter
+        // outputs reaches the sink in fewer belts (the other stays clear).
+        let sink_dir = Direction::North;
+        let sd = sink_dir.delta();
+        let front: Vec<Cell> = available_cells(s, &reserved)
+            .into_iter()
+            .filter(|&(_, y)| y <= sy - 2)
+            .collect();
+        if front.is_empty() {
+            continue;
+        }
+        let sink_pos = front[rng.choice_index(front.len())];
+        let sink_input = (sink_pos.0 - sd.0, sink_pos.1 - sd.1);
+        if !in_grid(sink_input, s) || reserved.contains(&sink_input) {
+            continue;
+        }
+        let mut best_out: Option<Vec<UgPlacement>> = None;
+        for &oc in &outputs {
+            let mut blocked = reserved.clone();
+            blocked.insert(sink_pos);
+            blocked.remove(&oc); // the path starts here
+            if let Some(p) = find_belt_path(oc, sink_input, sink_dir, s, &blocked, Underground::Off)
+            {
+                if best_out.as_ref().is_none_or(|b| p.len() < b.len()) {
+                    best_out = Some(p);
+                }
+            }
+        }
+        let Some(out_path) = best_out else {
+            continue;
+        };
+        place_marker(&mut world, sink_pos, Item::Sink, sink_dir, item_value);
+        place_belts(&mut world, &out_path);
+        belts += out_path.len();
 
         let total_entities = belts + 1; // + splitter
         if (total_entities as f64) > max_entities {
@@ -3655,6 +3711,119 @@ mod tests {
         assert!(
             built > 40,
             "only {built} sideloaded merges built across 60 seeds"
+        );
+    }
+
+    /// Belt tiles between the splitter and the sink: BFS over occupied tiles
+    /// from the sink to the nearest splitter tile, less the sink's own step.
+    fn splitter_sink_gap(world: &World) -> Option<usize> {
+        use std::collections::VecDeque;
+        let (w, h) = (world.width(), world.height());
+        let sink = (0..w)
+            .flat_map(|x| (0..h).map(move |y| (x, y)))
+            .find(|&(x, y)| world.entity_at(x, y) == Some(Item::Sink))?;
+        let mut seen: HashSet<(usize, usize)> = HashSet::from([sink]);
+        let mut q: VecDeque<((usize, usize), usize)> = VecDeque::from([(sink, 0)]);
+        while let Some(((x, y), d)) = q.pop_front() {
+            if world.entity_at(x, y) == Some(Item::Splitter) {
+                return Some(d.saturating_sub(1));
+            }
+            for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                    let c = (nx as usize, ny as usize);
+                    if !seen.contains(&c) && world.entity_at(c.0, c.1).is_some() {
+                        seen.insert(c);
+                        q.push_back((c, d + 1));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_sideloaded_merge_sink_not_always_adjacent() {
+        // The splitter output is wired to a semi-arbitrary sink, so the sink is
+        // not rigidly one belt from the splitter — across seeds it is sometimes
+        // two or more belts away.
+        let (mut built, mut far) = (0, 0);
+        for seed in 0..60u64 {
+            let Some(f) = build_factory(
+                12,
+                LessonKind::SplitterMergeSideloaded,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            built += 1;
+            if splitter_sink_gap(&f.world).is_some_and(|g| g >= 2) {
+                far += 1;
+            }
+        }
+        assert!(built > 40, "only {built} builds");
+        assert!(
+            far > 0,
+            "splitter was always ≤1 belt from the sink across {built} builds"
+        );
+    }
+
+    #[test]
+    fn test_sideloaded_merge_uses_both_splitter_outputs() {
+        // Exactly one splitter output tile is belted (the other stays clear):
+        // the one that reaches the sink in fewer belts. As the sink moves, both
+        // tiles get used across seeds.
+        let (mut tile0, mut tile1) = (0u32, 0u32);
+        for seed in 0..80u64 {
+            let Some(f) = build_factory(
+                12,
+                LessonKind::SplitterMergeSideloaded,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            let w = &f.world;
+            let mut spl: Vec<(usize, usize)> = (0..w.width())
+                .flat_map(|x| (0..w.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| w.entity_at(x, y) == Some(Item::Splitter))
+                .collect();
+            spl.sort();
+            assert_eq!(spl.len(), 2, "seed={seed}");
+            let (dx, dy) = w.direction_at(spl[0].0, spl[0].1).delta();
+            let belted: Vec<usize> = spl
+                .iter()
+                .enumerate()
+                .filter(|(_, &(x, y))| {
+                    let (ox, oy) = (x as i64 + dx, y as i64 + dy);
+                    ox >= 0
+                        && oy >= 0
+                        && (ox as usize) < w.width()
+                        && (oy as usize) < w.height()
+                        && matches!(
+                            w.entity_at(ox as usize, oy as usize),
+                            Some(Item::TransportBelt)
+                        )
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                belted.len(),
+                1,
+                "seed={seed}: exactly one splitter output tile should carry a belt"
+            );
+            if belted[0] == 0 {
+                tile0 += 1;
+            } else {
+                tile1 += 1;
+            }
+        }
+        assert!(
+            tile0 > 0 && tile1 > 0,
+            "output side not randomized: tile0={tile0} tile1={tile1}"
         );
     }
 

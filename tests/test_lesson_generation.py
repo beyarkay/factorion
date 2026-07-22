@@ -647,6 +647,45 @@ class TestSplitterMergeSideloadedHonest:
                 f"source saturated the sink (the old SPLITTER_MERGE hack)"
             )
 
+    def test_sink_is_sometimes_more_than_one_belt_from_splitter(self):
+        """The splitter output is wired to a semi-arbitrary sink, so the sink is
+        not rigidly one belt away — across seeds it is sometimes 2+ belts."""
+        from collections import deque
+
+        splitter_val = str2ent("splitter").value
+        sink_val = str2ent("sink").value
+        empty_val = str2ent("empty").value
+
+        def belt_gap(world):
+            ent = world[Channel.ENTITIES.value]
+            W, H = ent.shape
+            sink = tuple(int(c) for c in (ent == sink_val).nonzero(as_tuple=False)[0])
+            seen, q = {sink}, deque([(sink, 0)])
+            while q:
+                (x, y), d = q.popleft()
+                if int(ent[x, y]) == splitter_val:
+                    return d - 1
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < W and 0 <= ny < H and (nx, ny) not in seen \
+                            and int(ent[nx, ny]) != empty_val:
+                        seen.add((nx, ny))
+                        q.append(((nx, ny), d + 1))
+            return None
+
+        gaps = []
+        for seed in range(40):
+            factory = build_factory(
+                size=11, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
+            )
+            if factory is None:
+                continue
+            gaps.append(belt_gap(factory.world_CWH))
+        assert any((g or 0) >= 2 for g in gaps), (
+            f"splitter was never >1 belt from the sink across {len(gaps)} builds; "
+            f"gaps={sorted(g for g in gaps if g is not None)}"
+        )
+
 
 # ── Multi-tile entity removal tests ──────────────────────────────────────────
 
