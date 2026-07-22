@@ -120,7 +120,12 @@ in the flow graph. With 2 outputs, each gets half the input.
 Three lesson generators use splitters:
 
 - `SPLITTER_SPLIT`: 1 source → belts → splitter → 2×(belts → sink)
-- `SPLITTER_MERGE`: 2×(source → belts) → splitter → belts → 1 sink
+- `SPLITTER_MERGE_SIDELOADED`: 2×(source → side-load gadget capping the arm to
+  7.5 i/s) → splitter → belts → 1 sink. Each source is side-loaded via a
+  protected empty "decoy" belt so it fills only one lane (7.5); the splitter
+  merges the two half-belts into one full 15 i/s belt, making both arms
+  throughput-necessary (dropping one leaves the sink at 7.5). This replaces the
+  old `SPLITTER_MERGE`, whose single sink was saturated by either source alone.
 - Both are tested across many seeds and grid sizes
 
 ### Not Implemented

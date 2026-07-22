@@ -138,8 +138,8 @@ then blank out N entities from them. The result is a stream of
 covers a different entity/layout pattern:
 
 - `MOVE_ONE_ITEM`, `ALL_BELTS_ALREADY_IN_PLACE` — belt routing
-- `SPLITTER_SPLIT`, `SPLITTER_MERGE` — flow splitting/merging via 2×1
-  splitters
+- `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED` — flow splitting, and merging
+  two side-load-limited (7.5 i/s) arms into one full belt via 2×1 splitters
 - (planned) underground belts, crossings, assembling machines
 
 Each lesson also has an **internal difficulty knob**: `num_missing_entities`

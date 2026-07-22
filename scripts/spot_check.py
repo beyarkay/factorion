@@ -42,7 +42,7 @@ class Scenario(Enum):
 SCENARIO_TO_KIND = {
     Scenario.belt: LessonKind.MOVE_ONE_ITEM,
     Scenario.splitter_split: LessonKind.SPLITTER_SPLIT,
-    Scenario.splitter_merge: LessonKind.SPLITTER_MERGE,
+    Scenario.splitter_merge: LessonKind.SPLITTER_MERGE_SIDELOADED,
 }
 
 

@@ -230,7 +230,7 @@ class SftArgs(SharedArgs):
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 3.242e-3
+    lr: float = 1e-3
     """peak learning rate (after warmup, before cosine decay)"""
     warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""

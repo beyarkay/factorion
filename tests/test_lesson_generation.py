@@ -1,4 +1,4 @@
-"""Tests for lesson generation: SPLITTER_SPLIT, SPLITTER_MERGE."""
+"""Tests for lesson generation: SPLITTER_SPLIT, SPLITTER_MERGE_SIDELOADED."""
 
 import pytest
 import random
@@ -314,14 +314,14 @@ class TestSplitterSplitThroughputRange:
         )
 
 
-# ── SPLITTER_MERGE tests ─────────────────────────────────────────────────────
+# ── SPLITTER_MERGE_SIDELOADED tests ─────────────────────────────────────────────────────
 
 
 class TestSplitterMergeBasic:
-    """Basic sanity checks for SPLITTER_MERGE lesson generation."""
+    """Basic sanity checks for SPLITTER_MERGE_SIDELOADED lesson generation."""
 
     def test_generates_without_error(self):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, min_ent = blank_entities(factory, num_missing_entities=0)
@@ -330,7 +330,7 @@ class TestSplitterMergeBasic:
 
     def test_returns_cwh_tensor(self):
         size = 10
-        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -339,7 +339,7 @@ class TestSplitterMergeBasic:
         assert world.shape[2] == size
 
     def test_has_two_sources_one_sink(self):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -348,7 +348,7 @@ class TestSplitterMergeBasic:
         assert (ent_layer == str2ent("sink").value).sum().item() == 1
 
     def test_has_splitter(self):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -357,7 +357,7 @@ class TestSplitterMergeBasic:
         assert splitter_count == 2, f"Expected 2 splitter tiles, got {splitter_count}"
 
     def test_has_belts(self):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -366,7 +366,7 @@ class TestSplitterMergeBasic:
         assert belt_count >= 3, f"Expected at least 3 belts, got {belt_count}"
 
     def test_nonzero_throughput(self):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -375,7 +375,7 @@ class TestSplitterMergeBasic:
 
     def test_throughput_bounded_by_splitter(self):
         """Total throughput should be <= 30.0 (splitter max flow)."""
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -388,7 +388,7 @@ class TestSplitterMergeManySeeds:
 
     @pytest.mark.parametrize("seed", range(50))
     def test_size_10_seed(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -397,7 +397,7 @@ class TestSplitterMergeManySeeds:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_size_8_seed(self, seed):
-        factory = build_factory(size=8, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=8, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -406,7 +406,7 @@ class TestSplitterMergeManySeeds:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_12_seed(self, seed):
-        factory = build_factory(size=12, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=12, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -415,7 +415,7 @@ class TestSplitterMergeManySeeds:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_size_15_seed(self, seed):
-        factory = build_factory(size=15, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=15, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -428,7 +428,7 @@ class TestSplitterMergeThroughput:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_throughput_size_10(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -443,7 +443,7 @@ class TestSplitterMergeGridSizes:
 
     @pytest.mark.parametrize("size", [8, 9, 10, 12, 15])
     def test_valid_factory_per_size(self, size):
-        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=7
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=7
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -460,7 +460,7 @@ class TestSplitterMergeEntityDirections:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_all_entities_have_directions(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -483,7 +483,7 @@ class TestSplitterMergeNoOverlaps:
 
     @pytest.mark.parametrize("seed", range(30))
     def test_no_double_placement(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -503,7 +503,7 @@ class TestSplitterMergeItems:
 
     @pytest.mark.parametrize("seed", range(20))
     def test_sources_sink_have_matching_items(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
@@ -528,7 +528,7 @@ class TestSplitterMergeMissingEntities:
 
     @pytest.mark.parametrize("num_missing", [1, 2, 3])
     def test_removes_correct_count(self, num_missing):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=42
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=42
         )
         assert factory is not None
         world, min_ent = blank_entities(factory, num_missing_entities=num_missing)
@@ -539,7 +539,7 @@ class TestSplitterMergeMissingEntities:
 
     @pytest.mark.parametrize("seed", range(10))
     def test_missing_inf_returns_positive_count(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, min_ent = blank_entities(factory, num_missing_entities=float("inf"))
@@ -549,7 +549,7 @@ class TestSplitterMergeMissingEntities:
     def test_splitter_removable_on_full_blank(self, seed):
         """A full blank must remove the splitter so the expert completion
         includes placing it — otherwise the policy never learns to."""
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed)
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed)
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=float("inf"))
         ent_layer = world[Channel.ENTITIES.value]
@@ -568,11 +568,11 @@ class TestSplitterMergeDeterminism:
 
     @pytest.mark.parametrize("seed", [0, 1, 42, 99])
     def test_deterministic(self, seed):
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world1, min1 = blank_entities(factory, num_missing_entities=0)
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world2, min2 = blank_entities(factory, num_missing_entities=0)
@@ -587,13 +587,103 @@ class TestSplitterMergeThroughputRange:
     @pytest.mark.parametrize("seed", range(15))
     def test_throughput_in_range(self, size, seed):
         """Throughput should be > 0 and <= 30.0 (splitter max)."""
-        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        factory = build_factory(size=size, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, _ = blank_entities(factory, num_missing_entities=0)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert 0 < tp <= 30.0 + 1e-6, (
             f"size={size}, seed={seed}: throughput {tp} not in (0, 30.0]"
+        )
+
+
+class TestSplitterMergeSideloadedHonest:
+    """The reason SPLITTER_MERGE_SIDELOADED replaces the old SPLITTER_MERGE:
+    both source arms are throughput-necessary, so a partial build can't earn
+    full credit the way the old merge's single-source-saturated sink allowed."""
+
+    def test_lesson_opts_into_orphans(self):
+        import factorion_rs
+
+        allows = factorion_rs.py_lesson_allows_orphans()
+        assert allows["SPLITTER_MERGE_SIDELOADED"] is True
+        assert allows["SPLITTER_SPLIT"] is False
+
+    @pytest.mark.parametrize("seed", range(15))
+    def test_decoys_protected_and_are_belts(self, seed):
+        factory = build_factory(
+            size=11, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
+        )
+        assert factory is not None
+        # Two protected side-load decoy belts.
+        assert len(factory.protected_positions) == 2
+        ent = factory.world_CWH[Channel.ENTITIES.value]
+        for x, y in factory.protected_positions:
+            assert ent[x, y].item() == str2ent("transport_belt").value
+
+    @pytest.mark.parametrize("seed", range(15))
+    def test_dropping_a_source_arm_collapses_throughput(self, seed):
+        """A full build saturates the sink; blanking either source (a one-arm
+        build) drops it well below full — the anti-hack property the old
+        SPLITTER_MERGE lacked."""
+        factory = build_factory(
+            size=11, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
+        )
+        assert factory is not None
+        full_tp, _ = rs_throughput(factory.world_CWH.permute(1, 2, 0))
+        assert full_tp > 14.9, f"seed={seed}: full merge {full_tp} < 15"
+
+        ent = factory.world_CWH[Channel.ENTITIES.value]
+        sources = (ent == str2ent("source").value).nonzero(as_tuple=False)
+        assert len(sources) == 2
+        for i in range(len(sources)):
+            sx, sy = int(sources[i][0]), int(sources[i][1])
+            partial = factory.world_CWH.clone()
+            partial[Channel.ENTITIES.value, sx, sy] = str2ent("transport_belt").value
+            partial[Channel.ITEMS.value, sx, sy] = str2item("empty").value
+            one_arm_tp, _ = rs_throughput(partial.permute(1, 2, 0))
+            assert one_arm_tp < 14.0, (
+                f"seed={seed}: one-arm build scored {one_arm_tp} — a single "
+                f"source saturated the sink (the old SPLITTER_MERGE hack)"
+            )
+
+    def test_sink_is_sometimes_more_than_one_belt_from_splitter(self):
+        """The splitter output is wired to a semi-arbitrary sink, so the sink is
+        not rigidly one belt away — across seeds it is sometimes 2+ belts."""
+        from collections import deque
+
+        splitter_val = str2ent("splitter").value
+        sink_val = str2ent("sink").value
+        empty_val = str2ent("empty").value
+
+        def belt_gap(world):
+            ent = world[Channel.ENTITIES.value]
+            W, H = ent.shape
+            sink = tuple(int(c) for c in (ent == sink_val).nonzero(as_tuple=False)[0])
+            seen, q = {sink}, deque([(sink, 0)])
+            while q:
+                (x, y), d = q.popleft()
+                if int(ent[x, y]) == splitter_val:
+                    return d - 1
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < W and 0 <= ny < H and (nx, ny) not in seen \
+                            and int(ent[nx, ny]) != empty_val:
+                        seen.add((nx, ny))
+                        q.append(((nx, ny), d + 1))
+            return None
+
+        gaps = []
+        for seed in range(40):
+            factory = build_factory(
+                size=11, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
+            )
+            if factory is None:
+                continue
+            gaps.append(belt_gap(factory.world_CWH))
+        assert any((g or 0) >= 2 for g in gaps), (
+            f"splitter was never >1 belt from the sink across {len(gaps)} builds; "
+            f"gaps={sorted(g for g in gaps if g is not None)}"
         )
 
 
@@ -622,8 +712,8 @@ class TestRemoveEntitiesSplitterIntegrity:
 
     @pytest.mark.parametrize("seed", range(50))
     def test_splitter_merge_removal_clears_both_tiles(self, seed):
-        """Same test for SPLITTER_MERGE lessons."""
-        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE, seed=seed
+        """Same test for SPLITTER_MERGE_SIDELOADED lessons."""
+        factory = build_factory(size=10, kind=LessonKind.SPLITTER_MERGE_SIDELOADED, seed=seed
         )
         assert factory is not None
         world, min_ent = blank_entities(factory, num_missing_entities=1)

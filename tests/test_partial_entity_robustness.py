@@ -55,9 +55,9 @@ def test_single_tile_delete_never_panics(kind):
 
 def test_splitter_partial_at_edge_never_panics():
     """The exact crash class, reached through the real generator: a
-    SPLITTER_SPLIT / SPLITTER_MERGE factory with a single splitter tile deleted.
+    SPLITTER_SPLIT / SPLITTER_MERGE_SIDELOADED factory with a single splitter tile deleted.
     """
-    for kind in (LessonKind.SPLITTER_SPLIT, LessonKind.SPLITTER_MERGE):
+    for kind in (LessonKind.SPLITTER_SPLIT, LessonKind.SPLITTER_MERGE_SIDELOADED):
         for seed in range(16):
             factory = build_factory(size=11, kind=kind, seed=seed)
             if factory is None:
