@@ -46,13 +46,11 @@ from ppo import (  # noqa: E402
     _resolve_start_from,
     _CH_ENT,
     _CH_ITEMS,
-    _CH_FOOTPRINT,
     _EMPTY_ENT_ID,
     _EMPTY_ITEM_VAL,
     _DIR_NONE_VAL,
     _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
-    _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SftArgs  # noqa: E402
 
@@ -415,16 +413,6 @@ class RolloutEval(TypedDict):
     per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
 
 
-def _apply_legal_tile_mask(tile_logits, obs_batch):
-    """Mask illegal placement tiles to -inf so an argmax skips them."""
-    K = tile_logits.shape[0]
-    ent_ch = obs_batch[:, _CH_ENT]
-    foot_ch = obs_batch[:, _CH_FOOTPRINT]
-    # legal iff no entity & tile is placeable
-    legal = (ent_ch == _EMPTY_ENT_ID) & (foot_ch != _FOOTPRINT_UNAVAILABLE)
-    return tile_logits.masked_fill(~legal.reshape(K, -1), float("-inf"))
-
-
 def _solved_assembler_recipes(solved_CWH) -> set[int]:
     """The set of recipes (item ids) carried by assemblers in a solved factory,
     the ground truth for the rollout's recipe-pick check. Empty for factories
@@ -576,7 +564,6 @@ def run_rollout_eval(
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
-    batch_idx_K = torch.arange(K, device=device)
 
     with torch.no_grad():
         while any(active):
@@ -584,21 +571,21 @@ def run_rollout_eval(
             # outputs are discarded; the per-eval cost of K-1 stale
             # forwards at the tail is negligible compared to the
             # batching win earlier in the queue.
-            encoded, g_K = agent.encode(obs_batch)
-            eot_probs = torch.sigmoid(agent.eot_logit(encoded, g_K))
-
-            tile_logits = _apply_legal_tile_mask(
-                agent.tile_logits(encoded).reshape(K, -1), obs_batch
+            # Greedy pick through the one shared sampler: temperature=0 is
+            # argmax on every head, legal_mask keeps the tile pick on empty +
+            # buildable cells so it can't livelock on a rejected tile. The
+            # critic is unused here, so skip it.
+            out = agent.sample_action(
+                obs_batch, temperature=0.0, legal_mask=True, compute_value=False
             )
-            tile_idx_K = tile_logits.argmax(dim=1)
-            x_K = tile_idx_K // args.size
-            y_K = tile_idx_K % args.size
-            tile_features = agent.tile_features(encoded, g_K, batch_idx_K, x_K, y_K)
-
-            ent_K = agent.ent_head(tile_features).argmax(dim=1)
-            dir_K = agent.dir_head(tile_features).argmax(dim=1)
-            item_K = agent.item_head(tile_features).argmax(dim=1)
-            misc_K = agent.misc_head(tile_features).argmax(dim=1)
+            act = out["action"]
+            eot_probs = out["eot_prob"]
+            x_K = act["xy"][:, 0]
+            y_K = act["xy"][:, 1]
+            ent_K = act["entity"]
+            dir_K = act["direction"]
+            item_K = act["item"]
+            misc_K = act["misc"]
 
             for i in range(K):
                 if not active[i]:

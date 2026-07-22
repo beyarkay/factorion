@@ -27,7 +27,6 @@ import sft
 from sft import (
     SftArgs,
     StreamingDemoDataset,
-    _apply_legal_tile_mask,
     _artifact_name,
     _humanize_count,
     _humanize_lr,
@@ -40,7 +39,7 @@ from sft import (
     run_rollout_eval,
     train_sft,
 )
-from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args
+from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args, _legal_tile_mask
 
 
 def _materialise_args(args):
@@ -1365,7 +1364,7 @@ class TestLegalTileMask:
         logits[0, 5] = 5.0
 
         assert logits.argmax(dim=1).item() == 0, "sanity: unmasked picks occupied"
-        masked = _apply_legal_tile_mask(logits, obs)
+        masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
         assert masked.argmax(dim=1).item() == 5, "masked must skip to legal runner-up"
         assert masked[0, 0] == float("-inf"), "occupied tile must be -inf"
 
@@ -1380,7 +1379,7 @@ class TestLegalTileMask:
         logits[0, 4] = 10.0
         logits[0, 2] = 5.0
 
-        masked = _apply_legal_tile_mask(logits, obs)
+        masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
         assert masked.argmax(dim=1).item() == 2
         assert masked[0, 4] == float("-inf")
 
@@ -1392,7 +1391,7 @@ class TestLegalTileMask:
         obs[0, Channel.ENTITIES.value] = str2ent("transport_belt").value  # occupy everything
         logits = torch.randn(1, size * size)
 
-        masked = _apply_legal_tile_mask(logits, obs)
+        masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
         assert torch.isinf(masked).all(), "every tile should be masked to -inf"
         idx = masked.argmax(dim=1).item()
         assert idx == 0, "all-illegal row falls back to tile 0"
