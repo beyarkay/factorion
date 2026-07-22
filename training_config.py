@@ -233,8 +233,7 @@ class SftArgs(SharedArgs):
     lr: float = 1e-3
     """peak learning rate (after warmup, before cosine decay). ~1e-3 is the
     centre of the 91w8vyea attention-arch sweep's top-cluster (8.6e-4–1.5e-3,
-    best 8.95e-4); the old 3.242e-3 predated attention (a #244-era conv-only
-    sweep) and sat above the [8e-4, 3e-3] band this architecture was swept in."""
+    best 8.95e-4), within its [8e-4, 3e-3] search band."""
     warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
     min_lr_ratio: float = 0.02869
