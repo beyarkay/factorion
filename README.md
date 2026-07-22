@@ -161,7 +161,7 @@ throughput=0) bites much less than in the original RL-from-scratch setup.
 Point `--start-from` at either a local `.pt` file or a W&B run id (e.g. an SFT
 run like `j0s5y2mc`, whose model artifact is fetched automatically), and use
 `--critic-warmup` to train the fresh value head before unfreezing the policy.
-The aim is for PPO to beat the SFT base's `val/thput_eot`.
+The aim is for PPO to beat the SFT base's `val/thput`.
 
 Historically the project trained RL from scratch with an explicit curriculum
 that ramped `num_missing_entities` over time. That scaffolding still exists
