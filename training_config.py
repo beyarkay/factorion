@@ -231,9 +231,7 @@ class SftArgs(SharedArgs):
     batch_size: int = 512
     """training batch size"""
     lr: float = 1e-3
-    """peak learning rate (after warmup, before cosine decay). ~1e-3 is the
-    centre of the 91w8vyea attention-arch sweep's top-cluster (8.6e-4–1.5e-3,
-    best 8.95e-4), within its [8e-4, 3e-3] search band."""
+    """peak learning rate (after warmup, before cosine decay)"""
     warmup_frac: float = 0.0
     """fraction of total steps for linear warmup from lr*1e-3 up to lr. 0 disables warmup."""
     min_lr_ratio: float = 0.02869
