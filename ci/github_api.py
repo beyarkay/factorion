@@ -51,8 +51,13 @@ def update_pr_comment(comment_id: int, body: str) -> None:
     r.raise_for_status()
 
 
-def list_pr_comment_bodies(pr_number: int, max_pages: int = 10) -> list[str]:
-    bodies: list[str] = []
+def list_pr_comments(pr_number: int, max_pages: int = 10) -> list[dict]:
+    """Each PR comment as {"id": int, "body": str}, oldest first.
+
+    The reporter needs the id (not just the body) so it can UPDATE a run's
+    launch comment in place instead of posting a second one.
+    """
+    comments: list[dict] = []
     for page in range(1, max_pages + 1):
         r = requests.get(
             f"{API}/repos/{_repo()}/issues/{pr_number}/comments",
@@ -62,10 +67,14 @@ def list_pr_comment_bodies(pr_number: int, max_pages: int = 10) -> list[str]:
         )
         r.raise_for_status()
         batch = r.json()
-        bodies.extend(c.get("body", "") for c in batch)
+        comments.extend({"id": int(c["id"]), "body": c.get("body", "")} for c in batch)
         if len(batch) < 100:
             break
-    return bodies
+    return comments
+
+
+def list_pr_comment_bodies(pr_number: int, max_pages: int = 10) -> list[str]:
+    return [c["body"] for c in list_pr_comments(pr_number, max_pages)]
 
 
 def set_commit_status(sha: str, state: str, context: str, description: str) -> None:

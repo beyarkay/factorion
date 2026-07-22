@@ -582,7 +582,20 @@ def history_csv(out: str, limit: int = 500) -> int:
 # any finished W&B run tagged pr:<N> that has no summary comment yet gets one.
 # An invisible marker in each comment makes the sweep idempotent.
 
+# The launch comment carries the RUN marker so the reporter can find and
+# UPDATE it in place when the run terminates (rather than posting a second
+# comment). The REPORTED marker only ever appears in a final result body, so
+# it — not the run marker — is the idempotency key that stops the cron
+# re-reporting a run it has already reported.
 RUN_MARKER_TEMPLATE = "<!-- factorion-ci-run:{run_id} -->"
+REPORTED_MARKER_TEMPLATE = "<!-- factorion-ci-reported:{run_id} -->"
+
+
+def _result_markers(run_id: str) -> list[str]:
+    return [
+        RUN_MARKER_TEMPLATE.format(run_id=run_id),
+        REPORTED_MARKER_TEMPLATE.format(run_id=run_id),
+    ]
 
 
 def run_summary_markdown(
@@ -603,7 +616,7 @@ def run_summary_markdown(
     repo = os.environ.get("GITHUB_REPOSITORY")
     commit = f"[`{sha7}`](https://github.com/{repo}/commit/{sha7})" if repo else f"`{sha7}`"
     lines = [
-        RUN_MARKER_TEMPLATE.format(run_id=run_id),
+        *_result_markers(run_id),
         f"## {icon} CI {kind} run `{name}` {state}",
         "",
         f"Commit {commit} &middot; [view on W&B]({url})"
@@ -653,7 +666,7 @@ def boot_failure_markdown(
     repo = os.environ.get("GITHUB_REPOSITORY")
     commit = f"[`{sha7}`](https://github.com/{repo}/commit/{sha7})" if repo else f"`{sha7}`"
     lines = [
-        RUN_MARKER_TEMPLATE.format(run_id=run_id),
+        *_result_markers(run_id),
         f"## &#x274C; CI {kind} pod failed to boot",
         "",
         f"The pod for commit {commit} never started the run — it failed while "
@@ -673,13 +686,29 @@ def select_unreported(
     candidates: list[dict], existing_bodies: list[str]
 ) -> list[dict]:
     """Pure core of the reporter: candidates (dicts with a "run_id" key) whose
-    marker doesn't appear in any existing PR comment body."""
+    REPORTED marker doesn't appear in any existing PR comment body.
+
+    Keyed off the reported marker, not the run marker: the launch comment
+    carries the run marker too, so keying off that would make a run look
+    "already reported" the instant it was launched.
+    """
     joined = "\n".join(existing_bodies)
     return [
         c
         for c in candidates
-        if RUN_MARKER_TEMPLATE.format(run_id=c["run_id"]) not in joined
+        if REPORTED_MARKER_TEMPLATE.format(run_id=c["run_id"]) not in joined
     ]
+
+
+def _launch_comment_id(run_id: str, comments: list[dict]) -> Optional[int]:
+    """Id of the run's launch comment (bears its run marker but no reported
+    marker), so the reporter can edit it into the final result in place."""
+    marker = RUN_MARKER_TEMPLATE.format(run_id=run_id)
+    for c in comments:
+        body = c.get("body", "")
+        if marker in body and REPORTED_MARKER_TEMPLATE.format(run_id=run_id) not in body:
+            return c["id"]
+    return None
 
 
 def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
@@ -740,7 +769,8 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
 
     posted = 0
     for pr_number, candidates in by_pr.items():
-        bodies = github_api.list_pr_comment_bodies(pr_number)
+        comments = github_api.list_pr_comments(pr_number)
+        bodies = [c["body"] for c in comments]
         for c in select_unreported(candidates, bodies):
             if c["boot_failure"]:
                 md = boot_failure_markdown(
@@ -760,8 +790,13 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
                     sha7=c["sha7"],
                     summary_flat=c["summary_flat"],
                 )
+            launch_id = _launch_comment_id(c["run_id"], comments)
+            where = "update launch comment" if launch_id is not None else "new comment"
             if dry_run:
-                print(f"[dry-run] would comment on PR #{pr_number} for run {c['run_id']}")
+                print(f"[dry-run] would {where} on PR #{pr_number} for run {c['run_id']}")
+            elif launch_id is not None:
+                github_api.update_pr_comment(launch_id, md)
+                print(f"Updated launch comment on PR #{pr_number} for run {c['run_id']}")
             else:
                 github_api.post_pr_comment(pr_number, md)
                 print(f"Commented on PR #{pr_number} for run {c['run_id']}")

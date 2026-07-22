@@ -26,7 +26,10 @@ from ci.config import (
 from ci.gh_command import parse_comment
 from ci.jobs import ppo_command, sft_command, sweep_agent_command
 from ci.report import (
+    REPORTED_MARKER_TEMPLATE,
+    RUN_MARKER_TEMPLATE,
     MetricRow,
+    _launch_comment_id,
     boot_failure_markdown,
     compare_metric_rows,
     evaluate_assertion,
@@ -414,10 +417,102 @@ class TestCompareRows:
 
 
 class TestReporter:
-    def test_select_unreported_skips_marked_runs(self):
-        candidates = [{"run_id": "aaa"}, {"run_id": "bbb"}]
-        bodies = ["intro", "report\n<!-- factorion-ci-run:aaa -->"]
-        assert select_unreported(candidates, bodies) == [{"run_id": "bbb"}]
+    def test_select_unreported_skips_already_reported_runs(self):
+        # Idempotency keys off the REPORTED marker, not the run marker: a
+        # launch comment carries the run marker but is not yet a report.
+        candidates = [{"run_id": "aaa"}, {"run_id": "bbb"}, {"run_id": "ccc"}]
+        bodies = [
+            "intro",
+            "report\n" + REPORTED_MARKER_TEMPLATE.format(run_id="aaa"),
+            # bbb's launch comment — run marker present, but no report yet.
+            "launched\n" + RUN_MARKER_TEMPLATE.format(run_id="bbb"),
+        ]
+        assert select_unreported(candidates, bodies) == [
+            {"run_id": "bbb"},
+            {"run_id": "ccc"},
+        ]
+
+    def test_launch_comment_id_targets_the_pending_launch_comment(self):
+        comments = [
+            {"id": 1, "body": "unrelated"},
+            {"id": 2, "body": "launched\n" + RUN_MARKER_TEMPLATE.format(run_id="bbb")},
+        ]
+        # bbb has a launch comment to edit in place; ccc has none → post new.
+        assert _launch_comment_id("bbb", comments) == 2
+        assert _launch_comment_id("ccc", comments) is None
+
+    def test_launch_comment_id_ignores_a_finished_report(self):
+        # A comment that is already a full report (both markers) must not be
+        # re-edited — only a pending launch comment is a valid update target.
+        reported = "\n".join(
+            [
+                RUN_MARKER_TEMPLATE.format(run_id="bbb"),
+                REPORTED_MARKER_TEMPLATE.format(run_id="bbb"),
+                "results...",
+            ]
+        )
+        assert _launch_comment_id("bbb", [{"id": 9, "body": reported}]) is None
+
+    def test_reporter_updates_launch_comment_in_place(self, monkeypatch):
+        # A failed run whose launch comment already exists is edited in place
+        # (no second comment), and a run with no launch comment posts a new
+        # one — so a W&B failure always lands on the PR either way.
+        import wandb
+
+        from ci import github_api, report
+
+        class FakeRun:
+            def __init__(self, rid, state):
+                self.id = rid
+                self.name = f"sft-{rid}"
+                self.state = state
+                self.url = f"https://wandb.ai/x/y/runs/{rid}"
+                self.tags = ["ci", "kind:sft", "pr:42", "sha:abc1234"]
+                self.created_at = "2999-01-01T00:00:00"
+                self.summary = {"_runtime": 12, "val/thput_eot": 0.2}
+
+        class FakeApi:
+            default_entity = "ent"
+
+            def runs(self, *a, **k):
+                return [FakeRun("haslaunch", "failed"), FakeRun("nolaunch", "crashed")]
+
+        monkeypatch.setattr(wandb, "Api", lambda *a, **k: FakeApi())
+        # PR #42 already has haslaunch's launch comment (run marker, no report).
+        comments = [
+            {"id": 111, "body": "launched\n" + RUN_MARKER_TEMPLATE.format(run_id="haslaunch")},
+        ]
+        monkeypatch.setattr(github_api, "list_pr_comments", lambda pr, *a, **k: comments)
+        edits, posts = [], []
+        monkeypatch.setattr(github_api, "update_pr_comment", lambda cid, body: edits.append((cid, body)))
+        monkeypatch.setattr(github_api, "post_pr_comment", lambda pr, body: posts.append((pr, body)) or 1)
+
+        assert report.post_pending_reports() == 2
+        # haslaunch edited its launch comment; nolaunch posted fresh.
+        ((edit_id, edit_body),) = edits
+        assert edit_id == 111
+        assert REPORTED_MARKER_TEMPLATE.format(run_id="haslaunch") in edit_body
+        assert "failed" in edit_body
+        ((post_pr, post_body),) = posts
+        assert post_pr == 42
+        assert REPORTED_MARKER_TEMPLATE.format(run_id="nolaunch") in post_body
+
+    def test_run_summary_is_findable_and_idempotent(self):
+        # A posted result carries BOTH markers: the run marker (so a launch
+        # comment and its eventual report share a discovery key) and the
+        # reported marker (so the cron never reports the same run twice).
+        md = run_summary_markdown(
+            run_id="zzz",
+            name="sft-x",
+            state="failed",
+            url="https://wandb.ai/x/y/runs/zzz",
+            kind="sft",
+            sha7=SHA[:7],
+            summary_flat={},
+        )
+        assert RUN_MARKER_TEMPLATE.format(run_id="zzz") in md
+        assert REPORTED_MARKER_TEMPLATE.format(run_id="zzz") in md
+        assert select_unreported([{"run_id": "zzz"}], [md]) == []
 
     def test_boot_failure_reports_clearly_with_log_tail(self):
         # A pod that dies before the run starts (clone/build/setup) still gets

@@ -200,6 +200,16 @@ def _post(ctx, body: str) -> int:
     return comment_id
 
 
+def _launch_marker(info: dict) -> str:
+    """Invisible run marker so the reporter cron can find this launch comment
+    and edit the final result into it in place, rather than posting a second
+    comment (or leaving a failed run with no signal but this one)."""
+    from ci.report import RUN_MARKER_TEMPLATE
+
+    run_id = info.get("wandb_run_id")
+    return f"{RUN_MARKER_TEMPLATE.format(run_id=run_id)}\n" if run_id else ""
+
+
 def cmd_sft(args, ctx) -> None:
     job = SftJob(
         sha=ctx["sha"], num_samples=args.num_samples, extra_tags=[f"pr:{ctx['pr']}"]
@@ -207,7 +217,8 @@ def cmd_sft(args, ctx) -> None:
     info = launch(job, args.gpu_type, wait=False)
     _post(
         ctx,
-        _launched_comment(
+        _launch_marker(info)
+        + _launched_comment(
             f"SFT run launched at {_commit_link(ctx['sha'])}",
             [info],
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
@@ -225,7 +236,8 @@ def cmd_ppo(args, ctx) -> None:
     info = launch(job, args.gpu_type, wait=False)
     _post(
         ctx,
-        _launched_comment(
+        _launch_marker(info)
+        + _launched_comment(
             f"PPO run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
             [info],
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
