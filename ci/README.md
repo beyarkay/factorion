@@ -65,8 +65,9 @@ the intended path.
    `ci/config.py`'s job specs, CI cannot change it.
 4. The pod **terminates itself** when the job ends, however it ends.
 
-A `compare` fans out into 2 × seeds pods — **one training run per pod**, so
-seeds never compete for CPU — grouped in W&B by side
+A `compare` fans out into **exactly 2 pods** — one per side — each running its
+seeds **sequentially** (pods are scarce; grabbing 2 × seeds at once often
+fails). Each seed is still its own W&B run, grouped by side
 (`cmp-<sha7>-<algo>-<nonce>-pr` / `…-main`; the per-launch nonce keeps a
 rerun or a second compare at the same commit from polluting the groups);
 the report is assembled from W&B afterwards.

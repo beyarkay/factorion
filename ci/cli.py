@@ -124,10 +124,11 @@ def compare(
     """Compare a commitish against a base (default origin/main), multi-seed.
 
     Invoked as `compare sft --ref X` or `compare ppo --ref X --start-from ID`.
-    Fans out into 2 x seeds pods — one training run per pod, so seeds never
-    compete for CPU. Both sides run their own commit's code. On a PR, the
-    /ci compare comment command launches this AND posts the every-metric
-    seed-paired report (plus the assert commit status) when the runs finish.
+    Fans out into 2 pods — one per side, each running its seeds sequentially
+    (pods are scarce, so a compare only ever needs two). Both sides run their
+    own commit's code. On a PR, the /ci compare comment command launches this
+    AND posts the every-metric seed-paired report (plus the assert commit
+    status) when the runs finish.
 
     Args:
         algo: "sft" (from scratch) or "ppo" (finetune from --start-from on

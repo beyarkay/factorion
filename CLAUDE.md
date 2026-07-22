@@ -141,7 +141,8 @@ assert pr:rollout/thput > main:rollout/thput
 `assert` lines under a compare become a `factorion-ci/compare` commit
 status: sides `pr:`/`main:`, ops `< > <= >=` plus `==`/`~=` (approx-equal,
 `+- tol`). Compare runs land in W&B groups
-`cmp-<sha7>-<algo>-<nonce>-{pr,main}`, one pod per (side, seed).
+`cmp-<sha7>-<algo>-<nonce>-{pr,main}`, one pod per side running its seeds
+sequentially.
 
 What comes back, and what to relay to the user (always give links):
 
