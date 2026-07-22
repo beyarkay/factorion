@@ -1172,6 +1172,28 @@ def _categorical_entropy(logp_all_BN):
     return -(logp_all_BN.exp() * logp_all_BN).sum(-1)
 
 
+def _select_action(logp_all_BN, temperature):
+    """Pick one category per row: argmax at temperature==0 (greedy), else
+    sample the temperature-scaled distribution (==1 is the on-policy sample).
+    log_softmax is shift-invariant, so scaling log-probs by 1/T == softmax(
+    logits/T)."""
+    if temperature == 0.0:
+        return logp_all_BN.argmax(dim=-1)
+    if temperature == 1.0:
+        return _categorical_sample(logp_all_BN)
+    return _categorical_sample(F.log_softmax(logp_all_BN / temperature, dim=-1))
+
+
+def _legal_tile_mask(x_BCWH):
+    """Boolean (B, W*H), True where a tile is empty AND buildable — the
+    legal-placement mask the greedy eval's argmax needs so it can't re-propose
+    an occupied or walled cell."""
+    ent_BWH = x_BCWH[:, _CH_ENT]
+    foot_BWH = x_BCWH[:, _CH_FOOTPRINT]
+    legal_BWH = (ent_BWH == _EMPTY_ENT_ID) & (foot_BWH != _FOOTPRINT_UNAVAILABLE)
+    return legal_BWH.reshape(x_BCWH.shape[0], -1)
+
+
 class _SelfAttnStack(nn.Module):
     """Self-attention over the encoded map so every cell sees every other in
     one hop. Each cell's feature column is a token; the residual out-projection
@@ -1455,20 +1477,40 @@ class AgentCNN(nn.Module):
         lower it if the model rambles, raise it if it stops short."""
         return self.eot_prob(x_BCWH) > threshold
 
-    def get_action_and_value(self, x_BCWH, action=None):
+    def sample_action(
+        self,
+        x_BCWH,
+        *,
+        temperature: float = 1.0,
+        legal_mask: bool = False,
+        eot_threshold: float = 0.5,
+        action=None,
+        compute_value: bool = True,
+    ):
+        """The one sampler every consumer routes through. temperature=1 is the
+        stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
+        (eot fires at p>eot_threshold) for eval / mod server / builder UI.
+        legal_mask restricts the tile pick to empty+buildable cells; `action`
+        replays a stored action to recompute its log-prob. Returns a dict of
+        action / logp / entropy / value (None if not compute_value) / eot_prob
+        / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
         encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
-        value_B = self.critic_value(encoded_BCWH, g_BG)
+        value_B = self.critic_value(encoded_BCWH, g_BG) if compute_value else None
 
         B = encoded_BCWH.shape[0]
 
         # --- Tile selection: joint (x, y) via 1x1 conv ---
         tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
         tile_logits_BN = tile_logits_B1WH.reshape(B, -1)       # (B, W*H)
+        if legal_mask:
+            tile_logits_BN = tile_logits_BN.masked_fill(
+                ~_legal_tile_mask(x_BCWH), float("-inf")
+            )
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
         if action is None:
-            tile_idx_B = _categorical_sample(tile_logp_all_BN)  # (B,)
+            tile_idx_B = _select_action(tile_logp_all_BN, temperature)  # (B,)
         else:
             # Reconstruct tile index from stored (x, y)
             tile_idx_B = action[:, 0] * self.height + action[:, 1]
@@ -1496,13 +1538,18 @@ class AgentCNN(nn.Module):
         m_logp_all_BM = F.log_softmax(logits_m_BM, dim=-1)
 
         eot_logit_B = self.eot_logit(encoded_BCWH, g_BG)
+        p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
-            ent_B = _categorical_sample(e_logp_all_BE)
-            dir_B = _categorical_sample(d_logp_all_BD)
-            item_B = _categorical_sample(i_logp_all_BI)
-            misc_B = _categorical_sample(m_logp_all_BM)
-            eot_B = torch.bernoulli(torch.sigmoid(eot_logit_B))
+            ent_B = _select_action(e_logp_all_BE, temperature)
+            dir_B = _select_action(d_logp_all_BD, temperature)
+            item_B = _select_action(i_logp_all_BI, temperature)
+            misc_B = _select_action(m_logp_all_BM, temperature)
+            eot_B = (
+                (p_eot_B > eot_threshold).float()
+                if temperature == 0.0
+                else torch.bernoulli(p_eot_B)
+            )
         else:
             ent_B = action[:, 2]
             dir_B = action[:, 3]
@@ -1527,7 +1574,6 @@ class AgentCNN(nn.Module):
         # are still exploring vs collapsed) — the RL analog of SFT's per-head
         # accuracy. Stashed as detached scalars (cheap; mirrors the
         # self.time_for_* attributes already set here, so it stays eager-safe).
-        p_eot_B = torch.sigmoid(eot_logit_B)
         ent_tile = _categorical_entropy(tile_logp_all_BN)
         ent_e = _categorical_entropy(e_logp_all_BE)
         ent_d = _categorical_entropy(d_logp_all_BD)
@@ -1556,7 +1602,26 @@ class AgentCNN(nn.Module):
             "misc": misc_B,
             "eot": eot_B,
         }
-        return action_out, logp_B, entropy_B, value_B
+        return {
+            "action": action_out,
+            "logp": logp_B,
+            "entropy": entropy_B,
+            "value": value_B,
+            "eot_prob": p_eot_B,
+            "logp_heads": {
+                "tile": tile_logp_all_BN,
+                "entity": e_logp_all_BE,
+                "direction": d_logp_all_BD,
+                "item": i_logp_all_BI,
+                "misc": m_logp_all_BM,
+            },
+        }
+
+    def get_action_and_value(self, x_BCWH, action=None):
+        """sample_action at temperature 1, projected to the (action, logp,
+        entropy, value) 4-tuple the ~20 PPO/test callsites already unpack."""
+        out = self.sample_action(x_BCWH, temperature=1.0, action=action)
+        return out["action"], out["logp"], out["entropy"], out["value"]
 
 if __name__ == "__main__":
     print("Starting...")

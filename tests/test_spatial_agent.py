@@ -12,11 +12,22 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ppo import AgentCNN, PpoArgs, FactorioEnv, make_env  # noqa: E402
+from ppo import (  # noqa: E402
+    AgentCNN,
+    PpoArgs,
+    FactorioEnv,
+    make_env,
+    _CH_ENT,
+    _CH_FOOTPRINT,
+    _EMPTY_ENT_ID,
+    _FOOTPRINT_UNAVAILABLE,
+)
 from training_config import SharedArgs  # noqa: E402
 from helpers import Channel  # noqa: E402
+from factorion import Footprint  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
+_FOOTPRINT_AVAILABLE = Footprint.AVAILABLE.value
 
 
 ENV_ID = "factorion/FactorioEnv-v0-spatial-test"
@@ -440,3 +451,94 @@ class TestArchVariants:
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=4)
         num_heads = agent.attn.transformer.layers[0].self_attn.num_heads
         assert 4 % num_heads == 0 and num_heads == 4
+
+
+class TestSampleAction:
+    """The unified sampler: temperature is the greedy-vs-stochastic knob and
+    the only piece every consumer (PPO, SFT/PPO eval, mod server, builder UI)
+    goes through, so it must behave identically for all of them."""
+
+    def test_get_action_and_value_delegates(self, agent):
+        """The PPO wrapper is exactly sample_action(temperature=1) projected
+        to a 4-tuple, so a seed-matched pair agrees on every field."""
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        torch.manual_seed(0)
+        action_a, logp_a, entropy_a, value_a = agent.get_action_and_value(obs)
+        torch.manual_seed(0)
+        out = agent.sample_action(obs, temperature=1.0)
+        torch.testing.assert_close(logp_a, out["logp"])
+        torch.testing.assert_close(entropy_a, out["entropy"])
+        torch.testing.assert_close(value_a, out["value"])
+        for k in ("xy", "entity", "direction", "item", "misc", "eot"):
+            torch.testing.assert_close(action_a[k], out["action"][k])
+
+    def test_greedy_is_deterministic(self, agent):
+        """temperature=0 is argmax on every head, so repeated calls (even
+        without a fixed seed) return byte-identical actions."""
+        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        a = agent.sample_action(obs, temperature=0.0)["action"]
+        b = agent.sample_action(obs, temperature=0.0)["action"]
+        for k in ("xy", "entity", "direction", "item", "misc", "eot"):
+            torch.testing.assert_close(a[k], b[k])
+
+    def test_greedy_matches_manual_argmax(self, agent):
+        """The greedy action is the argmax of each head's returned log-probs —
+        the invariant the builder UI relies on to condition its side panel on
+        the same tile the top pick favours."""
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        out = agent.sample_action(obs, temperature=0.0)
+        heads = out["logp_heads"]
+        tile_idx = heads["tile"].argmax(dim=-1)
+        exp_x = tile_idx // agent.height
+        exp_y = tile_idx % agent.height
+        torch.testing.assert_close(out["action"]["xy"][:, 0], exp_x)
+        torch.testing.assert_close(out["action"]["xy"][:, 1], exp_y)
+        for head_name, act_key in [
+            ("entity", "entity"), ("direction", "direction"),
+            ("item", "item"), ("misc", "misc"),
+        ]:
+            torch.testing.assert_close(
+                out["action"][act_key], heads[head_name].argmax(dim=-1)
+            )
+
+    def test_legal_mask_avoids_occupied_and_walled_tiles(self, agent):
+        """With legal_mask=True the greedy tile pick lands only on empty,
+        buildable cells — the guard the eval rollout needs so argmax can't
+        livelock re-proposing a rejected tile."""
+        obs = torch.zeros(1, NUM_CHANNELS, 5, 5)
+        # Buildable everywhere (footprint AVAILABLE), then occupy every tile
+        # except (2, 3) and wall one of the occupied ones too.
+        obs[0, _CH_FOOTPRINT] = _FOOTPRINT_AVAILABLE
+        obs[0, _CH_ENT] = _EMPTY_ENT_ID + 1
+        obs[0, _CH_ENT, 2, 3] = _EMPTY_ENT_ID
+        obs[0, _CH_FOOTPRINT, 0, 0] = _FOOTPRINT_UNAVAILABLE
+        out = agent.sample_action(obs, temperature=0.0, legal_mask=True)
+        assert int(out["action"]["xy"][0, 0]) == 2
+        assert int(out["action"]["xy"][0, 1]) == 3
+
+    def test_replayed_action_recovers_logp(self, agent):
+        """Passing a stored action recomputes its exact log-prob regardless of
+        temperature — the PPO-update path, unchanged by the refactor."""
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        out = agent.sample_action(obs, temperature=0.0)
+        act = out["action"]
+        stored = torch.cat(
+            [
+                act["xy"],
+                act["entity"][:, None],
+                act["direction"][:, None],
+                act["item"][:, None],
+                act["misc"][:, None],
+                act["eot"][:, None].long(),
+            ],
+            dim=1,
+        )
+        replay = agent.sample_action(obs, action=stored)
+        torch.testing.assert_close(out["logp"], replay["logp"])
+
+    def test_compute_value_false_skips_critic(self, agent):
+        """Greedy consumers pass compute_value=False (the builder UI even
+        drops the critic head), so value must be None rather than computed."""
+        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        out = agent.sample_action(obs, temperature=0.0, compute_value=False)
+        assert out["value"] is None
