@@ -1,35 +1,23 @@
-# ci/sweep_sft.yaml — SFT sweep over the self-attention architecture (round 2).
+# ci/sweep_sft.yaml — SFT sweep over construction-stage weighting.
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Round 1 (sn7fd8l8) found the shape but hugged several range limits and left
-# some axes unexplored. This round:
-#   - lr: round 1's good runs spanned ~8e-4..2.9e-3 — kept as the search range.
-#   - kernel_size {1, 3}: 3 = local conv (won round 1); 1 = a purely per-cell
-#     1x1 projection with no spatial mixing, a no-CNN proxy (5 dropped — never
-#     produced a good run).
-#   - attn_dim {128,192,256} and attn_heads {8,12,16}: both topped out in round
-#     1 (heads snap to a divisor of attn_dim in AgentCNN, so every pair runs).
-#   - attn_layers {2,3,4}.
-#   - conv widths: layer1 is always positive (>=1 conv layer); layer2/3/4 may be
-#     0, so encoder depth ranges 1..4. Widths widened past the 64/96 band the
-#     round-1 good runs spread evenly across.
-#   - global_feat_dim {0,16,32,64,128}: never swept WITH attention (round 1
-#     pinned it at 32; the pre-attention #313 sweeps that varied it had no other
-#     source of grid-global info, so their "0 hurts" doesn't transfer). Tests
-#     whether the pooled global vector is still needed given attention.
-#   - attn_pos_embed left out -> default 1 (on in every round-1 good run).
+# A state with missing fraction f is sampled with normalized weight
+# exp(missing_fraction_alpha * f). alpha=0 is the existing uniform weighting;
+# increasing alpha focuses progressively more training on early, emptier
+# states. The full-vs-complete odds are exp(alpha), so this 0..6 range spans
+# 1x through ~403x. Everything else is pinned to the current SFT defaults.
 
 method: bayes
-run_cap: 80
+run_cap: 20
 metric:
   name: "val/thput_eot"
   goal: maximize
 
 parameters:
-  # Pinned: monotonic in the metric, so Bayes would only saturate them.
+  # Fixed run shape.
   size:
     value: 11
   num_samples:
@@ -37,37 +25,13 @@ parameters:
   epochs:
     value: 1
   max_level:
-    value: 0  # auto = 2*size = 22 entities blanked
+    value: 0 # auto = size*size, enough to blank every removable entity
 
-  # ── Conv trunk ───────────────────────────────────────────────────
-  kernel_size:
-    values: [1, 3]
-  layer1:
-    values: [48, 64, 96, 128]         # always >=1 conv layer
-  layer2:
-    values: [0, 48, 64, 96, 128]
-  layer3:
-    values: [0, 48, 64, 96, 128]
-  layer4:
-    values: [0, 48, 64, 96, 128]
-
-  # ── Attention ────────────────────────────────────────────────────
-  attn_dim:
-    values: [128, 192, 256]
-  attn_heads:
-    values: [4, 8, 12, 16]
-  attn_layers:
-    values: [1, 2, 3, 4]
-
-  # ── Pooled global vector (never swept with attention before) ─────
-  global_feat_dim:
-    values: [0, 16, 32, 64, 128]
-
-  # ── lr (the round-1 good band) ───────────────────────────────────
-  lr:
-    distribution: log_uniform_values
-    min: 8e-4
-    max: 3e-3
+  missing_fraction_alpha:
+    distribution: q_uniform
+    min: 0.0
+    max: 6.0
+    q: 0.5
 
 program: sft.py
 

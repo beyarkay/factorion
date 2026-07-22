@@ -10,6 +10,7 @@ Usage:
 
 import io
 import json
+import math
 import os
 import random
 import sys
@@ -215,6 +216,11 @@ def _artifact_name(args: "SftArgs") -> str:
     chan_str = "c" + "-".join(str(c) for c in layers)
     if args.kernel_size != 3:
         chan_str += f"-k{args.kernel_size}"
+    missing_fraction_str = (
+        f"-mfa{args.missing_fraction_alpha:g}"
+        if args.missing_fraction_alpha != 0.0
+        else ""
+    )
     return (
         f"sft-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
@@ -222,6 +228,7 @@ def _artifact_name(args: "SftArgs") -> str:
         f"-bs{args.batch_size}"
         f"-lr{_humanize_lr(args.lr)}"
         f"-{chan_str}"
+        f"{missing_fraction_str}"
     )
 
 
@@ -235,7 +242,46 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
+def _missing_fraction_probabilities(
+    remaining_counts: list[int], total_entities: int, alpha: float
+) -> list[float]:
+    """Normalized exp(alpha * missing_fraction) weights for one factory.
+
+    Normalizing per factory keeps lesson sampling balanced even though lessons
+    have different numbers of removable entities. The stable softmax form also
+    permits large positive/negative sweep values without overflow.
+    """
+    if not remaining_counts:
+        return []
+    if not math.isfinite(alpha):
+        raise ValueError(f"missing_fraction_alpha must be finite, got {alpha}")
+    denominator = max(1, total_entities)
+    logits = [alpha * min(1.0, count / denominator) for count in remaining_counts]
+    max_logit = max(logits)
+    weights = [math.exp(logit - max_logit) for logit in logits]
+    total_weight = sum(weights)
+    return [weight / total_weight for weight in weights]
+
+
+def _sample_demo_pairs(pairs, total_entities: int, alpha: float):
+    """Resample one trajectory with replacement according to missing fraction."""
+    if alpha == 0.0 or len(pairs) <= 1:
+        return pairs
+    probabilities = _missing_fraction_probabilities(
+        [int(pair[6].sum()) for pair in pairs], total_entities, alpha
+    )
+    return random.choices(pairs, weights=probabilities, k=len(pairs))
+
+
+def _iter_demo_pairs(
+    size,
+    max_level,
+    base_seed,
+    worker_id,
+    num_workers,
+    target=None,
+    missing_fraction_alpha=0.0,
+):
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
@@ -281,7 +327,10 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
         consecutive_fails[kind.name] = 0
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
-        for pair in extract_expert_actions(factory.world_CWH, task):
+        pairs = extract_expert_actions(factory.world_CWH, task)
+        for pair in _sample_demo_pairs(
+            pairs, factory.total_entities, missing_fraction_alpha
+        ):
             yield (*pair, seed, kind.value)
             kind_samples[kind.name] += 1
             produced += 1
@@ -289,14 +338,29 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
                 break
 
 
-def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
+def _materialise(
+    size,
+    max_level,
+    base_seed,
+    target=None,
+    n_lessons=None,
+    missing_fraction_alpha=0.0,
+):
     """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
     item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
     `n_lessons` distinct factories when that is given instead."""
     random.seed(base_seed)
     rows = []
     seeds = set()
-    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target):
+    for row in _iter_demo_pairs(
+        size,
+        max_level,
+        base_seed,
+        0,
+        1,
+        target,
+        missing_fraction_alpha,
+    ):
         if n_lessons is not None and row[8] not in seeds:
             if len(seeds) >= n_lessons:
                 break
@@ -326,11 +390,14 @@ class StreamingDemoDataset(IterableDataset):
     overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, max_level, base_seed, target):
+    def __init__(
+        self, size, max_level, base_seed, target, missing_fraction_alpha=0.0
+    ):
         self.size = size
         self.max_level = max_level
         self.base_seed = base_seed
         self.target = target
+        self.missing_fraction_alpha = missing_fraction_alpha
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
@@ -340,7 +407,13 @@ class StreamingDemoDataset(IterableDataset):
         base, rem = divmod(self.target, num_workers)
         my_target = base + (1 if worker_id < rem else 0)
         for row in _iter_demo_pairs(
-            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
+            self.size,
+            self.max_level,
+            self.base_seed,
+            worker_id,
+            num_workers,
+            my_target,
+            self.missing_fraction_alpha,
         ):
             # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
             # training only needs the first 8 — seed/kind are val-only metadata.
@@ -759,13 +832,42 @@ def train_sft(args: SftArgs):
         if os.path.exists(args.dataset_cache):
             print(f"Loading cached dataset from {args.dataset_cache} ...")
             # weights_only=False: our own locally-produced, trusted cache.
-            cached_train = torch.load(args.dataset_cache, weights_only=False)
+            cache_payload = torch.load(args.dataset_cache, weights_only=False)
+            if isinstance(cache_payload, dict) and "tensors" in cache_payload:
+                cached_alpha = float(cache_payload["missing_fraction_alpha"])
+                if cached_alpha != args.missing_fraction_alpha:
+                    raise ValueError(
+                        f"Dataset cache was generated with missing_fraction_alpha="
+                        f"{cached_alpha}, requested {args.missing_fraction_alpha}. "
+                        "Use a different cache path or delete the stale cache."
+                    )
+                cached_train = cache_payload["tensors"]
+            else:
+                # Backwards-compatible with caches written before weighted
+                # sampling existed; those are the alpha=0 uniform dataset.
+                if args.missing_fraction_alpha != 0.0:
+                    raise ValueError(
+                        "Legacy dataset caches have uniform stage weighting "
+                        "(missing_fraction_alpha=0). Use a different cache path "
+                        "or delete the stale cache."
+                    )
+                cached_train = cache_payload
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
             cached_train = _materialise(
-                args.size, max_level, train_base, target=args.num_samples
+                args.size,
+                max_level,
+                train_base,
+                target=args.num_samples,
+                missing_fraction_alpha=args.missing_fraction_alpha,
             )[:8]
-            torch.save(cached_train, args.dataset_cache)
+            torch.save(
+                {
+                    "tensors": cached_train,
+                    "missing_fraction_alpha": args.missing_fraction_alpha,
+                },
+                args.dataset_cache,
+            )
             print(f"Cached dataset to {args.dataset_cache}")
 
     # Re-seed so training RNG is identical whether the cache was just created
@@ -839,7 +941,13 @@ def train_sft(args: SftArgs):
         # GPU step.
         stream_workers = min(16, os.cpu_count() or 1)
         train_stream_loader = DataLoader(
-            StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
+            StreamingDemoDataset(
+                args.size,
+                max_level,
+                train_base,
+                args.num_samples,
+                args.missing_fraction_alpha,
+            ),
             batch_size=args.batch_size,
             num_workers=stream_workers,
             pin_memory=(device.type == "cuda"),
@@ -1590,6 +1698,7 @@ def train_sft(args: SftArgs):
         "optimizer_steps": global_step,
         "size": args.size,
         "lr": args.lr,
+        "missing_fraction_alpha": args.missing_fraction_alpha,
         "batch_size": args.batch_size,
         "seed": args.seed,
         "runtime_seconds": round(total_time, 1),
@@ -1628,6 +1737,7 @@ def train_sft(args: SftArgs):
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "lr": args.lr,
+                "missing_fraction_alpha": args.missing_fraction_alpha,
                 "seed": args.seed,
             },
         )

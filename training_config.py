@@ -226,6 +226,12 @@ class SftArgs(SharedArgs):
     DataLoader workers, so this is never held in memory all at once."""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
+    missing_fraction_alpha: float = 0.0
+    """Exponential tilt for sampling SFT construction stages. A state with
+    missing fraction f receives weight exp(alpha*f), normalized within its
+    factory trajectory. 0 exactly preserves uniform stage weighting; positive
+    values increasingly favor emptier, earlier states (full-vs-complete odds
+    are exp(alpha))."""
     epochs: int = 1
     """number of training epochs"""
     batch_size: int = 512
@@ -279,4 +285,5 @@ class SftArgs(SharedArgs):
     """if set, materialise the training stream to this path once and reuse it on
     later runs (torch.save/torch.load), trading the streaming generation for a
     fixed on-disk dataset. Lets repeated runs (benchmarks, dev iteration) skip
-    build_factory; the tensors are a pure function of (size, num_samples, seed)."""
+    build_factory; the tensors are a pure function of (size, num_samples, seed,
+    missing_fraction_alpha)."""

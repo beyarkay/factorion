@@ -1,5 +1,6 @@
 """Tests for SFT pre-training pipeline."""
 
+import math
 import os
 import random
 import sys
@@ -32,6 +33,8 @@ from sft import (
     _humanize_lr,
     _iter_demo_pairs,
     _materialise,
+    _missing_fraction_probabilities,
+    _sample_demo_pairs,
     _steps_per_epoch,
     _solved_assembler_recipes,
     build_lr_schedule,
@@ -46,7 +49,13 @@ def _materialise_args(args):
     """Eagerly collect a full dataset (the 10-tensor tuple) for assertions,
     matching how train_sft draws its data from `_materialise`."""
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
-    return _materialise(args.size, max_level, args.seed, target=args.num_samples)
+    return _materialise(
+        args.size,
+        max_level,
+        args.seed,
+        target=args.num_samples,
+        missing_fraction_alpha=args.missing_fraction_alpha,
+    )
 
 
 class TestExtractExpertActions:
@@ -481,6 +490,60 @@ class TestStreamingDemoDataset:
         assert len(list(loader)) == _steps_per_epoch(target, workers, batch)
 
 
+class TestMissingFractionSampling:
+    def test_alpha_zero_is_exactly_uniform(self):
+        probabilities = _missing_fraction_probabilities(
+            remaining_counts=[5, 4, 3, 2, 1, 0],
+            total_entities=5,
+            alpha=0.0,
+        )
+        assert probabilities == pytest.approx([1 / 6] * 6)
+
+    @pytest.mark.parametrize("total_entities", [5, 20, 50])
+    def test_full_vs_complete_odds_do_not_depend_on_lesson_length(
+        self, total_entities
+    ):
+        alpha = 2.5
+        full, complete = _missing_fraction_probabilities(
+            remaining_counts=[total_entities, 0],
+            total_entities=total_entities,
+            alpha=alpha,
+        )
+        assert full / complete == pytest.approx(math.exp(alpha))
+
+    def test_positive_alpha_keeps_terminal_examples_but_favors_early_states(self):
+        probabilities = _missing_fraction_probabilities(
+            remaining_counts=list(range(20, -1, -1)),
+            total_entities=20,
+            alpha=4.0,
+        )
+        assert sum(probabilities) == pytest.approx(1.0)
+        assert all(probability > 0 for probability in probabilities)
+        assert probabilities[0] / probabilities[-1] == pytest.approx(math.exp(4.0))
+
+    def test_alpha_zero_preserves_the_existing_trajectory_exactly(self):
+        pairs = [
+            (remaining, 0, 0, 0, 0, 0, torch.ones(remaining, dtype=torch.bool), 0)
+            for remaining in range(10, -1, -1)
+        ]
+        assert _sample_demo_pairs(pairs, total_entities=10, alpha=0.0) is pairs
+
+    def test_positive_alpha_resamples_toward_emptier_states(self):
+        pairs = [
+            (remaining, 0, 0, 0, 0, 0, torch.ones(remaining, dtype=torch.bool), 0)
+            for remaining in range(100, -1, -1)
+        ]
+        random.seed(7)
+        sampled = _sample_demo_pairs(pairs, total_entities=100, alpha=4.0)
+        mean_missing_fraction = sum(pair[0] for pair in sampled) / (100 * len(sampled))
+        assert mean_missing_fraction > 0.7
+
+    @pytest.mark.parametrize("alpha", [float("inf"), float("-inf"), float("nan")])
+    def test_alpha_must_be_finite(self, alpha):
+        with pytest.raises(ValueError, match="must be finite"):
+            _missing_fraction_probabilities([1, 0], total_entities=1, alpha=alpha)
+
+
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
 
 
@@ -688,7 +751,7 @@ class TestTrainSFTEndToEnd:
         run and trains from it on the second. Both runs produce a checkpoint."""
         cache = str(tmp_path / "ds_cache.pt")
 
-        def run(tag):
+        def run(tag, missing_fraction_alpha=0.0):
             args = SftArgs(
                 seed=1,
                 size=5,
@@ -698,6 +761,7 @@ class TestTrainSFTEndToEnd:
                 layer1=16,
                 layer2=16,
                 layer3=16,
+                missing_fraction_alpha=missing_fraction_alpha,
                 dataset_cache=cache,
                 checkpoint_path=str(tmp_path / f"ckpt_{tag}.pt"),
                 summary_path=str(tmp_path / f"summary_{tag}.json"),
@@ -708,6 +772,8 @@ class TestTrainSFTEndToEnd:
         assert os.path.exists(cache), "Cache should be written on first run"
         run("load")  # second run loads the cache instead of generating
         assert os.path.exists(str(tmp_path / "ckpt_load.pt"))
+        with pytest.raises(ValueError, match="missing_fraction_alpha"):
+            run("mismatched_alpha", missing_fraction_alpha=2.0)
 
 
 class TestSFTDropout:
@@ -1720,6 +1786,12 @@ class TestArtifactNameHelpers:
         base = _artifact_name(SftArgs())
         assert not base.endswith(("-k3", "-k5", "-k7"))
         assert _artifact_name(SftArgs(kernel_size=5)) == base + "-k5"
+
+    def test_artifact_name_missing_fraction_suffix(self):
+        """Uniform weighting keeps historical names; tilted runs do not collide."""
+        base = _artifact_name(SftArgs())
+        assert "-mfa" not in base
+        assert _artifact_name(SftArgs(missing_fraction_alpha=2.5)) == base + "-mfa2.5"
 
     def test_artifact_name_stable_across_runs(self):
         """Two SftArgs with the same hyperparams must produce the same
