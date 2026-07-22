@@ -311,6 +311,20 @@ fn py_lesson_kinds(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(d.into())
 }
 
+/// The lesson kinds that may leave protected orphan tiles in their solved
+/// factory (see `LessonKind::allows_orphans`), as an ordered `{NAME: bool}`
+/// dict — so Python-side no-orphan checks can exempt the same lessons the Rust
+/// invariant does.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_lesson_allows_orphans(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    for &kind in all_lesson_kinds() {
+        d.set_item(kind.name(), kind.allows_orphans())?;
+    }
+    Ok(d.into())
+}
+
 #[cfg(feature = "pyo3-bindings")]
 #[pymodule]
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -321,6 +335,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lesson_allows_orphans, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     m.add_function(wrap_pyfunction!(render_factory, m)?)?;
     Ok(())
