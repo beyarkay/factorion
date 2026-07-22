@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 from ci.config import (
+    CompareJob,
     Job,
     PpoJob,
     SftJob,
@@ -66,7 +67,47 @@ def sweep_agent_command(job: SweepJob) -> list[str]:
     return ["wandb", "agent", job.sweep_path]
 
 
+def _compare_subjob(job: CompareJob, seed: int) -> SftJob | PpoJob:
+    """The single-run job for one seed of a compare side — carries the same
+    group and tags so every seed lands in one W&B group."""
+    if job.algo == "sft":
+        return SftJob(
+            sha=job.sha,
+            num_samples=job.num_samples,
+            seed=seed,
+            group=job.group,
+            extra_tags=job.extra_tags,
+        )
+    assert job.start_from is not None  # enforced by compare_fanout
+    return PpoJob(
+        sha=job.sha,
+        start_from=job.start_from,
+        total_timesteps=job.total_timesteps,
+        seed=seed,
+        group=job.group,
+        extra_tags=job.extra_tags,
+    )
+
+
 # ── Execution ──────────────────────────────────────────────────────
+
+
+def run_compare(job: CompareJob) -> None:
+    """Run each seed sequentially on this one pod. Every seed is attempted even
+    if an earlier one fails, so one bad seed doesn't cost the whole side; the
+    pod fails (and reports) only if every seed failed."""
+    failed = []
+    for seed in job.seeds:
+        sub = _compare_subjob(job, seed)
+        cmd = sft_command(sub) if isinstance(sub, SftJob) else ppo_command(sub)
+        print(f">>> Compare seed {seed}/{job.seeds[-1]}: {cmd}", flush=True)
+        if subprocess.run(cmd, cwd=WORK_DIR).returncode != 0:
+            failed.append(seed)
+            print(f">>> Compare seed {seed} FAILED", flush=True)
+    if len(failed) == len(job.seeds):
+        raise RuntimeError(f"All {len(failed)} compare seeds failed")
+    if failed:
+        print(f">>> Compare finished with failed seed(s): {failed}", flush=True)
 
 
 def run_sweep(job: SweepJob) -> None:
@@ -101,6 +142,8 @@ def run(job: Job) -> None:
         subprocess.run(ppo_command(job), cwd=WORK_DIR, check=True)
     elif isinstance(job, SweepJob):
         run_sweep(job)
+    elif isinstance(job, CompareJob):
+        run_compare(job)
     else:
         raise ValueError(f"Unknown job: {job!r}")
 

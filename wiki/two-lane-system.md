@@ -129,9 +129,11 @@ Rough blast radius if we wanted to add two-lane support:
 ### Lesson generators
 
 Every lesson that places a belt, inserter, or splitter would need to reason
-about lane assignments. Existing `SPLITTER_SPLIT` / `SPLITTER_MERGE` tests
-that assert throughput caps would need updating (per-lane caps differ from
-combined caps).
+about lane assignments. Existing `SPLITTER_SPLIT` / `SPLITTER_MERGE_SIDELOADED`
+tests that assert throughput caps would need updating (per-lane caps differ from
+combined caps). `SPLITTER_MERGE_SIDELOADED` leans on the per-lane cap directly:
+side-loading a saturated source fills only the near lane (7.5), which is what
+makes both merge arms necessary.
 
 ### Throughput caps
 

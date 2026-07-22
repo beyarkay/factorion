@@ -30,7 +30,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 pub enum LessonKind {
     MoveOneItem = 0,
     SplitterSplit = 3,
-    SplitterMerge = 4,
+    SplitterMergeSideloaded = 4,
     #[deprecated]
     Assemble1In1Out = 5,
     MoveViaUgBelt = 6,
@@ -50,7 +50,7 @@ impl LessonKind {
         match v {
             0 => Some(LessonKind::MoveOneItem),
             3 => Some(LessonKind::SplitterSplit),
-            4 => Some(LessonKind::SplitterMerge),
+            4 => Some(LessonKind::SplitterMergeSideloaded),
             #[allow(deprecated)]
             5 => Some(LessonKind::Assemble1In1Out),
             6 => Some(LessonKind::MoveViaUgBelt),
@@ -73,7 +73,7 @@ impl LessonKind {
         match self {
             LessonKind::MoveOneItem => "MOVE_ONE_ITEM",
             LessonKind::SplitterSplit => "SPLITTER_SPLIT",
-            LessonKind::SplitterMerge => "SPLITTER_MERGE",
+            LessonKind::SplitterMergeSideloaded => "SPLITTER_MERGE_SIDELOADED",
             #[allow(deprecated)]
             LessonKind::Assemble1In1Out => "ASSEMBLE_1IN_1OUT",
             LessonKind::MoveViaUgBelt => "MOVE_VIA_UG_BELT",
@@ -88,6 +88,15 @@ impl LessonKind {
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
         }
     }
+
+    /// Whether this lesson may leave orphan (unreachable) tiles in its solved
+    /// factory. Almost every lesson must not (the no-orphan invariant), but
+    /// `SPLITTER_MERGE_SIDELOADED` deliberately places protected empty "decoy"
+    /// belts whose only job is to force a source to side-load; a decoy carries
+    /// nothing and lies on no source→sink path, so it is an intended orphan.
+    pub fn allows_orphans(self) -> bool {
+        matches!(self, LessonKind::SplitterMergeSideloaded)
+    }
 }
 
 /// Every [`LessonKind`], in the order the Python enum lists them (which fixes
@@ -96,7 +105,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
     &[
         LessonKind::MoveOneItem,
         LessonKind::SplitterSplit,
-        LessonKind::SplitterMerge,
+        LessonKind::SplitterMergeSideloaded,
         // LessonKind::Assemble1In1Out,
         LessonKind::MoveViaUgBelt,
         // LessonKind::Assemble2In1Out,
@@ -515,8 +524,8 @@ pub fn build_factory(
         LessonKind::SplitterSplit => {
             build_splitter_split(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::SplitterMerge => {
-            build_splitter_merge(size, &mut rng, random_item, max_entities)
+        LessonKind::SplitterMergeSideloaded => {
+            build_splitter_merge_sideloaded(size, &mut rng, random_item, max_entities)
         }
         // LessonKind::Assemble1In1Out => build_assemble_1in1out(size, &mut rng, max_entities),
         LessonKind::MoveViaUgBelt => {
@@ -910,10 +919,8 @@ type Wiring = (usize, Vec<Cell>, Vec<Cell>, Vec<Cell>);
 /// splitter with a base marker below it and two prong markers above, plus the
 /// runs connecting them (belts, and undergrounds where an arm tunnels under an
 /// obstruction). Runs are stored as cell sequences in split flow order (base →
-/// splitter, splitter → prong), so SPLITTER_SPLIT places them as-is (source →
-/// splitter → 2 sinks) and SPLITTER_MERGE reverses each sequence — rebuilt from
-/// the reversed cells by [`path_to_placements`] so corners re-orient and
-/// tunnels flip cleanly — into 2 sources → splitter → sink.
+/// splitter, splitter → prong), which SPLITTER_SPLIT places as-is (source →
+/// splitter → 2 sinks).
 struct SplitterYPlan {
     item_value: i64,
     tiles: Vec<Cell>,
@@ -929,9 +936,8 @@ struct SplitterYPlan {
     total_entities: usize,
 }
 
-/// Draw one prong (a sink, in split terms) in the north region, facing *away*
-/// from the splitter — so as a fed sink its input faces back toward the
-/// splitter, and after the merge flip (a feeding source) it faces toward it.
+/// Draw one prong (a sink) in the north region, facing *away* from the
+/// splitter — so as a fed sink its input faces back toward the splitter.
 /// The splitter sits at row `sy`, columns `sx..=sx+1`, strictly south of the
 /// prong, so north is always an away-facing; add the horizontal away-facing
 /// when the prong is off to one side. Returns `(pos, split-facing, input cell)`.
@@ -1143,108 +1149,64 @@ fn canonical_split(
     })
 }
 
-/// Lay one belt run: for a split, the cells as-is ending in `split_end`; for a
-/// merge, the reversed cells ending in `merge_end` (facings recomputed from the
-/// reversed sequence, so corners are correct).
-fn place_run(
-    world: &mut World,
-    cells: &[Cell],
-    split_end: Direction,
-    merge_end: Direction,
-    merge: bool,
-) -> Option<()> {
-    let run = if merge {
-        let rev: Vec<Cell> = cells.iter().rev().copied().collect();
-        path_to_placements(&rev, merge_end)?
-    } else {
-        path_to_placements(cells, split_end)?
-    };
-    place_belts(world, &run);
-    Some(())
-}
-
-/// Realise a [`SplitterYPlan`] as either SPLITTER_SPLIT (`merge = false`) or
-/// SPLITTER_MERGE (`merge = true`, flow reversed).
-fn place_plan(plan: &SplitterYPlan, size: usize, merge: bool) -> Option<World> {
+/// Realise a [`SplitterYPlan`] as a SPLITTER_SPLIT factory: the base source
+/// feeds a north-facing splitter, which feeds the two prong sinks.
+fn place_plan(plan: &SplitterYPlan, size: usize) -> Option<World> {
     let mut world = World::empty(size, size);
-    let splitter_dir = if merge {
-        Direction::South
-    } else {
-        Direction::North
-    };
-    let (base_ent, prong_ent) = if merge {
-        (Item::Sink, Item::Source)
-    } else {
-        (Item::Source, Item::Sink)
-    };
-    let flip = |d: Direction| if merge { d.opposite() } else { d };
-
     place_marker(
         &mut world,
         plan.base_pos,
-        base_ent,
-        flip(plan.base_dir_split),
+        Item::Source,
+        plan.base_dir_split,
         plan.item_value,
     );
     place_marker(
         &mut world,
         plan.prong1_pos,
-        prong_ent,
-        flip(plan.prong1_dir_split),
+        Item::Sink,
+        plan.prong1_dir_split,
         plan.item_value,
     );
     place_marker(
         &mut world,
         plan.prong2_pos,
-        prong_ent,
-        flip(plan.prong2_dir_split),
+        Item::Sink,
+        plan.prong2_dir_split,
         plan.item_value,
     );
-    place_splitter(&mut world, &plan.tiles, splitter_dir);
+    place_splitter(&mut world, &plan.tiles, Direction::North);
 
-    // Merge reverses every run; each then ends by feeding a south-facing
-    // splitter (arms) or the south-facing base sink (stem).
-    place_run(
+    // Lay each belt run as-is, ending in the given direction (corner facings
+    // are recomputed from the path sequence by `path_to_placements`).
+    place_belts(
         &mut world,
-        &plan.stem,
-        Direction::North,
-        Direction::South,
-        merge,
-    )?;
-    place_run(
+        &path_to_placements(&plan.stem, Direction::North)?,
+    );
+    place_belts(
         &mut world,
-        &plan.arm1,
-        plan.prong1_dir_split,
-        Direction::South,
-        merge,
-    )?;
-    place_run(
+        &path_to_placements(&plan.arm1, plan.prong1_dir_split)?,
+    );
+    place_belts(
         &mut world,
-        &plan.arm2,
-        plan.prong2_dir_split,
-        Direction::South,
-        merge,
-    )?;
+        &path_to_placements(&plan.arm2, plan.prong2_dir_split)?,
+    );
     Some(world)
 }
 
-/// Build a splitter Y lesson. Both SPLITTER_SPLIT and SPLITTER_MERGE are the
-/// same Y — a base wired through a splitter to two prongs — so both come from
-/// one canonical (base-toward-south-edge, facing north) layout: SPLITTER_MERGE
-/// reverses the flow, and a random number of 90° rotations then orients the
-/// whole factory. The splitter is left removable (no protected positions) so
-/// the policy learns to place it.
-fn build_splitter_y(
+/// Build a SPLITTER_SPLIT lesson: a base source wired through a splitter to two
+/// prong sinks, from one canonical (base-toward-south-edge, north-facing)
+/// layout that a random number of 90° rotations then orients. The splitter is
+/// left removable (no protected positions) so the policy learns to place it.
+fn build_splitter_split(
     size: usize,
     rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
-    merge: bool,
 ) -> Option<BuiltFactory> {
     let pool = item_pool();
     let mut count = (500).max(size * size * 10);
 
-    // NOTE: the item is drawn ONCE before the loop (as SPLITTER_SPLIT always has).
+    // The item is drawn ONCE before the loop.
     let item_value = if random_item {
         pool[rng.choice_index(pool.len())]
     } else {
@@ -1257,7 +1219,7 @@ fn build_splitter_y(
             Some(p) => p,
             None => continue,
         };
-        let mut world = match place_plan(&plan, size, merge) {
+        let mut world = match place_plan(&plan, size) {
             Some(w) => w,
             None => continue,
         };
@@ -1275,22 +1237,317 @@ fn build_splitter_y(
     None
 }
 
-fn build_splitter_split(
-    size: usize,
-    rng: &mut Rng,
-    random_item: bool,
-    max_entities: f64,
-) -> Option<BuiltFactory> {
-    build_splitter_y(size, rng, random_item, max_entities, false)
+/// A north-flowing side-load gadget: everything it places into `world`, plus
+/// the cells it touched, the protected decoy belt, and the output cell (the
+/// north neighbour of the side-load tile) where the arm belt begins.
+struct SideloadGadget {
+    cells: Vec<Cell>,
+    decoy: Cell,
+    source: Cell,
+    out_cell: Cell,
+    /// Removable belts placed (the side-load tile; the decoy is protected).
+    belts: usize,
 }
 
-fn build_splitter_merge(
+/// Place a north-flowing side-load gadget whose output belt carries exactly
+/// half a belt (7.5 i/s). A saturated source normally floods both lanes of the
+/// belt it feeds; side-loading fills only the near lane, but *only while the
+/// target belt has another belt-connectable input*. An empty "decoy" belt
+/// supplies that second input permanently, so the 7.5 cap survives even a
+/// one-arm build — a lone side feed would otherwise curve back to a full 15,
+/// which is exactly the hack the old SPLITTER_MERGE allowed. The decoy carries
+/// nothing and sits on no source→sink path, so it is an intentional protected
+/// orphan (see `LessonKind::allows_orphans`).
+///
+/// `t = (tx, ty)` is the side-load tile (a north-facing belt). `source_side`
+/// (−1 = source to the west, +1 = east) places the source perpendicular to
+/// `t`. `layout` picks the two wiki side-load shapes:
+///   0 (opposing): source and decoy feed `t` from opposite sides.
+///   1 (inline):   the decoy feeds `t` in-line from the south; source from the
+///                 side.
+/// Returns `None` if any tile is off-grid or collides with `blocked`.
+fn place_sideload_gadget(
+    world: &mut World,
+    t: Cell,
+    source_side: i64,
+    layout: usize,
+    item_value: i64,
+    s: i64,
+    blocked: &HashSet<Cell>,
+) -> Option<SideloadGadget> {
+    let (tx, ty) = t;
+    let out_cell = (tx, ty - 1); // t faces north → hands its flow here
+    let source = (tx + source_side, ty);
+    let source_dir = if source_side < 0 {
+        Direction::East
+    } else {
+        Direction::West
+    };
+    let (decoy, decoy_dir) = if layout == 0 {
+        // Opposing: decoy on the far side from the source, facing into `t`.
+        (
+            (tx - source_side, ty),
+            if source_side < 0 {
+                Direction::West
+            } else {
+                Direction::East
+            },
+        )
+    } else {
+        // Inline: decoy south of `t`, facing north into it.
+        ((tx, ty + 1), Direction::North)
+    };
+
+    let touched = [t, out_cell, source, decoy];
+    if touched.iter().any(|&c| !in_grid(c, s)) {
+        return None;
+    }
+    let uniq: HashSet<Cell> = touched.iter().copied().collect();
+    if uniq.len() != touched.len() || touched.iter().any(|c| blocked.contains(c)) {
+        return None;
+    }
+
+    place_marker(world, source, Item::Source, source_dir, item_value);
+    place_belts(
+        world,
+        &[
+            (tx, ty, Direction::North, Misc::None),
+            (decoy.0, decoy.1, decoy_dir, Misc::None),
+        ],
+    );
+
+    Some(SideloadGadget {
+        cells: vec![source, t, decoy, out_cell],
+        decoy,
+        source,
+        out_cell,
+        belts: 1,
+    })
+}
+
+/// Build a SPLITTER_MERGE_SIDELOADED lesson: two sources, each capped to 7.5
+/// i/s by a side-load gadget, merged through a splitter onto a single 15 i/s
+/// output belt to one sink. Unlike the old SPLITTER_MERGE — whose single sink
+/// was saturated by *either* source alone, so half the factory earned full
+/// credit — both arms are throughput-necessary here (drop one and the sink
+/// falls to 7.5). The two decoy belts are protected orphans; everything else
+/// (splitter included) stays removable so the policy learns to place it.
+fn build_splitter_merge_sideloaded(
     size: usize,
     rng: &mut Rng,
     random_item: bool,
     max_entities: f64,
 ) -> Option<BuiltFactory> {
-    build_splitter_y(size, rng, random_item, max_entities, true)
+    let s = size as i64;
+    // Room for: sink + output belt north of the splitter, and gadgets +
+    // arms south of it.
+    if s < 7 {
+        return None;
+    }
+    let pool = item_pool();
+    let item_value = if random_item {
+        pool[rng.choice_index(pool.len())]
+    } else {
+        Item::ElectronicCircuit as i64
+    };
+
+    let mut count = (500).max(size * size * 10);
+    while count > 0 {
+        count -= 1;
+
+        let mut world = World::empty(size, size);
+
+        // North-facing splitter: 2 tiles side by side, inputs on the south
+        // edge, two candidate output tiles on the north edge. The output is
+        // wired from whichever candidate reaches the sink in fewer belts.
+        let sx = rng.randint(1, s - 3);
+        let sy = rng.randint(3, s - 3);
+        let tiles = [(sx, sy), (sx + 1, sy)];
+        let inputs = [(sx, sy + 1), (sx + 1, sy + 1)];
+        let outputs = [(sx, sy - 1), (sx + 1, sy - 1)];
+
+        place_splitter(&mut world, &tiles, Direction::North);
+
+        // Reserve the fixed core so gadgets/arms can't overwrite it. Both
+        // output tiles are reserved; the unused one stays clear so all 15 i/s
+        // flows to the wired output.
+        let mut reserved: HashSet<Cell> = tiles.iter().copied().collect();
+        reserved.extend(inputs);
+        reserved.extend(outputs);
+
+        // Place both side-load gadgets in the region south of the splitter;
+        // their positions don't depend on which splitter input they feed.
+        let mut belts = 0;
+        let mut gadgets: Vec<SideloadGadget> = Vec::new();
+        let mut ok = true;
+        for _ in 0..2 {
+            let layout = rng.choice_index(2);
+            let source_side = if rng.choice_index(2) == 0 { -1 } else { 1 };
+            let tx = rng.randint(1, s - 2);
+            let ty = rng.randint(sy + 2, s - 2);
+            match place_sideload_gadget(
+                &mut world,
+                (tx, ty),
+                source_side,
+                layout,
+                item_value,
+                s,
+                &reserved,
+            ) {
+                Some(g) => {
+                    reserved.extend(g.cells.iter().copied());
+                    belts += g.belts;
+                    gadgets.push(g);
+                }
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        // Route the two 7.5 arms up into the splitter inputs. Try both
+        // source→input assignments and keep whichever uses fewer belts, so
+        // neither arm takes a needless roundabout path. Belts only (no tunnels)
+        // so the arms stay simple and independent (the second is routed around
+        // the first).
+        let mut best_arms: Option<(usize, Vec<UgPlacement>, Vec<UgPlacement>)> = None;
+        for &(a, b) in &[(0usize, 1usize), (1usize, 0usize)] {
+            let mut b0 = reserved.clone();
+            b0.remove(&gadgets[0].out_cell);
+            b0.remove(&inputs[a]);
+            let Some(p0) = find_belt_path(
+                gadgets[0].out_cell,
+                inputs[a],
+                Direction::North,
+                s,
+                &b0,
+                Underground::Off,
+            ) else {
+                continue;
+            };
+            let mut b1 = reserved.clone();
+            b1.extend(belt_cell_set(&p0));
+            b1.remove(&gadgets[1].out_cell);
+            b1.remove(&inputs[b]);
+            let Some(p1) = find_belt_path(
+                gadgets[1].out_cell,
+                inputs[b],
+                Direction::North,
+                s,
+                &b1,
+                Underground::Off,
+            ) else {
+                continue;
+            };
+            let total = p0.len() + p1.len();
+            if best_arms.as_ref().is_none_or(|(bt, ..)| total < *bt) {
+                best_arms = Some((total, p0, p1));
+            }
+        }
+        let Some((_, arm0, arm1)) = best_arms else {
+            continue;
+        };
+        place_belts(&mut world, &arm0);
+        place_belts(&mut world, &arm1);
+        belts += arm0.len() + arm1.len();
+        reserved.extend(belt_cell_set(&arm0));
+        reserved.extend(belt_cell_set(&arm1));
+        let decoys: Vec<Cell> = gadgets.iter().map(|g| g.decoy).collect();
+        let sources: Vec<Cell> = gadgets.iter().map(|g| g.source).collect();
+
+        // Wire the splitter output to a sink in the half-plane in FRONT of the
+        // splitter (north of it, pre-rotation), facing away, at a random
+        // location. The two sources sit in the half behind the splitter, so a
+        // line through the splitter cleanly separates sources from sink and the
+        // whole factory reads as one forward Y (sources → splitter → sink)
+        // rather than doubling back. Route from whichever of the two splitter
+        // outputs reaches the sink in fewer belts (the other stays clear).
+        let sink_dir = Direction::North;
+        let sd = sink_dir.delta();
+        let front: Vec<Cell> = available_cells(s, &reserved)
+            .into_iter()
+            .filter(|&(_, y)| y <= sy - 2)
+            .collect();
+        if front.is_empty() {
+            continue;
+        }
+        let sink_pos = front[rng.choice_index(front.len())];
+        let sink_input = (sink_pos.0 - sd.0, sink_pos.1 - sd.1);
+        if !in_grid(sink_input, s) || reserved.contains(&sink_input) {
+            continue;
+        }
+        let mut best_out: Option<Vec<UgPlacement>> = None;
+        for &oc in &outputs {
+            let mut blocked = reserved.clone();
+            blocked.insert(sink_pos);
+            blocked.remove(&oc); // the path starts here
+            if let Some(p) = find_belt_path(oc, sink_input, sink_dir, s, &blocked, Underground::Off)
+            {
+                if best_out.as_ref().is_none_or(|b| p.len() < b.len()) {
+                    best_out = Some(p);
+                }
+            }
+        }
+        let Some(out_path) = best_out else {
+            continue;
+        };
+        place_marker(&mut world, sink_pos, Item::Sink, sink_dir, item_value);
+        place_belts(&mut world, &out_path);
+        belts += out_path.len();
+
+        let total_entities = belts + 1; // + splitter
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        // The full build must merge both 7.5 arms to a saturated (15) sink,
+        // and the only orphans may be the two protected decoys.
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) < 14.9 || unreachable != decoys.len() {
+            continue;
+        }
+        // Anti-hack: removing either source must drop the sink well below full.
+        // A degenerate draw where an arm curves to a full belt (or the two arms
+        // interact) would let one source alone saturate the sink — the exact
+        // failure of the old SPLITTER_MERGE. Reject unless both arms are load-
+        // bearing.
+        let one_arm_saturates = sources.iter().any(|&(sx0, sy0)| {
+            let mut w2 = world.clone();
+            w2.set(
+                sx0 as usize,
+                sy0 as usize,
+                Channel::Entities,
+                Item::TransportBelt as i64,
+            );
+            let (d2, _) = calc_throughput(&build_graph(&w2));
+            factory_score(&d2) > 9.0
+        });
+        if one_arm_saturates {
+            continue;
+        }
+
+        // Random 90° rotations; the protected decoy coords rotate with the
+        // world (rotate_world_cw maps (x, y) → (s − 1 − y, x)).
+        let mut protected = decoys;
+        let rotations = rng.choice_index(4);
+        for _ in 0..rotations {
+            world = rotate_world_cw(&world);
+            for p in protected.iter_mut() {
+                *p = (s - 1 - p.1, p.0);
+            }
+        }
+
+        let protected_positions: Vec<(usize, usize)> = protected
+            .iter()
+            .map(|&(x, y)| (x as usize, y as usize))
+            .collect();
+        return finish(world, total_entities, protected_positions, count);
+    }
+    None
 }
 
 #[allow(unused)]
@@ -3402,8 +3659,183 @@ mod tests {
     }
 
     #[test]
+    fn test_sideloaded_merge_requires_both_arms() {
+        // The point of SPLITTER_MERGE_SIDELOADED over the old SPLITTER_MERGE:
+        // both source arms are throughput-necessary. A full build saturates the
+        // single sink (15), the two decoys are the only orphans, and blanking
+        // either source collapses the sink well below full (the old merge would
+        // stay at 15 — one source alone saturated it).
+        let mut built = 0;
+        for seed in 0..60u64 {
+            let Some(f) = build_factory(
+                12,
+                LessonKind::SplitterMergeSideloaded,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            built += 1;
+            let (dels, unreach) = calc_throughput(&build_graph(&f.world));
+            assert!(factory_score(&dels) > 14.9, "seed={seed}: full merge < 15");
+            assert_eq!(unreach, 2, "seed={seed}: only the 2 decoys may be orphans");
+            assert_eq!(
+                f.protected_positions.len(),
+                2,
+                "seed={seed}: 2 protected decoys"
+            );
+
+            for &(sx, sy) in f.protected_positions.iter() {
+                assert_eq!(
+                    f.world.entity_at(sx, sy),
+                    Some(Item::TransportBelt),
+                    "seed={seed}: protected decoy must be a belt"
+                );
+            }
+
+            // Blank each source in turn → sink must fall below full.
+            let source_cells: Vec<(usize, usize)> = (0..f.world.width())
+                .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| f.world.entity_at(x, y) == Some(Item::Source))
+                .collect();
+            assert_eq!(source_cells.len(), 2, "seed={seed}: expected 2 sources");
+            for &(x, y) in &source_cells {
+                let mut w2 = f.world.clone();
+                w2.set(x, y, Channel::Entities, Item::TransportBelt as i64);
+                let (d2, _) = calc_throughput(&build_graph(&w2));
+                assert!(
+                    factory_score(&d2) < 14.0,
+                    "seed={seed}: one-arm build scored {} — a single source saturated the sink",
+                    factory_score(&d2)
+                );
+            }
+        }
+        assert!(
+            built > 40,
+            "only {built} sideloaded merges built across 60 seeds"
+        );
+    }
+
+    /// Belt tiles between the splitter and the sink: BFS over occupied tiles
+    /// from the sink to the nearest splitter tile, less the sink's own step.
+    fn splitter_sink_gap(world: &World) -> Option<usize> {
+        use std::collections::VecDeque;
+        let (w, h) = (world.width(), world.height());
+        let sink = (0..w)
+            .flat_map(|x| (0..h).map(move |y| (x, y)))
+            .find(|&(x, y)| world.entity_at(x, y) == Some(Item::Sink))?;
+        let mut seen: HashSet<(usize, usize)> = HashSet::from([sink]);
+        let mut q: VecDeque<((usize, usize), usize)> = VecDeque::from([(sink, 0)]);
+        while let Some(((x, y), d)) = q.pop_front() {
+            if world.entity_at(x, y) == Some(Item::Splitter) {
+                return Some(d.saturating_sub(1));
+            }
+            for (dx, dy) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                    let c = (nx as usize, ny as usize);
+                    if !seen.contains(&c) && world.entity_at(c.0, c.1).is_some() {
+                        seen.insert(c);
+                        q.push_back((c, d + 1));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_sideloaded_merge_sink_not_always_adjacent() {
+        // The splitter output is wired to a semi-arbitrary sink, so the sink is
+        // not rigidly one belt from the splitter — across seeds it is sometimes
+        // two or more belts away.
+        let (mut built, mut far) = (0, 0);
+        for seed in 0..60u64 {
+            let Some(f) = build_factory(
+                12,
+                LessonKind::SplitterMergeSideloaded,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            built += 1;
+            if splitter_sink_gap(&f.world).is_some_and(|g| g >= 2) {
+                far += 1;
+            }
+        }
+        assert!(built > 40, "only {built} builds");
+        assert!(
+            far > 0,
+            "splitter was always ≤1 belt from the sink across {built} builds"
+        );
+    }
+
+    #[test]
+    fn test_sideloaded_merge_uses_both_splitter_outputs() {
+        // Exactly one splitter output tile is belted (the other stays clear):
+        // the one that reaches the sink in fewer belts. As the sink moves, both
+        // tiles get used across seeds.
+        let (mut tile0, mut tile1) = (0u32, 0u32);
+        for seed in 0..80u64 {
+            let Some(f) = build_factory(
+                12,
+                LessonKind::SplitterMergeSideloaded,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            let w = &f.world;
+            let mut spl: Vec<(usize, usize)> = (0..w.width())
+                .flat_map(|x| (0..w.height()).map(move |y| (x, y)))
+                .filter(|&(x, y)| w.entity_at(x, y) == Some(Item::Splitter))
+                .collect();
+            spl.sort();
+            assert_eq!(spl.len(), 2, "seed={seed}");
+            let (dx, dy) = w.direction_at(spl[0].0, spl[0].1).delta();
+            let belted: Vec<usize> = spl
+                .iter()
+                .enumerate()
+                .filter(|(_, &(x, y))| {
+                    let (ox, oy) = (x as i64 + dx, y as i64 + dy);
+                    ox >= 0
+                        && oy >= 0
+                        && (ox as usize) < w.width()
+                        && (oy as usize) < w.height()
+                        && matches!(
+                            w.entity_at(ox as usize, oy as usize),
+                            Some(Item::TransportBelt)
+                        )
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                belted.len(),
+                1,
+                "seed={seed}: exactly one splitter output tile should carry a belt"
+            );
+            if belted[0] == 0 {
+                tile0 += 1;
+            } else {
+                tile1 += 1;
+            }
+        }
+        assert!(
+            tile0 > 0 && tile1 > 0,
+            "output side not randomized: tile0={tile0} tile1={tile1}"
+        );
+    }
+
+    #[test]
     fn test_no_orphan_tiles_every_lesson() {
-        // No lesson's solved factory may contain orphan tiles (unreachable == 0).
+        // No lesson's solved factory may contain orphan tiles (unreachable ==
+        // 0), except lessons that opt in via `allows_orphans` — there every
+        // orphan must be an intentional protected tile (e.g. a side-load
+        // decoy), so the orphan count equals the protected-position count.
         for &kind in all_lesson_kinds() {
             let mut checked = 0;
             for seed in 0..20u64 {
@@ -3412,10 +3844,15 @@ mod tests {
                 };
                 checked += 1;
                 let (_, unreachable) = tp_unreachable(&f.world);
+                let allowed = if kind.allows_orphans() {
+                    f.protected_positions.len()
+                } else {
+                    0
+                };
                 assert_eq!(
                     unreachable,
-                    0,
-                    "{} seed={seed}: {unreachable} orphans",
+                    allowed,
+                    "{} seed={seed}: {unreachable} orphans, expected {allowed}",
                     kind.name()
                 );
             }
@@ -3425,26 +3862,32 @@ mod tests {
 
     #[test]
     fn test_splitter_lessons_leave_splitter_removable() {
-        // The splitter must be removable (empty protected_positions) so the
+        // The splitter must be removable (never a protected position) so the
         // policy can learn to place it; the built factory still contains it.
-        for &kind in &[LessonKind::SplitterSplit, LessonKind::SplitterMerge] {
+        // SPLITTER_MERGE_SIDELOADED does protect its decoy belts, but never the
+        // splitter itself.
+        for &kind in &[
+            LessonKind::SplitterSplit,
+            LessonKind::SplitterMergeSideloaded,
+        ] {
             let mut checked = 0;
             for seed in 0..20u64 {
                 let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
                     continue;
                 };
                 checked += 1;
-                assert!(
-                    f.protected_positions.is_empty(),
-                    "{} seed={seed}: splitter must be removable, got protected {:?}",
-                    kind.name(),
-                    f.protected_positions
-                );
+                let protected: HashSet<(usize, usize)> =
+                    f.protected_positions.iter().copied().collect();
                 let mut splitter_tiles = 0;
                 for x in 0..f.world.width() {
                     for y in 0..f.world.height() {
                         if f.world.entity_at(x, y) == Some(Item::Splitter) {
                             splitter_tiles += 1;
+                            assert!(
+                                !protected.contains(&(x, y)),
+                                "{} seed={seed}: splitter tile ({x},{y}) must be removable",
+                                kind.name()
+                            );
                         }
                     }
                 }
@@ -3461,12 +3904,12 @@ mod tests {
 
     #[test]
     fn test_splitter_y_roles() {
-        // The Y wires one base to two prongs through the splitter:
-        // SPLITTER_SPLIT is 1 source → 2 sinks, SPLITTER_MERGE is 2 sources →
-        // 1 sink. Both build with positive throughput across seeds.
+        // SPLITTER_SPLIT is 1 source → 2 sinks through the splitter;
+        // SPLITTER_MERGE_SIDELOADED is 2 sources → 1 sink. Both build with
+        // positive throughput across seeds.
         for &(kind, want_sources, want_sinks) in &[
             (LessonKind::SplitterSplit, 1, 2),
-            (LessonKind::SplitterMerge, 2, 1),
+            (LessonKind::SplitterMergeSideloaded, 2, 1),
         ] {
             let mut checked = 0;
             for seed in 0..20u64 {
@@ -3508,8 +3951,10 @@ mod tests {
         // Sources feed the splitter → they face toward it; sinks are fed by it
         // → they face away. That's the sign of facing · (splitterCentroid −
         // markerPos), which rotation preserves. (Centroid doubled to stay in
-        // integers: the two splitter tiles sum to 2·centroid.)
-        for &kind in &[LessonKind::SplitterSplit, LessonKind::SplitterMerge] {
+        // integers: the two splitter tiles sum to 2·centroid.) Only SPLITTER_SPLIT
+        // wires markers straight to the splitter; SPLITTER_MERGE_SIDELOADED
+        // sources face their side-load tile instead, so it is excluded.
+        for &kind in &[LessonKind::SplitterSplit] {
             for seed in 0..30u64 {
                 let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
                     continue;
