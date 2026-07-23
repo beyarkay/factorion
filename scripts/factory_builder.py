@@ -119,7 +119,7 @@ HELP_LINES = [
     "Clear selected: Delete / Backspace / right-click",
     "Deselect hotbar: Esc",
     "Generate lesson: g (set 'entities to clear' to blank N first)",
-    "Apply prediction (top pick): a",
+    "Apply prediction: tap a once / hold a for fast autoregressive placement",
     "Resize / clear grid: c",
 ]
 
@@ -600,6 +600,43 @@ def _predict(grid: list[list[dict]]) -> dict:
     }
 
 
+def _predict_action(grid: list[list[dict]]) -> dict:
+    """Return only the greedy next placement.
+
+    This is the latency-sensitive path used while the user holds ``a``.  The
+    detailed predictor above intentionally computes probability tables and
+    ghost candidates for inspection; none of that is needed for an
+    autoregressive placement, so this path performs one encode and five
+    argmaxes and returns the six fields the browser applies.
+    """
+    world_WHC = build_world(grid)
+    agent = _get_agent(world_WHC.shape[0])
+    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    H = obs_CWH.shape[3]
+
+    with torch.inference_mode():
+        encoded_BCWH, g_BG = agent.encode(obs_CWH)
+        tile_idx = int(agent.tile_logits(encoded_BCWH).reshape(-1).argmax().item())
+        x, y = divmod(tile_idx, H)
+        tile_features = encoded_BCWH[:, :, x, y]
+        if g_BG is not None:
+            tile_features = torch.cat([tile_features, g_BG], dim=1)
+
+        entity = int(agent.ent_head(tile_features).argmax(dim=-1).item())
+        direction = int(agent.dir_head(tile_features).argmax(dim=-1).item())
+        item = int(agent.item_head(tile_features).argmax(dim=-1).item())
+        misc = int(agent.misc_head(tile_features).argmax(dim=-1).item())
+
+    return {
+        "x": x,
+        "y": y,
+        "entity": _ENT_NAMES.get(entity, str(entity)),
+        "direction": _DIR_NAMES.get(direction, str(direction)),
+        "item": _ITEM_NAMES.get(item, str(item)),
+        "misc": _MISC_NAMES.get(misc, str(misc)),
+    }
+
+
 # Cache palette icons so the page payload stays small per cell.
 def _icon_b64(name: str) -> str:
     try:
@@ -943,6 +980,10 @@ let grid = [];           // grid[y][x] = cell dict
 let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
 let prediction = null;   // last /predict response (or null)
+let autoApplying = false;
+let autoApplyGeneration = 0;
+let autoApplyFrame = null;
+let autoApplyHoldTimer = null;
 
 function emptyCell() {{
   return {{
@@ -1210,13 +1251,17 @@ function clearSelected() {{
   scheduleCompute();
 }}
 
-let _computeTimer = null;
+let _predictionTimer = null;
+let _graphTimer = null;
 function scheduleCompute() {{
-  clearTimeout(_computeTimer);
-  _computeTimer = setTimeout(() => {{
-    computeGraph();
-    computePrediction();
-  }}, 200);
+  clearTimeout(_predictionTimer);
+  clearTimeout(_graphTimer);
+  if (autoApplying) return;
+  // Prediction is interactive; refresh it almost immediately. Matplotlib
+  // graph rendering is much heavier and shares the server thread, so only do
+  // it after the user has actually paused.
+  _predictionTimer = setTimeout(computePrediction, 25);
+  _graphTimer = setTimeout(computeGraph, 1000);
 }}
 
 // Format a probability as a short percent string. Matches the user's
@@ -1299,25 +1344,128 @@ async function computePrediction() {{
   }}
 }}
 
+async function requestFastPrediction() {{
+  const resp = await fetch('/predict', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ grid, detail: 'action' }}),
+  }});
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}}
+
 // Apply a single predicted placement to the grid, exactly as if the
 // user had placed it by hand. `cand` is either a ghost candidate or the
 // argmax `prediction` itself — both carry {{x, y, entity, direction,
 // item, misc}}, so the same code applies either. footprint is preserved
 // (the model never predicts it).
-function applyCandidate(cand) {{
+function applyCandidate(cand, interactive = true) {{
   const {{ x, y, entity, direction, item, misc }} = cand;
   grid[y][x] = {{
     entity, direction, item, misc, footprint: grid[y][x].footprint,
   }};
   selected = {{ x, y }};
   prediction = null;
-  renderGrid(); syncEditor();
-  scheduleCompute();
+  if (interactive) {{
+    renderGrid(); syncEditor();
+    scheduleCompute();
+  }}
 }}
 
 function applyPrediction() {{
   if (!prediction) return;
   applyCandidate(prediction);
+}}
+
+function renderAutoApplyFrame() {{
+  if (autoApplyFrame !== null) return;
+  autoApplyFrame = requestAnimationFrame(() => {{
+    autoApplyFrame = null;
+    renderGrid();
+    syncEditor();
+  }});
+}}
+
+async function runAutoApply(generation) {{
+  const info = document.getElementById('model-info');
+  let count = 0;
+  const started = performance.now();
+  try {{
+    while (autoApplying && generation === autoApplyGeneration) {{
+      const action = await requestFastPrediction();
+      if (!autoApplying || generation !== autoApplyGeneration) break;
+      applyCandidate(action, false);
+      count += 1;
+      renderAutoApplyFrame();
+      if (info) {{
+        const elapsed = Math.max((performance.now() - started) / 1000, 0.001);
+        info.textContent =
+          'fast apply: ' + count + ' placements · ' +
+          (count / elapsed).toFixed(1) + '/s';
+      }}
+    }}
+  }} catch (e) {{
+    autoApplying = false;
+    if (info) info.textContent = 'fast apply failed: ' + e;
+  }}
+}}
+
+function startAutoApply() {{
+  if (autoApplying || !modelLoaded) return;
+  clearTimeout(_predictionTimer);
+  clearTimeout(_graphTimer);
+  autoApplying = true;
+  autoApplyGeneration += 1;
+  runAutoApply(autoApplyGeneration);
+}}
+
+function stopAutoApply() {{
+  if (!autoApplying) return;
+  autoApplying = false;
+  autoApplyGeneration += 1;
+  if (autoApplyFrame !== null) {{
+    cancelAnimationFrame(autoApplyFrame);
+    autoApplyFrame = null;
+  }}
+  renderGrid();
+  syncEditor();
+  // Restore the rich probability/ghost view promptly; leave the PNG until
+  // one second of idle so it can never throttle the held-key loop.
+  scheduleCompute();
+}}
+
+function beginApplyKey() {{
+  if (!modelLoaded) return;
+  clearTimeout(_predictionTimer);
+  clearTimeout(_graphTimer);
+  // Preserve tap-to-apply: consume the visible prediction once, then only
+  // enter the continuous request pump if the key remains down.
+  if (prediction) {{
+    applyCandidate(prediction, false);
+    renderAutoApplyFrame();
+  }}
+  clearTimeout(autoApplyHoldTimer);
+  autoApplyHoldTimer = setTimeout(() => {{
+    autoApplyHoldTimer = null;
+    startAutoApply();
+  }}, 120);
+}}
+
+function endApplyKey() {{
+  clearTimeout(autoApplyHoldTimer);
+  autoApplyHoldTimer = null;
+  if (autoApplying) {{
+    stopAutoApply();
+    return;
+  }}
+  if (autoApplyFrame !== null) {{
+    cancelAnimationFrame(autoApplyFrame);
+    autoApplyFrame = null;
+  }}
+  renderGrid();
+  syncEditor();
+  scheduleCompute();
 }}
 
 async function computeGraph() {{
@@ -1504,7 +1652,11 @@ document.addEventListener('keydown', (ev) => {{
     clearSelected(); ev.preventDefault(); return;
   }}
   if (ev.key === 'g') {{ generateLesson(); ev.preventDefault(); return; }}
-  if (ev.key === 'a') {{ applyPrediction(); ev.preventDefault(); return; }}
+  if (ev.key === 'a') {{
+    if (!ev.repeat) beginApplyKey();
+    ev.preventDefault();
+    return;
+  }}
   if (ev.key === 'c') {{
     document.getElementById('resize').click(); ev.preventDefault(); return;
   }}
@@ -1519,6 +1671,23 @@ document.addEventListener('keydown', (ev) => {{
     if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
   }}
+}});
+
+document.addEventListener('keyup', (ev) => {{
+  if (ev.key === 'a') {{
+    endApplyKey();
+    ev.preventDefault();
+  }}
+}});
+
+function cancelApplyKeyIfActive() {{
+  if (autoApplying || autoApplyHoldTimer !== null) endApplyKey();
+}}
+// A lost keyup (for example, switching windows while holding a) must not
+// leave the request pump running in the background.
+window.addEventListener('blur', cancelApplyKeyIfActive);
+document.addEventListener('visibilitychange', () => {{
+  if (document.hidden) cancelApplyKeyIfActive();
 }});
 
 // [?] help popover: click the badge to toggle the shortcuts list,
@@ -1608,7 +1777,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
             elif self.path == "/predict":
-                result = _predict(payload["grid"])
+                if payload.get("detail") == "action":
+                    result = _predict_action(payload["grid"])
+                else:
+                    result = _predict(payload["grid"])
             elif self.path == "/load_lesson":
                 result = _load_lesson(
                     kind_name=payload["kind"],
