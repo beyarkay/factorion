@@ -23,7 +23,7 @@ from ppo import (  # noqa: E402
     _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SharedArgs  # noqa: E402
-from helpers import Channel  # noqa: E402
+from helpers import Channel, Direction, Misc, items, recipes, str2ent, str2item  # noqa: E402
 from factorion import Footprint  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -147,9 +147,21 @@ class TestEntropy:
 class TestGradientFlow:
     def test_gradients_flow_through_all_params(self, agent):
         """Verify gradients flow to encoder, tile_logits, and all four
-        per-tile heads (entity, direction, item, misc)."""
+        per-tile heads when the batch exercises every semantic choice."""
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
-        action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
+        recipe_id = next(
+            item.value
+            for item in items.values()
+            if item.name in recipes
+            and "assembling_machine_1" in recipes[item.name].produced_by
+        )
+        action = torch.tensor([
+            [0, 0, str2ent("transport_belt").value, Direction.EAST.value, 0, Misc.NONE.value, 0],
+            [1, 1, str2ent("assembling_machine_1").value, Direction.NONE.value, recipe_id, Misc.NONE.value, 0],
+            [2, 2, str2ent("underground_belt").value, Direction.NORTH.value, 0, Misc.UNDERGROUND_DOWN.value, 0],
+            [3, 3, str2ent("inserter").value, Direction.SOUTH.value, 0, Misc.NONE.value, 0],
+        ])
+        _, logp_B, _, value_B = agent.get_action_and_value(obs, action)
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
@@ -542,3 +554,103 @@ class TestSampleAction:
         obs = torch.randn(2, NUM_CHANNELS, 5, 5)
         out = agent.sample_action(obs, temperature=0.0, compute_value=False)
         assert out["value"] is None
+
+
+class TestSemanticActionMasking:
+    @pytest.mark.parametrize(
+        "entity_name",
+        [
+            "empty",
+            "transport_belt",
+            "inserter",
+            "assembling_machine_1",
+            "underground_belt",
+            "splitter",
+            "long_handed_inserter",
+        ],
+    )
+    def test_entity_conditions_other_heads(self, agent, entity_name):
+        """Even adversarial raw logits can only produce a valid combination."""
+        entity_id = str2ent(entity_name).value
+        iron_plate_id = str2item("iron_plate").value
+        with torch.no_grad():
+            for head in (agent.ent_head, agent.dir_head, agent.item_head, agent.misc_head):
+                head.weight.zero_()
+                head.bias.zero_()
+            agent.ent_head.bias[entity_id] = 100.0
+            agent.dir_head.bias[Direction.NONE.value] = 100.0
+            agent.dir_head.bias[Direction.NORTH.value] = 90.0
+            agent.item_head.bias[iron_plate_id] = 100.0
+            agent.item_head.bias[0] = 90.0
+            agent.misc_head.bias[Misc.NONE.value] = 100.0
+            agent.misc_head.bias[Misc.UNDERGROUND_DOWN.value] = 90.0
+
+        out = agent.sample_action(
+            torch.zeros(1, NUM_CHANNELS, 5, 5), temperature=0.0
+        )
+        action = out["action"]
+        assert action["entity"].item() == entity_id
+
+        if entity_name in ("empty", "assembling_machine_1"):
+            assert action["direction"].item() == Direction.NONE.value
+        else:
+            assert action["direction"].item() in {
+                Direction.NORTH.value,
+                Direction.EAST.value,
+                Direction.SOUTH.value,
+                Direction.WEST.value,
+            }
+
+        if entity_name == "assembling_machine_1":
+            recipe_item_ids = {
+                item.value
+                for item in items.values()
+                if item.name in recipes
+                and "assembling_machine_1" in recipes[item.name].produced_by
+            }
+            assert action["item"].item() in recipe_item_ids
+        else:
+            assert action["item"].item() == 0
+
+        if entity_name == "underground_belt":
+            assert action["misc"].item() in {
+                Misc.UNDERGROUND_DOWN.value,
+                Misc.UNDERGROUND_UP.value,
+            }
+        else:
+            assert action["misc"].item() == Misc.NONE.value
+
+        assert torch.isfinite(out["logp"]).all()
+        assert torch.isfinite(out["entropy"]).all()
+
+    def test_non_placeable_item_cannot_be_sampled_as_entity(self, agent):
+        """The entity head keeps its checkpoint shape but masks item-only IDs."""
+        invalid_entity_id = str2ent("iron_plate").value
+        belt_id = str2ent("transport_belt").value
+        with torch.no_grad():
+            agent.ent_head.weight.zero_()
+            agent.ent_head.bias.zero_()
+            agent.ent_head.bias[invalid_entity_id] = 100.0
+            agent.ent_head.bias[belt_id] = 90.0
+
+        out = agent.sample_action(
+            torch.zeros(1, NUM_CHANNELS, 5, 5), temperature=0.0
+        )
+        assert out["action"]["entity"].item() == belt_id
+        assert torch.isneginf(out["logp_heads"]["entity"][0, invalid_entity_id])
+
+    def test_invalid_stored_combination_has_zero_probability(self, agent):
+        """PPO replay uses the same masks rather than scoring an invalid tuple."""
+        action = torch.tensor([[
+            0,
+            0,
+            str2ent("transport_belt").value,
+            Direction.EAST.value,
+            str2item("iron_plate").value,
+            Misc.NONE.value,
+            0,
+        ]])
+        out = agent.sample_action(
+            torch.zeros(1, NUM_CHANNELS, 5, 5), action=action
+        )
+        assert torch.isneginf(out["logp"]).all()

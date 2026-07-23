@@ -32,6 +32,7 @@ from factorion import (
     build_factory,
     entities,
     items,
+    recipes,
     str2ent,
     str2item,
 )
@@ -54,6 +55,21 @@ _N_ENTITIES = len(entities)
 _N_DIRECTIONS = len(Direction)
 _DIR_NONE_VAL = Direction.NONE.value
 _MISC_NONE_VAL = Misc.NONE.value
+_VALID_ENTITY_ACTION_IDS = (
+    _EMPTY_ENT_ID,
+    *(
+        item.value
+        for item in entities.values()
+        if item.is_placeable
+        and item.name not in ("bulk_inserter", "stack_inserter")
+    ),
+)
+_ASM_RECIPE_ITEM_IDS = tuple(
+    item.value
+    for item in items.values()
+    if item.name in recipes
+    and "assembling_machine_1" in recipes[item.name].produced_by
+)
 # Fixed key set for the (logged-only) invalid_reason dict. step() tracks just the
 # one key that fired and materialises the full all-False+one-True dict lazily,
 # only when the info dict is actually built (terminal / full-diagnostics step).
@@ -1165,7 +1181,8 @@ def _categorical_logp(logp_all_BN, idx_B):
 
 def _categorical_entropy(logp_all_BN):
     """Shannon entropy of a categorical given its log-probabilities."""
-    return -(logp_all_BN.exp() * logp_all_BN).sum(-1)
+    finite_logp = logp_all_BN.masked_fill(~torch.isfinite(logp_all_BN), 0.0)
+    return -(logp_all_BN.exp() * finite_logp).sum(-1)
 
 
 def _select_action(logp_all_BN, temperature):
@@ -1266,6 +1283,22 @@ class AgentCNN(nn.Module):
         self.num_directions = len(Direction)
         self.num_items = len(items)
         self.num_misc = len(Misc)
+
+        # Semantic action grammar. These are non-persistent buffers so old
+        # checkpoints remain loadable; they are constants derived from the
+        # factorion item/recipe catalog rather than learned model state.
+        valid_entity_mask = torch.zeros(self.num_entities, dtype=torch.bool)
+        valid_entity_mask[list(_VALID_ENTITY_ACTION_IDS)] = True
+        assembler_recipe_mask = torch.zeros(self.num_items, dtype=torch.bool)
+        assembler_recipe_mask[list(_ASM_RECIPE_ITEM_IDS)] = True
+        self.valid_entity_action_mask: torch.Tensor
+        self.assembler_recipe_mask: torch.Tensor
+        self.register_buffer(
+            "valid_entity_action_mask", valid_entity_mask, persistent=False
+        )
+        self.register_buffer(
+            "assembler_recipe_mask", assembler_recipe_mask, persistent=False
+        )
 
         # --- Input encoding for the nominal (categorical) channels ---
         # The observation's ENTITIES/DIRECTION/ITEMS/MISC channels hold raw
@@ -1473,6 +1506,37 @@ class AgentCNN(nn.Module):
         lower it if the model rambles, raise it if it stops short."""
         return self.eot_prob(x_BCWH) > threshold
 
+    def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
+        """Apply the action grammar implied by the selected entity.
+
+        Empty and the rotation-invariant assembler use direction NONE. Other
+        placeable entities use cardinal directions. Only assemblers carry a
+        recipe item, and only underground belts carry DOWN/UP misc state.
+        """
+        is_empty_B = ent_B == _EMPTY_ENT_ID
+        is_assembler_B = ent_B == _ASM_MACHINE_ENT_ID
+        is_underground_B = ent_B == _UG_BELT_ENT_ID
+
+        direction_mask_BD = torch.zeros_like(logits_d_BD, dtype=torch.bool)
+        uses_none_direction_B = is_empty_B | is_assembler_B
+        direction_mask_BD[:, _DIR_NONE_VAL] = uses_none_direction_B
+        direction_mask_BD[:, 1:] = (~uses_none_direction_B).unsqueeze(1)
+
+        item_mask_BI = torch.zeros_like(logits_i_BI, dtype=torch.bool)
+        item_mask_BI[:, _EMPTY_ITEM_VAL] = ~is_assembler_B
+        item_mask_BI |= is_assembler_B.unsqueeze(1) & self.assembler_recipe_mask
+
+        misc_mask_BM = torch.zeros_like(logits_m_BM, dtype=torch.bool)
+        misc_mask_BM[:, _MISC_NONE_VAL] = ~is_underground_B
+        misc_mask_BM[:, Misc.UNDERGROUND_DOWN.value] = is_underground_B
+        misc_mask_BM[:, Misc.UNDERGROUND_UP.value] = is_underground_B
+
+        return (
+            F.log_softmax(logits_d_BD.masked_fill(~direction_mask_BD, float("-inf")), dim=-1),
+            F.log_softmax(logits_i_BI.masked_fill(~item_mask_BI, float("-inf")), dim=-1),
+            F.log_softmax(logits_m_BM.masked_fill(~misc_mask_BM, float("-inf")), dim=-1),
+        )
+
     def sample_action(
         self,
         x_BCWH,
@@ -1528,16 +1592,24 @@ class AgentCNN(nn.Module):
         logits_d_BD = self.dir_head(tile_features_BC)
         logits_i_BI = self.item_head(tile_features_BC)
         logits_m_BM = self.misc_head(tile_features_BC)
-        e_logp_all_BE = F.log_softmax(logits_e_BE, dim=-1)
-        d_logp_all_BD = F.log_softmax(logits_d_BD, dim=-1)
-        i_logp_all_BI = F.log_softmax(logits_i_BI, dim=-1)
-        m_logp_all_BM = F.log_softmax(logits_m_BM, dim=-1)
+        e_logp_all_BE = F.log_softmax(
+            logits_e_BE.masked_fill(~self.valid_entity_action_mask, float("-inf")),
+            dim=-1,
+        )
 
         eot_logit_B = self.eot_logit(encoded_BCWH, g_BG)
         p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
             ent_B = _select_action(e_logp_all_BE, temperature)
+        else:
+            ent_B = action[:, 2]
+
+        d_logp_all_BD, i_logp_all_BI, m_logp_all_BM = self.semantic_head_log_probs(
+            logits_d_BD, logits_i_BI, logits_m_BM, ent_B
+        )
+
+        if action is None:
             dir_B = _select_action(d_logp_all_BD, temperature)
             item_B = _select_action(i_logp_all_BI, temperature)
             misc_B = _select_action(m_logp_all_BM, temperature)
@@ -1547,7 +1619,6 @@ class AgentCNN(nn.Module):
                 else torch.bernoulli(p_eot_B)
             )
         else:
-            ent_B = action[:, 2]
             dir_B = action[:, 3]
             item_B = action[:, 4]
             misc_B = action[:, 5]
