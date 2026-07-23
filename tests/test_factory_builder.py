@@ -385,6 +385,33 @@ class TestSwapModel:
 # ── End-to-end /predict schema ──────────────────────────────────────────────
 
 class TestPredictSchema:
+    def test_predict_action_returns_compact_placement(self):
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            result = fb._predict_action(_empty_grid(4))
+            assert set(result) == {
+                "x", "y", "entity", "direction", "item", "misc",
+            }
+            assert 0 <= result["x"] < 4
+            assert 0 <= result["y"] < 4
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_predict_action_matches_detailed_argmax(self):
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            grid = _empty_grid(4)
+            compact = fb._predict_action(grid)
+            detailed = fb._predict(grid)
+            assert compact == {
+                key: detailed[key]
+                for key in ("x", "y", "entity", "direction", "item", "misc")
+            }
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_predict_returns_full_schema(self):
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
@@ -500,6 +527,15 @@ class TestRenderIndexApplyWiring:
         for cand in result["candidates"]:
             for key in ("x", "y", "entity", "direction", "item", "misc"):
                 assert key in cand
+
+    def test_hold_a_uses_compact_prediction_loop(self):
+        html = fb.render_index(default_size=11)
+        assert "function beginApplyKey(" in html
+        assert "function endApplyKey(" in html
+        assert "function startAutoApply(" in html
+        assert "function stopAutoApply(" in html
+        assert "detail: 'action'" in html
+        assert "document.addEventListener('keyup'" in html
 
 
 class TestRenderIndexHelpPopover:
