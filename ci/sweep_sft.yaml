@@ -13,7 +13,7 @@
 method: bayes
 run_cap: 20
 metric:
-  name: "val/thput_eot"
+  name: "val/thput"
   goal: maximize
 
 parameters:

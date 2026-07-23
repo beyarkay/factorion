@@ -290,7 +290,7 @@ class TestGenerateDataset:
             "expected at least one lesson to produce >1 pair sharing a seed"
         )
 
-    @pytest.mark.parametrize("kind_name", ["SPLITTER_MERGE", "SPLITTER_SPLIT"])
+    @pytest.mark.parametrize("kind_name", ["SPLITTER_MERGE_SIDELOADED", "SPLITTER_SPLIT"])
     @pytest.mark.parametrize("seed", range(20))
     def test_multi_tile_entities_emit_one_pair(self, kind_name, seed):
         """Splitters are one entity that occupy two tiles; extract_expert_actions

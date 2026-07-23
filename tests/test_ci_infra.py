@@ -10,6 +10,7 @@ import time
 
 from ci.config import (
     MAX_POD_AGE_SECONDS,
+    CompareJob,
     PpoJob,
     SftJob,
     SweepJob,
@@ -24,7 +25,8 @@ from ci.config import (
     sft_budget_seconds,
 )
 from ci.gh_command import parse_comment
-from ci.jobs import ppo_command, sft_command, sweep_agent_command
+from ci import jobs as ci_jobs
+from ci.jobs import _compare_subjob, ppo_command, run_compare, sft_command, sweep_agent_command
 from ci.report import (
     MetricRow,
     boot_failure_markdown,
@@ -84,20 +86,79 @@ class TestSweepCommand:
         assert sweep_agent_command(job) == ["wandb", "agent", "me/factorion/ab12cd34"]
 
 
-# ── Compare fan-out: one pod per (side, seed) ──────────────────────
+class _FakeProc:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+class TestCompareRunner:
+    def _job(self, algo="sft", seeds=(1, 2, 3)):
+        return CompareJob(
+            sha=SHA,
+            algo=algo,
+            seeds=list(seeds),
+            group="cmp-grp-pr",
+            num_samples=1000,
+            start_from="j0s5y2mc",
+            extra_tags=["cmp:abc1234", "cmp-side:pr", "pr:7"],
+        )
+
+    def test_subjob_carries_seed_group_and_tags(self):
+        sub = _compare_subjob(self._job(), seed=2)
+        assert isinstance(sub, SftJob)
+        cmd = sft_command(sub)
+        assert cmd[cmd.index("--seed") + 1] == "2"
+        assert cmd[cmd.index("--wandb-group") + 1] == "cmp-grp-pr"
+        assert "cmp-side:pr" in cmd and "pr:7" in cmd
+
+    def test_ppo_subjob_uses_the_shared_checkpoint(self):
+        sub = _compare_subjob(self._job(algo="ppo"), seed=1)
+        assert isinstance(sub, PpoJob)
+        cmd = ppo_command(sub)
+        assert cmd[cmd.index("--start-from") + 1] == "j0s5y2mc"
+        assert "kind:ppo" in cmd
+
+    def test_runs_every_seed_in_order(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            ci_jobs.subprocess,
+            "run",
+            lambda cmd, cwd=None: seen.append(cmd[cmd.index("--seed") + 1]) or _FakeProc(0),
+        )
+        run_compare(self._job(seeds=(1, 2, 3)))
+        assert seen == ["1", "2", "3"]
+
+    def test_one_bad_seed_does_not_sink_the_side(self, monkeypatch):
+        # seed 2 fails; 1 and 3 still run and the side succeeds overall.
+        def fake_run(cmd, cwd=None):
+            return _FakeProc(1 if cmd[cmd.index("--seed") + 1] == "2" else 0)
+
+        monkeypatch.setattr(ci_jobs.subprocess, "run", fake_run)
+        run_compare(self._job(seeds=(1, 2, 3)))  # no raise
+
+    def test_all_seeds_failing_raises(self, monkeypatch):
+        monkeypatch.setattr(ci_jobs.subprocess, "run", lambda cmd, cwd=None: _FakeProc(1))
+        try:
+            run_compare(self._job(seeds=(1, 2)))
+            assert False, "expected RuntimeError when every seed fails"
+        except RuntimeError:
+            pass
+
+
+# ── Compare fan-out: one pod per side, seeds run sequentially ──────
 
 
 class TestCompareFanout:
     def test_sft_fanout_shape(self):
         jobs = compare_fanout("sft", SHA, BASE_SHA, nonce="ab12", seeds=3, num_samples=1000)
-        assert len(jobs) == 6
-        pr_side = [j for j in jobs if j.sha == SHA]
-        main_side = [j for j in jobs if j.sha == BASE_SHA]
-        assert len(pr_side) == len(main_side) == 3
-        # Seeds pair up across sides; each side gets its own W&B group.
-        assert sorted(j.seed for j in pr_side) == [1, 2, 3]
-        assert {j.group for j in pr_side} == {compare_group(SHA, "sft", "ab12", "pr")}
-        assert {j.group for j in main_side} == {compare_group(SHA, "sft", "ab12", "main")}
+        # Only 2 pods (one per side), each running all seeds sequentially.
+        assert len(jobs) == 2
+        (pr_side,) = [j for j in jobs if j.sha == SHA]
+        (main_side,) = [j for j in jobs if j.sha == BASE_SHA]
+        # Each side carries all seeds; each side gets its own W&B group.
+        assert pr_side.seeds == main_side.seeds == [1, 2, 3]
+        assert pr_side.group == compare_group(SHA, "sft", "ab12", "pr")
+        assert main_side.group == compare_group(SHA, "sft", "ab12", "main")
         # Groups are keyed on the PR sha for both sides (one compare = one key).
         assert all(SHA[:7] in (j.group or "") for j in jobs)
 
@@ -125,9 +186,10 @@ class TestCompareFanout:
         jobs = compare_fanout(
             "ppo", SHA, BASE_SHA, nonce="ab12", seeds=2, start_from="j0s5y2mc", total_timesteps=100
         )
-        ppo_jobs = [j for j in jobs if isinstance(j, PpoJob)]
-        assert len(ppo_jobs) == len(jobs) == 4
-        assert {j.start_from for j in ppo_jobs} == {"j0s5y2mc"}
+        assert len(jobs) == 2
+        assert all(j.algo == "ppo" for j in jobs)
+        assert {j.start_from for j in jobs} == {"j0s5y2mc"}
+        assert all(j.seeds == [1, 2] for j in jobs)
 
     def test_ppo_fanout_requires_start_from(self):
         try:
@@ -146,6 +208,9 @@ class TestJobSerialization:
             SftJob(sha=SHA, num_samples=5, seed=2, group="g", extra_tags=["pr:1"]),
             PpoJob(sha=SHA, start_from="j0s5y2mc", total_timesteps=7),
             SweepJob(sha=SHA, algo="ppo", sweep_path="e/p/s", agents_per_pod=2),
+            CompareJob(
+                sha=SHA, algo="sft", seeds=[1, 2, 3], group="g", num_samples=5, extra_tags=["pr:1"]
+            ),
         ]
         for job in jobs:
             assert job_from_dict(job_to_dict(job)) == job
@@ -249,11 +314,18 @@ class TestBudgets:
         assert sft_budget_seconds(10_000_000, 1) > sft_budget_seconds(1_000_000, 1)
         assert ppo_budget_seconds(1_000_000) > ppo_budget_seconds(100_000)
 
-    def test_compare_pods_budget_like_single_runs(self):
+    def test_one_seed_compare_budget_equals_single_run(self):
         (job, *_) = compare_fanout(
             "sft", SHA, BASE_SHA, nonce="ab12", seeds=1, num_samples=1_000_000
         )
         assert job.budget_seconds() == sft_budget_seconds(1_000_000, 1)
+
+    def test_compare_budget_scales_with_sequential_seeds(self):
+        # 3 seeds on one pod: setup slack paid once, training time paid 3x —
+        # so more than one run's budget but less than a naive 3x of it.
+        one = compare_fanout("sft", SHA, BASE_SHA, nonce="ab12", seeds=1, num_samples=1_000_000)[0]
+        three = compare_fanout("sft", SHA, BASE_SHA, nonce="ab12", seeds=3, num_samples=1_000_000)[0]
+        assert one.budget_seconds() < three.budget_seconds() < 3 * one.budget_seconds()
 
 
 # ── /ci comment parsing ────────────────────────────────────────────
@@ -344,7 +416,7 @@ class TestAssertions:
 class TestFlattenSummary:
     def test_nested_namespaces_and_stat_dicts(self):
         summary = {
-            "val": {"thput": 0.3, "thput_eot": {"max": 0.2}},
+            "val": {"acc": 0.3, "thput": {"max": 0.2}},
             "loss": 1.5,
             "_runtime": 99,  # W&B internal: skipped
             "note": "text",  # non-numeric: skipped
@@ -352,15 +424,15 @@ class TestFlattenSummary:
             "bad": float("nan"),  # non-finite: skipped
         }
         assert flatten_summary(summary) == {
-            "val/thput": 0.3,
-            "val/thput_eot": 0.2,
+            "val/acc": 0.3,
+            "val/thput": 0.2,
             "loss": 1.5,
         }
 
 
 class TestMetricDirection:
     def test_heuristics(self):
-        assert metric_direction("val/thput_eot") == "higher"
+        assert metric_direction("val/thput") == "higher"
         assert metric_direction("val/acc") == "higher"
         assert metric_direction("train/loss") == "lower"
         assert metric_direction("some/unknown_metric") is None
@@ -444,11 +516,11 @@ class TestReporter:
             url="https://wandb.ai/x/y/runs/abc123",
             kind="sft",
             sha7=SHA[:7],
-            summary_flat={"val/thput_eot": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+            summary_flat={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
         )
         assert "<!-- factorion-ci-run:abc123 -->" in md
         before_details, details = md.split("<details>", 1)
-        assert "val/thput_eot" in before_details
+        assert "val/thput" in before_details
         assert "obscure/x" not in before_details
         assert "obscure/x" in details
 
@@ -456,11 +528,10 @@ class TestReporter:
 class TestSelectHeadline:
     def test_sft_patterns_cover_every_lesson_and_head(self):
         names = [
-            "val/thput_eot",
-            "val/thput",  # not headline: only the EOT-respecting number leads
-            "val/MOVE_ONE_ITEM/thput_eot",
-            "val/SPLITTER_SPLIT/thput_eot",
-            "val/SOME_FUTURE_LESSON_9/thput_eot",  # lessons matched, not hardcoded
+            "val/thput",
+            "val/MOVE_ONE_ITEM/thput",
+            "val/SPLITTER_SPLIT/thput",
+            "val/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "val/MOVE_ONE_ITEM/acc",  # per-lesson acc stays in the long tail
             "val/acc",
             "val/tile_acc",
@@ -471,10 +542,10 @@ class TestSelectHeadline:
         ]
         got = select_headline(names)
         assert got == [
-            "val/thput_eot",
-            "val/MOVE_ONE_ITEM/thput_eot",
-            "val/SOME_FUTURE_LESSON_9/thput_eot",
-            "val/SPLITTER_SPLIT/thput_eot",
+            "val/thput",
+            "val/MOVE_ONE_ITEM/thput",
+            "val/SOME_FUTURE_LESSON_9/thput",
+            "val/SPLITTER_SPLIT/thput",
             "val/acc",
             "val/eot_acc",
             "val/tile_acc",
@@ -484,7 +555,6 @@ class TestSelectHeadline:
     def test_ppo_patterns(self):
         names = [
             "eval/thput",  # eval/ stays in the long tail
-            "eval/thput_eot",
             "rollout/thput",
             "rollout/reward",
             "rollout/length",

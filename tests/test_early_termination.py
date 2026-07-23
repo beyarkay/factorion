@@ -151,11 +151,13 @@ class TestReward:
         env.reset(seed=42, options={"num_missing_entities": 99})
 
         action = _noop_action()
+        action["entity"] = env._source_id  # ignored because EOT is not a placement
         action["eot"] = 1
         _, reward, terminated, truncated, info = env.step(action)
 
         assert terminated is True, "eot=1 should terminate the episode"
         assert truncated is False
+        assert info["frac_invalid_actions"] == 0
         assert info["thput_normed"] < 1.0  # ended early, not a full solve
         expected = (env.throughput_reward_scale * info["thput_normed"]
                     - env.step_penalty
