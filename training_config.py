@@ -145,7 +145,7 @@ class PpoArgs(SharedArgs):
     throughput_reward_scale: float = 1.0
     """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
     step_penalty: float = 0.0
-    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput_eot)."""
+    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput)."""
     entity_penalty_scale: float = 0.001
     """per-entity penalty subtracted from the terminal reward: (# non-empty entities) * this. Nudges the policy toward frugal factories (fewer belts/inserters/etc.) rather than wasteful ones. A crude proxy for material cost; a future version may sum per-entity recipe costs instead."""
     max_grad_norm: float = 1.221
@@ -170,7 +170,7 @@ class PpoArgs(SharedArgs):
     critic_head_std: float = 0.1169
     """Initialization std for the value head. Sets the magnitude of the untrained critic's outputs at PPO start, i.e. how large the initial 'garbage advantages' are that --critic-warmup absorbs; smaller = gentler on the SFT policy in the first updates. With --start-from the loaded SFT critic (never trained) is re-initialised to this std at PPO start."""
     eval_every: int = 7
-    """Run the greedy held-out eval (eval/thput, eval/thput_eot, per-lesson) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
+    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
@@ -189,7 +189,7 @@ class PpoArgs(SharedArgs):
     # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
     """If set, stop training the first time an EMA of this iter-metric key
-    (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput_eot') reaches
+    (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput') reaches
     --target-value, and record the wall-clock time-to-quality. None disables
     (normal fixed-iteration training)."""
     target_value: Optional[float] = None
@@ -268,7 +268,7 @@ class SftArgs(SharedArgs):
     eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput_eot)"""
+    """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208
