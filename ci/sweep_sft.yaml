@@ -28,10 +28,9 @@ parameters:
     value: 0 # auto = size*size, enough to blank every removable entity
 
   missing_fraction_alpha:
-    distribution: q_uniform
+    distribution: uniform
     min: 0.0
     max: 6.0
-    q: 0.5
 
 program: sft.py
 
