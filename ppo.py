@@ -704,13 +704,16 @@ class FactorioEnv(gym.Env):
 
         self.actions.append(None)
         action_is_invalid = False
+        eot_declared = int(action.get("eot", 0)) == 1
         # Track only which invalid_reason fired (None = valid). The full 10-key
         # dict is built lazily at info time — it's logged-only and read just for
         # finished envs, so building it every step was wasted work.
         invalid_reason_key = None
 
         # Check that the action is actually valid
-        if not (0 <= entity_id < _N_ENTITIES):
+        if eot_declared:
+            action_is_invalid = False  # EOT carries no placement to validate.
+        elif not (0 <= entity_id < _N_ENTITIES):
             action_is_invalid = True
         elif not (0 <= direc < _N_DIRECTIONS):
             action_is_invalid = True
@@ -814,7 +817,6 @@ class FactorioEnv(gym.Env):
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        eot_declared = int(action.get("eot", 0)) == 1
         terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 

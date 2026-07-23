@@ -246,8 +246,8 @@ def launch_compare(
     dry_run: bool = False,
     extra_tags: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Fan a compare out into 2 x seeds single-run pods (one run per pod, so
-    seeds never compete for CPU). Returns the launch info of every pod."""
+    """Fan a compare out into 2 pods (one per side), each running its seeds
+    sequentially. Returns the launch info of both pods."""
     jobs = compare_fanout(
         algo=algo,
         sha=sha,
@@ -261,7 +261,7 @@ def launch_compare(
     )
     infos = []
     for job in jobs:
-        # Never block on boot: 2 x seeds pods launch back-to-back.
+        # Never block on boot: both side pods launch back-to-back.
         infos.append(launch(job, gpu_type, dry_run=dry_run, wait=False))
     return infos
 

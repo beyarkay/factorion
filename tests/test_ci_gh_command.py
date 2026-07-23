@@ -146,23 +146,27 @@ class TestCompareDispatch:
 
         gh_command.main()
 
-        # 2 seeds x 2 sides = 4 pods; sides split across the two shas.
-        assert len(gh_ctx["pods"]) == 4
+        # One pod per side (2 total), each running both seeds sequentially;
+        # sides split across the two shas.
+        assert len(gh_ctx["pods"]) == 2
         shas = [_job_spec(p)["sha"] for p in gh_ctx["pods"]]
-        assert shas.count(SHA) == 2 and shas.count("b" * 40) == 2
+        assert shas.count(SHA) == 1 and shas.count("b" * 40) == 1
+        # Each pod carries the full seed list to run in turn.
+        assert all(_job_spec(p)["seeds"] == [1, 2] for p in gh_ctx["pods"])
 
-        # Waited for both groups, then reported with the comment's assertion.
+        # Waited for both groups (still 2 finished runs each), then reported.
         assert waits[0]["expect_each"] == 2
         assert reports[0][2] == ["pr:val/thput > main:val/thput"]
 
         # The launch comment starts all-pending and is edited in place with
-        # live pod/run statuses (final refresh after the wait ends). The +1
-        # on each count is the status legend line.
+        # live pod statuses (final refresh after the wait ends). Each pod line
+        # shows one emoji (compare pods have no pre-minted W&B run to link);
+        # the +1 is the status legend line, which mentions every state once.
         launch_body = gh_ctx["comments"][0][1]
-        assert launch_body.count("⏳") == 2 * len(gh_ctx["pods"]) + 1
+        assert launch_body.count("⏳") == len(gh_ctx["pods"]) + 1
         ((edit_id, edit_body),) = gh_ctx["edits"]
         assert edit_id == 9001  # edits target the launch comment, not a new one
-        assert edit_body.count("🚀") == 2 * len(gh_ctx["pods"]) + 1
+        assert edit_body.count("🚀") == len(gh_ctx["pods"]) + 1
 
         # Status: pending at launch, success after the passing report.
         states = [s[1] for s in gh_ctx["statuses"]]
@@ -205,10 +209,12 @@ class TestComparePpoDispatch:
         )
         gh_command.main()
 
-        assert len(gh_ctx["pods"]) == 2  # 1 seed x 2 sides
+        assert len(gh_ctx["pods"]) == 2  # one pod per side
         specs = [_job_spec(p) for p in gh_ctx["pods"]]
-        assert {s["kind"] for s in specs} == {"ppo"}
+        assert {s["kind"] for s in specs} == {"compare"}
+        assert {s["algo"] for s in specs} == {"ppo"}
         assert {s["start_from"] for s in specs} == {"j0s5y2mc"}
+        assert all(s["seeds"] == [1] for s in specs)
 
 
 class TestSweepDispatch:
