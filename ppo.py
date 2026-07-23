@@ -125,7 +125,7 @@ def _build_eval_set(args) -> dict:
 
 
 def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/thput[_eot] so
+    """Greedy held-out throughput eval, mirroring SFT's val/thput so
     the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
@@ -144,16 +144,10 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         eot_threshold=0.5,
         num_envs=args.eval_num_envs,
     )
-    metrics = {
-        "eval/thput": roll["overall"],
-        "eval/thput_eot": roll["overall_eot"],
-    }
-    for kn, thp in roll["per_kind"].items():
-        if roll["per_kind_n"].get(kn, 0) > 0:
-            metrics[f"eval/{kn}/thput"] = thp
+    metrics = {"eval/thput": roll["overall_eot"]}
     for kn, thp in roll["per_kind_eot"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
-            metrics[f"eval/{kn}/thput_eot"] = thp
+            metrics[f"eval/{kn}/thput"] = thp
 
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
@@ -1675,14 +1669,12 @@ if __name__ == "__main__":
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="max")
-        wandb.define_metric("eval/thput_eot", summary="max")
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
-            wandb.define_metric(f"eval/{ln}/thput_eot", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
@@ -1934,7 +1926,7 @@ if __name__ == "__main__":
         return means
 
     # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
-    # eval/* — directly comparable to the SFT baseline's val/thput[_eot].
+    # eval/* — directly comparable to the SFT baseline's val/thput.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
