@@ -455,9 +455,9 @@ def run_rollout_eval(
     built all the way to env-done, so its EOT-respecting value equals the
     final throughput. The mean of those snapshots is `overall_eot`.
 
-    The (seed, kind) pairs are exactly the val_accuracy set — so a rise
-    in `val/thput` over training is directly comparable to the
-    existing per-kind val accuracy curves.
+    The (seed, kind) pairs are exactly the val_accuracy set. The
+    EOT-respecting result is logged as `val/thput`, directly comparable to
+    the existing per-kind val accuracy curves.
 
     The greedy tile argmax is restricted to legal (empty + buildable)
     tiles, so it can't livelock re-proposing an occupied tile the env
@@ -1421,20 +1421,13 @@ def train_sft(args: SftArgs):
                 num_envs=args.eval_rollouts_num_envs,
             )
             rollout_seconds = time.time() - t_rollout
-            overall_thp = roll["overall"]
+            overall_thp = roll["overall_eot"]
             per_kind_thp_n = roll["per_kind_n"]
-            # val/thput ignores the EOT head (true build skill, and the
-            # default checkpoint-selection metric); val/thput_eot stops
-            # at the first EOT fire (what the model's own stop head produces).
             per_kind_metrics["val/thput"] = overall_thp
-            per_kind_metrics["val/thput_eot"] = roll["overall_eot"]
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
-            for kn, thp in roll["per_kind"].items():
-                if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/thput"] = thp
             for kn, thp in roll["per_kind_eot"].items():
                 if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/thput_eot"] = thp
+                    per_kind_metrics[f"val/{kn}/thput"] = thp
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once
@@ -1546,7 +1539,8 @@ def train_sft(args: SftArgs):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
 
-        # Default checkpoint-selection metric: greedy throughput (EOT ignored).
+        # Select on the factory the model chooses to submit, not one it could
+        # have built after its stop head fired.
         # overall_thp is None on evals where no rollout ran.
         if overall_thp is not None and overall_thp >= best_val_throughput:
             best_val_throughput = overall_thp

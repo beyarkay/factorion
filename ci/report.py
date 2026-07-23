@@ -136,15 +136,15 @@ def compare_metric_rows(
 # Metrics surfaced OUTSIDE the <details> block of a report (the full
 # every-metric table sits inside it). Ordered regexes; a metric is headline
 # when any matches, and headline rows sort by first-matching pattern. Lesson
-# names are matched, never hardcoded (`val/{LESSON}/thput_eot` covers every
+# names are matched, never hardcoded (`val/{LESSON}/thput` covers every
 # current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
 # spaces are disjoint, so one list serves both kinds.
 HEADLINE_PATTERNS = [
     # SFT: throughput first (overall then per-lesson), then accuracies
     # (overall then per-head; the head names come from the [a-z]+_acc shape,
     # which deliberately excludes per-lesson accs like val/{LESSON}/acc).
-    r"^val/thput_eot$",
-    r"^val/[A-Z0-9_]+/thput_eot$",
+    r"^val/thput$",
+    r"^val/[A-Z0-9_]+/thput$",
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
     # PPO: on-policy rollout health (overall then per-lesson), then speed.
@@ -462,7 +462,7 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
     sweep = api.sweep(sweep_path)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "eval/thput_eot")
+    metric_name = metric_cfg.get("name", "eval/thput")
     metric_goal = metric_cfg.get("goal", "maximize")
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
@@ -523,10 +523,8 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
 # Headline columns for the history CSV: one stable, plottable row per CI run.
 HISTORY_METRICS = [
     "val/thput",
-    "val/thput_eot",
     "val/acc",
     "eval/thput",
-    "eval/thput_eot",
     "rollout/thput",
     "moving_avg_throughput",
 ]
