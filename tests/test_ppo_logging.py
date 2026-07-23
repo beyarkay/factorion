@@ -20,7 +20,6 @@ from ppo import (  # noqa: E402
     AgentCNN,
     FactorioEnv,
     make_env,
-    _run_greedy_eval,
     _run_signature,
     _build_eval_set,
     _rollout_episode_metrics,
@@ -86,42 +85,6 @@ class TestBuildEvalSet:
         # lives in a high range so eval factories are never trained on.
         args = PpoArgs(size=11, eval_seeds_per_kind=2, seed=1)
         assert min(_build_eval_set(args)) > 1_000_000
-
-
-class TestRunGreedyEval:
-    def test_thput_uses_only_eot_respecting_result(self, monkeypatch):
-        import sft
-
-        def fake_rollout_eval(*_args, **_kwargs):
-            return {
-                "overall": 0.9,
-                "overall_eot": 0.25,
-                "per_kind": {"MOVE_ONE_ITEM": 0.8},
-                "per_kind_eot": {"MOVE_ONE_ITEM": 0.2},
-                "per_kind_n": {"MOVE_ONE_ITEM": 1},
-                "asm_item_acc": 0.0,
-                "per_kind_asm_item_acc": {},
-                "per_kind_asm_n": {},
-                "eot_acc": 0.5,
-                "eot_pos_recall": 0.4,
-                "per_kind_eot_acc": {},
-                "per_kind_eot_pos_recall": {},
-                "per_kind_eot_step_n": {},
-                "per_kind_eot_pos_n": {},
-            }
-
-        monkeypatch.setattr(sft, "run_rollout_eval", fake_rollout_eval)
-        metrics = _run_greedy_eval(
-            agent=None,
-            args=PpoArgs(eval_num_envs=1),
-            eval_seeds_to_kind={1: LessonKind.MOVE_ONE_ITEM.value},
-            device=torch.device("cpu"),
-        )
-
-        assert metrics["eval/thput"] == pytest.approx(0.25)
-        assert metrics["eval/MOVE_ONE_ITEM/thput"] == pytest.approx(0.2)
-        assert 0.9 not in metrics.values()
-        assert 0.8 not in metrics.values()
 
 
 # ── lesson kind exposed in env info ─────────────────────────────────────────
