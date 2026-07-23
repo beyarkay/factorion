@@ -93,6 +93,107 @@ _CH_FOOTPRINT = Channel.FOOTPRINT.value
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 
+
+def apply_placement_action(
+    world_CWH: torch.Tensor,
+    action,
+    *,
+    source_id: int,
+    sink_id: int,
+) -> tuple[bool, Optional[str], Optional[dict]]:
+    """Validate and apply one placement action to ``world_CWH``.
+
+    This is the single source of truth for turning a model prediction into a
+    world mutation. ``FactorioEnv.step`` and the factory-builder UI both call
+    it, so multi-tile footprints, rejection rules, and mirrored channels cannot
+    drift between rollout/training and interactive inference.
+
+    Returns ``(is_invalid, invalid_reason_key, placed_action)``. The final item
+    is the human-readable action record used by the environment, or ``None``
+    when validation rejected the placement.
+    """
+    x, y = action["xy"]
+    entity_id = action["entity"]
+    direc = action["direction"]
+    item_id = action["item"]
+    misc = action["misc"]
+    size_x, size_y = world_CWH.shape[1:3]
+
+    assert 0 <= x < size_x, f"x={x} out of bounds [0, {size_x})"
+    assert 0 <= y < size_y, f"y={y} out of bounds [0, {size_y})"
+
+    invalid_reason_key: Optional[str] = None
+    if not (0 <= entity_id < _N_ENTITIES):
+        return True, None, None
+    if not (0 <= direc < _N_DIRECTIONS):
+        return True, None, None
+    if entity_id in (source_id, sink_id):
+        return True, "placed_source_or_sink", None
+    if entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
+        return True, "place_asm_mach_wo_recipe", None
+    if (
+        entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID)
+        and direc == _DIR_NONE_VAL
+    ):
+        return True, "placement_wo_direction", None
+    if entity_id == _EMPTY_ENT_ID and direc != _DIR_NONE_VAL:
+        return True, "direction_wo_entity", None
+    if misc == _MISC_NONE_VAL and entity_id == _UG_BELT_ENT_ID:
+        return True, "ug_belt_wo_up_or_down", None
+    if misc != _MISC_NONE_VAL and entity_id != _UG_BELT_ENT_ID:
+        return True, "placement_with_unneeded_misc", None
+
+    # Compute the entity's full footprint (anchor for 1x1, all occupied tiles
+    # for multi-tile). The Rust helper is canonical and handles rotation.
+    proto = entities[entity_id]
+    tiles_list = factorion_rs.py_entity_tiles(
+        x, y, direc, proto.width, proto.height
+    )
+    if tiles_list is None:
+        tiles_list = [(x, y)]
+    tiles_list = [tuple(t) for t in tiles_list]
+
+    # Read and write through a zero-copy numpy view. Besides keeping this hot
+    # rollout path cheap, this makes the all-tiles validation + mutation atomic:
+    # a rejected multi-tile placement never leaves a partial entity behind.
+    world_np = world_CWH.numpy()
+    if any(
+        not (0 <= tx < size_x and 0 <= ty < size_y)
+        for tx, ty in tiles_list
+    ):
+        return True, "too_wide", None
+    if any(
+        world_np[_CH_FOOTPRINT, tx, ty] == _FOOTPRINT_UNAVAILABLE
+        for tx, ty in tiles_list
+    ):
+        return True, "placed_on_masked_tile", None
+    if any(
+        int(world_np[_CH_ENT, tx, ty]) in (source_id, sink_id)
+        for tx, ty in tiles_list
+    ):
+        return True, "replaced_source_or_sink", None
+    if entity_id != _EMPTY_ENT_ID and any(
+        int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
+        for tx, ty in tiles_list
+    ):
+        return True, "placed_on_existing_entity", None
+
+    for tx, ty in tiles_list:
+        world_np[_CH_ENT, tx, ty] = entity_id
+        world_np[_CH_DIR, tx, ty] = direc
+        world_np[_CH_ITEMS, tx, ty] = item_id
+        world_np[_CH_MISC, tx, ty] = misc
+
+    placed_action = {
+        "entity": entities[entity_id].name,
+        "xy": (x, y),
+        "direction": Direction(direc),
+        "item": items[item_id].name,
+        "misc": Misc(misc),
+    }
+    return False, invalid_reason_key, placed_action
+
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -684,129 +785,28 @@ class FactorioEnv(gym.Env):
         return self._world_CWH.cpu().numpy(), self._get_info()
 
     def step(self, action):
-        x, y = action["xy"]
-        entity_id = action["entity"]
-        direc = action["direction"]
-        item_id = action["item"]
-        misc = action["misc"]
-
-
-        assert 0 <= x < self._world_CWH.shape[1], f"x={x} out of bounds [0, {self._world_CWH.shape[1]})"
-        assert 0 <= y < self._world_CWH.shape[2], f"y={y} out of bounds [0, {self._world_CWH.shape[2]})"
-        source_id = self._source_id
-        sink_id = self._sink_id
-
         self.actions.append(None)
-        action_is_invalid = False
         eot_declared = int(action.get("eot", 0)) == 1
         # Track only which invalid_reason fired (None = valid). The full 10-key
         # dict is built lazily at info time — it's logged-only and read just for
         # finished envs, so building it every step was wasted work.
-        invalid_reason_key = None
-
-        # Check that the action is actually valid
         if eot_declared:
             action_is_invalid = False  # EOT carries no placement to validate.
-        elif not (0 <= entity_id < _N_ENTITIES):
-            action_is_invalid = True
-        elif not (0 <= direc < _N_DIRECTIONS):
-            action_is_invalid = True
-        elif entity_id in (source_id, sink_id):
-            # agent tried to place a source or sink
-            invalid_reason_key = 'placed_source_or_sink'
-            action_is_invalid = True
-        elif entity_id == _ASM_MACHINE_ENT_ID and item_id == _EMPTY_ITEM_VAL:
-            # Model is trying to place an assembling machine without a recipe
-            invalid_reason_key = 'place_asm_mach_wo_recipe'
-            action_is_invalid = True
-        elif entity_id not in (_EMPTY_ENT_ID, _ASM_MACHINE_ENT_ID) and direc == _DIR_NONE_VAL:
-            # Model is trying to put a thing without giving a direction
-            invalid_reason_key = 'placement_wo_direction'
-            action_is_invalid = True
-        elif entity_id == _EMPTY_ENT_ID and direc != _DIR_NONE_VAL:
-            # Model is trying to put a thing without giving a direction
-            invalid_reason_key = 'direction_wo_entity'
-            action_is_invalid = True
-        elif (misc == _MISC_NONE_VAL) and (entity_id == _UG_BELT_ENT_ID):
-            # model is trying to place an underground belt without giving a down/up
-            invalid_reason_key = 'ug_belt_wo_up_or_down'
-            action_is_invalid = True
-        elif (misc != _MISC_NONE_VAL) and (entity_id != _UG_BELT_ENT_ID):
-            # model is trying to place a thing that doesn't need a Misc but
-            # still giving it a Misc
-            invalid_reason_key = 'placement_with_unneeded_misc'
-            action_is_invalid = True
+            invalid_reason_key = None
         else:
-            # Compute the entity's full footprint (anchor for 1x1, all
-            # occupied tiles for multi-tile). py_entity_tiles handles
-            # rotation correctly; the previous x+width/y+height bounds
-            # checks were direction-agnostic and wrong for rotated splitters.
-            proto = entities[entity_id]
-            tiles_list = factorion_rs.py_entity_tiles(x, y, direc, proto.width, proto.height)
-            if tiles_list is None:
-                tiles_list = [(x, y)]
-            tiles_list = [tuple(t) for t in tiles_list]
-
-            # Validate every tile of the footprint. Multi-tile placements
-            # were previously only validated at the anchor, so a splitter
-            # could overlap an existing belt at its secondary tile or
-            # extend off-grid undetected.
-            # Read the FOOTPRINT/ENTITIES channels through a zero-copy numpy view
-            # of the (CPU) world: per-tile torch scalar indexing carries heavy
-            # per-op dispatch overhead in this hot validity path; numpy scalar
-            # reads are far cheaper and give identical values (the world is not
-            # mutated until below, so the view is the pre-placement state).
-            world_np = self._world_CWH.numpy()
-            out_of_bounds = any(
-                not (0 <= tx < self.size and 0 <= ty < self.size)
-                for tx, ty in tiles_list
+            (
+                action_is_invalid,
+                invalid_reason_key,
+                placed_action,
+            ) = apply_placement_action(
+                self._world_CWH,
+                action,
+                source_id=self._source_id,
+                sink_id=self._sink_id,
             )
-            if out_of_bounds:
-                invalid_reason_key = 'too_wide'
-                action_is_invalid = True
-            elif any(
-                world_np[_CH_FOOTPRINT, tx, ty] == _FOOTPRINT_UNAVAILABLE
-                for tx, ty in tiles_list
-            ):
-                invalid_reason_key = 'placed_on_masked_tile'
-                action_is_invalid = True
-            elif any(
-                int(world_np[_CH_ENT, tx, ty]) in (source_id, sink_id)
-                for tx, ty in tiles_list
-            ):
-                invalid_reason_key = 'replaced_source_or_sink'
-                action_is_invalid = True
-            elif entity_id != _EMPTY_ENT_ID and any(
-                int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
-                for tx, ty in tiles_list
-            ):
-                # A real (non-empty) placement may not clobber an existing
-                # entity on any of its footprint tiles. Placing `empty` is
-                # exempt — that is the delete operation. Source/sink overlaps
-                # are caught above with their own, more specific reason.
-                invalid_reason_key = 'placed_on_existing_entity'
-                action_is_invalid = True
-            else:
-                action_is_invalid = False
-                # entity/direction/items/misc at every footprint tile. For a
-                # multi-tile entity (asm, splitter) the recipe/filter and misc
-                # are mirrored across the whole footprint, not just the anchor,
-                # so every tile of the entity carries identical channels.
-                # Written through world_np (aliases _world_CWH).
-                for tx, ty in tiles_list:
-                    world_np[_CH_ENT, tx, ty] = entity_id
-                    world_np[_CH_DIR, tx, ty] = direc
-                    world_np[_CH_ITEMS, tx, ty] = item_id
-                    world_np[_CH_MISC, tx, ty] = misc
-                placed_name = entities[entity_id].name
-                self.actions[-1] = {
-                    'entity': placed_name,
-                    'xy': (x, y),
-                    'direction': Direction(direc),
-                    'item': items[item_id].name,
-                    'misc': Misc(misc),
-                }
-                if placed_name != 'empty':
+            if placed_action is not None:
+                self.actions[-1] = placed_action
+                if placed_action["entity"] != "empty":
                     self._num_placed_entities += 1
 
         self.invalid_actions += 1 if action_is_invalid else 0
@@ -2513,5 +2513,3 @@ if __name__ == "__main__":
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Summary written to {summary_path}")
-
-

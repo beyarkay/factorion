@@ -60,6 +60,7 @@ from ppo import (  # noqa: E402
     AgentCNN,
     FactorioEnv,
     _resolve_wandb_checkpoint,
+    apply_placement_action,
     make_env,
 )
 
@@ -133,11 +134,11 @@ class Args:
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
     the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = "j0s5y2mc"
+    wandb_run: Optional[str] = "h76h80yb"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
-    and loaded. Mutually exclusive with --checkpoint. Defaults to the
-    canonical SFT run j0s5y2mc (sft-11x11, best_val_throughput 0.335)."""
+    and loaded. Mutually exclusive with --checkpoint. Defaults to run
+    h76h80yb."""
     wandb_project: str = "factorion"
     """W&B project to look in when --wandb-run is a bare id."""
     wandb_entity: Optional[str] = None
@@ -199,6 +200,38 @@ def world_CWH_to_grid(world_CWH: torch.Tensor) -> list[list[dict]]:
             })
         rows.append(row)
     return rows
+
+
+def _apply_prediction(grid: list[list[dict]], prediction: dict) -> dict:
+    """Apply a model prediction through the rollout environment's placement path.
+
+    The browser intentionally does not know entity dimensions or footprint
+    rules. It sends the current grid and predicted action here; this function
+    converts their names to action IDs and delegates the actual validation and
+    mutation to :func:`ppo.apply_placement_action`, the same function used by
+    :meth:`ppo.FactorioEnv.step`.
+    """
+    world_CWH = build_world(grid).permute(2, 0, 1).contiguous()
+    name_to_value = {it.name: it.value for it in items.values()}
+    action = {
+        "xy": (int(prediction["x"]), int(prediction["y"])),
+        "entity": name_to_value[prediction["entity"]],
+        "direction": Direction[prediction["direction"]].value,
+        "item": name_to_value[prediction["item"]],
+        "misc": Misc[prediction["misc"]].value,
+        "eot": 0,
+    }
+    is_invalid, invalid_reason, _placed_action = apply_placement_action(
+        world_CWH,
+        action,
+        source_id=name_to_value["stack_inserter"],
+        sink_id=name_to_value["bulk_inserter"],
+    )
+    return {
+        "applied": not is_invalid,
+        "invalid_reason": invalid_reason,
+        "grid": world_CWH_to_grid(world_CWH),
+    }
 
 
 # Cap retries so a misconfigured (size, kind) pair fails fast with a
@@ -984,6 +1017,7 @@ let autoApplying = false;
 let autoApplyGeneration = 0;
 let autoApplyFrame = null;
 let autoApplyHoldTimer = null;
+let applyKeyHeld = false;
 
 function emptyCell() {{
   return {{
@@ -1355,21 +1389,43 @@ async function requestFastPrediction() {{
   return data;
 }}
 
-// Apply a single predicted placement to the grid, exactly as if the
-// user had placed it by hand. `cand` is either a ghost candidate or the
-// argmax `prediction` itself — both carry {{x, y, entity, direction,
-// item, misc}}, so the same code applies either. footprint is preserved
-// (the model never predicts it).
-function applyCandidate(cand, interactive = true) {{
+// Apply through the server-side placement function shared with
+// FactorioEnv.step. The browser deliberately has no copy of multi-tile
+// geometry or action-validity rules.
+async function applyCandidate(cand, interactive = true) {{
   const {{ x, y, entity, direction, item, misc }} = cand;
-  grid[y][x] = {{
-    entity, direction, item, misc, footprint: grid[y][x].footprint,
-  }};
-  selected = {{ x, y }};
-  prediction = null;
-  if (interactive) {{
-    renderGrid(); syncEditor();
-    scheduleCompute();
+  const info = document.getElementById('model-info');
+  try {{
+    const resp = await fetch('/apply_prediction', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ grid, prediction: {{
+        x, y, entity, direction, item, misc,
+      }} }}),
+    }});
+    const data = await resp.json();
+    if (data.error) {{
+      if (info) info.textContent = 'apply failed: ' + data.error;
+      return false;
+    }}
+    if (!data.applied) {{
+      if (info) {{
+        info.textContent =
+          'prediction rejected: ' + (data.invalid_reason || 'invalid action');
+      }}
+      return false;
+    }}
+    grid = data.grid;
+    selected = {{ x, y }};
+    prediction = null;
+    if (interactive) {{
+      renderGrid(); syncEditor();
+      scheduleCompute();
+    }}
+    return true;
+  }} catch (e) {{
+    if (info) info.textContent = 'apply failed: ' + e;
+    return false;
   }}
 }}
 
@@ -1395,7 +1451,11 @@ async function runAutoApply(generation) {{
     while (autoApplying && generation === autoApplyGeneration) {{
       const action = await requestFastPrediction();
       if (!autoApplying || generation !== autoApplyGeneration) break;
-      applyCandidate(action, false);
+      const applied = await applyCandidate(action, false);
+      if (!applied) {{
+        autoApplying = false;
+        break;
+      }}
       count += 1;
       renderAutoApplyFrame();
       if (info) {{
@@ -1437,22 +1497,28 @@ function stopAutoApply() {{
 
 function beginApplyKey() {{
   if (!modelLoaded) return;
+  applyKeyHeld = true;
   clearTimeout(_predictionTimer);
   clearTimeout(_graphTimer);
   // Preserve tap-to-apply: consume the visible prediction once, then only
   // enter the continuous request pump if the key remains down.
+  let firstApply = Promise.resolve(true);
   if (prediction) {{
-    applyCandidate(prediction, false);
-    renderAutoApplyFrame();
+    firstApply = applyCandidate(prediction, false);
+    firstApply.then((applied) => {{
+      if (applied) renderAutoApplyFrame();
+    }});
   }}
   clearTimeout(autoApplyHoldTimer);
-  autoApplyHoldTimer = setTimeout(() => {{
+  autoApplyHoldTimer = setTimeout(async () => {{
     autoApplyHoldTimer = null;
-    startAutoApply();
+    const applied = await firstApply;
+    if (applyKeyHeld && applied) startAutoApply();
   }}, 120);
 }}
 
 function endApplyKey() {{
+  applyKeyHeld = false;
   clearTimeout(autoApplyHoldTimer);
   autoApplyHoldTimer = null;
   if (autoApplying) {{
@@ -1681,7 +1747,7 @@ document.addEventListener('keyup', (ev) => {{
 }});
 
 function cancelApplyKeyIfActive() {{
-  if (autoApplying || autoApplyHoldTimer !== null) endApplyKey();
+  if (applyKeyHeld || autoApplying || autoApplyHoldTimer !== null) endApplyKey();
 }}
 // A lost keyup (for example, switching windows while holding a) must not
 // leave the request pump running in the background.
@@ -1767,7 +1833,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):  # noqa: N802
-        if self.path not in ("/graph", "/predict", "/load_model", "/load_lesson"):
+        if self.path not in (
+            "/graph",
+            "/predict",
+            "/apply_prediction",
+            "/load_model",
+            "/load_lesson",
+        ):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -1781,6 +1853,10 @@ class Handler(BaseHTTPRequestHandler):
                     result = _predict_action(payload["grid"])
                 else:
                     result = _predict(payload["grid"])
+            elif self.path == "/apply_prediction":
+                result = _apply_prediction(
+                    payload["grid"], payload["prediction"]
+                )
             elif self.path == "/load_lesson":
                 result = _load_lesson(
                     kind_name=payload["kind"],

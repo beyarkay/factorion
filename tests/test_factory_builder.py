@@ -91,6 +91,10 @@ def _empty_grid(size: int) -> list[list[dict]]:
     ]
 
 
+def test_default_wandb_run():
+    assert fb.Args().wandb_run == "h76h80yb"
+
+
 # ── Pure helpers ────────────────────────────────────────────────────────────
 
 class TestTopP:
@@ -163,6 +167,117 @@ class TestBuildWorld:
         world = fb.build_world(grid)
         assert int(world[0, 0, fb.Channel.FOOTPRINT.value]) == \
             fb.Footprint.UNAVAILABLE.value
+
+
+class TestApplyPrediction:
+    """The web UI delegates placement to the rollout's shared mutation path."""
+
+    @staticmethod
+    def _prediction(
+        *,
+        x: int,
+        y: int,
+        entity: str,
+        direction: str,
+        item: str = "empty",
+        misc: str = "NONE",
+    ) -> dict:
+        return {
+            "x": x,
+            "y": y,
+            "entity": entity,
+            "direction": direction,
+            "item": item,
+            "misc": misc,
+        }
+
+    def test_assembler_prediction_fills_same_3x3_world_footprint_as_rollout(
+        self,
+    ):
+        out = fb._apply_prediction(
+            _empty_grid(5),
+            self._prediction(
+                x=0,
+                y=1,
+                entity="assembling_machine_1",
+                direction="NONE",
+                item="electronic_circuit",
+            ),
+        )
+
+        assert out["applied"] is True
+        placed = {
+            (x, y)
+            for y, row in enumerate(out["grid"])
+            for x, cell in enumerate(row)
+            if cell["entity"] == "assembling_machine_1"
+        }
+        assert placed == {(x, y) for x in range(3) for y in range(1, 4)}
+        for x, y in placed:
+            assert out["grid"][y][x]["item"] == "electronic_circuit"
+
+    @pytest.mark.parametrize(
+        ("direction", "expected"),
+        [
+            ("EAST", {(2, 2), (2, 3)}),
+            ("WEST", {(2, 2), (2, 3)}),
+            ("NORTH", {(2, 2), (3, 2)}),
+            ("SOUTH", {(2, 2), (3, 2)}),
+        ],
+    )
+    def test_splitter_prediction_fills_rotated_two_tile_footprint(
+        self, direction, expected
+    ):
+        out = fb._apply_prediction(
+            _empty_grid(5),
+            self._prediction(
+                x=2, y=2, entity="splitter", direction=direction
+            ),
+        )
+        placed = {
+            (x, y)
+            for y, row in enumerate(out["grid"])
+            for x, cell in enumerate(row)
+            if cell["entity"] == "splitter"
+        }
+        assert out["applied"] is True
+        assert placed == expected
+
+    def test_prediction_calls_shared_rollout_placement_function(
+        self, monkeypatch
+    ):
+        called = 0
+        shared_apply = fb.apply_placement_action
+
+        def recording_apply(*args, **kwargs):
+            nonlocal called
+            called += 1
+            return shared_apply(*args, **kwargs)
+
+        monkeypatch.setattr(fb, "apply_placement_action", recording_apply)
+        fb._apply_prediction(
+            _empty_grid(3),
+            self._prediction(
+                x=1, y=1, entity="transport_belt", direction="EAST"
+            ),
+        )
+        assert called == 1
+
+    def test_invalid_multitile_prediction_is_rejected_atomically(self):
+        grid = _empty_grid(5)
+        grid[3][2]["entity"] = "transport_belt"
+        grid[3][2]["direction"] = "EAST"
+
+        out = fb._apply_prediction(
+            grid,
+            self._prediction(
+                x=2, y=2, entity="splitter", direction="EAST"
+            ),
+        )
+
+        assert out["applied"] is False
+        assert out["invalid_reason"] == "placed_on_existing_entity"
+        assert out["grid"] == grid
 
 
 # ── Graph rendering (Rust-backed) ───────────────────────────────────────────
@@ -497,9 +612,7 @@ class TestPredictSchema:
 
 class TestRenderIndexApplyWiring:
     """The served HTML must wire clicking a ghosted tile to applying that
-    candidate. This is JS embedded in a Python string, so we assert on the
-    rendered markup rather than driving a browser — enough to catch the
-    wiring being dropped or the candidate field contract drifting."""
+    candidate through the server-side rollout placement path."""
 
     def test_click_applies_visible_candidate(self):
         html = fb.render_index(default_size=11)
@@ -516,6 +629,9 @@ class TestRenderIndexApplyWiring:
         _predict emits per candidate — keep the two in lockstep."""
         html = fb.render_index(default_size=11)
         assert "const { x, y, entity, direction, item, misc } = cand;" in html
+        assert "fetch('/apply_prediction'" in html
+        assert "body: JSON.stringify({ grid, prediction:" in html
+        assert "grid = data.grid;" in html
         # The same fields _predict guarantees on each candidate (see
         # TestPredictSchema.test_predict_returns_full_schema).
         path = _make_tiny_checkpoint(size=4, chan=8)
