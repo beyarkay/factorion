@@ -150,6 +150,8 @@ class TestRolloutEpisodeMetrics:
             num_entities=4.0,
             min_entities_required=3.0,
             frac_reachable=0.75,
+            entity_cost=12.5,
+            cost_efficiency=0.9,
         )
 
     def test_overall_logs_raw_and_normed_throughput(self):
@@ -176,12 +178,21 @@ class TestRolloutEpisodeMetrics:
                 num_entities=1.0,
                 min_entities_required=1.0,
                 frac_reachable=0.0,
+                entity_cost=4.0,
+                cost_efficiency=0.95,
             )
             assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
 
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()
         assert m["rollout/entity_efficiency"] == pytest.approx(3.0 / 4.0)
+
+    def test_entity_cost_is_logged_overall_and_per_lesson(self):
+        m = self._metrics("SPLITTER_SPLIT")
+        assert m["rollout/entity_cost"] == pytest.approx(12.5)
+        assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
+        assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
+        assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
 
 
 # ── critic (value-head) diagnostics (global + per-lesson) ────────────────────

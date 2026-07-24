@@ -142,12 +142,12 @@ class PpoArgs(SharedArgs):
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.794
     """coefficient of the value function"""
-    throughput_reward_scale: float = 1.0
-    """scales the terminal throughput reward (paid once when the episode ends, on eot or max_steps); throughput is in [0, 1] so this sets the max terminal reward."""
-    step_penalty: float = 0.0
-    """penalty subtracted every step, so dragging the build out costs reward and the eot head learns to fire once the factory can't improve. Small relative to throughput_reward_scale. Set to 0 so the reward is purely the terminal throughput (thput)."""
-    entity_penalty_scale: float = 0.001
-    """per-entity penalty subtracted from the terminal reward: (# non-empty entities) * this. Nudges the policy toward frugal factories (fewer belts/inserters/etc.) rather than wasteful ones. A crude proxy for material cost; a future version may sum per-entity recipe costs instead."""
+    entity_cost_scale: float = 0.001
+    """strength of the multiplicative terminal entity-cost penalty. Each
+    entity costs its per-output recursively-expanded raw-item count plus
+    cumulative craft time; terminal reward is raw items/second divided by
+    (1 + entity_cost_scale * cost). This keeps zero-throughput reward at zero
+    and never makes the throughput component negative. 0 disables the penalty."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
