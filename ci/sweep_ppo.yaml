@@ -1,115 +1,34 @@
-# ci/sweep_ppo.yaml — PPO hyperparameter sweep
+# ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
 #
-# Launched with: uv run python -m ci sweep ppo --ref <commitish>  (or comment /ci sweep ppo on a PR)
-# Sweep results are reported (ci sweep-report), not auto-applied —
-# hyperparameter defaults live in training_config.py and are edited by hand.
+# Launched with: /ci sweep ppo
 #
-# 2M-step refinement of sweep on9knjvl. That sweep ran only 200k steps — long
-# enough for the critic to settle but NOT for the actor to improve — so its optima
-# are a strong-but-partial prior for long-run RL dynamics. Design driven by its
-# post-hoc analysis (RF + gradient-boosting importance + Spearman + quadrant
-# interactions), which agreed on:
-#   * Dominant knobs: learning_rate, then ent_coef_start, then adam_epsilon.
-#     Secondary: gae_lambda, critic_head_std. The rest (clip_coef, max_grad_norm,
-#     gamma, tile_head_std) were near-noise at 200k but are kept per the wandb
-#     importance list — gamma/gae_lambda plausibly matter more over a 2M horizon.
-#   * Two strong AND-gate interactions — lr x adam_epsilon (+0.26) and
-#     lr x ent_coef_start (+0.24): good throughput needs ALL THREE jointly LOW;
-#     any one of them high collapses the SFT policy to ~0. That collapse destroys
-#     the baseline and does NOT recover with more steps, so the three ranges are
-#     confined to their safe LOW basins and their dead/collapsing high ends cut.
-#     This concentrates the 50-run Bayes budget where good configs actually live.
-#   * learning_rate and adam_epsilon were edge-bound at the old floors (5e-5, 1e-6),
-#     so both ranges extend DOWNWARD, with tops capped below the collapse zone. Low
-#     LR still learns here because 2M steps = 10x the updates of the 200k sweep —
-#     the actor needs time, not a hot (collapse-prone) LR.
-#   * critic_warmup / critic_lr_mult / vf_coef were near-noise at 200k and are
-#     transient-startup effects that matter even less at 2M — dropped from the sweep
-#     and pinned at on9knjvl's best run (9i6sjxvu).
-# Optimises rollout/thput (on-policy sampled throughput). rollout/thput tanks under
-# the EOT collapse (a junk-filled grid scores ~0), so it still penalises the failure
-# mode. No seed axis: Bayes spends its run budget exploring the space.
+# Every run uses this branch and the same training configuration. The only
+# swept value is eta, exposed by PpoArgs as entity_cost_scale:
+#
+#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
 
-method: bayes
-run_cap: 50
+method: grid
 metric:
-  name: "rollout/thput"
+  name: "eval/thput"
   goal: maximize
 
 parameters:
-  # --- dominant knobs, confined to the safe low basin (AND-gate interactions) ---
-  learning_rate:
-    distribution: log_uniform_values
-    min: 2.0e-5
-    max: 1.5e-4
-
-  ent_coef_start:
-    distribution: log_uniform_values
-    min: 0.005
-    max: 0.05
-
-  adam_epsilon:
-    distribution: log_uniform_values
-    min: 1.0e-8
-    max: 1.0e-5
-
-  # --- secondary / long-horizon knobs (may matter more at 2M than at 200k) ---
-  ent_coef_end:
-    distribution: log_uniform_values
-    min: 1.0e-4
-    max: 0.01
-
-  gae_lambda:
-    distribution: uniform
-    min: 0.85
-    max: 0.98
-
-  gamma:
-    distribution: uniform
-    min: 0.95
-    max: 0.999
-
-  critic_head_std:
-    distribution: log_uniform_values
-    min: 0.01
-    max: 0.5
-
-  # --- weak signal at 200k; kept per the wandb importance list, ranges narrowed ---
-  clip_coef:
-    distribution: uniform
-    min: 0.1
-    max: 0.3
-
-  max_grad_norm:
-    distribution: uniform
-    min: 0.75
-    max: 2.5
-
-  tile_head_std:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.05
+  entity_cost_scale:
+    values:
+      - 0.0
+      - 1.0e-4
+      - 1.0e-3
+      - 1.0e-2
 
 program: ppo.py
 
-# Plain `python`: on a CI pod deps are installed system-wide; locally, run the
-# agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
-# --start-from uju9n8ql: finetune from the SFT base (critic_warmup/critic_head_std
-# only bite with a loaded SFT checkpoint). The three non-swept knobs
-# (critic_warmup/critic_lr_mult/vf_coef) are pinned at on9knjvl's best run 9i6sjxvu.
 command:
   - ${env}
   - python
   - ${program}
   - --start-from
-  - uju9n8ql
+  - h76h80yb
   - --total-timesteps
   - 2_000_000
-  - --critic-warmup
-  - 9
-  - --critic-lr-mult
-  - 1.497
-  - --vf-coef
-  - 0.794
   - --track
   - ${args}

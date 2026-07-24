@@ -70,6 +70,24 @@ _ASM_RECIPE_ITEM_IDS = tuple(
     if item.name in recipes
     and "assembling_machine_1" in recipes[item.name].produced_by
 )
+
+# Dense lookup tables keep terminal factory costing to a handful of numpy
+# reductions. Source/sink and empty are excluded: the agent cannot place them,
+# and their episode-constant cost cannot inform a frugality decision.
+_ENTITY_UNIT_COSTS = np.zeros(_N_ENTITIES, dtype=np.float64)
+_ENTITY_FOOTPRINT_AREAS = np.ones(_N_ENTITIES, dtype=np.float64)
+for _item in entities.values():
+    if (
+        _item.is_placeable
+        and _item.name not in ("bulk_inserter", "stack_inserter")
+    ):
+        _recipe = recipes[_item.name]
+        _output_quantity = _recipe.produces[_item.name]
+        _ENTITY_UNIT_COSTS[_item.value] = (
+            sum(_recipe.total_raw.values()) + _recipe.total_raw_time
+        ) / _output_quantity
+        _ENTITY_FOOTPRINT_AREAS[_item.value] = _item.width * _item.height
+
 # Fixed key set for the (logged-only) invalid_reason dict. step() tracks just the
 # one key that fired and materialises the full all-False+one-True dict lazily,
 # only when the info dict is actually built (terminal / full-diagnostics step).
@@ -306,6 +324,8 @@ def _rollout_episode_metrics(
     num_entities: float,
     min_entities_required: float,
     frac_reachable: float,
+    entity_cost: float,
+    cost_efficiency: float,
 ) -> dict:
     """Build the rollout/* metrics for one finished episode (overall + per-lesson).
 
@@ -325,11 +345,15 @@ def _rollout_episode_metrics(
         "rollout/num_entities": float(num_entities),
         "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
         "rollout/frac_reachable": float(frac_reachable),
+        "rollout/entity_cost": float(entity_cost),
+        "rollout/cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
         f"rollout/{lesson}/thput": float(thput_normed),
         f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
+        f"rollout/{lesson}/entity_cost": float(entity_cost),
+        f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
 
 
@@ -476,13 +500,18 @@ def _resolve_start_from(
     return path
 
 
-def make_env(env_id, idx, capture_video, size, run_name, throughput_reward_scale=PpoArgs.throughput_reward_scale, step_penalty=PpoArgs.step_penalty, entity_penalty_scale=PpoArgs.entity_penalty_scale):
+def make_env(
+    env_id,
+    idx,
+    capture_video,
+    size,
+    run_name,
+    entity_cost_scale=PpoArgs.entity_cost_scale,
+):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
-                       'throughput_reward_scale': throughput_reward_scale,
-                       'step_penalty': step_penalty,
-                       'entity_penalty_scale': entity_penalty_scale})
+                       'entity_cost_scale': entity_cost_scale})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -547,14 +576,12 @@ class FactorioEnv(gym.Env):
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
         options: Optional[dict] = None,
-        throughput_reward_scale: float = PpoArgs.throughput_reward_scale,
-        step_penalty: float = PpoArgs.step_penalty,
-        entity_penalty_scale: float = PpoArgs.entity_penalty_scale,
+        entity_cost_scale: float = PpoArgs.entity_cost_scale,
     ):
         super().__init__()
-        self.throughput_reward_scale = throughput_reward_scale
-        self.step_penalty = step_penalty
-        self.entity_penalty_scale = entity_penalty_scale
+        if entity_cost_scale < 0:
+            raise ValueError("entity_cost_scale must be non-negative")
+        self.entity_cost_scale = entity_cost_scale
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -612,7 +639,7 @@ class FactorioEnv(gym.Env):
         # logged-only diagnostics every step — required by tests and any caller
         # that inspects mid-episode info. PPO training sets this False on its
         # rollout envs: those diagnostics feed neither the reward (mid-episode
-        # reward is just -step_penalty) nor any metric the rollout reads (it only
+        # reward is zero) nor any metric the rollout reads (it only
         # reads thput/frac_reachable/num_entities for *finished* envs), so on
         # non-terminal steps the whole block is skipped. The terminal reward and
         # every episode-end-consumed value are still computed, so the PPO
@@ -636,7 +663,8 @@ class FactorioEnv(gym.Env):
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
-            'material_cost': self._material_cost,
+            'entity_cost': self._entity_cost,
+            'cost_efficiency': self._cost_efficiency,
             'reward': self._reward,
             'cum_reward': self._cum_reward,
         }
@@ -707,7 +735,8 @@ class FactorioEnv(gym.Env):
         self._frac_reachable = 0
         self._frac_hallucin = 0
         self._final_dir_reward = 0
-        self._material_cost = 0
+        self._entity_cost = 0
+        self._cost_efficiency = 1.0
         self._reward = 0
         self._terminated = False
         self._truncated = False
@@ -815,10 +844,10 @@ class FactorioEnv(gym.Env):
         truncated = (not terminated) and (self.steps > self.max_steps)
 
         # The throughput sim + per-step diagnostics below are only *consumed* at
-        # episode end (the terminal reward uses thput_normed; the rollout reads
+        # episode end (the terminal reward uses thput_raw; the rollout reads
         # thput/frac_reachable/num_entities for finished envs) or by callers that
         # inspect every step (tests, monitoring). Mid-episode they feed neither
-        # the reward (just -step_penalty until termination) nor any metric the
+        # the reward (zero until termination) nor any metric the
         # PPO rollout reads, so when `_full_diagnostics` is off (training rollout
         # envs) we skip the whole block on non-terminal steps — that's the
         # ~31%-of-rollout simulate_throughput + numpy diagnostics. The terminal
@@ -859,10 +888,14 @@ class FactorioEnv(gym.Env):
             else:
                 final_dir_reward = 0.0
 
-            material_cost = (
-                1.0 * np.count_nonzero(dir_np == _TRANSPORT_BELT_ENT_ID)
-                + 1.5 * np.count_nonzero(dir_np == _UG_BELT_ENT_ID)
-                + 2.0 * np.count_nonzero(dir_np == _ASM_MACHINE_ENT_ID)
+            counts = np.bincount(
+                np.asarray(ent_np, dtype=np.int64).ravel(),
+                minlength=_N_ENTITIES,
+            )[:_N_ENTITIES]
+            entity_units = counts / _ENTITY_FOOTPRINT_AREAS
+            entity_cost = float(np.dot(entity_units, _ENTITY_UNIT_COSTS))
+            cost_efficiency = 1.0 / (
+                1.0 + self.entity_cost_scale * entity_cost
             )
 
             # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
@@ -887,24 +920,26 @@ class FactorioEnv(gym.Env):
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
-            material_cost = 0.0
+            entity_cost = 0.0
+            cost_efficiency = 1.0
             tile_match_location = tile_match_entity = tile_match_direction = 0.0
             curr_match = self._prev_match
             loc_delta = ent_delta = dir_delta = 0.0
 
-        reward = -self.step_penalty
+        reward = 0.0
         if terminated or truncated:
-            reward += self.throughput_reward_scale * thput_normed
-            # Frugality penalty: discourage wasteful factories (too many belts,
-            # inserters, etc.) by subtracting a small cost per non-empty entity.
-            reward -= self.entity_penalty_scale * num_entities
+            # Multiplication makes cost a secondary modifier of achieved
+            # throughput: a no-output factory always earns zero terminal
+            # throughput reward, however many entities it contains.
+            reward = thput_raw * cost_efficiency
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
-        self._material_cost = material_cost
+        self._entity_cost = entity_cost
+        self._cost_efficiency = cost_efficiency
         self._reward = reward
         self._terminated = terminated
         self._truncated = truncated
@@ -930,7 +965,8 @@ class FactorioEnv(gym.Env):
                 'frac_reachable': frac_reachable,
                 'frac_hallucin': frac_hallucin,
                 'final_dir_reward': final_dir_reward,
-                'material_cost': material_cost,
+                'entity_cost': entity_cost,
+                'cost_efficiency': cost_efficiency,
                 'completion_bonus': self.max_steps - self.steps,
                 'min_entities_required': self.min_entities_required,
                 'num_entities': num_entities,
@@ -1751,10 +1787,13 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable"]:
+                  "frac_reachable", "entity_cost", "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
-            for m in ["thput", "thput_raw", "reward", "length"]:
+            for m in [
+                "thput", "thput_raw", "reward", "length", "entity_cost",
+                "cost_efficiency",
+            ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
             wandb.define_metric(f"policy/{m}", summary="last")
@@ -1817,7 +1856,17 @@ if __name__ == "__main__":
         print("AMP: bf16 autocast enabled for forward passes")
 
     print(f"Setting up envs with {args}")
-    env_thunks = [make_env(args.env_id, i, args.capture_video, args.size, run_name, args.throughput_reward_scale, args.step_penalty, args.entity_penalty_scale) for i in range(args.num_envs)]
+    env_thunks = [
+        make_env(
+            args.env_id,
+            i,
+            args.capture_video,
+            args.size,
+            run_name,
+            args.entity_cost_scale,
+        )
+        for i in range(args.num_envs)
+    ]
     # Per-env attributes (see comments below). Set in-process for SyncVectorEnv,
     # via set_attr (which marshals to the workers) for AsyncVectorEnv.
     # _train_seed: fresh factory every episode — env i sweeps args.seed+i,
@@ -2162,6 +2211,8 @@ if __name__ == "__main__":
                         num_entities=infos['num_entities'][i],
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
+                        entity_cost=infos["entity_cost"][i],
+                        cost_efficiency=infos["cost_efficiency"][i],
                     ))
 
         rollout_seconds = time.time() - rollout_start
@@ -2386,7 +2437,17 @@ if __name__ == "__main__":
         if args.capture_video and ((iteration-1) % 50 == 0 or iteration + 1 == args.num_iterations):
             print(f"Recording agent progress at {iteration}")
             num_render_envs = 5
-            render_envs = gym.vector.SyncVectorEnv([make_env(args.env_id, i, False, args.size, run_name, args.throughput_reward_scale, args.step_penalty, args.entity_penalty_scale) for i in range(num_render_envs)])
+            render_envs = gym.vector.SyncVectorEnv([
+                make_env(
+                    args.env_id,
+                    i,
+                    False,
+                    args.size,
+                    run_name,
+                    args.entity_cost_scale,
+                )
+                for i in range(num_render_envs)
+            ])
             next_obs_ECWH_render, _ = render_envs.reset(seed=args.seed, options={'num_missing_entities': float('inf')})
 
             temp_dirs = [tempfile.mkdtemp() for _ in range(num_render_envs)]

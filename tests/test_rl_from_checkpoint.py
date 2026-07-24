@@ -139,10 +139,9 @@ class TestEotTerminationAndMetrics:
         assert not terminated and not truncated
         assert "episode" not in info
 
-    def test_reward_hparams_default(self):
+    def test_entity_cost_scale_default(self):
         a = PpoArgs()
-        assert a.throughput_reward_scale == 1.0
-        assert a.step_penalty == 0.0
+        assert a.entity_cost_scale == 0.001
 
 
 class TestCriticWarmupParamSplit:
