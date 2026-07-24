@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import factory_builder as fb  # noqa: E402
+from factorion import entities, items  # noqa: E402
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
@@ -690,3 +691,21 @@ class TestModelInfo:
             assert info["layers"] == [8, 8, 8]
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestIconCoverage:
+    """Keep the renderer's silently missing icons from reaching the UI."""
+
+    def test_every_entity_has_an_icon(self):
+        missing = [
+            entity.name
+            for entity in entities.values()
+            if not fb._icon_b64(entity.name)
+        ]
+        assert not missing, f"entities missing factorio-icons/*.png: {missing}"
+
+    def test_every_item_has_an_icon(self):
+        missing = [
+            item.name for item in items.values() if not fb._icon_b64(item.name)
+        ]
+        assert not missing, f"items missing factorio-icons/*.png: {missing}"
