@@ -229,6 +229,23 @@ class TestPyRecipesBinding:
                 f"{name}: crafting_time must be positive, got {data['crafting_time']}"
             )
 
+    def test_every_recipe_key_is_a_positive_output(self):
+        for name, data in factorion_rs.py_recipes().items():
+            assert data["produces"].get(name, 0) > 0, (
+                f"{name}: recipe key must be one of its positive outputs"
+            )
+
+    def test_every_agent_placeable_entity_has_a_recipe(self):
+        recipe_names = set(factorion_rs.py_recipes())
+        for data in factorion_rs.py_items().values():
+            if data["is_placeable"] and data["name"] not in {
+                "bulk_inserter",
+                "stack_inserter",
+            }:
+                assert data["name"] in recipe_names, (
+                    f"{data['name']}: agent-placeable entity has no recipe"
+                )
+
     def test_canonical_crafting_times(self):
         rs = factorion_rs.py_recipes()
         # Spot-check a handful of canonical wiki values.

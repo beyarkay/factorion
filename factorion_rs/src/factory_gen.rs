@@ -2165,6 +2165,32 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
 /// recipe tag), stripped of any long-belt routing — the routing is fixed at one
 /// tile, so only the recipe identity and the immediate inserter/belt geometry
 /// vary.
+fn memorise_recipe_pool(n_ingredients: usize) -> Vec<(Item, Recipe)> {
+    let recipes = all_recipes();
+    let eligible = |recipe: &Recipe, count: usize| {
+        recipe.consumes.len() == count && recipe.produced_by.contains(&Item::AssemblingMachine1)
+    };
+
+    // Equal pool sizes keep one ingredient-count lesson from covering more
+    // recipe identities than another. Registry order is stable, so truncating
+    // to the smallest bucket deterministically selects the first K recipes.
+    let mut pool_size = usize::MAX;
+    for count in 1..=4 {
+        pool_size = pool_size.min(
+            recipes
+                .iter()
+                .filter(|(_, recipe)| eligible(recipe, count))
+                .count(),
+        );
+    }
+
+    recipes
+        .into_iter()
+        .filter(|(_, recipe)| eligible(recipe, n_ingredients))
+        .take(pool_size)
+        .collect()
+}
+
 fn build_memorise_recipes(
     size: usize,
     rng: &mut Rng,
@@ -2178,12 +2204,7 @@ fn build_memorise_recipes(
     // machine would be tagged with a recipe it can't make. If nothing matches
     // (an ingredient count the table never uses) there is nothing to build, so
     // reject immediately.
-    let recipes: Vec<(Item, Recipe)> = all_recipes()
-        .into_iter()
-        .filter(|(_, r)| {
-            r.consumes.len() == n_ingredients && r.produced_by.contains(&Item::AssemblingMachine1)
-        })
-        .collect();
+    let recipes = memorise_recipe_pool(n_ingredients);
     if recipes.is_empty() {
         return None;
     }
@@ -2988,6 +3009,21 @@ mod tests {
             }
         }
         assert!(built > 40, "most seeds should build, got {built}");
+    }
+
+    #[test]
+    fn test_memorise_recipe_pools_are_equally_sized() {
+        let pools: Vec<_> = (1..=4).map(memorise_recipe_pool).collect();
+        assert!(!pools[0].is_empty());
+        assert!(pools.windows(2).all(|pair| pair[0].len() == pair[1].len()));
+
+        for (index, pool) in pools.iter().enumerate() {
+            let ingredient_count = index + 1;
+            assert!(pool.iter().all(|(_, recipe)| {
+                recipe.consumes.len() == ingredient_count
+                    && recipe.produced_by.contains(&Item::AssemblingMachine1)
+            }));
+        }
     }
 
     #[test]
