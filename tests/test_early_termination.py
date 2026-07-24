@@ -12,6 +12,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from factorion import Channel, Direction, str2ent  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
@@ -94,14 +95,11 @@ class TestEarlyTermination:
 
 
 class TestReward:
-    """Reward = throughput_reward_scale * throughput - step_penalty * num_steps
-    - entity_penalty_scale * num_entities: a per-step penalty plus the terminal
-    throughput reward (less the per-entity frugality penalty) when the episode
-    ends (solve / eot / max_steps)."""
+    """Reward = raw_throughput * cost_efficiency. The multiplier is bounded
+    in (0, 1], so cost can reduce reward but never make it negative."""
 
-    def test_solved_factory_with_eot_pays_full_reward(self):
-        """Declaring eot on a solved factory pays the full terminal throughput
-        reward (throughput >= 1.0) minus one step's penalty."""
+    def test_solved_factory_with_eot_pays_raw_throughput_reward(self):
+        """Declaring eot on a solved factory pays cost-adjusted raw throughput."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -111,20 +109,17 @@ class TestReward:
 
         assert terminated is True
         assert info["thput_normed"] >= 1.0
-        expected = (env.throughput_reward_scale * info["thput_normed"]
-                    - env.step_penalty
-                    - env.entity_penalty_scale * info["num_entities"])
+        expected = info["thput_raw"] * info["cost_efficiency"]
         assert reward == pytest.approx(expected)
 
-    def test_step_penalty_only_mid_episode(self):
-        """A non-terminal step pays just -step_penalty (no throughput reward)."""
+    def test_mid_episode_reward_is_zero(self):
         env = _make_env(size=5, max_steps=20)
         env.reset(seed=42, options={"num_missing_entities": 99})
 
         _, reward, terminated, truncated, _ = env.step(_noop_action())
 
         assert not terminated and not truncated
-        assert reward == pytest.approx(-env.step_penalty)
+        assert reward == 0
 
     def test_terminal_throughput_reward_on_truncation(self):
         """At max_steps the episode still banks the terminal throughput reward."""
@@ -139,9 +134,7 @@ class TestReward:
 
         assert truncated is True
         assert terminated is False
-        expected = (env.throughput_reward_scale * info["thput_normed"]
-                    - env.step_penalty
-                    - env.entity_penalty_scale * info["num_entities"])
+        expected = info["thput_raw"] * info["cost_efficiency"]
         assert reward == pytest.approx(expected)
 
     def test_eot_action_terminates_episode(self):
@@ -159,16 +152,14 @@ class TestReward:
         assert truncated is False
         assert info["frac_invalid_actions"] == 0
         assert info["thput_normed"] < 1.0  # ended early, not a full solve
-        expected = (env.throughput_reward_scale * info["thput_normed"]
-                    - env.step_penalty
-                    - env.entity_penalty_scale * info["num_entities"])
+        expected = info["thput_raw"] * info["cost_efficiency"]
         assert reward == pytest.approx(expected)
 
-    def test_entity_penalty_scales_with_entity_count(self):
-        """The terminal reward drops by entity_penalty_scale per non-empty
-        entity, so a wasteful factory is penalised more than a frugal one."""
+    def test_entity_cost_reduces_reward_multiplicatively(self):
+        """A non-zero entity cost reduces throughput reward without an
+        additive subtraction."""
         env = _make_env(size=5, max_steps=10)
-        env.entity_penalty_scale = 0.01
+        env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
         action = _noop_action()
@@ -176,13 +167,44 @@ class TestReward:
         _, reward, terminated, _, info = env.step(action)
 
         assert terminated is True
-        expected = (env.throughput_reward_scale * info["thput_normed"]
-                    - env.step_penalty
-                    - env.entity_penalty_scale * info["num_entities"])
+        expected = info["thput_raw"] * info["cost_efficiency"]
         assert reward == pytest.approx(expected)
-        # A non-zero penalty must actually pull the reward below the penalty-free value.
-        assert info["num_entities"] > 0
-        assert reward < env.throughput_reward_scale * info["thput_normed"] - env.step_penalty
+        assert info["entity_cost"] > 0
+        assert 0 < info["cost_efficiency"] < 1
+        assert reward < info["thput_raw"]
+
+    def test_zero_throughput_cost_penalty_is_never_negative(self):
+        env = FactorioEnv(
+            size=5,
+            max_steps=10,
+            idx=0,
+            entity_cost_scale=1_000_000.0,
+        )
+        env.reset(seed=42, options={"num_missing_entities": 99})
+
+        # Add one belt far from every source/sink so cost is non-zero while
+        # throughput remains zero.
+        entity_grid = env._world_CWH[Channel.ENTITIES.value]
+        markers = np.argwhere(
+            (entity_grid.numpy() == env._source_id)
+            | (entity_grid.numpy() == env._sink_id)
+        )
+        x, y = next(
+            (int(x), int(y))
+            for x, y in np.argwhere(entity_grid.numpy() == 0)
+            if all(abs(x - mx) + abs(y - my) > 1 for mx, my in markers)
+        )
+        entity_grid[x, y] = str2ent("transport_belt").value
+        env._world_CWH[Channel.DIRECTION.value, x, y] = Direction.NORTH.value
+
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
+
+        assert terminated is True
+        assert info["thput_raw"] == 0
+        assert info["entity_cost"] == pytest.approx(2.0)
+        assert reward == 0
 
 
 class TestStepsTaken:
