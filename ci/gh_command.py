@@ -93,7 +93,7 @@ def _commit_link(sha: str) -> str:
 def _group_link(group: str) -> str:
     entity = _wandb_entity()
     if entity:
-        return f"[`{group}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{group})"
+        return f"[`{group}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{group}/workspace)"
     return f"`{group}`"
 
 
