@@ -608,7 +608,7 @@ def poll_loop(
     *,
     poll_interval: float = 0.25,
     max_steps: int = 64,
-    placement_delay_s: float = 0.02,
+    placement_delay_s: float = 0.01,
     device: torch.device,
     wandb_project: str = "factorion",
     wandb_entity: Optional[str] = None,
@@ -689,7 +689,7 @@ def handle_request(
     rcon: RconClient,
     *,
     max_steps: int,
-    placement_delay_s: float = 0.02,
+    placement_delay_s: float = 0.01,
     device,
 ):
     if req["grid_size"] != agent.width:
@@ -745,8 +745,8 @@ def main():
     ap.add_argument(
         "--placement-delay-ms",
         type=float,
-        default=20.0,
-        help="Delay after each accepted world placement (default: 20 ms).",
+        default=10.0,
+        help="Delay after each accepted world placement (default: 10 ms).",
     )
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     ap.add_argument("--log-level", default="INFO")

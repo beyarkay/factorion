@@ -157,11 +157,11 @@ def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
         _AcceptingRcon(),
         "request-1",
         _action("transport_belt"),
-        placement_delay_s=0.02,
+        placement_delay_s=0.01,
     )
 
     assert accepted is True
-    assert sleeps == [0.02]
+    assert sleeps == [0.01]
 
 
 class _OneStepAgent:

@@ -18,7 +18,7 @@ hosted game:
 ```
 
 Pass a local checkpoint or another W&B run as the first argument when needed.
-Predicted entities are paced with a 20 ms delay after each placement, making
+Predicted entities are paced with a 10 ms delay after each placement, making
 the sequence easier to follow. Override it in milliseconds when needed:
 
 ```bash
