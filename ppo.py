@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import contextlib
 import typing
@@ -236,6 +237,8 @@ def _run_signature(args) -> str:
         sig += f"-kl{args.target_kl:g}"
     if args.critic_warmup:
         sig += f"-cw{args.critic_warmup}"
+    if args.reward_symlog_r0:
+        sig += f"-r0{args.reward_symlog_r0:g}"
     if args.start_from:
         sig += f"-from{args.start_from}"
     sig += f"-c{layers}-seed{args.seed}"
@@ -507,11 +510,13 @@ def make_env(
     size,
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
+    reward_symlog_r0=PpoArgs.reward_symlog_r0,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
-                       'entity_cost_scale': entity_cost_scale})
+                       'entity_cost_scale': entity_cost_scale,
+                       'reward_symlog_r0': reward_symlog_r0})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -577,11 +582,15 @@ class FactorioEnv(gym.Env):
         idx: Optional[int] = None,
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
+        reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
+        if reward_symlog_r0 < 0:
+            raise ValueError("reward_symlog_r0 must be non-negative")
         self.entity_cost_scale = entity_cost_scale
+        self.reward_symlog_r0 = reward_symlog_r0
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -928,10 +937,19 @@ class FactorioEnv(gym.Env):
 
         reward = 0.0
         if terminated or truncated:
-            # Multiplication makes cost a secondary modifier of achieved
-            # throughput: a no-output factory always earns zero terminal
-            # throughput reward, however many entities it contains.
-            reward = thput_raw * cost_efficiency
+            if self.reward_symlog_r0 > 0:
+                # Log-compressed throughput so lessons whose ceilings differ by
+                # ~360x contribute comparable gradient; cost then rides along as
+                # an additive penalty whose bite no longer depends on which
+                # lesson (i.e. which reward scale) the episode came from.
+                reward = math.log1p(
+                    thput_raw / self.reward_symlog_r0
+                ) - math.log1p(self.entity_cost_scale * entity_cost)
+            else:
+                # Multiplication makes cost a secondary modifier of achieved
+                # throughput: a no-output factory always earns zero terminal
+                # throughput reward, however many entities it contains.
+                reward = thput_raw * cost_efficiency
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1864,6 +1882,7 @@ if __name__ == "__main__":
             args.size,
             run_name,
             args.entity_cost_scale,
+            args.reward_symlog_r0,
         )
         for i in range(args.num_envs)
     ]
@@ -2445,6 +2464,7 @@ if __name__ == "__main__":
                     args.size,
                     run_name,
                     args.entity_cost_scale,
+                    args.reward_symlog_r0,
                 )
                 for i in range(num_render_envs)
             ])

@@ -1,5 +1,6 @@
 """Tests for early termination when the agent solves the puzzle."""
 
+import math
 import os
 import sys
 
@@ -12,13 +13,22 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from factorion import Channel, Direction, str2ent  # noqa: E402
+from factorion import Channel, Direction, LessonKind, str2ent  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
-def _make_env(size=5, max_steps=10):
+def _make_env(size=5, max_steps=10, **kwargs):
     """Create a FactorioEnv for testing."""
-    return FactorioEnv(size=size, max_steps=max_steps, idx=0)
+    return FactorioEnv(size=size, max_steps=max_steps, idx=0, **kwargs)
+
+
+def _expected_reward(env, info):
+    """The terminal reward the env's configured scheme should have paid."""
+    if env.reward_symlog_r0 > 0:
+        return math.log1p(
+            info["thput_raw"] / env.reward_symlog_r0
+        ) - math.log1p(env.entity_cost_scale * info["entity_cost"])
+    return info["thput_raw"] * info["cost_efficiency"]
 
 
 def _noop_action():
@@ -95,8 +105,8 @@ class TestEarlyTermination:
 
 
 class TestReward:
-    """Reward = raw_throughput * cost_efficiency. The multiplier is bounded
-    in (0, 1], so cost can reduce reward but never make it negative."""
+    """Reward = log1p(raw_throughput / r0) - log1p(scale * entity_cost),
+    or raw_throughput * cost_efficiency when the log transform is disabled."""
 
     def test_solved_factory_with_eot_pays_raw_throughput_reward(self):
         """Declaring eot on a solved factory pays cost-adjusted raw throughput."""
@@ -109,8 +119,7 @@ class TestReward:
 
         assert terminated is True
         assert info["thput_normed"] >= 1.0
-        expected = info["thput_raw"] * info["cost_efficiency"]
-        assert reward == pytest.approx(expected)
+        assert reward == pytest.approx(_expected_reward(env, info))
 
     def test_mid_episode_reward_is_zero(self):
         env = _make_env(size=5, max_steps=20)
@@ -134,8 +143,7 @@ class TestReward:
 
         assert truncated is True
         assert terminated is False
-        expected = info["thput_raw"] * info["cost_efficiency"]
-        assert reward == pytest.approx(expected)
+        assert reward == pytest.approx(_expected_reward(env, info))
 
     def test_eot_action_terminates_episode(self):
         """A non-solved factory ends immediately when the agent declares eot=1,
@@ -152,13 +160,27 @@ class TestReward:
         assert truncated is False
         assert info["frac_invalid_actions"] == 0
         assert info["thput_normed"] < 1.0  # ended early, not a full solve
-        expected = info["thput_raw"] * info["cost_efficiency"]
-        assert reward == pytest.approx(expected)
+        assert reward == pytest.approx(_expected_reward(env, info))
 
-    def test_entity_cost_reduces_reward_multiplicatively(self):
-        """A non-zero entity cost reduces throughput reward without an
-        additive subtraction."""
+    def test_entity_cost_reduces_reward(self):
+        """A non-zero entity cost lowers the reward below the pure
+        throughput term."""
         env = _make_env(size=5, max_steps=10)
+        env.entity_cost_scale = 0.01
+        env.reset(seed=42, options={"num_missing_entities": 0})
+
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
+
+        assert terminated is True
+        assert reward == pytest.approx(_expected_reward(env, info))
+        assert info["entity_cost"] > 0
+        assert reward < math.log1p(info["thput_raw"] / env.reward_symlog_r0)
+
+    def test_entity_cost_reduces_reward_multiplicatively_without_log(self):
+        """With the log transform off, cost is a multiplier bounded in (0, 1]."""
+        env = _make_env(size=5, max_steps=10, reward_symlog_r0=0.0)
         env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -173,12 +195,13 @@ class TestReward:
         assert 0 < info["cost_efficiency"] < 1
         assert reward < info["thput_raw"]
 
-    def test_zero_throughput_cost_penalty_is_never_negative(self):
+    def test_zero_throughput_cost_penalty_is_never_negative_without_log(self):
         env = FactorioEnv(
             size=5,
             max_steps=10,
             idx=0,
             entity_cost_scale=1_000_000.0,
+            reward_symlog_r0=0.0,
         )
         env.reset(seed=42, options={"num_missing_entities": 99})
 
@@ -205,6 +228,65 @@ class TestReward:
         assert info["thput_raw"] == 0
         assert info["entity_cost"] == pytest.approx(2.0)
         assert reward == 0
+
+    def test_log_reward_pays_negative_for_zero_throughput_with_cost(self):
+        """The log-space cost term is subtracted, so entities that deliver
+        nothing are worse than an empty grid rather than merely equal to it."""
+        env = _make_env(size=5, max_steps=10)
+        env.reset(seed=42, options={"num_missing_entities": 99})
+
+        entity_grid = env._world_CWH[Channel.ENTITIES.value]
+        markers = np.argwhere(
+            (entity_grid.numpy() == env._source_id)
+            | (entity_grid.numpy() == env._sink_id)
+        )
+        x, y = next(
+            (int(x), int(y))
+            for x, y in np.argwhere(entity_grid.numpy() == 0)
+            if all(abs(x - mx) + abs(y - my) > 1 for mx, my in markers)
+        )
+        entity_grid[x, y] = str2ent("transport_belt").value
+        env._world_CWH[Channel.DIRECTION.value, x, y] = Direction.NORTH.value
+
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, info = env.step(action)
+
+        assert terminated is True
+        assert info["thput_raw"] == 0
+        assert reward == pytest.approx(
+            -math.log1p(env.entity_cost_scale * info["entity_cost"])
+        )
+        assert reward < 0
+
+
+class TestLogRewardScaleCompression:
+    """The point of the log transform: lessons whose achievable items/s differ
+    by orders of magnitude must not differ by orders of magnitude in reward."""
+
+    def _solved_reward(self, kind, size=11):
+        """Terminal reward for eot on an already-solved factory of `kind`."""
+        env = _make_env(size=size, max_steps=10)
+        env.reset(seed=7, options={"num_missing_entities": 0, "kind": kind})
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, _, _, info = env.step(action)
+        return reward, info["thput_raw"]
+
+    def test_belt_and_assembler_rewards_are_within_one_order_of_magnitude(self):
+        belt_r, belt_thput = self._solved_reward(LessonKind.MOVE_ONE_ITEM)
+        asm_r, asm_thput = self._solved_reward(
+            LessonKind.MEMORISE_4_INGREDIENT_RECIPES
+        )
+
+        raw_ratio = belt_thput / asm_thput
+        reward_ratio = belt_r / asm_r
+
+        assert raw_ratio > 50, "expected a large raw items/s gap between lessons"
+        assert reward_ratio < 10, (
+            f"log reward still spreads lessons {reward_ratio:.1f}x "
+            f"(raw gap {raw_ratio:.1f}x)"
+        )
 
 
 class TestStepsTaken:
