@@ -745,11 +745,11 @@ def main():
                     break
                 log.info(
                     "Waiting for streaming protocol v2; restart Factorio and "
-                    "host a game with factorion 0.6.0 (%s)",
+                    "host a game with factorion 0.6.1 (%s)",
                     protocol or "no mod response",
                 )
             except (RconError, OSError) as exc:
-                log.info("Waiting for Factorio to reload factorion 0.6.0 (%s)", exc)
+                log.info("Waiting for Factorio to reload factorion 0.6.1 (%s)", exc)
                 rcon.close()
                 time.sleep(2)
                 try:

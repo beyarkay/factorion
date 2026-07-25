@@ -70,7 +70,7 @@ factorion-mod/
 │   ├── parity.lua            ← engine-parity runner (build spec, measure throughput)
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
-│   └── prototypes/           ← endpoint belts, selection tools, hotkey definitions
+│   └── prototypes/           ← endpoint belts, footprint tool, hotkey definitions
 ├── server/                   ← local inference daemon + parity harness
 │   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
@@ -247,7 +247,7 @@ Server-callable remote methods exposed by the mod:
 - `parity_start(spec_json)` / `parity_poll()` / `parity_abort()` — the
   engine-parity runner (see above; driven by `server/parity.py`)
 - `introspect()` — outbox depth, pending requests, players known
-- `dump_state(player_index?)` — full footprint + sources + sinks dump
+- `dump_state(player_index?)` — per-player footprint state dump
 - `inject_request(json, deliver_to_player_index)` — synthesise a request
   without using the hotkey (for headless / scripted tests). Pass
   `player_index=0` for the headless sentinel, which logs streamed placements.

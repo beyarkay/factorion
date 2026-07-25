@@ -2,8 +2,6 @@
 --
 -- State per player lives in `storage.players[player_index]`:
 --   footprint = { x=int, y=int, w=int, h=int }   world-tile bbox
---   sources/sinks = { { x, y, item, direction, entity_unit_number,
---                       render_ids }, ... }
 --   pending   = { request_id=string, tick=int }  in-flight request, if any
 --
 -- Round trip (single-channel RCON, both directions):
@@ -36,8 +34,6 @@ local function ensure_player_state(player_index)
   if not storage.players[player_index] then
     storage.players[player_index] = {
       footprint = nil,
-      sources   = {},
-      sinks     = {},
       pending   = nil,
       picker    = nil,
       footprint_render_id = nil,
@@ -196,21 +192,8 @@ local function draw_footprint(player, state)
   state.footprint_render_id = object.id
 end
 
-local function inside_footprint(x, y, fp)
-  return fp and x >= fp.x and x < fp.x + fp.w
-    and y >= fp.y and y < fp.y + fp.h
-end
-
 local MARKER_DIALOG = "factorion-marker-dialog"
 local ITEM_PICKER = "factorion-marker-item"
-local DIRECTION_PICKER = "factorion-marker-direction"
-local DIRECTION_LABELS = {
-  "Flow north ↑", "Flow east →", "Flow south ↓", "Flow west ←",
-}
-local DIRECTION_TO_FACTORIO = {
-  defines.direction.north, defines.direction.east,
-  defines.direction.south, defines.direction.west,
-}
 local FACTORIO_TO_DIRECTION = {
   [defines.direction.north] = 1,
   [defines.direction.east] = 2,
@@ -223,10 +206,6 @@ local ENDPOINT_ENTITY_NAMES = {
 }
 local SINK_RATE_SAMPLE_TICKS = 30
 local SINK_RATE_WINDOW_TICKS = 5 * 60
-
-local function endpoint_entity_name(role)
-  return ENDPOINT_ENTITY_NAMES[role]
-end
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
@@ -323,32 +302,6 @@ local function endpoint_config(entity)
   return storage.endpoints[entity.unit_number]
 end
 
-local function destroy_endpoint_entity(mark)
-  if not mark.entity_unit_number then return end
-  local config = storage.endpoints
-    and storage.endpoints[mark.entity_unit_number] or nil
-  local entity = config and config.entity or nil
-  if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
-  mark.entity_unit_number = nil
-end
-
-local function destroy_endpoint_render(mark)
-  for _, object_id in ipairs(mark.render_ids or {}) do
-    local object = rendering.get_object_by_id(object_id)
-    if object then object.destroy() end
-  end
-  mark.render_ids = nil
-end
-
-local function clear_endpoint_markers(state)
-  for _, list in pairs({ state.sources or {}, state.sinks or {} }) do
-    for _, mark in ipairs(list) do
-      destroy_endpoint_render(mark)
-      destroy_endpoint_entity(mark)
-    end
-  end
-end
-
 local function clear_predicted_entities(state)
   for _, unit_number in ipairs(state.predicted_entities or {}) do
     local entity = game.get_entity_by_unit_number(unit_number)
@@ -358,58 +311,20 @@ local function clear_predicted_entities(state)
   state.prediction_placed = 0
 end
 
-local function create_endpoint_entity(player, mark)
-  local entity = player.surface.create_entity({
-    name = endpoint_entity_name(mark.role),
-    position = { mark.x + 0.5, mark.y + 0.5 },
-    direction = DIRECTION_TO_FACTORIO[mark.direction],
-    force = player.force,
-    player = player,
-    raise_built = true,
-  })
-  if not entity then return nil end
-
-  mark.entity_unit_number = entity.unit_number
-  register_endpoint(entity, mark.item)
-  return entity
-end
-
-local function draw_endpoint(player, mark)
-  destroy_endpoint_render(mark)
-  local config = mark.entity_unit_number and storage.endpoints
-    and storage.endpoints[mark.entity_unit_number] or nil
-  local entity = config and config.entity or nil
-  if entity then refresh_endpoint_alt_icon(entity, endpoint_config(entity)) end
-end
-
-local function default_flow_direction(x, y, fp)
-  local rel_x, rel_y = x - fp.x, y - fp.y
-  local mid = (GRID_SIZE - 1) / 2
-  local dx, dy = mid - rel_x, mid - rel_y
-  if math.abs(dx) >= math.abs(dy) then
-    return dx >= 0 and 2 or 4
-  end
-  return dy >= 0 and 3 or 1
-end
-
 local function close_marker_dialog(player, state)
   local frame = player.gui.screen[MARKER_DIALOG]
   if frame then frame.destroy() end
   state.picker = nil
 end
 
-local function open_marker_dialog(player, state, role, x, y, entity)
+local function open_marker_dialog(player, state, role, entity)
   close_marker_dialog(player, state)
-  local direction = entity and FACTORIO_TO_DIRECTION[entity.direction]
-    or default_flow_direction(x, y, state.footprint)
   state.picker = {
-    role = role, x = x, y = y, direction = direction,
-    entity_unit_number = entity and entity.unit_number or nil,
+    role = role,
+    entity_unit_number = entity.unit_number,
   }
-  local config = entity and endpoint_config(entity) or nil
-  local title = entity and ("Configure Factorion " .. role .. " belt")
-    or (role == "source" and "Place Factorion source belt"
-      or "Place Factorion sink belt")
+  local config = endpoint_config(entity)
+  local title = "Configure Factorion " .. role .. " belt"
   local prompt = role == "source"
     and "Choose the item this source belt produces:"
     or "Choose the item this sink belt consumes:"
@@ -423,23 +338,13 @@ local function open_marker_dialog(player, state, role, x, y, entity)
     type = "choose-elem-button", name = ITEM_PICKER,
     elem_type = "item", item = config and config.item or get_default_item(),
   })
-  frame.add({
-    type = "label",
-    caption = entity and "Rotate the belt normally with R."
-      or "Choose the initial belt flow direction:",
-  })
-  frame.add({
-    type = "drop-down", name = DIRECTION_PICKER,
-    items = DIRECTION_LABELS, selected_index = direction,
-    enabled = not entity,
-  })
   local actions = frame.add({ type = "flow", direction = "horizontal" })
   actions.add({
     type = "button", caption = "Cancel",
     tags = { factorion_action = "marker-cancel" },
   })
   actions.add({
-    type = "button", caption = entity and "Save item" or "Place " .. role .. " belt",
+    type = "button", caption = "Save item",
     style = "confirm_button",
     tags = { factorion_action = "marker-save" },
   })
@@ -447,61 +352,65 @@ local function open_marker_dialog(player, state, role, x, y, entity)
 end
 
 local function handle_tool_selection(event)
+  if event.item ~= "factorion-footprint-tool" then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   if not player then return end
 
-  if event.item == "factorion-footprint-tool" then
-    clear_predicted_entities(state)
-    clear_endpoint_markers(state)
-    state.footprint = fixed_footprint(event.area)
-    state.sources = {}
-    state.sinks = {}
-    draw_footprint(player, state)
-    local fp = state.footprint
-    player.print(string.format(
-      "[Factorion] Stamped 11x11 region at x=%d..%d, y=%d..%d. " ..
-      "Now place a source and sink.",
-      fp.x, fp.x + 10, fp.y, fp.y + 10))
-    return
-  end
-
-  local role = event.item == "factorion-source-tool" and "source"
-    or event.item == "factorion-sink-tool" and "sink" or nil
-  if not role then return end
-  if not state.footprint then
-    player.print("[Factorion] Stamp the 11x11 region first.")
-    return
-  end
-  local x, y = area_center_tile(event.area)
-  if not inside_footprint(x, y, state.footprint) then
-    player.print("[Factorion] Choose a tile inside the blue 11x11 region.")
-    return
-  end
-  open_marker_dialog(player, state, role, x, y)
+  clear_predicted_entities(state)
+  state.footprint = fixed_footprint(event.area)
+  draw_footprint(player, state)
+  local fp = state.footprint
+  player.print(string.format(
+    "[Factorion] Stamped 11x11 region at x=%d..%d, y=%d..%d. " ..
+    "Now place a source and sink.",
+    fp.x, fp.x + 10, fp.y, fp.y + 10))
 end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
 
--- Right-clicking the region tool is a quick clear; source/sink tools behave
--- identically on either mouse button because their roles are explicit.
+-- Right-clicking the region tool is a quick clear.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
-  if event.item ~= "factorion-footprint-tool" then
-    handle_tool_selection(event)
-    return
-  end
+  if event.item ~= "factorion-footprint-tool" then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   destroy_footprint_render(state)
   clear_predicted_entities(state)
-  clear_endpoint_markers(state)
   state.footprint = nil
-  state.sources = {}
-  state.sinks = {}
   if player then
     player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
   end
 end)
+
+local function save_marker_dialog(player, state)
+  if not state.picker then
+    player.print(
+      "[Factorion] That endpoint dialog had closed. Click the belt and try again.")
+    close_marker_dialog(player, state)
+    return
+  end
+  local frame = player.gui.screen[MARKER_DIALOG]
+  local picker = frame and frame[ITEM_PICKER]
+  local item = picker and picker.elem_value
+  if not item then
+    player.print("[Factorion] Choose an item first.")
+    return
+  end
+  local config = storage.endpoints
+    and storage.endpoints[state.picker.entity_unit_number] or nil
+  local entity = config and config.entity or nil
+  if not entity or not endpoint_role(entity) then
+    player.print("[Factorion] That endpoint belt no longer exists.")
+    close_marker_dialog(player, state)
+    return
+  end
+  config = register_endpoint(entity, item)
+  if not config then return end
+  player.print(string.format(
+    "[Factorion] %s belt now uses [item=%s].",
+    config.role, config.item))
+  close_marker_dialog(player, state)
+end
 
 script.on_event(defines.events.on_gui_click, function(event)
   local element = event.element
@@ -515,72 +424,25 @@ script.on_event(defines.events.on_gui_click, function(event)
     close_marker_dialog(player, state)
     return
   end
-  if action ~= "marker-save" or not state.picker then return end
-  local frame = player.gui.screen[MARKER_DIALOG]
-  local picker = frame and frame[ITEM_PICKER]
-  local item = picker and picker.elem_value
-  if not item then
-    player.print("[Factorion] Choose an item first.")
-    return
-  end
-  local direction_picker = frame and frame[DIRECTION_PICKER]
-  local direction = direction_picker and direction_picker.selected_index or 0
-  if direction < 1 or direction > 4 then
-    player.print("[Factorion] Choose a flow direction first.")
-    return
-  end
+  if action ~= "marker-save" then return end
+  save_marker_dialog(player, state)
+end)
 
-  local mark = state.picker
-  if mark.entity_unit_number then
-    local config = storage.endpoints
-      and storage.endpoints[mark.entity_unit_number] or nil
-    local entity = config and config.entity or nil
-    if not entity or not endpoint_role(entity) then
-      player.print("[Factorion] That endpoint belt no longer exists.")
-      close_marker_dialog(player, state)
-      return
-    end
-    local config = register_endpoint(entity, item)
-    if not config then return end
-    player.print(string.format(
-      "[Factorion] %s belt now uses [item=%s].",
-      config.role, config.item))
-    close_marker_dialog(player, state)
-    return
-  end
-
-  -- One endpoint per tile: saving replaces either previous role at this tile.
-  for _, list in pairs({ state.sources, state.sinks }) do
-    for i = #list, 1, -1 do
-      if list[i].x == mark.x and list[i].y == mark.y then
-        destroy_endpoint_render(list[i])
-        destroy_endpoint_entity(list[i])
-        table.remove(list, i)
-      end
-    end
-  end
-  local target = mark.role == "source" and state.sources or state.sinks
-  local endpoint = {
-    role = mark.role, x = mark.x, y = mark.y,
-    item = item, direction = direction,
-  }
-  if not create_endpoint_entity(player, endpoint) then
-    player.print(
-      "[Factorion] Could not place the endpoint belt; clear that tile and try again.")
-    return
-  end
-  table.insert(target, endpoint)
-  draw_endpoint(player, endpoint)
-  player.print(string.format(
-    "[Factorion] Placed %s belt at (%d,%d): [item=%s], %s",
-    mark.role, mark.x, mark.y, item, DIRECTION_LABELS[direction]))
-  close_marker_dialog(player, state)
+script.on_event("factorion-confirm-dialog", function(event)
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  local state = ensure_player_state(event.player_index)
+  if not state.picker or not player.gui.screen[MARKER_DIALOG] then return end
+  save_marker_dialog(player, state)
 end)
 
 script.on_event(defines.events.on_gui_closed, function(event)
-  if not event.element or event.element.name ~= MARKER_DIALOG then return end
+  if not event.element or not event.element.valid
+      or event.element.name ~= MARKER_DIALOG then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
   local state = ensure_player_state(event.player_index)
-  state.picker = nil
+  close_marker_dialog(player, state)
 end)
 
 script.on_event(defines.events.on_gui_opened, function(event)
@@ -591,9 +453,7 @@ script.on_event(defines.events.on_gui_opened, function(event)
   if not player then return end
   player.opened = nil
   register_endpoint(entity)
-  open_marker_dialog(
-    player, ensure_player_state(event.player_index), role,
-    math.floor(entity.position.x), math.floor(entity.position.y), entity)
+  open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
 end)
 
 local function endpoint_built(event)
@@ -663,44 +523,12 @@ local function endpoint_entity_removed(event)
   destroy_endpoint_alt_icon(config)
   destroy_sink_rate_label(config)
   if storage.endpoints then storage.endpoints[entity.unit_number] = nil end
-  for _, state in pairs(storage.players or {}) do
-    for _, list in pairs({ state.sources or {}, state.sinks or {} }) do
-      for i = #list, 1, -1 do
-        if list[i].entity_unit_number == entity.unit_number then
-          destroy_endpoint_render(list[i])
-          table.remove(list, i)
-        end
-      end
-    end
-  end
 end
 
 script.on_event(defines.events.on_player_mined_entity, endpoint_entity_removed)
 script.on_event(defines.events.on_robot_mined_entity, endpoint_entity_removed)
 script.on_event(defines.events.on_entity_died, endpoint_entity_removed)
 script.on_event(defines.events.script_raised_destroy, endpoint_entity_removed)
-
-script.on_event(defines.events.on_player_rotated_entity, function(event)
-  local entity = event.entity
-  local direction = entity and FACTORIO_TO_DIRECTION[entity.direction] or nil
-  if not entity or not entity.unit_number or not direction then return end
-  for _, state in pairs(storage.players or {}) do
-    for _, list in pairs({ state.sources or {}, state.sinks or {} }) do
-      for _, mark in ipairs(list) do
-        if mark.entity_unit_number == entity.unit_number then
-          mark.direction = direction
-          local player = game.get_player(event.player_index)
-          if player then
-            player.print(string.format(
-              "[Factorion] Rotated %s: %s",
-              mark.role, DIRECTION_LABELS[direction]))
-          end
-          return
-        end
-      end
-    end
-  end
-end)
 
 local function feed_source(mark, entity)
   for line_index = 1, entity.get_max_transport_line_index() do
@@ -816,33 +644,13 @@ script.on_event("factorion-reset", function(event)
   local state = ensure_player_state(event.player_index)
   destroy_footprint_render(state)
   clear_predicted_entities(state)
-  clear_endpoint_markers(state)
   state.footprint = nil
-  state.sources = {}
-  state.sinks = {}
   local player = game.get_player(event.player_index)
   if player then
     close_marker_dialog(player, state)
     player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
   end
 end)
-
--- ----------------------------------------------------------------------------
--- direction inference: a source on the west edge faces east, etc.
--- ----------------------------------------------------------------------------
-
-local function dir_toward_center(rel_x, rel_y, size)
-  -- "Toward center" snapped to cardinal. Larger of the two distances-to-
-  -- edge-center wins. Returns the Factorion Direction enum: 1=N,2=E,3=S,4=W.
-  local mid = (size - 1) / 2
-  local dx = mid - rel_x
-  local dy = mid - rel_y
-  if math.abs(dx) >= math.abs(dy) then
-    if dx >= 0 then return 2 else return 4 end  -- east or west
-  else
-    if dy >= 0 then return 3 else return 1 end  -- south or north
-  end
-end
 
 -- ----------------------------------------------------------------------------
 -- execute: write a request JSON the server picks up
@@ -1162,22 +970,7 @@ remote.add_interface("factorion", {
             p.footprint.x, p.footprint.y, p.footprint.w, p.footprint.h)
           or "nil"
         table.insert(parts, string.format(
-          "player[%s]: footprint={%s} #sources=%d #sinks=%d",
-          tostring(k), fp, #(p.sources or {}), #(p.sinks or {})))
-        if p.sources and #p.sources > 0 then
-          local s = {}
-          for _, src in ipairs(p.sources) do
-            table.insert(s, string.format("(%d,%d)", src.x, src.y))
-          end
-          table.insert(parts, "  sources: " .. table.concat(s, ","))
-        end
-        if p.sinks and #p.sinks > 0 then
-          local s = {}
-          for _, snk in ipairs(p.sinks) do
-            table.insert(s, string.format("(%d,%d)", snk.x, snk.y))
-          end
-          table.insert(parts, "  sinks: " .. table.concat(s, ","))
-        end
+          "player[%s]: footprint={%s}", tostring(k), fp))
       end
     end
     if #parts == 0 then return "(no player state)" end
@@ -1216,20 +1009,6 @@ script.on_configuration_changed(function()
     state.prediction_placed = state.prediction_placed or 0
     give_tools(player)
     if state.footprint then draw_footprint(player, state) end
-    for role, list in pairs({ source = state.sources, sink = state.sinks }) do
-      for _, mark in ipairs(list or {}) do
-        mark.role = role
-        mark.item = mark.item or get_default_item()
-        mark.direction = mark.direction
-          or (state.footprint
-            and default_flow_direction(mark.x, mark.y, state.footprint) or 2)
-        local config = mark.entity_unit_number and storage.endpoints
-          and storage.endpoints[mark.entity_unit_number] or nil
-        local entity = config and config.entity or nil
-        if not entity then create_endpoint_entity(player, mark) end
-        draw_endpoint(player, mark)
-      end
-    end
   end
   for _, surface in pairs(game.surfaces) do
     for _, entity in pairs(surface.find_entities_filtered({
