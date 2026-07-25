@@ -90,6 +90,26 @@ def test_underground_belt_placement_has_endpoint_type():
     assert placement["type"] == "input"
 
 
+class _AcceptingRcon:
+    def exec(self, _command):
+        return "ok"
+
+
+def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(mod_server.time, "sleep", sleeps.append)
+
+    accepted = mod_server._stream_placement(
+        _AcceptingRcon(),
+        "request-1",
+        _action("transport_belt"),
+        placement_delay_s=0.02,
+    )
+
+    assert accepted is True
+    assert sleeps == [0.02]
+
+
 class _OneStepAgent:
     def __init__(self):
         self.calls = 0

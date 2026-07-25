@@ -465,7 +465,13 @@ def _lua_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ") + "'"
 
 
-def _stream_placement(rcon: RconClient, request_id: str, action: dict) -> bool:
+def _stream_placement(
+    rcon: RconClient,
+    request_id: str,
+    action: dict,
+    *,
+    placement_delay_s: float = 0.0,
+) -> bool:
     placement = action_to_placement(action)
     payload = json.dumps(placement, separators=(",", ":"))
     response = rcon.exec(
@@ -473,6 +479,8 @@ def _stream_placement(rcon: RconClient, request_id: str, action: dict) -> bool:
         f"{_lua_string(request_id)},{_lua_string(payload)}))"
     ).strip()
     if response == "ok":
+        if placement_delay_s > 0:
+            time.sleep(placement_delay_s)
         return True
     log.error("Factorio rejected %s: %s", placement, response or "(empty response)")
     return False
@@ -576,6 +584,7 @@ def poll_loop(
     *,
     poll_interval: float = 0.25,
     max_steps: int = 64,
+    placement_delay_s: float = 0.02,
     device: torch.device,
     wandb_project: str = "factorion",
     wandb_entity: Optional[str] = None,
@@ -588,6 +597,7 @@ def poll_loop(
     Factorio restart without needing to be restarted itself.
     """
     log.info("Polling factorion.poll_request every %.0f ms", poll_interval * 1000)
+    log.info("Placement pacing delay: %.0f ms", placement_delay_s * 1000)
     model_state = model_state or {"name": "unknown", "url": None}
     last_model_publish = 0.0
 
@@ -637,13 +647,26 @@ def poll_loop(
             continue
 
         try:
-            handle_request(req, agent, rcon, max_steps=max_steps, device=device)
+            handle_request(
+                req,
+                agent,
+                rcon,
+                max_steps=max_steps,
+                placement_delay_s=placement_delay_s,
+                device=device,
+            )
         except Exception:
             log.exception("Failed to handle request %s", req.get("request_id"))
 
 
 def handle_request(
-    req: dict, agent: AgentCNN, rcon: RconClient, *, max_steps: int, device
+    req: dict,
+    agent: AgentCNN,
+    rcon: RconClient,
+    *,
+    max_steps: int,
+    placement_delay_s: float = 0.02,
+    device,
 ):
     if req["grid_size"] != agent.width:
         raise ValueError(
@@ -661,7 +684,10 @@ def handle_request(
         max_steps=max_steps,
         device=device,
         on_placement=lambda action: _stream_placement(
-            rcon, req["request_id"], action,
+            rcon,
+            req["request_id"],
+            action,
+            placement_delay_s=placement_delay_s,
         ),
     )
     _finish_prediction(rcon, req["request_id"], stats)
@@ -692,9 +718,17 @@ def main():
                     help="Override checkpoint metadata (normally unnecessary).")
     ap.add_argument("--max-steps", type=int, default=64,
                     help="Iterative inference budget per request.")
+    ap.add_argument(
+        "--placement-delay-ms",
+        type=float,
+        default=20.0,
+        help="Delay after each accepted world placement (default: 20 ms).",
+    )
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
+    if args.placement_delay_ms < 0:
+        ap.error("--placement-delay-ms must be non-negative")
 
     logging.basicConfig(
         level=args.log_level.upper(),
@@ -774,7 +808,10 @@ def main():
 
         poll_loop(
             agent, rcon,
-            poll_interval=0.25, max_steps=args.max_steps, device=device,
+            poll_interval=0.25,
+            max_steps=args.max_steps,
+            placement_delay_s=args.placement_delay_ms / 1000,
+            device=device,
             wandb_project=args.wandb_project, wandb_entity=args.wandb_entity,
             model_state={"name": model_name, "url": model_url},
         )
