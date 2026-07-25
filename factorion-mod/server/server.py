@@ -37,8 +37,8 @@ from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
 MOD_GRID_SIZE = 11
-MOD_PROTOCOL_VERSION = "3"
-MOD_VERSION = "0.6.2"
+MOD_PROTOCOL_VERSION = "4"
+MOD_VERSION = "0.6.3"
 
 
 # --------------------------------------------------------------------------- #

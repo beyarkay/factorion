@@ -911,6 +911,64 @@ json_encode = function(t)
   return game.table_to_json(t)
 end
 
+local function describe_placement_failure(surface, player, fp, placement)
+  local left = fp.x + placement.tile_x
+  local top = fp.y + placement.tile_y
+  local right = left + placement.width
+  local bottom = top + placement.height
+
+  local blockers = {}
+  local found = surface.find_entities({
+    { left, top },
+    { right, bottom },
+  })
+  for _, entity in pairs(found) do
+    local unit = entity.unit_number and ("#" .. entity.unit_number) or ""
+    table.insert(blockers, string.format(
+      "%s%s(type=%s,pos=%.2f,%.2f)",
+      entity.name,
+      unit,
+      entity.type,
+      entity.position.x,
+      entity.position.y))
+  end
+  table.sort(blockers)
+  if #blockers > 8 then
+    local extra = #blockers - 8
+    while #blockers > 8 do table.remove(blockers) end
+    table.insert(blockers, string.format("...(+%d more)", extra))
+  end
+
+  local ground_set = {}
+  for x = left, right - 1 do
+    for y = top, bottom - 1 do
+      ground_set[surface.get_tile(x, y).name] = true
+    end
+  end
+  local ground = {}
+  for name in pairs(ground_set) do table.insert(ground, name) end
+  table.sort(ground)
+
+  local can_place = surface.can_place_entity({
+    name = placement.name,
+    position = { fp.x + placement.x, fp.y + placement.y },
+    direction = placement.direction,
+    force = player.force,
+  })
+  return string.format(
+    "error: Factorio refused %s at relative tile (%s,%s), " ..
+    "world tile (%d,%d) on %s; can_place_entity=%s; blockers=[%s]; ground=[%s]",
+    tostring(placement.name),
+    tostring(placement.tile_x),
+    tostring(placement.tile_y),
+    left,
+    top,
+    surface.name,
+    tostring(can_place),
+    #blockers > 0 and table.concat(blockers, ", ") or "none",
+    #ground > 0 and table.concat(ground, ", ") or "none")
+end
+
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
@@ -1005,12 +1063,20 @@ remote.add_interface("factorion", {
     }
     if placement.type then params.type = placement.type end
     if placement.recipe then params.recipe = placement.recipe end
-    local entity = player.surface.create_entity(params)
-    if not entity then
+    local created, entity = pcall(
+      function() return player.surface.create_entity(params) end)
+    if not created then
       return string.format(
-        "error: could not place %s at relative tile (%s,%s)",
-        tostring(placement.name), tostring(placement.tile_x),
-        tostring(placement.tile_y))
+        "error: create_entity raised while placing %s at relative tile " ..
+        "(%s,%s): %s",
+        tostring(placement.name),
+        tostring(placement.tile_x),
+        tostring(placement.tile_y),
+        tostring(entity))
+    end
+    if not entity then
+      return describe_placement_failure(
+        player.surface, player, fp, placement)
     end
 
     state.predicted_entities = state.predicted_entities or {}
@@ -1054,7 +1120,7 @@ remote.add_interface("factorion", {
     return "factorion-mod alive at tick " .. tostring(game.tick)
   end,
   protocol_version = function()
-    return "3"
+    return "4"
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
