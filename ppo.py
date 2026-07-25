@@ -1260,7 +1260,11 @@ def _legal_tile_mask(x_BCWH):
     ent_BWH = x_BCWH[:, _CH_ENT]
     foot_BWH = x_BCWH[:, _CH_FOOTPRINT]
     legal_BWH = (ent_BWH == _EMPTY_ENT_ID) & (foot_BWH != _FOOTPRINT_UNAVAILABLE)
-    return legal_BWH.reshape(x_BCWH.shape[0], -1)
+    legal_BN = legal_BWH.reshape(x_BCWH.shape[0], -1)
+    # A grid with nowhere left to build would mask every tile to -inf, making
+    # log_softmax NaN and multinomial fault; leave those rows unconstrained (the
+    # env rejects the placement as it always has) rather than crash the rollout.
+    return legal_BN | ~legal_BN.any(dim=-1, keepdim=True)
 
 
 class _SelfAttnStack(nn.Module):

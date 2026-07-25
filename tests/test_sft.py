@@ -1384,17 +1384,17 @@ class TestLegalTileMask:
         assert masked[0, 4] == float("-inf")
 
     def test_all_illegal_row_is_nan_free(self):
-        """A fully occupied grid leaves every tile illegal; the masked argmax
-        must still return a finite index (tile 0) rather than NaN-ing out."""
+        """A fully occupied grid leaves no legal tile; the row falls back to
+        unconstrained so the log-probs stay finite — masking it out entirely
+        would NaN log_softmax and fault multinomial on the sampling path."""
         size = 3
         obs = self._obs(size)
         obs[0, Channel.ENTITIES.value] = str2ent("transport_belt").value  # occupy everything
         logits = torch.randn(1, size * size)
 
         masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
-        assert torch.isinf(masked).all(), "every tile should be masked to -inf"
-        idx = masked.argmax(dim=1).item()
-        assert idx == 0, "all-illegal row falls back to tile 0"
+        assert torch.equal(masked, logits), "all-illegal row must stay unconstrained"
+        assert not torch.isnan(torch.log_softmax(masked, dim=1)).any()
 
 
 class TestEotHead:

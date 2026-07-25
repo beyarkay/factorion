@@ -528,6 +528,18 @@ class TestSampleAction:
         assert int(out["action"]["xy"][0, 0]) == 2
         assert int(out["action"]["xy"][0, 1]) == 3
 
+    def test_legal_mask_falls_back_when_nothing_is_buildable(self, agent):
+        """A grid with no legal tile must still yield a finite, sampleable
+        distribution — masking every tile to -inf NaNs the log-probs and faults
+        multinomial mid-rollout."""
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        obs[:, _CH_FOOTPRINT] = _FOOTPRINT_UNAVAILABLE
+        obs[:, _CH_ENT] = _EMPTY_ENT_ID + 1
+        for temperature in (0.0, 1.0):
+            out = agent.sample_action(obs, temperature=temperature, legal_mask=True)
+            assert torch.isfinite(out["logp"]).all()
+            assert torch.isfinite(out["entropy"]).all()
+
     def test_replayed_action_recovers_logp(self, agent):
         """Passing a stored action recomputes its exact log-prob regardless of
         temperature — the PPO-update path, unchanged by the refactor."""
