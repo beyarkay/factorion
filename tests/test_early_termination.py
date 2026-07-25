@@ -24,11 +24,10 @@ def _make_env(size=5, max_steps=10, **kwargs):
 
 def _expected_reward(env, info):
     """The terminal reward the env's configured scheme should have paid."""
+    reward = info["thput_raw"] * info["cost_efficiency"]
     if env.reward_symlog_r0 > 0:
-        return math.log1p(
-            info["thput_raw"] / env.reward_symlog_r0
-        ) - math.log1p(env.entity_cost_scale * info["entity_cost"])
-    return info["thput_raw"] * info["cost_efficiency"]
+        return math.log1p(reward / env.reward_symlog_r0)
+    return reward
 
 
 def _noop_action():
@@ -105,8 +104,10 @@ class TestEarlyTermination:
 
 
 class TestReward:
-    """Reward = log1p(raw_throughput / r0) - log1p(scale * entity_cost),
-    or raw_throughput * cost_efficiency when the log transform is disabled."""
+    """Reward = raw_throughput * cost_efficiency, log-compressed at r0 unless
+    the compression is disabled. The cost multiplier is bounded in (0, 1] and
+    log1p is non-negative on it, so cost can reduce reward but never make it
+    negative under either scheme."""
 
     def test_solved_factory_with_eot_pays_raw_throughput_reward(self):
         """Declaring eot on a solved factory pays cost-adjusted raw throughput."""
@@ -195,13 +196,18 @@ class TestReward:
         assert 0 < info["cost_efficiency"] < 1
         assert reward < info["thput_raw"]
 
-    def test_zero_throughput_cost_penalty_is_never_negative_without_log(self):
+    @pytest.mark.parametrize("reward_symlog_r0", [0.0, 0.01])
+    def test_zero_throughput_cost_penalty_is_never_negative(self, reward_symlog_r0):
+        """Entities that deliver nothing must score exactly zero, not negative:
+        else an empty grid beats a nearly-complete factory and the policy is
+        rewarded for building nothing. Holds under either scheme because the
+        cost multiplier is bounded in (0, 1] and log1p(0) == 0."""
         env = FactorioEnv(
             size=5,
             max_steps=10,
             idx=0,
             entity_cost_scale=1_000_000.0,
-            reward_symlog_r0=0.0,
+            reward_symlog_r0=reward_symlog_r0,
         )
         env.reset(seed=42, options={"num_missing_entities": 99})
 
@@ -228,36 +234,6 @@ class TestReward:
         assert info["thput_raw"] == 0
         assert info["entity_cost"] == pytest.approx(2.0)
         assert reward == 0
-
-    def test_log_reward_pays_negative_for_zero_throughput_with_cost(self):
-        """The log-space cost term is subtracted, so entities that deliver
-        nothing are worse than an empty grid rather than merely equal to it."""
-        env = _make_env(size=5, max_steps=10)
-        env.reset(seed=42, options={"num_missing_entities": 99})
-
-        entity_grid = env._world_CWH[Channel.ENTITIES.value]
-        markers = np.argwhere(
-            (entity_grid.numpy() == env._source_id)
-            | (entity_grid.numpy() == env._sink_id)
-        )
-        x, y = next(
-            (int(x), int(y))
-            for x, y in np.argwhere(entity_grid.numpy() == 0)
-            if all(abs(x - mx) + abs(y - my) > 1 for mx, my in markers)
-        )
-        entity_grid[x, y] = str2ent("transport_belt").value
-        env._world_CWH[Channel.DIRECTION.value, x, y] = Direction.NORTH.value
-
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
-
-        assert terminated is True
-        assert info["thput_raw"] == 0
-        assert reward == pytest.approx(
-            -math.log1p(env.entity_cost_scale * info["entity_cost"])
-        )
-        assert reward < 0
 
 
 class TestLogRewardScaleCompression:

@@ -143,27 +143,27 @@ class PpoArgs(SharedArgs):
     vf_coef: float = 0.794
     """coefficient of the value function"""
     entity_cost_scale: float = 0.001
-    """strength of the terminal entity-cost penalty. Each entity costs its
-    per-output recursively-expanded raw-item count plus cumulative craft time.
-    With reward_symlog_r0 > 0 the penalty is additive in log space
-    (- log1p(entity_cost_scale * cost)); otherwise the reward is raw
-    items/second divided by (1 + entity_cost_scale * cost). 0 disables the
-    penalty."""
+    """strength of the multiplicative terminal entity-cost penalty. Each
+    entity costs its per-output recursively-expanded raw-item count plus
+    cumulative craft time; terminal reward is raw items/second divided by
+    (1 + entity_cost_scale * cost). This keeps zero-throughput reward at zero
+    and never makes the throughput component negative. 0 disables the penalty."""
     reward_symlog_r0: float = 0.01
-    """reference flow (items/s) for the log-compressed terminal reward
-    `log1p(thput_raw / r0) - log1p(entity_cost_scale * cost)`.
+    """reference flow (items/s) at which the terminal reward is log-compressed:
+    `log1p(thput_raw * cost_efficiency / r0)`.
     Solved lessons differ ~360x in achievable items/s (belts 15, MEMORISE_2
-    0.043), so raw reward hands belt lessons two orders of magnitude more
-    gradient than assembler lessons and leaves the small end under a shared
-    critic's error floor. log1p turns those multiplicative scale gaps into
-    additive offsets, which baselines subtract off for free; r0 puts the
-    smallest flow we care about at the knee of the log (r0=1 would be plain
+    0.043), so an uncompressed reward hands belt lessons two orders of
+    magnitude more gradient than assembler lessons and leaves the small end
+    under a shared critic's error floor. log1p turns those multiplicative scale
+    gaps into additive offsets, which baselines subtract off for free; r0 puts
+    the smallest flow we care about at the knee of the log (r0=1 would be plain
     symlog, which only compresses the top and still leaves ~66x, while r0=0.01
-    brings the spread to ~4.5x). Being a monotone transform of
-    a terminal-only reward it cannot change which factory is optimal per
-    lesson, only how gradient is shared across them. Note the cost term is now
-    a subtraction, so a zero-throughput factory scores slightly negative rather
-    than zero. 0 restores the multiplicative raw-throughput reward."""
+    brings the spread to ~4.5x). Being a monotone transform of a terminal-only
+    reward it cannot change which factory is optimal per lesson, only how
+    gradient is shared across them; compressing the cost-adjusted reward (as
+    opposed to subtracting a log-space cost term) also keeps zero throughput at
+    exactly zero, so a factory that delivers nothing is never worse than an
+    empty grid. 0 disables the compression."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

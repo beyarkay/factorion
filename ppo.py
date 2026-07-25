@@ -237,8 +237,6 @@ def _run_signature(args) -> str:
         sig += f"-kl{args.target_kl:g}"
     if args.critic_warmup:
         sig += f"-cw{args.critic_warmup}"
-    if args.reward_symlog_r0:
-        sig += f"-r0{args.reward_symlog_r0:g}"
     if args.start_from:
         sig += f"-from{args.start_from}"
     sig += f"-c{layers}-seed{args.seed}"
@@ -937,19 +935,17 @@ class FactorioEnv(gym.Env):
 
         reward = 0.0
         if terminated or truncated:
+            # Multiplication makes cost a secondary modifier of achieved
+            # throughput: a no-output factory always earns zero terminal
+            # throughput reward, however many entities it contains.
+            reward = thput_raw * cost_efficiency
             if self.reward_symlog_r0 > 0:
-                # Log-compressed throughput so lessons whose ceilings differ by
-                # ~360x contribute comparable gradient; cost then rides along as
-                # an additive penalty whose bite no longer depends on which
-                # lesson (i.e. which reward scale) the episode came from.
-                reward = math.log1p(
-                    thput_raw / self.reward_symlog_r0
-                ) - math.log1p(self.entity_cost_scale * entity_cost)
-            else:
-                # Multiplication makes cost a secondary modifier of achieved
-                # throughput: a no-output factory always earns zero terminal
-                # throughput reward, however many entities it contains.
-                reward = thput_raw * cost_efficiency
+                # Compress so lessons whose ceilings differ by ~360x contribute
+                # comparable gradient. Compressing the cost-adjusted reward
+                # rather than subtracting a log-space cost term keeps zero
+                # throughput at exactly zero; above the knee the two agree to
+                # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
+                reward = math.log1p(reward / self.reward_symlog_r0)
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
