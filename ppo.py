@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import contextlib
 import typing
@@ -513,11 +514,13 @@ def make_env(
     size,
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
+    reward_symlog_r0=PpoArgs.reward_symlog_r0,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
-                       'entity_cost_scale': entity_cost_scale})
+                       'entity_cost_scale': entity_cost_scale,
+                       'reward_symlog_r0': reward_symlog_r0})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -583,11 +586,15 @@ class FactorioEnv(gym.Env):
         idx: Optional[int] = None,
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
+        reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
+        if reward_symlog_r0 < 0:
+            raise ValueError("reward_symlog_r0 must be non-negative")
         self.entity_cost_scale = entity_cost_scale
+        self.reward_symlog_r0 = reward_symlog_r0
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -938,6 +945,13 @@ class FactorioEnv(gym.Env):
             # throughput: a no-output factory always earns zero terminal
             # throughput reward, however many entities it contains.
             reward = thput_raw * cost_efficiency
+            if self.reward_symlog_r0 > 0:
+                # Compress so lessons whose ceilings differ by ~360x contribute
+                # comparable gradient. Compressing the cost-adjusted reward
+                # rather than subtracting a log-space cost term keeps zero
+                # throughput at exactly zero; above the knee the two agree to
+                # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
+                reward = math.log1p(reward / self.reward_symlog_r0)
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1872,6 +1886,7 @@ if __name__ == "__main__":
             args.size,
             run_name,
             args.entity_cost_scale,
+            args.reward_symlog_r0,
         )
         for i in range(args.num_envs)
     ]
@@ -2461,6 +2476,7 @@ if __name__ == "__main__":
                     args.size,
                     run_name,
                     args.entity_cost_scale,
+                    args.reward_symlog_r0,
                 )
                 for i in range(num_render_envs)
             ])
