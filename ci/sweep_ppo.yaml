@@ -138,9 +138,16 @@ parameters:
     max: 0.99
 
   # ── Pinned, not swept ────────────────────────────────────────────
-  # Must stay 0. Non-zero dropout is exactly the #337 bug: it desynchronises
-  # the rollout and update forward passes, and now trips the critic-warm-up
-  # `approx_kl < _WARMUP_KL_TOL` assert, hard-failing the run.
+  # Pinned because this loop cannot currently use dropout — not because dropout
+  # and RL are incompatible. #337 fixed the attention stack ignoring this flag;
+  # it did not make values above 0 usable. ppo.py never calls .eval(), and
+  # torch.no_grad() does not disable dropout, so the rollout and the update each
+  # draw independent masks: at identical weights the recomputed log-probs
+  # disagree with the acting ones and every importance ratio is corrupted. It
+  # also trips the critic-warm-up `approx_kl < _WARMUP_KL_TOL` assert, so such a
+  # run hard-fails in its first iterations instead of quietly producing garbage.
+  # Making dropout sweepable needs eval-mode rollouts, or masks cached at act
+  # time and replayed in the update — a code change, not a sweep entry.
   dropout:
     value: 0
 
