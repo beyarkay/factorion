@@ -154,7 +154,7 @@ def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
     monkeypatch.setattr(mod_server.time, "sleep", sleeps.append)
 
     accepted = mod_server._stream_placement(
-        _AcceptingRcon(),
+        cast(mod_server.RconClient, _AcceptingRcon()),
         "request-1",
         _action("transport_belt"),
         placement_delay_s=0.01,
