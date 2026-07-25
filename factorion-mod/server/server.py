@@ -1,8 +1,7 @@
 """Factorion model server.
 
-Watches a directory for `req-*.json` files written by the Factorio mod,
-runs the trained AgentCNN policy on each, and pushes the resulting
-blueprint back into the running game over RCON.
+Polls the Factorio mod for requests, runs the trained AgentCNN policy, and
+streams each predicted entity back into the running game over RCON.
 
 Run from the repo root so the `factorion` and `factorion_rs` modules are
 importable (e.g. via `uv run python factorion-mod/server/server.py ...`).
@@ -18,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import numpy as np
@@ -29,12 +28,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from factorion import Channel, entities, str2ent  # noqa: E402
+from factorion import Channel, Misc, entities, items, str2ent  # noqa: E402
 from ppo import AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
 
 import factorion_rs  # noqa: E402
 
-from blueprint import world_tensor_to_blueprint_string  # noqa: E402
+from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
 MOD_GRID_SIZE = 11
@@ -63,6 +62,11 @@ class Hyperparams:
     grid_size: int = 11
     layers: tuple[int, ...] = (93, 69, 96)
     kernel_size: int = 3
+    attn_dim: int = 0
+    attn_heads: int = 12
+    attn_layers: int = 4
+    attn_pos_embed: int = 1
+    global_feat_dim: int = 0
 
     @classmethod
     def from_mapping(cls, values: dict) -> "Hyperparams":
@@ -87,6 +91,11 @@ class Hyperparams:
             grid_size=size,
             layers=layers,
             kernel_size=int(values.get("kernel_size", 3)),
+            attn_dim=int(values.get("attn_dim", 0)),
+            attn_heads=int(values.get("attn_heads", 12)),
+            attn_layers=int(values.get("attn_layers", 4)),
+            attn_pos_embed=int(values.get("attn_pos_embed", 1)),
+            global_feat_dim=int(values.get("global_feat_dim", 0)),
         )
 
     @classmethod
@@ -127,10 +136,21 @@ def resolve_checkpoint(
 
 
 def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentCNN:
-    log.info("Loading checkpoint %s (grid=%d, layers=%s, kernel=%d)",
-             ckpt_path, hp.grid_size, "/".join(map(str, hp.layers)), hp.kernel_size)
-    agent = AgentCNN(_duck_envs(hp.grid_size),
-                     layers=hp.layers, kernel_size=hp.kernel_size).to(device)
+    log.info(
+        "Loading checkpoint %s (grid=%d, layers=%s, kernel=%d, attention=%d, global=%d)",
+        ckpt_path, hp.grid_size, "/".join(map(str, hp.layers)), hp.kernel_size,
+        hp.attn_dim, hp.global_feat_dim,
+    )
+    agent = AgentCNN(
+        _duck_envs(hp.grid_size),
+        layers=hp.layers,
+        kernel_size=hp.kernel_size,
+        attn_dim=hp.attn_dim,
+        attn_heads=hp.attn_heads,
+        attn_layers=hp.attn_layers,
+        attn_pos_embed=hp.attn_pos_embed,
+        global_feat_dim=hp.global_feat_dim,
+    ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
     current = agent.state_dict()
     expandable = {
@@ -145,6 +165,21 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
     for key, saved in state.items():
         target = current.get(key)
         if target is None or target.shape == saved.shape:
+            continue
+        can_expand_coord_channels = (
+            key == "encoder.0.weight"
+            and target.ndim == saved.ndim == 4
+            and target.shape[0] == saved.shape[0]
+            and target.shape[2:] == saved.shape[2:]
+            and target.shape[1] == saved.shape[1] + 2
+        )
+        if can_expand_coord_channels:
+            merged = target.new_zeros(target.shape)
+            merged[:, :saved.shape[1]] = saved
+            state[key] = merged
+            expanded.append(
+                f"{key} input channels:{saved.shape[1]}→{target.shape[1]}"
+            )
             continue
         can_expand = (
             key in expandable
@@ -170,6 +205,8 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
         expanded.append(f"{key}:{saved.shape[0]}→{target.shape[0]}")
     if expanded:
         log.info("Expanded append-only catalog tensors: %s", ", ".join(expanded))
+    if "coord_grid" not in state:
+        state["coord_grid"] = current["coord_grid"]
     agent.load_state_dict(state)
     agent.eval()
     return agent
@@ -230,7 +267,9 @@ def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
         # temperature=0 = the shared sampler's greedy (argmax) mode.
-        act = agent.sample_action(x, temperature=0.0, compute_value=False)["action"]
+        act = agent.sample_action(
+            x, temperature=0.0, legal_mask=True, compute_value=False,
+        )["action"]
     return {
         "xy": (int(act["xy"][0, 0]), int(act["xy"][0, 1])),
         "entity": int(act["entity"].item()),
@@ -275,8 +314,61 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
     return True
 
 
+def action_to_placement(action: dict) -> dict:
+    """Convert one model action into a Factorio create_entity specification."""
+    ent_id = int(action["entity"])
+    ent_meta = entities.get(ent_id)
+    if ent_meta is None or not ent_meta.is_placeable:
+        raise ValueError(f"entity id {ent_id} is not placeable")
+
+    x, y = (int(v) for v in action["xy"])
+    direction_model = int(action["direction"])
+    direction = _DIR_MODEL_TO_BP.get(direction_model)
+    if direction is None:
+        direction = 0
+
+    name = _hyphenate(ent_meta.name)
+    if "inserter" in name:
+        direction = (direction + 8) % 16
+
+    width, height = ent_meta.width, ent_meta.height
+    if direction_model in (2, 4):
+        width, height = height, width
+
+    placement = {
+        "name": name,
+        "tile_x": x,
+        "tile_y": y,
+        "width": width,
+        "height": height,
+        "x": x + width / 2.0,
+        "y": y + height / 2.0,
+        "direction": direction,
+    }
+
+    item_id = int(action["item"])
+    item_meta = items.get(item_id)
+    if name == "assembling-machine-1" and item_meta is not None:
+        if item_meta.name != "empty":
+            placement["recipe"] = _hyphenate(item_meta.name)
+
+    if name == "underground-belt":
+        misc = int(action["misc"])
+        if misc == Misc.UNDERGROUND_DOWN.value:
+            placement["type"] = "input"
+        elif misc == Misc.UNDERGROUND_UP.value:
+            placement["type"] = "output"
+
+    return placement
+
+
 def run_inference(
-    agent: AgentCNN, req: dict, max_steps: int, device, eot_threshold: float = 0.5,
+    agent: AgentCNN,
+    req: dict,
+    max_steps: int,
+    device,
+    eot_threshold: float = 0.5,
+    on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
     """Iteratively place entities until eot_head signals "done", the model
     emits a no-op, or we hit the safety budget."""
@@ -317,7 +409,7 @@ def run_inference(
         ent_id = action["entity"]
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
-        item_name = entities[item_id].name if item_id in entities else "?"
+        item_name = items[item_id].name if item_id in items else "?"
         stats["placements"].append({
             "step": step,
             "eot": eot_p,
@@ -342,6 +434,10 @@ def run_inference(
             stats["steps_taken"] = step + 1
             break
         stats["steps_taken"] = step + 1
+        if on_placement is not None and not on_placement(action):
+            log.info("  → Factorio rejected the placement, stopping")
+            stats["stop_reason"] = "placement_error"
+            break
     else:
         log.info("Reached max_steps=%d without eot/empty.", max_steps)
 
@@ -359,11 +455,43 @@ def run_inference(
 
 POLL_CMD = "/silent-command rcon.print(remote.call('factorion','poll_request'))"
 MODEL_POLL_CMD = "/silent-command rcon.print(remote.call('factorion','poll_model'))"
+PROTOCOL_CMD = (
+    "/silent-command rcon.print(remote.call('factorion','protocol_version'))"
+)
 
 
 def _lua_string(value: str) -> str:
     """Quote a Python string for the small Lua command strings sent over RCON."""
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ") + "'"
+
+
+def _stream_placement(rcon: RconClient, request_id: str, action: dict) -> bool:
+    placement = action_to_placement(action)
+    payload = json.dumps(placement, separators=(",", ":"))
+    response = rcon.exec(
+        "/silent-command rcon.print(remote.call('factorion','place_prediction',"
+        f"{_lua_string(request_id)},{_lua_string(payload)}))"
+    ).strip()
+    if response == "ok":
+        return True
+    log.error("Factorio rejected %s: %s", placement, response or "(empty response)")
+    return False
+
+
+def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
+    summary = json.dumps({
+        "steps_taken": stats["steps_taken"],
+        "stop_reason": stats["stop_reason"],
+    }, separators=(",", ":"))
+    response = rcon.exec(
+        "/silent-command rcon.print(remote.call('factorion','finish_prediction',"
+        f"{_lua_string(request_id)},{_lua_string(summary)}))"
+    ).strip()
+    if response != "ok":
+        raise RuntimeError(
+            f"Factorio could not finish request {request_id}: "
+            f"{response or '(empty response)'}"
+        )
 
 
 def _send_model_status(
@@ -397,7 +525,10 @@ def _maybe_switch_model(
     # A save hosted before this mod update has the older remote interface.
     # Keep serving predictions quietly; a newly hosted game will expose the
     # method and hot-swapping starts working automatically.
-    if "No such function: factorion.poll_model" in raw:
+    if (
+        "No such function: factorion.poll_model" in raw
+        or "Unknown interface: factorion" in raw
+    ):
         return agent
     try:
         request = json.loads(raw)
@@ -497,7 +628,12 @@ def poll_loop(
         try:
             req = json.loads(raw)
         except json.JSONDecodeError:
-            log.warning("Non-JSON RCON response (first 200 chars): %r", raw[:200])
+            if "Unknown interface: factorion" in raw:
+                log.info("Factorion mod is not active yet; waiting for a loaded game…")
+                time.sleep(2.0)
+            else:
+                log.warning("Non-JSON RCON response (first 200 chars): %r", raw[:200])
+                time.sleep(poll_interval)
             continue
 
         try:
@@ -519,108 +655,20 @@ def handle_request(
              len(req.get("sources", [])), len(req.get("sinks", [])))
 
     t0 = time.time()
-    obs_CWH, stats = run_inference(agent, req, max_steps=max_steps, device=device)
-
-    # Embed prediction metadata in the blueprint itself so it's visible in
-    # the player's cursor / inventory — particularly useful for empty
-    # results, where the player would otherwise see a blank blueprint with
-    # no clue why.
-    src_id, snk_id = _source_id(), _sink_id()
-    placed_count = 0   # model-placed entities (belts, inserters, etc.)
-    marker_count = 0   # source/sink markers (rendered as chests)
-    for xx in range(obs_CWH.shape[1]):
-        for yy in range(obs_CWH.shape[2]):
-            eid = int(obs_CWH[Channel.ENTITIES.value, xx, yy])
-            if eid == 0:
-                continue
-            if eid in (src_id, snk_id):
-                marker_count += 1
-            else:
-                placed_count += 1
-    total_entities = placed_count + marker_count  # matches blueprint contents
-
-    # Direction enum (1=N, 2=E, 3=S, 4=W) → short label.
-    _DIR_LABEL = {0: "-", 1: "N", 2: "E", 3: "S", 4: "W"}
-    _MISC_LABEL = {0: "", 1: " UG_DOWN", 2: " UG_UP"}
-
-    def _fmt_step(p: dict) -> str:
-        # Factorio rich-text icon, then position + direction. No entity
-        # name (the icon shows it) and no eot prob per step (keeps the
-        # trace short — Factorio's blueprint description has a tight
-        # character limit, ~500 chars in 2.0).
-        ent_tag = "[item=" + p["entity_name"].replace("_", "-") + "]"
-        dir_label = _DIR_LABEL.get(p["direction"], str(p["direction"]))
-        item_tag = ""
-        if p["item_name"] not in ("empty", "?", ""):
-            item_tag = " [item=" + p["item_name"].replace("_", "-") + "]"
-        return (f"{p['step']}: {ent_tag} ({p['x']},{p['y']}) "
-                f"{dir_label}{_MISC_LABEL.get(p['misc'], '')}{item_tag}")
-
-    placements = stats.get("placements", [])
-    # Description has a hard ~500 char limit in Factorio 2.0; truncation
-    # leaves a half-written rich-text tag at the end. Budget conservatively
-    # and stop as soon as we'd exceed it.
-    MAX_DESCRIPTION_CHARS = 480
-    header_lines = [
-        f"sources={len(req.get('sources', []))} "
-        f"sinks={len(req.get('sinks', []))} "
-        f"steps={stats['steps_taken']} stop={stats['stop_reason']}",
-        "",
-    ]
-    used = sum(len(s) + 1 for s in header_lines)  # +1 for the newline
-    trace_lines = []
-    for p in placements:
-        line = _fmt_step(p)
-        if used + len(line) + 1 + len("...N more") > MAX_DESCRIPTION_CHARS:
-            trace_lines.append(f"...{len(placements) - len(trace_lines)} more")
-            break
-        trace_lines.append(line)
-        used += len(line) + 1
-
-    label = (f"Factorion: {total_entities} entities "
-             f"({placed_count} placed + {marker_count} markers)")
-    description_parts = [
-        f"sources={len(req.get('sources', []))} "
-        f"sinks={len(req.get('sinks', []))} "
-        f"steps={stats['steps_taken']} stop={stats['stop_reason']}",
-        "",
-    ] + trace_lines
-    description = "\n".join(description_parts)
-    bp_str = world_tensor_to_blueprint_string(
-        obs_CWH, label=label, description=description,
+    _, stats = run_inference(
+        agent,
+        req,
+        max_steps=max_steps,
+        device=device,
+        on_placement=lambda action: _stream_placement(
+            rcon, req["request_id"], action,
+        ),
     )
-    log.info("Inference %.2fs; blueprint %d chars  label=%r",
-             time.time() - t0, len(bp_str), label)
-
-    # Decode the blueprint so we can log what's actually inside (entity
-    # counts, names, positions) — easier than eyeballing the b64.
-    try:
-        from factorion import b64_to_dict
-        decoded = b64_to_dict(bp_str)
-        entities_list = decoded.get("blueprint", {}).get("entities", [])
-        log.info("  blueprint contains %d entities:", len(entities_list))
-        for e in entities_list[:40]:  # cap to 40 to avoid log spam
-            log.info("    %s @ (%s,%s) dir=%s%s%s",
-                     e.get("name"), e["position"]["x"], e["position"]["y"],
-                     e.get("direction", "-"),
-                     " recipe=" + e["recipe"] if "recipe" in e else "",
-                     " type=" + e["type"] if "type" in e else "")
-        if len(entities_list) > 40:
-            log.info("    ... and %d more", len(entities_list) - 40)
-        log.info("  blueprint string: %s", bp_str)
-    except Exception:
-        log.exception("Could not decode blueprint for logging")
-
-    # Single-quoted Lua string: blueprint b64 alphabet [A-Za-z0-9+/=] plus
-    # our "0" version prefix contains no single quotes, so this is safe.
-    cmd = "/silent-command remote.call('factorion','deliver_blueprint','{}','{}')".format(
-        req["request_id"], bp_str
+    _finish_prediction(rcon, req["request_id"], stats)
+    log.info(
+        "Inference %.2fs; streamed %d placement step(s), stop=%s",
+        time.time() - t0, stats["steps_taken"], stats["stop_reason"],
     )
-    resp = rcon.exec(cmd)
-    if resp:
-        log.info("RCON reply: %s", resp.strip())
-    else:
-        log.info("RCON reply: (empty — success)")
 
 
 # --------------------------------------------------------------------------- #
@@ -664,6 +712,11 @@ def main():
         grid_size=args.grid_size if args.grid_size is not None else inferred.grid_size,
         layers=cli_layers or inferred.layers,
         kernel_size=args.kernel_size if args.kernel_size is not None else inferred.kernel_size,
+        attn_dim=inferred.attn_dim,
+        attn_heads=inferred.attn_heads,
+        attn_layers=inferred.attn_layers,
+        attn_pos_embed=inferred.attn_pos_embed,
+        global_feat_dim=inferred.global_feat_dim,
     )
     if hp.grid_size != MOD_GRID_SIZE:
         ap.error(
@@ -685,15 +738,26 @@ def main():
             time.sleep(2)
     try:
         log.info("RCON connected to %s:%d", args.rcon_host, args.rcon_port)
-        # Sanity check: ping the mod. If a save isn't loaded yet, this
-        # call will succeed at the RCON layer but the remote interface
-        # won't exist; treat that as "wait, the user hasn't joined a
-        # game yet" rather than a fatal error.
-        try:
-            r = rcon.exec("/silent-command rcon.print(remote.call('factorion','ping'))")
-            log.info("Mod ping: %s", (r or "(no response — load a save with factorion enabled)").strip())
-        except Exception:
-            log.warning("Could not ping factorion mod — is the save loaded with the mod enabled?")
+        while True:
+            try:
+                protocol = rcon.exec(PROTOCOL_CMD).strip()
+                if protocol == "2":
+                    break
+                log.info(
+                    "Waiting for streaming protocol v2; restart Factorio and "
+                    "host a game with factorion 0.6.0 (%s)",
+                    protocol or "no mod response",
+                )
+            except (RconError, OSError) as exc:
+                log.info("Waiting for Factorio to reload factorion 0.6.0 (%s)", exc)
+                rcon.close()
+                time.sleep(2)
+                try:
+                    rcon.connect()
+                except (RconError, OSError):
+                    continue
+            time.sleep(2)
+        log.info("Factorion streaming protocol v2 ready")
 
         model_name = source["run_id"] if source else str(checkpoint)
         model_url = source["run_url"] if source else None

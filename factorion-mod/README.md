@@ -2,7 +2,7 @@
 
 A Factorio mod + local Python server that lets you ask a trained
 Factorion policy to design a factory layout from inside the game and
-paste it back as a blueprint.
+place the predicted entities directly into the world as the model runs.
 
 ## Round trip
 
@@ -18,8 +18,8 @@ empty string (nothing pending) or the next queued request JSON.
    │              │  reply: request JSON  (or "" when empty)         │        │
    │              │                                                  │        │
    │              │ ◄─────────────────────────────────────────────── │        │
-   └──────────────┘  push: remote.call("factorion",                  └────────┘
-                          "deliver_blueprint", req_id, bp_b64)
+   └──────────────┘  each step: place_prediction(req_id, entity)     └────────┘
+                     final: finish_prediction(req_id, summary)
 ```
 
 Why is this asymmetric on the wire even though it's one channel? Because
@@ -29,29 +29,18 @@ channel for an external process is RCON.
 
 ## Source / sink representation
 
-The normal workflow uses separate green **source** and orange **sink** tools.
-Click a tile and a dialog opens; choose what that endpoint provides or receives
-and the direction items flow. The tool places a real constant-combinator on the
-tile with the item, role, and arrow signals, plus a floating colored label such
-as `SOURCE for iron-plate →`. Mining the combinator removes the endpoint.
+The normal workflow uses a green **source belt** and orange **sink belt**. They
+are real 1×1 transport belts: place, mine, rotate, copy, paste, and blueprint
+them like ordinary belts. Click a placed endpoint to choose the item it
+provides or receives. Alt mode displays that configured item over the belt.
+Each sink also displays the items per second it consumed over a rolling
+5-second window, refreshed twice per second.
 
-Configured **constant-combinators** remain available as an advanced/legacy
-alternative. Place one in the region and configure its first section with
-three filters:
-
-| filter | purpose         | values                                                                  |
-| ------ | --------------- | ----------------------------------------------------------------------- |
-| item   | what flows      | `iron-plate`, `electronic-circuit`, … (items tab)                       |
-| role   | source vs sink  | `signal-output` (source) or `signal-input` (sink) (virtual signals)     |
-| arrow  | facing          | `up-arrow` / `right-arrow` / `down-arrow` / `left-arrow` (virtual)      |
-
-Slot order doesn't matter — the mod parses by signal name. The server
-re-renders these same combinators in the output blueprint so the round
-trip is loss-free; you can paste-over your existing markers and only the
-model's belts/inserters get added as ghosts.
-
-There's also a fallback click-tool (drag = sources, Shift+drag = sinks)
-if you'd rather mark by tile without dropping combinators.
+Green sources keep both lanes supplied with the chosen item; orange sinks
+consume that item when it reaches their tile. The endpoint's current rotation
+is sent to the model. Rerunning a prediction removes only the entities created
+by the previous prediction, so endpoint belts stay in place until you mine
+them.
 
 ## RCON setup
 
@@ -77,16 +66,16 @@ factorion-mod/
 ├── mod/                      ← the actual Factorio mod (publishable)
 │   ├── info.json
 │   ├── .luarc.json           ← lua-language-server config (Factorio globals)
-│   ├── control.lua           ← event handlers, RCON interface, combinator auto-detect
+│   ├── control.lua           ← event handlers, endpoint belts, RCON interface
 │   ├── parity.lua            ← engine-parity runner (build spec, measure throughput)
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
-│   └── prototypes/           ← footprint + marker selection tools, hotkey definitions
+│   └── prototypes/           ← endpoint belts, selection tools, hotkey definitions
 ├── server/                   ← local inference daemon + parity harness
 │   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
 │   ├── rcon.py               ← shared minimal Source-RCON client
-│   ├── blueprint.py          ← obs tensor → Factorio blueprint b64 (combinator markers)
+│   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
 │   └── README.md
 └── scripts/
     ├── install_mod.sh        ← symlink mod/ into Factorio's mods dir
@@ -97,26 +86,21 @@ factorion-mod/
 
 ## Quick start (GUI)
 
-1. Build the project's Rust extension and install deps (one-time, from
-   the repo root):
+1. Configure GUI-host RCON once in `config.ini` as described above. Then start
+   the mod from the repo root:
 
    ```bash
-   uv sync
-   uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
+   ./start-mod.sh
    ```
 
-2. Configure GUI-host RCON once in `config.ini` as described above. Then run
-   the all-in-one command with either a local checkpoint or a W&B run id/URL:
-
-   ```bash
-   bash factorion-mod/scripts/serve.sh 38vza7tf
-   ```
-
-   This installs and enables the mod, downloads the run's latest model artifact,
+   This installs dependencies and builds the Rust extension when needed,
+   installs and enables the mod, downloads the run's latest model artifact,
    reads the exact grid/encoder architecture from W&B, and waits for Factorio.
+   It defaults to checkpoint `h76h80yb`; pass a local checkpoint or another W&B
+   run as the first argument, or set `FACTORION_CHECKPOINT`.
 
-3. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
-   region brush and run `38vza7tf` both use a fixed 11×11 grid; checkpoints
+2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
+   region brush and run `h76h80yb` both use a fixed 11×11 grid; checkpoints
    trained at another size are rejected with a clear error.
 
 For a manual or headless setup, start the server directly. `--checkpoint`
@@ -124,7 +108,7 @@ accepts a local `.pt`, bare W&B run id, `entity/project/id`, or run URL:
 
 ```bash
 uv run python factorion-mod/server/server.py \
-  --checkpoint 38vza7tf \
+  --checkpoint h76h80yb \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -132,27 +116,28 @@ For local files, an `agent.hp.json` sidecar with
 `{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}` is read
 automatically.
 
-4. In Factorio:
-   - Press `Ctrl+T` to receive the three custom tools.
+3. In Factorio:
+   - Press `Ctrl+T` to receive the blue region tool plus ten source belts and
+     ten sink belts.
    - Click once with the blue **region tool**. It stamps an 11×11 region
      centered on that tile—there is no size-sensitive drag.
-   - Click inside it with the green **source tool**, then choose the supplied
-     item and flow direction. Do the same with the orange **sink tool**. Each
-     endpoint becomes a labeled constant-combinator on the map.
+   - Place the green **source belt** and orange **sink belt** inside it as
+     ordinary belts. Click each endpoint to choose its item, and hover it and
+     press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
-   - A blueprint titled `Factorion: N entities (M placed + K markers)`
-     lands in your cursor. Description has a per-step trace with item
-     icons. Paste to materialise.
+   - Each predicted entity is placed directly into the marked region as soon
+     as the model emits it. When the model stops, chat reports how many
+     entities were placed and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
    - `Ctrl+P` — request prediction
-   - `Ctrl+R` — clear footprint, sources and sinks
-   - `Ctrl+T` — re-grant selection tools
+   - `Ctrl+R` — clear the region and model-placed entities
+   - `Ctrl+T` — re-grant the region tool and endpoint belts
 
    Change checkpoints without restarting the game or Python server:
 
    ```text
-   /model 38vza7tf
+   /model h76h80yb
    /model /absolute/path/to/agent.pt
    ```
 
@@ -257,14 +242,15 @@ To check on the first live run (in rough order):
 Server-callable remote methods exposed by the mod:
 
 - `ping()` — round-trip check
+- `place_prediction(request_id, placement_json)` /
+  `finish_prediction(request_id, summary_json)` — streamed model placement
 - `parity_start(spec_json)` / `parity_poll()` / `parity_abort()` — the
   engine-parity runner (see above; driven by `server/parity.py`)
 - `introspect()` — outbox depth, pending requests, players known
 - `dump_state(player_index?)` — full footprint + sources + sinks dump
 - `inject_request(json, deliver_to_player_index)` — synthesise a request
   without using the hotkey (for headless / scripted tests). Pass
-  `player_index=0` for the headless sentinel where `deliver_blueprint`
-  logs the result instead of cursor-injecting.
+  `player_index=0` for the headless sentinel, which logs streamed placements.
 
 ## Status
 
@@ -273,15 +259,10 @@ Server-callable remote methods exposed by the mod:
 - Mod loads cleanly, `lua-language-server --check` reports clean.
 - Headless round trip via `--start-server-load-scenario base/freeplay` +
   `inject_request` (proves the wire).
-- Live GUI round trip via `--host <save>` with config.ini RCON +
-  W&B SFT checkpoint `0g9hfjna`: place combinators → drag footprint →
-  auto-predict → blueprint in cursor → paste materialises markers + model
-  placements with no Factorio import warnings.
-- Constant-combinator markers round-trip through blueprint import/export
-  preserving all three filter signals.
-- Per-step inference trace embedded in the blueprint description with
-  rich-text item icons; description char-budget aware so it doesn't
-  truncate mid-tag.
+- Source and sink items place configurable one-tile endpoint belts with normal
+  mining, rotation, copy/paste, blueprint, and Alt-mode behavior.
+- Model actions stream over RCON and create real entities in the player's
+  world; rerun/reset cleanup is limited to entities created by the mod.
 - `eot_head` is wired as the iterative stop signal (PPO PR #103 landed
   via the main-merge).
 
@@ -299,21 +280,18 @@ Server-callable remote methods exposed by the mod:
 - **`game.reload_script()` picking up `control.lua` edits from disk** —
   reloads from the **save's embedded mod scripts**, so changes only
   stick after save → exit → host-saved-game cycle.
-- **Cursor injection in headless mode** — no player exists, so
-  `cursor_stack` ops would crash. Server uses `player_index=0` as the
-  sentinel and the mod logs the blueprint via `log()` instead.
+- **World placement in headless mode** — no player exists to select a surface
+  and force. `player_index=0` remains a sentinel that logs each placement.
 
 ### Not yet integrated
 
 - **Stochastic / temperature sampling.** Inference is argmax-only; with
   weak checkpoints the policy can argmax-loop on the same tile. A
   `--temperature` flag with `Categorical(logits)` sampling is ~10 LoC.
-- **Tile-mask in the tile head**: prevent the model from re-picking a
-  tile that's already non-empty. Would also break degenerate loops.
-- **Multi-tile entity validation** during iterative inference. The
-  obs-side state update treats splitters / undergrounds as 1×1; final
-  blueprint emission handles them correctly. To enforce validity during
-  the loop, drive `FactorioEnv.step()` directly.
+- **Full multi-tile action masking.** The tile head masks occupied anchor
+  tiles, and Factorio rejects a streamed entity whose rotated footprint lies
+  outside the region or collides in the world. The model-side mask does not
+  yet pre-mask every invalid multi-tile anchor.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with
   `FACTORIO_BIN=…` if it can't find yours.
@@ -332,6 +310,6 @@ CLI check:
 lua-language-server --check factorion-mod/mod --checklevel=Warning
 ```
 
-For full API typing (typed `LuaPlayer.cursor_stack` etc.), install
+For full API typing, install
 [FMTK / vscode-factoriomod-debug](https://github.com/justarandomgeek/vscode-factoriomod-debug)
 which ships full Factorio API definitions for LLS.
