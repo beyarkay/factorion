@@ -1267,11 +1267,6 @@ class _SelfAttnStack(nn.Module):
         self.pos_embed = (
             nn.Parameter(torch.zeros(1, num_tokens, dim)) if pos_embed else None
         )
-        # dropout MUST come from the caller: TransformerEncoderLayer defaults it
-        # to 0.1, and PPO cannot tolerate a stochastic forward at all — the
-        # rollout and the update would draw different masks, so the recomputed
-        # log-probs (and hence every importance ratio and approx_kl) would be
-        # wrong even with the actor frozen.
         enc_layer = nn.TransformerEncoderLayer(
             d_model=dim,
             nhead=heads,
@@ -2337,11 +2332,6 @@ if __name__ == "__main__":
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        # With the actor frozen the recomputed log-probs must equal the acting
-        # ones, so approx_kl can only be rollout-vs-update FP noise. Anything
-        # larger means the policy forward is not a deterministic function of
-        # (weights, obs, action) — every importance ratio, and target_kl with
-        # them, is then measuring the artifact instead of policy movement.
         if in_warmup:
             assert approx_kl < _WARMUP_KL_TOL, (
                 f"approx_kl={float(approx_kl):.4g} during critic warm-up "
