@@ -111,6 +111,12 @@ _CH_FOOTPRINT = Channel.FOOTPRINT.value
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 
+# Largest approx_kl a frozen actor can legitimately produce: the rollout and the
+# update run different compiled handles at different batch sizes, so their
+# log-probs differ by ~5e-4 of graph-fusion FP ordering. Exported so the
+# regression test and the in-loop warm-up assert share one number.
+_WARMUP_KL_TOL = 1e-3
+
 
 def apply_placement_action(
     world_CWH: torch.Tensor,
@@ -1249,7 +1255,7 @@ class _SelfAttnStack(nn.Module):
     is zero-init, so the stage is identity at init and shape-preserving
     (grid-sized in == grid-sized out)."""
 
-    def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed):
+    def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed, dropout):
         super().__init__()
         # MultiheadAttention needs dim % heads == 0; snap heads down to the
         # largest divisor <= the requested count so any (dim, heads) the sweep
@@ -1261,10 +1267,16 @@ class _SelfAttnStack(nn.Module):
         self.pos_embed = (
             nn.Parameter(torch.zeros(1, num_tokens, dim)) if pos_embed else None
         )
+        # dropout MUST come from the caller: TransformerEncoderLayer defaults it
+        # to 0.1, and PPO cannot tolerate a stochastic forward at all — the
+        # rollout and the update would draw different masks, so the recomputed
+        # log-probs (and hence every importance ratio and approx_kl) would be
+        # wrong even with the actor frozen.
         enc_layer = nn.TransformerEncoderLayer(
             d_model=dim,
             nhead=heads,
             dim_feedforward=2 * dim,
+            dropout=dropout,
             batch_first=True,
             norm_first=True,
         )
@@ -1403,6 +1415,7 @@ class AgentCNN(nn.Module):
                 layers=attn_layers,
                 num_tokens=self.width * self.height,
                 pos_embed=bool(attn_pos_embed),
+                dropout=dropout,
             )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(
