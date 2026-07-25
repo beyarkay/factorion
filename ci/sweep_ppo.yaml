@@ -157,16 +157,34 @@ parameters:
 #     head is re-initialised after the load (ppo.py, `layer_init(agent.
 #     critic_head[-1], ...)`). The previous sweep swept it and burned a
 #     dimension on nothing.
-#   * num_envs / num_steps / async_envs / amp — measured dead ends in
-#     tests/benchmarks/EXPERIMENT_LOG.md (more envs is net slower, num_steps
-#     <256 no win, async loses at every env count, AMP no win).
+#   * async_envs / amp — EXPERIMENT_LOG.md calls these dead ends, but that
+#     verdict is STALE and should not be read as settled: it was last measured
+#     2026-07-05, before the attention stack (#314, 07-21) and before the update
+#     loop ran more than one epoch (#337, 07-25). Every one of those findings
+#     rested on "the rollout is CPU-bound and the GPU work is ~0", which a
+#     192-dim 4-layer transformer over 121 tokens plus 8x the update work is
+#     exactly what breaks. They are still excluded HERE because they are speed
+#     knobs: neither moves eval/thput, so Bayes would fit noise on those axes.
+#     Re-test them in `bench_measure.sh ppo-speed`, which is the instrument
+#     that measures what they actually change.
+#   * num_envs / num_steps — same stale verdict, but unlike the two above these
+#     are real learning knobs (they set batch_size, and num_steps sets the GAE
+#     truncation horizon), so they DO belong in a quality sweep. They are held
+#     out because eval_every counts ITERATIONS, not timesteps: at 1M steps a
+#     512-sample batch runs 1953 iterations = 279 evals (~4.5 h of pure eval)
+#     against 34 evals (~0.5 h) at the default 4096, so small-batch runs would
+#     burn their budget evaluating AND have the metric sampled on a different
+#     cadence than large-batch ones — an unfair comparison baked into the
+#     sweep. num_minibatches > batch_size also divides to minibatch_size 0 and
+#     raises ValueError. Make eval_every timestep-based first, then sweep them.
 #   * critic_warmup / critic_lr_mult / critic_head_std — startup transients
 #     worth ~9 iterations of a 244-iteration run; dropped for the same reason
 #     the 2M sweep dropped them, and pinned at their defaults.
-#   * adam_epsilon — held out to keep the Bayes budget on the 12 axes above.
-#     It ranked high in the old post-hoc analysis, but that ranking was
-#     measured through the broken update loop, so it is a lead to re-check
-#     later, not a trusted prior.
+#   * adam_epsilon — left out to keep the budget on the 12 axes above. The old
+#     sweep ranked it the third most important knob, but that sweep ran through
+#     the broken update loop, so the ranking is worthless: it is not evidence
+#     that adam_epsilon matters, nor evidence that it doesn't. Add it back when
+#     there is budget for a 13th axis.
 
 program: ppo.py
 
