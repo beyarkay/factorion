@@ -36,11 +36,13 @@ provides or receives. Alt mode displays that configured item over the belt.
 Each sink also displays the items per second it consumed over a rolling
 5-second window, refreshed twice per second.
 
-Green sources keep both lanes supplied with the chosen item; orange sinks
-consume that item when it reaches their tile. The endpoint's current rotation
-is sent to the model. Rerunning a prediction removes only the entities created
-by the previous prediction, so endpoint belts stay in place until you mine
-them.
+Green sources keep both lanes supplied with the chosen item. Changing a
+source's item removes the old item from its connected downstream belt network.
+Orange sinks consume every item that reaches their tile, but count only their
+configured item toward the displayed throughput. The endpoint's current
+rotation is sent to the model. Rerunning a prediction removes only the entities
+created by the previous prediction, so endpoint belts stay in place until you
+mine them.
 
 ## RCON setup
 

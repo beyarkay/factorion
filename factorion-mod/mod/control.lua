@@ -269,12 +269,48 @@ local function refresh_endpoint_alt_icon(entity, config)
   config.render_id = icon.id
 end
 
+local function clear_downstream_item(source, item)
+  local queue = { source }
+  local next_index = 1
+  local visited = {}
+  local removed = 0
+
+  while next_index <= #queue do
+    local entity = queue[next_index]
+    next_index = next_index + 1
+    local unit_number = entity and entity.valid and entity.unit_number or nil
+    if unit_number and not visited[unit_number] then
+      visited[unit_number] = true
+      for line_index = 1, entity.get_max_transport_line_index() do
+        local line = entity.get_transport_line(line_index)
+        local count = line.get_item_count({ name = item })
+        if count > 0 then
+          removed = removed + line.remove_item({ name = item, count = count })
+        end
+        for _, output_line in pairs(line.output_lines) do
+          local owner = output_line.owner
+          if owner and owner.valid and owner.unit_number
+              and not visited[owner.unit_number] then
+            table.insert(queue, owner)
+          end
+        end
+      end
+    end
+  end
+
+  return removed
+end
+
 local function register_endpoint(entity, item)
   local role = endpoint_role(entity)
   if not role or not entity.unit_number then return nil end
   storage.endpoints = storage.endpoints or {}
   local config = storage.endpoints[entity.unit_number] or {}
   local item_changed = item and config.item and item ~= config.item
+  local cleared_items = 0
+  if role == "source" and item_changed then
+    cleared_items = clear_downstream_item(entity, config.item)
+  end
   config.entity = entity
   config.role = role
   config.item = item or config.item or get_default_item()
@@ -293,7 +329,7 @@ local function register_endpoint(entity, item)
     destroy_sink_rate_label(config)
   end
   refresh_endpoint_alt_icon(entity, config)
-  return config
+  return config, cleared_items
 end
 
 local function endpoint_config(entity)
@@ -327,7 +363,7 @@ local function open_marker_dialog(player, state, role, entity)
   local title = "Configure Factorion " .. role .. " belt"
   local prompt = role == "source"
     and "Choose the item this source belt produces:"
-    or "Choose the item this sink belt consumes:"
+    or "Choose the item this sink counts toward throughput:"
   local frame = player.gui.screen.add({
     type = "frame", name = MARKER_DIALOG, caption = title,
     direction = "vertical",
@@ -404,11 +440,19 @@ local function save_marker_dialog(player, state)
     close_marker_dialog(player, state)
     return
   end
-  config = register_endpoint(entity, item)
+  local cleared_items
+  config, cleared_items = register_endpoint(entity, item)
   if not config then return end
-  player.print(string.format(
-    "[Factorion] %s belt now uses [item=%s].",
-    config.role, config.item))
+  if config.role == "source" and cleared_items > 0 then
+    player.print(string.format(
+      "[Factorion] Source belt now uses [item=%s]; cleared %d old item(s) " ..
+      "from its downstream belts.",
+      config.item, cleared_items))
+  else
+    player.print(string.format(
+      "[Factorion] %s belt now uses [item=%s].",
+      config.role, config.item))
+  end
   close_marker_dialog(player, state)
 end
 
@@ -550,20 +594,31 @@ local function drain_sink(mark, entity)
   local bottom = entity.position.y + 0.51
   for line_index = 1, entity.get_max_transport_line_index() do
     local line = entity.get_transport_line(line_index)
-    local count = 0
+    local removals = {}
     for _, detail in ipairs(line.get_detailed_contents()) do
       local stack = detail.stack
-      if stack.valid_for_read and stack.name == mark.item then
+      if stack.valid_for_read then
         local position = line.get_line_item_position(detail.position)
         if position.x >= left and position.x <= right
             and position.y >= top and position.y <= bottom then
-          count = count + stack.count
+          local quality = stack.quality and stack.quality.name or nil
+          local key = stack.name .. "\0" .. (quality or "")
+          local removal = removals[key]
+          if not removal then
+            removal = { name = stack.name, quality = quality, count = 0 }
+            removals[key] = removal
+          end
+          removal.count = removal.count + stack.count
         end
       end
     end
-    if count > 0 then
-      removed_total = removed_total
-        + line.remove_item({ name = mark.item, count = count })
+    for _, removal in pairs(removals) do
+      local request = { name = removal.name, count = removal.count }
+      if removal.quality then request.quality = removal.quality end
+      local removed = line.remove_item(request)
+      if removal.name == mark.item then
+        removed_total = removed_total + removed
+      end
     end
   end
   return removed_total
