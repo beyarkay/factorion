@@ -2337,6 +2337,19 @@ if __name__ == "__main__":
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
+        # With the actor frozen the recomputed log-probs must equal the acting
+        # ones, so approx_kl can only be rollout-vs-update FP noise. Anything
+        # larger means the policy forward is not a deterministic function of
+        # (weights, obs, action) — every importance ratio, and target_kl with
+        # them, is then measuring the artifact instead of policy movement.
+        if in_warmup:
+            assert approx_kl < _WARMUP_KL_TOL, (
+                f"approx_kl={float(approx_kl):.4g} during critic warm-up "
+                f"(actor frozen, so it must be ~0). The policy forward is "
+                f"non-deterministic: check for active dropout (`--dropout 0`) "
+                f"or a rollout/update bookkeeping mismatch."
+            )
+
         # Value-head (critic) diagnostics, global + per-lesson.
         critic_metrics = _critic_diagnostics(
             values_B.cpu().numpy(), returns_B.cpu().numpy(),
