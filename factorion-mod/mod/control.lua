@@ -6,7 +6,8 @@
 --
 -- Round trip (single-channel RCON, both directions):
 --   1. On key `factorion-execute`, we build a request JSON describing the
---      footprint + sources + sinks (in footprint-relative coords) and
+--      footprint + existing entities + sources + sinks (in footprint-relative
+--      coords) and
 --      enqueue it on `storage.outbox`. The Python server is polling our
 --      `poll_request` remote interface over RCON; when there's something
 --      in the queue it gets popped and returned as a JSON string.
@@ -119,7 +120,8 @@ local function show_startup_message(player)
     "show their rolling 5-second throughput above the belt.")
   player.print(
     "4. Hover a source or sink and press R to rotate it. Press CTRL+P to let " ..
-    "the model place a factory directly into the blue region.")
+    "the model complete the factory around supported entities already in the " ..
+    "blue region.")
   player.print(
     "CTRL+R clears the region and model-placed entities; mine endpoint belts " ..
     "normally when you want to pick them up. Keep ./start-mod.sh running.")
@@ -200,9 +202,33 @@ local FACTORIO_TO_DIRECTION = {
   [defines.direction.south] = 3,
   [defines.direction.west] = 4,
 }
+local OPPOSITE_DIRECTION = {
+  [1] = 3,
+  [2] = 4,
+  [3] = 1,
+  [4] = 2,
+}
 local ENDPOINT_ENTITY_NAMES = {
   source = "factorion-source-belt",
   sink = "factorion-sink-belt",
+}
+local MODEL_ENTITY_NAMES = {
+  "transport-belt",
+  "inserter",
+  "long-handed-inserter",
+  "assembling-machine-1",
+  "underground-belt",
+  "splitter",
+}
+local MODEL_ENTITY_SPECS = {
+  ["transport-belt"] = { width = 1, height = 1 },
+  ["inserter"] = { width = 1, height = 1, inserter = true },
+  ["long-handed-inserter"] = { width = 1, height = 1, inserter = true },
+  ["assembling-machine-1"] = {
+    width = 3, height = 3, directionless = true, recipe = true,
+  },
+  ["underground-belt"] = { width = 1, height = 1, underground = true },
+  ["splitter"] = { width = 2, height = 1 },
 }
 local SINK_RATE_SAMPLE_TICKS = 30
 local SINK_RATE_WINDOW_TICKS = 5 * 60
@@ -736,6 +762,66 @@ local function build_footprint_mask(fp)
   return tiles
 end
 
+local function gather_existing_entities(state, surface, fp)
+  local predicted = {}
+  for _, unit_number in ipairs(state.predicted_entities or {}) do
+    predicted[unit_number] = true
+  end
+
+  local result = {}
+  local candidates = surface.find_entities_filtered({
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+    name = MODEL_ENTITY_NAMES,
+  })
+  for _, entity in pairs(candidates) do
+    if not predicted[entity.unit_number] then
+      local spec = MODEL_ENTITY_SPECS[entity.name]
+      local direction = 0
+      if not spec.directionless then
+        direction = FACTORIO_TO_DIRECTION[entity.direction]
+      end
+      if direction then
+        -- Factorio stores an inserter's drop direction; the model stores its
+        -- pickup direction.
+        if spec.inserter then direction = OPPOSITE_DIRECTION[direction] end
+
+        local width, height = spec.width, spec.height
+        if direction == 2 or direction == 4 then
+          width, height = height, width
+        end
+        local world_x = math.floor(entity.position.x - width / 2 + 0.0001)
+        local world_y = math.floor(entity.position.y - height / 2 + 0.0001)
+        local rx, ry = world_x - fp.x, world_y - fp.y
+
+        -- An entity crossing the region boundary cannot be represented as a
+        -- complete model unit, so leave it out rather than supplying a clipped
+        -- and misleading footprint.
+        if rx >= 0 and ry >= 0 and rx + width <= fp.w and ry + height <= fp.h then
+          local entry = {
+            name = entity.name,
+            x = rx,
+            y = ry,
+            direction = direction,
+          }
+          if spec.recipe then
+            local recipe = entity.get_recipe()
+            if recipe then entry.item = recipe.name end
+          end
+          if spec.underground then
+            if entity.belt_to_ground_type == "input" then
+              entry.misc = 1
+            elseif entity.belt_to_ground_type == "output" then
+              entry.misc = 2
+            end
+          end
+          table.insert(result, entry)
+        end
+      end
+    end
+  end
+  return result
+end
+
 local function gather_request(state, player_index)
   local fp = state.footprint
   local size = get_grid_size()
@@ -744,6 +830,7 @@ local function gather_request(state, player_index)
 
   local sources = {}
   local sinks = {}
+  local model_entities = gather_existing_entities(state, player.surface, fp)
   local entities = player.surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
     name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
@@ -769,13 +856,15 @@ local function gather_request(state, player_index)
   end
 
   local provenance = string.format(
-    "%d source belt(s), %d sink belt(s)", #sources, #sinks)
+    "%d existing supported entities, %d source belt(s), %d sink belt(s)",
+    #model_entities, #sources, #sinks)
 
   local request = {
     request_id    = new_request_id(),
     player_index  = player_index,
     grid_size     = size,
     footprint     = build_footprint_mask(fp),
+    entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
     default_item  = default_item,
@@ -965,7 +1054,7 @@ remote.add_interface("factorion", {
     return "factorion-mod alive at tick " .. tostring(game.tick)
   end,
   protocol_version = function()
-    return "2"
+    return "3"
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.

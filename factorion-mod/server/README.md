@@ -84,6 +84,11 @@ or the next pending request JSON:
   "player_index": 1,
   "grid_size": 8,
   "footprint": [[0, 0], [0, 1], ...],
+  "entities": [
+    {"name": "transport-belt", "x": 2, "y": 3, "direction": 2},
+    {"name": "assembling-machine-1", "x": 4, "y": 4, "direction": 0,
+     "item": "iron-gear-wheel"}
+  ],
   "sources": [{"x": 0, "y": 3, "direction": 2, "item": "iron-plate"}],
   "sinks":   [{"x": 7, "y": 3, "direction": 2, "item": "iron-plate"}],
   "default_item": "iron-plate"
@@ -92,6 +97,10 @@ or the next pending request JSON:
 
 `direction` uses Factorion's enum (1=N, 2=E, 3=S, 4=W), *not* Factorio's
 16-step runtime convention; the server converts before emitting.
+Ctrl-P snapshots supported entities already inside the region into `entities`,
+including their complete rotated footprint, recipes, and underground-belt
+input/output state. Inserter directions are converted from Factorio's drop
+direction to the model's pickup direction.
 
 After every accepted action, the server sends:
 

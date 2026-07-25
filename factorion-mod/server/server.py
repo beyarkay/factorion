@@ -37,6 +37,8 @@ from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
 MOD_GRID_SIZE = 11
+MOD_PROTOCOL_VERSION = "3"
+MOD_VERSION = "0.6.2"
 
 
 # --------------------------------------------------------------------------- #
@@ -797,15 +799,21 @@ def main():
         while True:
             try:
                 protocol = rcon.exec(PROTOCOL_CMD).strip()
-                if protocol == "2":
+                if protocol == MOD_PROTOCOL_VERSION:
                     break
                 log.info(
-                    "Waiting for streaming protocol v2; restart Factorio and "
-                    "host a game with factorion 0.6.1 (%s)",
+                    "Waiting for streaming protocol v%s; restart Factorio and "
+                    "host a game with factorion %s (%s)",
+                    MOD_PROTOCOL_VERSION,
+                    MOD_VERSION,
                     protocol or "no mod response",
                 )
             except (RconError, OSError) as exc:
-                log.info("Waiting for Factorio to reload factorion 0.6.1 (%s)", exc)
+                log.info(
+                    "Waiting for Factorio to reload factorion %s (%s)",
+                    MOD_VERSION,
+                    exc,
+                )
                 rcon.close()
                 time.sleep(2)
                 try:
@@ -813,7 +821,10 @@ def main():
                 except (RconError, OSError):
                     continue
             time.sleep(2)
-        log.info("Factorion streaming protocol v2 ready")
+        log.info(
+            "Factorion streaming protocol v%s ready",
+            MOD_PROTOCOL_VERSION,
+        )
 
         model_name = source["run_id"] if source else str(checkpoint)
         model_url = source["run_url"] if source else None
