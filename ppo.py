@@ -1600,7 +1600,7 @@ class AgentCNN(nn.Module):
         x_BCWH,
         *,
         temperature: float = 1.0,
-        legal_mask: bool = False,
+        legal_mask: bool = True,
         eot_threshold: float = 0.5,
         action=None,
         compute_value: bool = True,
