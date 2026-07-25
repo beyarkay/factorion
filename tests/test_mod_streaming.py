@@ -6,7 +6,7 @@ from typing import cast
 
 import torch
 
-from factorion import Misc, str2ent
+from factorion import Channel, Misc, str2ent
 from ppo import AgentCNN
 
 
@@ -88,6 +88,60 @@ def test_underground_belt_placement_has_endpoint_type():
     )
 
     assert placement["type"] == "input"
+
+
+def test_request_seeds_existing_entities_with_configuration():
+    request = _request()
+    request["entities"] = [
+        {
+            "name": "transport-belt",
+            "x": 1,
+            "y": 2,
+            "direction": 2,
+        },
+        {
+            "name": "assembling-machine-1",
+            "x": 4,
+            "y": 3,
+            "direction": 0,
+            "item": "electronic-circuit",
+        },
+        {
+            "name": "underground-belt",
+            "x": 8,
+            "y": 8,
+            "direction": 4,
+            "misc": Misc.UNDERGROUND_UP.value,
+        },
+        {
+            "name": "splitter",
+            "x": 1,
+            "y": 7,
+            "direction": 2,
+        },
+    ]
+
+    obs = mod_server.request_to_obs(request)
+    ent = obs[Channel.ENTITIES.value]
+    direction = obs[Channel.DIRECTION.value]
+    item = obs[Channel.ITEMS.value]
+    misc = obs[Channel.MISC.value]
+
+    assert ent[1, 2] == _id("transport_belt")
+    assert direction[1, 2] == 2
+
+    assembler_tiles = [(x, y) for x in range(4, 7) for y in range(3, 6)]
+    for x, y in assembler_tiles:
+        assert ent[x, y] == _id("assembling_machine_1")
+        assert item[x, y] == _id("electronic_circuit")
+
+    assert ent[8, 8] == _id("underground_belt")
+    assert direction[8, 8] == 4
+    assert misc[8, 8] == Misc.UNDERGROUND_UP.value
+
+    # An east-facing splitter rotates its 2x1 footprint to 1x2.
+    assert ent[1, 7] == _id("splitter")
+    assert ent[1, 8] == _id("splitter")
 
 
 class _AcceptingRcon:

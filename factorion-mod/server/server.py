@@ -240,6 +240,27 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     src_id, snk_id = _source_id(), _sink_id()
 
+    for existing in req.get("entities", []):
+        entity = str2ent(existing.get("name"))
+        if entity is None or not entity.is_placeable:
+            log.warning(
+                "Ignoring unsupported existing entity %r",
+                existing.get("name"),
+            )
+            continue
+        if entity.value in {src_id, snk_id}:
+            # Endpoints have their own request lists because they also carry
+            # the configured source/sink item.
+            continue
+        item = str2ent(existing.get("item", existing.get("recipe", "empty")))
+        _apply_placement(obs, {
+            "xy": (int(existing["x"]), int(existing["y"])),
+            "entity": entity.value,
+            "direction": int(existing.get("direction", 0)),
+            "item": item.value if item is not None else 0,
+            "misc": int(existing.get("misc", Misc.NONE.value)),
+        })
+
     for s in req.get("sources", []):
         x, y = s["x"], s["y"]
         obs[Channel.ENTITIES.value, x, y] = src_id
@@ -309,8 +330,8 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
         if 0 <= tx < W and 0 <= ty < H:
             obs_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
             obs_CWH[Channel.DIRECTION.value, tx, ty] = direction
-    obs_CWH[Channel.ITEMS.value, x, y] = action["item"]
-    obs_CWH[Channel.MISC.value, x, y] = action["misc"]
+            obs_CWH[Channel.ITEMS.value, tx, ty] = action["item"]
+            obs_CWH[Channel.MISC.value, tx, ty] = action["misc"]
     return True
 
 
@@ -381,6 +402,7 @@ def run_inference(
                for s in req.get("sinks", [])]
     log.info("  initial sources (x,y,dir,item): %s", src_ids)
     log.info("  initial sinks   (x,y,dir,item): %s", snk_ids)
+    log.info("  existing model entities: %d", len(req.get("entities", [])))
     fp_count = int(obs[Channel.FOOTPRINT.value].sum())
     log.info("  footprint tiles: %d", fp_count)
 
