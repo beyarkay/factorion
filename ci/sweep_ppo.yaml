@@ -68,12 +68,35 @@ parameters:
   # reward = log1p(thput_raw / (1 + entity_cost_scale*cost) / reward_symlog_r0)
   # Both knobs reshape that terminal reward, and they interact (the cost
   # penalty is applied inside the compression), so neither is meaningful to
-  # tune alone. 0 = that stage disabled, kept as the control.
-  entity_cost_scale:
-    values: [0, 1.0e-4, 1.0e-3, 1.0e-2]
+  # tune alone.
+  #
+  # Continuous rather than a values-list: W&B's Bayes optimiser one-hot-encodes
+  # `values`, so it cannot tell that 3e-3 lies between 1e-3 and 1e-2 — on knobs
+  # this smooth that throws away most of the sample efficiency a 48-run budget
+  # needs. Neither knob's "0 = stage off" sentinel is worth the categorical
+  # encoding, because both ranges reach that regime numerically anyway (below),
+  # and whether the stages help at all is #336's compare, not this sweep.
 
+  # Floor is off in all but name: at cost 242 (the most expensive lesson,
+  # FACTORY_1_INGREDIENT) 1e-5 costs 0.2% of the reward. Top stays at the
+  # previous grid's max, already a 71% penalty there.
+  entity_cost_scale:
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-2
+
+  # Spread between the highest- and lowest-ceiling lesson (15 vs 0.043 items/s)
+  # across this range: 2.5x at 1e-3, 4.4x at the 1e-2 default, 66x at 1 (plain
+  # symlog), 214x at 10 — against 349x uncompressed, so the top is compression
+  # off in all but name. Deliberately stops at 10: r0 sets the absolute reward
+  # magnitude as well as the compression knee (max reward 9.6 -> 0.92 across
+  # this range), and since v_loss is squared error on returns, that scale is
+  # confounded with vf_coef. Sweeping vf_coef jointly lets Bayes compensate;
+  # extending to 100 would push the confound to ~1e4 in v_loss terms.
   reward_symlog_r0:
-    values: [0, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 10.0
 
   # ── Knobs the reward change and the real update loop invalidate ──
   # vf_coef balances value loss against policy loss, so symlog's rescaling of
