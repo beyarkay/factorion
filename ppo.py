@@ -111,6 +111,12 @@ _CH_FOOTPRINT = Channel.FOOTPRINT.value
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
 
+# Largest approx_kl a frozen actor can legitimately produce: the rollout and the
+# update run different compiled handles at different batch sizes, so their
+# log-probs differ by ~5e-4 of graph-fusion FP ordering. Exported so the
+# regression test and the in-loop warm-up assert share one number.
+_WARMUP_KL_TOL = 1e-3
+
 
 def apply_placement_action(
     world_CWH: torch.Tensor,
@@ -1249,7 +1255,7 @@ class _SelfAttnStack(nn.Module):
     is zero-init, so the stage is identity at init and shape-preserving
     (grid-sized in == grid-sized out)."""
 
-    def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed):
+    def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed, dropout):
         super().__init__()
         # MultiheadAttention needs dim % heads == 0; snap heads down to the
         # largest divisor <= the requested count so any (dim, heads) the sweep
@@ -1265,6 +1271,7 @@ class _SelfAttnStack(nn.Module):
             d_model=dim,
             nhead=heads,
             dim_feedforward=2 * dim,
+            dropout=dropout,
             batch_first=True,
             norm_first=True,
         )
@@ -1403,6 +1410,7 @@ class AgentCNN(nn.Module):
                 layers=attn_layers,
                 num_tokens=self.width * self.height,
                 pos_embed=bool(attn_pos_embed),
+                dropout=dropout,
             )
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(
@@ -2323,6 +2331,14 @@ if __name__ == "__main__":
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
+
+        if in_warmup:
+            assert approx_kl < _WARMUP_KL_TOL, (
+                f"approx_kl={float(approx_kl):.4g} during critic warm-up "
+                f"(actor frozen, so it must be ~0). The policy forward is "
+                f"non-deterministic: check for active dropout (`--dropout 0`) "
+                f"or a rollout/update bookkeeping mismatch."
+            )
 
         # Value-head (critic) diagnostics, global + per-lesson.
         critic_metrics = _critic_diagnostics(
