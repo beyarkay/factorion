@@ -332,7 +332,6 @@ def _rollout_episode_metrics(
     min_entities_required: float,
     frac_reachable: float,
     entity_cost: float,
-    cost_efficiency: float,
 ) -> dict:
     """Build the rollout/* metrics for one finished episode (overall + per-lesson).
 
@@ -340,7 +339,9 @@ def _rollout_episode_metrics(
     the lesson name, so each averages over only that lesson's episodes. Only the
     overall view logs thput_raw (items/s), since it is the reward's actual input;
     per lesson it is an affine rescaling of thput (same fixed ceiling), so it
-    carries no signal the normalized view doesn't.
+    carries no signal the normalized view doesn't. cost_efficiency is likewise
+    absent: it is 1/(1 + entity_cost_scale * entity_cost), so entity_cost plus
+    reward already pin it down.
     """
     return {
         "rollout/thput": float(thput_normed),
@@ -353,13 +354,11 @@ def _rollout_episode_metrics(
         "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
         "rollout/frac_reachable": float(frac_reachable),
         "rollout/entity_cost": float(entity_cost),
-        "rollout/cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
         f"rollout/{lesson}/thput": float(thput_normed),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
-        f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
 
 
@@ -1807,11 +1806,11 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+                  "frac_reachable", "entity_cost"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "reward", "length", "entity_cost", "cost_efficiency",
+                "thput", "reward", "length", "entity_cost",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
@@ -2232,7 +2231,6 @@ if __name__ == "__main__":
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
-                        cost_efficiency=infos["cost_efficiency"][i],
                     ))
 
         rollout_seconds = time.time() - rollout_start

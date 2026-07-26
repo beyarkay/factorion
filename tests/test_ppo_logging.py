@@ -151,7 +151,6 @@ class TestRolloutEpisodeMetrics:
             min_entities_required=3.0,
             frac_reachable=0.75,
             entity_cost=12.5,
-            cost_efficiency=0.9,
         )
 
     def test_overall_logs_raw_and_normed_throughput(self):
@@ -180,7 +179,6 @@ class TestRolloutEpisodeMetrics:
                 min_entities_required=1.0,
                 frac_reachable=0.0,
                 entity_cost=4.0,
-                cost_efficiency=0.95,
             )
             assert m[f"rollout/{kind.name}/thput"] == pytest.approx(0.25)
 
@@ -192,8 +190,9 @@ class TestRolloutEpisodeMetrics:
         m = self._metrics("SPLITTER_SPLIT")
         assert m["rollout/entity_cost"] == pytest.approx(12.5)
         assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
-        assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
-        assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
+        # cost_efficiency is a deterministic function of entity_cost, so only
+        # the cost itself is logged.
+        assert "rollout/cost_efficiency" not in m
 
 
 # ── critic (value-head) diagnostics (global + per-lesson) ────────────────────
