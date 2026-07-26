@@ -15,11 +15,11 @@ comes from `training_config.py`. Full grammar: `ci/README.md`.
 
 # comparisons — N seeds/side; add `assert` lines for a pass/fail status
 /ci compare sft --seeds 3
-assert pr:val/thput > main:val/thput
+assert pr:eval/thput > main:eval/thput
 assert pr:val/acc >= 0.5
 
 /ci compare ppo --start-from abc123 --total-timesteps 40000000 --seeds 3
-assert pr:val/thput > main:val/thput
+assert pr:eval/thput > main:eval/thput
 
 # pods
 /ci pods

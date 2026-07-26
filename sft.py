@@ -455,8 +455,9 @@ def run_rollout_eval(
     final throughput. The mean of those snapshots is `overall_eot`.
 
     The (seed, kind) pairs are exactly the val_accuracy set. The
-    EOT-respecting result is logged as `val/thput`, directly comparable to
-    the existing per-kind val accuracy curves.
+    EOT-respecting result is logged as `eval/thput` — the same key PPO's
+    greedy eval logs, so SFT and PPO curves overlay — and is directly
+    comparable to the existing per-kind val accuracy curves.
 
     The greedy tile argmax is restricted to legal (empty + buildable)
     tiles, so it can't livelock re-proposing an occupied tile the env
@@ -732,7 +733,7 @@ def train_sft(args: SftArgs):
 
     # Held-out validation: the first eval_rollouts_max_seeds distinct factories
     # from seed `args.seed` upward. The rollout eval replays these same lessons,
-    # so val/acc and val/thput stay directly comparable.
+    # so val/acc and eval/thput stay directly comparable.
     val = _materialise(
         args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
     )
@@ -1396,7 +1397,7 @@ def train_sft(args: SftArgs):
         val_seconds = time.time() - t_val
 
         # Rollout eval: greedy-play the held-out factories and record final
-        # throughput. Same lessons as val accuracy, so val/thput is directly
+        # throughput. Same lessons as val accuracy, so eval/thput is directly
         # comparable to val/acc curves. Runs on every eval window unless
         # disabled (it's the slow part of an eval).
         do_rollout = args.eval_rollouts
@@ -1414,21 +1415,21 @@ def train_sft(args: SftArgs):
             rollout_seconds = time.time() - t_rollout
             overall_thp = roll["overall_eot"]
             per_kind_thp_n = roll["per_kind_n"]
-            per_kind_metrics["val/thput"] = overall_thp
-            per_kind_metrics["val/rollout_seconds"] = rollout_seconds
+            per_kind_metrics["eval/thput"] = overall_thp
+            per_kind_metrics["perf/eval_seconds"] = rollout_seconds
             for kn, thp in roll["per_kind_eot"].items():
                 if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/thput"] = thp
+                    per_kind_metrics[f"eval/{kn}/thput"] = thp
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once
             # the agent starts placing them, and never for belt-only lessons).
             per_kind_asm_n = roll["per_kind_asm_n"]
             if sum(per_kind_asm_n.values()) > 0:
-                per_kind_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
+                per_kind_metrics["eval/asm_item_acc"] = roll["asm_item_acc"]
             for kn, acc in roll["per_kind_asm_item_acc"].items():
                 if per_kind_asm_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
+                    per_kind_metrics[f"eval/{kn}/asm_item_acc"] = acc
         else:
             overall_thp = None
             rollout_seconds = None
@@ -1537,7 +1538,7 @@ def train_sft(args: SftArgs):
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)
             ever_saved = True
-            pbar.write(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
+            pbar.write(f"  -> Saved best checkpoint (eval/thput {overall_thp:.3f})")
 
     pbar.close()
     if not ever_saved:
@@ -1546,7 +1547,7 @@ def train_sft(args: SftArgs):
         torch.save(agent.state_dict(), args.checkpoint_path)
     total_time = time.time() - t0
     print(
-        f"\nBest val/thput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
+        f"\nBest eval/thput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
     )
     print(f"Checkpoint saved to: {args.checkpoint_path}")
 

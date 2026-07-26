@@ -267,8 +267,8 @@ def _build_eval_set(args) -> dict:
 
 
 def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/thput so
-    the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
+    """Greedy held-out throughput eval. Logs the same eval/* keys SFT does
+    (same helper, same semantics) so the curves overlay on one panel. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
     from types import SimpleNamespace
@@ -2066,7 +2066,7 @@ if __name__ == "__main__":
         return means
 
     # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
-    # eval/* — directly comparable to the SFT baseline's val/thput.
+    # eval/* — the same keys the SFT baseline logs.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
