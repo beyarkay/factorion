@@ -47,25 +47,14 @@ factorio --rcon-bind 127.0.0.1:27015 --rcon-password factorion
 Required flags for the server:
 
 - `--checkpoint` — a local `torch.save(agent.state_dict(), ...)` file, W&B run
-  id, `entity/project/id`, or normal W&B run URL. W&B runs supply grid and
-  architecture metadata automatically.
+  id, or `entity/project/id`. W&B runs supply grid and architecture metadata
+  automatically.
 - `--rcon-port` / `--rcon-password` — must match what Factorio was
   launched with.
 
-Architecture overrides (normally only needed for old local checkpoints with no
-sidecar metadata):
-
-- `--grid-size 11`
-- `--layers 93,69,96 --kernel-size 3`
-
 If you put a sidecar JSON next to the checkpoint named `agent.hp.json`
 with `{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}`, the
-server reads it automatically (explicit CLI flags override metadata).
-
-While the server is running, `/model <path-or-wandb-id>` in Factorio hot-swaps
-the in-memory checkpoint. A failed load leaves the previous model active. W&B
-models report their direct run URL in chat, and every prediction queue message
-names the active model.
+server reads it automatically.
 
 ## Protocol
 
@@ -81,17 +70,14 @@ or the next pending request JSON:
 ```json
 {
   "request_id": "1234-5-7",
-  "player_index": 1,
-  "grid_size": 8,
-  "footprint": [[0, 0], [0, 1], ...],
+  "grid_size": 11,
   "entities": [
     {"name": "transport-belt", "x": 2, "y": 3, "direction": 2},
     {"name": "assembling-machine-1", "x": 4, "y": 4, "direction": 0,
      "item": "iron-gear-wheel"}
   ],
   "sources": [{"x": 0, "y": 3, "direction": 2, "item": "iron-plate"}],
-  "sinks":   [{"x": 7, "y": 3, "direction": 2, "item": "iron-plate"}],
-  "default_item": "iron-plate"
+  "sinks":   [{"x": 10, "y": 3, "direction": 2, "item": "iron-plate"}]
 }
 ```
 

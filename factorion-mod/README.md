@@ -106,7 +106,7 @@ factorion-mod/
    trained at another size are rejected with a clear error.
 
 For a manual or headless setup, start the server directly. `--checkpoint`
-accepts a local `.pt`, bare W&B run id, `entity/project/id`, or run URL:
+accepts a local `.pt`, bare W&B run id, or `entity/project/id`:
 
 ```bash
 uv run python factorion-mod/server/server.py \
@@ -136,15 +136,9 @@ automatically.
    - `Ctrl+R` — clear the region and model-placed entities
    - `Ctrl+T` — re-grant the region tool and endpoint belts
 
-   Change checkpoints without restarting the game or Python server:
-
-   ```text
-   /model h76h80yb
-   /model /absolute/path/to/agent.pt
-   ```
-
-   The server reports success or the load error in chat. Models not trained on
-   an 11×11 grid are rejected because the in-game brush is intentionally fixed.
+   Models not trained on an 11×11 grid are rejected because the in-game brush
+   is intentionally fixed. Restart `./start-mod.sh` with another checkpoint to
+   change models.
 
 ## Engine parity harness (issue #261)
 

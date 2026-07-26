@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional
-from urllib.parse import urlparse
 
 import numpy as np
 import torch
@@ -38,7 +37,6 @@ from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 log = logging.getLogger("factorion-server")
 MOD_GRID_SIZE = 11
 MOD_PROTOCOL_VERSION = "4"
-MOD_VERSION = "0.6.3"
 
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +49,6 @@ from rcon import RconClient, RconError  # noqa: E402, F401
 # --------------------------------------------------------------------------- #
 # Model loading & inference.
 # --------------------------------------------------------------------------- #
-
 def _duck_envs(size: int):
     """Minimal vector-env shape surface needed to construct AgentCNN."""
     return SimpleNamespace(
@@ -72,20 +69,15 @@ class Hyperparams:
 
     @classmethod
     def from_mapping(cls, values: dict) -> "Hyperparams":
-        """Read either current layer1..8 config or the legacy chan1..3 form."""
+        """Read W&B's layer1..8 config or a sidecar's layers list."""
         size = int(values.get("size", values.get("grid_size", cls.grid_size)))
         if "layers" in values:
             layers = tuple(int(v) for v in values["layers"] if int(v) > 0)
-        elif "layer1" in values:
+        else:
             layers = tuple(
                 int(values.get(f"layer{i}", 0))
                 for i in range(1, 9)
                 if int(values.get(f"layer{i}", 0)) > 0
-            )
-        else:
-            layers = tuple(
-                int(values.get(f"chan{i}", default))
-                for i, default in enumerate(cls.layers, start=1)
             )
         if not layers:
             raise ValueError("checkpoint config has no positive-width encoder layers")
@@ -109,18 +101,6 @@ class Hyperparams:
         return cls()
 
 
-def _wandb_run_path(spec: str) -> str:
-    """Accept a bare run id, entity/project/id, or a normal W&B run URL."""
-    if spec.startswith(("https://", "http://")):
-        parts = [p for p in urlparse(spec).path.split("/") if p]
-        try:
-            runs_i = parts.index("runs")
-            return "/".join((parts[runs_i - 2], parts[runs_i - 1], parts[runs_i + 1]))
-        except (ValueError, IndexError):
-            raise ValueError(f"not a W&B run URL: {spec}") from None
-    return spec
-
-
 def resolve_checkpoint(
     spec: str, project: str = "factorion", entity: Optional[str] = None,
 ) -> tuple[Path, Optional[Hyperparams], Optional[dict]]:
@@ -131,7 +111,7 @@ def resolve_checkpoint(
     if spec.endswith(".pt"):
         raise FileNotFoundError(f"checkpoint does not exist: {local}")
 
-    path, source = _resolve_wandb_checkpoint(_wandb_run_path(spec), project, entity)
+    path, source = _resolve_wandb_checkpoint(spec, project, entity)
     config = source.get("config") or {}
     hp = Hyperparams.from_mapping(config)
     return Path(path), hp, source
@@ -154,61 +134,6 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
         global_feat_dim=hp.global_feat_dim,
     ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    current = agent.state_dict()
-    expandable = {
-        "ent_embed.weight",
-        "item_embed.weight",
-        "ent_head.weight",
-        "ent_head.bias",
-        "item_head.weight",
-        "item_head.bias",
-    }
-    expanded = []
-    for key, saved in state.items():
-        target = current.get(key)
-        if target is None or target.shape == saved.shape:
-            continue
-        can_expand_coord_channels = (
-            key == "encoder.0.weight"
-            and target.ndim == saved.ndim == 4
-            and target.shape[0] == saved.shape[0]
-            and target.shape[2:] == saved.shape[2:]
-            and target.shape[1] == saved.shape[1] + 2
-        )
-        if can_expand_coord_channels:
-            merged = target.new_zeros(target.shape)
-            merged[:, :saved.shape[1]] = saved
-            state[key] = merged
-            expanded.append(
-                f"{key} input channels:{saved.shape[1]}→{target.shape[1]}"
-            )
-            continue
-        can_expand = (
-            key in expandable
-            and target.ndim == saved.ndim
-            and target.shape[1:] == saved.shape[1:]
-            and target.shape[0] > saved.shape[0]
-        )
-        if not can_expand:
-            raise RuntimeError(
-                f"checkpoint tensor {key} has shape {tuple(saved.shape)}, "
-                f"current model expects {tuple(target.shape)}"
-            )
-        merged = target.clone()
-        merged[:saved.shape[0]] = saved
-        # New catalog entries were not present during training. Keep random
-        # embeddings for input compatibility, but make new output rows lose
-        # argmax so loading old checkpoints cannot emit unseen recipes.
-        if key in {"ent_head.weight", "item_head.weight"}:
-            merged[saved.shape[0]:].zero_()
-        elif key in {"ent_head.bias", "item_head.bias"}:
-            merged[saved.shape[0]:].fill_(-1e9)
-        state[key] = merged
-        expanded.append(f"{key}:{saved.shape[0]}→{target.shape[0]}")
-    if expanded:
-        log.info("Expanded append-only catalog tensors: %s", ", ".join(expanded))
-    if "coord_grid" not in state:
-        state["coord_grid"] = current["coord_grid"]
     agent.load_state_dict(state)
     agent.eval()
     return agent
@@ -217,7 +142,6 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
 # --------------------------------------------------------------------------- #
 # Request → obs tensor.
 # --------------------------------------------------------------------------- #
-
 def _source_id() -> int:
     e = str2ent("source")
     assert e is not None, "factorion is missing the 'source' entity"
@@ -236,9 +160,8 @@ def request_to_obs(req: dict) -> np.ndarray:
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
 
-    # Footprint mask
-    for x, y in req["footprint"]:
-        obs[Channel.FOOTPRINT.value, x, y] = 1.0
+    # The in-game region is a fixed square, so every tile is buildable.
+    obs[Channel.FOOTPRINT.value] = 1.0
 
     src_id, snk_id = _source_id(), _sink_id()
 
@@ -285,7 +208,6 @@ def request_to_obs(req: dict) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Iterative inference: place one entity at a time, greedy (argmax).
 # --------------------------------------------------------------------------- #
-
 def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
@@ -311,10 +233,10 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
     x, y = action["xy"]
     ent_meta = entities.get(ent_id)
     if ent_meta is None or not ent_meta.is_placeable:
-        # Head can technically emit recipe IDs (8+) since it's sized
-        # len(entities)-2 to only exclude source/sink. Treat those as no-ops.
+        # A legal mask should prevent this, but stop safely if a mismatched
+        # checkpoint still emits an unsupported catalog entry.
         log.debug("Skipping non-placeable predicted entity id %d", ent_id)
-        return True
+        return False
 
     direction = action["direction"]
     width, height = ent_meta.width, ent_meta.height
@@ -397,23 +319,9 @@ def run_inference(
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
 
-    # Dump the initial obs summary so we can see what the model is starting from
-    src_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
-               for s in req.get("sources", [])]
-    snk_ids = [(int(s["x"]), int(s["y"]), s.get("direction"), s.get("item"))
-               for s in req.get("sinks", [])]
-    log.info("  initial sources (x,y,dir,item): %s", src_ids)
-    log.info("  initial sinks   (x,y,dir,item): %s", snk_ids)
-    log.info("  existing model entities: %d", len(req.get("entities", [])))
-    fp_count = int(obs[Channel.FOOTPRINT.value].sum())
-    log.info("  footprint tiles: %d", fp_count)
-
     stats: dict = {
         "steps_taken": 0,
         "stop_reason": "max_steps",
-        "first_eot_prob": None,
-        "final_eot_prob": None,
-        "placements": [],  # list of dicts, one per step
     }
 
     for step in range(max_steps):
@@ -421,9 +329,6 @@ def run_inference(
         with torch.no_grad():
             x = torch.from_numpy(obs).unsqueeze(0).to(device)
             eot_p = float(agent.eot_prob(x).item())
-        if step == 0:
-            stats["first_eot_prob"] = eot_p
-        stats["final_eot_prob"] = eot_p
         if eot_p > eot_threshold:
             log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
             stats["stop_reason"] = "eot"
@@ -434,18 +339,6 @@ def run_inference(
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
         item_name = items[item_id].name if item_id in items else "?"
-        stats["placements"].append({
-            "step": step,
-            "eot": eot_p,
-            "entity_id": ent_id,
-            "entity_name": ent_name,
-            "x": int(action["xy"][0]),
-            "y": int(action["xy"][1]),
-            "direction": int(action["direction"]),
-            "item_id": item_id,
-            "item_name": item_name,
-            "misc": int(action["misc"]),
-        })
         log.info(
             "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
             step, eot_p, ent_name, ent_id,
@@ -465,11 +358,6 @@ def run_inference(
     else:
         log.info("Reached max_steps=%d without eot/empty.", max_steps)
 
-    # Summarise final state
-    ent_ch = obs[Channel.ENTITIES.value]
-    placed = int((ent_ch != 0).sum())
-    log.info("Final: %d non-empty tiles in ENTITIES channel", placed)
-    stats["nonzero_entities_tiles"] = placed
     return obs, stats
 
 
@@ -478,7 +366,6 @@ def run_inference(
 # --------------------------------------------------------------------------- #
 
 POLL_CMD = "/silent-command rcon.print(remote.call('factorion','poll_request'))"
-MODEL_POLL_CMD = "/silent-command rcon.print(remote.call('factorion','poll_model'))"
 PROTOCOL_CMD = (
     "/silent-command rcon.print(remote.call('factorion','protocol_version'))"
 )
@@ -526,82 +413,6 @@ def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
         )
 
 
-def _send_model_status(
-    rcon: RconClient,
-    player_index: int,
-    ok: bool,
-    message: str,
-    model_name: Optional[str] = None,
-    model_url: Optional[str] = None,
-) -> None:
-    model_arg = ",nil" if model_name is None else f",{_lua_string(model_name)}"
-    url_arg = ",nil" if model_url is None else f",{_lua_string(model_url)}"
-    rcon.exec(
-        "/silent-command remote.call('factorion','model_status',"
-        f"{player_index},{str(ok).lower()},{_lua_string(message)}{model_arg}{url_arg})"
-    )
-
-
-def _maybe_switch_model(
-    agent: AgentCNN,
-    rcon: RconClient,
-    device: torch.device,
-    project: str,
-    entity: Optional[str],
-    model_state: dict,
-) -> AgentCNN:
-    """Apply one queued in-game /model request, keeping the old model on error."""
-    raw = rcon.exec(MODEL_POLL_CMD).strip()
-    if not raw:
-        return agent
-    # A save hosted before this mod update has the older remote interface.
-    # Keep serving predictions quietly; a newly hosted game will expose the
-    # method and hot-swapping starts working automatically.
-    if (
-        "No such function: factorion.poll_model" in raw
-        or "Unknown interface: factorion" in raw
-    ):
-        return agent
-    try:
-        request = json.loads(raw)
-        spec = str(request["spec"])
-        player_index = int(request["player_index"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        log.warning("Invalid model-switch request: %r", raw[:500])
-        return agent
-
-    log.info("In-game model switch requested: %s", spec)
-    try:
-        checkpoint, wandb_hp, source = resolve_checkpoint(spec, project, entity)
-        hp = wandb_hp or Hyperparams.from_json_sibling(checkpoint)
-        if hp.grid_size != MOD_GRID_SIZE:
-            raise ValueError(
-                f"checkpoint uses {hp.grid_size}x{hp.grid_size}; "
-                f"the in-game region brush is fixed at {MOD_GRID_SIZE}x{MOD_GRID_SIZE}"
-            )
-        replacement = load_agent(checkpoint, hp, device)
-        provenance = source["run_id"] if source else str(checkpoint)
-        message = (
-            f"Loaded {provenance}: {hp.grid_size}x{hp.grid_size}, "
-            f"layers {'/'.join(map(str, hp.layers))}."
-        )
-        model_url = source["run_url"] if source else None
-        if model_url:
-            message += f" {model_url}"
-        _send_model_status(
-            rcon, player_index, True, message, provenance, model_url,
-        )
-        model_state["name"] = provenance
-        model_state["url"] = model_url
-        log.info(message)
-        return replacement
-    except Exception as exc:
-        message = f"Could not load {spec}: {exc}"
-        log.exception("Model switch failed")
-        _send_model_status(rcon, player_index, False, message)
-        return agent
-
-
 def poll_loop(
     agent: AgentCNN,
     rcon: RconClient,
@@ -610,9 +421,6 @@ def poll_loop(
     max_steps: int = 64,
     placement_delay_s: float = 0.01,
     device: torch.device,
-    wandb_project: str = "factorion",
-    wandb_entity: Optional[str] = None,
-    model_state: Optional[dict] = None,
 ):
     """Poll Factorio over RCON for queued requests; handle each as it arrives.
 
@@ -622,24 +430,9 @@ def poll_loop(
     """
     log.info("Polling factorion.poll_request every %.0f ms", poll_interval * 1000)
     log.info("Placement pacing delay: %.0f ms", placement_delay_s * 1000)
-    model_state = model_state or {"name": "unknown", "url": None}
-    last_model_publish = 0.0
 
     while True:
         try:
-            agent = _maybe_switch_model(
-                agent, rcon, device, wandb_project, wandb_entity, model_state,
-            )
-            # Re-publish periodically so a Factorio save/mod reload learns the
-            # active model even though the long-running Python process stayed up.
-            now = time.monotonic()
-            if now - last_model_publish >= 5.0:
-                name = model_state["name"]
-                _send_model_status(
-                    rcon, 0, True, f"Active model: {name}.",
-                    name, model_state.get("url"),
-                )
-                last_model_publish = now
             raw = rcon.exec(POLL_CMD).strip()
         except (RconError, OSError) as e:
             log.warning("RCON poll failed (%s); reconnecting in 2s…", e)
@@ -692,29 +485,31 @@ def handle_request(
     placement_delay_s: float = 0.01,
     device,
 ):
-    if req["grid_size"] != agent.width:
-        raise ValueError(
-            f"game requested a {req['grid_size']}x{req['grid_size']} grid, but "
-            f"the checkpoint expects {agent.width}x{agent.height}; load an 11x11 model"
-        )
-    log.info("Request %s: grid=%dx%d, %d sources, %d sinks",
-             req["request_id"], req["grid_size"], req["grid_size"],
-             len(req.get("sources", [])), len(req.get("sinks", [])))
-
     t0 = time.time()
-    _, stats = run_inference(
-        agent,
-        req,
-        max_steps=max_steps,
-        device=device,
-        on_placement=lambda action: _stream_placement(
-            rcon,
-            req["request_id"],
-            action,
-            placement_delay_s=placement_delay_s,
-        ),
-    )
-    _finish_prediction(rcon, req["request_id"], stats)
+    stats = {"steps_taken": 0, "stop_reason": "server_error"}
+    try:
+        if req["grid_size"] != agent.width:
+            raise ValueError(
+                f"game requested a {req['grid_size']}x{req['grid_size']} grid, "
+                f"but the checkpoint expects {agent.width}x{agent.height}"
+            )
+        log.info("Request %s: grid=%dx%d, %d sources, %d sinks",
+                 req["request_id"], req["grid_size"], req["grid_size"],
+                 len(req.get("sources", [])), len(req.get("sinks", [])))
+        _, stats = run_inference(
+            agent,
+            req,
+            max_steps=max_steps,
+            device=device,
+            on_placement=lambda action: _stream_placement(
+                rcon,
+                req["request_id"],
+                action,
+                placement_delay_s=placement_delay_s,
+            ),
+        )
+    finally:
+        _finish_prediction(rcon, req["request_id"], stats)
     log.info(
         "Inference %.2fs; streamed %d placement step(s), stop=%s",
         time.time() - t0, stats["steps_taken"], stats["stop_reason"],
@@ -724,22 +519,15 @@ def handle_request(
 # --------------------------------------------------------------------------- #
 # CLI.
 # --------------------------------------------------------------------------- #
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True,
-                    help="Local .pt path, W&B run id, entity/project/id, or run URL.")
+                    help="Local .pt path, W&B run id, or entity/project/id.")
     ap.add_argument("--wandb-project", default="factorion")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--rcon-host", default="127.0.0.1")
     ap.add_argument("--rcon-port", type=int, default=27015)
     ap.add_argument("--rcon-password", default="factorion")
-    ap.add_argument("--grid-size", type=int, default=None,
-                    help="Override checkpoint metadata (normally unnecessary).")
-    ap.add_argument("--layers", default=None,
-                    help="Comma-separated encoder widths; overrides checkpoint metadata.")
-    ap.add_argument("--kernel-size", type=int, default=None,
-                    help="Override checkpoint metadata (normally unnecessary).")
     ap.add_argument("--max-steps", type=int, default=64,
                     help="Iterative inference budget per request.")
     ap.add_argument(
@@ -763,19 +551,7 @@ def main():
     checkpoint, wandb_hp, source = resolve_checkpoint(
         args.checkpoint, args.wandb_project, args.wandb_entity,
     )
-    sidecar = Hyperparams.from_json_sibling(checkpoint)
-    inferred = wandb_hp or sidecar
-    cli_layers = tuple(int(v) for v in args.layers.split(",")) if args.layers else None
-    hp = Hyperparams(
-        grid_size=args.grid_size if args.grid_size is not None else inferred.grid_size,
-        layers=cli_layers or inferred.layers,
-        kernel_size=args.kernel_size if args.kernel_size is not None else inferred.kernel_size,
-        attn_dim=inferred.attn_dim,
-        attn_heads=inferred.attn_heads,
-        attn_layers=inferred.attn_layers,
-        attn_pos_embed=inferred.attn_pos_embed,
-        global_feat_dim=inferred.global_feat_dim,
-    )
+    hp = wandb_hp or Hyperparams.from_json_sibling(checkpoint)
     if hp.grid_size != MOD_GRID_SIZE:
         ap.error(
             f"checkpoint uses {hp.grid_size}x{hp.grid_size}; "
@@ -791,6 +567,7 @@ def main():
             rcon.connect()
             break
         except (RconError, OSError) as exc:
+            rcon.close()
             log.info("Waiting for Factorio RCON at %s:%d (%s)",
                      args.rcon_host, args.rcon_port, exc)
             time.sleep(2)
@@ -803,15 +580,13 @@ def main():
                     break
                 log.info(
                     "Waiting for streaming protocol v%s; restart Factorio and "
-                    "host a game with factorion %s (%s)",
+                    "host a game with the current mod (%s)",
                     MOD_PROTOCOL_VERSION,
-                    MOD_VERSION,
                     protocol or "no mod response",
                 )
             except (RconError, OSError) as exc:
                 log.info(
-                    "Waiting for Factorio to reload factorion %s (%s)",
-                    MOD_VERSION,
+                    "Waiting for Factorio to reload the mod (%s)",
                     exc,
                 )
                 rcon.close()
@@ -826,27 +601,12 @@ def main():
             MOD_PROTOCOL_VERSION,
         )
 
-        model_name = source["run_id"] if source else str(checkpoint)
-        model_url = source["run_url"] if source else None
-        try:
-            _send_model_status(
-                rcon, 0, True,
-                f"Active model: {model_name} ({hp.grid_size}x{hp.grid_size}, "
-                f"layers {'/'.join(map(str, hp.layers))}).",
-                model_name,
-                model_url,
-            )
-        except Exception:
-            log.warning("Could not publish initial model identity to the mod")
-
         poll_loop(
             agent, rcon,
             poll_interval=0.25,
             max_steps=args.max_steps,
             placement_delay_s=args.placement_delay_ms / 1000,
             device=device,
-            wandb_project=args.wandb_project, wandb_entity=args.wandb_entity,
-            model_state={"name": model_name, "url": model_url},
         )
     finally:
         rcon.close()
