@@ -24,22 +24,19 @@
 # (entity_cost_scale, reward_symlog_r0), so rollout/reward is not comparable
 # across runs, whereas normalised throughput is.
 
-# BEFORE LAUNCHING, read #339 — two of its blockers bear directly on this sweep:
-#   * Blocker 3: the training rollout never masks the tile head (legal_mask
-#     defaults to False; the only True call site is sft.py's greedy eval), so
-#     training explores a different action distribution than the metric scores.
-#     That moves the optimum for learning_rate, clip_coef and ent_coef_start —
-#     three of the axes below.
-#   * Blocker 1: eval/thput, this sweep's objective, is not zero-based.
-#     CROSS_UNDER_BELT scores 0.25 normalised on a fully blanked grid, so firing
-#     end-of-turn immediately banks free reward there and drags the shared EOT
-#     head, which #339 flags as a plausible cause of PPO degrading strong bases.
-# Both are small plumbing fixes in #339's own sequencing, and both change what
-# this sweep would find. Tuning through them repeats the #337 mistake that this
-# sweep exists to undo.
+# The bar: #340's compare measured h76h80yb at eval/thput 0.797 after 1.5M PPO
+# steps on main's defaults. That is what a swept config has to beat. (CLAUDE.md
+# still cites 0.11 for the older j0s5y2mc base — stale, ignore it.)
+#
+# #339's blocker 3 (mask the tile head during rollout) is NOT applied here and
+# should not be: #340 tested legal_mask=True from this exact base and it came
+# out slightly worse (eval/thput 0.797 -> 0.757, rollout/thput 0.799 -> 0.712,
+# 1 seed). rollout/invalid_frac is already 0.28% from a pretrained policy, so
+# the mask has almost nothing to fix — blocker 3 is a from-scratch finding that
+# does not transfer to a finetune.
 
 method: bayes
-run_cap: 32
+run_cap: 48
 metric:
   name: "eval/thput"
   goal: maximize
@@ -205,17 +202,19 @@ program: ppo.py
 # Plain `python`: on a CI pod deps are installed system-wide; locally, run the
 # agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
 #
-# 1M steps ~= 244 iterations at batch 4096. Cost is dominated by the UPDATE, not
-# the rollout, and scales linearly with update_epochs — measured here at batch
-# 512 / 8 minibatches, update went 4.64 -> 37.10 s/iter as update_epochs went
-# 1 -> 8 (8.0x; 62% -> 93% of the iteration). #339 measures the full config at
-# 15 s rollout + 55 s optimiser per 4096-step iteration, so a run costs roughly
-# 244 * (15 + 55*E) seconds: ~4.7 h at E=1, ~31 h at E=8 before torch.compile.
-# Since update_epochs is itself swept, per-run cost varies ~6x and drainage is
-# inherently uneven; that is why run_cap is 32 rather than 48. Budget generously
-# (--pods 8) and expect the low-E runs to finish many times faster than the
-# high-E ones. max_seconds cannot bound this — it is nested inside the
-# target_metric block (ppo.py) and does nothing unless target_metric is set.
+# 1M steps ~= 244 iterations at batch 4096, ~34 evals. Cost is dominated by the
+# UPDATE, not the rollout, and scales linearly with update_epochs: #340's pod
+# run (update_epochs 8, 32 minibatches, torch.compile, this same base) measured
+# update 16.44 s vs rollout 1.21 s per iteration — the update is 93% of it.
+#
+# So per-run cost tracks the swept update_epochs x num_minibatches corner:
+#   E=1,  8 minibatches  ~0.2 h      E=8, 32 minibatches  ~1.3 h (measured)
+#   E=8, 64 minibatches  ~2.4 h
+# Average ~1 h, so 48 runs is roughly 48 pod-hours: --pods 4 drains it in ~12 h,
+# well inside the 24 h sweep pod budget. Do NOT size this off #339's 58 steps/s
+# — that is MPS without torch.compile, and #339 says as much; the pods measure
+# 271 steps/s. max_seconds cannot cap a slow run either: it is nested inside the
+# target_metric block (ppo.py) and is inert unless target_metric is set.
 command:
   - ${env}
   - python
