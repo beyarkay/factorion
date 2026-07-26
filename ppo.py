@@ -24,6 +24,7 @@ import torch.optim as optim
 import tyro
 import factorion_rs
 from factorion import (
+    LESSON_IS_TRIAL,
     Channel,
     Direction,
     Footprint,
@@ -287,6 +288,11 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         num_envs=args.eval_num_envs,
     )
     metrics = {"eval/thput": roll["overall_eot"]}
+    # The trials are the actual target — building a factory from nothing but
+    # the markers. Scored apart from eval/thput so a long stretch at zero
+    # (expected: there is nothing to imitate) doesn't drag the lesson curve.
+    if roll["trial_n"] > 0:
+        metrics["eval/trial_thput"] = roll["trial_overall_eot"]
     for kn, thp in roll["per_kind_eot"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
@@ -333,6 +339,7 @@ def _rollout_episode_metrics(
     frac_reachable: float,
     entity_cost: float,
     cost_efficiency: float,
+    is_trial: bool = False,
 ) -> dict:
     """Build the rollout/* metrics for one finished episode (overall + per-lesson).
 
@@ -341,19 +348,28 @@ def _rollout_episode_metrics(
     overall and per-lesson views log thput_raw (items/s) alongside the
     normalized throughput, so lessons with very different ceilings (belts ~15/s
     vs assemblers <1/s) stay comparable in raw terms.
+
+    A trial episode's aggregate keys land under ``rollout/trial_*`` instead of
+    ``rollout/*``, so the two populations never mix: a lesson episode rebuilds a
+    factory the generator can also build, a trial episode invents one from bare
+    markers. Splitting the whole block rather than throughput alone keeps each
+    side internally consistent (a reward mean that excludes trials next to a
+    throughput mean that includes them would describe no population at all).
+    The per-lesson keys are already name-separated and are left alone.
     """
+    agg = "rollout/trial_" if is_trial else "rollout/"
     return {
-        "rollout/thput": float(thput_normed),
-        "rollout/thput_raw": float(thput_raw),
-        "rollout/reward": float(episode_return),
-        "rollout/length": float(episode_len),
-        "rollout/eot_rate": float(ended_by_eot),
-        "rollout/invalid_frac": float(invalid_frac),
-        "rollout/num_entities": float(num_entities),
-        "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
-        "rollout/frac_reachable": float(frac_reachable),
-        "rollout/entity_cost": float(entity_cost),
-        "rollout/cost_efficiency": float(cost_efficiency),
+        f"{agg}thput": float(thput_normed),
+        f"{agg}thput_raw": float(thput_raw),
+        f"{agg}reward": float(episode_return),
+        f"{agg}length": float(episode_len),
+        f"{agg}eot_rate": float(ended_by_eot),
+        f"{agg}invalid_frac": float(invalid_frac),
+        f"{agg}num_entities": float(num_entities),
+        f"{agg}entity_efficiency": float(min_entities_required) / float(num_entities),
+        f"{agg}frac_reachable": float(frac_reachable),
+        f"{agg}entity_cost": float(entity_cost),
+        f"{agg}cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
         f"rollout/{lesson}/thput": float(thput_normed),
         f"rollout/{lesson}/thput_raw": float(thput_raw),
@@ -1792,6 +1808,7 @@ if __name__ == "__main__":
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="max")
+        wandb.define_metric("eval/trial_thput", summary="max")
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
@@ -1805,6 +1822,7 @@ if __name__ == "__main__":
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable", "entity_cost", "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
+            wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
                 "thput", "thput_raw", "reward", "length", "entity_cost",
@@ -2213,9 +2231,14 @@ if __name__ == "__main__":
                     # eot_rate: ended by the EOT action (termination) vs hitting
                     # max_steps (truncation).
                     ended_by_eot = 1.0 if bool(terminations[i]) else 0.0
-                    lesson = LessonKind(int(infos["kind"][i])).name
+                    kind = LessonKind(int(infos["kind"][i]))
+                    lesson = kind.name
+                    is_trial = LESSON_IS_TRIAL[kind]
 
-                    end_of_episode_thputs.append(end_of_episode_thput)
+                    # Drives the pbar + the final run tag, so it tracks the same
+                    # lesson-only population as rollout/thput.
+                    if not is_trial:
+                        end_of_episode_thputs.append(end_of_episode_thput)
 
                     _record_episode(_rollout_episode_metrics(
                         lesson,
@@ -2230,6 +2253,7 @@ if __name__ == "__main__":
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
+                        is_trial=is_trial,
                     ))
 
         rollout_seconds = time.time() - rollout_start

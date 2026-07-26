@@ -402,8 +402,15 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
 class RolloutEval(TypedDict):
     """Return shape of :func:`run_rollout_eval`."""
 
-    overall: float  # mean throughput ignoring the EOT head
-    overall_eot: float  # mean throughput respecting the EOT head
+    # The overall means pool lessons only. Trials measure a different thing —
+    # inventing a factory with nothing to imitate, versus reproducing a known
+    # one — and pooling them would silently move the headline number that the
+    # SFT baseline and every historical run are quoted in.
+    overall: float  # mean lesson throughput ignoring the EOT head
+    overall_eot: float  # mean lesson throughput respecting the EOT head
+    trial_overall: float  # overall over trial kinds only (0.0 when none ran)
+    trial_overall_eot: float  # overall_eot over trial kinds only
+    trial_n: int  # number of trial factories the eval scored
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
@@ -495,8 +502,11 @@ def run_rollout_eval(
 
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
+    # Lessons and trials accumulate separately — see RolloutEval.
     all_throughputs: list[float] = []
     all_eot_throughputs: list[float] = []
+    trial_throughputs: list[float] = []
+    trial_eot_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
     # EOT-head scoring: every scored step counts toward *_step; done states
@@ -514,6 +524,9 @@ def run_rollout_eval(
         return {
             "overall": 0.0,
             "overall_eot": 0.0,
+            "trial_overall": 0.0,
+            "trial_overall_eot": 0.0,
+            "trial_n": 0,
             "per_kind": zero,
             "per_kind_eot": dict(zero),
             "per_kind_n": per_kind_n,
@@ -645,13 +658,18 @@ def run_rollout_eval(
 
                 # Slot is finished — harvest both metrics, refill or deactivate.
                 s, k, last_thp = current[i]
-                all_throughputs.append(last_thp)
                 per_kind_throughputs[k.name].append(last_thp)
                 # EOT never fired → model would have built to env-done, so its
                 # EOT-respecting value is the same final throughput.
                 eot_value = eot_thp[i] if eot_fired[i] else last_thp
-                all_eot_throughputs.append(eot_value)
                 per_kind_eot_throughputs[k.name].append(eot_value)
+                pool, eot_pool = (
+                    (trial_throughputs, trial_eot_throughputs)
+                    if LESSON_IS_TRIAL[k]
+                    else (all_throughputs, all_eot_throughputs)
+                )
+                pool.append(last_thp)
+                eot_pool.append(eot_value)
 
                 if queue:
                     s = queue.pop(0)
@@ -679,6 +697,10 @@ def run_rollout_eval(
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
     overall_eot = float(np.mean(all_eot_throughputs)) if all_eot_throughputs else 0.0
+    trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
+    trial_overall_eot = (
+        float(np.mean(trial_eot_throughputs)) if trial_eot_throughputs else 0.0
+    )
     per_kind = {
         kn: (float(np.mean(ts)) if ts else 0.0)
         for kn, ts in per_kind_throughputs.items()
@@ -718,6 +740,9 @@ def run_rollout_eval(
     return {
         "overall": overall,
         "overall_eot": overall_eot,
+        "trial_overall": trial_overall,
+        "trial_overall_eot": trial_overall_eot,
+        "trial_n": len(trial_throughputs),
         "per_kind": per_kind,
         "per_kind_eot": per_kind_eot,
         "per_kind_n": per_kind_n,

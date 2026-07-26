@@ -1050,6 +1050,9 @@ class TestRunRolloutEval:
         assert set(roll) == {
             "overall",
             "overall_eot",
+            "trial_overall",
+            "trial_overall_eot",
+            "trial_n",
             "per_kind",
             "per_kind_eot",
             "per_kind_n",
