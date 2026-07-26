@@ -2,28 +2,25 @@
 --
 -- State per player lives in `storage.players[player_index]`:
 --   footprint = { x=int, y=int, w=int, h=int }   world-tile bbox
---   sources   = { { x=int, y=int }, ... }        world-tile coords
---   sinks     = { { x=int, y=int }, ... }
 --   pending   = { request_id=string, tick=int }  in-flight request, if any
 --
 -- Round trip (single-channel RCON, both directions):
 --   1. On key `factorion-execute`, we build a request JSON describing the
---      footprint + sources + sinks (in footprint-relative coords) and
+--      footprint + existing entities + sources + sinks (in footprint-relative
+--      coords) and
 --      enqueue it on `storage.outbox`. The Python server is polling our
 --      `poll_request` remote interface over RCON; when there's something
 --      in the queue it gets popped and returned as a JSON string.
---   2. The server runs the model, then calls our `deliver_blueprint`
---      remote interface (also over RCON). We import the blueprint string
---      into the requesting player's cursor.
+--   2. After each model step, the server calls `place_prediction` over RCON.
+--      We create that entity directly in the requesting player's world.
+--   3. The server calls `finish_prediction` when the model stops.
 --
 -- No script-output files are involved. The only outbound channel a
 -- vanilla mod has is RCON, and we use it both ways.
 
 local parity = require("parity")
 
-local function get_grid_size()
-  return settings.global["factorion-grid-size"].value
-end
+local GRID_SIZE = 11
 
 local function get_default_item()
   return settings.global["factorion-default-item"].value
@@ -34,9 +31,10 @@ local function ensure_player_state(player_index)
   if not storage.players[player_index] then
     storage.players[player_index] = {
       footprint = nil,
-      sources   = {},
-      sinks     = {},
       pending   = nil,
+      picker    = nil,
+      footprint_render_id = nil,
+      predicted_entities = {},
     }
   end
   return storage.players[player_index]
@@ -47,14 +45,8 @@ local function ensure_pending_lookup()
   storage.pending_by_request = storage.pending_by_request or {}
   -- FIFO of JSON request strings waiting for the server to pop via RCON.
   storage.outbox = storage.outbox or {}
+  storage.endpoints = storage.endpoints or {}
 end
-
--- Forward declarations: these are defined further down but referenced
--- from event handlers (registered earlier in file order). Declaring them
--- as locals here lets the handler closures capture the local slot, which
--- the later assignments fill in.
-local try_request_prediction
-local json_encode
 
 -- ----------------------------------------------------------------------------
 -- player onboarding
@@ -66,14 +58,20 @@ local function give_tools(player)
   if inv.get_item_count("factorion-footprint-tool") == 0 then
     inv.insert({ name = "factorion-footprint-tool", count = 1 })
   end
-  if inv.get_item_count("factorion-marker-tool") == 0 then
-    inv.insert({ name = "factorion-marker-tool", count = 1 })
+  if inv.get_item_count("factorion-source-belt") == 0 then
+    inv.insert({ name = "factorion-source-belt", count = 10 })
   end
-  player.print({ "", "[Factorion] Tools added: ",
-    "drag the [item=factorion-footprint-tool] to set an ",
-    tostring(get_grid_size()), "x", tostring(get_grid_size()),
-    " footprint, then left/right-click with [item=factorion-marker-tool] ",
-    "to mark sources/sinks. Press CTRL+SHIFT+P to predict." })
+  if inv.get_item_count("factorion-sink-belt") == 0 then
+    inv.insert({ name = "factorion-sink-belt", count = 10 })
+  end
+end
+
+local function show_startup_message(player)
+  player.print({ "",
+    "[Factorion] Ready. Press CTRL+T for the [item=factorion-footprint-tool], ",
+    "[item=factorion-source-belt], and [item=factorion-sink-belt]. Stamp a ",
+    "region, place and configure the endpoint belts, then press CTRL+P." })
+  player.print("[Factorion] CTRL+R clears the region and model placements; endpoint belts mine normally.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -85,7 +83,18 @@ end)
 
 script.on_event("factorion-give-tools", function(event)
   local player = game.get_player(event.player_index)
-  if player then give_tools(player) end
+  if player then
+    give_tools(player)
+    player.print("[Factorion] Factorion tools and endpoint belts added to your inventory.")
+  end
+end)
+
+script.on_event(defines.events.on_player_joined_game, function(event)
+  local player = game.get_player(event.player_index)
+  if player then
+    give_tools(player)
+    show_startup_message(player)
+  end
 end)
 
 -- ----------------------------------------------------------------------------
@@ -98,330 +107,665 @@ local function tile_floor(area_axis)
   return math.floor(area_axis + 0.0001)
 end
 
-local function area_to_bbox(area)
-  local x = tile_floor(area.left_top.x)
-  local y = tile_floor(area.left_top.y)
-  -- right_bottom is exclusive in tile-space; subtract 1 for the inclusive
-  -- last tile, then +1 for the count.
-  local w = tile_floor(area.right_bottom.x) - x
-  local h = tile_floor(area.right_bottom.y) - y
-  return { x = x, y = y, w = w, h = h }
+local function area_center_tile(area)
+  return tile_floor((area.left_top.x + area.right_bottom.x) / 2),
+    tile_floor((area.left_top.y + area.right_bottom.y) / 2)
 end
 
-script.on_event(defines.events.on_player_selected_area, function(event)
+local function fixed_footprint(area)
+  local cx, cy = area_center_tile(area)
+  local radius = math.floor(GRID_SIZE / 2)
+  return { x = cx - radius, y = cy - radius, w = GRID_SIZE, h = GRID_SIZE }
+end
+
+local function destroy_footprint_render(state)
+  if not state.footprint_render_id then return end
+  local object = rendering.get_object_by_id(state.footprint_render_id)
+  if object then object.destroy() end
+  state.footprint_render_id = nil
+end
+
+local function draw_footprint(player, state)
+  destroy_footprint_render(state)
+  local fp = state.footprint
+  local object = rendering.draw_rectangle({
+    surface = player.surface,
+    left_top = { fp.x, fp.y },
+    right_bottom = { fp.x + fp.w, fp.y + fp.h },
+    color = { r = 0.1, g = 0.75, b = 1.0, a = 0.95 },
+    width = 4,
+    filled = false,
+    players = { player },
+    draw_on_ground = true,
+  })
+  state.footprint_render_id = object.id
+end
+
+local MARKER_DIALOG = "factorion-marker-dialog"
+local ITEM_PICKER = "factorion-marker-item"
+local SAVE_MARKER = "factorion-save-marker"
+local FACTORIO_TO_DIRECTION = {
+  [defines.direction.north] = 1,
+  [defines.direction.east] = 2,
+  [defines.direction.south] = 3,
+  [defines.direction.west] = 4,
+}
+local OPPOSITE_DIRECTION = {
+  [1] = 3,
+  [2] = 4,
+  [3] = 1,
+  [4] = 2,
+}
+local ENDPOINT_ENTITY_NAMES = {
+  source = "factorion-source-belt",
+  sink = "factorion-sink-belt",
+}
+local MODEL_ENTITY_NAMES = {
+  "transport-belt",
+  "inserter",
+  "long-handed-inserter",
+  "assembling-machine-1",
+  "underground-belt",
+  "splitter",
+}
+local SINK_RATE_SAMPLE_TICKS = 30
+local SINK_RATE_WINDOW_TICKS = 5 * 60
+
+local function endpoint_role(entity)
+  if not entity or not entity.valid then return nil end
+  if entity.name == ENDPOINT_ENTITY_NAMES.source then return "source" end
+  if entity.name == ENDPOINT_ENTITY_NAMES.sink then return "sink" end
+  return nil
+end
+
+local function destroy_endpoint_alt_icon(config)
+  if not config or not config.render_id then return end
+  local object = rendering.get_object_by_id(config.render_id)
+  if object then object.destroy() end
+  config.render_id = nil
+end
+
+local function destroy_sink_rate_label(config)
+  if not config or not config.rate_render_id then return end
+  local object = rendering.get_object_by_id(config.rate_render_id)
+  if object then object.destroy() end
+  config.rate_render_id = nil
+end
+
+local function refresh_sink_rate_label(entity, config)
+  destroy_sink_rate_label(config)
+  if not entity or not entity.valid or not config or config.role ~= "sink" then
+    return
+  end
+  local label = rendering.draw_text({
+    text = string.format("%.1f/s", config.throughput_rate or 0),
+    surface = entity.surface,
+    target = entity,
+    target_offset = { 0, -0.7 },
+    color = { r = 1.0, g = 0.72, b = 0.2, a = 1.0 },
+    scale = 0.8,
+    alignment = "center",
+    vertical_alignment = "bottom",
+    render_mode = "game",
+  })
+  config.rate_render_id = label.id
+end
+
+local function refresh_endpoint_alt_icon(entity, config)
+  destroy_endpoint_alt_icon(config)
+  if not entity or not entity.valid or not config or not config.item then return end
+  local players = {}
+  for _, player in pairs(game.connected_players) do
+    if player.game_view_settings.show_entity_info then
+      table.insert(players, player)
+    end
+  end
+  if #players == 0 then return end
+  local icon = rendering.draw_sprite({
+    sprite = "item/" .. config.item,
+    surface = entity.surface,
+    target = entity,
+    x_scale = 0.42,
+    y_scale = 0.42,
+    players = players,
+    render_mode = "game",
+  })
+  config.render_id = icon.id
+end
+
+local function clear_downstream_item(source, item)
+  local queue = { source }
+  local next_index = 1
+  local visited = {}
+  local removed = 0
+
+  while next_index <= #queue do
+    local entity = queue[next_index]
+    next_index = next_index + 1
+    local unit_number = entity and entity.valid and entity.unit_number or nil
+    if unit_number and not visited[unit_number] then
+      visited[unit_number] = true
+      for line_index = 1, entity.get_max_transport_line_index() do
+        local line = entity.get_transport_line(line_index)
+        local count = line.get_item_count({ name = item })
+        if count > 0 then
+          removed = removed + line.remove_item({ name = item, count = count })
+        end
+        for _, output_line in pairs(line.output_lines) do
+          local owner = output_line.owner
+          if owner and owner.valid and owner.unit_number
+              and not visited[owner.unit_number] then
+            table.insert(queue, owner)
+          end
+        end
+      end
+    end
+  end
+
+  return removed
+end
+
+local function register_endpoint(entity, item)
+  local role = endpoint_role(entity)
+  if not role or not entity.unit_number then return nil end
+  storage.endpoints = storage.endpoints or {}
+  local config = storage.endpoints[entity.unit_number] or {}
+  local item_changed = item and config.item and item ~= config.item
+  local cleared_items = 0
+  if role == "source" and item_changed then
+    cleared_items = clear_downstream_item(entity, config.item)
+  end
+  config.entity = entity
+  config.role = role
+  config.item = item or config.item or get_default_item()
+  storage.endpoints[entity.unit_number] = config
+  if role == "sink" then
+    if item_changed or not config.throughput_samples then
+      config.throughput_samples = {}
+      config.throughput_pending_count = 0
+      config.throughput_total_count = 0
+      config.throughput_total_ticks = 0
+      config.throughput_last_sample_tick = game.tick
+      config.throughput_rate = 0
+    end
+    refresh_sink_rate_label(entity, config)
+  else
+    destroy_sink_rate_label(config)
+  end
+  refresh_endpoint_alt_icon(entity, config)
+  return config, cleared_items
+end
+
+local function endpoint_config(entity)
+  if not entity or not entity.unit_number then return nil end
+  storage.endpoints = storage.endpoints or {}
+  return storage.endpoints[entity.unit_number]
+end
+
+local function clear_predicted_entities(state)
+  for _, unit_number in ipairs(state.predicted_entities or {}) do
+    local entity = game.get_entity_by_unit_number(unit_number)
+    if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
+  end
+  state.predicted_entities = {}
+end
+
+local function cancel_pending(state)
+  if state.pending and storage.pending_by_request then
+    storage.pending_by_request[state.pending.request_id] = nil
+  end
+  state.pending = nil
+end
+
+local function close_marker_dialog(player, state)
+  local frame = player.gui.screen[MARKER_DIALOG]
+  if frame then frame.destroy() end
+  state.picker = nil
+end
+
+local function open_marker_dialog(player, state, role, entity)
+  close_marker_dialog(player, state)
+  state.picker = {
+    entity_unit_number = entity.unit_number,
+  }
+  local config = endpoint_config(entity)
+  local title = "Configure Factorion " .. role .. " belt"
+  local prompt = role == "source"
+    and "Choose the item this source belt produces:"
+    or "Choose the item this sink counts toward throughput:"
+  local frame = player.gui.screen.add({
+    type = "frame", name = MARKER_DIALOG, caption = title,
+    direction = "vertical",
+  })
+  frame.auto_center = true
+  frame.add({ type = "label", caption = prompt })
+  frame.add({
+    type = "choose-elem-button", name = ITEM_PICKER,
+    elem_type = "item", item = config and config.item or get_default_item(),
+  })
+  local actions = frame.add({ type = "flow", direction = "horizontal" })
+  actions.add({
+    type = "button", name = SAVE_MARKER, caption = "Save item",
+    style = "confirm_button",
+  })
+  player.opened = frame
+end
+
+local function handle_tool_selection(event)
+  if event.item ~= "factorion-footprint-tool" then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   if not player then return end
+  if state.pending then
+    player.print("[Factorion] Wait for the current prediction or press CTRL+R to cancel it.")
+    return
+  end
 
-  if event.item == "factorion-footprint-tool" then
-    local bbox = area_to_bbox(event.area)
-    local size = get_grid_size()
-    if bbox.w ~= size or bbox.h ~= size then
-      player.print(string.format(
-        "[Factorion] Footprint must be exactly %dx%d (got %dx%d). " ..
-        "Try again, or change `factorion-grid-size` in mod settings.",
-        size, size, bbox.w, bbox.h))
-      return
-    end
-    state.footprint = bbox
-    state.sources = {}
-    state.sinks = {}
+  clear_predicted_entities(state)
+  state.footprint = fixed_footprint(event.area)
+  draw_footprint(player, state)
+  local fp = state.footprint
+  player.print(string.format(
+    "[Factorion] Stamped 11x11 region at x=%d..%d, y=%d..%d. " ..
+    "Now place a source and sink.",
+    fp.x, fp.x + 10, fp.y, fp.y + 10))
+end
+
+script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
+
+-- Right-clicking the region tool is a quick clear.
+script.on_event(defines.events.on_player_alt_selected_area, function(event)
+  if event.item ~= "factorion-footprint-tool" then return end
+  local state = ensure_player_state(event.player_index)
+  local player = game.get_player(event.player_index)
+  cancel_pending(state)
+  destroy_footprint_render(state)
+  clear_predicted_entities(state)
+  state.footprint = nil
+  if player then
+    player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
+  end
+end)
+
+local function save_marker_dialog(player, state)
+  if not state.picker then
+    close_marker_dialog(player, state)
+    return
+  end
+  local frame = player.gui.screen[MARKER_DIALOG]
+  local picker = frame and frame[ITEM_PICKER]
+  local item = picker and picker.elem_value
+  if not item then
+    player.print("[Factorion] Choose an item first.")
+    return
+  end
+  local config = storage.endpoints
+    and storage.endpoints[state.picker.entity_unit_number] or nil
+  local entity = config and config.entity or nil
+  if not entity or not endpoint_role(entity) then
+    player.print("[Factorion] That endpoint belt no longer exists.")
+    close_marker_dialog(player, state)
+    return
+  end
+  local cleared_items
+  config, cleared_items = register_endpoint(entity, item)
+  if not config then return end
+  if config.role == "source" and cleared_items > 0 then
     player.print(string.format(
-      "[Factorion] Footprint set: x=%d..%d (%d wide), y=%d..%d (%d tall).",
-      bbox.x, bbox.x + bbox.w - 1, bbox.w,
-      bbox.y, bbox.y + bbox.h - 1, bbox.h))
-    -- Auto-trigger a prediction if sources/sinks (combinators or click-marks)
-    -- are already valid. If not, the message is informative — the player can
-    -- then drop combinators in and press CTRL+P manually.
-    local ok, msg = try_request_prediction(event.player_index)
-    if ok then
-      player.print("[Factorion] " .. msg)
-    else
-      player.print("[Factorion] " .. msg ..
-        " (After adding them, press CTRL+P to predict.)")
-    end
+      "[Factorion] Source belt now uses [item=%s]; cleared %d old item(s) " ..
+      "from its downstream belts.",
+      config.item, cleared_items))
+  else
+    player.print(string.format(
+      "[Factorion] %s belt now uses [item=%s].",
+      config.role, config.item))
+  end
+  close_marker_dialog(player, state)
+end
 
-  elseif event.item == "factorion-marker-tool" then
-    -- left-click = sources
-    if not state.footprint then
-      player.print("[Factorion] Set a footprint first.")
-      return
-    end
-    local added, skipped = {}, {}
-    local fp = state.footprint
-    for _, tile in pairs(event.tiles or {}) do
-      local tx, ty = tile.position.x, tile.position.y
-      if tx >= fp.x and tx < fp.x + fp.w
-         and ty >= fp.y and ty < fp.y + fp.h then
-        table.insert(state.sources, { x = tx, y = ty })
-        table.insert(added, string.format("(%d,%d)", tx, ty))
-      else
-        table.insert(skipped, string.format("(%d,%d)", tx, ty))
-      end
-    end
-    if #added > 0 then
-      player.print(string.format(
-        "[Factorion] +%d source(s) at %s; total %d.",
-        #added, table.concat(added, ","), #state.sources))
-    end
-    if #skipped > 0 then
-      player.print(string.format(
-        "[Factorion] Skipped %d source mark(s) outside footprint: %s. " ..
-        "Valid x=%d..%d y=%d..%d.",
-        #skipped, table.concat(skipped, ","),
-        fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
+script.on_event(defines.events.on_gui_click, function(event)
+  local element = event.element
+  if not element or not element.valid or element.name ~= SAVE_MARKER then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  save_marker_dialog(player, ensure_player_state(event.player_index))
+end)
+
+script.on_event("factorion-confirm-dialog", function(event)
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  local state = ensure_player_state(event.player_index)
+  if not state.picker or not player.gui.screen[MARKER_DIALOG] then return end
+  save_marker_dialog(player, state)
+end)
+
+script.on_event(defines.events.on_gui_closed, function(event)
+  if not event.element or not event.element.valid
+      or event.element.name ~= MARKER_DIALOG then return end
+  ensure_player_state(event.player_index).picker = nil
+end)
+
+script.on_event(defines.events.on_gui_opened, function(event)
+  local entity = event.entity
+  local role = endpoint_role(entity)
+  if not role then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  player.opened = nil
+  register_endpoint(entity)
+  open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
+end)
+
+local function endpoint_built(event)
+  local entity = event.entity or event.created_entity
+  local role = endpoint_role(entity)
+  if not role then return end
+  local item = event.tags and event.tags.factorion_item or nil
+  register_endpoint(entity, item)
+end
+
+script.on_event(defines.events.on_built_entity, endpoint_built)
+script.on_event(defines.events.on_robot_built_entity, endpoint_built)
+script.on_event(defines.events.script_raised_built, endpoint_built)
+script.on_event(defines.events.script_raised_revive, endpoint_built)
+
+script.on_event(defines.events.on_entity_cloned, function(event)
+  local source = endpoint_config(event.source)
+  if endpoint_role(event.destination) then
+    register_endpoint(event.destination, source and source.item or nil)
+  end
+end)
+
+script.on_event(defines.events.on_entity_settings_pasted, function(event)
+  local source = endpoint_config(event.source)
+  if source and endpoint_role(event.destination) then
+    register_endpoint(event.destination, source.item)
+  end
+end)
+
+script.on_event(defines.events.on_player_setup_blueprint, function(event)
+  local blueprint = event.stack or event.record
+  if not blueprint or not event.mapping then return end
+  for index, entity in pairs(event.mapping.get()) do
+    local config = endpoint_config(entity)
+    if config then
+      blueprint.set_blueprint_entity_tag(index, "factorion_item", config.item)
     end
   end
 end)
 
--- The "alt" variants of selection events have moved around between
--- Factorio versions. Wire up all three secondary modes so whichever the
--- player's modifier hits (Shift, Ctrl-Shift, etc.) records sinks.
+script.on_event(defines.events.on_player_toggled_alt_mode, function()
+  for _, config in pairs(storage.endpoints or {}) do
+    local entity = config.entity
+    if entity then refresh_endpoint_alt_icon(entity, config) end
+  end
+end)
 
-local function handle_sink_select(event, mode_name)
-  local state = ensure_player_state(event.player_index)
-  local player = game.get_player(event.player_index)
-  if not player then return end
+local function endpoint_entity_removed(event)
+  local entity = event.entity
+  if not entity or not entity.unit_number then return end
+  local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
+  destroy_endpoint_alt_icon(config)
+  destroy_sink_rate_label(config)
+  if storage.endpoints then storage.endpoints[entity.unit_number] = nil end
+end
 
-  if event.item == "factorion-footprint-tool" then
-    -- any secondary on the footprint = clear it
-    state.footprint = nil
-    state.sources = {}
-    state.sinks = {}
-    player.print(string.format("[Factorion] Footprint cleared (via %s).", mode_name))
+script.on_event(defines.events.on_player_mined_entity, endpoint_entity_removed)
+script.on_event(defines.events.on_robot_mined_entity, endpoint_entity_removed)
+script.on_event(defines.events.on_entity_died, endpoint_entity_removed)
+script.on_event(defines.events.script_raised_destroy, endpoint_entity_removed)
 
-  elseif event.item == "factorion-marker-tool" then
-    if not state.footprint then
-      player.print("[Factorion] Set a footprint first.")
-      return
-    end
-    local added, skipped = {}, {}
-    local fp = state.footprint
-    for _, tile in pairs(event.tiles or {}) do
-      local tx, ty = tile.position.x, tile.position.y
-      if tx >= fp.x and tx < fp.x + fp.w
-         and ty >= fp.y and ty < fp.y + fp.h then
-        table.insert(state.sinks, { x = tx, y = ty })
-        table.insert(added, string.format("(%d,%d)", tx, ty))
-      else
-        table.insert(skipped, string.format("(%d,%d)", tx, ty))
-      end
-    end
-    if #added > 0 then
-      player.print(string.format(
-        "[Factorion] +%d sink(s) at %s; total %d. (via %s)",
-        #added, table.concat(added, ","), #state.sinks, mode_name))
-    end
-    if #skipped > 0 then
-      player.print(string.format(
-        "[Factorion] Skipped %d sink mark(s) outside footprint: %s. " ..
-        "Valid x=%d..%d y=%d..%d.",
-        #skipped, table.concat(skipped, ","),
-        fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
+local function feed_source(mark, entity)
+  for line_index = 1, entity.get_max_transport_line_index() do
+    local line = entity.get_transport_line(line_index)
+    -- Four unstacked items fit on a one-tile lane. Eight attempts also fill
+    -- stacked lanes while remaining bounded if another mod changes belt rules.
+    for _ = 1, 8 do
+      if not line.can_insert_at_back() then break end
+      if not line.insert_at_back({ name = mark.item, count = 1 }) then break end
     end
   end
 end
 
-script.on_event(defines.events.on_player_alt_selected_area, function(e)
-  handle_sink_select(e, "alt_select")
-end)
-script.on_event(defines.events.on_player_reverse_selected_area, function(e)
-  handle_sink_select(e, "reverse_select")
-end)
-script.on_event(defines.events.on_player_alt_reverse_selected_area, function(e)
-  handle_sink_select(e, "alt_reverse_select")
-end)
+local function drain_sink(mark, entity)
+  local removed_total = 0
+  local left = entity.position.x - 0.51
+  local right = entity.position.x + 0.51
+  local top = entity.position.y - 0.51
+  local bottom = entity.position.y + 0.51
+  for line_index = 1, entity.get_max_transport_line_index() do
+    local line = entity.get_transport_line(line_index)
+    local removals = {}
+    for _, detail in ipairs(line.get_detailed_contents()) do
+      local stack = detail.stack
+      if stack.valid_for_read then
+        local position = line.get_line_item_position(detail.position)
+        if position.x >= left and position.x <= right
+            and position.y >= top and position.y <= bottom then
+          local quality = stack.quality and stack.quality.name or nil
+          local key = stack.name .. "\0" .. (quality or "")
+          local removal = removals[key]
+          if not removal then
+            removal = { name = stack.name, quality = quality, count = 0 }
+            removals[key] = removal
+          end
+          removal.count = removal.count + stack.count
+        end
+      end
+    end
+    for _, removal in pairs(removals) do
+      local request = { name = removal.name, count = removal.count }
+      if removal.quality then request.quality = removal.quality end
+      local removed = line.remove_item(request)
+      if removal.name == mark.item then
+        removed_total = removed_total + removed
+      end
+    end
+  end
+  return removed_total
+end
+
+local function sample_sink_throughput(config, entity)
+  local elapsed = game.tick - (config.throughput_last_sample_tick or game.tick)
+  if elapsed < SINK_RATE_SAMPLE_TICKS then return end
+
+  local sample = {
+    count = config.throughput_pending_count or 0,
+    ticks = elapsed,
+  }
+  local samples = config.throughput_samples or {}
+  table.insert(samples, sample)
+  config.throughput_samples = samples
+  config.throughput_pending_count = 0
+  config.throughput_last_sample_tick = game.tick
+  config.throughput_total_count =
+    (config.throughput_total_count or 0) + sample.count
+  config.throughput_total_ticks =
+    (config.throughput_total_ticks or 0) + sample.ticks
+
+  while config.throughput_total_ticks > SINK_RATE_WINDOW_TICKS
+      and #samples > 1 do
+    local expired = table.remove(samples, 1)
+    config.throughput_total_count =
+      config.throughput_total_count - expired.count
+    config.throughput_total_ticks =
+      config.throughput_total_ticks - expired.ticks
+  end
+
+  if config.throughput_total_ticks > 0 then
+    config.throughput_rate =
+      config.throughput_total_count * 60 / config.throughput_total_ticks
+  else
+    config.throughput_rate = 0
+  end
+  refresh_sink_rate_label(entity, config)
+end
+
+local function service_endpoint_belts()
+  for unit_number, config in pairs(storage.endpoints or {}) do
+    local entity = config.entity
+    if not entity or not endpoint_role(entity) then
+      destroy_endpoint_alt_icon(config)
+      storage.endpoints[unit_number] = nil
+    elseif config.role == "source" then
+      feed_source(config, entity)
+    else
+      config.throughput_pending_count =
+        (config.throughput_pending_count or 0) + drain_sink(config, entity)
+      sample_sink_throughput(config, entity)
+    end
+  end
+end
 
 script.on_event("factorion-reset", function(event)
   local state = ensure_player_state(event.player_index)
+  cancel_pending(state)
+  destroy_footprint_render(state)
+  clear_predicted_entities(state)
   state.footprint = nil
-  state.sources = {}
-  state.sinks = {}
   local player = game.get_player(event.player_index)
-  if player then player.print("[Factorion] State cleared.") end
-end)
-
--- ----------------------------------------------------------------------------
--- direction inference: a source on the west edge faces east, etc.
--- ----------------------------------------------------------------------------
-
-local function dir_toward_center(rel_x, rel_y, size)
-  -- "Toward center" snapped to cardinal. Larger of the two distances-to-
-  -- edge-center wins. Returns the Factorion Direction enum: 1=N,2=E,3=S,4=W.
-  local mid = (size - 1) / 2
-  local dx = mid - rel_x
-  local dy = mid - rel_y
-  if math.abs(dx) >= math.abs(dy) then
-    if dx >= 0 then return 2 else return 4 end  -- east or west
-  else
-    if dy >= 0 then return 3 else return 1 end  -- south or north
+  if player then
+    close_marker_dialog(player, state)
+    player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
   end
-end
+end)
 
 -- ----------------------------------------------------------------------------
 -- execute: write a request JSON the server picks up
 -- ----------------------------------------------------------------------------
-
-local function world_to_rel(p, fp)
-  return p.x - fp.x, p.y - fp.y
-end
-
-local function in_footprint(rel_x, rel_y, fp)
-  return rel_x >= 0 and rel_x < fp.w and rel_y >= 0 and rel_y < fp.h
-end
 
 local function new_request_id()
   return string.format("%d-%d-%d", game.tick,
     math.random(0, 2^30), math.random(0, 2^30))
 end
 
-local function build_footprint_mask(fp)
-  -- For now: every tile in the bbox is buildable. Later we may let the
-  -- player exclude tiles inside the bbox.
-  local tiles = {}
-  for y = 0, fp.h - 1 do
-    for x = 0, fp.w - 1 do
-      table.insert(tiles, { x, y })
-    end
+local function gather_existing_entities(state, surface, fp)
+  local predicted = {}
+  for _, unit_number in ipairs(state.predicted_entities or {}) do
+    predicted[unit_number] = true
   end
-  return tiles
-end
 
--- Map our arrow virtual signals to the Factorion Direction enum.
-local ARROW_TO_DIR = {
-  ["up-arrow"] = 1, ["right-arrow"] = 2,
-  ["down-arrow"] = 3, ["left-arrow"] = 4,
-}
+  local result = {}
+  local candidates = surface.find_entities_filtered({
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+    name = MODEL_ENTITY_NAMES,
+  })
+  for _, entity in pairs(candidates) do
+    if not predicted[entity.unit_number] then
+      local direction = entity.type == "assembling-machine"
+        and 0 or FACTORIO_TO_DIRECTION[entity.direction]
+      if direction then
+        -- Factorio stores an inserter's drop direction; the model stores its
+        -- pickup direction.
+        if entity.type == "inserter" then
+          direction = OPPOSITE_DIRECTION[direction]
+        end
 
-local function parse_combinator_marker(combi)
-  -- Inspect a constant-combinator's first section for our identifying
-  -- filters: signal-output / signal-input + arrow + item. Returns
-  --   { role="source"|"sink", item=<name>, direction=<1..4> }
-  -- or nil if this combinator isn't one of our markers.
-  local cb = combi.get_control_behavior()
-  if not cb or not cb.sections then return nil end
-  for _, section in pairs(cb.sections) do
-    local item_name, role, direction = nil, nil, nil
-    local n = section.filters_count or 0
-    for i = 1, n do
-      local f = section.get_slot(i)
-      if f and f.value and f.value.name then
-        local name = f.value.name
-        local typ = f.value.type
-        if name == "signal-output" then role = "source"
-        elseif name == "signal-input" then role = "sink"
-        elseif ARROW_TO_DIR[name] then direction = ARROW_TO_DIR[name]
-        elseif typ == nil or typ == "item" then item_name = name
+        local width = entity.prototype.tile_width
+        local height = entity.prototype.tile_height
+        if direction == 2 or direction == 4 then
+          width, height = height, width
+        end
+        local world_x = math.floor(entity.position.x - width / 2 + 0.0001)
+        local world_y = math.floor(entity.position.y - height / 2 + 0.0001)
+        local rx, ry = world_x - fp.x, world_y - fp.y
+
+        -- An entity crossing the region boundary cannot be represented as a
+        -- complete model unit, so leave it out rather than supplying a clipped
+        -- and misleading footprint.
+        if rx >= 0 and ry >= 0 and rx + width <= fp.w and ry + height <= fp.h then
+          local entry = {
+            name = entity.name,
+            x = rx,
+            y = ry,
+            direction = direction,
+          }
+          if entity.type == "assembling-machine" then
+            local recipe = entity.get_recipe()
+            if recipe then entry.item = recipe.name end
+          end
+          if entity.type == "underground-belt" then
+            if entity.belt_to_ground_type == "input" then
+              entry.misc = 1
+            elseif entity.belt_to_ground_type == "output" then
+              entry.misc = 2
+            end
+          end
+          table.insert(result, entry)
         end
       end
     end
-    if role then
-      return { role = role, item = item_name, direction = direction or 2 }
-    end
   end
-  return nil
+  return result
 end
 
-local function scan_footprint_for_markers(player, fp)
-  -- Returns (sources, sinks), each a list of {x_world, y_world, direction, item}.
-  -- Coordinates are world tiles (floor of the combinator's centre).
-  local sources, sinks = {}, {}
-  if not player or not player.surface then return sources, sinks end
-  local found = player.surface.find_entities_filtered{
+local function gather_request(state, player_index)
+  local fp = state.footprint
+  local default_item = get_default_item()
+  local player = game.get_player(player_index)
+
+  local sources = {}
+  local sinks = {}
+  local model_entities = gather_existing_entities(state, player.surface, fp)
+  local entities = player.surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
-    name = "constant-combinator",
-  }
-  for _, combi in pairs(found) do
-    local m = parse_combinator_marker(combi)
-    if m then
+    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+  })
+  for _, entity in pairs(entities) do
+    local x, y = math.floor(entity.position.x), math.floor(entity.position.y)
+    local rx, ry = x - fp.x, y - fp.y
+    if rx >= 0 and rx < fp.w and ry >= 0 and ry < fp.h then
+      local config = register_endpoint(entity)
+      if not config then goto continue end
       local entry = {
-        x = math.floor(combi.position.x),
-        y = math.floor(combi.position.y),
-        direction = m.direction,
-        item = m.item,
+        x = rx, y = ry,
+        direction = FACTORIO_TO_DIRECTION[entity.direction],
+        item = config.item or default_item,
       }
-      if m.role == "source" then
+      if config.role == "source" then
         table.insert(sources, entry)
       else
         table.insert(sinks, entry)
       end
     end
-  end
-  return sources, sinks
-end
-
-local function gather_request(state, player_index)
-  local fp = state.footprint
-  local size = get_grid_size()
-  local default_item = get_default_item()
-  local player = game.get_player(player_index)
-
-  -- Prefer in-world constant-combinators with our identifying filters.
-  -- Falls back to the click-tool state lists if no combinators are
-  -- found inside the footprint.
-  local from_world_src, from_world_snk = scan_footprint_for_markers(player, fp)
-  local raw_sources = (#from_world_src > 0) and from_world_src or state.sources
-  local raw_sinks = (#from_world_snk > 0) and from_world_snk or state.sinks
-  local source_provenance = (#from_world_src > 0) and "combinator" or "click-tool"
-  local sink_provenance = (#from_world_snk > 0) and "combinator" or "click-tool"
-
-  local sources = {}
-  for _, s in ipairs(raw_sources) do
-    local rx, ry = world_to_rel(s, fp)
-    if in_footprint(rx, ry, fp) then
-      table.insert(sources, {
-        x = rx, y = ry,
-        direction = s.direction or dir_toward_center(rx, ry, size),
-        item = s.item or default_item,
-      })
-    end
-  end
-
-  local sinks = {}
-  for _, s in ipairs(raw_sinks) do
-    local rx, ry = world_to_rel(s, fp)
-    if in_footprint(rx, ry, fp) then
-      table.insert(sinks, {
-        x = rx, y = ry,
-        direction = s.direction or dir_toward_center(rx, ry, size),
-        item = s.item or default_item,
-      })
-    end
+    ::continue::
   end
 
   local provenance = string.format(
-    "%d source(s) from %s, %d sink(s) from %s",
-    #sources, source_provenance, #sinks, sink_provenance)
+    "%d existing supported entities, %d source belt(s), %d sink belt(s)",
+    #model_entities, #sources, #sinks)
 
   local request = {
     request_id    = new_request_id(),
-    player_index  = player_index,
-    grid_size     = size,
-    footprint     = build_footprint_mask(fp),
+    grid_size     = GRID_SIZE,
+    entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
-    default_item  = default_item,
   }
   return request, provenance
 end
 
--- Build a request from the player's current state (combinators preferred,
--- click-marks as fallback) and enqueue it for the server. Returns
+-- Build a request from the player's configured endpoint belts and enqueue it
+-- for the server. Returns
 -- (true, message) on success, (false, message) on a precheck failure.
-try_request_prediction = function(player_index)
+local function try_request_prediction(player_index)
   local state = ensure_player_state(player_index)
   ensure_pending_lookup()
   if not state.footprint then
     return false, "No footprint set."
   end
-  local request, provenance = gather_request(state, player_index)
-  if #request.sources == 0 and #request.sinks == 0 then
-    return false,
-      "No sources or sinks. Place a constant-combinator inside the " ..
-      "footprint (with signal-output/signal-input + an arrow + an item) " ..
-      "or use the marker tool."
+  if state.pending then
+    return false, "A prediction is already in progress."
   end
-  local request_json = json_encode(request)
+  local request, provenance = gather_request(state, player_index)
+  if #request.sources == 0 then
+    return false, "No source belt inside the region."
+  end
+  if #request.sinks == 0 then
+    return false, "No sink belt inside the region."
+  end
+  clear_predicted_entities(state)
+  local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = player_index
   state.pending = { request_id = request.request_id, tick = game.tick }
@@ -432,13 +776,28 @@ try_request_prediction = function(player_index)
     request.request_id, provenance)
 end
 
-json_encode = function(t)
-  -- Factorio 2.0 exposes helpers.table_to_json; the older `game.table_to_json`
-  -- is deprecated but kept for compat. Prefer helpers when present.
-  if helpers and helpers.table_to_json then
-    return helpers.table_to_json(t)
+local function describe_placement_failure(surface, fp, placement)
+  local left = fp.x + placement.tile_x
+  local top = fp.y + placement.tile_y
+  local blockers = {}
+  local found = surface.find_entities({
+    { left, top },
+    { left + placement.width, top + placement.height },
+  })
+  for _, entity in pairs(found) do
+    table.insert(blockers, entity.name)
   end
-  return game.table_to_json(t)
+  table.sort(blockers)
+  return string.format(
+    "error: Factorio refused %s at relative tile (%s,%s), " ..
+    "world tile (%d,%d) on %s; blockers=[%s]",
+    tostring(placement.name),
+    tostring(placement.tile_x),
+    tostring(placement.tile_y),
+    left,
+    top,
+    surface.name,
+    #blockers > 0 and table.concat(blockers, ", ") or "none")
 end
 
 script.on_event("factorion-execute", function(event)
@@ -449,7 +808,7 @@ script.on_event("factorion-execute", function(event)
 end)
 
 -- ----------------------------------------------------------------------------
--- RCON interface: server pushes the prediction back here
+-- RCON interface: server streams predictions back here
 -- ----------------------------------------------------------------------------
 
 -- Re-registration safety: remote.add_interface errors if the name already
@@ -470,64 +829,106 @@ remote.add_interface("factorion", {
     return table.remove(storage.outbox, 1)
   end,
 
-  -- Called via RCON: remote.call("factorion","deliver_blueprint", req_id, bp_str)
-  deliver_blueprint = function(request_id, blueprint_string)
+  -- Create one model-predicted entity at footprint-relative coordinates.
+  place_prediction = function(request_id, placement_json)
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
     if not player_index then
-      log("[Factorion] deliver_blueprint: unknown request_id " .. tostring(request_id))
-      return false
+      return "error: unknown request_id " .. tostring(request_id)
     end
-    storage.pending_by_request[request_id] = nil
 
-    -- player_index == 0 is the headless-test sentinel: log the blueprint
-    -- to factorio-current.log instead of trying to inject into a cursor
-    -- that doesn't exist (no player connected in --start-server-load-
-    -- scenario without admin auth).
     if player_index == 0 then
-      log("[Factorion] (headless) blueprint for " .. tostring(request_id) ..
-        " (" .. tostring(#blueprint_string) .. " chars): " ..
-        string.sub(blueprint_string, 1, 80) .. "...")
-      return true
+      log("[Factorion] (headless) placement for " .. tostring(request_id) ..
+        ": " .. tostring(placement_json))
+      return "ok"
     end
 
     local player = game.get_player(player_index)
-    if not player then return false end
+    if not player then return "error: requesting player is unavailable" end
+    local state = ensure_player_state(player_index)
+    local fp = state.footprint
+    if not fp then return "error: footprint was cleared" end
 
-    local cursor = player.cursor_stack
-    if not cursor then
-      player.print("[Factorion] No cursor_stack available.")
-      return false
+    local ok, placement = pcall(
+      function() return helpers.json_to_table(placement_json) end)
+    if not ok or not placement then return "error: invalid placement JSON" end
+    if not placement.name or not placement.tile_x or not placement.tile_y
+        or not placement.width or not placement.height then
+      return "error: incomplete placement"
     end
-    -- LuaItemStack:is_empty() was removed in 2.0; use valid_for_read instead.
-    if cursor.valid_for_read then
-      cursor.clear()
-    end
-    if not cursor.set_stack({ name = "blueprint", count = 1 }) then
-      player.print("[Factorion] Could not place blueprint in cursor.")
-      return false
-    end
-
-    local rc = cursor.import_stack(blueprint_string)
-    if rc < 0 then
-      player.print(string.format(
-        "[Factorion] Blueprint imported with warnings (rc=%d).", rc))
-    elseif rc > 0 then
-      player.print("[Factorion] Blueprint import failed.")
-      cursor.clear()
-      return false
-    else
-      player.print("[Factorion] Prediction ready. Paste it on your footprint.")
+    if placement.tile_x < 0 or placement.tile_y < 0
+        or placement.tile_x + placement.width > fp.w
+        or placement.tile_y + placement.height > fp.h then
+      return "error: placement lies outside the footprint"
     end
 
+    local params = {
+      name = placement.name,
+      position = { fp.x + placement.x, fp.y + placement.y },
+      direction = placement.direction,
+      force = player.force,
+      player = player,
+      raise_built = true,
+      create_build_effect_smoke = true,
+    }
+    if placement.type then params.type = placement.type end
+    if placement.recipe then params.recipe = placement.recipe end
+    local created, entity = pcall(
+      function() return player.surface.create_entity(params) end)
+    if not created then
+      return string.format(
+        "error: create_entity raised while placing %s at relative tile " ..
+        "(%s,%s): %s",
+        tostring(placement.name),
+        tostring(placement.tile_x),
+        tostring(placement.tile_y),
+        tostring(entity))
+    end
+    if not entity then
+      return describe_placement_failure(player.surface, fp, placement)
+    end
+
+    state.predicted_entities = state.predicted_entities or {}
+    if entity.unit_number then
+      table.insert(state.predicted_entities, entity.unit_number)
+    end
+    return "ok"
+  end,
+
+  -- Complete the streamed request and release its pending state.
+  finish_prediction = function(request_id, summary_json)
+    ensure_pending_lookup()
+    local player_index = storage.pending_by_request[request_id]
+    if not player_index then
+      return "error: unknown request_id " .. tostring(request_id)
+    end
+    storage.pending_by_request[request_id] = nil
+    if player_index == 0 then
+      log("[Factorion] (headless) prediction complete for " ..
+        tostring(request_id) .. ": " .. tostring(summary_json))
+      return "ok"
+    end
+
+    local player = game.get_player(player_index)
     local state = ensure_player_state(player_index)
     state.pending = nil
-    return true
+    local ok, summary = pcall(
+      function() return helpers.json_to_table(summary_json) end)
+    local reason = ok and summary and summary.stop_reason or "unknown"
+    if player then
+      player.print(string.format(
+        "[Factorion] Prediction complete: placed %d entities (stop: %s).",
+        #(state.predicted_entities or {}), tostring(reason)))
+    end
+    return "ok"
   end,
 
   -- Diagnostic: server can call this to check the mod is alive.
   ping = function()
     return "factorion-mod alive at tick " .. tostring(game.tick)
+  end,
+  protocol_version = function()
+    return "4"
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
@@ -537,7 +938,7 @@ remote.add_interface("factorion", {
   --
   -- Caller supplies the request JSON and a player_index to deliver the
   -- response to. In headless tests with no player connected, pass 0 to
-  -- signal "log the blueprint string instead of injecting into a cursor".
+  -- signal "log streamed placements instead of creating world entities".
   inject_request = function(request_json, deliver_to_player_index)
     storage.outbox = storage.outbox or {}
     storage.pending_by_request = storage.pending_by_request or {}
@@ -557,9 +958,11 @@ remote.add_interface("factorion", {
     storage.pending_by_request = storage.pending_by_request or {}
     local pending_n = 0
     for _ in pairs(storage.pending_by_request) do pending_n = pending_n + 1 end
-    return string.format("outbox=%d pending=%d players=%d",
+    local endpoint_n = 0
+    for _ in pairs(storage.endpoints or {}) do endpoint_n = endpoint_n + 1 end
+    return string.format("outbox=%d pending=%d players=%d endpoints=%d",
       #storage.outbox, pending_n,
-      storage.players and table_size(storage.players) or 0)
+      storage.players and table_size(storage.players) or 0, endpoint_n)
   end,
 
   -- Parity harness (server/parity.py): build a factory spec on the
@@ -585,22 +988,7 @@ remote.add_interface("factorion", {
             p.footprint.x, p.footprint.y, p.footprint.w, p.footprint.h)
           or "nil"
         table.insert(parts, string.format(
-          "player[%s]: footprint={%s} #sources=%d #sinks=%d",
-          tostring(k), fp, #(p.sources or {}), #(p.sinks or {})))
-        if p.sources and #p.sources > 0 then
-          local s = {}
-          for _, src in ipairs(p.sources) do
-            table.insert(s, string.format("(%d,%d)", src.x, src.y))
-          end
-          table.insert(parts, "  sources: " .. table.concat(s, ","))
-        end
-        if p.sinks and #p.sinks > 0 then
-          local s = {}
-          for _, snk in ipairs(p.sinks) do
-            table.insert(s, string.format("(%d,%d)", snk.x, snk.y))
-          end
-          table.insert(parts, "  sinks: " .. table.concat(s, ","))
-        end
+          "player[%s]: footprint={%s}", tostring(k), fp))
       end
     end
     if #parts == 0 then return "(no player state)" end
@@ -608,9 +996,12 @@ remote.add_interface("factorion", {
   end,
 })
 
--- Parity runs drive the game every tick while active; the handler
--- early-outs when no run is in flight, so it's free otherwise.
-script.on_event(defines.events.on_tick, parity.on_tick)
+-- Endpoint belts drive the player's factory; parity drives its isolated lab
+-- surface and early-outs when no run is active.
+script.on_event(defines.events.on_tick, function()
+  service_endpoint_belts()
+  parity.on_tick()
+end)
 
 -- ----------------------------------------------------------------------------
 -- migrations
@@ -620,10 +1011,25 @@ script.on_init(function()
   storage.players = {}
   storage.pending_by_request = {}
   storage.outbox = {}
+  storage.endpoints = {}
 end)
 
 script.on_configuration_changed(function()
   storage.players = storage.players or {}
   storage.pending_by_request = storage.pending_by_request or {}
   storage.outbox = storage.outbox or {}
+  storage.endpoints = storage.endpoints or {}
+  for _, player in pairs(game.players) do
+    local state = ensure_player_state(player.index)
+    state.predicted_entities = state.predicted_entities or {}
+    give_tools(player)
+    if state.footprint then draw_footprint(player, state) end
+  end
+  for _, surface in pairs(game.surfaces) do
+    for _, entity in pairs(surface.find_entities_filtered({
+      name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+    })) do
+      register_endpoint(entity)
+    end
+  end
 end)
