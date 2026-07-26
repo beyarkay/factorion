@@ -189,8 +189,9 @@ class PpoArgs(SharedArgs):
     """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""
-    eval_num_envs: int = 8
-    """Parallel envs for the greedy eval rollout."""
+    eval_num_envs: int = 16
+    """Parallel envs for the greedy eval rollout. Per-seed results are
+    independent of this, so it is purely a speed knob."""
     amp: bool = False
     """Run the policy/value forward passes under bf16 autocast (mixed precision).
     Speeds up the GPU matmuls; helps most when the GPU is the bottleneck (less so
@@ -280,11 +281,12 @@ class SftArgs(SharedArgs):
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
-    metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
-    eval_rollouts_num_envs: int = 8
-    """parallel envs for rollout eval; batches the CNN forward across them"""
+    metric (eval/thput), so it sets its noise floor. Drawn from val lessons."""
+    eval_rollouts_num_envs: int = 16
+    """parallel envs for rollout eval; batches the CNN forward across them.
+    Per-seed results are independent of this, so it is purely a speed knob."""
     rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
+    """EOT-head prob above which we mark the model "would stop" (for eval/thput)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208
