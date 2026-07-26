@@ -1047,7 +1047,6 @@ class TestRunRolloutEval:
         assert set(roll) == {
             "overall",
             "overall_eot",
-            "per_kind",
             "per_kind_eot",
             "per_kind_n",
             "asm_item_acc",
@@ -1060,9 +1059,9 @@ class TestRunRolloutEval:
             "per_kind_eot_step_n",
             "per_kind_eot_pos_n",
         }
-        overall, per_kind, per_kind_n = (
+        overall, per_kind_eot, per_kind_n = (
             roll["overall"],
-            roll["per_kind"],
+            roll["per_kind_eot"],
             roll["per_kind_n"],
         )
 
@@ -1072,7 +1071,7 @@ class TestRunRolloutEval:
         assert total_n == len(val_seeds_to_kind), (
             f"per-kind n totals {total_n}, expected {len(val_seeds_to_kind)}"
         )
-        for kn, thp in per_kind.items():
+        for kn, thp in per_kind_eot.items():
             assert 0.0 <= thp <= 1.5, f"{kn}: throughput out of range: {thp}"
 
     def test_default_max_level_evals_from_empty(self, registered_env):
