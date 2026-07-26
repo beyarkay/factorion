@@ -134,7 +134,7 @@ class TestPerHeadEntropyStash:
         assert entropy_B.mean().detach().item() == pytest.approx(head_sum, abs=1e-4)
 
 
-# ── per-episode rollout metrics (overall + per-lesson, raw + normalized) ──────
+# ── per-episode rollout metrics (overall + per-lesson) ───────────────────────
 
 
 class TestRolloutEpisodeMetrics:
@@ -151,7 +151,6 @@ class TestRolloutEpisodeMetrics:
             min_entities_required=3.0,
             frac_reachable=0.75,
             entity_cost=12.5,
-            cost_efficiency=0.9,
         )
 
     def test_overall_logs_raw_and_normed_throughput(self):
@@ -159,19 +158,20 @@ class TestRolloutEpisodeMetrics:
         assert m["rollout/thput"] == pytest.approx(0.6)
         assert m["rollout/thput_raw"] == pytest.approx(9.0)
 
-    def test_per_lesson_logs_raw_throughput(self):
-        # The ASSERT: raw items/s must be logged per lesson, not just overall.
+    def test_per_lesson_logs_normed_throughput_only(self):
+        # Per lesson the ceiling is fixed, so raw is an affine rescaling of
+        # normed and adds no signal — only the normalized key is logged.
         m = self._metrics("SPLITTER_SPLIT")
-        assert m["rollout/SPLITTER_SPLIT/thput_raw"] == pytest.approx(9.0)
         assert m["rollout/SPLITTER_SPLIT/thput"] == pytest.approx(0.6)
+        assert "rollout/SPLITTER_SPLIT/thput_raw" not in m
 
-    def test_every_lesson_kind_gets_a_per_lesson_raw_key(self):
+    def test_every_lesson_kind_gets_a_per_lesson_thput_key(self):
         for kind in LessonKind:
             m = _rollout_episode_metrics(
                 kind.name,
                 episode_return=0.0,
                 episode_len=1.0,
-                thput_normed=0.0,
+                thput_normed=0.25,
                 thput_raw=1.23,
                 ended_by_eot=0.0,
                 invalid_frac=0.0,
@@ -179,9 +179,8 @@ class TestRolloutEpisodeMetrics:
                 min_entities_required=1.0,
                 frac_reachable=0.0,
                 entity_cost=4.0,
-                cost_efficiency=0.95,
             )
-            assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
+            assert m[f"rollout/{kind.name}/thput"] == pytest.approx(0.25)
 
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()
@@ -191,8 +190,9 @@ class TestRolloutEpisodeMetrics:
         m = self._metrics("SPLITTER_SPLIT")
         assert m["rollout/entity_cost"] == pytest.approx(12.5)
         assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
-        assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
-        assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
+        # cost_efficiency is a deterministic function of entity_cost, so only
+        # the cost itself is logged.
+        assert "rollout/cost_efficiency" not in m
 
 
 # ── critic (value-head) diagnostics (global + per-lesson) ────────────────────

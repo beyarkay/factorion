@@ -267,8 +267,8 @@ def _build_eval_set(args) -> dict:
 
 
 def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/thput so
-    the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
+    """Greedy held-out throughput eval. Logs the same eval/* keys SFT does
+    (same helper, same semantics) so the curves overlay on one panel. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
     from types import SimpleNamespace
@@ -332,15 +332,16 @@ def _rollout_episode_metrics(
     min_entities_required: float,
     frac_reachable: float,
     entity_cost: float,
-    cost_efficiency: float,
 ) -> dict:
     """Build the rollout/* metrics for one finished episode (overall + per-lesson).
 
     Pure (no wandb/torch) so it can be unit-tested. The per-lesson keys carry
-    the lesson name, so each averages over only that lesson's episodes. Both the
-    overall and per-lesson views log thput_raw (items/s) alongside the
-    normalized throughput, so lessons with very different ceilings (belts ~15/s
-    vs assemblers <1/s) stay comparable in raw terms.
+    the lesson name, so each averages over only that lesson's episodes. Only the
+    overall view logs thput_raw (items/s), since it is the reward's actual input;
+    per lesson it is an affine rescaling of thput (same fixed ceiling), so it
+    carries no signal the normalized view doesn't. cost_efficiency is likewise
+    absent: it is 1/(1 + entity_cost_scale * entity_cost), so entity_cost plus
+    reward already pin it down.
     """
     return {
         "rollout/thput": float(thput_normed),
@@ -353,14 +354,11 @@ def _rollout_episode_metrics(
         "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
         "rollout/frac_reachable": float(frac_reachable),
         "rollout/entity_cost": float(entity_cost),
-        "rollout/cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
         f"rollout/{lesson}/thput": float(thput_normed),
-        f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
-        f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
 
 
@@ -1801,7 +1799,6 @@ if __name__ == "__main__":
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
-        wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
@@ -1809,12 +1806,11 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+                  "frac_reachable", "entity_cost"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
+                "thput", "reward", "length", "entity_cost",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
@@ -1822,7 +1818,7 @@ if __name__ == "__main__":
         for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
             wandb.define_metric(f"policy/entropy_{h}", summary="last")
         for m in ["policy", "value", "entropy", "total", "approx_kl",
-                  "clipfrac", "explained_variance"]:
+                  "clipfrac"]:
             wandb.define_metric(f"losses/{m}", summary="last")
         for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
                   "return_mean", "value_std", "return_std", "value_return_corr",
@@ -2069,7 +2065,7 @@ if __name__ == "__main__":
         return means
 
     # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
-    # eval/* — directly comparable to the SFT baseline's val/thput.
+    # eval/* — the same keys the SFT baseline logs.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
@@ -2235,7 +2231,6 @@ if __name__ == "__main__":
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
-                        cost_efficiency=infos["cost_efficiency"][i],
                     ))
 
         rollout_seconds = time.time() - rollout_start
@@ -2360,7 +2355,6 @@ if __name__ == "__main__":
             values_B.cpu().numpy(), returns_B.cpu().numpy(),
             advantages_B.cpu().numpy(), kinds_SE.reshape(-1),
         )
-        explained_var = critic_metrics["critic/explained_variance"]  # losses/* back-compat
 
         update_seconds = time.time() - update_start
         rollout_seconds_hist.append(rollout_seconds)
@@ -2375,7 +2369,6 @@ if __name__ == "__main__":
             t_eval = time.time()
             eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
             eval_seconds = time.time() - t_eval
-            eval_metrics["eval/seconds"] = eval_seconds
 
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
@@ -2387,7 +2380,6 @@ if __name__ == "__main__":
             "losses/total": loss.item(),
             "losses/approx_kl": float(approx_kl),
             "losses/clipfrac": float(torch.stack(clipfracs).mean()) if clipfracs else 0.0,
-            "losses/explained_variance": explained_var,
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.
             "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,

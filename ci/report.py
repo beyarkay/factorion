@@ -136,15 +136,18 @@ def compare_metric_rows(
 # Metrics surfaced OUTSIDE the <details> block of a report (the full
 # every-metric table sits inside it). Ordered regexes; a metric is headline
 # when any matches, and headline rows sort by first-matching pattern. Lesson
-# names are matched, never hardcoded (`val/{LESSON}/thput` covers every
-# current and future lesson). SFT (val/) and PPO (eval/, rollout/, ...) key
-# spaces are disjoint, so one list serves both kinds.
+# names are matched, never hardcoded (`eval/{LESSON}/thput` covers every
+# current and future lesson). One list serves both kinds: `eval/` is shared
+# (sft.py and ppo.py log it from the same greedy rollout), `val/` is
+# SFT-only and `rollout/` PPO-only.
 HEADLINE_PATTERNS = [
-    # SFT: throughput first (overall then per-lesson), then accuracies
-    # (overall then per-head; the head names come from the [a-z]+_acc shape,
-    # which deliberately excludes per-lesson accs like val/{LESSON}/acc).
-    r"^val/thput$",
-    r"^val/[A-Z0-9_]+/thput$",
+    # Greedy held-out throughput, the headline for both kinds (overall then
+    # per-lesson).
+    r"^eval/thput$",
+    r"^eval/[A-Z0-9_]+/thput$",
+    # SFT: teacher-forced accuracies (overall then per-head; the head names
+    # come from the [a-z]+_acc shape, which deliberately excludes per-lesson
+    # accs like val/{LESSON}/acc).
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
     # PPO: on-policy rollout health (overall then per-lesson), then speed.
@@ -227,7 +230,7 @@ def render_compare_markdown(
 
 
 # ── Assertions ─────────────────────────────────────────────────────
-# e.g. "pr:val/thput > main:val/thput" — evaluated on group means. Sides:
+# e.g. "pr:eval/thput > main:eval/thput" — evaluated on group means. Sides:
 # pr: = the PR's commit, main: = the baseline (test:/base: kept as aliases);
 # a bare number is a constant threshold. == and ~= mean approximately equal
 # (|lhs - rhs| <= tolerance): exact float equality on run means would
@@ -522,9 +525,8 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
 
 # Headline columns for the history CSV: one stable, plottable row per CI run.
 HISTORY_METRICS = [
-    "val/thput",
-    "val/acc",
     "eval/thput",
+    "val/acc",
     "rollout/thput",
     "moving_avg_throughput",
 ]
