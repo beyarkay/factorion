@@ -1,6 +1,6 @@
 # ci/sweep_ppo.yaml — re-tune the PPO knobs now that the update loop actually runs
 #
-# Launched with: /ci sweep ppo --pods 6
+# Launched with: /ci sweep ppo --pods 4
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
