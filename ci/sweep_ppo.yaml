@@ -1,27 +1,220 @@
-# ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
+# ci/sweep_ppo.yaml — re-tune the PPO knobs now that the update loop actually runs
 #
-# Launched with: /ci sweep ppo
+# Launched with: /ci sweep ppo --pods 4
+# Sweep results are reported (ci sweep-report), not auto-applied —
+# hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Every run uses this branch and the same training configuration. The only
-# swept value is eta, exposed by PpoArgs as entity_cost_scale:
+# WHY NOW. #337 found that the self-attention stack ignored --dropout, so the
+# policy forward was stochastic and the update's recomputed log-probs never
+# matched the acting ones: approx_kl read 0.27-0.36 with the actor *frozen*.
+# target_kl=0.02 therefore broke the epoch loop after epoch 1 on every single
+# iteration, so every PPO run this project has ever done effectively ran
+# `update_epochs=1` and had no trust region at all. The whole PPO update-loop
+# family — update_epochs, target_kl, clip_coef, num_minibatches — is thus
+# UNVALIDATED, and learning_rate (co-tuned against those broken updates, and
+# now facing up to 8x the gradient work per iteration) has to be re-searched
+# jointly with them. That is the core of this sweep.
 #
-#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
+# Architecture is NOT swept: every run finetunes the same checkpoint
+# (--start-from h76h80yb), so size / layer1-8 / kernel_size / attn_* /
+# global_feat_dim are fixed by the checkpoint and would fail to load.
+#
+# Metric is eval/thput (EOT-respecting greedy held-out throughput, normalised
+# per factory). It has to be — this sweep varies the reward function itself
+# (entity_cost_scale, reward_symlog_r0), so rollout/reward is not comparable
+# across runs, whereas normalised throughput is.
 
-method: grid
+# The bar: #340's compare measured h76h80yb at eval/thput 0.797 after 1.5M PPO
+# steps on main's defaults. That is what a swept config has to beat. (CLAUDE.md
+# still cites 0.11 for the older j0s5y2mc base — stale, ignore it.)
+#
+# #339's blocker 3 (mask the tile head during rollout) is NOT applied here and
+# should not be: #340 tested legal_mask=True from this exact base and it came
+# out slightly worse (eval/thput 0.797 -> 0.757, rollout/thput 0.799 -> 0.712,
+# 1 seed). rollout/invalid_frac is already 0.28% from a pretrained policy, so
+# the mask has almost nothing to fix — blocker 3 is a from-scratch finding that
+# does not transfer to a finetune.
+
+method: bayes
+run_cap: 48
 metric:
   name: "eval/thput"
   goal: maximize
 
 parameters:
+  # ── The update loop (never actually exercised before #337) ────────
+  # update_epochs x target_kl x clip_coef jointly define the trust region;
+  # they only mean anything together, so they are swept together.
+  update_epochs:
+    distribution: int_uniform
+    min: 1
+    max: 8
+
+  # No None here (a sweep cannot emit it), but the top of the range is
+  # effectively "no early stop" — approx_kl rarely reaches 0.5.
+  target_kl:
+    distribution: log_uniform_values
+    min: 0.005
+    max: 0.5
+
+  clip_coef:
+    distribution: uniform
+    min: 0.05
+    max: 0.3
+
+  # batch_size is 4096 (16 envs x 256 steps), so this is minibatch
+  # 512 / 256 / 128 / 64. Covers the minibatch-size axis; num_envs and
+  # num_steps stay pinned (see the exclusions below).
+  num_minibatches:
+    values: [8, 16, 32, 64]
+
+  # Widened downward: real multi-epoch updates take up to 8x more gradient
+  # steps per iteration than the 3.369e-5 default was tuned against.
+  learning_rate:
+    distribution: log_uniform_values
+    min: 5.0e-6
+    max: 3.0e-4
+
+  # ── Reward shaping ───────────────────────────────────────────────
+  # reward = log1p(thput_raw / (1 + entity_cost_scale*cost) / reward_symlog_r0)
+  # Both knobs reshape that terminal reward, and they interact (the cost
+  # penalty is applied inside the compression), so neither is meaningful to
+  # tune alone.
+  #
+  # Continuous rather than a values-list: W&B's Bayes optimiser one-hot-encodes
+  # `values`, so it cannot tell that 3e-3 lies between 1e-3 and 1e-2 — on knobs
+  # this smooth that throws away most of the sample efficiency a 48-run budget
+  # needs. Neither knob's "0 = stage off" sentinel is worth the categorical
+  # encoding, because both ranges reach that regime numerically anyway (below),
+  # and whether the stages help at all is #336's compare, not this sweep.
+
+  # Floor is off in all but name: at cost 242 (the most expensive lesson,
+  # FACTORY_1_INGREDIENT) 1e-5 costs 0.2% of the reward. Top stays at the
+  # previous grid's max, already a 71% penalty there.
   entity_cost_scale:
-    values:
-      - 0.0
-      - 1.0e-4
-      - 1.0e-3
-      - 1.0e-2
+    distribution: log_uniform_values
+    min: 1.0e-5
+    max: 1.0e-2
+
+  # Spread between the highest- and lowest-ceiling lesson (15 vs 0.043 items/s)
+  # across this range: 2.5x at 1e-3, 4.4x at the 1e-2 default, 66x at 1 (plain
+  # symlog), 214x at 10 — against 349x uncompressed, so the top is compression
+  # off in all but name. Deliberately stops at 10: r0 sets the absolute reward
+  # magnitude as well as the compression knee (max reward 9.6 -> 0.92 across
+  # this range), and since v_loss is squared error on returns, that scale is
+  # confounded with vf_coef. Sweeping vf_coef jointly lets Bayes compensate;
+  # extending to 100 would push the confound to ~1e4 in v_loss terms.
+  reward_symlog_r0:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 10.0
+
+  # ── Knobs the reward change and the real update loop invalidate ──
+  # vf_coef balances value loss against policy loss, so symlog's rescaling of
+  # the return distribution moves its optimum directly.
+  vf_coef:
+    distribution: uniform
+    min: 0.25
+    max: 1.5
+
+  # Clipping bites much harder when a rollout is replayed up to 8 times.
+  max_grad_norm:
+    distribution: uniform
+    min: 0.3
+    max: 2.5
+
+  # ent_coef is a linear interpolation start -> end, so a swept start against
+  # the 7.372e-4 default end would anneal entropy *upward* over most of the
+  # range. Pinning end at 0 makes the schedule a decay-to-zero for every run
+  # (CLAUDE.md's finetuning guidance) and leaves start as the one real knob.
+  ent_coef_start:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 0.02
+  ent_coef_end:
+    value: 0
+
+  # The reward is terminal-only over episodes of up to size*size = 121 steps,
+  # so gamma is the credit-assignment knob: at the 0.9566 default the first
+  # placement keeps 0.9566^121 ~ 0.5% of the factory's reward. The range is
+  # pushed toward 1 to test whether that is starving early placements.
+  gamma:
+    distribution: uniform
+    min: 0.95
+    max: 0.9995
+
+  gae_lambda:
+    distribution: uniform
+    min: 0.85
+    max: 0.99
+
+  # ── Pinned, not swept ────────────────────────────────────────────
+  # Pinned because this loop cannot currently use dropout — not because dropout
+  # and RL are incompatible. #337 fixed the attention stack ignoring this flag;
+  # it did not make values above 0 usable. ppo.py never calls .eval(), and
+  # torch.no_grad() does not disable dropout, so the rollout and the update each
+  # draw independent masks: at identical weights the recomputed log-probs
+  # disagree with the acting ones and every importance ratio is corrupted. It
+  # also trips the critic-warm-up `approx_kl < _WARMUP_KL_TOL` assert, so such a
+  # run hard-fails in its first iterations instead of quietly producing garbage.
+  # Making dropout sweepable needs eval-mode rollouts, or masks cached at act
+  # time and replayed in the update — a code change, not a sweep entry.
+  dropout:
+    value: 0
+
+# Deliberately excluded (do not add these back without a reason):
+#   * tile_head_std — a NO-OP under --start-from. It is applied at
+#     construction and then overwritten by load_state_dict; only the critic
+#     head is re-initialised after the load (ppo.py, `layer_init(agent.
+#     critic_head[-1], ...)`). The previous sweep swept it and burned a
+#     dimension on nothing.
+#   * async_envs / amp — EXPERIMENT_LOG.md calls these dead ends, but that
+#     verdict is STALE and should not be read as settled: it was last measured
+#     2026-07-05, before the attention stack (#314, 07-21) and before the update
+#     loop ran more than one epoch (#337, 07-25). Every one of those findings
+#     rested on "the rollout is CPU-bound and the GPU work is ~0", which a
+#     192-dim 4-layer transformer over 121 tokens plus 8x the update work is
+#     exactly what breaks. They are still excluded HERE because they are speed
+#     knobs: neither moves eval/thput, so Bayes would fit noise on those axes.
+#     Re-test them in `bench_measure.sh ppo-speed`, which is the instrument
+#     that measures what they actually change.
+#   * num_envs / num_steps — same stale verdict, but unlike the two above these
+#     are real learning knobs (they set batch_size, and num_steps sets the GAE
+#     truncation horizon), so they DO belong in a quality sweep. They are held
+#     out because eval_every counts ITERATIONS, not timesteps: at 1M steps a
+#     512-sample batch runs 1953 iterations = 279 evals (~4.5 h of pure eval)
+#     against 34 evals (~0.5 h) at the default 4096, so small-batch runs would
+#     burn their budget evaluating AND have the metric sampled on a different
+#     cadence than large-batch ones — an unfair comparison baked into the
+#     sweep. num_minibatches > batch_size also divides to minibatch_size 0 and
+#     raises ValueError. Make eval_every timestep-based first, then sweep them.
+#   * critic_warmup / critic_lr_mult / critic_head_std — startup transients
+#     worth ~9 iterations of a 244-iteration run; dropped for the same reason
+#     the 2M sweep dropped them, and pinned at their defaults.
+#   * adam_epsilon — left out to keep the budget on the 12 axes above. The old
+#     sweep ranked it the third most important knob, but that sweep ran through
+#     the broken update loop, so the ranking is worthless: it is not evidence
+#     that adam_epsilon matters, nor evidence that it doesn't. Add it back when
+#     there is budget for a 13th axis.
 
 program: ppo.py
 
+# Plain `python`: on a CI pod deps are installed system-wide; locally, run the
+# agent under `uv run wandb agent <sweep>` so the venv python is on PATH.
+#
+# 1M steps ~= 244 iterations at batch 4096, ~34 evals. Cost is dominated by the
+# UPDATE, not the rollout, and scales linearly with update_epochs: #340's pod
+# run (update_epochs 8, 32 minibatches, torch.compile, this same base) measured
+# update 16.44 s vs rollout 1.21 s per iteration — the update is 93% of it.
+#
+# So per-run cost tracks the swept update_epochs x num_minibatches corner:
+#   E=1,  8 minibatches  ~0.2 h      E=8, 32 minibatches  ~1.3 h (measured)
+#   E=8, 64 minibatches  ~2.4 h
+# Average ~1 h, so 48 runs is roughly 48 pod-hours: --pods 4 drains it in ~12 h,
+# well inside the 24 h sweep pod budget. Do NOT size this off #339's 58 steps/s
+# — that is MPS without torch.compile, and #339 says as much; the pods measure
+# 271 steps/s. max_seconds cannot cap a slow run either: it is nested inside the
+# target_metric block (ppo.py) and is inert unless target_metric is set.
 command:
   - ${env}
   - python
@@ -29,6 +222,6 @@ command:
   - --start-from
   - h76h80yb
   - --total-timesteps
-  - 2_000_000
+  - 1_000_000
   - --track
   - ${args}
