@@ -27,7 +27,7 @@ from ppo import (  # noqa: E402
     _pearson_corr,
     _critic_diagnostics,
 )
-from factorion import LessonKind, build_factory  # noqa: E402
+from factorion import LESSON_IS_TRIAL, LessonKind, build_factory  # noqa: E402
 from helpers import Channel  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -193,6 +193,66 @@ class TestRolloutEpisodeMetrics:
         assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
         assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
         assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
+
+
+class TestTrialRolloutMetricsAreSeparate:
+    """A trial episode must never land in the lesson aggregate: rollout/thput
+    is quoted against the SFT baseline, and trials have no imitation baseline."""
+
+    def _metrics(self, lesson, is_trial):
+        return _rollout_episode_metrics(
+            lesson,
+            episode_return=2.5,
+            episode_len=42.0,
+            thput_normed=0.6,
+            thput_raw=9.0,
+            ended_by_eot=1.0,
+            invalid_frac=0.1,
+            num_entities=4.0,
+            min_entities_required=3.0,
+            frac_reachable=0.75,
+            entity_cost=12.5,
+            cost_efficiency=0.9,
+            is_trial=is_trial,
+        )
+
+    @staticmethod
+    def _aggregate_fields(metrics):
+        """The `rollout/<field>` keys, i.e. those with no per-kind path segment."""
+        tail = (k[len("rollout/"):] for k in metrics if k.startswith("rollout/"))
+        return {t for t in tail if "/" not in t}
+
+    def test_trial_episode_writes_only_the_trial_aggregate(self):
+        m = self._metrics("TRIAL_RECIPE_TREE_DEPTH_1", True)
+        assert m["rollout/trial_thput"] == pytest.approx(0.6)
+        # The ASSERT: nothing from a trial reaches the lesson-only aggregate.
+        assert all(f.startswith("trial_") for f in self._aggregate_fields(m))
+
+    def test_lesson_episode_writes_only_the_lesson_aggregate(self):
+        m = self._metrics("MOVE_ONE_ITEM", False)
+        assert m["rollout/thput"] == pytest.approx(0.6)
+        assert not any(f.startswith("trial_") for f in self._aggregate_fields(m))
+
+    def test_both_sides_carry_the_same_aggregate_fields(self):
+        lesson = self._aggregate_fields(self._metrics("MOVE_ONE_ITEM", False))
+        trial = self._aggregate_fields(
+            self._metrics("TRIAL_RECIPE_TREE_DEPTH_1", True)
+        )
+        assert lesson == {f[len("trial_"):] for f in trial}
+
+    def test_per_lesson_keys_are_unaffected_for_trials(self):
+        # Per-kind keys are already name-separated, so they stay as-is.
+        m = self._metrics("TRIAL_RECIPE_TREE_DEPTH_2", True)
+        assert m["rollout/TRIAL_RECIPE_TREE_DEPTH_2/thput"] == pytest.approx(0.6)
+        assert m["rollout/TRIAL_RECIPE_TREE_DEPTH_2/thput_raw"] == pytest.approx(9.0)
+
+    def test_every_trial_kind_is_flagged_and_routed(self):
+        trials = [k for k in LessonKind if LESSON_IS_TRIAL[k]]
+        assert trials, "Sanity: at least one trial kind exists"
+        for kind in trials:
+            m = self._metrics(kind.name, True)
+            assert "rollout/thput" not in m
+            assert m["rollout/trial_thput"] == pytest.approx(0.6)
 
 
 # ── critic (value-head) diagnostics (global + per-lesson) ────────────────────
