@@ -1206,6 +1206,16 @@ def assert_device_ok(device) -> None:
     )
 
 
+def maybe_compile(fn, device):
+    """`torch.compile(reduce-overhead)` on everything but CPU, where inductor's
+    vectoriser miscodegens the `_legal_tile_mask` select (`VecMask<int,1>` vs
+    `VecMask<float,1>` in one ternary) and g++ rejects the kernel before the
+    first rollout step. MPS keeps compiling: it reaches the Metal backend, not
+    the C++ one, and still fuses — it just skips the CUDA-graph replay, which
+    inductor only ever enables for a lone cuda device."""
+    return fn if device.type == "cpu" else torch.compile(fn, mode="reduce-overhead")
+
+
 def cuda_env_info() -> dict[str, str]:
     """Wheel CUDA build + host driver, recorded in every run's W&B config.
 
@@ -1991,9 +2001,9 @@ if __name__ == "__main__":
     # caller must cudagraph_mark_step_begin() before each call and not retain a
     # raw output past the next call — the rollout copies every output into
     # storage immediately, so that holds.
-    print("Compiling inference paths with torch.compile(reduce-overhead)")
-    rollout_act = torch.compile(agent.get_action_and_value, mode="reduce-overhead")
-    rollout_value = torch.compile(agent.get_value, mode="reduce-overhead")
+    print(f"Inference paths on {device.type}: {'eager' if device.type == 'cpu' else 'compiled'}")
+    rollout_act = maybe_compile(agent.get_action_and_value, device)
+    rollout_value = maybe_compile(agent.get_value, device)
     # Separate handle for the grad update path (B=minibatch, action given). The
     # CUDA graph spans the forward AND its backward (autograd reuses the captured
     # activations, valid because backward runs before the next mark_step_begin);
@@ -2002,7 +2012,7 @@ if __name__ == "__main__":
     # pools from interleaving. The warm-up requires_grad flip and the v_loss-only
     # vs joint-loss change just trigger a one-time recompile of the affected
     # graph.
-    update_act = torch.compile(agent.get_action_and_value, mode="reduce-overhead")
+    update_act = maybe_compile(agent.get_action_and_value, device)
 
     # Two param groups so the critic warm-up + LR annealing can address actor
     # and critic LRs independently; group[0]=actor keeps the existing
