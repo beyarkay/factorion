@@ -11,8 +11,10 @@ them to BaseHTTPRequestHandler would only re-test stdlib socket
 behaviour. wandb downloads aren't tested either: they'd require
 mocking the wandb client, which is high-effort for low payoff."""
 
+import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import factory_builder as fb  # noqa: E402
-from factorion import entities, items  # noqa: E402
+from factorion import Channel, LessonKind, entities, items  # noqa: E402
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
@@ -798,6 +800,178 @@ class TestModelInfo:
             assert info["layers"] == [8, 8, 8]
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestBatchRollout:
+    """The Scan tab's batched rollout: N blanked factories rebuilt in
+    lockstep and streamed back as one event per finished rollout."""
+
+    @staticmethod
+    def _scan(payload: dict) -> list[dict]:
+        """Drain a scan, asserting every event survives the wire (the
+        endpoint serialises each one as a line of NDJSON)."""
+        events = list(fb._batch_rollout_request(payload))
+        for event in events:
+            json.dumps(event)
+        return events
+
+    def test_reset_blanks_all_but_protected(self):
+        """A scan hands the model a world stripped down to the lesson's
+        protected tiles — the source, sink and reserved cells — which is
+        the "rebuild from nothing" test the Scan tab exists to run."""
+        env = FactorioEnv(size=11, idx=0)
+        obs, used_seed = fb._reset_rollout_env(
+            env, LessonKind.MOVE_ONE_ITEM, seed=0, num_missing_entities=None
+        )
+        assert used_seed == 0
+        blanked = int((obs[Channel.ENTITIES.value] != 0).sum())
+        solved = int((env._solved_world_CWH[Channel.ENTITIES.value] != 0).sum())
+        assert 0 < blanked < solved
+
+    def test_streams_a_result_per_seed(self):
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 3, "seed": 0, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        assert events[0] == {"type": "start", "n": 3}
+        assert events[-1]["type"] == "done"
+        results = [e for e in events if e["type"] == "result"]
+        assert sorted(r["seed"] for r in results) == [0, 1, 2]
+        assert all(r["kind"] == "MOVE_ONE_ITEM" for r in results)
+        assert any(e["type"] == "progress" for e in events)
+
+    def test_result_carries_both_grids(self):
+        """Each result ships the factory the model built *and* the
+        generator's own solution, so the gallery can show them side by
+        side without a second round trip."""
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 1, "seed": 7, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        result = next(e for e in events if e["type"] == "result")
+        assert result["stopped_by"] in ("eot", "max_steps")
+        for grid in (result["grid"], result["solved_grid"]):
+            assert len(grid) == 11 and all(len(row) == 11 for row in grid)
+        assert any(
+            c["entity"] != "empty" for row in result["solved_grid"] for c in row
+        )
+
+    def test_every_kind_cycles_kinds_before_seeds(self):
+        """One rollout per LessonKind at the same seed, so a scan sized to
+        the kind count is a breadth-first sweep of setups."""
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan({
+                "kind": fb.ALL_KINDS_SENTINEL,
+                "count": len(list(LessonKind)),
+                "seed": 4,
+                "size": 11,
+            })
+        finally:
+            path.unlink(missing_ok=True)
+        results = [e for e in events if e["type"] == "result"]
+        assert {r["kind"] for r in results} == {k.name for k in LessonKind}
+        assert all(r["seed"] == 4 for r in results)
+
+    def test_runs_more_rollouts_than_one_batch(self, monkeypatch):
+        """A count above the lockstep batch width runs as back-to-back
+        groups instead of being truncated to fit a single batch."""
+        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        results = [e for e in events if e["type"] == "result"]
+        assert sorted(r["seed"] for r in results) == [0, 1, 2, 3, 4]
+        # Indices stay unique across groups — the gallery sorts on them.
+        assert sorted(r["index"] for r in results) == [0, 1, 2, 3, 4]
+
+    def test_count_is_never_silently_capped(self, monkeypatch):
+        """The requested count is what runs. A cap that quietly trimmed the
+        scan would read as "that's all there was to find"."""
+        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 7, "seed": 0, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        assert events[0] == {"type": "start", "n": 7}
+        assert len([e for e in events if e["type"] == "result"]) == 7
+
+    def test_bad_kind_yields_an_error_event(self):
+        """The response headers are already sent by the time the scan
+        runs, so failures have to travel in-band rather than as an
+        exception."""
+        events = self._scan({"kind": "NOT_A_LESSON", "count": 1, "size": 11})
+        assert events[-1]["type"] == "error"
+        assert "NOT_A_LESSON" in events[-1]["error"]
+
+    def test_missing_checkpoint_yields_an_error_event(self):
+        events = self._scan({"kind": "MOVE_ONE_ITEM", "count": 1, "size": 11})
+        assert events[-1]["type"] == "error"
+        assert "checkpoint" in events[-1]["error"]
+
+
+class TestRenderIndexScanTab:
+    """The served page must expose the scan controls and consume the
+    endpoint's NDJSON stream."""
+
+    def test_scan_tab_controls_exist(self):
+        html = fb.render_index(default_size=11)
+        assert 'data-tab="scan"' in html and 'data-tab="build"' in html
+        for element_id in (
+            "scan-kind", "scan-count", "scan-seed", "scan-clear", "scan-mask",
+            "scan-ref", "scan-sort", "scan-run", "scan-stop", "scan-results",
+            "scan-summary", "scan-stats", "scan-clear-results",
+        ):
+            assert f'id="{element_id}"' in html, element_id
+        assert f'<option value="{fb.ALL_KINDS_SENTINEL}">' in html
+        # Worst-first by default: a scan is run to find the failures.
+        assert '<option value="worst" selected>' in html
+
+    def test_client_streams_from_the_endpoint_the_server_routes(self):
+        html = fb.render_index(default_size=11)
+        assert "fetch('/batch_rollout'" in html
+        assert "resp.body.getReader()" in html
+        assert "signal: scanAbort.signal" in html
+        # A typo'd path here fails silently as a 404, so pin the client's
+        # URL to the handler's route list.
+        assert "/batch_rollout" in inspect.getsource(fb.Handler.do_POST)
+
+    def test_result_fields_the_page_reads_are_all_emitted(self):
+        """Every `r.<field>` the scan JS reads must exist on a real result
+        event. Asserting against a hardcoded list on either side would keep
+        passing while the two drifted apart, so this derives one side from
+        the served page and the other from an actual rollout."""
+        html = fb.render_index(default_size=11)
+        read_fields = set(re.findall(r"\br\.([a-z_]+)", html))
+        assert read_fields, "no r.<field> reads found in the served page"
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = TestBatchRollout._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 1, "seed": 1, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        result = next(e for e in events if e["type"] == "result")
+        assert read_fields <= set(result), read_fields - set(result)
 
 
 class TestIconCoverage:
