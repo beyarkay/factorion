@@ -28,6 +28,7 @@ from sft import (
     SftArgs,
     StreamingDemoDataset,
     _artifact_name,
+    _greedy_metrics,
     _humanize_count,
     _humanize_lr,
     _iter_demo_pairs,
@@ -1540,6 +1541,66 @@ class TestPerKindEotMetrics:
             if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
         }
         assert {k.split("/")[1] for k in acc_keys} == place_kinds
+
+
+class TestGreedyMetrics:
+    """_greedy_metrics flattens a RolloutEval into the logged greedy/* keys."""
+
+    def _roll(self, **over):
+        roll = {
+            "overall": 0.4,
+            "overall_eot": 0.5,
+            "per_kind_eot": {"MOVE_ONE_ITEM": 0.5, "ASSEMBLE_1IN_1OUT": 0.0},
+            "per_kind_n": {"MOVE_ONE_ITEM": 3, "ASSEMBLE_1IN_1OUT": 0},
+            "asm_item_acc": 0.25,
+            "per_kind_asm_item_acc": {"MOVE_ONE_ITEM": 0.0, "ASSEMBLE_1IN_1OUT": 0.25},
+            "per_kind_asm_n": {"MOVE_ONE_ITEM": 0, "ASSEMBLE_1IN_1OUT": 4},
+            "eot_acc": 0.75,
+            "eot_pos_recall": 0.6,
+            "per_kind_eot_acc": {"MOVE_ONE_ITEM": 0.75, "ASSEMBLE_1IN_1OUT": 0.1},
+            "per_kind_eot_pos_recall": {"MOVE_ONE_ITEM": 0.6, "ASSEMBLE_1IN_1OUT": 0.0},
+            "per_kind_eot_step_n": {"MOVE_ONE_ITEM": 9, "ASSEMBLE_1IN_1OUT": 0},
+            "per_kind_eot_pos_n": {"MOVE_ONE_ITEM": 2, "ASSEMBLE_1IN_1OUT": 0},
+        }
+        roll.update(over)
+        return roll
+
+    def test_overall_keys_always_present(self):
+        m = _greedy_metrics(self._roll())
+        assert m["greedy/thput"] == pytest.approx(0.5)
+        assert m["greedy/eot_acc"] == pytest.approx(0.75)
+        assert m["greedy/eot_pos_recall"] == pytest.approx(0.6)
+        assert m["greedy/asm_item_acc"] == pytest.approx(0.25)
+
+    def test_uses_the_eot_respecting_throughput(self):
+        # overall_eot, not overall: the score at the moment the model stops.
+        m = _greedy_metrics(self._roll(overall=0.99))
+        assert m["greedy/thput"] == pytest.approx(0.5)
+
+    def test_per_lesson_keys_gated_on_being_scored(self):
+        m = _greedy_metrics(self._roll())
+        # Scored for throughput, so present; the 0-factory lesson is absent.
+        assert "greedy/MOVE_ONE_ITEM/thput" in m
+        assert "greedy/ASSEMBLE_1IN_1OUT/thput" not in m
+        # Only the assembler lesson placed assemblers.
+        assert "greedy/ASSEMBLE_1IN_1OUT/asm_item_acc" in m
+        assert "greedy/MOVE_ONE_ITEM/asm_item_acc" not in m
+        # Only the belt lesson reached a done state / took scored steps.
+        assert "greedy/MOVE_ONE_ITEM/eot_acc" in m
+        assert "greedy/MOVE_ONE_ITEM/eot_pos_recall" in m
+        assert "greedy/ASSEMBLE_1IN_1OUT/eot_acc" not in m
+        assert "greedy/ASSEMBLE_1IN_1OUT/eot_pos_recall" not in m
+
+    def test_recipe_accuracy_absent_when_no_assembler_placed(self):
+        m = _greedy_metrics(
+            self._roll(per_kind_asm_n={"MOVE_ONE_ITEM": 0, "ASSEMBLE_1IN_1OUT": 0})
+        )
+        assert "greedy/asm_item_acc" not in m
+        assert not [k for k in m if k.endswith("/asm_item_acc")]
+
+    def test_every_key_is_greedy_namespaced(self):
+        m = _greedy_metrics(self._roll())
+        assert all(k.startswith("greedy/") for k in m), sorted(m)
 
 
 class TestNotNoneHeadAccuracy:

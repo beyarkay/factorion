@@ -516,11 +516,11 @@ class TestReporter:
             url="https://wandb.ai/x/y/runs/abc123",
             kind="sft",
             sha7=SHA[:7],
-            summary_flat={"eval/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+            summary_flat={"greedy/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
         )
         assert "<!-- factorion-ci-run:abc123 -->" in md
         before_details, details = md.split("<details>", 1)
-        assert "eval/thput" in before_details
+        assert "greedy/thput" in before_details
         assert "obscure/x" not in before_details
         assert "obscure/x" in details
 
@@ -528,10 +528,10 @@ class TestReporter:
 class TestSelectHeadline:
     def test_sft_patterns_cover_every_lesson_and_head(self):
         names = [
-            "eval/thput",
-            "eval/MOVE_ONE_ITEM/thput",
-            "eval/SPLITTER_SPLIT/thput",
-            "eval/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
+            "greedy/thput",
+            "greedy/MOVE_ONE_ITEM/thput",
+            "greedy/SPLITTER_SPLIT/thput",
+            "greedy/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "val/MOVE_ONE_ITEM/acc",  # per-lesson acc stays in the long tail
             "val/acc",
             "val/tile_acc",
@@ -542,10 +542,10 @@ class TestSelectHeadline:
         ]
         got = select_headline(names)
         assert got == [
-            "eval/thput",
-            "eval/MOVE_ONE_ITEM/thput",
-            "eval/SOME_FUTURE_LESSON_9/thput",
-            "eval/SPLITTER_SPLIT/thput",
+            "greedy/thput",
+            "greedy/MOVE_ONE_ITEM/thput",
+            "greedy/SOME_FUTURE_LESSON_9/thput",
+            "greedy/SPLITTER_SPLIT/thput",
             "val/acc",
             "val/eot_acc",
             "val/tile_acc",
@@ -554,7 +554,6 @@ class TestSelectHeadline:
 
     def test_ppo_patterns(self):
         names = [
-            "eval/thput",  # shared with SFT, so it headlines first
             "sampled/thput",
             "sampled/reward",
             "sampled/length",
@@ -567,14 +566,12 @@ class TestSelectHeadline:
             "entropy/total",
             "perf/update_seconds",
             "perf/rollout_seconds",
-            "perf/eval_seconds",
             "perf/sps",
             "losses/value",
             "optim/lr",
         ]
         got = select_headline(names)
         assert got == [
-            "eval/thput",
             "sampled/thput",
             "sampled/reward",
             "sampled/length",
@@ -583,6 +580,5 @@ class TestSelectHeadline:
             "sampled/SOME_FUTURE_LESSON_9/thput",
             "perf/update_seconds",
             "perf/rollout_seconds",
-            "perf/eval_seconds",
             "perf/sps",
         ]

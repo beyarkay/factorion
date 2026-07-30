@@ -136,15 +136,13 @@ def compare_metric_rows(
 # Metrics surfaced OUTSIDE the <details> block of a report (the full
 # every-metric table sits inside it). Ordered regexes; a metric is headline
 # when any matches, and headline rows sort by first-matching pattern. Lesson
-# names are matched, never hardcoded (`eval/{LESSON}/thput` covers every
-# current and future lesson). One list serves both kinds: `eval/` is shared
-# (sft.py and ppo.py log it from the same greedy rollout), `val/` is
-# SFT-only and `sampled/` PPO-only.
+# names are matched, never hardcoded (`greedy/{LESSON}/thput` covers every
+# current and future lesson). One list serves both kinds: `greedy/` and `val/`
+# are SFT-only, `sampled/` PPO-only.
 HEADLINE_PATTERNS = [
-    # Greedy held-out throughput, the headline for both kinds (overall then
-    # per-lesson).
-    r"^eval/thput$",
-    r"^eval/[A-Z0-9_]+/thput$",
+    # SFT: greedy held-out throughput (overall then per-lesson).
+    r"^greedy/thput$",
+    r"^greedy/[A-Z0-9_]+/thput$",
     # SFT: teacher-forced accuracies (overall then per-head; the head names
     # come from the [a-z]+_acc shape, which deliberately excludes per-lesson
     # accs like val/{LESSON}/acc).
@@ -230,7 +228,7 @@ def render_compare_markdown(
 
 
 # ── Assertions ─────────────────────────────────────────────────────
-# e.g. "pr:eval/thput > main:eval/thput" — evaluated on group means. Sides:
+# e.g. "pr:greedy/thput > main:greedy/thput" — evaluated on group means. Sides:
 # pr: = the PR's commit, main: = the baseline (test:/base: kept as aliases);
 # a bare number is a constant threshold. == and ~= mean approximately equal
 # (|lhs - rhs| <= tolerance): exact float equality on run means would
@@ -465,7 +463,7 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
     sweep = api.sweep(sweep_path)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "eval/thput")
+    metric_name = metric_cfg.get("name", "greedy/thput")
     metric_goal = metric_cfg.get("goal", "maximize")
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
@@ -525,7 +523,7 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
 
 # Headline columns for the history CSV: one stable, plottable row per CI run.
 HISTORY_METRICS = [
-    "eval/thput",
+    "greedy/thput",
     "val/acc",
     "sampled/thput",
     "moving_avg_throughput",

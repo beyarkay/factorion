@@ -328,11 +328,12 @@ class TestDeterministicPolicyForward:
     def test_train_and_eval_mode_agree(self, forward_probe):
         """train() and eval() must compute the same function.
 
-        The `eval/thput` vs `rollout/thput` symptom: `run_rollout_eval` calls
+        The `greedy/thput` vs `sampled/thput` symptom: `run_rollout_eval` calls
         `agent.eval()` while the PPO rollout runs in train mode, so a mode-
-        dependent forward shows up as an unexplained gap between the two at
-        iteration 1 — before a single gradient step, on identical weights. A
-        train/eval gap at step 0 is always a bug, never a property of the model.
+        dependent forward shows up as an unexplained gap between the SFT
+        checkpoint's score and PPO's first iteration on those same weights.
+        A train/eval gap before any gradient step is always a bug, never a
+        property of the model.
         """
         torch.testing.assert_close(forward_probe["logp_1"], forward_probe["logp_eval"])
         torch.testing.assert_close(forward_probe["value_1"], forward_probe["value_eval"])
