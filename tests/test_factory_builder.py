@@ -14,6 +14,7 @@ mocking the wandb client, which is high-effort for low payoff."""
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -836,8 +837,7 @@ class TestBatchRollout:
             )
         finally:
             path.unlink(missing_ok=True)
-        assert events[0]["type"] == "start"
-        assert events[0]["n"] == 3
+        assert events[0] == {"type": "start", "n": 3}
         assert events[-1]["type"] == "done"
         results = [e for e in events if e["type"] == "result"]
         assert sorted(r["seed"] for r in results) == [0, 1, 2]
@@ -857,12 +857,6 @@ class TestBatchRollout:
         finally:
             path.unlink(missing_ok=True)
         result = next(e for e in events if e["type"] == "result")
-        for key in (
-            "grid", "solved_grid", "thput_normed", "thput_raw", "max_throughput",
-            "steps", "stopped_by", "eot_prob", "num_placed_entities",
-            "invalid_actions", "frac_reachable", "size", "index",
-        ):
-            assert key in result, key
         assert result["stopped_by"] in ("eot", "max_steps")
         for grid in (result["grid"], result["solved_grid"]):
             assert len(grid) == 11 and all(len(row) == 11 for row in grid)
@@ -884,9 +878,9 @@ class TestBatchRollout:
             })
         finally:
             path.unlink(missing_ok=True)
-        jobs = events[0]["jobs"]
-        assert {j["kind"] for j in jobs} == {k.name for k in LessonKind}
-        assert all(j["seed"] == 4 for j in jobs)
+        results = [e for e in events if e["type"] == "result"]
+        assert {r["kind"] for r in results} == {k.name for k in LessonKind}
+        assert all(r["seed"] == 4 for r in results)
 
     def test_bad_kind_yields_an_error_event(self):
         """The response headers are already sent by the time the scan
@@ -912,7 +906,7 @@ class TestRenderIndexScanTab:
         for element_id in (
             "scan-kind", "scan-count", "scan-seed", "scan-clear", "scan-mask",
             "scan-ref", "scan-sort", "scan-run", "scan-stop", "scan-results",
-            "scan-summary",
+            "scan-summary", "scan-stats",
         ):
             assert f'id="{element_id}"' in html, element_id
         assert f'<option value="{fb.ALL_KINDS_SENTINEL}">' in html
@@ -926,17 +920,24 @@ class TestRenderIndexScanTab:
         # URL to the handler's route list.
         assert "/batch_rollout" in inspect.getsource(fb.Handler.do_POST)
 
-    def test_result_fields_the_cards_read_are_all_emitted(self):
-        """scanCard() reads these off each result — keep the card and
-        _rollout_result in lockstep."""
+    def test_result_fields_the_page_reads_are_all_emitted(self):
+        """Every `r.<field>` the scan JS reads must exist on a real result
+        event. Asserting against a hardcoded list on either side would keep
+        passing while the two drifted apart, so this derives one side from
+        the served page and the other from an actual rollout."""
         html = fb.render_index(default_size=11)
-        for field in (
-            "r.kind", "r.seed", "r.thput_normed", "r.thput_raw",
-            "r.max_throughput", "r.stopped_by", "r.steps",
-            "r.num_placed_entities", "r.invalid_actions", "r.frac_reachable",
-            "r.grid", "r.solved_grid", "r.size",
-        ):
-            assert field in html, field
+        read_fields = set(re.findall(r"\br\.([a-z_]+)", html))
+        assert read_fields, "no r.<field> reads found in the served page"
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = TestBatchRollout._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 1, "seed": 1, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        result = next(e for e in events if e["type"] == "result")
+        assert read_fields <= set(result), read_fields - set(result)
 
 
 class TestIconCoverage:
