@@ -185,13 +185,6 @@ class PpoArgs(SharedArgs):
     """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
     critic_head_std: float = 0.1169
     """Initialization std for the value head. Sets the magnitude of the untrained critic's outputs at PPO start, i.e. how large the initial 'garbage advantages' are that --critic-warmup absorbs; smaller = gentler on the SFT policy in the first updates. With --start-from the loaded SFT critic (never trained) is re-initialised to this std at PPO start."""
-    eval_every: int = 7
-    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
-    eval_seeds_per_kind: int = 12
-    """Held-out factories per LessonKind in the greedy eval set."""
-    eval_num_envs: int = 16
-    """Parallel envs for the greedy eval rollout. Per-seed results are
-    independent of this, so it is purely a speed knob."""
     amp: bool = False
     """Run the policy/value forward passes under bf16 autocast (mixed precision).
     Speeds up the GPU matmuls; helps most when the GPU is the bottleneck (less so

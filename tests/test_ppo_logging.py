@@ -21,13 +21,12 @@ from ppo import (  # noqa: E402
     FactorioEnv,
     make_env,
     _run_signature,
-    _build_eval_set,
     _rollout_episode_metrics,
     _explained_variance,
     _pearson_corr,
     _critic_diagnostics,
 )
-from factorion import LessonKind, build_factory  # noqa: E402
+from factorion import LessonKind  # noqa: E402
 from helpers import Channel  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -61,30 +60,6 @@ class TestRunSignature:
         assert "cw" not in sig
         assert "from" not in sig
         assert "kl" not in sig
-
-
-# ── greedy-eval held-out set ────────────────────────────────────────────────
-
-
-class TestBuildEvalSet:
-    def test_disjoint_seeds_all_kinds_buildable(self):
-        args = PpoArgs(size=11, eval_seeds_per_kind=2, seed=1)
-        s2k = _build_eval_set(args)
-        # Unique seeds (dict keys), and every (seed, kind) actually builds.
-        assert len(s2k) == len(set(s2k))
-        for seed, kind_val in s2k.items():
-            kind = LessonKind(kind_val)
-            assert build_factory(size=args.size, kind=kind, seed=seed) is not None
-        # Every lesson kind that can build at this size is represented.
-        kinds_seen = {LessonKind(v) for v in s2k.values()}
-        assert LessonKind.MOVE_ONE_ITEM in kinds_seen
-        assert len(kinds_seen) >= 5
-
-    def test_seeds_disjoint_from_training_range(self):
-        # Training resets use seeds near args.seed (+ env idx); the eval pool
-        # lives in a high range so eval factories are never trained on.
-        args = PpoArgs(size=11, eval_seeds_per_kind=2, seed=1)
-        assert min(_build_eval_set(args)) > 1_000_000
 
 
 # ── lesson kind exposed in env info ─────────────────────────────────────────

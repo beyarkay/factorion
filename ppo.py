@@ -249,76 +249,6 @@ def _run_signature(args) -> str:
     return sig
 
 
-def _build_eval_set(args) -> dict:
-    """Fixed held-out (seed -> LessonKind.value) factories for the greedy eval,
-    disjoint from the training seeds. Each LessonKind gets its own high seed
-    range so seeds never collide across kinds; only seeds where build_factory
-    succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
-    out: dict = {}
-    for ki, kind in enumerate(LessonKind):
-        base = 9_000_000 + args.seed + ki * 100_000
-        found, s = 0, base
-        while found < args.eval_seeds_per_kind and s < base + 5000:
-            if build_factory(size=args.size, kind=kind, seed=s) is not None:
-                out[s] = kind.value
-                found += 1
-            s += 1
-    return out
-
-
-def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval. Logs the same eval/* keys SFT does
-    (same helper, same semantics) so the curves overlay on one panel. Returns a flat dict of eval/* metrics. Reuses SFT's
-    run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
-    be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
-    from types import SimpleNamespace
-
-    from sft import run_rollout_eval
-
-    # Duck-typed args shim: run_rollout_eval only reads .size/.seed/.max_level.
-    eval_args = SimpleNamespace(size=args.size, seed=args.seed, max_level=0)
-    roll = run_rollout_eval(
-        agent,
-        eval_args,  # ty: ignore[invalid-argument-type]
-        eval_seeds_to_kind,
-        device,
-        max_seeds=len(eval_seeds_to_kind),
-        eot_threshold=0.5,
-        num_envs=args.eval_num_envs,
-    )
-    metrics = {"eval/thput": roll["overall_eot"]}
-    for kn, thp in roll["per_kind_eot"].items():
-        if roll["per_kind_n"].get(kn, 0) > 0:
-            metrics[f"eval/{kn}/thput"] = thp
-
-    # Recipe-pick accuracy from the same rollout: fraction of assemblers the
-    # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
-    # the recipe-pick skill is trackable through RL (#264). Only surfaces for
-    # factories that have an assembler (MEMORISE today, any future one too).
-    asm_n = roll["per_kind_asm_n"]
-    if sum(asm_n.values()) > 0:
-        metrics["eval/asm_item_acc"] = roll["asm_item_acc"]
-    for kn, acc in roll["per_kind_asm_item_acc"].items():
-        if asm_n.get(kn, 0) > 0:
-            metrics[f"eval/{kn}/asm_item_acc"] = acc
-
-    # EOT-head accuracy/recall from the same rollout. PPO has no expert-labelled
-    # val set, so this on-rollout score is the only per-lesson EOT-head signal it
-    # gets (mirrors SFT's val/{kind}/eot_acc + eot_pos_recall). Per-lesson
-    # positive recall only surfaces once a lesson actually reaches a done state.
-    metrics["eval/eot_acc"] = roll["eot_acc"]
-    metrics["eval/eot_pos_recall"] = roll["eot_pos_recall"]
-    eot_step_n = roll["per_kind_eot_step_n"]
-    eot_pos_n = roll["per_kind_eot_pos_n"]
-    for kn, acc in roll["per_kind_eot_acc"].items():
-        if eot_step_n.get(kn, 0) > 0:
-            metrics[f"eval/{kn}/eot_acc"] = acc
-    for kn, rec in roll["per_kind_eot_pos_recall"].items():
-        if eot_pos_n.get(kn, 0) > 0:
-            metrics[f"eval/{kn}/eot_pos_recall"] = rec
-    return metrics
-
-
 def _rollout_episode_metrics(
     lesson: str,
     *,
@@ -1795,15 +1725,6 @@ if __name__ == "__main__":
         # the headline progress signal, so it summarises to its max.
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
-        wandb.define_metric("eval/thput", summary="max")
-        wandb.define_metric("eval/asm_item_acc", summary="max")
-        wandb.define_metric("eval/eot_acc", summary="max")
-        wandb.define_metric("eval/eot_pos_recall", summary="max")
-        for ln in _LESSONS:
-            wandb.define_metric(f"eval/{ln}/thput", summary="max")
-            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
-            wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
-            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable", "entity_cost"]:
@@ -1830,7 +1751,7 @@ if __name__ == "__main__":
                 wandb.define_metric(f"critic/{ln}/{m}", summary="last")
         for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
             wandb.define_metric(f"optim/{m}", summary="last")
-        for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
+        for m in ["sps", "rollout_seconds", "update_seconds"]:
             wandb.define_metric(f"perf/{m}", summary="last")
     print("Registering factorio Gym env")
     # Register the factorio env. This runs only under __main__, so pass the
@@ -2063,13 +1984,6 @@ if __name__ == "__main__":
         means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
         _episode_metrics.clear()
         return means
-
-    # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
-    # eval/* — the same keys the SFT baseline logs.
-    eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
-    if eval_seeds_to_kind:
-        print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
-              f"every {args.eval_every} iters")
 
     # Per-iteration rollout/optimise wall-times, accumulated so the final
     # summary can report where the loop spends its time (for speed benchmarking).
@@ -2360,16 +2274,6 @@ if __name__ == "__main__":
         rollout_seconds_hist.append(rollout_seconds)
         update_seconds_hist.append(update_seconds)
 
-        # ── Greedy held-out eval (every eval_every iters + the final one) ──
-        eval_metrics: dict = {}
-        eval_seconds = 0.0
-        if eval_seeds_to_kind and (
-            iteration % args.eval_every == 0 or iteration == args.num_iterations
-        ):
-            t_eval = time.time()
-            eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
-            eval_seconds = time.time() - t_eval
-
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
         iter_metrics = {
@@ -2392,12 +2296,10 @@ if __name__ == "__main__":
             "perf/sps": int(global_step / (time.time() - start_time)),
             "perf/rollout_seconds": rollout_seconds,
             "perf/update_seconds": update_seconds,
-            "perf/eval_seconds": eval_seconds,
         }
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
         iter_metrics.update(critic_metrics)
-        iter_metrics.update(eval_metrics)
 
         if iteration == 1:
             iter1_signature = {
