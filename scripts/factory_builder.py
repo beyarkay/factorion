@@ -634,31 +634,32 @@ def _predict(grid: list[list[dict]]) -> dict:
 
 
 def _predict_action(grid: list[list[dict]]) -> dict:
-    """Return only the greedy next placement.
+    """Return only the greedy next placement, plus the EOT probability.
 
-    This is the latency-sensitive path used while the user holds ``a``.  The
-    detailed predictor above intentionally computes probability tables and
-    ghost candidates for inspection; none of that is needed for an
-    autoregressive placement, so this path performs one encode and five
-    argmaxes and returns the six fields the browser applies.
+    This is the latency-sensitive path used while the user holds ``a``. The
+    detailed predictor above additionally builds probability tables and ghost
+    candidates for inspection, none of which an autoregressive placement needs
+    — but both go through the shared sampler, so what the held key applies is
+    exactly what the panel showed. Reading the heads directly instead skips the
+    entity-conditional masks `sample_action` applies to direction / item / misc
+    (which is how a belt ends up tagged with a recipe, or an assembler with
+    none), and skips `eot_prob`, without which the loop cannot stop where a
+    rollout would.
     """
     world_WHC = build_world(grid)
     agent = _get_agent(world_WHC.shape[0])
     obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
-    H = obs_CWH.shape[3]
 
     with torch.inference_mode():
-        encoded_BCWH, g_BG = agent.encode(obs_CWH)
-        tile_idx = int(agent.tile_logits(encoded_BCWH).reshape(-1).argmax().item())
-        x, y = divmod(tile_idx, H)
-        tile_features = encoded_BCWH[:, :, x, y]
-        if g_BG is not None:
-            tile_features = torch.cat([tile_features, g_BG], dim=1)
-
-        entity = int(agent.ent_head(tile_features).argmax(dim=-1).item())
-        direction = int(agent.dir_head(tile_features).argmax(dim=-1).item())
-        item = int(agent.item_head(tile_features).argmax(dim=-1).item())
-        misc = int(agent.misc_head(tile_features).argmax(dim=-1).item())
+        out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
+        act = out["action"]
+        x = int(act["xy"][0, 0].item())
+        y = int(act["xy"][0, 1].item())
+        entity = int(act["entity"][0].item())
+        direction = int(act["direction"][0].item())
+        item = int(act["item"][0].item())
+        misc = int(act["misc"][0].item())
+        eot_prob = float(out["eot_prob"][0].item())
 
     return {
         "x": x,
@@ -667,6 +668,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
         "direction": _DIR_NAMES.get(direction, str(direction)),
         "item": _ITEM_NAMES.get(item, str(item)),
         "misc": _MISC_NAMES.get(misc, str(misc)),
+        "eot_prob": eot_prob,
     }
 
 

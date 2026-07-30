@@ -507,7 +507,7 @@ class TestPredictSchema:
             fb._load_checkpoint(str(path))
             result = fb._predict_action(_empty_grid(4))
             assert set(result) == {
-                "x", "y", "entity", "direction", "item", "misc",
+                "x", "y", "entity", "direction", "item", "misc", "eot_prob",
             }
             assert 0 <= result["x"] < 4
             assert 0 <= result["y"] < 4
@@ -523,7 +523,9 @@ class TestPredictSchema:
             detailed = fb._predict(grid)
             assert compact == {
                 key: detailed[key]
-                for key in ("x", "y", "entity", "direction", "item", "misc")
+                for key in (
+                    "x", "y", "entity", "direction", "item", "misc", "eot_prob",
+                )
             }
         finally:
             path.unlink(missing_ok=True)
