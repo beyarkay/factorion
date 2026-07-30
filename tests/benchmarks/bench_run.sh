@@ -49,7 +49,7 @@ case "$KIND" in
       --critic-warmup 5 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
       --layer1 93 --layer2 69 --layer3 96 \
       --eval-every 0 \
-      --target-metric rollout/reward --target-value -0.15 \
+      --target-metric sampled/reward --target-value -0.15 \
       --quality-ema-alpha 0.4 --max-seconds 300 --total-timesteps 100000000 \
       --summary-path "${SUMMARY_PATH:-/tmp/bench_ppo_quality.json}" "$@"
     ;;

@@ -263,7 +263,7 @@ def _rollout_episode_metrics(
     frac_reachable: float,
     entity_cost: float,
 ) -> dict:
-    """Build the rollout/* metrics for one finished episode (overall + per-lesson).
+    """Build the sampled/* metrics for one finished episode (overall + per-lesson).
 
     Pure (no wandb/torch) so it can be unit-tested. The per-lesson keys carry
     the lesson name, so each averages over only that lesson's episodes. Only the
@@ -274,21 +274,21 @@ def _rollout_episode_metrics(
     reward already pin it down.
     """
     return {
-        "rollout/thput": float(thput_normed),
-        "rollout/thput_raw": float(thput_raw),
-        "rollout/reward": float(episode_return),
-        "rollout/length": float(episode_len),
-        "rollout/eot_rate": float(ended_by_eot),
-        "rollout/invalid_frac": float(invalid_frac),
-        "rollout/num_entities": float(num_entities),
-        "rollout/entity_efficiency": float(min_entities_required) / float(num_entities),
-        "rollout/frac_reachable": float(frac_reachable),
-        "rollout/entity_cost": float(entity_cost),
+        "sampled/thput": float(thput_normed),
+        "sampled/thput_raw": float(thput_raw),
+        "sampled/reward": float(episode_return),
+        "sampled/length": float(episode_len),
+        "sampled/eot_rate": float(ended_by_eot),
+        "sampled/invalid_frac": float(invalid_frac),
+        "sampled/num_entities": float(num_entities),
+        "sampled/entity_efficiency": float(min_entities_required) / float(num_entities),
+        "sampled/frac_reachable": float(frac_reachable),
+        "sampled/entity_cost": float(entity_cost),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
-        f"rollout/{lesson}/thput": float(thput_normed),
-        f"rollout/{lesson}/reward": float(episode_return),
-        f"rollout/{lesson}/length": float(episode_len),
-        f"rollout/{lesson}/entity_cost": float(entity_cost),
+        f"sampled/{lesson}/thput": float(thput_normed),
+        f"sampled/{lesson}/reward": float(episode_return),
+        f"sampled/{lesson}/length": float(episode_len),
+        f"sampled/{lesson}/entity_cost": float(entity_cost),
     }
 
 
@@ -1728,12 +1728,12 @@ if __name__ == "__main__":
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "eot_prob", "invalid_frac", "num_entities",
                   "entity_efficiency", "frac_reachable", "entity_cost"]:
-            wandb.define_metric(f"rollout/{m}", summary="last")
+            wandb.define_metric(f"sampled/{m}", summary="last")
         for ln in _LESSONS:
             for m in [
                 "thput", "reward", "length", "entity_cost",
             ]:
-                wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
+                wandb.define_metric(f"sampled/{ln}/{m}", summary="last")
         wandb.define_metric("entropy/total", summary="last")
         for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
             wandb.define_metric(f"entropy/{h}", summary="last")
@@ -1968,7 +1968,7 @@ if __name__ == "__main__":
     approx_kl = np.nan
 
     # Accumulate episode-level metrics during the rollout, then log means once
-    # per iteration. Per-lesson keys (rollout/{LESSON}/*) are recorded only by
+    # per iteration. Per-lesson keys (sampled/{LESSON}/*) are recorded only by
     # episodes of that lesson, so each averages over just its own episodes.
     _episode_metrics: dict[str, list[float]] = {}
 
@@ -2025,7 +2025,7 @@ if __name__ == "__main__":
         ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
         # Per-iteration accumulators for the acting policy's distribution shape
-        # (entropy/* and rollout/eot_prob): summed over rollout steps, meaned at
+        # (entropy/* and sampled/eot_prob): summed over rollout steps, meaned at
         # log time.
         _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
         _eot_prob_sum = 0.0
@@ -2285,7 +2285,7 @@ if __name__ == "__main__":
             # entropy/* describe the ACTING policy's distribution (meaned over
             # the rollout steps), the RL analog of SFT's per-head metrics.
             "entropy/total": float(sum(_head_ent_sum.values())) / n_steps,
-            "rollout/eot_prob": float(_eot_prob_sum) / n_steps,
+            "sampled/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
@@ -2318,8 +2318,8 @@ if __name__ == "__main__":
         # ── Time-to-quality early stop (offline benchmark) ──────────────────
         # EMA-smooth the target metric and stop the first time it crosses the
         # threshold; record the wall-clock time-to-quality. Metric keys absent
-        # this iteration (e.g. rollout/* with no finished episode, or eval/* off
-        # an eval iter) simply don't update the EMA.
+        # this iteration (e.g. sampled/* with no finished episode) simply don't
+        # update the EMA.
         if args.target_metric is not None and args.target_value is not None:
             mval = iter_metrics.get(args.target_metric)
             if mval is not None:

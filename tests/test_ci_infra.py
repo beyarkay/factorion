@@ -555,14 +555,14 @@ class TestSelectHeadline:
     def test_ppo_patterns(self):
         names = [
             "eval/thput",  # shared with SFT, so it headlines first
-            "rollout/thput",
-            "rollout/reward",
-            "rollout/length",
-            "rollout/invalid_frac",
-            "rollout/eot_rate",  # not headline
-            "rollout/MOVE_ONE_ITEM/thput",
-            "rollout/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
-            "rollout/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail
+            "sampled/thput",
+            "sampled/reward",
+            "sampled/length",
+            "sampled/invalid_frac",
+            "sampled/eot_rate",  # not headline
+            "sampled/MOVE_ONE_ITEM/thput",
+            "sampled/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
+            "sampled/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail
             "critic/explained_variance",
             "entropy/total",
             "perf/update_seconds",
@@ -575,12 +575,12 @@ class TestSelectHeadline:
         got = select_headline(names)
         assert got == [
             "eval/thput",
-            "rollout/thput",
-            "rollout/reward",
-            "rollout/length",
-            "rollout/invalid_frac",
-            "rollout/MOVE_ONE_ITEM/thput",
-            "rollout/SOME_FUTURE_LESSON_9/thput",
+            "sampled/thput",
+            "sampled/reward",
+            "sampled/length",
+            "sampled/invalid_frac",
+            "sampled/MOVE_ONE_ITEM/thput",
+            "sampled/SOME_FUTURE_LESSON_9/thput",
             "perf/update_seconds",
             "perf/rollout_seconds",
             "perf/eval_seconds",

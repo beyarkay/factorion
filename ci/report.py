@@ -139,7 +139,7 @@ def compare_metric_rows(
 # names are matched, never hardcoded (`eval/{LESSON}/thput` covers every
 # current and future lesson). One list serves both kinds: `eval/` is shared
 # (sft.py and ppo.py log it from the same greedy rollout), `val/` is
-# SFT-only and `rollout/` PPO-only.
+# SFT-only and `sampled/` PPO-only.
 HEADLINE_PATTERNS = [
     # Greedy held-out throughput, the headline for both kinds (overall then
     # per-lesson).
@@ -150,12 +150,12 @@ HEADLINE_PATTERNS = [
     # accs like val/{LESSON}/acc).
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
-    # PPO: on-policy rollout health (overall then per-lesson), then speed.
-    r"^rollout/thput$",
-    r"^rollout/reward$",
-    r"^rollout/length$",
-    r"^rollout/invalid_frac$",
-    r"^rollout/[A-Z0-9_]+/thput$",
+    # PPO: sampled-rollout health (overall then per-lesson), then speed.
+    r"^sampled/thput$",
+    r"^sampled/reward$",
+    r"^sampled/length$",
+    r"^sampled/invalid_frac$",
+    r"^sampled/[A-Z0-9_]+/thput$",
     r"^perf/update_seconds$",
     r"^perf/rollout_seconds$",
     r"^perf/eval_seconds$",
@@ -527,7 +527,7 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
 HISTORY_METRICS = [
     "eval/thput",
     "val/acc",
-    "rollout/thput",
+    "sampled/thput",
     "moving_avg_throughput",
 ]
 

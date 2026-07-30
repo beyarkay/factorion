@@ -1,6 +1,6 @@
-"""Tests for the PPO wandb-logging support: run-name signature, the held-out
-greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
-+ eot prob stashed by get_action_and_value (the policy/* metrics)."""
+"""Tests for the PPO wandb-logging support: run-name signature, the lesson kind
+exposed in env info, and the per-head entropy + eot prob stashed by
+get_action_and_value (the entropy/* metrics)."""
 
 import os
 import sys
@@ -76,7 +76,7 @@ class TestEnvExposesKind:
         assert info2["kind"] == LessonKind.SPLITTER_SPLIT.value
 
 
-# ── per-head entropy + eot prob (policy/* metrics) ──────────────────────────
+# ── per-head entropy + eot prob (entropy/* metrics) ─────────────────────────
 
 
 class TestPerHeadEntropyStash:
@@ -130,15 +130,15 @@ class TestRolloutEpisodeMetrics:
 
     def test_overall_logs_raw_and_normed_throughput(self):
         m = self._metrics()
-        assert m["rollout/thput"] == pytest.approx(0.6)
-        assert m["rollout/thput_raw"] == pytest.approx(9.0)
+        assert m["sampled/thput"] == pytest.approx(0.6)
+        assert m["sampled/thput_raw"] == pytest.approx(9.0)
 
     def test_per_lesson_logs_normed_throughput_only(self):
         # Per lesson the ceiling is fixed, so raw is an affine rescaling of
         # normed and adds no signal — only the normalized key is logged.
         m = self._metrics("SPLITTER_SPLIT")
-        assert m["rollout/SPLITTER_SPLIT/thput"] == pytest.approx(0.6)
-        assert "rollout/SPLITTER_SPLIT/thput_raw" not in m
+        assert m["sampled/SPLITTER_SPLIT/thput"] == pytest.approx(0.6)
+        assert "sampled/SPLITTER_SPLIT/thput_raw" not in m
 
     def test_every_lesson_kind_gets_a_per_lesson_thput_key(self):
         for kind in LessonKind:
@@ -155,19 +155,19 @@ class TestRolloutEpisodeMetrics:
                 frac_reachable=0.0,
                 entity_cost=4.0,
             )
-            assert m[f"rollout/{kind.name}/thput"] == pytest.approx(0.25)
+            assert m[f"sampled/{kind.name}/thput"] == pytest.approx(0.25)
 
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()
-        assert m["rollout/entity_efficiency"] == pytest.approx(3.0 / 4.0)
+        assert m["sampled/entity_efficiency"] == pytest.approx(3.0 / 4.0)
 
     def test_entity_cost_is_logged_overall_and_per_lesson(self):
         m = self._metrics("SPLITTER_SPLIT")
-        assert m["rollout/entity_cost"] == pytest.approx(12.5)
-        assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
+        assert m["sampled/entity_cost"] == pytest.approx(12.5)
+        assert m["sampled/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
         # cost_efficiency is a deterministic function of entity_cost, so only
         # the cost itself is logged.
-        assert "rollout/cost_efficiency" not in m
+        assert "sampled/cost_efficiency" not in m
 
 
 # ── critic (value-head) diagnostics (global + per-lesson) ────────────────────

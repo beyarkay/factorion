@@ -9,7 +9,7 @@
 
 method: grid
 metric:
-  name: "rollout/thput"
+  name: "sampled/thput"
   goal: maximize
 
 parameters:
