@@ -21,6 +21,7 @@ use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recip
 use crate::world::World;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::num::NonZeroUsize;
 
 /// The lesson kinds. This is the single source of truth for the kind set:
 /// Python's `LessonKind` enum is built from [`all_lesson_kinds`] via the PyO3
@@ -221,9 +222,20 @@ enum Underground {
     On(Option<Direction>),
 }
 
-/// Up to `shortest_n` distinct minimal-cost routes from `start` to `end`
-/// (`shortest_n < 0` returns every valid one), each a `Vec<UgPlacement>` laying
-/// exactly one entity per cell from `start` through `end` (which faces `end_dir`).
+/// Which minimal-cost routes to return. There are ~`C(2n, n)` of them on an
+/// `n`×`n` grid (1.7e10 at `n = 20` — every monotone staircase is one), so
+/// neither variant can collect them all.
+enum Routes<'a> {
+    /// The first `n` the backtrack reaches, in its own fixed order.
+    First(NonZeroUsize),
+    /// One route, taking a random predecessor at each step back: arbitrary
+    /// rather than uniform, and O(route length) instead of enumerate-and-shuffle.
+    Sampled(&'a mut Rng),
+}
+
+/// Minimal-cost routes from `start` to `end` as selected by `routes`, each a
+/// `Vec<UgPlacement>` laying exactly one entity per cell from `start` through
+/// `end` (which faces `end_dir`).
 ///
 /// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 4 and
 /// a `span`-tile tunnel costs `5 * (span + 1)` (an integral 1.25×/tile penalty),
@@ -238,7 +250,7 @@ fn find_belt_paths(
     size: i64,
     blocked: &HashSet<Cell>,
     underground: Underground,
-    shortest_n: i64,
+    routes: Routes,
 ) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
@@ -397,13 +409,32 @@ fn find_belt_paths(
         return vec![];
     }
 
-    // Walk every predecessor chain from each goal arrival back to `start_state`,
-    // emitting start→end routes and dropping any that reuse a tile, until
-    // `shortest_n` valid routes are collected (`< 0` == unbounded).
-    let limit = if shortest_n < 0 {
-        usize::MAX
-    } else {
-        shortest_n as usize
+    // Walk predecessor chains from a goal arrival back to `start_state`,
+    // emitting start→end routes, until enough valid ones are collected.
+    let limit = match routes {
+        Routes::First(n) => n.get(),
+        // Every recorded edge lies on a minimal route, so following one random
+        // predecessor per step always lands on `start_state`.
+        Routes::Sampled(rng) => {
+            let (mut state, tail) =
+                goal_arrivals.swap_remove(rng.choice_index(goal_arrivals.len()));
+            let mut rev: Vec<UgPlacement> = Vec::new();
+            while state != start_state {
+                let Some(ps) = preds.get(&state) else {
+                    return vec![];
+                };
+                let (pstate, emit) = &ps[rng.choice_index(ps.len())];
+                rev.extend(emit.iter().rev().copied());
+                state = *pstate;
+            }
+            let mut path: Vec<UgPlacement> = rev.into_iter().rev().collect();
+            path.extend(tail);
+            return if no_tile_reuse(&path) {
+                vec![path]
+            } else {
+                vec![]
+            };
+        }
     };
     fn walk(
         state: State,
@@ -420,9 +451,7 @@ fn find_belt_paths(
         if state == start_state {
             let mut path: Vec<UgPlacement> = acc.iter().rev().copied().collect();
             path.extend_from_slice(tail);
-            // One entity per tile: reject any self-overlapping (reorienting) detour.
-            let mut seen: HashSet<Cell> = HashSet::new();
-            if path.iter().all(|&(x, y, _, _)| seen.insert((x, y))) {
+            if no_tile_reuse(&path) {
                 results.push(path);
             }
             return;
@@ -463,6 +492,12 @@ fn find_belt_paths(
     results
 }
 
+/// One entity per tile: `false` for a self-overlapping (reorienting) detour.
+fn no_tile_reuse(path: &[UgPlacement]) -> bool {
+    let mut seen: HashSet<Cell> = HashSet::new();
+    path.iter().all(|&(x, y, _, _)| seen.insert((x, y)))
+}
+
 /// Convert a cell run into belt placements, last belt taking `end_dir`.
 fn path_to_belts(path: &[Cell], end_dir: Direction) -> Vec<UgPlacement> {
     let mut belts: Vec<UgPlacement> = Vec::new();
@@ -489,7 +524,8 @@ fn find_belt_path(
     blocked: &HashSet<Cell>,
     underground: Underground,
 ) -> Option<Vec<UgPlacement>> {
-    find_belt_paths(start, end, end_dir, size, blocked, underground, 1)
+    let one = Routes::First(NonZeroUsize::MIN);
+    find_belt_paths(start, end, end_dir, size, blocked, underground, one)
         .into_iter()
         .next()
 }
@@ -771,7 +807,8 @@ fn build_move_one_item(
         place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
 
         // Route from the source's output cell to the sink's input cell, keeping
-        // the markers themselves clear (all shortest belt paths; no tunnels).
+        // the markers themselves clear (a random shortest belt path, so the
+        // lesson varies seed to seed; no tunnels).
         let (dr_s, dc_s) = source_dir.delta();
         let start = (source_wh.0 + dr_s, source_wh.1 + dc_s);
         let (dr_k, dc_k) = sink_dir.delta();
@@ -779,29 +816,19 @@ fn build_move_one_item(
         let mut blocked: HashSet<Cell> = HashSet::new();
         blocked.insert(source_wh);
         blocked.insert(sink_wh);
-        let mut paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, -1);
-        paths.retain(|p| (p.len() as f64) <= max_entities);
-
-        if paths.is_empty() {
+        let sampled = Routes::Sampled(rng);
+        let paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, sampled);
+        let Some(chosen) = paths.into_iter().next() else {
+            continue;
+        };
+        if (chosen.len() as f64) > max_entities {
             continue;
         }
 
-        rng.shuffle(&mut paths);
-        let mut chosen: Option<Vec<UgPlacement>> = None;
-        for candidate in &paths {
-            let mut trial = world.clone();
-            place_belts(&mut trial, candidate);
-            if world_throughput(&trial) > 0.0 {
-                chosen = Some(candidate.clone());
-                world = trial;
-                break;
-            }
+        place_belts(&mut world, &chosen);
+        if world_throughput(&world) <= 0.0 {
+            continue;
         }
-
-        let chosen = match chosen {
-            Some(c) => c,
-            None => continue,
-        };
 
         let total_entities = chosen.len();
         return finish(world, total_entities, vec![], count);
@@ -3724,7 +3751,7 @@ mod tests {
     #[test]
     fn test_shortest_n_caps_and_enumerates() {
         // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
-        // shortest ones. `shortest_n` caps how many come back; -1 returns all.
+        // shortest ones, so a cap above 6 returns exactly those 6.
         let free = HashSet::new();
         let all = find_belt_paths(
             (0, 0),
@@ -3733,7 +3760,7 @@ mod tests {
             5,
             &free,
             Underground::Off,
-            -1,
+            Routes::First(NonZeroUsize::new(50).unwrap()),
         );
         assert_eq!(all.len(), 6);
         for p in &all {
@@ -3756,7 +3783,7 @@ mod tests {
                 5,
                 &free,
                 Underground::Off,
-                2
+                Routes::First(NonZeroUsize::new(2).unwrap()),
             )
             .len(),
             2
@@ -3769,7 +3796,7 @@ mod tests {
                 5,
                 &free,
                 Underground::Off,
-                1
+                Routes::First(NonZeroUsize::MIN),
             )
             .len(),
             1
@@ -3783,9 +3810,47 @@ mod tests {
             5,
             &blocked,
             Underground::Off,
-            -1
+            Routes::First(NonZeroUsize::new(50).unwrap()),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn test_sampled_route_is_cheap_and_varied() {
+        // Corner to corner of a 20x20 grid there are C(38,19) ~ 1.7e10 shortest
+        // routes — enumerating them to pick one is what OOM-killed the
+        // generator. Sampling must stay valid without collapsing onto one route.
+        let free = HashSet::new();
+        let mut seen: HashSet<Vec<Cell>> = HashSet::new();
+        for seed in 0..20u64 {
+            let mut rng = Rng::seeded(seed);
+            let paths = find_belt_paths(
+                (0, 0),
+                (19, 19),
+                Direction::East,
+                20,
+                &free,
+                Underground::Off,
+                Routes::Sampled(&mut rng),
+            );
+            assert_eq!(paths.len(), 1);
+            assert_eq!(paths[0].len(), 39, "every shortest route is 39 tiles");
+            seen.insert(belt_cells(&paths[0]));
+        }
+        assert!(
+            seen.len() > 10,
+            "sampling collapsed onto {} routes",
+            seen.len()
+        );
+    }
+
+    #[test]
+    fn test_move_one_item_stays_cheap_on_a_large_grid() {
+        // Regression: `build_move_one_item` used to enumerate every shortest
+        // route, which at size 20 exhausted memory within ~100 seeds.
+        for seed in 0..100u64 {
+            build_factory(20, LessonKind::MoveOneItem, seed, true, f64::INFINITY);
+        }
     }
 
     #[test]
