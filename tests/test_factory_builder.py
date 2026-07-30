@@ -899,21 +899,20 @@ class TestBatchRollout:
         # Indices stay unique across groups — the gallery sorts on them.
         assert sorted(r["index"] for r in results) == [0, 1, 2, 3, 4]
 
-    def test_over_ceiling_is_reported_not_silently_truncated(self, monkeypatch):
-        """Asking for more than the per-scan ceiling still runs, but says
-        what it cut — a silent clamp reads as "that's all there was"."""
-        monkeypatch.setattr(fb, "MAX_BATCH_ROLLOUTS", 2)
+    def test_count_is_never_silently_capped(self, monkeypatch):
+        """The requested count is what runs. A cap that quietly trimmed the
+        scan would read as "that's all there was to find"."""
+        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 11}
+                {"kind": "MOVE_ONE_ITEM", "count": 7, "seed": 0, "size": 11}
             )
         finally:
             path.unlink(missing_ok=True)
-        note = next(e for e in events if e["type"] == "note")
-        assert "5" in note["message"] and "2" in note["message"]
-        assert len([e for e in events if e["type"] == "result"]) == 2
+        assert events[0] == {"type": "start", "n": 7}
+        assert len([e for e in events if e["type"] == "result"]) == 7
 
     def test_bad_kind_yields_an_error_event(self):
         """The response headers are already sent by the time the scan

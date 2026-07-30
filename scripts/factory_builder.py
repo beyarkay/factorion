@@ -693,10 +693,10 @@ ALL_KINDS_SENTINEL = "__ALL__"
 ROLLOUT_BATCH_SIZE = 64
 """Rollouts advanced in lockstep per batched forward. Every slot stays in the
 batch until the last of its group finishes, so a wider batch mostly buys stale
-compute at the tail; a bigger scan runs as back-to-back groups instead."""
-MAX_BATCH_ROLLOUTS = 512
-"""Hard ceiling on one scan, so a fat-fingered count can't tie the server up
-for an hour. Exceeding it is reported, never silently truncated."""
+compute at the tail; a bigger scan runs as back-to-back groups instead. There
+is deliberately no ceiling on the scan itself: groups are built and freed one
+at a time so memory is flat in the count, results stream as they finish, and
+Stop cancels — nothing a cap would protect against."""
 
 
 def _reset_rollout_env(
@@ -839,16 +839,7 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
     """
     try:
         size = int(payload.get("size", 11))
-        requested = max(1, int(payload.get("count", 10)))
-        count = min(requested, MAX_BATCH_ROLLOUTS)
-        if count < requested:
-            yield {
-                "type": "note",
-                "message": (
-                    f"asked for {requested} rollouts, running "
-                    f"{MAX_BATCH_ROLLOUTS} (the per-scan ceiling)"
-                ),
-            }
+        count = max(1, int(payload.get("count", 10)))
         start_seed = int(payload.get("seed", 0))
         kind_name = payload.get("kind") or ALL_KINDS_SENTINEL
         if kind_name == ALL_KINDS_SENTINEL:
@@ -1279,7 +1270,7 @@ def render_index(default_size: int) -> str:
       <select id="scan-kind">{scan_lesson_options}</select>
     </label>
     <label title="How many rollouts to add per click. With '(every kind)' the kinds cycle first, so N = the number of kinds gives one seed of each.">
-      rollouts <input id="scan-count" type="number" min="1" max="{MAX_BATCH_ROLLOUTS}" value="50">
+      rollouts <input id="scan-count" type="number" min="1" value="50">
     </label>
     <label title="Seed the next batch starts from. Advances by the rollout count after each run, so repeated clicks keep drawing fresh factories.">
       start seed <input id="scan-seed" type="number" value="0" step="1">
@@ -2333,8 +2324,6 @@ async function runScan() {{
         if (ev.type === 'start') {{
           total = ev.n;
           scanSummary('running ' + total + ' rollouts…');
-        }} else if (ev.type === 'note') {{
-          scanSummary(ev.message);
         }} else if (ev.type === 'result') {{
           ev.index += indexBase;
           scanResults.push(ev);
@@ -2428,10 +2417,28 @@ class _BuilderServer(HTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: _BuilderServer  # _BuilderServer stashes the CLI defaults on itself
+    raw_requestline: bytes  # set by handle_one_request; absent from the stubs
     server_version = "FactoryBuilder/0.1"
 
     def log_message(self, format, *args):  # noqa: A002
         sys.stderr.write("[%s] %s\n" % (self.address_string(), format % args))
+
+    def parse_request(self) -> bool:
+        """Reject a TLS handshake without logging it as a mangled request.
+
+        Bytes starting 0x16 0x03 are a TLS ClientHello: something reached
+        this plain-HTTP server over https://, which browsers do on their own
+        (Firefox's HTTPS-Only mode, HSTS, an extension). The default handler
+        renders the handshake as a garbled HTTP/0.9 request line, which reads
+        like a crash rather than a wrong-scheme connection.
+        """
+        if self.raw_requestline.startswith(b"\x16\x03"):
+            self.log_message(
+                "ignored an https:// connection — this server is plain HTTP"
+            )
+            self.close_connection = True
+            return False
+        return super().parse_request()
 
     def _stream_ndjson(self, events: Iterator[dict]) -> None:
         """Write one JSON object per line as the generator produces them.
@@ -2461,7 +2468,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
+
+    def _write_body(self, body: bytes) -> None:
+        """Write a response body, tolerating a client that has gone away.
+
+        Reloading mid-load or hitting Stop drops the socket while the ~1MB
+        page is still going out; that is routine, not something to dump a
+        traceback over."""
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_GET(self):  # noqa: N802
         if self.path == "/" or self.path.startswith("/?"):
@@ -2470,7 +2488,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            self._write_body(body)
             return
         if self.path == "/model_info":
             self._send_json(_model_info())
