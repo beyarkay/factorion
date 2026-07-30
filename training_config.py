@@ -121,11 +121,11 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9566
+    gamma: float = 0.9829
     """the discount factor gamma"""
-    gae_lambda: float = 0.9187
+    gae_lambda: float = 0.9832
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 32
+    num_minibatches: int = 8
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
     update_epochs: int = 8
     """the K epochs to update the policy"""
@@ -164,9 +164,9 @@ class PpoArgs(SharedArgs):
     opposed to subtracting a log-space cost term) also keeps zero throughput at
     exactly zero, so a factory that delivers nothing is never worse than an
     empty grid. 0 disables the compression."""
-    max_grad_norm: float = 1.221
+    max_grad_norm: float = 1.9171
     """the maximum norm for the gradient clipping"""
-    target_kl: Optional[float] = 0.02
+    target_kl: Optional[float] = 0.0089354
     """the target KL divergence threshold; early-stops the update's epochs. None
     = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
     adam_epsilon: float = 6.891e-06
