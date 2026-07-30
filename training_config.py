@@ -199,7 +199,7 @@ class PpoArgs(SharedArgs):
     # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
     """If set, stop training the first time an EMA of this iter-metric key
-    (e.g. 'rollout/reward', 'rollout/thput', 'eval/thput') reaches
+    (e.g. 'sampled/reward', 'sampled/thput') reaches
     --target-value, and record the wall-clock time-to-quality. None disables
     (normal fixed-iteration training)."""
     target_value: Optional[float] = None
@@ -274,12 +274,12 @@ class SftArgs(SharedArgs):
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
-    metric (eval/thput), so it sets its noise floor. Drawn from val lessons."""
+    metric (greedy/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 16
     """parallel envs for rollout eval; batches the CNN forward across them.
     Per-seed results are independent of this, so it is purely a speed knob."""
     rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for eval/thput)"""
+    """EOT-head prob above which we mark the model "would stop" (for greedy/thput)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208

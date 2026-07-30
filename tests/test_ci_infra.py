@@ -434,28 +434,28 @@ class TestMetricDirection:
     def test_heuristics(self):
         assert metric_direction("val/thput") == "higher"
         assert metric_direction("val/acc") == "higher"
-        assert metric_direction("train/loss") == "lower"
+        assert metric_direction("val/loss") == "lower"
         assert metric_direction("some/unknown_metric") is None
 
 
 class TestCompareRows:
     def _sides(self):
-        base = {s: {"val/thput": 0.10 + 0.01 * s, "train/loss": 2.0} for s in (1, 2, 3)}
-        test = {s: {"val/thput": 0.30 + 0.01 * s, "train/loss": 1.0} for s in (1, 2, 3)}
+        base = {s: {"greedy/thput": 0.10 + 0.01 * s, "val/loss": 2.0} for s in (1, 2, 3)}
+        test = {s: {"greedy/thput": 0.30 + 0.01 * s, "val/loss": 1.0} for s in (1, 2, 3)}
         return base, test
 
     def test_paired_and_significant_improvement(self):
         base, test = self._sides()
         rows = {r.name: r for r in compare_metric_rows(base, test)}
-        thput = rows["val/thput"]
+        thput = rows["greedy/thput"]
         assert thput.paired
         assert math.isclose(thput.delta, 0.2, abs_tol=1e-9)
         assert thput.p_value is not None and thput.p_value < 0.05
         assert thput.verdict() == "better"
 
     def test_lower_is_better_direction(self):
-        base = {s: {"train/loss": 2.0 + 0.001 * s} for s in (1, 2, 3)}
-        test = {s: {"train/loss": 1.0 + 0.001 * s} for s in (1, 2, 3)}
+        base = {s: {"val/loss": 2.0 + 0.001 * s} for s in (1, 2, 3)}
+        test = {s: {"val/loss": 1.0 + 0.001 * s} for s in (1, 2, 3)}
         (row,) = compare_metric_rows(base, test)
         assert row.verdict() == "better"
 
@@ -475,9 +475,9 @@ class TestCompareRows:
         base[1]["obscure/metric"] = 1.0
         test[1]["obscure/metric"] = 1.1
         rows = compare_metric_rows(base, test)
-        md = render_compare_markdown(rows, "grp-base", "grp-test", headline=["val/thput"])
+        md = render_compare_markdown(rows, "grp-base", "grp-test", headline=["greedy/thput"])
         before_details, details = md.split("<details>", 1)
-        assert "val/thput" in before_details  # headline shown up front
+        assert "greedy/thput" in before_details  # headline shown up front
         assert "obscure/metric" not in before_details  # long tail hidden…
         assert "obscure/metric" in details  # …but present in the full table
 
@@ -538,7 +538,7 @@ class TestSelectHeadline:
             "val/eot_acc",
             "val/eot_pos_recall",  # not an accuracy
             "perf/train_seconds",
-            "train/loss",
+            "val/loss",
         ]
         got = select_headline(names)
         assert got == [

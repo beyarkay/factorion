@@ -1211,7 +1211,7 @@ def train_sft(args: SftArgs):
                 # LessonKind and so terminal samples can be masked out of
                 # placement losses. mean over the tile axis matches the
                 # scale of bce_loss(reduction="mean"), keeping
-                # val/loss_tile comparable to train/loss_tile.
+                # val/loss_tile comparable across heads.
                 loss_tile_per = (
                     bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
                     * placement_mask
