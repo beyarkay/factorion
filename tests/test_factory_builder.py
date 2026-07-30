@@ -11,7 +11,10 @@ them to BaseHTTPRequestHandler would only re-test stdlib socket
 behaviour. wandb downloads aren't tested either: they'd require
 mocking the wandb client, which is high-effort for low payoff."""
 
+import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -22,6 +25,8 @@ import torch
 
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["WANDB_DISABLED"] = "true"
+
+_NODE = shutil.which("node")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -507,7 +512,7 @@ class TestPredictSchema:
             fb._load_checkpoint(str(path))
             result = fb._predict_action(_empty_grid(4))
             assert set(result) == {
-                "x", "y", "entity", "direction", "item", "misc",
+                "x", "y", "entity", "direction", "item", "misc", "eot_prob",
             }
             assert 0 <= result["x"] < 4
             assert 0 <= result["y"] < 4
@@ -523,7 +528,9 @@ class TestPredictSchema:
             detailed = fb._predict(grid)
             assert compact == {
                 key: detailed[key]
-                for key in ("x", "y", "entity", "direction", "item", "misc")
+                for key in (
+                    "x", "y", "entity", "direction", "item", "misc", "eot_prob",
+                )
             }
         finally:
             path.unlink(missing_ok=True)
@@ -653,6 +660,106 @@ class TestRenderIndexApplyWiring:
         assert "function stopAutoApply(" in html
         assert "detail: 'action'" in html
         assert "document.addEventListener('keyup'" in html
+
+
+# The page's own script, driven under node against a stub DOM: `fetch` and the
+# apply endpoint are replaced, so what runs is the real loop, not a paraphrase.
+# `applyCandidate` starts refusing at CAP placements the way a filled grid
+# would, which is the only reason a stop-blind loop terminates at all.
+_JS_HARNESS = """
+import fs from 'node:fs';
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const mode = process.argv[3];
+const stub = () => new Proxy({}, {
+  get(t, k) {
+    if (k === 'style' || k === 'dataset' || k === 'classList') return stub();
+    if (k in t) return t[k];
+    return () => stub();
+  },
+  set(t, k, v) { t[k] = v; return true; },
+});
+globalThis.document = {
+  getElementById: () => stub(), createElement: () => stub(),
+  addEventListener: () => {}, querySelectorAll: () => [], body: stub(),
+};
+globalThis.addEventListener = () => {};
+globalThis.window = globalThis;
+globalThis.performance = { now: () => 0 };
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {};
+globalThis.fetch = async () => ({ json: async () => ({}) });
+
+const driver = `
+const CAP = 50;
+const STOP_AFTER = 3;
+let applied = 0;
+const stops = ${JSON.stringify(mode)} !== 'never_stops';
+requestFastPrediction = async () => ({
+  x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
+  item: 'empty', misc: 'NONE',
+  eot_prob: (stops && applied >= STOP_AFTER) ? 0.9 : 0.01,
+});
+applyCandidate = async () => { applied += 1; return applied < CAP; };
+modelLoaded = true;
+(async () => {
+  if (${JSON.stringify(mode)} === 'tap') {
+    prediction = { x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
+                   item: 'empty', misc: 'NONE', eot_prob: 0.9 };
+    beginApplyKey();
+    await new Promise((r) => setTimeout(r, 250));
+    endApplyKey();
+  } else {
+    autoApplying = true;
+    autoApplyGeneration = 7;
+    await runAutoApply(7);
+  }
+  return { applied, autoApplying, threshold: EOT_STOP_THRESHOLD };
+})();
+`;
+console.log(JSON.stringify(await eval(src + driver)));
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+class TestHoldToApplyRespectsEot:
+    """Holding `a` is a rollout, so the model's stop head must end it — the UI
+    kept placing entities until the grid refused them, long past eot."""
+
+    def _drive(self, tmp_path: Path, mode: str) -> dict:
+        html = fb.render_index(default_size=11)
+        js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+        (tmp_path / "page.js").write_text(js)
+        (tmp_path / "harness.mjs").write_text(_JS_HARNESS)
+        assert _NODE is not None  # narrowed by the skipif above
+        proc = subprocess.run(
+            [_NODE, str(tmp_path / "harness.mjs"), str(tmp_path / "page.js"), mode],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, f"node failed:\n{proc.stderr}"
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def test_loop_stops_on_the_step_eot_fires(self, tmp_path):
+        out = self._drive(tmp_path, "stops")
+        assert out["applied"] == 3, (
+            "the loop must apply exactly the placements the model offered "
+            "before it declared itself done"
+        )
+        assert out["autoApplying"] is False
+
+    def test_loop_keeps_building_while_eot_stays_low(self, tmp_path):
+        """The stop is the head firing, not the loop being timid: with eot
+        pinned low it runs until the grid stops accepting placements."""
+        out = self._drive(tmp_path, "never_stops")
+        assert out["applied"] == 50
+
+    def test_holding_a_on_a_finished_factory_places_nothing(self, tmp_path):
+        """The visible prediction is already suppressed at eot > threshold, so
+        the key that consumes it must not apply the hidden placement either."""
+        out = self._drive(tmp_path, "tap")
+        assert out["applied"] == 0
+        assert out["autoApplying"] is False
 
 
 class TestRenderIndexHelpPopover:

@@ -543,6 +543,13 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
     return top, max(0.0, 1.0 - cum)
 
 
+EOT_STOP_THRESHOLD = 0.5
+"""EOT-head probability above which the UI treats the model as finished: the
+hold-to-apply loop stops and no further placement is applied. Matches
+`AgentCNN.eot_should_stop`'s default and SFT's `rollout_eot_threshold`, so
+holding `a` reproduces what a greedy rollout would build."""
+
+
 CANDIDATE_TILE_THRESHOLD = 0.01
 """Minimum p(tile) for a tile to appear as a ghost candidate in the UI.
 Tiles with `p(tile) < CANDIDATE_TILE_THRESHOLD` are dropped — they're
@@ -634,31 +641,32 @@ def _predict(grid: list[list[dict]]) -> dict:
 
 
 def _predict_action(grid: list[list[dict]]) -> dict:
-    """Return only the greedy next placement.
+    """Return only the greedy next placement, plus the EOT probability.
 
-    This is the latency-sensitive path used while the user holds ``a``.  The
-    detailed predictor above intentionally computes probability tables and
-    ghost candidates for inspection; none of that is needed for an
-    autoregressive placement, so this path performs one encode and five
-    argmaxes and returns the six fields the browser applies.
+    This is the latency-sensitive path used while the user holds ``a``. The
+    detailed predictor above additionally builds probability tables and ghost
+    candidates for inspection, none of which an autoregressive placement needs
+    — but both go through the shared sampler, so what the held key applies is
+    exactly what the panel showed. Reading the heads directly instead skips the
+    entity-conditional masks `sample_action` applies to direction / item / misc
+    (which is how a belt ends up tagged with a recipe, or an assembler with
+    none), and skips `eot_prob`, without which the loop cannot stop where a
+    rollout would.
     """
     world_WHC = build_world(grid)
     agent = _get_agent(world_WHC.shape[0])
     obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
-    H = obs_CWH.shape[3]
 
     with torch.inference_mode():
-        encoded_BCWH, g_BG = agent.encode(obs_CWH)
-        tile_idx = int(agent.tile_logits(encoded_BCWH).reshape(-1).argmax().item())
-        x, y = divmod(tile_idx, H)
-        tile_features = encoded_BCWH[:, :, x, y]
-        if g_BG is not None:
-            tile_features = torch.cat([tile_features, g_BG], dim=1)
-
-        entity = int(agent.ent_head(tile_features).argmax(dim=-1).item())
-        direction = int(agent.dir_head(tile_features).argmax(dim=-1).item())
-        item = int(agent.item_head(tile_features).argmax(dim=-1).item())
-        misc = int(agent.misc_head(tile_features).argmax(dim=-1).item())
+        out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
+        act = out["action"]
+        x = int(act["xy"][0, 0].item())
+        y = int(act["xy"][0, 1].item())
+        entity = int(act["entity"][0].item())
+        direction = int(act["direction"][0].item())
+        item = int(act["item"][0].item())
+        misc = int(act["misc"][0].item())
+        eot_prob = float(out["eot_prob"][0].item())
 
     return {
         "x": x,
@@ -667,6 +675,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
         "direction": _DIR_NAMES.get(direction, str(direction)),
         "item": _ITEM_NAMES.get(item, str(item)),
         "misc": _MISC_NAMES.get(misc, str(misc)),
+        "eot_prob": eot_prob,
     }
 
 
@@ -1003,6 +1012,7 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
+const EOT_STOP_THRESHOLD = {EOT_STOP_THRESHOLD};
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
 // successful /load_model call. Prediction calls are gated on it so we
 // don't pester the server with /predict when no checkpoint is loaded.
@@ -1053,6 +1063,17 @@ function iconFor(name) {{
   return PALETTE_ICONS[name] || ITEM_ICONS[name] || '';
 }}
 
+// The stop head is authoritative for every apply path in the UI, not just
+// the visualisation: once it fires, a rollout is over, so the page must not
+// place anything more either.
+function eotStop(pred) {{
+  return !!pred && pred.eot_prob > EOT_STOP_THRESHOLD;
+}}
+
+function eotStopMessage(pred) {{
+  return 'model says done (eot ' + fmtPct(pred.eot_prob) + ')';
+}}
+
 function renderGrid() {{
   const host = document.getElementById('grid-host');
   // Build (x,y) -> candidate map once per render so the per-cell
@@ -1061,7 +1082,7 @@ function renderGrid() {{
   // placing things" — the candidate ghosts would just be misleading
   // hallucinations of a forced placement, so suppress them.
   const candByXY = {{}};
-  if (prediction && prediction.candidates && !(prediction.eot_prob > 0.5)) {{
+  if (prediction && prediction.candidates && !eotStop(prediction)) {{
     for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
   }}
   const tbl = document.createElement('table');
@@ -1079,7 +1100,7 @@ function renderGrid() {{
       // visually nominate a "next placement" tile.
       if (
         prediction && prediction.x === x && prediction.y === y
-        && !(prediction.eot_prob > 0.5)
+        && !eotStop(prediction)
       ) td.classList.add('predicted');
 
       const inner = document.createElement('div');
@@ -1349,19 +1370,20 @@ async function computePrediction() {{
     }}
     prediction = data;
     if (info) {{
-      info.textContent =
-        'predicted next placement at (' + data.x + ', ' + data.y + ')';
+      info.textContent = eotStop(data)
+        ? eotStopMessage(data) + ' — no placement offered'
+        : 'predicted next placement at (' + data.x + ', ' + data.y + ')';
     }}
     if (out) {{
       // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
       // The <pre> uses white-space:pre + overflow-x:auto so long top-p
       // lines scroll horizontally instead of wrapping.
       // EOT line: model's "I'm done" probability. The {{stop}} /
-      // {{continue}} marker matches the >0.5 default threshold in
+      // {{continue}} marker matches the threshold in
       // agent.eot_should_stop — a quick read for whether the model
       // would terminate an inference rollout right now.
       const eotPct = fmtPct(data.eot_prob);
-      const eotMark = data.eot_prob > 0.5 ? '[stop]' : '[continue]';
+      const eotMark = eotStop(data) ? '[stop]' : '[continue]';
       const lines = [
         '  eot:       ' + eotPct + ' ' + eotMark,
         '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
@@ -1431,6 +1453,11 @@ async function applyCandidate(cand, interactive = true) {{
 
 function applyPrediction() {{
   if (!prediction) return;
+  if (eotStop(prediction)) {{
+    const info = document.getElementById('model-info');
+    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
+    return;
+  }}
   applyCandidate(prediction);
 }}
 
@@ -1451,6 +1478,15 @@ async function runAutoApply(generation) {{
     while (autoApplying && generation === autoApplyGeneration) {{
       const action = await requestFastPrediction();
       if (!autoApplying || generation !== autoApplyGeneration) break;
+      if (eotStop(action)) {{
+        autoApplying = false;
+        if (info) {{
+          info.textContent =
+            'fast apply: stopped after ' + count + ' placements · ' +
+            eotStopMessage(action);
+        }}
+        break;
+      }}
       const applied = await applyCandidate(action, false);
       if (!applied) {{
         autoApplying = false;
@@ -1503,7 +1539,12 @@ function beginApplyKey() {{
   // Preserve tap-to-apply: consume the visible prediction once, then only
   // enter the continuous request pump if the key remains down.
   let firstApply = Promise.resolve(true);
-  if (prediction) {{
+  if (eotStop(prediction)) {{
+    // Resolving false also keeps the hold from entering the request pump.
+    firstApply = Promise.resolve(false);
+    const info = document.getElementById('model-info');
+    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
+  }} else if (prediction) {{
     firstApply = applyCandidate(prediction, false);
     firstApply.then((applied) => {{
       if (applied) renderAutoApplyFrame();

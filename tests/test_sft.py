@@ -1049,12 +1049,9 @@ class TestRunRolloutEval:
         )
         assert set(roll) == {
             "overall",
-            "overall_eot",
             "trial_overall",
-            "trial_overall_eot",
             "trial_n",
             "per_kind",
-            "per_kind_eot",
             "per_kind_n",
             "asm_item_acc",
             "per_kind_asm_item_acc",
@@ -1073,7 +1070,6 @@ class TestRunRolloutEval:
         )
 
         assert 0.0 <= overall <= 1.5, f"overall throughput out of range: {overall}"
-        assert 0.0 <= roll["overall_eot"] <= 1.5
         total_n = sum(per_kind_n.values())
         assert total_n == len(val_seeds_to_kind), (
             f"per-kind n totals {total_n}, expected {len(val_seeds_to_kind)}"
@@ -1169,15 +1165,14 @@ class TestRunRolloutEval:
             device=torch.device("cpu"),
         )
         assert roll["overall"] == 0.0
-        assert roll["overall_eot"] == 0.0
         assert sum(roll["per_kind_n"].values()) == 0
 
-    def test_eot_threshold_controls_eot_metric(self, registered_env):
-        """One rollout yields two throughputs: `overall` ignores the EOT head
-        (steps to env-done), `overall_eot` snapshots throughput at the first
-        EOT fire. A threshold above 1 means the head never fires, so
-        overall_eot == overall; a threshold below 0 means it fires before any
-        step, snapshotting the reset throughput (0) for every seed."""
+    def test_eot_head_stops_the_rollout(self, registered_env):
+        """The EOT head ends the rollout, so the threshold decides how far the
+        agent gets to build. A threshold above 1 means the head never fires and
+        the rollout runs to env-done; a threshold below 0 means it fires before
+        the first placement, so every rollout stops after one scored step and
+        scores the untouched reset factory (throughput 0)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
         agent = AgentCNN(envs, layers=(16, 16, 16))
@@ -1203,12 +1198,10 @@ class TestRunRolloutEval:
             eot_threshold=10.0,
             max_seeds=len(val_seeds_to_kind),
         )
-        assert never["overall_eot"] == pytest.approx(never["overall"]), (
-            "EOT never fires -> EOT-respecting throughput must equal ignore-EOT"
-        )
+        assert 0.0 <= never["overall"] <= 1.5
 
         # sigmoid(logit) > 0 always, so threshold -1 -> EOT fires before the
-        # first step, snapshotting the reset throughput (0).
+        # first placement.
         always = run_rollout_eval(
             agent,
             args,
@@ -1217,21 +1210,29 @@ class TestRunRolloutEval:
             eot_threshold=-1.0,
             max_seeds=len(val_seeds_to_kind),
         )
-        assert always["overall_eot"] == 0.0, (
-            "EOT firing before the first step must snapshot reset throughput (0)"
+        assert always["overall"] == 0.0, (
+            "EOT firing before the first placement must score the reset factory (0)"
         )
-        assert 0.0 <= always["overall"] <= 1.5
+
+        # The ASSERT: the head stops the rollout rather than just annotating it,
+        # so an immediately-firing head places nothing at all.
+        n_rollouts = len(val_seeds_to_kind)
+        assert sum(always["per_kind_eot_step_n"].values()) == n_rollouts, (
+            "an immediate stop must be exactly one scored step per rollout"
+        )
+        assert sum(never["per_kind_eot_step_n"].values()) > n_rollouts, (
+            "a silent head must keep placing past the first step"
+        )
 
     def test_rollout_eot_head_scoring(self, registered_env):
-        """The rollout scores the EOT head per step against ground truth: a
-        pre-action state is a should-stop positive iff the factory is already
-        complete (thput_normed >= 1.0). Forcing the head to never / always fire
-        (via the threshold) exposes the invariant: the greedy trajectory is
-        independent of the threshold, so both runs see the same steps and the
-        same done/not-done labels. Never-fire is correct exactly on the not-done
-        steps, always-fire exactly on the done steps — every step is one or the
-        other, so the two accuracies partition to 1.0. Never firing recalls no
-        positive; always firing recalls them all (1.0) when any exist."""
+        """The rollout scores the EOT head on every state it visits, against
+        ground truth: a pre-action state is a should-stop positive iff the
+        factory is already complete (thput_normed >= 1.0). Forcing the head to
+        never / always fire (via the threshold) pins both ends. A head that
+        always fires stops on the blank reset factory: one scored step per
+        rollout, wrong every time, and it never reaches a completed factory to
+        recall. A silent head keeps placing to env-done, so it is right on
+        exactly the not-done steps and recalls no positive."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
         agent = AgentCNN(envs, layers=(16, 16, 16))
@@ -1275,17 +1276,21 @@ class TestRunRolloutEval:
                 if roll["per_kind_eot_step_n"][kn] == 0:
                     assert acc == 0.0, f"{kn}: no steps but acc {acc}"
 
-        # Trajectory (and thus per-step labels) is threshold-independent.
-        assert never["per_kind_eot_step_n"] == always["per_kind_eot_step_n"]
-        assert never["per_kind_eot_pos_n"] == always["per_kind_eot_pos_n"]
+        # Firing on the blank reset factory is wrong, and stopping there means
+        # no completed factory is ever visited — so there is nothing to recall.
+        always_steps = sum(always["per_kind_eot_step_n"].values())
+        assert always_steps == max_seeds
+        assert sum(always["per_kind_eot_pos_n"].values()) == 0
+        assert always["eot_acc"] == 0.0
+        assert always["eot_pos_recall"] == 0.0
 
-        assert never["eot_acc"] + always["eot_acc"] == pytest.approx(1.0), (
-            "never-fire scores not-done steps, always-fire scores done steps"
-        )
-
+        # A silent head runs the full trajectory: strictly more scored steps,
+        # correct on exactly the not-done ones, and no positive recalled.
+        never_steps = sum(never["per_kind_eot_step_n"].values())
+        never_pos = sum(never["per_kind_eot_pos_n"].values())
+        assert never_steps > always_steps
+        assert never["eot_acc"] == pytest.approx((never_steps - never_pos) / never_steps)
         assert never["eot_pos_recall"] == 0.0, "silent head recalls no positive"
-        total_pos = sum(always["per_kind_eot_pos_n"].values())
-        assert always["eot_pos_recall"] == (1.0 if total_pos > 0 else 0.0)
 
     def _run_with_recorded_proposals(self, monkeypatch):
         """Run a greedy rollout eval with a FactorioEnv that records, for every

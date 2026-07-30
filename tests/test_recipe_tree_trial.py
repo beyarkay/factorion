@@ -272,17 +272,17 @@ class TestTrialEvalIsScoredApart:
         mixed.update(self._seeds([LessonKind.TRIAL_RECIPE_TREE_DEPTH_1], start=900))
 
         # The ASSERT: adding trials to the eval set must not move eval/thput.
-        assert self._run(mixed)["overall_eot"] == pytest.approx(
-            self._run(lesson_only)["overall_eot"]
+        assert self._run(mixed)["overall"] == pytest.approx(
+            self._run(lesson_only)["overall"]
         )
 
     def test_trials_are_reported_under_their_own_keys(self, registered_env):
         roll = self._run(self._seeds(list(TRIAL_KINDS)))
         assert roll["trial_n"] == 2 * len(TRIAL_KINDS)
-        assert 0.0 <= roll["trial_overall_eot"] <= 1.0
+        assert 0.0 <= roll["trial_overall"] <= 1.0
         # Only trials ran, so the lesson pool stays empty rather than
         # silently reporting the trial score as the headline.
-        assert roll["overall_eot"] == 0.0
+        assert roll["overall"] == 0.0
 
     def test_greedy_eval_surfaces_the_trial_metric(self, registered_env):
         import torch
