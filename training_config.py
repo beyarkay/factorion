@@ -121,7 +121,7 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.9566
+    gamma: float = 1.0
     """the discount factor gamma"""
     gae_lambda: float = 0.9187
     """the lambda for the general advantage estimation"""
