@@ -564,7 +564,7 @@ class TestSelectHeadline:
             "rollout/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "rollout/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail
             "critic/explained_variance",
-            "policy/entropy",
+            "entropy/total",
             "perf/update_seconds",
             "perf/rollout_seconds",
             "perf/eval_seconds",

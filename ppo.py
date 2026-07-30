@@ -1623,7 +1623,7 @@ class AgentCNN(nn.Module):
             -F.binary_cross_entropy_with_logits(eot_logit_B, eot_B, reduction="none")
         )
         # Per-head entropies, summed into the joint entropy used by PPO. Kept
-        # individually so the rollout can log policy/entropy_{head} (which heads
+        # individually so the rollout can log entropy/{head} (which heads
         # are still exploring vs collapsed) — the RL analog of SFT's per-head
         # accuracy. Stashed as detached scalars (cheap; mirrors the
         # self.time_for_* attributes already set here, so it stays eager-safe).
@@ -1726,18 +1726,17 @@ if __name__ == "__main__":
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
-                  "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost"]:
+                  "eot_prob", "invalid_frac", "num_entities",
+                  "entity_efficiency", "frac_reachable", "entity_cost"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
         for ln in _LESSONS:
             for m in [
                 "thput", "reward", "length", "entity_cost",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob"]:
-            wandb.define_metric(f"policy/{m}", summary="last")
+        wandb.define_metric("entropy/total", summary="last")
         for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
-            wandb.define_metric(f"policy/entropy_{h}", summary="last")
+            wandb.define_metric(f"entropy/{h}", summary="last")
         for m in ["pg", "value", "total", "approx_kl", "clipfrac"]:
             wandb.define_metric(f"losses/{m}", summary="last")
         for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
@@ -2026,7 +2025,8 @@ if __name__ == "__main__":
         ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
         # Per-iteration accumulators for the acting policy's distribution shape
-        # (the policy/* metrics): summed over rollout steps, meaned at log time.
+        # (entropy/* and rollout/eot_prob): summed over rollout steps, meaned at
+        # log time.
         _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
         _eot_prob_sum = 0.0
         rollout_start = time.time()
@@ -2051,7 +2051,7 @@ if __name__ == "__main__":
                     action_ED, logprobs_E, _entropy_E, value_E = rollout_act(next_obs_ECWH)
                 values_SE[step] = value_E
                 # Accumulate the acting policy's per-head entropy + eot prob
-                # (stashed by get_action_and_value) for the policy/* metrics.
+                # (stashed by get_action_and_value) for entropy/* + eot_prob.
                 # Keep the running sums on-device (each `e` is a GPU scalar) so we
                 # do NOT force a CUDA sync per step — float()-ing them every step
                 # was 7 device->host syncs × num_steps purely for logging. Sum on
@@ -2282,10 +2282,10 @@ if __name__ == "__main__":
             "losses/total": loss.item(),
             "losses/approx_kl": float(approx_kl),
             "losses/clipfrac": float(torch.stack(clipfracs).mean()) if clipfracs else 0.0,
-            # policy/* describe the ACTING policy's distribution (meaned over the
-            # rollout steps), the RL analog of SFT's per-head metrics.
-            "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,
-            "policy/eot_prob": float(_eot_prob_sum) / n_steps,
+            # entropy/* describe the ACTING policy's distribution (meaned over
+            # the rollout steps), the RL analog of SFT's per-head metrics.
+            "entropy/total": float(sum(_head_ent_sum.values())) / n_steps,
+            "rollout/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
@@ -2296,7 +2296,7 @@ if __name__ == "__main__":
             "perf/update_seconds": update_seconds,
         }
         for h, s in _head_ent_sum.items():
-            iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
+            iter_metrics[f"entropy/{h}"] = float(s) / n_steps
         iter_metrics.update(critic_metrics)
 
         if iteration == 1:
