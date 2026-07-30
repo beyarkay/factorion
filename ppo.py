@@ -1738,8 +1738,7 @@ if __name__ == "__main__":
             wandb.define_metric(f"policy/{m}", summary="last")
         for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
             wandb.define_metric(f"policy/entropy_{h}", summary="last")
-        for m in ["policy", "value", "entropy", "total", "approx_kl",
-                  "clipfrac"]:
+        for m in ["policy", "value", "total", "approx_kl", "clipfrac"]:
             wandb.define_metric(f"losses/{m}", summary="last")
         for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
                   "return_mean", "value_std", "return_std", "value_return_corr",
@@ -2280,7 +2279,6 @@ if __name__ == "__main__":
             "global_step": global_step,
             "losses/policy": pg_loss.item(),
             "losses/value": v_loss.item(),
-            "losses/entropy": entropy_loss.item(),
             "losses/total": loss.item(),
             "losses/approx_kl": float(approx_kl),
             "losses/clipfrac": float(torch.stack(clipfracs).mean()) if clipfracs else 0.0,
