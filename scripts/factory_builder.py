@@ -798,7 +798,7 @@ def _batch_rollout(
                 )
                 out = agent.sample_action(
                     batch, temperature=0.0, legal_mask=legal_mask,
-                    compute_value=False,
+                    eot_threshold=EOT_STOP_THRESHOLD, compute_value=False,
                 )
                 act = out["action"]
                 xy = act["xy"].cpu().numpy()
