@@ -287,13 +287,13 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         eot_threshold=0.5,
         num_envs=args.eval_num_envs,
     )
-    metrics = {"eval/thput": roll["overall_eot"]}
+    metrics = {"eval/thput": roll["overall"]}
     # The trials are the actual target — building a factory from nothing but
     # the markers. Scored apart from eval/thput so a long stretch at zero
     # (expected: there is nothing to imitate) doesn't drag the lesson curve.
     if roll["trial_n"] > 0:
-        metrics["eval/trial_thput"] = roll["trial_overall_eot"]
-    for kn, thp in roll["per_kind_eot"].items():
+        metrics["eval/trial_thput"] = roll["trial_overall"]
+    for kn, thp in roll["per_kind"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
 

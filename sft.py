@@ -406,13 +406,10 @@ class RolloutEval(TypedDict):
     # inventing a factory with nothing to imitate, versus reproducing a known
     # one — and pooling them would silently move the headline number that the
     # SFT baseline and every historical run are quoted in.
-    overall: float  # mean lesson throughput ignoring the EOT head
-    overall_eot: float  # mean lesson throughput respecting the EOT head
+    overall: float  # mean lesson throughput at the moment the model stopped
     trial_overall: float  # overall over trial kinds only (0.0 when none ran)
-    trial_overall_eot: float  # overall_eot over trial kinds only
     trial_n: int  # number of trial factories the eval scored
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
-    per_kind_eot: dict[str, float]  # overall_eot, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
@@ -452,32 +449,26 @@ def run_rollout_eval(
     stay busy until the queue drains.
 
     For each held-out (seed, kind) we greedy-argmax every head and step
-    until the env finishes (throughput==1.0 or max_steps) — we do NOT
-    let the EOT head stop us. Throughput is the last `info['thput_normed']`
-    the env reported: raw items/sec divided by the per-factory max, in
-    [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of its
-    absolute belt speed (the env already calls the Rust solver every step,
-    so we don't re-run it). This `overall` number is the model's true
-    build skill independent of its stop head.
+    until the EOT head crosses `eot_threshold` — which ends the rollout,
+    exactly as the sampled EOT action terminates a PPO episode — or the env
+    finishes (throughput==1.0 or max_steps) without it ever firing.
+    Throughput is the last `info['thput_normed']` the env reported for the
+    state the model stopped at: raw items/sec divided by the per-factory
+    max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
+    its absolute belt speed (the env already calls the Rust solver every
+    step, so we don't re-run it).
 
-    In the same single rollout we also track the throughput the model
-    *would* have produced if it trusted its EOT head: the first time the
-    EOT prob crosses `eot_threshold` for a slot we snapshot that slot's
-    current throughput. If the EOT head never fires, the model would have
-    built all the way to env-done, so its EOT-respecting value equals the
-    final throughput. The mean of those snapshots is `overall_eot`.
-
-    The (seed, kind) pairs are exactly the val_accuracy set. The
-    EOT-respecting result is logged as `val/thput`, directly comparable to
-    the existing per-kind val accuracy curves.
+    The (seed, kind) pairs are exactly the val_accuracy set. The result is
+    logged as `val/thput`, directly comparable to the existing per-kind val
+    accuracy curves.
 
     The greedy tile argmax is restricted to legal (empty + buildable)
     tiles, so it can't livelock re-proposing an occupied tile the env
     keeps rejecting. Eval-only; training is untouched.
 
     Returns a dict with:
-        overall, overall_eot — mean throughput ignoring / respecting EOT;
-        per_kind, per_kind_eot — same, keyed by LessonKind.name;
+        overall — mean throughput at the state the model stopped at;
+        per_kind — the same, keyed by LessonKind.name;
         per_kind_n — sample count per kind in the eval;
         eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
         per_kind_eot_acc, per_kind_eot_pos_recall — same, keyed by kind.
@@ -501,12 +492,9 @@ def run_rollout_eval(
     seeds_sorted = seeds_sorted[:max_seeds]
 
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
-    per_kind_eot_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     # Lessons and trials accumulate separately — see RolloutEval.
     all_throughputs: list[float] = []
-    all_eot_throughputs: list[float] = []
     trial_throughputs: list[float] = []
-    trial_eot_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
     # EOT-head scoring: every scored step counts toward *_step; done states
@@ -523,12 +511,9 @@ def run_rollout_eval(
         per_kind_n = {kn: 0 for kn in per_kind_throughputs}
         return {
             "overall": 0.0,
-            "overall_eot": 0.0,
             "trial_overall": 0.0,
-            "trial_overall_eot": 0.0,
             "trial_n": 0,
             "per_kind": zero,
-            "per_kind_eot": dict(zero),
             "per_kind_n": per_kind_n,
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
@@ -555,10 +540,6 @@ def run_rollout_eval(
     # work and should be skipped.
     queue = list(seeds_sorted)
     active = [True] * K
-    # Per-slot EOT bookkeeping: whether the EOT head has fired yet for the
-    # seed this slot is replaying, and the throughput snapshotted when it did.
-    eot_fired = [False] * K
-    eot_thp = [0.0] * K
     # Correct recipes for the factory each slot is replaying (from its solved
     # world). Empty when that factory has no assembler, which skips the check.
     asm_recipes: list[set[int]] = [set() for _ in range(K)]
@@ -582,6 +563,30 @@ def run_rollout_eval(
         obs_stack.append(obs)
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
+
+    def finish_slot(i: int, thput: float) -> None:
+        """Record slot `i`'s finished rollout at `thput` and refill it from the
+        seed queue, deactivating the slot once the queue is empty."""
+        _, k, _ = current[i]
+        per_kind_throughputs[k.name].append(thput)
+        pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
+        pool.append(thput)
+
+        if not queue:
+            active[i] = False
+            return
+        s = queue.pop(0)
+        k = LessonKind(val_seeds_to_kind[s])
+        obs, info = envs[i].reset(
+            seed=s,
+            options={
+                "num_missing_entities": max_level,
+                "kind": k,
+            },
+        )
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
+        obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32, device=device)
 
     with torch.no_grad():
         while any(active):
@@ -608,14 +613,7 @@ def run_rollout_eval(
                     continue
 
                 s, k, cur_thp = current[i]
-
-                # Snapshot the EOT-respecting throughput the first time the
-                # head crosses threshold — but keep stepping regardless, so
-                # `overall` reflects true build skill (EOT ignored).
                 pred_stop = float(eot_probs[i]) > eot_threshold
-                if not eot_fired[i] and pred_stop:
-                    eot_fired[i] = True
-                    eot_thp[i] = cur_thp
 
                 # Score the head against ground truth on this pre-action state:
                 # it should fire iff the factory is already complete. `cur_thp`
@@ -626,6 +624,13 @@ def run_rollout_eval(
                 if is_done:
                     per_kind_eot_pos_total[k.name] += 1
                     per_kind_eot_pos_correct[k.name] += int(pred_stop)
+
+                # The stop head ends the rollout, the same way the sampled EOT
+                # action terminates a PPO episode: we score the factory the
+                # model declared finished, never one it was forced past.
+                if pred_stop:
+                    finish_slot(i, cur_thp)
+                    continue
 
                 action = {
                     "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
@@ -656,58 +661,14 @@ def run_rollout_eval(
                     )
                     continue
 
-                # Slot is finished — harvest both metrics, refill or deactivate.
-                s, k, last_thp = current[i]
-                per_kind_throughputs[k.name].append(last_thp)
-                # EOT never fired → model would have built to env-done, so its
-                # EOT-respecting value is the same final throughput.
-                eot_value = eot_thp[i] if eot_fired[i] else last_thp
-                per_kind_eot_throughputs[k.name].append(eot_value)
-                pool, eot_pool = (
-                    (trial_throughputs, trial_eot_throughputs)
-                    if LESSON_IS_TRIAL[k]
-                    else (all_throughputs, all_eot_throughputs)
-                )
-                pool.append(last_thp)
-                eot_pool.append(eot_value)
-
-                if queue:
-                    s = queue.pop(0)
-                    k = LessonKind(val_seeds_to_kind[s])
-                    obs, info = envs[i].reset(
-                        seed=s,
-                        options={
-                            "num_missing_entities": max_level,
-                            "kind": k,
-                        },
-                    )
-                    current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-                    asm_recipes[i] = _solved_assembler_recipes(
-                        envs[i]._solved_world_CWH
-                    )
-                    eot_fired[i] = False
-                    eot_thp[i] = 0.0
-                    obs_batch[i] = torch.as_tensor(
-                        obs,
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                else:
-                    active[i] = False
+                # The env ran out of room or steps before the head ever fired.
+                finish_slot(i, current[i][2])
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
-    overall_eot = float(np.mean(all_eot_throughputs)) if all_eot_throughputs else 0.0
     trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
-    trial_overall_eot = (
-        float(np.mean(trial_eot_throughputs)) if trial_eot_throughputs else 0.0
-    )
     per_kind = {
         kn: (float(np.mean(ts)) if ts else 0.0)
         for kn, ts in per_kind_throughputs.items()
-    }
-    per_kind_eot = {
-        kn: (float(np.mean(ts)) if ts else 0.0)
-        for kn, ts in per_kind_eot_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
 
@@ -739,12 +700,9 @@ def run_rollout_eval(
         agent.train()
     return {
         "overall": overall,
-        "overall_eot": overall_eot,
         "trial_overall": trial_overall,
-        "trial_overall_eot": trial_overall_eot,
         "trial_n": len(trial_throughputs),
         "per_kind": per_kind,
-        "per_kind_eot": per_kind_eot,
         "per_kind_n": per_kind_n,
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
@@ -1451,11 +1409,11 @@ def train_sft(args: SftArgs):
                 num_envs=args.eval_rollouts_num_envs,
             )
             rollout_seconds = time.time() - t_rollout
-            overall_thp = roll["overall_eot"]
+            overall_thp = roll["overall"]
             per_kind_thp_n = roll["per_kind_n"]
             per_kind_metrics["val/thput"] = overall_thp
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
-            for kn, thp in roll["per_kind_eot"].items():
+            for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput"] = thp
             # Recipe-pick accuracy from the same rollout: fraction of the
