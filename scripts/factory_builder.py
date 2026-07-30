@@ -24,7 +24,7 @@ import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import matplotlib
 
@@ -122,6 +122,7 @@ HELP_LINES = [
     "Generate lesson: g (set 'entities to clear' to blank N first)",
     "Apply prediction: tap a once / hold a for fast autoregressive placement",
     "Resize / clear grid: c",
+    "Scan seeds tab: rebuild N blanked seeds at once, click a result to open it",
 ]
 
 
@@ -679,6 +680,206 @@ def _predict_action(grid: list[list[dict]]) -> dict:
     }
 
 
+# ── Batched seed scan ────────────────────────────────────────────────────────
+
+ALL_KINDS_SENTINEL = "__ALL__"
+MAX_BATCH_ROLLOUTS = 64
+"""Upper bound on rollouts per scan. Every slot stays in the batched forward
+until the last one finishes, so a huge N mostly buys stale compute at the tail."""
+
+
+def _reset_rollout_env(
+    env: FactorioEnv,
+    kind: LessonKind,
+    seed: int,
+    num_missing_entities: Optional[int],
+) -> tuple[np.ndarray, int]:
+    """Reset `env` onto (kind, seed) and return (obs, the seed that built).
+
+    Advances past seeds whose rejection sampler gives up — the same retry
+    idiom :func:`_load_lesson` uses — so a scan never dies on one unlucky
+    seed. Omitting ``num_missing_entities`` leaves the env's default of
+    "blank everything", which is the point of the scan: rebuild from the
+    lesson's protected tiles alone.
+    """
+    attempt = int(seed)
+    for _ in range(_LESSON_RETRY_BUDGET):
+        options: dict = {"kind": kind}
+        if num_missing_entities is not None:
+            options["num_missing_entities"] = num_missing_entities
+        try:
+            obs, _info = env.reset(seed=attempt, options=options)
+        except RuntimeError:
+            attempt += 1
+            continue
+        return obs, attempt
+    raise RuntimeError(
+        f"build_factory returned None for {_LESSON_RETRY_BUDGET} consecutive "
+        f"seeds (kind={kind.name}, size={env.size}, start_seed={seed})."
+    )
+
+
+def _rollout_result(
+    index: int,
+    env: FactorioEnv,
+    seed: int,
+    info: dict,
+    steps: int,
+    terminated: bool,
+    eot_prob: float,
+) -> dict:
+    return {
+        "type": "result",
+        "index": index,
+        "kind": env._kind.name,
+        "seed": seed,
+        "size": env.size,
+        "steps": steps,
+        "stopped_by": "eot" if terminated else "max_steps",
+        "eot_prob": eot_prob,
+        "thput_normed": float(info.get("thput_normed", 0.0)),
+        "thput_raw": float(info.get("thput_raw", 0.0)),
+        "max_throughput": float(env._max_throughput),
+        "num_entities": int(info.get("num_entities", 0)),
+        "num_placed_entities": int(info.get("num_placed_entities", 0)),
+        "frac_reachable": float(info.get("frac_reachable", 0.0)),
+        "invalid_actions": int(env.invalid_actions),
+        "grid": world_CWH_to_grid(env._world_CWH),
+        "solved_grid": world_CWH_to_grid(env._solved_world_CWH),
+    }
+
+
+def _batch_rollout(
+    kinds: list[LessonKind],
+    seeds: list[int],
+    size: int,
+    num_missing_entities: Optional[int],
+    eot_threshold: float,
+    legal_mask: bool,
+) -> Iterator[dict]:
+    """Greedily rebuild one blanked factory per (kind, seed), yielding an
+    event per finished rollout.
+
+    Every rollout advances in lockstep so a single batched ``sample_action``
+    covers the whole set — N seeds cost about one seed's worth of forward
+    passes, which is what makes scanning 20 seeds interactive rather than a
+    20× wait. Slots that have already stopped stay in the batch (their
+    outputs are discarded); dropping them would cost a re-pack every step
+    for a tail that is short by construction.
+
+    Greedy argmax + the legal-tile mask mirror ``sft.run_rollout_eval``, so a
+    scan's throughput numbers are the same quantity as ``eval/thput`` — except
+    that here the EOT head really does end the episode, since the whole point
+    is to see the factory the model considers finished.
+    """
+    agent = _get_agent(size)
+    envs: list[FactorioEnv] = []
+    used_seeds: list[int] = []
+    obs_list: list[np.ndarray] = []
+    for kind, seed in zip(kinds, seeds):
+        env = FactorioEnv(size=size, idx=0)
+        # Only the terminal throughput is ever shown, and the per-step
+        # simulate_throughput otherwise dominates the rollout.
+        env._full_diagnostics = False
+        obs, used = _reset_rollout_env(env, kind, seed, num_missing_entities)
+        envs.append(env)
+        used_seeds.append(used)
+        obs_list.append(obs)
+
+    yield {
+        "type": "start",
+        "n": len(envs),
+        "jobs": [
+            {"index": i, "kind": env._kind.name, "seed": s}
+            for i, (env, s) in enumerate(zip(envs, used_seeds))
+        ],
+    }
+
+    obs_NCWH = np.stack(obs_list)
+    active = [True] * len(envs)
+    steps = [0] * len(envs)
+    step = 0
+    with torch.no_grad():
+        while any(active):
+            batch = torch.as_tensor(
+                obs_NCWH, dtype=torch.float32, device=_AGENT_DEVICE
+            )
+            out = agent.sample_action(
+                batch,
+                temperature=0.0,
+                legal_mask=legal_mask,
+                eot_threshold=eot_threshold,
+                compute_value=False,
+            )
+            act = out["action"]
+            xy = act["xy"].cpu().numpy()
+            ent = act["entity"].reshape(-1).cpu().numpy()
+            dirs = act["direction"].reshape(-1).cpu().numpy()
+            item = act["item"].reshape(-1).cpu().numpy()
+            misc = act["misc"].reshape(-1).cpu().numpy()
+            eot = act["eot"].reshape(-1).cpu().numpy()
+            eot_p = out["eot_prob"].reshape(-1).cpu().numpy()
+            step += 1
+            for i, env in enumerate(envs):
+                if not active[i]:
+                    continue
+                action = {
+                    "xy": np.array([int(xy[i, 0]), int(xy[i, 1])], dtype=int),
+                    "entity": int(ent[i]),
+                    "direction": int(dirs[i]),
+                    "item": int(item[i]),
+                    "misc": int(misc[i]),
+                    "eot": int(eot[i]),
+                }
+                next_obs, _reward, terminated, truncated, info = env.step(action)
+                obs_NCWH[i] = next_obs
+                steps[i] += 1
+                if terminated or truncated:
+                    active[i] = False
+                    yield _rollout_result(
+                        i, env, used_seeds[i], info, steps[i],
+                        terminated, float(eot_p[i]),
+                    )
+            yield {"type": "progress", "step": step, "running": sum(active)}
+    yield {"type": "done"}
+
+
+def _batch_rollout_request(payload: dict) -> Iterator[dict]:
+    """Turn a /batch_rollout POST body into a stream of scan events.
+
+    Errors are yielded rather than raised: the response headers are already
+    on the wire by the time this generator runs, so the browser can only be
+    told about a failure in-band.
+    """
+    try:
+        size = int(payload.get("size", 11))
+        count = max(1, min(int(payload.get("count", 10)), MAX_BATCH_ROLLOUTS))
+        start_seed = int(payload.get("seed", 0))
+        kind_name = payload.get("kind") or ALL_KINDS_SENTINEL
+        if kind_name == ALL_KINDS_SENTINEL:
+            # Cycle kinds before seeds so a scan of N < len(LessonKind) is a
+            # breadth-first sweep of setups, which is what "one of each" means.
+            every = list(LessonKind)
+            kinds = [every[i % len(every)] for i in range(count)]
+            seeds = [start_seed + i // len(every) for i in range(count)]
+        else:
+            kinds = [LessonKind[kind_name]] * count
+            seeds = [start_seed + i for i in range(count)]
+        clear = payload.get("num_missing_entities")
+        num_missing = None if clear in (None, "") else max(0, int(clear))
+        yield from _batch_rollout(
+            kinds=kinds,
+            seeds=seeds,
+            size=size,
+            num_missing_entities=num_missing,
+            eot_threshold=float(payload.get("eot_threshold", 0.5)),
+            legal_mask=bool(payload.get("legal_mask", True)),
+        )
+    except Exception as e:
+        traceback.print_exc()
+        yield {"type": "error", "error": f"{type(e).__name__}: {e}"}
+
+
 # Cache palette icons so the page payload stays small per cell.
 def _icon_b64(name: str) -> str:
     try:
@@ -747,6 +948,10 @@ def render_index(default_size: int) -> str:
     )
     lesson_options = "".join(
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
+    )
+    scan_lesson_options = (
+        f'<option value="{ALL_KINDS_SENTINEL}">(every kind)</option>'
+        + lesson_options
     )
 
     # Model loader is collapsed by default — switching models is rare
@@ -935,12 +1140,52 @@ def render_index(default_size: int) -> str:
     user-select: none; padding: 0.2em 0;
   }}
   details.edges-details {{ margin-top: 0.4em; }}
+  .tabs {{ display: flex; gap: 0.3em; margin-bottom: 0.5em; }}
+  .tabs button {{
+    padding: 0.3em 0.9em; font-size: 0.85em; cursor: pointer;
+    border: 1px solid #ccc; border-radius: 5px 5px 0 0;
+    background: #eee; color: #555; border-bottom-color: #ccc;
+  }}
+  .tabs button.active {{
+    background: #fff; color: #111; font-weight: bold; border-bottom-color: #fff;
+  }}
+  .scan-summary {{
+    font-family: monospace; font-size: 0.85em; margin: 0.5em 0;
+    padding: 0.4em 0.6em; background: #f4f4f4; border-radius: 4px;
+  }}
+  .scan-results {{ display: flex; flex-wrap: wrap; gap: 0.6em; }}
+  .scan-card {{
+    border: 1px solid #ccc; border-left-width: 5px; border-radius: 5px;
+    padding: 0.35em; background: #fff; cursor: pointer;
+  }}
+  .scan-card:hover {{ background: #f6fbff; border-color: #0d47a1; }}
+  .scan-card .hd {{ font-size: 0.72em; font-weight: bold; }}
+  .scan-card .sub {{ font-size: 0.7em; color: #666; font-family: monospace; }}
+  .scan-card .pair {{ display: flex; gap: 0.4em; align-items: flex-start; }}
+  .scan-card figure {{ margin: 0.2em 0 0; }}
+  .scan-card figcaption {{
+    font-size: 0.62em; color: #888; text-align: center;
+  }}
+  table.mini {{ border-collapse: collapse; }}
+  table.mini td {{
+    width: 22px; height: 22px; border: 1px solid #e2e2e2; padding: 0;
+    position: relative; background: #fff;
+  }}
+  table.mini td.unavailable {{ background: #e8e8e8; }}
+  table.mini .arrow {{ font-size: 9px; line-height: 9px; }}
+  table.mini .misc {{ font-size: 9px; }}
 </style></head><body>
 
 <h1>Factory builder
   {help_html}
 </h1>
 
+<div class="tabs" id="tabs">
+  <button class="active" data-tab="build">Build</button>
+  <button data-tab="scan">Scan seeds</button>
+</div>
+
+<div id="tab-build">
 <div class="layout">
 
   <div class="grid-wrap">
@@ -1004,8 +1249,45 @@ def render_index(default_size: int) -> str:
   </div>
 
 </div>
+</div>
+
+<div id="tab-scan" hidden>
+  <div class="controls action-row">
+    <label>lesson
+      <select id="scan-kind">{scan_lesson_options}</select>
+    </label>
+    <label title="How many rollouts to run. With '(every kind)' the kinds cycle first, so N = the number of kinds gives one seed of each.">
+      rollouts <input id="scan-count" type="number" min="1" max="{MAX_BATCH_ROLLOUTS}" value="10">
+    </label>
+    <label>start seed <input id="scan-seed" type="number" value="0" step="1"></label>
+    <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
+      entities to clear <input id="scan-clear" type="number" min="0" placeholder="all" style="width:4.5em">
+    </label>
+    <label title="Restrict the tile head's argmax to empty, buildable cells — what sft.run_rollout_eval does. Off shows the raw head, including illegal proposals.">
+      <input id="scan-mask" type="checkbox" checked> legal-tile mask
+    </label>
+    <label title="Also draw the generator's own solution next to each rebuild">
+      <input id="scan-ref" type="checkbox"> show reference
+    </label>
+    <label>sort
+      <select id="scan-sort">
+        <option value="seed">run order</option>
+        <option value="worst">worst first</option>
+        <option value="best">best first</option>
+      </select>
+    </label>
+    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its EOT head fires, and show every final factory">
+      Run scan
+    </button>
+    <button id="scan-stop" disabled>Stop</button>
+  </div>
+  <div class="scan-summary" id="scan-summary">no scan yet</div>
+  <div class="scan-results" id="scan-results"></div>
+</div>
 
 <script>
+const ALL_KINDS = '{ALL_KINDS_SENTINEL}';
+const NUM_LESSON_KINDS = {len(list(LessonKind))};
 const PALETTE_ICONS = {json.dumps(PALETTE_ICONS)};
 const ITEM_ICONS = {json.dumps(ITEM_ICONS)};
 const HOTBAR = {json.dumps(HOTBAR)};
@@ -1826,11 +2108,232 @@ function bindHelp() {{
   }});
 }}
 
+// ── Scan tab ────────────────────────────────────────────────────────────
+// A scan blanks N factories, lets the model rebuild each one until its EOT
+// head fires, and lays the finished factories out side by side. The server
+// runs all N in lockstep through one batched forward per step, so the wall
+// clock is roughly one rollout's, not N.
+let scanResults = [];
+let scanAbort = null;
+
+function switchTab(name) {{
+  document.querySelectorAll('#tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === name));
+  document.getElementById('tab-build').hidden = (name !== 'build');
+  document.getElementById('tab-scan').hidden = (name !== 'scan');
+}}
+
+// Red at zero throughput through to green at a perfect rebuild. The card's
+// left border is the fastest read in the gallery — you spot the cluster of
+// failures before any text resolves.
+function thputColor(t) {{
+  const q = Math.max(0, Math.min(t, 1));
+  return `hsl(${{Math.round(q * 120)}}, 70%, 45%)`;
+}}
+
+function miniGrid(g, n) {{
+  let html = '<table class="mini">';
+  for (let y = 0; y < n; y++) {{
+    html += '<tr>';
+    for (let x = 0; x < n; x++) {{
+      const c = g[y][x];
+      let inner = '';
+      if (c.entity && c.entity !== 'empty')
+        inner += `<img class="ent" src="${{iconFor(c.entity)}}">`;
+      if (c.item && c.item !== 'empty')
+        inner += `<img class="itm" src="${{iconFor(c.item)}}">`;
+      const arrow = DIR_ARROW[c.direction] || '';
+      if (arrow) inner += `<div class="arrow">${{arrow}}</div>`;
+      const m = MISC_GLYPH[c.misc] || '';
+      if (m) inner += `<div class="misc">${{m}}</div>`;
+      const cls = c.footprint === 'UNAVAILABLE' ? ' class="unavailable"' : '';
+      html += `<td${{cls}}><div class="cell-inner">${{inner}}</div></td>`;
+    }}
+    html += '</tr>';
+  }}
+  return html + '</table>';
+}}
+
+function scanCard(r, showRef) {{
+  const card = document.createElement('div');
+  card.className = 'scan-card';
+  card.style.borderLeftColor = thputColor(r.thput_normed);
+  const stop = r.stopped_by === 'eot'
+    ? 'stopped at ' + r.steps
+    : 'no stop, ' + r.steps + ' steps';
+  const head =
+    `<div class="hd">${{escHtml(r.kind)}}</div>` +
+    `<div class="sub">seed ${{r.seed}} · thput ${{r.thput_normed.toFixed(3)}}` +
+    ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
+    `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +
+    `${{r.invalid_actions}} invalid · reach ${{Math.round(r.frac_reachable * 100)}}%</div>`;
+  const built =
+    `<figure><figcaption>built</figcaption>${{miniGrid(r.grid, r.size)}}</figure>`;
+  const ref = showRef
+    ? `<figure><figcaption>reference</figcaption>${{miniGrid(r.solved_grid, r.size)}}</figure>`
+    : '';
+  card.innerHTML = head + `<div class="pair">${{built}}${{ref}}</div>`;
+  card.title = 'Open this factory in the Build tab';
+  card.addEventListener('click', () => {{
+    SIZE = r.size;
+    grid = r.grid.map(row => row.map(c => Object.assign({{}}, c)));
+    selected = null;
+    prediction = null;
+    document.getElementById('size').value = SIZE;
+    switchTab('build');
+    renderGrid(); syncEditor(); scheduleCompute();
+  }});
+  return card;
+}}
+
+function renderScan() {{
+  const host = document.getElementById('scan-results');
+  const showRef = document.getElementById('scan-ref').checked;
+  const mode = document.getElementById('scan-sort').value;
+  const rows = scanResults.slice();
+  if (mode === 'worst') {{
+    rows.sort((a, b) => a.thput_normed - b.thput_normed || a.index - b.index);
+  }} else if (mode === 'best') {{
+    rows.sort((a, b) => b.thput_normed - a.thput_normed || a.index - b.index);
+  }} else {{
+    rows.sort((a, b) => a.index - b.index);
+  }}
+  host.replaceChildren(...rows.map(r => scanCard(r, showRef)));
+}}
+
+function scanSummary(status) {{
+  const el = document.getElementById('scan-summary');
+  const n = scanResults.length;
+  if (!n) {{ el.textContent = status || 'no scan yet'; return; }}
+  const t = scanResults.map(r => r.thput_normed);
+  const mean = t.reduce((a, b) => a + b, 0) / n;
+  const zeros = t.filter(v => v <= 0).length;
+  const perfect = t.filter(v => v >= 0.999).length;
+  const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
+  el.textContent =
+    `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{zeros}} at zero · ` +
+    `${{perfect}} perfect · eot fired ${{eot}}/${{n}}` +
+    (status ? '  ·  ' + status : '');
+}}
+
+async function runScan() {{
+  const runBtn = document.getElementById('scan-run');
+  const stopBtn = document.getElementById('scan-stop');
+  if (!modelLoaded) {{
+    document.getElementById('scan-summary').textContent =
+      'no model loaded — load one from the Build tab first';
+    return;
+  }}
+  const clearRaw = parseInt(document.getElementById('scan-clear').value, 10);
+  const body = {{
+    kind: document.getElementById('scan-kind').value,
+    count: parseInt(document.getElementById('scan-count').value, 10) || 1,
+    seed: parseInt(document.getElementById('scan-seed').value, 10) || 0,
+    size: SIZE,
+    legal_mask: document.getElementById('scan-mask').checked,
+    num_missing_entities:
+      Number.isFinite(clearRaw) && clearRaw >= 0 ? clearRaw : null,
+  }};
+  scanResults = [];
+  document.getElementById('scan-results').replaceChildren();
+  scanAbort = new AbortController();
+  runBtn.disabled = true;
+  stopBtn.disabled = false;
+  const started = performance.now();
+  const showRef = document.getElementById('scan-ref').checked;
+  let total = body.count;
+  scanSummary('generating ' + total + ' factories at size ' + SIZE + '…');
+  try {{
+    const resp = await fetch('/batch_rollout', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(body),
+      signal: scanAbort.signal,
+    }});
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    // The server streams newline-delimited JSON so results land as they
+    // finish instead of after the slowest rollout.
+    for (;;) {{
+      const {{ done, value }} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {{ stream: true }});
+      let nl;
+      while ((nl = buf.indexOf('\\n')) >= 0) {{
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === 'start') {{
+          total = ev.n;
+          scanSummary('running ' + total + ' rollouts…');
+        }} else if (ev.type === 'result') {{
+          scanResults.push(ev);
+          // Append rather than re-render: a full re-sort of N cards on
+          // every arrival is O(N^2) table builds. renderScan() applies
+          // the chosen sort once the stream ends.
+          document.getElementById('scan-results').appendChild(scanCard(ev, showRef));
+          scanSummary(scanResults.length + '/' + total + ' finished');
+        }} else if (ev.type === 'progress') {{
+          const secs = (performance.now() - started) / 1000;
+          scanSummary(
+            'step ' + ev.step + ' · ' + ev.running + ' still building · ' +
+            secs.toFixed(1) + 's'
+          );
+        }} else if (ev.type === 'error') {{
+          scanSummary('error: ' + ev.error);
+        }}
+      }}
+    }}
+    renderScan();
+    const secs = (performance.now() - started) / 1000;
+    scanSummary('finished in ' + secs.toFixed(1) + 's');
+  }} catch (e) {{
+    if (e.name === 'AbortError') {{
+      renderScan();
+      scanSummary('stopped');
+    }} else {{
+      scanSummary('scan failed: ' + e);
+    }}
+  }} finally {{
+    runBtn.disabled = false;
+    stopBtn.disabled = true;
+    scanAbort = null;
+  }}
+}}
+
+function syncScanRunLabel() {{
+  const c = parseInt(document.getElementById('scan-count').value, 10) || 1;
+  document.getElementById('scan-run').textContent = 'Run ×' + c;
+}}
+
+function bindScan() {{
+  document.querySelectorAll('#tabs button').forEach(b =>
+    b.addEventListener('click', () => switchTab(b.dataset.tab)));
+  document.getElementById('scan-run').addEventListener('click', runScan);
+  document.getElementById('scan-stop').addEventListener('click', () => {{
+    if (scanAbort) scanAbort.abort();
+  }});
+  document.getElementById('scan-count').addEventListener('input', syncScanRunLabel);
+  document.getElementById('scan-kind').addEventListener('change', (ev) => {{
+    // "(every kind)" cycles kinds before seeds, so one-of-each is the
+    // useful default count for it.
+    document.getElementById('scan-count').value =
+      ev.target.value === ALL_KINDS ? NUM_LESSON_KINDS : 10;
+    syncScanRunLabel();
+  }});
+  document.getElementById('scan-sort').addEventListener('change', renderScan);
+  document.getElementById('scan-ref').addEventListener('change', renderScan);
+  syncScanRunLabel();
+}}
+
 grid = newGrid(SIZE);
 renderGrid();
 bindHotbar();
 bindEditor();
 bindHelp();
+bindScan();
 refreshModelInfo();
 </script>
 </body></html>"""
@@ -1850,6 +2353,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):  # noqa: A002
         sys.stderr.write("[%s] %s\n" % (self.address_string(), format % args))
+
+    def _stream_ndjson(self, events: Iterator[dict]) -> None:
+        """Write one JSON object per line as the generator produces them.
+
+        The response carries no Content-Length: this handler speaks HTTP/1.0,
+        so end-of-body is end-of-connection, which is also how the browser's
+        Stop button works — aborting the fetch drops the socket, the next
+        write raises, and abandoning the generator cancels the scan.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            for event in events:
+                self.wfile.write((json.dumps(event) + "\n").encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode()
@@ -1880,6 +2402,7 @@ class Handler(BaseHTTPRequestHandler):
             "/apply_prediction",
             "/load_model",
             "/load_lesson",
+            "/batch_rollout",
         ):
             self.send_error(404)
             return
@@ -1887,6 +2410,9 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8")
         try:
             payload = json.loads(raw)
+            if self.path == "/batch_rollout":
+                self._stream_ndjson(_batch_rollout_request(payload))
+                return
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
             elif self.path == "/predict":
