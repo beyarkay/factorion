@@ -600,7 +600,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 11,
+        size: int = SharedArgs.size,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,

@@ -64,6 +64,7 @@ from ppo import (  # noqa: E402
     apply_placement_action,
     make_env,
 )
+from training_config import SharedArgs  # noqa: E402
 
 
 # Order shown in the palette and dropdowns.
@@ -131,7 +132,7 @@ HELP_LINES = [
 class Args:
     port: int = 8765
     """port for the local HTTP server"""
-    size: int = 11
+    size: int = SharedArgs.size
     """default grid size"""
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows

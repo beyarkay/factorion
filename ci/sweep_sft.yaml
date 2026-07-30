@@ -30,8 +30,6 @@ metric:
 
 parameters:
   # Pinned: monotonic in the metric, so Bayes would only saturate them.
-  size:
-    value: 11
   num_samples:
     value: 5000000
   epochs:

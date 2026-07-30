@@ -35,7 +35,7 @@ class SharedArgs:
 
     seed: int = 1
     """seed of the experiment"""
-    size: int = 11
+    size: int = 20
     """the width and height of the factory grid"""
 
     # CNN encoder width per layer slot. The encoder uses every slot with
@@ -54,8 +54,8 @@ class SharedArgs:
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     attn_dim: int = 192
-    """model dim of the self-attention stage over the encoded map (the 121 grid
-    cells become tokens, so full attention is cheap and every head gets
+    """model dim of the self-attention stage over the encoded map (each grid
+    cell becomes a token, so full attention is cheap and every head gets
     grid-global information in one hop). The dominant win in the SFT arch
     sweeps; the second sweep (91w8vyea) preferred 192-256 over 128. 0 disables
     the stage, recovering a conv-only ablation baseline. Int not bool for W&B
