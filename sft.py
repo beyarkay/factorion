@@ -1129,16 +1129,11 @@ def train_sft(args: SftArgs):
         if train_total == 0:
             break
 
-        # Single GPU->CPU sync for the whole window's accumulated stats.
-        (
-            train_loss,
-            train_loss_tile,
-            train_loss_ent,
-            train_loss_dir,
-            train_loss_item,
-            train_loss_misc,
-            train_loss_eot,
-        ) = (acc_loss / train_total).tolist()
+        # Single GPU->CPU sync for the whole window's accumulated stats. Only the
+        # total is read: every training pair is freshly generated and never seen
+        # twice, so the per-head train losses just re-estimated what val/loss_*
+        # already reports on a fixed set.
+        train_loss = (acc_loss / train_total)[0].item()
         train_acc = (acc_correct / train_total).item()
         train_eot_acc = (acc_eot_correct / train_total).item()
         grad_norm_sum = acc_grad_norm.item()
@@ -1500,15 +1495,6 @@ def train_sft(args: SftArgs):
             # monotonically — samples_seen does, by construction.)
             run.log(
                 {
-                    "train/loss": train_loss,
-                    "train/loss_tile": train_loss_tile,
-                    "train/loss_ent": train_loss_ent,
-                    "train/loss_dir": train_loss_dir,
-                    "train/loss_item": train_loss_item,
-                    "train/loss_misc": train_loss_misc,
-                    "train/loss_eot": train_loss_eot,
-                    "train/acc": train_acc,
-                    "train/eot_acc": train_eot_acc,
                     "val/loss": val_loss,
                     "val/loss_tile": val_loss_tile,
                     "val/loss_ent": val_loss_ent,
@@ -1528,11 +1514,11 @@ def train_sft(args: SftArgs):
                         f"val/not_none_{h}_acc": acc
                         for h, acc in val_not_none_acc.items()
                     },
-                    "train/epoch": epoch,
-                    "train/samples_seen": samples_seen,
-                    "train/global_step": global_step,
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "train/grad_norm": (grad_norm_sum / grad_norm_count)
+                    "epoch": epoch,
+                    "samples_seen": samples_seen,
+                    "global_step": global_step,
+                    "optim/lr": optimizer.param_groups[0]["lr"],
+                    "optim/grad_norm": (grad_norm_sum / grad_norm_count)
                     if grad_norm_count > 0
                     else float("nan"),
                     # Real wall-clock (no added syncs); train splits into
