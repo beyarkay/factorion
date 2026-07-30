@@ -690,9 +690,13 @@ def _predict_action(grid: list[list[dict]]) -> dict:
 # ── Batched seed scan ────────────────────────────────────────────────────────
 
 ALL_KINDS_SENTINEL = "__ALL__"
-MAX_BATCH_ROLLOUTS = 64
-"""Upper bound on rollouts per scan. Every slot stays in the batched forward
-until the last one finishes, so a huge N mostly buys stale compute at the tail."""
+ROLLOUT_BATCH_SIZE = 64
+"""Rollouts advanced in lockstep per batched forward. Every slot stays in the
+batch until the last of its group finishes, so a wider batch mostly buys stale
+compute at the tail; a bigger scan runs as back-to-back groups instead."""
+MAX_BATCH_ROLLOUTS = 512
+"""Hard ceiling on one scan, so a fat-fingered count can't tie the server up
+for an hour. Exceeding it is reported, never silently truncated."""
 
 
 def _reset_rollout_env(
@@ -751,12 +755,15 @@ def _batch_rollout(
     """Greedily rebuild one blanked factory per (kind, seed), yielding an
     event per finished rollout.
 
-    Every rollout advances in lockstep through one batched ``sample_action``.
-    Slots that have already stopped stay in the batch and their outputs are
-    discarded: compacting would change the batch shape every step, and mps
-    re-plans kernels per shape, which measures far slower than the wasted
-    slots (N=64: 5.6s fixed vs 29.8s compacted). ``sft.run_rollout_eval``
-    makes the same choice.
+    Rollouts advance in lockstep through one batched ``sample_action``, in
+    groups of ``ROLLOUT_BATCH_SIZE``; a scan larger than one group runs the
+    groups back to back, so the wall clock stays linear in the count instead
+    of the count being truncated to fit one batch. Slots that have already
+    stopped stay in their group's batch and their outputs are discarded:
+    compacting would change the batch shape every step, and mps re-plans
+    kernels per shape, which measures far slower than the wasted slots
+    (N=64: 5.6s fixed vs 29.8s compacted). ``sft.run_rollout_eval`` makes the
+    same choice.
 
     Greedy argmax + the legal-tile mask mirror ``sft.run_rollout_eval``, so a
     scan's throughput numbers are the same quantity as ``eval/thput`` — except
@@ -764,57 +771,62 @@ def _batch_rollout(
     is to see the factory the model considers finished.
     """
     agent = _get_agent(size)
-    envs: list[FactorioEnv] = []
-    used_seeds: list[int] = []
-    obs_list: list[np.ndarray] = []
-    for kind, seed in zip(kinds, seeds):
-        env = FactorioEnv(size=size, idx=0)
-        # Only the terminal throughput is ever shown, and the per-step
-        # simulate_throughput otherwise dominates the rollout.
-        env._full_diagnostics = False
-        obs, used = _reset_rollout_env(env, kind, seed, num_missing_entities)
-        envs.append(env)
-        used_seeds.append(used)
-        obs_list.append(obs)
+    yield {"type": "start", "n": len(seeds)}
 
-    yield {"type": "start", "n": len(envs)}
-
-    obs_NCWH = np.stack(obs_list)
-    active = [True] * len(envs)
     step = 0
-    with torch.no_grad():
-        while any(active):
-            batch = torch.as_tensor(
-                obs_NCWH, dtype=torch.float32, device=_AGENT_DEVICE
-            )
-            out = agent.sample_action(
-                batch, temperature=0.0, legal_mask=legal_mask, compute_value=False
-            )
-            act = out["action"]
-            xy = act["xy"].cpu().numpy()
-            ent = act["entity"].reshape(-1).cpu().numpy()
-            dirs = act["direction"].reshape(-1).cpu().numpy()
-            item = act["item"].reshape(-1).cpu().numpy()
-            misc = act["misc"].reshape(-1).cpu().numpy()
-            eot = act["eot"].reshape(-1).cpu().numpy()
-            step += 1
-            for i, env in enumerate(envs):
-                if not active[i]:
-                    continue
-                action = {
-                    "xy": np.array([int(xy[i, 0]), int(xy[i, 1])], dtype=int),
-                    "entity": int(ent[i]),
-                    "direction": int(dirs[i]),
-                    "item": int(item[i]),
-                    "misc": int(misc[i]),
-                    "eot": int(eot[i]),
-                }
-                next_obs, _reward, terminated, truncated, info = env.step(action)
-                obs_NCWH[i] = next_obs
-                if terminated or truncated:
-                    active[i] = False
-                    yield _rollout_result(i, env, used_seeds[i], info, terminated)
-            yield {"type": "progress", "step": step}
+    for base in range(0, len(seeds), ROLLOUT_BATCH_SIZE):
+        group = slice(base, base + ROLLOUT_BATCH_SIZE)
+        envs: list[FactorioEnv] = []
+        used_seeds: list[int] = []
+        obs_list: list[np.ndarray] = []
+        for kind, seed in zip(kinds[group], seeds[group]):
+            env = FactorioEnv(size=size, idx=0)
+            # Only the terminal throughput is ever shown, and the per-step
+            # simulate_throughput otherwise dominates the rollout.
+            env._full_diagnostics = False
+            obs, used = _reset_rollout_env(env, kind, seed, num_missing_entities)
+            envs.append(env)
+            used_seeds.append(used)
+            obs_list.append(obs)
+
+        obs_NCWH = np.stack(obs_list)
+        active = [True] * len(envs)
+        with torch.no_grad():
+            while any(active):
+                batch = torch.as_tensor(
+                    obs_NCWH, dtype=torch.float32, device=_AGENT_DEVICE
+                )
+                out = agent.sample_action(
+                    batch, temperature=0.0, legal_mask=legal_mask,
+                    compute_value=False,
+                )
+                act = out["action"]
+                xy = act["xy"].cpu().numpy()
+                ent = act["entity"].reshape(-1).cpu().numpy()
+                dirs = act["direction"].reshape(-1).cpu().numpy()
+                item = act["item"].reshape(-1).cpu().numpy()
+                misc = act["misc"].reshape(-1).cpu().numpy()
+                eot = act["eot"].reshape(-1).cpu().numpy()
+                step += 1
+                for i, env in enumerate(envs):
+                    if not active[i]:
+                        continue
+                    action = {
+                        "xy": np.array([int(xy[i, 0]), int(xy[i, 1])], dtype=int),
+                        "entity": int(ent[i]),
+                        "direction": int(dirs[i]),
+                        "item": int(item[i]),
+                        "misc": int(misc[i]),
+                        "eot": int(eot[i]),
+                    }
+                    next_obs, _reward, terminated, truncated, info = env.step(action)
+                    obs_NCWH[i] = next_obs
+                    if terminated or truncated:
+                        active[i] = False
+                        yield _rollout_result(
+                            base + i, env, used_seeds[i], info, terminated
+                        )
+                yield {"type": "progress", "step": step}
     yield {"type": "done"}
 
 
@@ -827,7 +839,16 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
     """
     try:
         size = int(payload.get("size", 11))
-        count = max(1, min(int(payload.get("count", 10)), MAX_BATCH_ROLLOUTS))
+        requested = max(1, int(payload.get("count", 10)))
+        count = min(requested, MAX_BATCH_ROLLOUTS)
+        if count < requested:
+            yield {
+                "type": "note",
+                "message": (
+                    f"asked for {requested} rollouts, running "
+                    f"{MAX_BATCH_ROLLOUTS} (the per-scan ceiling)"
+                ),
+            }
         start_seed = int(payload.get("seed", 0))
         kind_name = payload.get("kind") or ALL_KINDS_SENTINEL
         if kind_name == ALL_KINDS_SENTINEL:
@@ -1257,10 +1278,12 @@ def render_index(default_size: int) -> str:
     <label>lesson
       <select id="scan-kind">{scan_lesson_options}</select>
     </label>
-    <label title="How many rollouts to run. With '(every kind)' the kinds cycle first, so N = the number of kinds gives one seed of each.">
-      rollouts <input id="scan-count" type="number" min="1" max="{MAX_BATCH_ROLLOUTS}" value="10">
+    <label title="How many rollouts to add per click. With '(every kind)' the kinds cycle first, so N = the number of kinds gives one seed of each.">
+      rollouts <input id="scan-count" type="number" min="1" max="{MAX_BATCH_ROLLOUTS}" value="50">
     </label>
-    <label>start seed <input id="scan-seed" type="number" value="0" step="1"></label>
+    <label title="Seed the next batch starts from. Advances by the rollout count after each run, so repeated clicks keep drawing fresh factories.">
+      start seed <input id="scan-seed" type="number" value="0" step="1">
+    </label>
     <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
       entities to clear <input id="scan-clear" type="number" min="0" placeholder="all" style="width:4.5em">
     </label>
@@ -1272,15 +1295,16 @@ def render_index(default_size: int) -> str:
     </label>
     <label>sort
       <select id="scan-sort">
-        <option value="seed">run order</option>
-        <option value="worst">worst first</option>
+        <option value="worst" selected>worst first</option>
         <option value="best">best first</option>
+        <option value="seed">run order</option>
       </select>
     </label>
-    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its EOT head fires, and show every final factory">
+    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its EOT head fires, and add every final factory to the gallery">
       Run scan
     </button>
     <button id="scan-stop" disabled>Stop</button>
+    <button id="scan-clear-results" title="Throw away everything scanned so far">clear</button>
   </div>
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
@@ -2124,6 +2148,7 @@ function bindHelp() {{
 // head fires, and lays the finished factories out side by side.
 let scanResults = [];
 let scanAbort = null;
+let scanIndexBase = 0;
 
 function switchTab(name) {{
   document.querySelectorAll('#tabs button').forEach(b =>
@@ -2269,9 +2294,12 @@ async function runScan() {{
     num_missing_entities:
       Number.isFinite(clearRaw) && clearRaw >= 0 ? clearRaw : null,
   }};
-  scanResults = [];
-  document.getElementById('scan-results').replaceChildren();
-  renderScanStats();
+  // Each run appends. Indices are offset by the running total so they stay
+  // unique across runs and keep the server's within-run ordering, which is
+  // what the "run order" sort reads.
+  const indexBase = scanIndexBase;
+  scanIndexBase += body.count;
+  const before = scanResults.length;
   scanAbort = new AbortController();
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -2305,7 +2333,10 @@ async function runScan() {{
         if (ev.type === 'start') {{
           total = ev.n;
           scanSummary('running ' + total + ' rollouts…');
+        }} else if (ev.type === 'note') {{
+          scanSummary(ev.message);
         }} else if (ev.type === 'result') {{
+          ev.index += indexBase;
           scanResults.push(ev);
           // Append rather than re-render: a full re-sort of N cards on
           // every arrival is O(N^2) table builds. renderScan() applies
@@ -2315,8 +2346,8 @@ async function runScan() {{
         }} else if (ev.type === 'progress') {{
           const secs = (performance.now() - started) / 1000;
           scanSummary(
-            'step ' + ev.step + ' · ' + scanResults.length + '/' + total +
-            ' finished · ' + secs.toFixed(1) + 's'
+            'step ' + ev.step + ' · ' + (scanResults.length - before) + '/' +
+            total + ' finished · ' + secs.toFixed(1) + 's'
           );
         }} else if (ev.type === 'error') {{
           scanSummary('error: ' + ev.error);
@@ -2324,8 +2355,17 @@ async function runScan() {{
       }}
     }}
     renderScan();
+    // Advance the seed so the next click draws fresh factories rather than
+    // rebuilding the same ones. "(every kind)" cycles kinds before seeds, so
+    // its run only consumes count/kinds seeds.
+    const seedInput = document.getElementById('scan-seed');
+    seedInput.value = body.seed + (body.kind === ALL_KINDS
+      ? Math.ceil(body.count / NUM_LESSON_KINDS)
+      : body.count);
     const secs = (performance.now() - started) / 1000;
-    scanSummary('finished in ' + secs.toFixed(1) + 's');
+    scanSummary(
+      'added ' + (scanResults.length - before) + ' in ' + secs.toFixed(1) + 's'
+    );
   }} catch (e) {{
     if (e.name === 'AbortError') {{
       renderScan();
@@ -2340,9 +2380,17 @@ async function runScan() {{
   }}
 }}
 
+function clearScan() {{
+  scanResults = [];
+  scanIndexBase = 0;
+  document.getElementById('scan-results').replaceChildren();
+  renderScanStats();
+  scanSummary('');
+}}
+
 function syncScanRunLabel() {{
   const c = parseInt(document.getElementById('scan-count').value, 10) || 1;
-  document.getElementById('scan-run').textContent = 'Run ×' + c;
+  document.getElementById('scan-run').textContent = 'Run +' + c;
 }}
 
 function bindScan() {{
@@ -2353,13 +2401,7 @@ function bindScan() {{
     if (scanAbort) scanAbort.abort();
   }});
   document.getElementById('scan-count').addEventListener('input', syncScanRunLabel);
-  document.getElementById('scan-kind').addEventListener('change', (ev) => {{
-    // "(every kind)" cycles kinds before seeds, so one-of-each is the
-    // useful default count for it.
-    document.getElementById('scan-count').value =
-      ev.target.value === ALL_KINDS ? NUM_LESSON_KINDS : 10;
-    syncScanRunLabel();
-  }});
+  document.getElementById('scan-clear-results').addEventListener('click', clearScan);
   document.getElementById('scan-sort').addEventListener('change', renderScan);
   document.getElementById('scan-ref').addEventListener('change', renderScan);
   syncScanRunLabel();

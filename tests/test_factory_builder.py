@@ -882,6 +882,39 @@ class TestBatchRollout:
         assert {r["kind"] for r in results} == {k.name for k in LessonKind}
         assert all(r["seed"] == 4 for r in results)
 
+    def test_runs_more_rollouts_than_one_batch(self, monkeypatch):
+        """A count above the lockstep batch width runs as back-to-back
+        groups instead of being truncated to fit a single batch."""
+        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        results = [e for e in events if e["type"] == "result"]
+        assert sorted(r["seed"] for r in results) == [0, 1, 2, 3, 4]
+        # Indices stay unique across groups — the gallery sorts on them.
+        assert sorted(r["index"] for r in results) == [0, 1, 2, 3, 4]
+
+    def test_over_ceiling_is_reported_not_silently_truncated(self, monkeypatch):
+        """Asking for more than the per-scan ceiling still runs, but says
+        what it cut — a silent clamp reads as "that's all there was"."""
+        monkeypatch.setattr(fb, "MAX_BATCH_ROLLOUTS", 2)
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            events = self._scan(
+                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 11}
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        note = next(e for e in events if e["type"] == "note")
+        assert "5" in note["message"] and "2" in note["message"]
+        assert len([e for e in events if e["type"] == "result"]) == 2
+
     def test_bad_kind_yields_an_error_event(self):
         """The response headers are already sent by the time the scan
         runs, so failures have to travel in-band rather than as an
@@ -906,10 +939,12 @@ class TestRenderIndexScanTab:
         for element_id in (
             "scan-kind", "scan-count", "scan-seed", "scan-clear", "scan-mask",
             "scan-ref", "scan-sort", "scan-run", "scan-stop", "scan-results",
-            "scan-summary", "scan-stats",
+            "scan-summary", "scan-stats", "scan-clear-results",
         ):
             assert f'id="{element_id}"' in html, element_id
         assert f'<option value="{fb.ALL_KINDS_SENTINEL}">' in html
+        # Worst-first by default: a scan is run to find the failures.
+        assert '<option value="worst" selected>' in html
 
     def test_client_streams_from_the_endpoint_the_server_routes(self):
         html = fb.render_index(default_size=11)
