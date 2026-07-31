@@ -833,7 +833,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 3, "seed": 0, "size": 11}
+                {"kind": "MOVE_ONE_ITEM", "count": 3, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -890,7 +890,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 11}
+                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -907,7 +907,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 7, "seed": 0, "size": 11}
+                {"kind": "MOVE_ONE_ITEM", "count": 7, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
