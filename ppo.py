@@ -337,6 +337,7 @@ def _rollout_episode_metrics(
     num_entities: float,
     min_entities_required: float,
     frac_reachable: float,
+    connect_progress: float,
     entity_cost: float,
     cost_efficiency: float,
     is_trial: bool = False,
@@ -368,6 +369,7 @@ def _rollout_episode_metrics(
         f"{agg}num_entities": float(num_entities),
         f"{agg}entity_efficiency": float(min_entities_required) / float(num_entities),
         f"{agg}frac_reachable": float(frac_reachable),
+        f"{agg}connect_progress": float(connect_progress),
         f"{agg}entity_cost": float(entity_cost),
         f"{agg}cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
@@ -375,6 +377,7 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
+        f"rollout/{lesson}/connect_progress": float(connect_progress),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
@@ -535,12 +538,14 @@ def make_env(
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
+    connect_coef=PpoArgs.connect_coef,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0})
+                       'reward_symlog_r0': reward_symlog_r0,
+                       'connect_coef': connect_coef})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -607,14 +612,18 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
+        connect_coef: float = PpoArgs.connect_coef,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
         if reward_symlog_r0 < 0:
             raise ValueError("reward_symlog_r0 must be non-negative")
+        if connect_coef < 0:
+            raise ValueError("connect_coef must be non-negative")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
+        self.connect_coef = connect_coef
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -693,6 +702,7 @@ class FactorioEnv(gym.Env):
             # factory's reference throughput).
             'thput_raw': self._thput_raw,
             'thput_normed': self._thput_normed,
+            'connect_progress': self._connect_progress,
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
@@ -765,6 +775,7 @@ class FactorioEnv(gym.Env):
         self.invalid_actions = 0
         self._thput_raw = 0.0
         self._thput_normed = 0.0
+        self._connect_progress = 0.0
         self._frac_reachable = 0
         self._frac_hallucin = 0
         self._final_dir_reward = 0
@@ -886,7 +897,13 @@ class FactorioEnv(gym.Env):
             # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
             # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
             # self._max_throughput comes from the factory generator — see reset().
-            thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+            world_WHC = self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            thput_raw, num_unreachable = factorion_rs.simulate_throughput(world_WHC)
+            connect_progress = (
+                factorion_rs.py_connect_progress(world_WHC)
+                if self.connect_coef > 0
+                else 0.0
+            )
             thput_normed = (
                 min(1.0, thput_raw / self._max_throughput)
                 if self._max_throughput > 0
@@ -944,6 +961,7 @@ class FactorioEnv(gym.Env):
             # diagnostics (the rollout never reads these mid-episode).
             thput_raw = 0.0
             thput_normed = 0.0
+            connect_progress = 0.0
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
@@ -966,9 +984,21 @@ class FactorioEnv(gym.Env):
                 # throughput at exactly zero; above the knee the two agree to
                 # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
                 reward = math.log1p(reward / self.reward_symlog_r0)
+            # Dense credit for closing the source→sink gap, so a half-built
+            # factory outscores an empty one. Weighted by what solving *this*
+            # lesson pays rather than a flat constant: achievable rates span
+            # 1600x, so a constant large enough to matter on a belt lesson
+            # would beat a perfect solve on a slow-recipe one outright.
+            if self.connect_coef > 0 and self.reward_symlog_r0 > 0:
+                reward += (
+                    self.connect_coef
+                    * connect_progress
+                    * math.log1p(self._max_throughput / self.reward_symlog_r0)
+                )
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
+        self._connect_progress = connect_progress
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
@@ -996,6 +1026,7 @@ class FactorioEnv(gym.Env):
             info.update({
                 'thput_raw': thput_raw,
                 'thput_normed': thput_normed,
+                'connect_progress': connect_progress,
                 'frac_reachable': frac_reachable,
                 'frac_hallucin': frac_hallucin,
                 'final_dir_reward': final_dir_reward,
@@ -1834,13 +1865,14 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+                  "frac_reachable", "connect_progress", "entity_cost",
+                  "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
+                "thput", "thput_raw", "reward", "length", "connect_progress",
+                "entity_cost", "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
@@ -1913,6 +1945,7 @@ if __name__ == "__main__":
             run_name,
             args.entity_cost_scale,
             args.reward_symlog_r0,
+            args.connect_coef,
         )
         for i in range(args.num_envs)
     ]
@@ -2265,6 +2298,7 @@ if __name__ == "__main__":
                         num_entities=infos['num_entities'][i],
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
+                        connect_progress=infos["connect_progress"][i],
                         entity_cost=infos["entity_cost"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
                         is_trial=is_trial,
@@ -2509,6 +2543,7 @@ if __name__ == "__main__":
                     run_name,
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
+                    args.connect_coef,
                 )
                 for i in range(num_render_envs)
             ])

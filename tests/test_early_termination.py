@@ -22,11 +22,22 @@ def _make_env(size=5, max_steps=10, **kwargs):
     return FactorioEnv(size=size, max_steps=max_steps, idx=0, **kwargs)
 
 
+def _connect_bonus(env, info):
+    """The dense source→sink connection term of the terminal reward."""
+    if env.reward_symlog_r0 <= 0:
+        return 0.0
+    return (
+        env.connect_coef
+        * info["connect_progress"]
+        * math.log1p(env._max_throughput / env.reward_symlog_r0)
+    )
+
+
 def _expected_reward(env, info):
     """The terminal reward the env's configured scheme should have paid."""
     reward = info["thput_raw"] * info["cost_efficiency"]
     if env.reward_symlog_r0 > 0:
-        return math.log1p(reward / env.reward_symlog_r0)
+        return math.log1p(reward / env.reward_symlog_r0) + _connect_bonus(env, info)
     return reward
 
 
@@ -177,7 +188,10 @@ class TestReward:
         assert terminated is True
         assert reward == pytest.approx(_expected_reward(env, info))
         assert info["entity_cost"] > 0
-        assert reward < math.log1p(info["thput_raw"] / env.reward_symlog_r0)
+        # Isolate the throughput term: the connection bonus rides on top of it
+        # and would otherwise mask the cost multiplier this test is about.
+        thput_term = reward - _connect_bonus(env, info)
+        assert thput_term < math.log1p(info["thput_raw"] / env.reward_symlog_r0)
 
     def test_entity_cost_reduces_reward_multiplicatively_without_log(self):
         """With the log transform off, cost is a multiplier bounded in (0, 1]."""
@@ -309,3 +323,65 @@ class TestStepsTaken:
         # Episode isn't over yet
         assert not terminated and not truncated
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
+
+
+class TestConnectProgressShaping:
+    """Throughput alone is 0 for every partially-built factory, so the terminal
+    reward carries a dense source→sink connection bonus. It has to stay a
+    fraction of what solving the lesson pays, or on a slow-recipe lesson a
+    half-built grid would outscore a perfect solve."""
+
+    def test_solved_factory_reports_full_connection(self):
+        env = _make_env(size=11, max_steps=50)
+        env.reset(seed=7, options={"num_missing_entities": 0,
+                                   "kind": LessonKind.MOVE_ONE_ITEM})
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, _, _, info = env.step(action)
+
+        assert info["connect_progress"] == pytest.approx(1.0)
+        assert reward == pytest.approx(_expected_reward(env, info))
+
+    def test_blank_grid_earns_no_bonus(self):
+        """The episode's start state must be the zero of the shaping scale."""
+        env = _make_env(size=11, max_steps=50)
+        env.reset(seed=7, options={"num_missing_entities": float("inf"),
+                                   "kind": LessonKind.MOVE_ONE_ITEM})
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, _, _, info = env.step(action)
+
+        assert info["connect_progress"] == pytest.approx(0.0)
+        assert reward == pytest.approx(0.0)
+
+    def test_bonus_never_outranks_a_solve_on_the_slowest_lesson(self):
+        """MEMORISE_4 tops out at ~0.0017 items/s, the slowest solvable lesson.
+        Scaling the bonus by the lesson's own ceiling is what keeps a fully
+        connected but dead factory below a real solve there."""
+        env = _make_env(size=11, max_steps=50)
+        env.reset(seed=3, options={"num_missing_entities": 0,
+                                   "kind": LessonKind.MEMORISE_4_INGREDIENT_RECIPES})
+        action = _noop_action()
+        action["eot"] = 1
+        _, solve_reward, _, _, info = env.step(action)
+
+        ceiling = math.log1p(env._max_throughput / env.reward_symlog_r0)
+        max_bonus = env.connect_coef * 1.0 * ceiling
+        assert max_bonus < solve_reward, (
+            f"a fully-connected dead factory pays {max_bonus}, which must stay "
+            f"below the {solve_reward} a real solve pays"
+        )
+
+    def test_disabled_by_zero_coef(self):
+        env = _make_env(size=11, max_steps=50, connect_coef=0.0)
+        env.reset(seed=7, options={"num_missing_entities": 0,
+                                   "kind": LessonKind.MOVE_ONE_ITEM})
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, _, _, info = env.step(action)
+
+        assert info["connect_progress"] == pytest.approx(0.0)
+        assert reward == pytest.approx(
+            math.log1p(info["thput_raw"] * info["cost_efficiency"]
+                       / env.reward_symlog_r0)
+        )
