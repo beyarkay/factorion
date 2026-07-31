@@ -15,6 +15,8 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import (
+    TINY_ARCH,
+    TINY_ARCH_ARGS,
     Channel,
     Direction,
     LessonKind,
@@ -496,14 +498,14 @@ class TestSFTCheckpointLoading:
     def test_checkpoint_roundtrip(self, registered_env, tmp_path):
         """SFT checkpoint should load into AgentCNN and produce valid outputs."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
 
         # Save checkpoint
         ckpt_path = str(tmp_path / "test_sft.pt")
         torch.save(agent.state_dict(), ckpt_path)
 
         # Load into fresh agent
-        agent2 = AgentCNN(envs, layers=(16, 16, 16))
+        agent2 = AgentCNN(envs, **TINY_ARCH)
         agent2.load_state_dict(torch.load(ckpt_path))
 
         # Verify identical outputs
@@ -522,13 +524,13 @@ class TestSFTCheckpointLoading:
     def test_sft_to_ppo_start_from(self, registered_env, tmp_path):
         """SFT checkpoint loaded via --start_from should not crash during RL."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
 
         ckpt_path = str(tmp_path / "test_sft.pt")
         torch.save(agent.state_dict(), ckpt_path)
 
         # Simulate what ppo.py does with --start_from
-        agent2 = AgentCNN(envs, layers=(16, 16, 16))
+        agent2 = AgentCNN(envs, **TINY_ARCH)
         agent2.load_state_dict(torch.load(ckpt_path))
 
         # Run a forward pass (simulating RL step)
@@ -554,7 +556,7 @@ class TestSFTCheckpointLoading:
         import sft as sft_mod
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        ref = AgentCNN(envs, layers=(16, 16, 16))
+        ref = AgentCNN(envs, **TINY_ARCH)
         envs.close()
         with torch.no_grad():
             ref.ent_head.bias.fill_(4.2)
@@ -587,9 +589,7 @@ class TestSFTCheckpointLoading:
                 max_level=2,
                 epochs=1,
                 batch_size=32,
-                layer1=16,
-                layer2=16,
-                layer3=16,
+                **TINY_ARCH_ARGS,
                 start_from=ckpt,
                 checkpoint_path=str(tmp_path / "resumed.pt"),
                 summary_path=str(tmp_path / "resumed.json"),
@@ -611,7 +611,7 @@ class TestSFTLossConvergence:
         )
 
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
@@ -668,9 +668,7 @@ class TestTrainSFTEndToEnd:
             max_level=2,
             epochs=2,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             checkpoint_path=ckpt,
             summary_path=summary,
         )
@@ -698,9 +696,7 @@ class TestTrainSFTEndToEnd:
                 num_samples=300,
                 epochs=1,
                 batch_size=64,
-                layer1=16,
-                layer2=16,
-                layer3=16,
+                **TINY_ARCH_ARGS,
                 dataset_cache=cache,
                 checkpoint_path=str(tmp_path / f"ckpt_{tag}.pt"),
                 summary_path=str(tmp_path / f"summary_{tag}.json"),
@@ -739,9 +735,7 @@ class TestSFTDropout:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             dropout=0.5,
             checkpoint_path=str(tmp_path / "drop.pt"),
             summary_path=str(tmp_path / "drop.json"),
@@ -779,9 +773,7 @@ class TestTrackedArtifact:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -820,9 +812,7 @@ class TestTrackedArtifact:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -871,7 +861,7 @@ class TestRolloutAsmItemAcc:
         """
         asm_id = str2ent("assembling_machine_1").value
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
         with torch.no_grad():
             for head, idx in (
@@ -1025,7 +1015,7 @@ class TestRunRolloutEval:
         was eval'd."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         args = SftArgs(
@@ -1033,9 +1023,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1, "Sanity: at least one valid lesson"
@@ -1085,7 +1073,7 @@ class TestRunRolloutEval:
         exercises the default; the others pass max_level explicitly)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         # max_level left at its 0 default -> size*size (25) >> 2*size (10),
@@ -1094,9 +1082,7 @@ class TestRunRolloutEval:
             seed=1,
             size=size,
             num_samples=50,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         assert args.max_level == 0, "default must be the auto sentinel"
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
@@ -1117,7 +1103,7 @@ class TestRunRolloutEval:
         is larger."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         args = SftArgs(
@@ -1125,9 +1111,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=6)
         assert len(val_seeds_to_kind) >= 3
@@ -1146,7 +1130,7 @@ class TestRunRolloutEval:
         crashing (defensive — the caller already guards on len(...)>0)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         args = SftArgs(
@@ -1154,9 +1138,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         roll = run_rollout_eval(
             agent,
@@ -1175,7 +1157,7 @@ class TestRunRolloutEval:
         scores the untouched reset factory (throughput 0)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         args = SftArgs(
@@ -1183,9 +1165,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
 
@@ -1235,7 +1215,7 @@ class TestRunRolloutEval:
         exactly the not-done steps and recalls no positive."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         args = SftArgs(
@@ -1243,9 +1223,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         device = torch.device("cpu")
@@ -1298,7 +1276,7 @@ class TestRunRolloutEval:
         world just before the placement was applied. Returns that list."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         recorded: list[tuple[int, int]] = []
@@ -1318,9 +1296,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1
@@ -1451,7 +1427,7 @@ class TestEotHead:
         """AgentCNN must expose an eot_head producing a single logit per
         observation."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         assert hasattr(agent, "eot_head"), "AgentCNN must have an eot_head"
@@ -1469,7 +1445,7 @@ class TestEotHead:
         returns a bool tensor of the same shape. These are the methods
         inference rollouts call to decide 'I'm done here'."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         B = 3
@@ -1517,9 +1493,7 @@ class TestPerKindEotMetrics:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             track=True,
             eval_rollouts=False,  # skip the slow greedy rollout
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1583,9 +1557,7 @@ class TestNotNoneHeadAccuracy:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             track=True,
             eval_rollouts=False,  # skip the slow greedy rollout
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1642,9 +1614,7 @@ class TestNotNoneHeadAccuracy:
             max_level=2,
             epochs=1,
             batch_size=32,
-            layer1=16,
-            layer2=16,
-            layer3=16,
+            **TINY_ARCH_ARGS,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
