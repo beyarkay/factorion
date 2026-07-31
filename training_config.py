@@ -75,16 +75,8 @@ class SharedArgs:
     worst setting and the metric peaked around 64."""
 
     connect_coef: float = 0.25
-    """weight of the terminal source→sink connection bonus, as a fraction of
-    what solving the lesson pays: the terminal reward gains
-    `connect_coef * connect_progress * log1p(max_throughput / reward_symlog_r0)`.
-    Throughput alone is 0 for every partially-built factory, so nothing
-    rewards a half-laid belt run and lessons the policy cannot finish (trials,
-    FACTORY_1_INGREDIENT) have a flat objective; `connect_progress` scores how
-    much of the source→sink gap has been closed instead. Scaling by the
-    lesson's own ceiling is what keeps it un-farmable across a 1600x spread in
-    achievable items/s — a solved MEMORISE_4 pays only 0.159 raw, which a flat
-    bonus would outrank outright. 0 disables the shaping."""
+    """terminal bonus for closing the source→sink gap, as a fraction of what
+    solving that lesson pays (0 disables it)"""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

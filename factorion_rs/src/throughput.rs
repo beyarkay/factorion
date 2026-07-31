@@ -255,36 +255,13 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
     unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
-/// Manhattan distance between two anchor tiles.
-fn manhattan(a: (usize, usize), b: (usize, usize)) -> usize {
-    a.0.abs_diff(b.0) + a.1.abs_diff(b.1)
-}
-
-/// The distinct entity anchors backing a set of node indices.
-fn anchors_of(graph: &FactoryGraph, nodes: &HashSet<usize>) -> HashSet<(usize, usize)> {
-    nodes.iter().map(|&i| graph.nodes[i].anchor).collect()
-}
-
-/// How much of the source→sink gap the built factory has closed, in `[0, 1]`.
-///
-/// [`calc_throughput`] keeps only `F ∩ B` — the nodes on a *complete*
-/// source→sink path — so a half-built chain is indistinguishable from an
-/// empty grid and nothing rewards progress until the very last tile lands.
-/// This scores the halves instead: per source, the fraction of its initial
-/// distance to the nearest sink that the connected structure has eaten,
-/// counting both what grows forward from the source and what grows backward
-/// from the sink. A source whose chain reaches a sink scores 1.
-///
-/// Averaged over sources, so wiring 2 of a trial's 3 ingredient lines scores
-/// 2/3 rather than nothing.
-///
-/// Closing the gap, rather than chain length, is the measure on purpose:
-/// length is maximised by a belt spiral that never approaches the sink,
-/// whereas the gap only shrinks by building towards the other end. Since the
-/// forward set always contains the source itself and the backward set the
-/// sinks, a markers-only grid scores exactly 0 without needing the episode's
-/// start state stashed anywhere.
-pub fn connect_progress(graph: &FactoryGraph) -> f64 {
+/// Per source, the fraction of its initial distance to the nearest sink that
+/// the connected structure has closed (1 if its chain reaches a sink),
+/// averaged over sources. [`calc_throughput`] scores only complete
+/// source→sink paths, so every half-built factory ties with an empty grid;
+/// this grades the halves. Gap rather than chain length, so a belt spiral
+/// heading away from the sink earns nothing.
+pub fn almost_connected_reward(graph: &FactoryGraph) -> f64 {
     let sources: Vec<usize> = (0..graph.node_count())
         .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
         .collect();
@@ -316,18 +293,24 @@ pub fn connect_progress(graph: &FactoryGraph) -> f64 {
             total += 1.0;
             continue;
         }
-        let src_anchor = graph.nodes[src].anchor;
+        let (sx, sy) = graph.nodes[src].anchor;
         // Distance at reset, when forward is just the source: a pure function
         // of the marker positions, which no placement can move.
         let start_gap = sink_anchors
             .iter()
-            .map(|&s| manhattan(src_anchor, s))
+            .map(|&(x, y)| sx.abs_diff(x) + sy.abs_diff(y))
             .min()
             .unwrap_or(1)
             .max(1);
-        let gap = anchors_of(graph, &forward)
+        let forward_anchors: HashSet<(usize, usize)> =
+            forward.iter().map(|&i| graph.nodes[i].anchor).collect();
+        let gap = forward_anchors
             .iter()
-            .flat_map(|&f| backward_anchors.iter().map(move |&b| manhattan(f, b)))
+            .flat_map(|&(fx, fy)| {
+                backward_anchors
+                    .iter()
+                    .map(move |&(bx, by)| fx.abs_diff(bx) + fy.abs_diff(by))
+            })
             .min()
             .unwrap_or(start_gap);
         total += (1.0 - gap as f64 / start_gap as f64).clamp(0.0, 1.0);
@@ -944,19 +927,16 @@ mod tests {
         );
     }
 
-    /// Source at (0,0), sink at (5,0): a bare-markers grid is the episode's
-    /// start state and must be the zero of the scale.
     #[test]
-    fn test_connect_progress_markers_only_is_zero() {
+    fn test_almost_connected_reward_markers_only_is_zero() {
         let mut w = World::empty(6, 1);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
-        assert_eq!(connect_progress(&build_graph(&w)), 0.0);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 0.0);
     }
 
-    /// Each belt laid from the source eats one tile of the 5-tile gap.
     #[test]
-    fn test_connect_progress_grows_towards_sink() {
+    fn test_almost_connected_reward_grows_towards_sink() {
         let mut w = World::empty(6, 1);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
@@ -964,7 +944,7 @@ mod tests {
         let mut prev = 0.0;
         for (x, expected) in [(1, 0.2), (2, 0.4), (3, 0.6)] {
             w.place(x, 0, Item::TransportBelt, Direction::East, None);
-            let p = connect_progress(&build_graph(&w));
+            let p = almost_connected_reward(&build_graph(&w));
             assert!(
                 (p - expected).abs() < 1e-9,
                 "belt to x={x} should score {expected}, got {p}"
@@ -975,45 +955,39 @@ mod tests {
 
         // Closing the chain saturates the score.
         w.place(4, 0, Item::TransportBelt, Direction::East, None);
-        assert_eq!(connect_progress(&build_graph(&w)), 1.0);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 1.0);
     }
 
-    /// The shaping must not be farmable by laying belt away from the sink —
-    /// that is why the measure is the residual gap and not chain length.
     #[test]
-    fn test_connect_progress_ignores_belt_spiral_away_from_sink() {
+    fn test_almost_connected_reward_ignores_belt_spiral_away_from_sink() {
         let mut w = World::empty(9, 3);
         w.place(4, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(8, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
-        let bare = connect_progress(&build_graph(&w));
+        let bare = almost_connected_reward(&build_graph(&w));
 
         // A four-tile run heading west, directly away from the sink.
         for x in [3, 2, 1, 0] {
             w.place(x, 0, Item::TransportBelt, Direction::West, None);
         }
         assert_eq!(
-            connect_progress(&build_graph(&w)),
+            almost_connected_reward(&build_graph(&w)),
             bare,
             "belt laid away from the sink must not earn progress"
         );
     }
 
-    /// Building backwards from the sink counts too — the agent is free to
-    /// discover either direction.
     #[test]
-    fn test_connect_progress_counts_backward_from_sink() {
+    fn test_almost_connected_reward_counts_backward_from_sink() {
         let mut w = World::empty(6, 1);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
         w.place(4, 0, Item::TransportBelt, Direction::East, None);
-        let p = connect_progress(&build_graph(&w));
+        let p = almost_connected_reward(&build_graph(&w));
         assert!((p - 0.2).abs() < 1e-9, "expected 0.2, got {p}");
     }
 
-    /// Averaging over sources gives partial credit for partial wiring, which
-    /// is the whole point for multi-ingredient trials.
     #[test]
-    fn test_connect_progress_averages_over_sources() {
+    fn test_almost_connected_reward_averages_over_sources() {
         let mut w = World::empty(3, 3);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(0, 2, Item::Source, Direction::East, Some(Item::IronPlate));
@@ -1024,7 +998,7 @@ mod tests {
         // has closed, so the exact total depends on the layout — what matters
         // is that half the job scores at least half and short of a solve.
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
-        let p = connect_progress(&build_graph(&w));
+        let p = almost_connected_reward(&build_graph(&w));
         assert!(
             (0.5..1.0).contains(&p),
             "one of two sources wired should land in [0.5, 1.0), got {p}"
@@ -1034,15 +1008,14 @@ mod tests {
         w.place(1, 2, Item::TransportBelt, Direction::East, None);
         w.place(2, 2, Item::TransportBelt, Direction::North, None);
         w.place(2, 1, Item::TransportBelt, Direction::North, None);
-        assert_eq!(connect_progress(&build_graph(&w)), 1.0);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 1.0);
     }
 
-    /// No sink means no gap to close and nothing to score against.
     #[test]
-    fn test_connect_progress_without_sink_is_zero() {
+    fn test_almost_connected_reward_without_sink_is_zero() {
         let mut w = World::empty(4, 1);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
-        assert_eq!(connect_progress(&build_graph(&w)), 0.0);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 0.0);
     }
 }

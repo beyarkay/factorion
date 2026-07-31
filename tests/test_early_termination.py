@@ -18,26 +18,17 @@ from ppo import FactorioEnv  # noqa: E402
 
 
 def _make_env(size=5, max_steps=10, **kwargs):
-    """Create a FactorioEnv for testing."""
+    """Create a FactorioEnv for testing, with the connection shaping off unless
+    a test opts in — the reward tests below are about the throughput term."""
+    kwargs.setdefault("connect_coef", 0.0)
     return FactorioEnv(size=size, max_steps=max_steps, idx=0, **kwargs)
-
-
-def _connect_bonus(env, info):
-    """The dense source→sink connection term of the terminal reward."""
-    if env.reward_symlog_r0 <= 0:
-        return 0.0
-    return (
-        env.connect_coef
-        * info["connect_progress"]
-        * math.log1p(env._max_throughput / env.reward_symlog_r0)
-    )
 
 
 def _expected_reward(env, info):
     """The terminal reward the env's configured scheme should have paid."""
     reward = info["thput_raw"] * info["cost_efficiency"]
     if env.reward_symlog_r0 > 0:
-        return math.log1p(reward / env.reward_symlog_r0) + _connect_bonus(env, info)
+        return math.log1p(reward / env.reward_symlog_r0)
     return reward
 
 
@@ -188,10 +179,7 @@ class TestReward:
         assert terminated is True
         assert reward == pytest.approx(_expected_reward(env, info))
         assert info["entity_cost"] > 0
-        # Isolate the throughput term: the connection bonus rides on top of it
-        # and would otherwise mask the cost multiplier this test is about.
-        thput_term = reward - _connect_bonus(env, info)
-        assert thput_term < math.log1p(info["thput_raw"] / env.reward_symlog_r0)
+        assert reward < math.log1p(info["thput_raw"] / env.reward_symlog_r0)
 
     def test_entity_cost_reduces_reward_multiplicatively_without_log(self):
         """With the log transform off, cost is a multiplier bounded in (0, 1]."""
@@ -325,63 +313,77 @@ class TestStepsTaken:
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
 
 
-class TestConnectProgressShaping:
-    """Throughput alone is 0 for every partially-built factory, so the terminal
-    reward carries a dense source→sink connection bonus. It has to stay a
-    fraction of what solving the lesson pays, or on a slow-recipe lesson a
-    half-built grid would outscore a perfect solve."""
+class TestAlmostConnectedReward:
+    """Throughput is 0 for every partially-built factory alike, so the terminal
+    reward carries a dense bonus for closing the source→sink gap. Asserted
+    against rewards the env actually paid, never a formula recomputed here."""
 
-    def test_solved_factory_reports_full_connection(self):
-        env = _make_env(size=11, max_steps=50)
-        env.reset(seed=7, options={"num_missing_entities": 0,
-                                   "kind": LessonKind.MOVE_ONE_ITEM})
+    @staticmethod
+    def _terminal(env, **reset_options):
+        env.reset(seed=7, options=reset_options)
         action = _noop_action()
         action["eot"] = 1
         _, reward, _, _, info = env.step(action)
+        return reward, info
 
-        assert info["connect_progress"] == pytest.approx(1.0)
-        assert reward == pytest.approx(_expected_reward(env, info))
+    def test_partial_factories_form_a_gradient_at_zero_throughput(self):
+        """Removing more of a solved factory must score strictly worse, even
+        though every one of these delivers nothing. Without the bonus they all
+        pay exactly 0 and are indistinguishable — which is why the trials and
+        FACTORY_1_INGREDIENT had no gradient to climb."""
+        env = _make_env(size=11, max_steps=50, connect_coef=0.25)
+        rewards = []
+        for missing in (1, 2, 3, float("inf")):
+            reward, info = self._terminal(
+                env, num_missing_entities=missing, kind=LessonKind.MOVE_ONE_ITEM
+            )
+            assert info["thput_raw"] == 0.0, (
+                f"{missing} missing should break the chain, got "
+                f"{info['thput_raw']} items/s"
+            )
+            rewards.append(reward)
 
-    def test_blank_grid_earns_no_bonus(self):
-        """The episode's start state must be the zero of the shaping scale."""
-        env = _make_env(size=11, max_steps=50)
-        env.reset(seed=7, options={"num_missing_entities": float("inf"),
-                                   "kind": LessonKind.MOVE_ONE_ITEM})
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, _, _, info = env.step(action)
+        assert rewards == sorted(rewards, reverse=True), rewards
+        assert rewards[0] > rewards[-1]
+        assert rewards[-1] == 0.0, "a bare-markers grid is the zero of the scale"
 
-        assert info["connect_progress"] == pytest.approx(0.0)
-        assert reward == pytest.approx(0.0)
+    def test_solved_factory_outscores_any_partial_one(self):
+        shaped = _make_env(size=11, max_steps=50, connect_coef=0.25)
+        solved, info = self._terminal(shaped, num_missing_entities=0,
+                                      kind=LessonKind.MOVE_ONE_ITEM)
+        blank, _ = self._terminal(shaped, num_missing_entities=float("inf"),
+                                  kind=LessonKind.MOVE_ONE_ITEM)
+        assert info["almost_connected_reward"] == pytest.approx(1.0)
+        assert solved > blank
 
     def test_bonus_never_outranks_a_solve_on_the_slowest_lesson(self):
-        """MEMORISE_4 tops out at ~0.0017 items/s, the slowest solvable lesson.
-        Scaling the bonus by the lesson's own ceiling is what keeps a fully
-        connected but dead factory below a real solve there."""
-        env = _make_env(size=11, max_steps=50)
-        env.reset(seed=3, options={"num_missing_entities": 0,
-                                   "kind": LessonKind.MEMORISE_4_INGREDIENT_RECIPES})
-        action = _noop_action()
-        action["eot"] = 1
-        _, solve_reward, _, _, info = env.step(action)
+        """MEMORISE_4 solves at ~0.0017 items/s, the slowest there is. Scaling
+        the bonus by the lesson's own ceiling is what keeps a fully connected
+        but dead factory below a real solve — a flat coefficient would not."""
+        kind = LessonKind.MEMORISE_4_INGREDIENT_RECIPES
+        shaped = _make_env(size=11, max_steps=50, connect_coef=0.25)
+        solved, info = self._terminal(shaped, num_missing_entities=0, kind=kind)
 
-        ceiling = math.log1p(env._max_throughput / env.reward_symlog_r0)
-        max_bonus = env.connect_coef * 1.0 * ceiling
-        assert max_bonus < solve_reward, (
-            f"a fully-connected dead factory pays {max_bonus}, which must stay "
-            f"below the {solve_reward} a real solve pays"
+        # A solved factory is fully connected, so its bonus is the largest any
+        # dead factory on this lesson could earn: the rest of `solved` is the
+        # throughput the shaping must never be able to stand in for.
+        assert info["almost_connected_reward"] == pytest.approx(1.0)
+        unshaped = _make_env(size=11, max_steps=50, connect_coef=0.0)
+        solve_only, _ = self._terminal(unshaped, num_missing_entities=0, kind=kind)
+        assert solved - solve_only < solve_only, (
+            f"max bonus {solved - solve_only} must stay under the "
+            f"{solve_only} a real solve pays"
         )
 
-    def test_disabled_by_zero_coef(self):
-        env = _make_env(size=11, max_steps=50, connect_coef=0.0)
-        env.reset(seed=7, options={"num_missing_entities": 0,
-                                   "kind": LessonKind.MOVE_ONE_ITEM})
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, _, _, info = env.step(action)
+    def test_zero_coef_pays_exactly_the_unshaped_reward(self):
+        kind = LessonKind.MOVE_ONE_ITEM
+        shaped, _ = self._terminal(
+            _make_env(size=11, max_steps=50, connect_coef=0.25),
+            num_missing_entities=0, kind=kind)
+        unshaped, info = self._terminal(
+            _make_env(size=11, max_steps=50, connect_coef=0.0),
+            num_missing_entities=0, kind=kind)
 
-        assert info["connect_progress"] == pytest.approx(0.0)
-        assert reward == pytest.approx(
-            math.log1p(info["thput_raw"] * info["cost_efficiency"]
-                       / env.reward_symlog_r0)
-        )
+        assert info["almost_connected_reward"] == 0.0
+        assert unshaped == pytest.approx(_expected_reward(_make_env(), info))
+        assert shaped > unshaped

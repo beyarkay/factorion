@@ -337,7 +337,7 @@ def _rollout_episode_metrics(
     num_entities: float,
     min_entities_required: float,
     frac_reachable: float,
-    connect_progress: float,
+    almost_connected_reward: float,
     entity_cost: float,
     cost_efficiency: float,
     is_trial: bool = False,
@@ -369,7 +369,7 @@ def _rollout_episode_metrics(
         f"{agg}num_entities": float(num_entities),
         f"{agg}entity_efficiency": float(min_entities_required) / float(num_entities),
         f"{agg}frac_reachable": float(frac_reachable),
-        f"{agg}connect_progress": float(connect_progress),
+        f"{agg}almost_connected_reward": float(almost_connected_reward),
         f"{agg}entity_cost": float(entity_cost),
         f"{agg}cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
@@ -377,7 +377,7 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
-        f"rollout/{lesson}/connect_progress": float(connect_progress),
+        f"rollout/{lesson}/almost_connected_reward": float(almost_connected_reward),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
@@ -702,7 +702,7 @@ class FactorioEnv(gym.Env):
             # factory's reference throughput).
             'thput_raw': self._thput_raw,
             'thput_normed': self._thput_normed,
-            'connect_progress': self._connect_progress,
+            'almost_connected_reward': self._almost_connected_reward,
             'frac_reachable': self._frac_reachable,
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
@@ -775,7 +775,7 @@ class FactorioEnv(gym.Env):
         self.invalid_actions = 0
         self._thput_raw = 0.0
         self._thput_normed = 0.0
-        self._connect_progress = 0.0
+        self._almost_connected_reward = 0.0
         self._frac_reachable = 0
         self._frac_hallucin = 0
         self._final_dir_reward = 0
@@ -899,8 +899,8 @@ class FactorioEnv(gym.Env):
             # self._max_throughput comes from the factory generator — see reset().
             world_WHC = self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
             thput_raw, num_unreachable = factorion_rs.simulate_throughput(world_WHC)
-            connect_progress = (
-                factorion_rs.py_connect_progress(world_WHC)
+            almost_connected_reward = (
+                factorion_rs.py_almost_connected_reward(world_WHC)
                 if self.connect_coef > 0
                 else 0.0
             )
@@ -961,7 +961,7 @@ class FactorioEnv(gym.Env):
             # diagnostics (the rollout never reads these mid-episode).
             thput_raw = 0.0
             thput_normed = 0.0
-            connect_progress = 0.0
+            almost_connected_reward = 0.0
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
@@ -990,15 +990,16 @@ class FactorioEnv(gym.Env):
             # 1600x, so a constant large enough to matter on a belt lesson
             # would beat a perfect solve on a slow-recipe one outright.
             if self.connect_coef > 0 and self.reward_symlog_r0 > 0:
-                reward += (
-                    self.connect_coef
-                    * connect_progress
-                    * math.log1p(self._max_throughput / self.reward_symlog_r0)
+                # The generator's per-episode ceiling, not anything the agent
+                # built — so this scale is fixed and positive all episode.
+                solved_reward = math.log1p(
+                    self._max_throughput / self.reward_symlog_r0
                 )
+                reward += self.connect_coef * almost_connected_reward * solved_reward
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
-        self._connect_progress = connect_progress
+        self._almost_connected_reward = almost_connected_reward
         self._frac_reachable = frac_reachable
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
@@ -1026,7 +1027,7 @@ class FactorioEnv(gym.Env):
             info.update({
                 'thput_raw': thput_raw,
                 'thput_normed': thput_normed,
-                'connect_progress': connect_progress,
+                'almost_connected_reward': almost_connected_reward,
                 'frac_reachable': frac_reachable,
                 'frac_hallucin': frac_hallucin,
                 'final_dir_reward': final_dir_reward,
@@ -1865,13 +1866,13 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "connect_progress", "entity_cost",
+                  "frac_reachable", "almost_connected_reward", "entity_cost",
                   "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "thput_raw", "reward", "length", "connect_progress",
+                "thput", "thput_raw", "reward", "length", "almost_connected_reward",
                 "entity_cost", "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
@@ -2298,7 +2299,7 @@ if __name__ == "__main__":
                         num_entities=infos['num_entities'][i],
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
-                        connect_progress=infos["connect_progress"][i],
+                        almost_connected_reward=infos["almost_connected_reward"][i],
                         entity_cost=infos["entity_cost"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
                         is_trial=is_trial,

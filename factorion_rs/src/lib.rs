@@ -49,7 +49,7 @@ use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
 use std::collections::HashMap;
 #[cfg(feature = "pyo3-bindings")]
-use throughput::{calc_throughput, connect_progress, factory_score};
+use throughput::{almost_connected_reward, calc_throughput, factory_score};
 #[cfg(feature = "pyo3-bindings")]
 use types::{all_items, all_recipes, Direction, Item, Recipe};
 #[cfg(feature = "pyo3-bindings")]
@@ -79,13 +79,13 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
 /// `simulate_throughput` takes.
 ///
 /// Dense counterpart to `simulate_throughput`'s score, which is 0 for every
-/// partially-built factory alike. See [`connect_progress`].
+/// partially-built factory alike. See [`almost_connected_reward`].
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-fn py_connect_progress(world: PyReadonlyArray3<i64>) -> PyResult<f64> {
+fn py_almost_connected_reward(world: PyReadonlyArray3<i64>) -> PyResult<f64> {
     let world = World::from_numpy(&world);
     let graph = build_graph(&world);
-    Ok(connect_progress(&graph))
+    Ok(almost_connected_reward(&graph))
 }
 
 /// Python-facing shape of one sink's delivery: the sink's anchor tile, the
@@ -366,7 +366,7 @@ fn py_lesson_is_trial(py: Python<'_>) -> PyResult<Py<PyDict>> {
 fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(simulate_throughput, m)?)?;
     m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
-    m.add_function(wrap_pyfunction!(py_connect_progress, m)?)?;
+    m.add_function(wrap_pyfunction!(py_almost_connected_reward, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
