@@ -1011,6 +1011,76 @@ mod tests {
         assert_eq!(almost_connected_reward(&build_graph(&w)), 1.0);
     }
 
+    /// Two snakes, each covering half the grid: one fed by the source, one
+    /// draining to the sink, separated by a blank row so they never join.
+    /// Maximises both reachable sets at once, which is the input the pairwise
+    /// gap scan is quadratic in.
+    fn packed_two_snake_world(n: usize) -> World {
+        fn snake(w: &mut World, y0: usize, y1: usize, n: usize) -> (usize, usize) {
+            let mut end = (0, y0);
+            for (i, y) in (y0..y1).enumerate() {
+                let eastward = i % 2 == 0;
+                let xs: Vec<usize> = if eastward {
+                    (0..n).collect()
+                } else {
+                    (0..n).rev().collect()
+                };
+                let dir = if eastward {
+                    Direction::East
+                } else {
+                    Direction::West
+                };
+                for &x in &xs {
+                    w.place(x, y, Item::TransportBelt, dir, None);
+                }
+                if let Some(&last) = xs.last() {
+                    if y != y1 - 1 {
+                        w.place(last, y, Item::TransportBelt, Direction::South, None);
+                    }
+                    end = (last, y);
+                }
+            }
+            end
+        }
+
+        let mut w = World::empty(n, n);
+        let half = n / 2;
+        snake(&mut w, 1, half, n);
+        let (ex, ey) = snake(&mut w, half + 1, n, n);
+        w.place(0, 0, Item::Source, Direction::South, Some(Item::IronPlate));
+        w.place(ex, ey, Item::Sink, Direction::East, Some(Item::IronPlate));
+        w
+    }
+
+    #[test]
+    fn test_almost_connected_reward_on_a_grid_packed_with_belts() {
+        let n = 32;
+        let graph = build_graph(&packed_two_snake_world(n));
+
+        let started = std::time::Instant::now();
+        let score = almost_connected_reward(&graph);
+        let elapsed = started.elapsed();
+
+        // Guard the stress itself: if a change to belt connectivity fragments
+        // the snakes, the sets shrink and this stops exercising anything.
+        assert!(
+            graph.node_count() > 1000,
+            "expected a densely connected graph, got {} nodes",
+            graph.node_count()
+        );
+        assert!(
+            (0.9..1.0).contains(&score),
+            "two near-touching snakes should score just under 1, got {score}"
+        );
+        // The gap scan is |forward| x |backward|, and both sets are ~every
+        // tile here. Deliberately loose — this is a guard against the cost
+        // becoming super-quadratic, not a benchmark.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "{n}x{n} packed grid took {elapsed:?}"
+        );
+    }
+
     #[test]
     fn test_almost_connected_reward_without_sink_is_zero() {
         let mut w = World::empty(4, 1);
