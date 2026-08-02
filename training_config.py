@@ -140,6 +140,23 @@ class PpoArgs(SharedArgs):
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
     """entropy coefficient at the end of training (low = more exploitation)"""
+    ent_mult_tile: float = 1.0
+    """per-head multiplier on the annealed entropy coefficient for the tile head"""
+    ent_mult_entity: float = 1.0
+    """per-head multiplier on the annealed entropy coefficient for the entity head"""
+    ent_mult_direction: float = 1.0
+    """per-head multiplier on the annealed entropy coefficient for the direction head"""
+    ent_mult_item: float = 1.0
+    """per-head multiplier on the annealed entropy coefficient for the item head"""
+    ent_mult_misc: float = 1.0
+    """per-head multiplier on the annealed entropy coefficient for the misc head"""
+    ent_mult_eot: float = 0.0
+    """per-head multiplier on the annealed entropy coefficient for the EOT head.
+    0 by default: Bernoulli entropy is maximised at p=0.5, so a shared bonus
+    drags termination toward a coin flip (expected episode length ~2) no matter
+    what the SFT prior learned. This one bit has more leverage over the return
+    than any other head, so its behaviour is shaped by the reward alone; set 1.0
+    to recover the old summed-entropy bonus."""
     vf_coef: float = 0.794
     """coefficient of the value function"""
     entity_cost_scale: float = 0.001

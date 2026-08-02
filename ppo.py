@@ -72,6 +72,10 @@ _ASM_RECIPE_ITEM_IDS = tuple(
     if item.name in recipes
     and "assembling_machine_1" in recipes[item.name].produced_by
 )
+# The policy's action heads, in the order their entropies combine into the
+# entropy bonus. One tuple so the loss weights, the accumulators and the
+# policy/* metric names can never drift apart.
+_ENTROPY_HEADS = ("tile", "entity", "direction", "item", "misc", "eot")
 
 # Dense lookup tables keep terminal factory costing to a handful of numpy
 # reductions. Source/sink and empty are excluded: the agent cannot place them,
@@ -230,6 +234,11 @@ def _append_run_tags(run, *tags: str) -> None:
     """Append tags to a (possibly None / disabled) W&B run."""
     if run is not None:
         run.tags = (run.tags or ()) + tags
+
+
+def _entropy_head_mults(args) -> dict:
+    """The `--ent-mult-*` knobs as the {head: multiplier} map AgentCNN takes."""
+    return {h: float(getattr(args, f"ent_mult_{h}")) for h in _ENTROPY_HEADS}
 
 
 def _run_signature(args) -> str:
@@ -1347,8 +1356,19 @@ class AgentCNN(nn.Module):
         attn_layers=SharedArgs.attn_layers,
         attn_pos_embed=SharedArgs.attn_pos_embed,
         global_feat_dim=SharedArgs.global_feat_dim,
+        entropy_head_mults=None,
     ):
         super().__init__()
+        # Per-head weights on the entropy bonus (PPO multiplies the whole thing
+        # by the annealed ent_coef). The network default is the plain sum;
+        # PpoArgs.ent_mult_* is what actually reweights it, so a consumer that
+        # never touches the entropy bonus (SFT, the mod server) is unaffected.
+        self.entropy_head_mults = dict.fromkeys(_ENTROPY_HEADS, 1.0)
+        if entropy_head_mults is not None:
+            unknown = set(entropy_head_mults) - set(_ENTROPY_HEADS)
+            if unknown:
+                raise ValueError(f"unknown entropy head(s): {sorted(unknown)}")
+            self.entropy_head_mults.update(entropy_head_mults)
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
         # (the latter holds its sub-envs in worker processes, no `.envs`).
@@ -1718,11 +1738,13 @@ class AgentCNN(nn.Module):
             _categorical_logp(m_logp_all_BM, misc_B) +
             -F.binary_cross_entropy_with_logits(eot_logit_B, eot_B, reduction="none")
         )
-        # Per-head entropies, summed into the joint entropy used by PPO. Kept
-        # individually so the rollout can log policy/entropy_{head} (which heads
-        # are still exploring vs collapsed) — the RL analog of SFT's per-head
-        # accuracy. Stashed as detached scalars (cheap; mirrors the
-        # self.time_for_* attributes already set here, so it stays eager-safe).
+        # Per-head entropies, combined into the joint entropy used by PPO under
+        # the per-head weights. Kept individually so the rollout can log
+        # policy/entropy_{head} (which heads are still exploring vs collapsed) —
+        # the RL analog of SFT's per-head accuracy. Stashed *unweighted* and as
+        # detached scalars (cheap; mirrors the self.time_for_* attributes already
+        # set here, so it stays eager-safe) so the metric stays comparable across
+        # weightings; PPO logs the weighted contributions separately.
         ent_tile = _categorical_entropy(tile_logp_all_BN)
         ent_e = _categorical_entropy(e_logp_all_BE)
         ent_d = _categorical_entropy(d_logp_all_BD)
@@ -1732,7 +1754,15 @@ class AgentCNN(nn.Module):
             p_eot_B * F.logsigmoid(eot_logit_B)
             + (1.0 - p_eot_B) * F.logsigmoid(-eot_logit_B)
         )
-        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m + ent_eot
+        w = self.entropy_head_mults
+        entropy_B = (
+            w["tile"] * ent_tile
+            + w["entity"] * ent_e
+            + w["direction"] * ent_d
+            + w["item"] * ent_i
+            + w["misc"] * ent_m
+            + w["eot"] * ent_eot
+        )
         self._last_head_entropy = {
             "tile": ent_tile.mean().detach(),
             "entity": ent_e.mean().detach(),
@@ -1952,6 +1982,7 @@ if __name__ == "__main__":
         attn_layers=args.attn_layers,
         attn_pos_embed=args.attn_pos_embed,
         global_feat_dim=args.global_feat_dim,
+        entropy_head_mults=_entropy_head_mults(args),
     )
 
     if args.start_from is not None:
@@ -2144,7 +2175,7 @@ if __name__ == "__main__":
 
         # Per-iteration accumulators for the acting policy's distribution shape
         # (the policy/* metrics): summed over rollout steps, meaned at log time.
-        _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
+        _head_ent_sum: dict = dict.fromkeys(_ENTROPY_HEADS, 0.0)
         _eot_prob_sum = 0.0
         rollout_start = time.time()
 

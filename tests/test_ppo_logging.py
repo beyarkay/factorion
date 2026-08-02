@@ -21,6 +21,7 @@ from ppo import (  # noqa: E402
     FactorioEnv,
     make_env,
     _run_signature,
+    _entropy_head_mults,
     _build_eval_set,
     _rollout_episode_metrics,
     _explained_variance,
@@ -132,6 +133,54 @@ class TestPerHeadEntropyStash:
         # entropy_B is per-sample (summed over heads); its mean should match the
         # sum of the per-head means stashed for logging.
         assert entropy_B.mean().detach().item() == pytest.approx(head_sum, abs=1e-4)
+
+
+class TestPerHeadEntropyMults:
+    """The entropy bonus is a per-head weighted sum (#235): PPO zeroes the EOT
+    head so the exploration bonus can't drag termination toward p=0.5."""
+
+    def _agent(self, mults=None):
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
+        )
+        return AgentCNN(envs, layers=(16, 16, 16), entropy_head_mults=mults)
+
+    def test_weighted_sum_matches_per_head_entropies(self, registered_env):
+        mults = {"tile": 0.5, "entity": 2.0, "direction": 0.0,
+                 "item": 1.0, "misc": 0.25, "eot": 0.0}
+        agent = self._agent(mults)
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        _, _, entropy_B, _ = agent.get_action_and_value(obs)
+        # The stash stays unweighted, so the weighted total is recomputable.
+        want = sum(mults[h] * float(v) for h, v in agent._last_head_entropy.items())
+        assert entropy_B.mean().detach().item() == pytest.approx(want, abs=1e-4)
+
+    def test_zero_eot_mult_drops_the_eot_term(self, registered_env):
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        summed = self._agent()
+        no_eot = self._agent({"eot": 0.0})
+        no_eot.load_state_dict(summed.state_dict())
+
+        torch.manual_seed(0)
+        _, _, ent_summed, _ = summed.get_action_and_value(obs)
+        eot_ent = float(summed._last_head_entropy["eot"])
+        torch.manual_seed(0)
+        _, _, ent_no_eot, _ = no_eot.get_action_and_value(obs)
+
+        assert eot_ent > 0.0  # an untrained EOT head is near p=0.5, i.e. ~ln 2
+        assert ent_no_eot.mean().item() == pytest.approx(
+            ent_summed.mean().item() - eot_ent, abs=1e-4
+        )
+
+    def test_unknown_head_rejected(self, registered_env):
+        with pytest.raises(ValueError, match="unknown entropy head"):
+            self._agent({"nonesuch": 1.0})
+
+    def test_ppo_args_zero_the_eot_head_by_default(self):
+        assert _entropy_head_mults(PpoArgs()) == {
+            "tile": 1.0, "entity": 1.0, "direction": 1.0,
+            "item": 1.0, "misc": 1.0, "eot": 0.0,
+        }
 
 
 # ── per-episode rollout metrics (overall + per-lesson, raw + normalized) ──────
