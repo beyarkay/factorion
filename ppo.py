@@ -1414,18 +1414,9 @@ class AgentCNN(nn.Module):
         attn_pos_embed=SharedArgs.attn_pos_embed,
         global_feat_dim=SharedArgs.global_feat_dim,
         entropy_head_mults=None,
+        entropy_normalize=False,
     ):
         super().__init__()
-        # Per-head weights on the entropy bonus (PPO multiplies the whole thing
-        # by the annealed ent_coef). The network default is the plain sum;
-        # PpoArgs.ent_mult_* is what actually reweights it, so a consumer that
-        # never touches the entropy bonus (SFT, the mod server) is unaffected.
-        self.entropy_head_mults = dict.fromkeys(_ENTROPY_HEADS, 1.0)
-        if entropy_head_mults is not None:
-            unknown = set(entropy_head_mults) - set(_ENTROPY_HEADS)
-            if unknown:
-                raise ValueError(f"unknown entropy head(s): {sorted(unknown)}")
-            self.entropy_head_mults.update(entropy_head_mults)
         # Grid size from the vector env's single observation space (shape
         # (C, W, H)) so this works for both SyncVectorEnv and AsyncVectorEnv
         # (the latter holds its sub-envs in worker processes, no `.envs`).
@@ -1441,6 +1432,23 @@ class AgentCNN(nn.Module):
         self.num_directions = len(Direction)
         self.num_items = len(items)
         self.num_misc = len(Misc)
+
+        # Per-head weights on the entropy bonus (PPO multiplies the whole thing
+        # by the annealed ent_coef). The network default is the plain sum;
+        # PpoArgs.ent_mult_*/--ent-normalize are what actually reweight it, so a
+        # consumer that never touches the entropy bonus (SFT, the mod server) is
+        # unaffected.
+        self.entropy_head_mults = dict.fromkeys(_ENTROPY_HEADS, 1.0)
+        if entropy_head_mults is not None:
+            unknown = set(entropy_head_mults) - set(_ENTROPY_HEADS)
+            if unknown:
+                raise ValueError(f"unknown entropy head(s): {sorted(unknown)}")
+            self.entropy_head_mults.update(entropy_head_mults)
+        if entropy_normalize:
+            ceilings = self.max_head_entropies()
+            self.entropy_head_mults = {
+                h: m / ceilings[h] for h, m in self.entropy_head_mults.items()
+            }
 
         # Semantic action grammar. These are non-persistent buffers so old
         # checkpoints remain loadable; they are constants derived from the
@@ -1664,6 +1672,25 @@ class AgentCNN(nn.Module):
         """Boolean stop signal per observation. Threshold defaults to 0.5;
         lower it if the model rambles, raise it if it stops short."""
         return self.eot_prob(x_BCWH) > threshold
+
+    def max_head_entropies(self) -> dict:
+        """Each head's maximum achievable entropy, in nats.
+
+        The log of the number of categories the action grammar actually leaves
+        open, NOT of the head's raw width: the entity head has ~66 outputs but
+        `valid_entity_action_mask` zeroes all but the placeable ones, so no
+        policy can ever reach log(66). direction/item/misc are masked to one
+        branch of an either/or grammar (a belt takes a direction and no recipe,
+        an assembler the reverse), so the wider branch sets each ceiling.
+        """
+        return {
+            "tile": math.log(self.width * self.height),
+            "entity": math.log(len(_VALID_ENTITY_ACTION_IDS)),
+            "direction": math.log(self.num_directions - 1),  # every dir but NONE
+            "item": math.log(len(_ASM_RECIPE_ITEM_IDS)),
+            "misc": math.log(2),  # UNDERGROUND_UP / _DOWN
+            "eot": math.log(2),  # Bernoulli
+        }
 
     def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
         """Apply the action grammar implied by the selected entity.
@@ -2050,6 +2077,7 @@ if __name__ == "__main__":
         attn_pos_embed=args.attn_pos_embed,
         global_feat_dim=args.global_feat_dim,
         entropy_head_mults=_entropy_head_mults(args),
+        entropy_normalize=bool(args.ent_normalize),
     )
 
     if args.start_from is not None:

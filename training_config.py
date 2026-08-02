@@ -157,6 +157,15 @@ class PpoArgs(SharedArgs):
     what the SFT prior learned. This one bit has more leverage over the return
     than any other head, so its behaviour is shaped by the reward alone; set 1.0
     to recover the old summed-entropy bonus."""
+    ent_normalize: int = 0
+    """1 = divide each head's entropy by its maximum (log of the number of
+    categories its action mask leaves open) before applying ent_mult_*, so a
+    multiplier means "this fraction of max entropy" for every head alike.
+    Unnormalized, the 121-way tile head (max ~4.8 nats) and the 3-way misc head
+    (max ~1.1) draw incomparable shares of the same bonus, and maximising the
+    entity/item heads' entropy pushes mass back onto catalog entries no lesson
+    ever uses — fighting the SFT prior. Int not bool for W&B sweeps. This
+    rescales the whole bonus, so ent_coef_start/end need retuning alongside."""
     vf_coef: float = 0.794
     """coefficient of the value function"""
     entity_cost_scale: float = 0.001

@@ -2,6 +2,7 @@
 greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
 + eot prob stashed by get_action_and_value (the policy/* metrics)."""
 
+import math
 import os
 import sys
 
@@ -17,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
     PpoArgs,
+    _ENTROPY_HEADS,
     AgentCNN,
     FactorioEnv,
     make_env,
@@ -183,6 +185,52 @@ class TestPerHeadEntropyMults:
             "tile": 1.0, "entity": 1.0, "direction": 1.0,
             "item": 1.0, "misc": 1.0, "eot": 0.0,
         }
+
+
+class TestMaxEntropyNormalization:
+    """--ent-normalize puts every head's bonus on the same "fraction of max
+    entropy" scale, so a 121-way head and a 3-way head are comparable (#235)."""
+
+    def _agent(self, **kw):
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
+        )
+        return AgentCNN(envs, layers=(16, 16, 16), **kw)
+
+    def test_ceilings_are_the_masked_category_counts(self, registered_env):
+        agent = self._agent()
+        ceil = agent.max_head_entropies()
+        assert ceil["tile"] == pytest.approx(math.log(5 * 5))
+        assert ceil["misc"] == pytest.approx(math.log(2))
+        assert ceil["eot"] == pytest.approx(math.log(2))
+        # Masked, so strictly below the raw head widths.
+        assert ceil["entity"] < math.log(agent.num_entities)
+        assert ceil["item"] < math.log(agent.num_items)
+        assert ceil["direction"] == pytest.approx(math.log(agent.num_directions - 1))
+
+    def test_mults_are_divided_by_the_ceilings(self, registered_env):
+        agent = self._agent(entropy_head_mults={h: 2.0 for h in _ENTROPY_HEADS},
+                            entropy_normalize=True)
+        ceil = agent.max_head_entropies()
+        assert agent.entropy_head_mults == pytest.approx(
+            {h: 2.0 / ceil[h] for h in _ENTROPY_HEADS}
+        )
+
+    def test_normalized_entropy_is_a_fraction_of_max_per_head(self, registered_env):
+        agent = self._agent(entropy_normalize=True)
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        _, _, entropy_B, _ = agent.get_action_and_value(obs)
+        ceil = agent.max_head_entropies()
+        want = sum(
+            float(v) / ceil[h] for h, v in agent._last_head_entropy.items()
+        )
+        assert entropy_B.mean().item() == pytest.approx(want, abs=1e-4)
+        # Every head is now in [0, 1], so the total cannot exceed the head count.
+        assert entropy_B.mean().item() <= len(_ENTROPY_HEADS)
+
+    def test_off_by_default(self, registered_env):
+        assert PpoArgs().ent_normalize == 0
+        assert self._agent().entropy_head_mults["tile"] == 1.0
 
 
 class TestLengthDistribution:
