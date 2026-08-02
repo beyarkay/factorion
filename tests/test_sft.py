@@ -35,6 +35,7 @@ from sft import (
     _iter_demo_pairs,
     _materialise,
     _steps_per_epoch,
+    _solve_rate,
     _solved_assembler_recipes,
     build_lr_schedule,
     extract_expert_actions,
@@ -982,6 +983,20 @@ class TestRolloutAsmItemAcc:
         assert roll["per_kind_asm_n"]["MOVE_ONE_ITEM"] == 0
 
 
+class TestSolveRate:
+    def test_counts_only_factories_that_reached_the_reference(self):
+        # Same mean (0.5), different skill: two solved factories vs four
+        # half-built ones.
+        assert _solve_rate([1.0, 1.0, 0.0, 0.0]) == 0.5
+        assert _solve_rate([0.5, 0.5, 0.5, 0.5]) == 0.0
+
+    def test_overshoot_counts_as_solved(self):
+        assert _solve_rate([1.2]) == 1.0
+
+    def test_empty_is_zero(self):
+        assert _solve_rate([]) == 0.0
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
@@ -1045,11 +1060,17 @@ class TestRunRolloutEval:
             "trial_n",
             "per_kind",
             "per_kind_n",
+            "solve_rate",
+            "trial_solve_rate",
+            "per_kind_solve_rate",
             "asm_item_acc",
             "per_kind_asm_item_acc",
             "per_kind_asm_n",
             "eot_acc",
             "eot_pos_recall",
+            "eot_prob",
+            "trial_eot_prob",
+            "per_kind_eot_prob",
             "per_kind_eot_acc",
             "per_kind_eot_pos_recall",
             "per_kind_eot_step_n",
@@ -1068,6 +1089,20 @@ class TestRunRolloutEval:
         )
         for kn, thp in per_kind.items():
             assert 0.0 <= thp <= 1.5, f"{kn}: throughput out of range: {thp}"
+
+        # EOT probabilities are means of a sigmoid, so they stay in [0, 1] and
+        # the pooled lesson mean sits inside the range of the kinds it pools.
+        assert 0.0 <= roll["eot_prob"] <= 1.0
+        assert 0.0 <= roll["trial_eot_prob"] <= 1.0
+        for p in roll["per_kind_eot_prob"].values():
+            assert 0.0 <= p <= 1.0
+        lessons = [
+            roll["per_kind_eot_prob"][k.name]
+            for k in LessonKind
+            if not LESSON_IS_TRIAL[k] and roll["per_kind_eot_step_n"][k.name] > 0
+        ]
+        assert lessons, "Sanity: at least one lesson was scored"
+        assert min(lessons) <= roll["eot_prob"] <= max(lessons)
 
     def test_default_max_level_evals_from_empty(self, registered_env):
         """With the default max_level (0), the rollout eval auto-resolves to

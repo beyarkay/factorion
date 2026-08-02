@@ -2,6 +2,7 @@
 greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
 + eot prob stashed by get_action_and_value (the policy/* metrics)."""
 
+import math
 import os
 import sys
 
@@ -17,10 +18,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
     PpoArgs,
+    _ENTROPY_HEADS,
     AgentCNN,
     FactorioEnv,
     make_env,
     _run_signature,
+    _entropy_head_mults,
+    _weighted_entropy_metrics,
+    _length_distribution,
     _build_eval_set,
     _rollout_episode_metrics,
     _explained_variance,
@@ -134,6 +139,138 @@ class TestPerHeadEntropyStash:
         assert entropy_B.mean().detach().item() == pytest.approx(head_sum, abs=1e-4)
 
 
+class TestPerHeadEntropyMults:
+    """The entropy bonus is a per-head weighted sum (#235): PPO zeroes the EOT
+    head so the exploration bonus can't drag termination toward p=0.5."""
+
+    def _agent(self, mults=None):
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
+        )
+        return AgentCNN(envs, layers=(16, 16, 16), entropy_head_mults=mults)
+
+    def test_weighted_sum_matches_per_head_entropies(self, registered_env):
+        mults = {"tile": 0.5, "entity": 2.0, "direction": 0.0,
+                 "item": 1.0, "misc": 0.25, "eot": 0.0}
+        agent = self._agent(mults)
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        _, _, entropy_B, _ = agent.get_action_and_value(obs)
+        # The stash stays unweighted, so the weighted total is recomputable.
+        want = sum(mults[h] * float(v) for h, v in agent._last_head_entropy.items())
+        assert entropy_B.mean().detach().item() == pytest.approx(want, abs=1e-4)
+
+    def test_zero_eot_mult_drops_the_eot_term(self, registered_env):
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        summed = self._agent()
+        no_eot = self._agent({"eot": 0.0})
+        no_eot.load_state_dict(summed.state_dict())
+
+        torch.manual_seed(0)
+        _, _, ent_summed, _ = summed.get_action_and_value(obs)
+        eot_ent = float(summed._last_head_entropy["eot"])
+        torch.manual_seed(0)
+        _, _, ent_no_eot, _ = no_eot.get_action_and_value(obs)
+
+        assert eot_ent > 0.0  # an untrained EOT head is near p=0.5, i.e. ~ln 2
+        assert ent_no_eot.mean().item() == pytest.approx(
+            ent_summed.mean().item() - eot_ent, abs=1e-4
+        )
+
+    def test_unknown_head_rejected(self, registered_env):
+        with pytest.raises(ValueError, match="unknown entropy head"):
+            self._agent({"nonesuch": 1.0})
+
+    def test_ppo_args_zero_the_eot_head_by_default(self):
+        assert _entropy_head_mults(PpoArgs()) == {
+            "tile": 1.0, "entity": 1.0, "direction": 1.0,
+            "item": 1.0, "misc": 1.0, "eot": 0.0,
+        }
+
+
+class TestMaxEntropyNormalization:
+    """--ent-normalize puts every head's bonus on the same "fraction of max
+    entropy" scale, so a 121-way head and a 3-way head are comparable (#235)."""
+
+    def _agent(self, **kw):
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
+        )
+        return AgentCNN(envs, layers=(16, 16, 16), **kw)
+
+    def test_ceilings_are_the_masked_category_counts(self, registered_env):
+        agent = self._agent()
+        ceil = agent.max_head_entropies()
+        assert ceil["tile"] == pytest.approx(math.log(5 * 5))
+        assert ceil["misc"] == pytest.approx(math.log(2))
+        assert ceil["eot"] == pytest.approx(math.log(2))
+        # Masked, so strictly below the raw head widths.
+        assert ceil["entity"] < math.log(agent.num_entities)
+        assert ceil["item"] < math.log(agent.num_items)
+        assert ceil["direction"] == pytest.approx(math.log(agent.num_directions - 1))
+
+    def test_mults_are_divided_by_the_ceilings(self, registered_env):
+        agent = self._agent(entropy_head_mults={h: 2.0 for h in _ENTROPY_HEADS},
+                            entropy_normalize=True)
+        ceil = agent.max_head_entropies()
+        assert agent.entropy_head_mults == pytest.approx(
+            {h: 2.0 / ceil[h] for h in _ENTROPY_HEADS}
+        )
+
+    def test_normalized_entropy_is_a_fraction_of_max_per_head(self, registered_env):
+        agent = self._agent(entropy_normalize=True)
+        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        _, _, entropy_B, _ = agent.get_action_and_value(obs)
+        ceil = agent.max_head_entropies()
+        want = sum(
+            float(v) / ceil[h] for h, v in agent._last_head_entropy.items()
+        )
+        assert entropy_B.mean().item() == pytest.approx(want, abs=1e-4)
+        # Every head is now in [0, 1], so the total cannot exceed the head count.
+        assert entropy_B.mean().item() <= len(_ENTROPY_HEADS)
+
+    def test_off_by_default(self, registered_env):
+        assert PpoArgs().ent_normalize == 0
+        assert self._agent().entropy_head_mults["tile"] == 1.0
+
+
+class TestLengthDistribution:
+    def test_quantiles_separate_instant_quits_from_steady_building(self):
+        # Same mean (10), opposite shapes: half instant quits + half long runs
+        # vs everyone building the same medium factory.
+        bimodal = _length_distribution([1.0] * 5 + [19.0] * 5, "rollout/")
+        steady = _length_distribution([10.0] * 10, "rollout/")
+        assert bimodal["rollout/length_le2_frac"] == 0.5
+        assert steady["rollout/length_le2_frac"] == 0.0
+        assert bimodal["rollout/length_p10"] < steady["rollout/length_p10"]
+        assert bimodal["rollout/length_p90"] > steady["rollout/length_p90"]
+        assert bimodal["rollout/length_max"] == 19.0
+
+    def test_empty_emits_nothing(self):
+        assert _length_distribution([], "rollout/trial_") == {}
+
+    def test_prefix_is_applied(self):
+        keys = _length_distribution([3.0], "rollout/trial_")
+        assert all(k.startswith("rollout/trial_length") for k in keys)
+
+
+class TestWeightedEntropyMetrics:
+    def test_contribution_is_coef_times_mult_times_entropy(self):
+        m = _weighted_entropy_metrics(
+            {"tile": 4.0, "eot": 0.69}, {"tile": 1.0, "eot": 0.0}, 0.01
+        )
+        assert m["policy/entropy_weighted_tile"] == pytest.approx(0.04)
+        assert m["policy/entropy_weighted_eot"] == 0.0
+        assert m["policy/entropy_weighted"] == pytest.approx(0.04)
+
+    def test_total_is_the_sum_of_the_per_head_contributions(self):
+        ent = {h: 1.0 + i for i, h in enumerate(_entropy_head_mults(PpoArgs()))}
+        mults = {h: 0.5 for h in ent}
+        m = _weighted_entropy_metrics(ent, mults, 0.02)
+        per_head = [v for k, v in m.items() if k != "policy/entropy_weighted"]
+        assert len(per_head) == len(ent)
+        assert m["policy/entropy_weighted"] == pytest.approx(sum(per_head))
+
+
 # ── per-episode rollout metrics (overall + per-lesson, raw + normalized) ──────
 
 
@@ -182,6 +319,11 @@ class TestRolloutEpisodeMetrics:
                 cost_efficiency=0.95,
             )
             assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
+
+    def test_eot_rate_is_logged_per_lesson(self):
+        # Aggregated eot_rate hides which lessons the policy quits on; the
+        # per-lesson split is what says whether early quitting is uniform.
+        assert self._metrics("SPLITTER_SPLIT")["rollout/SPLITTER_SPLIT/eot_rate"] == 1.0
 
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()

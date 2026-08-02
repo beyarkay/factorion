@@ -72,6 +72,10 @@ _ASM_RECIPE_ITEM_IDS = tuple(
     if item.name in recipes
     and "assembling_machine_1" in recipes[item.name].produced_by
 )
+# The policy's action heads, in the order their entropies combine into the
+# entropy bonus. One tuple so the loss weights, the accumulators and the
+# policy/* metric names can never drift apart.
+_ENTROPY_HEADS = ("tile", "entity", "direction", "item", "misc", "eot")
 
 # Dense lookup tables keep terminal factory costing to a handful of numpy
 # reductions. Source/sink and empty are excluded: the agent cannot place them,
@@ -232,6 +236,11 @@ def _append_run_tags(run, *tags: str) -> None:
         run.tags = (run.tags or ()) + tags
 
 
+def _entropy_head_mults(args) -> dict:
+    """The `--ent-mult-*` knobs as the {head: multiplier} map AgentCNN takes."""
+    return {h: float(getattr(args, f"ent_mult_{h}")) for h in _ENTROPY_HEADS}
+
+
 def _run_signature(args) -> str:
     """Filename-safe W&B run name encoding the key hyperparameters, so runs are
     identifiable at a glance instead of by timestamp (mirrors SFT's naming).
@@ -297,6 +306,15 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
 
+    # Held-out solve rate: what fraction of those factories the policy actually
+    # finished, rather than how far it got on average.
+    metrics["eval/solve_rate"] = roll["solve_rate"]
+    if roll["trial_n"] > 0:
+        metrics["eval/trial_solve_rate"] = roll["trial_solve_rate"]
+    for kn, rate in roll["per_kind_solve_rate"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            metrics[f"eval/{kn}/solve_rate"] = rate
+
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
     # the recipe-pick skill is trackable through RL (#264). Only surfaces for
@@ -314,8 +332,18 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     # positive recall only surfaces once a lesson actually reaches a done state.
     metrics["eval/eot_acc"] = roll["eot_acc"]
     metrics["eval/eot_pos_recall"] = roll["eot_pos_recall"]
+    # The EOT head's mean probability, lessons and trials apart. This is what an
+    # entropy bonus on that head drags toward 0.5 (#235), so it is the direct
+    # readout of whether termination is being shaped by the reward or by the
+    # exploration term — and per lesson, of where the policy quits early.
+    metrics["eval/eot_prob"] = roll["eot_prob"]
+    if roll["trial_n"] > 0:
+        metrics["eval/trial_eot_prob"] = roll["trial_eot_prob"]
     eot_step_n = roll["per_kind_eot_step_n"]
     eot_pos_n = roll["per_kind_eot_pos_n"]
+    for kn, p in roll["per_kind_eot_prob"].items():
+        if eot_step_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/eot_prob"] = p
     for kn, acc in roll["per_kind_eot_acc"].items():
         if eot_step_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/eot_acc"] = acc
@@ -323,6 +351,43 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if eot_pos_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/eot_pos_recall"] = rec
     return metrics
+
+
+def _length_distribution(lengths: list, prefix: str) -> dict:
+    """Quantiles of this iteration's episode lengths, under `prefix`.
+
+    The mean alone cannot tell the EOT head's failure mode apart from healthy
+    building: a policy that quits after one placement on most episodes and
+    occasionally runs to the step cap has the same mean length as one that
+    always builds a medium factory. `le2_frac` is the instant-quit share (one
+    placement plus an eot, or a bare eot).
+    """
+    if not lengths:
+        return {}
+    return {
+        f"{prefix}length_p10": float(np.percentile(lengths, 10)),
+        f"{prefix}length_p50": float(np.percentile(lengths, 50)),
+        f"{prefix}length_p90": float(np.percentile(lengths, 90)),
+        f"{prefix}length_max": float(max(lengths)),
+        f"{prefix}length_le2_frac": sum(v <= 2 for v in lengths) / len(lengths),
+    }
+
+
+def _weighted_entropy_metrics(
+    head_entropy: dict, mults: dict, ent_coef: float
+) -> dict:
+    """Each head's actual pull on the loss, `ent_coef * mult * H_head`.
+
+    Raw per-head entropies are not comparable to each other — a 121-way tile
+    head tops out at ~4.8 nats and the 3-way misc head at ~1.1 — so
+    policy/entropy_{head} cannot say which head the bonus is actually steering.
+    These keys are in loss units, and their sum is the whole bonus term.
+    """
+    out = {}
+    for h, ent in head_entropy.items():
+        out[f"policy/entropy_weighted_{h}"] = ent_coef * mults[h] * ent
+    out["policy/entropy_weighted"] = sum(out.values())
+    return out
 
 
 def _rollout_episode_metrics(
@@ -375,6 +440,7 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
+        f"rollout/{lesson}/eot_rate": float(ended_by_eot),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
@@ -1347,6 +1413,8 @@ class AgentCNN(nn.Module):
         attn_layers=SharedArgs.attn_layers,
         attn_pos_embed=SharedArgs.attn_pos_embed,
         global_feat_dim=SharedArgs.global_feat_dim,
+        entropy_head_mults=None,
+        entropy_normalize=False,
     ):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
@@ -1364,6 +1432,23 @@ class AgentCNN(nn.Module):
         self.num_directions = len(Direction)
         self.num_items = len(items)
         self.num_misc = len(Misc)
+
+        # Per-head weights on the entropy bonus (PPO multiplies the whole thing
+        # by the annealed ent_coef). The network default is the plain sum;
+        # PpoArgs.ent_mult_*/--ent-normalize are what actually reweight it, so a
+        # consumer that never touches the entropy bonus (SFT, the mod server) is
+        # unaffected.
+        self.entropy_head_mults = dict.fromkeys(_ENTROPY_HEADS, 1.0)
+        if entropy_head_mults is not None:
+            unknown = set(entropy_head_mults) - set(_ENTROPY_HEADS)
+            if unknown:
+                raise ValueError(f"unknown entropy head(s): {sorted(unknown)}")
+            self.entropy_head_mults.update(entropy_head_mults)
+        if entropy_normalize:
+            ceilings = self.max_head_entropies()
+            self.entropy_head_mults = {
+                h: m / ceilings[h] for h, m in self.entropy_head_mults.items()
+            }
 
         # Semantic action grammar. These are non-persistent buffers so old
         # checkpoints remain loadable; they are constants derived from the
@@ -1588,6 +1673,25 @@ class AgentCNN(nn.Module):
         lower it if the model rambles, raise it if it stops short."""
         return self.eot_prob(x_BCWH) > threshold
 
+    def max_head_entropies(self) -> dict:
+        """Each head's maximum achievable entropy, in nats.
+
+        The log of the number of categories the action grammar actually leaves
+        open, NOT of the head's raw width: the entity head has ~66 outputs but
+        `valid_entity_action_mask` zeroes all but the placeable ones, so no
+        policy can ever reach log(66). direction/item/misc are masked to one
+        branch of an either/or grammar (a belt takes a direction and no recipe,
+        an assembler the reverse), so the wider branch sets each ceiling.
+        """
+        return {
+            "tile": math.log(self.width * self.height),
+            "entity": math.log(len(_VALID_ENTITY_ACTION_IDS)),
+            "direction": math.log(self.num_directions - 1),  # every dir but NONE
+            "item": math.log(len(_ASM_RECIPE_ITEM_IDS)),
+            "misc": math.log(2),  # UNDERGROUND_UP / _DOWN
+            "eot": math.log(2),  # Bernoulli
+        }
+
     def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
         """Apply the action grammar implied by the selected entity.
 
@@ -1718,11 +1822,13 @@ class AgentCNN(nn.Module):
             _categorical_logp(m_logp_all_BM, misc_B) +
             -F.binary_cross_entropy_with_logits(eot_logit_B, eot_B, reduction="none")
         )
-        # Per-head entropies, summed into the joint entropy used by PPO. Kept
-        # individually so the rollout can log policy/entropy_{head} (which heads
-        # are still exploring vs collapsed) — the RL analog of SFT's per-head
-        # accuracy. Stashed as detached scalars (cheap; mirrors the
-        # self.time_for_* attributes already set here, so it stays eager-safe).
+        # Per-head entropies, combined into the joint entropy used by PPO under
+        # the per-head weights. Kept individually so the rollout can log
+        # policy/entropy_{head} (which heads are still exploring vs collapsed) —
+        # the RL analog of SFT's per-head accuracy. Stashed *unweighted* and as
+        # detached scalars (cheap; mirrors the self.time_for_* attributes already
+        # set here, so it stays eager-safe) so the metric stays comparable across
+        # weightings; PPO logs the weighted contributions separately.
         ent_tile = _categorical_entropy(tile_logp_all_BN)
         ent_e = _categorical_entropy(e_logp_all_BE)
         ent_d = _categorical_entropy(d_logp_all_BD)
@@ -1732,7 +1838,15 @@ class AgentCNN(nn.Module):
             p_eot_B * F.logsigmoid(eot_logit_B)
             + (1.0 - p_eot_B) * F.logsigmoid(-eot_logit_B)
         )
-        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m + ent_eot
+        w = self.entropy_head_mults
+        entropy_B = (
+            w["tile"] * ent_tile
+            + w["entity"] * ent_e
+            + w["direction"] * ent_d
+            + w["item"] * ent_i
+            + w["misc"] * ent_m
+            + w["eot"] * ent_eot
+        )
         self._last_head_entropy = {
             "tile": ent_tile.mean().detach(),
             "entity": ent_e.mean().detach(),
@@ -1823,30 +1937,40 @@ if __name__ == "__main__":
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="max")
         wandb.define_metric("eval/trial_thput", summary="max")
+        wandb.define_metric("eval/solve_rate", summary="max")
+        wandb.define_metric("eval/trial_solve_rate", summary="max")
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
+        # A probability, not a score: "last" — its best value is not its largest.
+        wandb.define_metric("eval/eot_prob", summary="last")
+        wandb.define_metric("eval/trial_eot_prob", summary="last")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
+            wandb.define_metric(f"eval/{ln}/solve_rate", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
-        for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
-                  "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+            wandb.define_metric(f"eval/{ln}/eot_prob", summary="last")
+        for m in ["thput", "thput_raw", "reward", "length", "length_p10",
+                  "length_p50", "length_p90", "length_max", "length_le2_frac",
+                  "eot_rate", "invalid_frac", "num_entities",
+                  "entity_efficiency", "frac_reachable", "entity_cost",
+                  "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
+                "thput", "thput_raw", "reward", "length", "eot_rate",
+                "entity_cost", "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob"]:
+        for m in ["entropy", "entropy_weighted", "eot_prob"]:
             wandb.define_metric(f"policy/{m}", summary="last")
-        for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
+        for h in _ENTROPY_HEADS:
             wandb.define_metric(f"policy/entropy_{h}", summary="last")
+            wandb.define_metric(f"policy/entropy_weighted_{h}", summary="last")
         for m in ["policy", "value", "entropy", "total", "approx_kl",
                   "clipfrac", "explained_variance"]:
             wandb.define_metric(f"losses/{m}", summary="last")
@@ -1952,6 +2076,8 @@ if __name__ == "__main__":
         attn_layers=args.attn_layers,
         attn_pos_embed=args.attn_pos_embed,
         global_feat_dim=args.global_feat_dim,
+        entropy_head_mults=_entropy_head_mults(args),
+        entropy_normalize=bool(args.ent_normalize),
     )
 
     if args.start_from is not None:
@@ -2091,6 +2217,10 @@ if __name__ == "__main__":
         if not _episode_metrics:
             return {}
         means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
+        for prefix in ("rollout/", "rollout/trial_"):
+            means.update(
+                _length_distribution(_episode_metrics.get(f"{prefix}length", []), prefix)
+            )
         _episode_metrics.clear()
         return means
 
@@ -2144,7 +2274,7 @@ if __name__ == "__main__":
 
         # Per-iteration accumulators for the acting policy's distribution shape
         # (the policy/* metrics): summed over rollout steps, meaned at log time.
-        _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
+        _head_ent_sum: dict = dict.fromkeys(_ENTROPY_HEADS, 0.0)
         _eot_prob_sum = 0.0
         rollout_start = time.time()
 
@@ -2411,6 +2541,7 @@ if __name__ == "__main__":
 
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
+        head_ent_mean = {h: float(s) / n_steps for h, s in _head_ent_sum.items()}
         iter_metrics = {
             "global_step": global_step,
             "losses/policy": pg_loss.item(),
@@ -2422,7 +2553,7 @@ if __name__ == "__main__":
             "losses/explained_variance": explained_var,
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.
-            "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,
+            "policy/entropy": sum(head_ent_mean.values()),
             "policy/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
@@ -2434,8 +2565,11 @@ if __name__ == "__main__":
             "perf/update_seconds": update_seconds,
             "perf/eval_seconds": eval_seconds,
         }
-        for h, s in _head_ent_sum.items():
-            iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
+        for h, e in head_ent_mean.items():
+            iter_metrics[f"policy/entropy_{h}"] = e
+        iter_metrics.update(
+            _weighted_entropy_metrics(head_ent_mean, agent.entropy_head_mults, ent_coef)
+        )
         iter_metrics.update(critic_metrics)
         iter_metrics.update(eval_metrics)
 

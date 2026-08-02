@@ -411,15 +411,38 @@ class RolloutEval(TypedDict):
     trial_n: int  # number of trial factories the eval scored
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    # Fraction of rollouts that reached the reference throughput, pooled the
+    # same way: a mean of 0.5 is a half-built factory everywhere or a solved one
+    # half the time, and only the latter is real build skill.
+    solve_rate: float
+    trial_solve_rate: float
+    per_kind_solve_rate: dict[str, float]  # solve_rate, keyed by LessonKind.name
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
     eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
     eot_pos_recall: float  # frac of done states where the EOT head actually fired
+    # Mean EOT-head probability over scored steps, split lesson/trial like the
+    # throughputs: it is the quantity an entropy bonus on the EOT head pushes
+    # toward 0.5, so it needs to be readable per population (#235).
+    eot_prob: float
+    trial_eot_prob: float
+    per_kind_eot_prob: dict[str, float]  # eot_prob, keyed by LessonKind.name
     per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
     per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
     per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
     per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+
+
+def _solve_rate(thputs: list) -> float:
+    """Fraction of rollouts that reached the reference throughput.
+
+    The mean throughput cannot say whether the policy half-builds everything or
+    fully builds some factories and nothing on the rest; only the second is on a
+    path to a working factory. `>= 1.0` is the same "is this factory finished?"
+    test the EOT head is scored against.
+    """
+    return sum(t >= 1.0 for t in thputs) / len(thputs) if thputs else 0.0
 
 
 def _solved_assembler_recipes(solved_CWH) -> set[int]:
@@ -501,6 +524,7 @@ def run_rollout_eval(
     # (should-stop positives) also count toward *_pos.
     per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_prob_sum: dict[str, float] = {k.name: 0.0 for k in LessonKind}
     per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
@@ -515,11 +539,17 @@ def run_rollout_eval(
             "trial_n": 0,
             "per_kind": zero,
             "per_kind_n": per_kind_n,
+            "solve_rate": 0.0,
+            "trial_solve_rate": 0.0,
+            "per_kind_solve_rate": dict(zero),
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
             "per_kind_asm_n": dict(per_kind_n),
             "eot_acc": 0.0,
             "eot_pos_recall": 0.0,
+            "eot_prob": 0.0,
+            "trial_eot_prob": 0.0,
+            "per_kind_eot_prob": dict(zero),
             "per_kind_eot_acc": dict(zero),
             "per_kind_eot_pos_recall": dict(zero),
             "per_kind_eot_step_n": dict(per_kind_n),
@@ -613,13 +643,15 @@ def run_rollout_eval(
                     continue
 
                 s, k, cur_thp = current[i]
-                pred_stop = float(eot_probs[i]) > eot_threshold
+                p_eot = float(eot_probs[i])
+                pred_stop = p_eot > eot_threshold
 
                 # Score the head against ground truth on this pre-action state:
                 # it should fire iff the factory is already complete. `cur_thp`
                 # and `eot_probs[i]` are both this same state, so they align.
                 is_done = cur_thp >= 1.0
                 per_kind_eot_step_total[k.name] += 1
+                per_kind_eot_prob_sum[k.name] += p_eot
                 per_kind_eot_correct[k.name] += int(pred_stop == is_done)
                 if is_done:
                     per_kind_eot_pos_total[k.name] += 1
@@ -671,6 +703,9 @@ def run_rollout_eval(
         for kn, ts in per_kind_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
+    per_kind_solve_rate = {
+        kn: _solve_rate(ts) for kn, ts in per_kind_throughputs.items()
+    }
 
     asm_total_all = sum(per_kind_asm_total.values())
     asm_item_acc = (
@@ -695,6 +730,17 @@ def run_rollout_eval(
         kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
         for kn, n in per_kind_eot_pos_total.items()
     }
+    per_kind_eot_prob = {
+        kn: (per_kind_eot_prob_sum[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_step_total.items()
+    }
+    # Step-weighted, so the pooled mean is over steps rather than over kinds —
+    # the same population per_kind_eot_prob is computed from.
+    def _pooled_eot_prob(trial: bool) -> float:
+        kinds = [k for k in LessonKind if LESSON_IS_TRIAL[k] == trial]
+        n = sum(per_kind_eot_step_total[k.name] for k in kinds)
+        tot = sum(per_kind_eot_prob_sum[k.name] for k in kinds)
+        return tot / n if n else 0.0
 
     if was_training:
         agent.train()
@@ -704,11 +750,17 @@ def run_rollout_eval(
         "trial_n": len(trial_throughputs),
         "per_kind": per_kind,
         "per_kind_n": per_kind_n,
+        "solve_rate": _solve_rate(all_throughputs),
+        "trial_solve_rate": _solve_rate(trial_throughputs),
+        "per_kind_solve_rate": per_kind_solve_rate,
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
         "per_kind_asm_n": dict(per_kind_asm_total),
         "eot_acc": eot_acc,
         "eot_pos_recall": eot_pos_recall,
+        "eot_prob": _pooled_eot_prob(trial=False),
+        "trial_eot_prob": _pooled_eot_prob(trial=True),
+        "per_kind_eot_prob": per_kind_eot_prob,
         "per_kind_eot_acc": per_kind_eot_acc,
         "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
         "per_kind_eot_step_n": dict(per_kind_eot_step_total),
