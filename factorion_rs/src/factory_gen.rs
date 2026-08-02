@@ -47,6 +47,11 @@ pub enum LessonKind {
     TrialRecipeTreeDepth1 = 16,
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
+    Move1Items = 19,
+    Move2Items = 20,
+    Move3Items = 21,
+    Move4Items = 22,
+    Move5Items = 23,
 }
 
 impl LessonKind {
@@ -70,6 +75,11 @@ impl LessonKind {
             16 => Some(LessonKind::TrialRecipeTreeDepth1),
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
+            19 => Some(LessonKind::Move1Items),
+            20 => Some(LessonKind::Move2Items),
+            21 => Some(LessonKind::Move3Items),
+            22 => Some(LessonKind::Move4Items),
+            23 => Some(LessonKind::Move5Items),
             _ => None,
         }
     }
@@ -111,6 +121,11 @@ impl LessonKind {
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
+            LessonKind::Move1Items => "MOVE_1_ITEMS",
+            LessonKind::Move2Items => "MOVE_2_ITEMS",
+            LessonKind::Move3Items => "MOVE_3_ITEMS",
+            LessonKind::Move4Items => "MOVE_4_ITEMS",
+            LessonKind::Move5Items => "MOVE_5_ITEMS",
         }
     }
 
@@ -139,6 +154,11 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::Memorise3IngredientRecipes,
         LessonKind::Memorise4IngredientRecipes,
         LessonKind::MoveOneItemChaos,
+        LessonKind::Move1Items,
+        LessonKind::Move2Items,
+        LessonKind::Move3Items,
+        LessonKind::Move4Items,
+        LessonKind::Move5Items,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
         LessonKind::TrialRecipeTreeDepth1,
@@ -620,6 +640,11 @@ pub fn build_factory(
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
+        LessonKind::Move1Items => build_move_n_items(size, &mut rng, random_item, max_entities, 1),
+        LessonKind::Move2Items => build_move_n_items(size, &mut rng, random_item, max_entities, 2),
+        LessonKind::Move3Items => build_move_n_items(size, &mut rng, random_item, max_entities, 3),
+        LessonKind::Move4Items => build_move_n_items(size, &mut rng, random_item, max_entities, 4),
+        LessonKind::Move5Items => build_move_n_items(size, &mut rng, random_item, max_entities, 5),
         _ => None,
     }
 }
@@ -938,6 +963,298 @@ fn build_move_one_item_chaos(
             .map(|&(x, y)| (x as usize, y as usize))
             .collect();
         return finish(world, total_entities, protected, count);
+    }
+    None
+}
+
+/// The fully-expanded cost of one unit of `item`: its recipe's total raw
+/// materials plus the cumulative craft time of the whole tree, divided by the
+/// units one craft yields. This is the same figure `ppo.py` charges a factory
+/// per placed tile (`_ENTITY_UNIT_COSTS`), so a layout chosen to minimise it
+/// is the layout the RL reward also prefers. Items with no recipe are free.
+fn entity_unit_cost(item: Item, index: &HashMap<Item, Recipe>) -> f64 {
+    let Some(recipe) = index.get(&item) else {
+        return 0.0;
+    };
+    let total = recipe.total_raw(index);
+    let raws: f64 = total.items.iter().map(|&(_, qty)| qty).sum();
+    let per_craft = recipe
+        .produces_rate(item)
+        .filter(|p| *p > 0.0)
+        .unwrap_or(1.0);
+    (raws + total.time) / per_craft
+}
+
+/// One source→sink line of a `MOVE_N_ITEMS` lesson: the two markers, their
+/// facings, the item they carry, and the two cells the route must join (the
+/// source's drop cell and the cell that feeds the sink).
+struct MoveLine {
+    source: Cell,
+    sink: Cell,
+    source_dir: Direction,
+    sink_dir: Direction,
+    item_value: i64,
+    start: Cell,
+    end: Cell,
+}
+
+/// The fixed context of a [`cheapest_route_set`] search — everything the
+/// recursion reads but never changes.
+struct RouteSearch<'a> {
+    lines: &'a [MoveLine],
+    /// Which line each source-drop / sink-feed cell belongs to. Every cell in
+    /// here is blocked for every line but its owner.
+    endpoint_owner: &'a HashMap<Cell, usize>,
+    size: i64,
+    belt_cost: f64,
+    ug_cost: f64,
+}
+
+impl RouteSearch<'_> {
+    /// Route one more line in every still-unrouted way, recursing on each and
+    /// keeping the cheapest complete set in `best`.
+    fn extend(
+        &self,
+        routes: &mut Vec<Option<Vec<UgPlacement>>>,
+        taken: &HashSet<Cell>,
+        cost: f64,
+        best: &mut Option<(f64, Vec<Vec<UgPlacement>>)>,
+    ) {
+        // A prefix that can't beat the incumbent even if every line still to
+        // lay came in at one belt — the cheapest a route can possibly be —
+        // ends nowhere better. The router minimises its own belt/tunnel
+        // metric rather than entity cost, so an unobstructed route is *not* a
+        // lower bound on the same line laid later; only this holds.
+        let unlaid = routes.iter().filter(|r| r.is_none()).count() as f64;
+        if best
+            .as_ref()
+            .is_some_and(|(best_cost, _)| cost + unlaid * self.belt_cost >= *best_cost)
+        {
+            return;
+        }
+        if routes.iter().all(|r| r.is_some()) {
+            *best = Some((cost, routes.iter().flatten().cloned().collect()));
+            return;
+        }
+        for i in 0..self.lines.len() {
+            if routes[i].is_some() {
+                continue;
+            }
+            let Some(route) = self.route(i, taken) else {
+                continue;
+            };
+            let mut next_taken = taken.clone();
+            next_taken.extend(route.iter().map(|&(x, y, ..)| (x, y)));
+            let next_cost = cost + self.route_cost(&route);
+            routes[i] = Some(route);
+            self.extend(routes, &next_taken, next_cost, best);
+            routes[i] = None;
+        }
+    }
+
+    /// The cheapest route for line `i` given the cells `taken` so far. Every
+    /// other line's endpoints are blocked on top: shared with another line they
+    /// would mix the two items, and a line's own endpoints are the only cells
+    /// it may claim from that set.
+    fn route(&self, i: usize, taken: &HashSet<Cell>) -> Option<Vec<UgPlacement>> {
+        let line = &self.lines[i];
+        let mut blocked = taken.clone();
+        blocked.extend(
+            self.endpoint_owner
+                .iter()
+                .filter(|&(_, &owner)| owner != i)
+                .map(|(&cell, _)| cell),
+        );
+        find_belt_path(
+            line.start,
+            line.end,
+            line.sink_dir,
+            self.size,
+            &blocked,
+            Underground::On(Some(line.source_dir)),
+        )
+    }
+
+    fn route_cost(&self, route: &[UgPlacement]) -> f64 {
+        route
+            .iter()
+            .map(|&(.., misc)| {
+                if misc == Misc::None {
+                    self.belt_cost
+                } else {
+                    self.ug_cost
+                }
+            })
+            .sum()
+    }
+}
+
+/// Lay every line of a `MOVE_N_ITEMS` draw in some order and return the
+/// cheapest complete result, or `None` if no order wires them all.
+///
+/// Each line is routed against the markers, every *other* line's endpoints, and
+/// the cells earlier lines already took, so the outcome depends on the order.
+/// Orders are explored as a depth-first tree rather than as `n!` independent
+/// sweeps: a prefix of `k` lines is routed once and shared by every order that
+/// starts with it, and a prefix that can't beat the best complete order found
+/// so far is abandoned. Both are exact, so this returns what an exhaustive
+/// sweep of all `n!` orders would — for a fraction of the routing work.
+fn cheapest_route_set(
+    lines: &[MoveLine],
+    endpoint_owner: &HashMap<Cell, usize>,
+    markers: &HashSet<Cell>,
+    size: i64,
+    belt_cost: f64,
+    ug_cost: f64,
+) -> Option<Vec<Vec<UgPlacement>>> {
+    let search = RouteSearch {
+        lines,
+        endpoint_owner,
+        size,
+        belt_cost,
+        ug_cost,
+    };
+    // Unroutable against the markers alone means unroutable in any order — a
+    // draw worth abandoning before the tree is walked at all.
+    for i in 0..lines.len() {
+        search.route(i, markers)?;
+    }
+    let mut routes: Vec<Option<Vec<UgPlacement>>> = vec![None; lines.len()];
+    let mut best = None;
+    search.extend(&mut routes, markers, 0.0, &mut best);
+    best.map(|(_, routes)| routes)
+}
+
+/// Build a `MOVE_N_ITEMS` lesson: `n` source→sink lines sharing one grid, each
+/// carrying a **different** item, all wired by the underground-aware belt
+/// router. Everything but the markers is blanked, so the policy has to route
+/// `n` items to `n` different places at once — keeping the EOT head down until
+/// every line is done, and keeping the items unmixed — rather than the single
+/// route MOVE_ONE_ITEM asks for.
+///
+/// Routes are laid one line at a time, each blocked by the markers, by every
+/// other line's endpoints, and by the cells already taken. That makes the
+/// result order-dependent, so all `n!` orders are laid and the cheapest kept,
+/// scored by [`entity_unit_cost`] (raw materials + craft time per tile) — an
+/// underground tile costs ~5× a belt, so an order that lets a later line
+/// detour around an earlier one beats one that forces it to tunnel under.
+///
+/// Blocking every *other* line's endpoints is what keeps the items separate:
+/// a belt only ever points at its own next cell or its own sink, so no line can
+/// side-load into another, and no source can drop onto a foreign belt.
+fn build_move_n_items(
+    size: usize,
+    rng: &mut Rng,
+    random_item: bool,
+    max_entities: f64,
+    n: usize,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let belt_flow = Item::TransportBelt.flow_rate();
+    let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+    let belt_cost = entity_unit_cost(Item::TransportBelt, &index);
+    let ug_cost = entity_unit_cost(Item::UndergroundBelt, &index);
+    let pool = item_pool();
+    if n > pool.len() || 2 * n > size * size {
+        return None;
+    }
+    let all_cells = available_cells(s, &HashSet::new());
+
+    let mut count = (500).max(size * size * 4);
+    while count > 0 {
+        count -= 1;
+
+        let markers = rng.sample(&all_cells, 2 * n);
+        let items = if random_item {
+            rng.sample(&pool, n)
+        } else {
+            pool[..n].to_vec()
+        };
+        let marker_set: HashSet<Cell> = markers.iter().copied().collect();
+
+        // Each line's endpoints (source drop cell, sink feed cell) belong to
+        // that line alone: shared with another line they would mix items, and
+        // on a marker they would have nowhere to go.
+        let mut lines: Vec<MoveLine> = Vec::with_capacity(n);
+        let mut endpoint_owner: HashMap<Cell, usize> = HashMap::new();
+        let mut endpoints_ok = true;
+        for (i, item_value) in items.into_iter().enumerate() {
+            let (source, sink) = (markers[2 * i], markers[2 * i + 1]);
+            let source_dir = DIRS[rng.choice_index(4)];
+            let sink_dir = DIRS[rng.choice_index(4)];
+            let (sdx, sdy) = source_dir.delta();
+            let (kdx, kdy) = sink_dir.delta();
+            let start = (source.0 + sdx, source.1 + sdy);
+            let end = (sink.0 - kdx, sink.1 - kdy);
+            lines.push(MoveLine {
+                source,
+                sink,
+                source_dir,
+                sink_dir,
+                item_value,
+                start,
+                end,
+            });
+            for cell in [start, end] {
+                endpoints_ok &= in_grid(cell, s)
+                    && !marker_set.contains(&cell)
+                    && *endpoint_owner.entry(cell).or_insert(i) == i;
+            }
+            if !endpoints_ok {
+                break;
+            }
+        }
+        if !endpoints_ok {
+            continue;
+        }
+
+        let Some(routes) =
+            cheapest_route_set(&lines, &endpoint_owner, &marker_set, s, belt_cost, ug_cost)
+        else {
+            continue;
+        };
+
+        let total_entities: usize = routes.iter().map(|r| r.len()).sum();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+        // A later line's tunnel may not open inside an earlier line's tunnel:
+        // the engine would pair the wrong ends and orphan both downstreams.
+        let spans: Vec<&[UgPlacement]> = routes.iter().map(|r| r.as_slice()).collect();
+        if tunnels_crossed(&spans) {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for line in &lines {
+            place_marker(
+                &mut world,
+                line.source,
+                Item::Source,
+                line.source_dir,
+                line.item_value,
+            );
+            place_marker(
+                &mut world,
+                line.sink,
+                Item::Sink,
+                line.sink_dir,
+                line.item_value,
+            );
+        }
+        for route in &routes {
+            place_belts(&mut world, route);
+        }
+
+        // Every line must deliver its own item at full belt speed (the power
+        // mean only reaches `belt_flow` when no sink is short-changed), with
+        // nothing left off a source→sink path.
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) < belt_flow - 1e-6 || unreachable != 0 {
+            continue;
+        }
+
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -3263,6 +3580,240 @@ mod tests {
             }
         }
         assert!(built > 40, "most seeds should build, got {built}");
+    }
+
+    /// Every permutation of `0..n`, in lexicographic order — the brute-force
+    /// reference the pruned search in [`cheapest_route_set`] is checked
+    /// against. Only ever called with `n <= 5` (the largest `MOVE_N_ITEMS`),
+    /// so the factorial blow-up is bounded at 120.
+    fn permutations(n: usize) -> Vec<Vec<usize>> {
+        let mut perms: Vec<Vec<usize>> = vec![Vec::new()];
+        for _ in 0..n {
+            let mut next = Vec::new();
+            for perm in &perms {
+                for v in 0..n {
+                    if !perm.contains(&v) {
+                        let mut extended = perm.clone();
+                        extended.push(v);
+                        next.push(extended);
+                    }
+                }
+            }
+            perms = next;
+        }
+        perms
+    }
+
+    /// The `MOVE_N_ITEMS` kinds, paired with the line count each promises.
+    const MOVE_N_KINDS: [(LessonKind, usize); 5] = [
+        (LessonKind::Move1Items, 1),
+        (LessonKind::Move2Items, 2),
+        (LessonKind::Move3Items, 3),
+        (LessonKind::Move4Items, 4),
+        (LessonKind::Move5Items, 5),
+    ];
+
+    #[test]
+    fn test_move_n_items_has_n_lines_of_distinct_items() {
+        for (kind, n) in MOVE_N_KINDS {
+            let mut built = 0;
+            for seed in 0..30u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                built += 1;
+                let mut source_items = Vec::new();
+                let mut sink_items = Vec::new();
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let item = f.world.get(x, y, Channel::Items);
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Source) => source_items.push(item),
+                            Some(Item::Sink) => sink_items.push(item),
+                            _ => {}
+                        }
+                    }
+                }
+                assert_eq!(source_items.len(), n, "{kind:?} seed={seed}");
+                assert_eq!(sink_items.len(), n, "{kind:?} seed={seed}");
+                source_items.sort_unstable();
+                sink_items.sort_unstable();
+                assert_eq!(
+                    source_items, sink_items,
+                    "{kind:?} seed={seed}: sinks must want exactly what the sources send"
+                );
+                source_items.dedup();
+                assert_eq!(
+                    source_items.len(),
+                    n,
+                    "{kind:?} seed={seed}: every line carries a different item"
+                );
+            }
+            assert!(built > 20, "{kind:?}: most seeds should build, got {built}");
+        }
+    }
+
+    #[test]
+    fn test_move_n_items_delivers_every_line_at_full_belt_speed() {
+        let belt_flow = Item::TransportBelt.flow_rate();
+        for (kind, _) in MOVE_N_KINDS {
+            for seed in 0..30u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                let (deliveries, unreachable) = calc_throughput(&build_graph(&f.world));
+                assert_eq!(unreachable, 0, "{kind:?} seed={seed}");
+                for d in &deliveries {
+                    assert!(
+                        d.achieved >= belt_flow - 1e-6,
+                        "{kind:?} seed={seed}: sink short-changed at {:?}",
+                        d.achieved
+                    );
+                }
+                assert!(
+                    (f.max_throughput - belt_flow).abs() < 1e-6,
+                    "{kind:?} seed={seed}: max_throughput={}",
+                    f.max_throughput
+                );
+            }
+        }
+    }
+
+    /// Nothing but the markers is protected, so blanking strips the whole
+    /// route set and the policy rebuilds every line from scratch.
+    #[test]
+    fn test_move_n_items_protects_nothing() {
+        for (kind, _) in MOVE_N_KINDS {
+            for seed in 0..10u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                assert!(f.protected_positions.is_empty(), "{kind:?} seed={seed}");
+                assert!(f.total_entities >= 1, "{kind:?} seed={seed}");
+            }
+        }
+    }
+
+    /// The chosen routing order is the cheapest one: no other order of the
+    /// same draw can beat it. Re-derived here by replaying the built world's
+    /// markers through every permutation.
+    #[test]
+    fn test_move_n_items_picks_the_cheapest_order() {
+        let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+        let belt_cost = entity_unit_cost(Item::TransportBelt, &index);
+        let ug_cost = entity_unit_cost(Item::UndergroundBelt, &index);
+        assert!(ug_cost > belt_cost, "a tunnel tile must cost above a belt");
+
+        for (kind, n) in MOVE_N_KINDS {
+            for seed in 0..15u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                let s = f.world.width() as i64;
+                let built_cost: f64 = (0..f.world.width())
+                    .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
+                    .map(|(x, y)| match f.world.entity_at(x, y) {
+                        Some(Item::TransportBelt) => belt_cost,
+                        Some(Item::UndergroundBelt) => ug_cost,
+                        _ => 0.0,
+                    })
+                    .sum();
+
+                // Recover the lines from the world: markers pair up by item.
+                let mut sources: HashMap<i64, (Cell, Direction)> = HashMap::new();
+                let mut sinks: HashMap<i64, (Cell, Direction)> = HashMap::new();
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let c = (x as i64, y as i64);
+                        let item = f.world.get(x, y, Channel::Items);
+                        let dir = f.world.direction_at(x, y);
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Source) => drop(sources.insert(item, (c, dir))),
+                            Some(Item::Sink) => drop(sinks.insert(item, (c, dir))),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut items: Vec<i64> = sources.keys().copied().collect();
+                items.sort_unstable();
+                let marker_set: HashSet<Cell> = sources
+                    .values()
+                    .chain(sinks.values())
+                    .map(|&(c, _)| c)
+                    .collect();
+                let mut endpoint_owner: HashMap<Cell, usize> = HashMap::new();
+                let mut ends: Vec<(Cell, Cell, Direction, Direction)> = Vec::new();
+                for (i, item) in items.iter().enumerate() {
+                    let (src, sdir) = sources[item];
+                    let (snk, kdir) = sinks[item];
+                    let (sdx, sdy) = sdir.delta();
+                    let (kdx, kdy) = kdir.delta();
+                    let start = (src.0 + sdx, src.1 + sdy);
+                    let end = (snk.0 - kdx, snk.1 - kdy);
+                    endpoint_owner.insert(start, i);
+                    endpoint_owner.insert(end, i);
+                    ends.push((start, end, sdir, kdir));
+                }
+
+                let mut cheapest = f64::INFINITY;
+                for order in permutations(n) {
+                    let mut taken = marker_set.clone();
+                    let mut cost = 0.0;
+                    let mut complete = true;
+                    for i in order {
+                        let (start, end, sdir, kdir) = ends[i];
+                        let mut blocked = taken.clone();
+                        for (&cell, &owner) in &endpoint_owner {
+                            if owner != i {
+                                blocked.insert(cell);
+                            }
+                        }
+                        let Some(route) = find_belt_path(
+                            start,
+                            end,
+                            kdir,
+                            s,
+                            &blocked,
+                            Underground::On(Some(sdir)),
+                        ) else {
+                            complete = false;
+                            break;
+                        };
+                        for &(x, y, _, m) in &route {
+                            taken.insert((x, y));
+                            cost += if m == Misc::None { belt_cost } else { ug_cost };
+                        }
+                    }
+                    if complete {
+                        cheapest = cheapest.min(cost);
+                    }
+                }
+                assert!(
+                    built_cost <= cheapest + 1e-6,
+                    "{kind:?} seed={seed}: built {built_cost} > cheapest order {cheapest}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_permutations_are_complete_and_distinct() {
+        for n in 0..=5 {
+            let perms = permutations(n);
+            let expected: usize = (1..=n).product::<usize>().max(1);
+            assert_eq!(perms.len(), expected, "n={n}");
+            let unique: HashSet<Vec<usize>> = perms.iter().cloned().collect();
+            assert_eq!(unique.len(), expected, "n={n}: duplicate permutation");
+            for p in &perms {
+                let mut sorted = p.clone();
+                sorted.sort_unstable();
+                assert_eq!(
+                    sorted,
+                    (0..n).collect::<Vec<_>>(),
+                    "n={n}: not a permutation"
+                );
+            }
+        }
     }
 
     #[test]
