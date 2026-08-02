@@ -22,6 +22,7 @@ from ppo import (  # noqa: E402
     make_env,
     _run_signature,
     _entropy_head_mults,
+    _weighted_entropy_metrics,
     _build_eval_set,
     _rollout_episode_metrics,
     _explained_variance,
@@ -181,6 +182,24 @@ class TestPerHeadEntropyMults:
             "tile": 1.0, "entity": 1.0, "direction": 1.0,
             "item": 1.0, "misc": 1.0, "eot": 0.0,
         }
+
+
+class TestWeightedEntropyMetrics:
+    def test_contribution_is_coef_times_mult_times_entropy(self):
+        m = _weighted_entropy_metrics(
+            {"tile": 4.0, "eot": 0.69}, {"tile": 1.0, "eot": 0.0}, 0.01
+        )
+        assert m["policy/entropy_weighted_tile"] == pytest.approx(0.04)
+        assert m["policy/entropy_weighted_eot"] == 0.0
+        assert m["policy/entropy_weighted"] == pytest.approx(0.04)
+
+    def test_total_is_the_sum_of_the_per_head_contributions(self):
+        ent = {h: 1.0 + i for i, h in enumerate(_entropy_head_mults(PpoArgs()))}
+        mults = {h: 0.5 for h in ent}
+        m = _weighted_entropy_metrics(ent, mults, 0.02)
+        per_head = [v for k, v in m.items() if k != "policy/entropy_weighted"]
+        assert len(per_head) == len(ent)
+        assert m["policy/entropy_weighted"] == pytest.approx(sum(per_head))
 
 
 # ── per-episode rollout metrics (overall + per-lesson, raw + normalized) ──────

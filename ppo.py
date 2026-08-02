@@ -334,6 +334,23 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     return metrics
 
 
+def _weighted_entropy_metrics(
+    head_entropy: dict, mults: dict, ent_coef: float
+) -> dict:
+    """Each head's actual pull on the loss, `ent_coef * mult * H_head`.
+
+    Raw per-head entropies are not comparable to each other — a 121-way tile
+    head tops out at ~4.8 nats and the 3-way misc head at ~1.1 — so
+    policy/entropy_{head} cannot say which head the bonus is actually steering.
+    These keys are in loss units, and their sum is the whole bonus term.
+    """
+    out = {}
+    for h, ent in head_entropy.items():
+        out[f"policy/entropy_weighted_{h}"] = ent_coef * mults[h] * ent
+    out["policy/entropy_weighted"] = sum(out.values())
+    return out
+
+
 def _rollout_episode_metrics(
     lesson: str,
     *,
@@ -1873,10 +1890,11 @@ if __name__ == "__main__":
                 "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob"]:
+        for m in ["entropy", "entropy_weighted", "eot_prob"]:
             wandb.define_metric(f"policy/{m}", summary="last")
-        for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
+        for h in _ENTROPY_HEADS:
             wandb.define_metric(f"policy/entropy_{h}", summary="last")
+            wandb.define_metric(f"policy/entropy_weighted_{h}", summary="last")
         for m in ["policy", "value", "entropy", "total", "approx_kl",
                   "clipfrac", "explained_variance"]:
             wandb.define_metric(f"losses/{m}", summary="last")
@@ -2442,6 +2460,7 @@ if __name__ == "__main__":
 
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
+        head_ent_mean = {h: float(s) / n_steps for h, s in _head_ent_sum.items()}
         iter_metrics = {
             "global_step": global_step,
             "losses/policy": pg_loss.item(),
@@ -2453,7 +2472,7 @@ if __name__ == "__main__":
             "losses/explained_variance": explained_var,
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.
-            "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,
+            "policy/entropy": sum(head_ent_mean.values()),
             "policy/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
@@ -2465,8 +2484,11 @@ if __name__ == "__main__":
             "perf/update_seconds": update_seconds,
             "perf/eval_seconds": eval_seconds,
         }
-        for h, s in _head_ent_sum.items():
-            iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
+        for h, e in head_ent_mean.items():
+            iter_metrics[f"policy/entropy_{h}"] = e
+        iter_metrics.update(
+            _weighted_entropy_metrics(head_ent_mean, agent.entropy_head_mults, ent_coef)
+        )
         iter_metrics.update(critic_metrics)
         iter_metrics.update(eval_metrics)
 
