@@ -1,24 +1,17 @@
 # ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
-#
 # Launched with: /ci sweep ppo
-#
-# Every run uses this branch and the same training configuration. The only
-# swept value is eta, exposed by PpoArgs as entity_cost_scale:
-#
-#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
 
 method: grid
+run_cap: 10
 metric:
-  name: "eval/thput"
+  name: "rollout/thput"
   goal: maximize
 
 parameters:
-  entity_cost_scale:
-    values:
-      - 0.0
-      - 1.0e-4
-      - 1.0e-3
-      - 1.0e-2
+  gamma:
+    uniform:
+      min: 0.95
+      max: 1.0
 
 program: ppo.py
 
