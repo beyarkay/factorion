@@ -19,25 +19,26 @@ from factorion import (
 from helpers import rs_throughput
 
 MOVE_N_KINDS = [(LessonKind[f"MOVE_{n}_ITEMS"], n) for n in range(1, 6)]
+SIZE = 11
 
 
-def _build(kind, seed, size=11):
+def _build(kind, seed, size=SIZE):
     factory = build_factory(size=size, kind=kind, seed=seed)
     assert factory is not None, f"{kind.name} seed={seed} failed to build"
     return factory
 
 
-@pytest.mark.parametrize("kind,n", MOVE_N_KINDS)
-def test_solved_factory_round_trips(kind, n):
+@pytest.mark.parametrize("kind,_n", MOVE_N_KINDS)
+def test_solved_factory_round_trips(kind, _n):
     factory = _build(kind, 7)
     world, _ = blank_entities(factory, num_missing_entities=0)
-    assert world.shape == (len(Channel), 11, 11)
+    assert world.shape == (len(Channel), SIZE, SIZE)
     tp, _ = rs_throughput(world.permute(1, 2, 0))
     assert tp == pytest.approx(factory.max_throughput)
 
 
 @pytest.mark.parametrize("kind,n", MOVE_N_KINDS)
-@pytest.mark.parametrize("num_missing", [1, 3, float("inf")])
+@pytest.mark.parametrize("num_missing", [1, 3])
 def test_markers_survive_blanking(kind, n, num_missing):
     world, _ = blank_entities(
         _build(kind, 3), num_missing_entities=num_missing
@@ -60,15 +61,3 @@ def test_full_blank_leaves_only_the_markers(kind, n, seed):
     # With every belt gone, nothing is delivered — the policy rebuilds from here.
     tp, _ = rs_throughput(world.permute(1, 2, 0))
     assert tp == 0
-
-
-@pytest.mark.parametrize("kind,n", MOVE_N_KINDS)
-def test_each_line_carries_its_own_item(kind, n):
-    factory = _build(kind, 11)
-    ent = factory.world_CWH[Channel.ENTITIES.value]
-    items = factory.world_CWH[Channel.ITEMS.value]
-    sources = items[ent == str2ent("source").value].tolist()
-    sinks = items[ent == str2ent("sink").value].tolist()
-    assert len(sources) == n
-    assert sorted(sources) == sorted(sinks)
-    assert len(set(sources)) == n

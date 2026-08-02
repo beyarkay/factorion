@@ -967,22 +967,12 @@ fn build_move_one_item_chaos(
     None
 }
 
-/// The fully-expanded cost of one unit of `item`: its recipe's total raw
-/// materials plus the cumulative craft time of the whole tree, divided by the
-/// units one craft yields. This is the same figure `ppo.py` charges a factory
-/// per placed tile (`_ENTITY_UNIT_COSTS`), so a layout chosen to minimise it
-/// is the layout the RL reward also prefers. Items with no recipe are free.
+/// What one tile of `item` costs to place, via [`Recipe::unit_cost`]. Items
+/// with no recipe are free.
 fn entity_unit_cost(item: Item, index: &HashMap<Item, Recipe>) -> f64 {
-    let Some(recipe) = index.get(&item) else {
-        return 0.0;
-    };
-    let total = recipe.total_raw(index);
-    let raws: f64 = total.items.iter().map(|&(_, qty)| qty).sum();
-    let per_craft = recipe
-        .produces_rate(item)
-        .filter(|p| *p > 0.0)
-        .unwrap_or(1.0);
-    (raws + total.time) / per_craft
+    index
+        .get(&item)
+        .map_or(0.0, |recipe| recipe.unit_cost(item, index))
 }
 
 /// One source→sink line of a `MOVE_N_ITEMS` lesson: the two markers, their
@@ -3692,6 +3682,21 @@ mod tests {
                 assert!(f.total_entities >= 1, "{kind:?} seed={seed}");
             }
         }
+    }
+
+    /// The tile costs the order search scores by are the ones `ppo.py` charges
+    /// a factory. Pinned to the same figures `tests/test_factory_cost.py`
+    /// asserts for `_ENTITY_UNIT_COSTS`, so the two implementations of the
+    /// cost model cannot drift apart silently.
+    #[test]
+    fn test_entity_unit_cost_matches_the_rl_reward() {
+        let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
+        // One craft: 3 raw iron + 1 cumulative second, yielding two belts.
+        assert!((entity_unit_cost(Item::TransportBelt, &index) - 2.0).abs() < 1e-9);
+        // One craft: 17.5 raw iron + 3.5 cumulative seconds, yielding two tiles.
+        assert!((entity_unit_cost(Item::UndergroundBelt, &index) - 10.5).abs() < 1e-9);
+        // A raw item has no recipe, so placing it costs nothing.
+        assert_eq!(entity_unit_cost(Item::IronPlate, &index), 0.0);
     }
 
     /// The chosen routing order is the cheapest one: no other order of the

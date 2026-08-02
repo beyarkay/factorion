@@ -716,6 +716,18 @@ impl Recipe {
         }
         TotalRaw { items, time }
     }
+
+    /// What one unit of `item` costs: this recipe's total raw materials plus
+    /// the cumulative craft time of the whole tree, over the units one craft
+    /// yields. `ppo.py` charges a factory this per placed tile, so anything
+    /// choosing a layout by cost must score it the same way or it optimises
+    /// for something the RL reward doesn't.
+    pub fn unit_cost(&self, item: Item, index: &HashMap<Item, Recipe>) -> f64 {
+        let total = self.total_raw(index);
+        let raws: f64 = total.items.iter().map(|&(_, qty)| qty).sum();
+        let per_craft = self.produces_rate(item).filter(|p| *p > 0.0).unwrap_or(1.0);
+        (raws + total.time) / per_craft
+    }
 }
 
 /// Sum `qty` of `item` into `items`, merging with an existing entry rather
