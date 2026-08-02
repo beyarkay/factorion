@@ -1,7 +1,7 @@
 # ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
 # Launched with: /ci sweep ppo
 
-method: grid
+method: bayes
 run_cap: 10
 metric:
   name: "rollout/thput"
