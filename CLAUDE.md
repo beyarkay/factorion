@@ -18,7 +18,7 @@ The training pipeline is moving toward an **LLM-style two-stage split**:
 
 1. **Data generation** — `build_factory()` in `factorion.py` constructs a known-correct factory (returning `Optional[Factory]`), then `blank_entities()` produces a *(partial-factory, correct-completion)* training pair by removing N entities from it. Each lesson type (`MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED`, …) covers a different entity or layout pattern. The exception is **trial** kinds (`LESSON_IS_TRIAL`): scenarios with no known solution — the built world is only the source/sink markers, so they yield no SFT pairs and are trained on by RL alone.
 2. **SFT pretraining** — `sft.py` runs supervised training on those pairs, giving the policy a strong prior over entity placement. It uploads the best checkpoint as a W&B artifact (type `model`, containing `sft_checkpoint.pt`) so RL can pull it by run id.
-3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start-from` (accepts **either** a local `.pt` path **or** a W&B run id like `j0s5y2mc` — the run's model artifact is downloaded automatically). Every episode builds from a **fully-blank** grid (no curriculum). The canonical SFT base is run **`j0s5y2mc`**; the bar PPO must clear is its `val/thput ≈ 0.11` (see "Throughput metric" below).
+3. **RL finetuning** — PPO (`ppo.py`) refines the pretrained policy to push beyond what imitation achieves. Load an SFT checkpoint with `--start-from` (accepts **either** a local `.pt` path **or** a W&B run id like `h76h80yb` — the run's model artifact is downloaded automatically). Every episode builds from a **fully-blank** grid (no curriculum). The canonical SFT base is run **`h76h80yb`**; the bar PPO must clear is its `eval/thput ≈ 0.67` on the current lesson mix (see "Baselines and best runs" below).
 
 Historically the project did RL-from-scratch with heavy scaffolding (curriculum on `num_missing_entities`, reward shaping, action masking) to handle the sparse-reward problem. Most of that scaffolding still exists but its role changes under the new pipeline: the curriculum axis becomes a data-sampling knob during SFT, and RL starts from a much better policy so sparse rewards matter less.
 
@@ -49,7 +49,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 ### Codebase map (grep these symbols)
 
 - **State tensor** is `(C, W, H)` with `C = len(Channel) = 5` channels: `ENTITIES`, `DIRECTION`, `ITEMS` (recipe/filter), `MISC` (underground up/down), `FOOTPRINT` (1 = buildable).
-- **Lessons** (`LessonKind` in `factorion.py`, built from `factory_gen.rs::LessonKind` via `factorion_rs.py_lesson_kinds()`): `MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED`, `ASSEMBLE_1IN_1OUT`, `MOVE_VIA_UG_BELT`, `ASSEMBLE_2IN_1OUT`, `MEMORISE_1_INGREDIENT_RECIPES` … `MEMORISE_4_INGREDIENT_RECIPES`, `MOVE_ONE_ITEM_CHAOS`, `CROSS_UNDER_BELT`, `FACTORY_1_INGREDIENT`, `TRIAL_RECIPE_TREE_DEPTH_1` … `TRIAL_RECIPE_TREE_DEPTH_3`. `build_factory(size, kind, seed, ...)` (Rust-backed) returns `Optional[Factory]` (rejection sampling can fail → `None`); `blank_entities(factory, num_missing_entities, seed)` removes N entity *units* (multi-tile entities count as one). Every `Factory` carries `max_throughput`, the items/s reference throughput is normalized by (the solved world's simulated rate, or an analytic ceiling for trials). Each lesson has a `build_*` generator in `factory_gen.rs`; `SPLITTER_MERGE_SIDELOADED` (`build_splitter_merge_sideloaded`) replaces the old throughput-hackable `SPLITTER_MERGE`: two sources are each capped to 7.5 i/s by a **side-load gadget** (a protected empty "decoy" belt forces the source to side-load onto one lane instead of curving to a full 15), then a splitter merges the two 7.5 arms onto one 15 i/s belt to a single sink — so *both* arms are throughput-necessary (drop one and the sink falls to 7.5), unlike the old merge whose lone sink was saturated by either source alone. Its decoy belts are the one sanctioned exception to the no-orphan invariant (see below). The `MEMORISE_N_INGREDIENT_RECIPES` lessons (`build_memorise_recipes`, one per exact ingredient count 1–4) place a random recipe's assembler fed/drained by `source → belt → inserter → assembler → inserter → belt → sink` arms with exactly one belt per arm (one source per ingredient, so lesson `N` has exactly `N` input sources); `CROSS_UNDER_BELT` (`build_cross_under_belt`) is validated by its own throughput/orphan invariants; `FACTORY_1_INGREDIENT` (`build_factory_1_ingredient`) places a row of 1+ assemblers sharing an input and an output belt lane (1–3 input and 1–3 output inserters per assembler), with the source/sink at semi-arbitrary cells wired to the lane ends by the UG-aware router — throughput deliberately varies (input-inserter / recipe-speed / output-inserter limited) so the critic sees good and bad layouts; the `TRIAL_RECIPE_TREE_DEPTH_N` **trials** (`build_recipe_tree_trial`; flagged by `LessonKind::is_trial` / Python `LESSON_IS_TRIAL`) place ONLY markers, always on the grid edge working inward (sources face their wall's inward normal, the sink faces outward so it pulls from its interior neighbour) — a random craftable sink item (any assembler tier) plus one source per item of a randomly-expanded frontier of its ingredient tree, where the deepest expanded chain is exactly `N` crafting stages — with a reserved free working cell per marker; `total_entities == 0` and `max_throughput` is the sink recipe's single-assembler output rate.
+- **Lessons** (`LessonKind` in `factorion.py`, built from `factory_gen.rs::LessonKind` via `factorion_rs.py_lesson_kinds()`): `MOVE_ONE_ITEM`, `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED`, `MOVE_VIA_UG_BELT`, `MEMORISE_1_INGREDIENT_RECIPES` … `MEMORISE_4_INGREDIENT_RECIPES`, `MOVE_ONE_ITEM_CHAOS`, `CROSS_UNDER_BELT`, `FACTORY_1_INGREDIENT`, `TRIAL_RECIPE_TREE_DEPTH_1` … `TRIAL_RECIPE_TREE_DEPTH_3`. (`Assemble1In1Out`/`Assemble2In1Out` still occupy discriminants 5 and 7 in the Rust enum but are `#[deprecated]` and absent from `py_lesson_kinds()`, so nothing generates or trains on them.) `build_factory(size, kind, seed, ...)` (Rust-backed) returns `Optional[Factory]` (rejection sampling can fail → `None`); `blank_entities(factory, num_missing_entities, seed)` removes N entity *units* (multi-tile entities count as one). Every `Factory` carries `max_throughput`, the items/s reference throughput is normalized by (the solved world's simulated rate, or an analytic ceiling for trials). Each lesson has a `build_*` generator in `factory_gen.rs`; `SPLITTER_MERGE_SIDELOADED` (`build_splitter_merge_sideloaded`) replaces the old throughput-hackable `SPLITTER_MERGE`: two sources are each capped to 7.5 i/s by a **side-load gadget** (a protected empty "decoy" belt forces the source to side-load onto one lane instead of curving to a full 15), then a splitter merges the two 7.5 arms onto one 15 i/s belt to a single sink — so *both* arms are throughput-necessary (drop one and the sink falls to 7.5), unlike the old merge whose lone sink was saturated by either source alone. Its decoy belts are the one sanctioned exception to the no-orphan invariant (see below). The `MEMORISE_N_INGREDIENT_RECIPES` lessons (`build_memorise_recipes`, one per exact ingredient count 1–4) place a random recipe's assembler fed/drained by `source → belt → inserter → assembler → inserter → belt → sink` arms with exactly one belt per arm (one source per ingredient, so lesson `N` has exactly `N` input sources); `CROSS_UNDER_BELT` (`build_cross_under_belt`) is validated by its own throughput/orphan invariants; `FACTORY_1_INGREDIENT` (`build_factory_1_ingredient`) places a row of 1+ assemblers sharing an input and an output belt lane (1–3 input and 1–3 output inserters per assembler), with the source/sink at semi-arbitrary cells wired to the lane ends by the UG-aware router — throughput deliberately varies (input-inserter / recipe-speed / output-inserter limited) so the critic sees good and bad layouts; the `TRIAL_RECIPE_TREE_DEPTH_N` **trials** (`build_recipe_tree_trial`; flagged by `LessonKind::is_trial` / Python `LESSON_IS_TRIAL`) place ONLY markers, always on the grid edge working inward (sources face their wall's inward normal, the sink faces outward so it pulls from its interior neighbour) — a random craftable sink item (any assembler tier) plus one source per item of a randomly-expanded frontier of its ingredient tree, where the deepest expanded chain is exactly `N` crafting stages — with a reserved free working cell per marker; `total_entities == 0` and `max_throughput` is the sink recipe's single-assembler output rate.
 - **Underground lessons**: `MOVE_VIA_UG_BELT` forces underground belts with an `UNAVAILABLE`-footprint wall; `CROSS_UNDER_BELT` gives a real, protected belt line (the "obstruction" — a winding edge-to-edge cut) the crossing must tunnel *under* via `factory_gen.rs::ug_aware_belt_path` (a Dijkstra that may dip under blocked cells; minimal tunnel span, no 180° reversals or tile reuse, source→UG-down / UG-up→sink shortcuts).
 - **No-orphan invariant**: no lesson's solved factory may contain orphan tiles — throughput must report `unreachable == 0` (checked by `factory_gen.rs::tests::test_no_orphan_tiles_every_lesson` across every non-trial `LessonKind`; a trial's world is only the unconnected markers). Unreachability is judged per ENTITY (an entity is an orphan iff none of its lane nodes lie on a source→sink path) since e.g. an inserter-fed belt legitimately has one forever-empty lane. The **one opt-out** is `LessonKind::allows_orphans()` (exposed to Python as `factorion_rs.py_lesson_allows_orphans()`): `SPLITTER_MERGE_SIDELOADED` returns `true` because its side-load decoy belts are intentional protected orphans; the test then requires every orphan to be a protected tile (`unreachable == protected_positions.len()`), so no *accidental* orphan slips through.
 - **Jargon**: the orientation-relative sides of a directional entity are **left, right, fore, aft** (a north-facing belt's left side is west, its fore side north). Use these consistently in code comments and docs.
@@ -61,11 +61,11 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 
 ## W&B dashboards
 
-Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
+Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr3.369e-05-ent0.008034_0.0007372-kl0.02-cw9-fromh76h80yb-c128-128-128-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
 
 - **`eval/`** — periodic EOT-respecting greedy held-out throughput (`eval/thput`, `eval/{LESSON}/thput`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`ci/sweep_ppo.yaml`).
 - **`rollout/`** — on-policy sampled episode stats (`thput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`, `entity_cost`, `cost_efficiency`) + per-lesson `rollout/{LESSON}/{thput,thput_raw,reward,length,entity_cost,cost_efficiency}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
-- **Lessons vs trials are pooled separately.** The `eval/thput` and `rollout/*` aggregates cover **lessons only**; trial episodes go to `eval/trial_thput` and the parallel `rollout/trial_*` block (same field names). This keeps the headline comparable to the SFT baseline — SFT never sees a trial, so mixing them in would move `eval/thput` for reasons unrelated to build skill. Per-lesson `{eval,rollout}/{TRIAL_*}/…` keys are already name-separated and are logged as usual, so a trial's own curve is always visible. **`eval/trial_thput` is the metric that actually matters** — it scores building a factory from nothing but the markers, which is the real problem; every lesson is a proxy for it. Expect it to sit at 0 for a long time (see #339).
+- **Lessons vs trials are pooled separately.** The `eval/thput` and `rollout/*` aggregates cover **lessons only**; trial episodes go to `eval/trial_thput` and the parallel `rollout/trial_*` block (same field names). This keeps the headline comparable to the SFT baseline — SFT never sees a trial, so mixing them in would move `eval/thput` for reasons unrelated to build skill. Per-lesson `{eval,rollout}/{TRIAL_*}/…` keys are already name-separated and are logged as usual, so a trial's own curve is always visible. **`eval/trial_thput` is the metric that actually matters** — it scores building a factory from nothing but the markers, which is the real problem; every lesson is a proxy for it. Expect it to stay near 0 for a long time (see #339): as of 2026-07-30 it sits at 0.00–0.05 across seeds, entirely from `TRIAL_RECIPE_TREE_DEPTH_1` (≈0.11); depths 2 and 3 are still exactly 0.
 - **`policy/`** — acting-policy distribution: `entropy`, per-head `entropy_{tile,entity,direction,item,misc,eot}`, `eot_prob`.
 - **`critic/`** — value-head health (is the critic predicting factory value?), global + per-lesson (`ppo.py:_critic_diagnostics`). Global: `explained_variance` (headline: 1=perfect, 0=predicts-the-mean, <0=worse), `value_rmse`/`value_bias` (error size / signed over-under-estimation, in reward units), `value_return_corr` (ordering skill, robust to scale/offset), `value_std` vs `return_std` (tells a collapsed-to-constant critic apart from a responsive one), `value_mean`/`return_mean`, `adv_abs_mean` (mean |GAE advantage|, a TD-error proxy). Per-lesson `critic/{LESSON}/{explained_variance,value_rmse,value_bias,value_return_corr}` — so a critic that nails belts but is clueless on assemblers shows as a split curve (variance-based fields are NaN when fewer than 2 transitions back that slice).
 - **`losses/`** `policy,value,entropy,total,approx_kl,clipfrac,explained_variance` (the last kept for back-compat; `critic/` is the richer view); **`optim/`** `lr,critic_lr,ent_coef,grad_norm,critic_warmup`; **`perf/`** `sps,rollout_seconds,update_seconds,eval_seconds`.
@@ -77,7 +77,67 @@ The metric comes from a greedy rollout that blanks the **whole** grid and rebuil
 - **`thput`** (`overall`) — build skill *respecting* the EOT head: the rollout stops the first time the EOT prob crosses `rollout_eot_threshold` (0.5) and scores the throughput at that state; if it never fires, the rollout runs to env-done and scores the final throughput. "How good is the factory at the moment the model decides it's done?"
 - **`trial_thput`** (`trial_overall`) — the same number over trial kinds only, pooled separately (`trial_n` counts the trials scored). Zero when no trial ran, which is always the case for SFT.
 
-**The RL goal is for PPO's achieved throughput to exceed the SFT base's `val/thput` (≈0.11 for `j0s5y2mc`).** Per-lesson the SFT base is uneven (MOVE_ONE_ITEM ~0.38, assembler lessons ~0). The longer-run goal is `eval/trial_thput` above zero at all — nothing imitative can produce it.
+**The RL goal is for PPO's achieved throughput to exceed the SFT base's throughput on the same lesson mix (≈0.67 for `h76h80yb`).** Per-lesson the SFT base is uneven — belt and memorise lessons are near-solved while `FACTORY_1_INGREDIENT` sits ~0.3. The longer-run goal is `eval/trial_thput` climbing well above zero — nothing imitative can produce it.
+
+## Baselines and best runs
+
+Numbers below are from W&B (`beyarkay/factorion`); the sha each was trained at is
+in the run's tags. **Two caveats before comparing anything to anything:**
+
+- **#328 renamed the metric.** Before `dc2f435` the EOT-respecting number was
+  logged as `val/thput_eot` and `val/thput` meant "run to env-done, ignore the
+  EOT head". After it, `val/thput` *is* the EOT-respecting number. #350
+  (`2c5a915`) then made the rollout actually stop at the fire, which by
+  construction preserved the values. So for a pre-#328 run, read
+  `val/thput_eot`.
+- **Lesson generation changed under the metric.** #335 (`5336d58`, recipe
+  rebalance) and #349 (`10dfb72`, sample one belt route) both moved the data
+  distribution, so an SFT `val/thput` from before them is not comparable to one
+  after. Every SFT run on record predates both — which is why the operative
+  baseline below is measured *inside* a PPO run on current-ish main rather than
+  taken from the SFT run's own logs.
+
+**Canonical SFT base — `h76h80yb`** (12.7 h, 50M samples, `110ab3a`, finished,
+model artifact present, and what `ci/sweep_ppo.yaml` + `scripts/factory_builder.py`
+point at). Its own SFT-time score was `val/thput_eot = 0.954`, but that was on
+the pre-#335 lesson mix. Re-measured on main@`94ef25e`, it scores
+**`eval/thput ≈ 0.67`** — that is the bar PPO has to clear.
+
+**Best PPO to date** — the 3-seeds-per-side compare on PR #346 (2026-07-30,
+from `h76h80yb`, 2.5M timesteps, ~2.5 h/seed). Both sides landed in the same
+place (no metric moved significantly), so read either column as "what PPO
+currently gets to":
+
+| metric | main@`94ef25e` | PR@`b8042d4` | p |
+|---|---|---|---|
+| `eval/thput` | 0.776 | 0.784 | 0.38 |
+| `eval/trial_thput` | 0.037 | 0.041 | 0.42 |
+| `rollout/thput` | 0.788 | 0.793 | 0.29 |
+
+So PPO takes `eval/thput` from ≈0.67 (the SFT base) to ≈0.78 in 2.5M steps,
+and `eval/trial_thput` is all `TRIAL_RECIPE_TREE_DEPTH_1` (≈0.11 on its own
+curve) — depths 2 and 3 contribute exactly 0.
+
+**Long runs are not reliably better.** `gs1nqoni` (21.7 h, 40M steps,
+main@`5336d58`) *degraded*: `eval/thput` 0.68 → 0.42. #339 traces this to the
+`CROSS_UNDER_BELT` freebie (a fully-blanked grid already scores 0.25 there, so
+firing EOT immediately is locally optimal) plus the EOT bias. Other multi-hour
+runs improved — `i3vzy230` 0.50 → 0.76 over 44M steps, `6fn5s38f` 0.10 → 0.55
+over 35M. Treat >10M-step runs as needing the #339 blockers fixed first.
+
+**Highest SFT `val/thput` on record** is `84glrv0x` at **0.83** (5M samples,
+2026-07-23), with `w1ci81b7` at 0.82 — but both come from a sweep over
+`missing_fraction_alpha`, a blanking-difficulty knob that no longer exists in
+`SftArgs`, so they were trained on a data distribution the current code cannot
+reproduce. Their checkpoints still load (same architecture), but do not read
+0.83 as "what SFT reaches today". The largest SFT run, `rqsl66jw` (40.3 h,
+killed at 150M of 250M samples), reached 0.75 and **uploaded no model
+artifact**, so it cannot be used as a `--start-from` base at all.
+
+**No run on record was trained at the current main tip.** The newest results
+(2026-07-30) sit at `94ef25e`/`b8042d4`, which predate #350, #347, #351, #349
+and #354. #349 in particular changes lesson generation, so expect the numbers
+above to shift when the next run lands.
 
 ## SFT → PPO handoff
 
