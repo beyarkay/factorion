@@ -23,6 +23,7 @@ from ppo import (  # noqa: E402
     _run_signature,
     _entropy_head_mults,
     _weighted_entropy_metrics,
+    _length_distribution,
     _build_eval_set,
     _rollout_episode_metrics,
     _explained_variance,
@@ -182,6 +183,26 @@ class TestPerHeadEntropyMults:
             "tile": 1.0, "entity": 1.0, "direction": 1.0,
             "item": 1.0, "misc": 1.0, "eot": 0.0,
         }
+
+
+class TestLengthDistribution:
+    def test_quantiles_separate_instant_quits_from_steady_building(self):
+        # Same mean (10), opposite shapes: half instant quits + half long runs
+        # vs everyone building the same medium factory.
+        bimodal = _length_distribution([1.0] * 5 + [19.0] * 5, "rollout/")
+        steady = _length_distribution([10.0] * 10, "rollout/")
+        assert bimodal["rollout/length_le2_frac"] == 0.5
+        assert steady["rollout/length_le2_frac"] == 0.0
+        assert bimodal["rollout/length_p10"] < steady["rollout/length_p10"]
+        assert bimodal["rollout/length_p90"] > steady["rollout/length_p90"]
+        assert bimodal["rollout/length_max"] == 19.0
+
+    def test_empty_emits_nothing(self):
+        assert _length_distribution([], "rollout/trial_") == {}
+
+    def test_prefix_is_applied(self):
+        keys = _length_distribution([3.0], "rollout/trial_")
+        assert all(k.startswith("rollout/trial_length") for k in keys)
 
 
 class TestWeightedEntropyMetrics:

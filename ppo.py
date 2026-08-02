@@ -334,6 +334,26 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     return metrics
 
 
+def _length_distribution(lengths: list, prefix: str) -> dict:
+    """Quantiles of this iteration's episode lengths, under `prefix`.
+
+    The mean alone cannot tell the EOT head's failure mode apart from healthy
+    building: a policy that quits after one placement on most episodes and
+    occasionally runs to the step cap has the same mean length as one that
+    always builds a medium factory. `le2_frac` is the instant-quit share (one
+    placement plus an eot, or a bare eot).
+    """
+    if not lengths:
+        return {}
+    return {
+        f"{prefix}length_p10": float(np.percentile(lengths, 10)),
+        f"{prefix}length_p50": float(np.percentile(lengths, 50)),
+        f"{prefix}length_p90": float(np.percentile(lengths, 90)),
+        f"{prefix}length_max": float(max(lengths)),
+        f"{prefix}length_le2_frac": sum(v <= 2 for v in lengths) / len(lengths),
+    }
+
+
 def _weighted_entropy_metrics(
     head_entropy: dict, mults: dict, ent_coef: float
 ) -> dict:
@@ -1879,9 +1899,11 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
-        for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
-                  "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+        for m in ["thput", "thput_raw", "reward", "length", "length_p10",
+                  "length_p50", "length_p90", "length_max", "length_le2_frac",
+                  "eot_rate", "invalid_frac", "num_entities",
+                  "entity_efficiency", "frac_reachable", "entity_cost",
+                  "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
@@ -2140,6 +2162,10 @@ if __name__ == "__main__":
         if not _episode_metrics:
             return {}
         means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
+        for prefix in ("rollout/", "rollout/trial_"):
+            means.update(
+                _length_distribution(_episode_metrics.get(f"{prefix}length", []), prefix)
+            )
         _episode_metrics.clear()
         return means
 
