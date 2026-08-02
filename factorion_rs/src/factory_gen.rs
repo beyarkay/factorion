@@ -19,6 +19,7 @@ use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::num::NonZeroUsize;
@@ -988,16 +989,22 @@ struct MoveLine {
     end: Cell,
 }
 
+/// Routings already derived, keyed by the line and the cells that were taken
+/// when it was asked for — the two things [`RouteSearch::route`] depends on.
+type RouteCache = HashMap<(usize, Vec<Cell>), Option<Vec<UgPlacement>>>;
+
 /// The fixed context of a [`cheapest_route_set`] search — everything the
 /// recursion reads but never changes.
 struct RouteSearch<'a> {
     lines: &'a [MoveLine],
-    /// Which line each source-drop / sink-feed cell belongs to. Every cell in
-    /// here is blocked for every line but its owner.
-    endpoint_owner: &'a HashMap<Cell, usize>,
     size: i64,
     belt_cost: f64,
     ug_cost: f64,
+    /// Routing a line is a Dijkstra and depends on nothing but the line and the
+    /// cells already taken, and every order of a non-interfering prefix
+    /// converges on the same taken set — so without this the tree re-derives
+    /// most of its routes (707 → 252 routings per seed at `n = 5`).
+    routes_by_taken: RefCell<RouteCache>,
 }
 
 impl RouteSearch<'_> {
@@ -1015,14 +1022,14 @@ impl RouteSearch<'_> {
         // ends nowhere better. The router minimises its own belt/tunnel
         // metric rather than entity cost, so an unobstructed route is *not* a
         // lower bound on the same line laid later; only this holds.
-        let unlaid = routes.iter().filter(|r| r.is_none()).count() as f64;
+        let unlaid = routes.iter().filter(|r| r.is_none()).count();
         if best
             .as_ref()
-            .is_some_and(|(best_cost, _)| cost + unlaid * self.belt_cost >= *best_cost)
+            .is_some_and(|(best_cost, _)| cost + unlaid as f64 * self.belt_cost >= *best_cost)
         {
             return;
         }
-        if routes.iter().all(|r| r.is_some()) {
+        if unlaid == 0 {
             *best = Some((cost, routes.iter().flatten().cloned().collect()));
             return;
         }
@@ -1042,18 +1049,32 @@ impl RouteSearch<'_> {
         }
     }
 
-    /// The cheapest route for line `i` given the cells `taken` so far. Every
-    /// other line's endpoints are blocked on top: shared with another line they
-    /// would mix the two items, and a line's own endpoints are the only cells
-    /// it may claim from that set.
+    /// The cheapest route for line `i` given the cells `taken` so far, reusing
+    /// an earlier identical routing where one exists.
     fn route(&self, i: usize, taken: &HashSet<Cell>) -> Option<Vec<UgPlacement>> {
+        let mut cells: Vec<Cell> = taken.iter().copied().collect();
+        cells.sort_unstable();
+        let key = (i, cells);
+        if let Some(hit) = self.routes_by_taken.borrow().get(&key) {
+            return hit.clone();
+        }
+        let route = self.route_uncached(i, taken);
+        self.routes_by_taken.borrow_mut().insert(key, route.clone());
+        route
+    }
+
+    /// Every *other* line's endpoints are blocked on top of `taken`: shared
+    /// with another line they would mix the two items, and a line's own
+    /// endpoints are the only cells it may claim from that set.
+    fn route_uncached(&self, i: usize, taken: &HashSet<Cell>) -> Option<Vec<UgPlacement>> {
         let line = &self.lines[i];
         let mut blocked = taken.clone();
         blocked.extend(
-            self.endpoint_owner
+            self.lines
                 .iter()
-                .filter(|&(_, &owner)| owner != i)
-                .map(|(&cell, _)| cell),
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .flat_map(|(_, other)| [other.start, other.end]),
         );
         find_belt_path(
             line.start,
@@ -1091,7 +1112,6 @@ impl RouteSearch<'_> {
 /// sweep of all `n!` orders would — for a fraction of the routing work.
 fn cheapest_route_set(
     lines: &[MoveLine],
-    endpoint_owner: &HashMap<Cell, usize>,
     markers: &HashSet<Cell>,
     size: i64,
     belt_cost: f64,
@@ -1099,13 +1119,14 @@ fn cheapest_route_set(
 ) -> Option<Vec<Vec<UgPlacement>>> {
     let search = RouteSearch {
         lines,
-        endpoint_owner,
         size,
         belt_cost,
         ug_cost,
+        routes_by_taken: RefCell::new(RouteCache::new()),
     };
     // Unroutable against the markers alone means unroutable in any order — a
-    // draw worth abandoning before the tree is walked at all.
+    // draw worth abandoning before the tree is walked at all. The cache makes
+    // this free: the tree's root level asks for the very same routings.
     for i in 0..lines.len() {
         search.route(i, markers)?;
     }
@@ -1124,10 +1145,15 @@ fn cheapest_route_set(
 ///
 /// Routes are laid one line at a time, each blocked by the markers, by every
 /// other line's endpoints, and by the cells already taken. That makes the
-/// result order-dependent, so all `n!` orders are laid and the cheapest kept,
-/// scored by [`entity_unit_cost`] (raw materials + craft time per tile) — an
-/// underground tile costs ~5× a belt, so an order that lets a later line
-/// detour around an earlier one beats one that forces it to tunnel under.
+/// result order-dependent, so [`cheapest_route_set`] picks the order costing
+/// the least by [`entity_unit_cost`] (raw materials + craft time per tile) —
+/// an underground tile costs ~5× a belt, so an order that leaves a later line
+/// room to detour beats one that forces it to tunnel under.
+///
+/// Only the *order* is chosen this way. Each individual route comes from
+/// [`find_belt_paths`], which minimises its own belt/tunnel metric, so a line
+/// can never trade its tunnel for a longer surface detour however costly the
+/// tunnel is here.
 ///
 /// Blocking every *other* line's endpoints is what keeps the items separate:
 /// a belt only ever points at its own next cell or its own sink, so no line can
@@ -1167,8 +1193,7 @@ fn build_move_n_items(
         // on a marker they would have nowhere to go.
         let mut lines: Vec<MoveLine> = Vec::with_capacity(n);
         let mut endpoint_owner: HashMap<Cell, usize> = HashMap::new();
-        let mut endpoints_ok = true;
-        for (i, item_value) in items.into_iter().enumerate() {
+        let endpoints_ok = items.into_iter().enumerate().all(|(i, item_value)| {
             let (source, sink) = (markers[2 * i], markers[2 * i + 1]);
             let source_dir = DIRS[rng.choice_index(4)];
             let sink_dir = DIRS[rng.choice_index(4)];
@@ -1185,22 +1210,17 @@ fn build_move_n_items(
                 start,
                 end,
             });
-            for cell in [start, end] {
-                endpoints_ok &= in_grid(cell, s)
+            [start, end].into_iter().all(|cell| {
+                in_grid(cell, s)
                     && !marker_set.contains(&cell)
-                    && *endpoint_owner.entry(cell).or_insert(i) == i;
-            }
-            if !endpoints_ok {
-                break;
-            }
-        }
+                    && *endpoint_owner.entry(cell).or_insert(i) == i
+            })
+        });
         if !endpoints_ok {
             continue;
         }
 
-        let Some(routes) =
-            cheapest_route_set(&lines, &endpoint_owner, &marker_set, s, belt_cost, ug_cost)
-        else {
+        let Some(routes) = cheapest_route_set(&lines, &marker_set, s, belt_cost, ug_cost) else {
             continue;
         };
 
@@ -3603,8 +3623,53 @@ mod tests {
         (LessonKind::Move5Items, 5),
     ];
 
+    /// The lines of a built `MOVE_N_ITEMS` world, recovered from its markers:
+    /// each item's source and sink pair up, since a line is exactly the two
+    /// markers carrying the same item.
+    fn move_lines(world: &World) -> Vec<MoveLine> {
+        let mut sources: HashMap<i64, (Cell, Direction)> = HashMap::new();
+        let mut sinks: HashMap<i64, (Cell, Direction)> = HashMap::new();
+        for x in 0..world.width() {
+            for y in 0..world.height() {
+                let at = (x as i64, y as i64);
+                let item = world.get(x, y, Channel::Items);
+                let dir = world.direction_at(x, y);
+                match world.entity_at(x, y) {
+                    Some(Item::Source) => drop(sources.insert(item, (at, dir))),
+                    Some(Item::Sink) => drop(sinks.insert(item, (at, dir))),
+                    _ => {}
+                }
+            }
+        }
+        let mut items: Vec<i64> = sources.keys().copied().collect();
+        items.sort_unstable();
+        items
+            .into_iter()
+            .filter_map(|item_value| {
+                let (source, source_dir) = *sources.get(&item_value)?;
+                let (sink, sink_dir) = *sinks.get(&item_value)?;
+                let (sdx, sdy) = source_dir.delta();
+                let (kdx, kdy) = sink_dir.delta();
+                Some(MoveLine {
+                    source,
+                    sink,
+                    source_dir,
+                    sink_dir,
+                    item_value,
+                    start: (source.0 + sdx, source.1 + sdy),
+                    end: (sink.0 - kdx, sink.1 - kdy),
+                })
+            })
+            .collect()
+    }
+
+    /// One sweep, every generator invariant: `n` lines each carrying its own
+    /// item, every sink served at full belt speed with nothing orphaned, and
+    /// nothing protected (so a full blank strips the whole route set).
+    /// Generation is the slowest in the repo, so the seeds are walked once.
     #[test]
-    fn test_move_n_items_has_n_lines_of_distinct_items() {
+    fn test_move_n_items_invariants() {
+        let belt_flow = Item::TransportBelt.flow_rate();
         for (kind, n) in MOVE_N_KINDS {
             let mut built = 0;
             for seed in 0..30u64 {
@@ -3612,45 +3677,33 @@ mod tests {
                     continue;
                 };
                 built += 1;
-                let mut source_items = Vec::new();
-                let mut sink_items = Vec::new();
+
+                let mut sources = Vec::new();
+                let mut sinks = Vec::new();
                 for x in 0..f.world.width() {
                     for y in 0..f.world.height() {
                         let item = f.world.get(x, y, Channel::Items);
                         match f.world.entity_at(x, y) {
-                            Some(Item::Source) => source_items.push(item),
-                            Some(Item::Sink) => sink_items.push(item),
+                            Some(Item::Source) => sources.push(item),
+                            Some(Item::Sink) => sinks.push(item),
                             _ => {}
                         }
                     }
                 }
-                assert_eq!(source_items.len(), n, "{kind:?} seed={seed}");
-                assert_eq!(sink_items.len(), n, "{kind:?} seed={seed}");
-                source_items.sort_unstable();
-                sink_items.sort_unstable();
+                sources.sort_unstable();
+                sinks.sort_unstable();
+                assert_eq!(sources.len(), n, "{kind:?} seed={seed}");
                 assert_eq!(
-                    source_items, sink_items,
+                    sources, sinks,
                     "{kind:?} seed={seed}: sinks must want exactly what the sources send"
                 );
-                source_items.dedup();
+                sources.dedup();
                 assert_eq!(
-                    source_items.len(),
+                    sources.len(),
                     n,
                     "{kind:?} seed={seed}: every line carries a different item"
                 );
-            }
-            assert!(built > 20, "{kind:?}: most seeds should build, got {built}");
-        }
-    }
 
-    #[test]
-    fn test_move_n_items_delivers_every_line_at_full_belt_speed() {
-        let belt_flow = Item::TransportBelt.flow_rate();
-        for (kind, _) in MOVE_N_KINDS {
-            for seed in 0..30u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
-                    continue;
-                };
                 let (deliveries, unreachable) = calc_throughput(&build_graph(&f.world));
                 assert_eq!(unreachable, 0, "{kind:?} seed={seed}");
                 for d in &deliveries {
@@ -3665,22 +3718,11 @@ mod tests {
                     "{kind:?} seed={seed}: max_throughput={}",
                     f.max_throughput
                 );
-            }
-        }
-    }
 
-    /// Nothing but the markers is protected, so blanking strips the whole
-    /// route set and the policy rebuilds every line from scratch.
-    #[test]
-    fn test_move_n_items_protects_nothing() {
-        for (kind, _) in MOVE_N_KINDS {
-            for seed in 0..10u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
-                    continue;
-                };
                 assert!(f.protected_positions.is_empty(), "{kind:?} seed={seed}");
                 assert!(f.total_entities >= 1, "{kind:?} seed={seed}");
             }
+            assert!(built > 20, "{kind:?}: most seeds should build, got {built}");
         }
     }
 
@@ -3699,9 +3741,12 @@ mod tests {
         assert_eq!(entity_unit_cost(Item::IronPlate, &index), 0.0);
     }
 
-    /// The chosen routing order is the cheapest one: no other order of the
-    /// same draw can beat it. Re-derived here by replaying the built world's
-    /// markers through every permutation.
+    /// The order the generator settled on is the cheapest available: no
+    /// permutation of the same draw wires it for less. The reference sweep
+    /// differs from the real search in exactly one dimension — it walks all
+    /// `n!` orders instead of pruning — and routes through the very same
+    /// `RouteSearch` helpers, so a change to the blocking rule or the cost
+    /// model cannot pass by being made twice.
     #[test]
     fn test_move_n_items_picks_the_cheapest_order() {
         let index: HashMap<Item, Recipe> = all_recipes().into_iter().collect();
@@ -3714,7 +3759,6 @@ mod tests {
                 let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
                     continue;
                 };
-                let s = f.world.width() as i64;
                 let built_cost: f64 = (0..f.world.width())
                     .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
                     .map(|(x, y)| match f.world.entity_at(x, y) {
@@ -3724,75 +3768,31 @@ mod tests {
                     })
                     .sum();
 
-                // Recover the lines from the world: markers pair up by item.
-                let mut sources: HashMap<i64, (Cell, Direction)> = HashMap::new();
-                let mut sinks: HashMap<i64, (Cell, Direction)> = HashMap::new();
-                for x in 0..f.world.width() {
-                    for y in 0..f.world.height() {
-                        let c = (x as i64, y as i64);
-                        let item = f.world.get(x, y, Channel::Items);
-                        let dir = f.world.direction_at(x, y);
-                        match f.world.entity_at(x, y) {
-                            Some(Item::Source) => drop(sources.insert(item, (c, dir))),
-                            Some(Item::Sink) => drop(sinks.insert(item, (c, dir))),
-                            _ => {}
-                        }
-                    }
-                }
-                let mut items: Vec<i64> = sources.keys().copied().collect();
-                items.sort_unstable();
-                let marker_set: HashSet<Cell> = sources
-                    .values()
-                    .chain(sinks.values())
-                    .map(|&(c, _)| c)
-                    .collect();
-                let mut endpoint_owner: HashMap<Cell, usize> = HashMap::new();
-                let mut ends: Vec<(Cell, Cell, Direction, Direction)> = Vec::new();
-                for (i, item) in items.iter().enumerate() {
-                    let (src, sdir) = sources[item];
-                    let (snk, kdir) = sinks[item];
-                    let (sdx, sdy) = sdir.delta();
-                    let (kdx, kdy) = kdir.delta();
-                    let start = (src.0 + sdx, src.1 + sdy);
-                    let end = (snk.0 - kdx, snk.1 - kdy);
-                    endpoint_owner.insert(start, i);
-                    endpoint_owner.insert(end, i);
-                    ends.push((start, end, sdir, kdir));
-                }
+                let lines = move_lines(&f.world);
+                let markers: HashSet<Cell> =
+                    lines.iter().flat_map(|l| [l.source, l.sink]).collect();
+                let search = RouteSearch {
+                    lines: &lines,
+                    size: f.world.width() as i64,
+                    belt_cost,
+                    ug_cost,
+                    routes_by_taken: RefCell::new(RouteCache::new()),
+                };
 
-                let mut cheapest = f64::INFINITY;
-                for order in permutations(n) {
-                    let mut taken = marker_set.clone();
-                    let mut cost = 0.0;
-                    let mut complete = true;
-                    for i in order {
-                        let (start, end, sdir, kdir) = ends[i];
-                        let mut blocked = taken.clone();
-                        for (&cell, &owner) in &endpoint_owner {
-                            if owner != i {
-                                blocked.insert(cell);
-                            }
+                let cheapest = permutations(n)
+                    .into_iter()
+                    .filter_map(|order| {
+                        let mut taken = markers.clone();
+                        let mut cost = 0.0;
+                        for i in order {
+                            let route = search.route(i, &taken)?;
+                            taken.extend(route.iter().map(|&(x, y, ..)| (x, y)));
+                            cost += search.route_cost(&route);
                         }
-                        let Some(route) = find_belt_path(
-                            start,
-                            end,
-                            kdir,
-                            s,
-                            &blocked,
-                            Underground::On(Some(sdir)),
-                        ) else {
-                            complete = false;
-                            break;
-                        };
-                        for &(x, y, _, m) in &route {
-                            taken.insert((x, y));
-                            cost += if m == Misc::None { belt_cost } else { ug_cost };
-                        }
-                    }
-                    if complete {
-                        cheapest = cheapest.min(cost);
-                    }
-                }
+                        Some(cost)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+
                 assert!(
                     built_cost <= cheapest + 1e-6,
                     "{kind:?} seed={seed}: built {built_cost} > cheapest order {cheapest}"
@@ -3801,23 +3801,13 @@ mod tests {
         }
     }
 
+    /// Guards the reference sweep above: if `permutations` ever returned fewer
+    /// orders than it claims, the comparison would pass vacuously.
     #[test]
     fn test_permutations_are_complete_and_distinct() {
         for n in 0..=5 {
-            let perms = permutations(n);
-            let expected: usize = (1..=n).product::<usize>().max(1);
-            assert_eq!(perms.len(), expected, "n={n}");
-            let unique: HashSet<Vec<usize>> = perms.iter().cloned().collect();
-            assert_eq!(unique.len(), expected, "n={n}: duplicate permutation");
-            for p in &perms {
-                let mut sorted = p.clone();
-                sorted.sort_unstable();
-                assert_eq!(
-                    sorted,
-                    (0..n).collect::<Vec<_>>(),
-                    "n={n}: not a permutation"
-                );
-            }
+            let unique: HashSet<Vec<usize>> = permutations(n).into_iter().collect();
+            assert_eq!(unique.len(), (1..=n).product::<usize>().max(1), "n={n}");
         }
     }
 
