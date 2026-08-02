@@ -323,8 +323,18 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     # positive recall only surfaces once a lesson actually reaches a done state.
     metrics["eval/eot_acc"] = roll["eot_acc"]
     metrics["eval/eot_pos_recall"] = roll["eot_pos_recall"]
+    # The EOT head's mean probability, lessons and trials apart. This is what an
+    # entropy bonus on that head drags toward 0.5 (#235), so it is the direct
+    # readout of whether termination is being shaped by the reward or by the
+    # exploration term — and per lesson, of where the policy quits early.
+    metrics["eval/eot_prob"] = roll["eot_prob"]
+    if roll["trial_n"] > 0:
+        metrics["eval/trial_eot_prob"] = roll["trial_eot_prob"]
     eot_step_n = roll["per_kind_eot_step_n"]
     eot_pos_n = roll["per_kind_eot_pos_n"]
+    for kn, p in roll["per_kind_eot_prob"].items():
+        if eot_step_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/eot_prob"] = p
     for kn, acc in roll["per_kind_eot_acc"].items():
         if eot_step_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/eot_acc"] = acc
@@ -421,6 +431,7 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/thput_raw": float(thput_raw),
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
+        f"rollout/{lesson}/eot_rate": float(ended_by_eot),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
@@ -1893,12 +1904,16 @@ if __name__ == "__main__":
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
+        # A probability, not a score: "last" — its best value is not its largest.
+        wandb.define_metric("eval/eot_prob", summary="last")
+        wandb.define_metric("eval/trial_eot_prob", summary="last")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
+            wandb.define_metric(f"eval/{ln}/eot_prob", summary="last")
         for m in ["thput", "thput_raw", "reward", "length", "length_p10",
                   "length_p50", "length_p90", "length_max", "length_le2_frac",
                   "eot_rate", "invalid_frac", "num_entities",
@@ -1908,8 +1923,8 @@ if __name__ == "__main__":
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
+                "thput", "thput_raw", "reward", "length", "eot_rate",
+                "entity_cost", "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "entropy_weighted", "eot_prob"]:

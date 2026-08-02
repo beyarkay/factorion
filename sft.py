@@ -416,6 +416,12 @@ class RolloutEval(TypedDict):
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
     eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
     eot_pos_recall: float  # frac of done states where the EOT head actually fired
+    # Mean EOT-head probability over scored steps, split lesson/trial like the
+    # throughputs: it is the quantity an entropy bonus on the EOT head pushes
+    # toward 0.5, so it needs to be readable per population (#235).
+    eot_prob: float
+    trial_eot_prob: float
+    per_kind_eot_prob: dict[str, float]  # eot_prob, keyed by LessonKind.name
     per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
     per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
     per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
@@ -501,6 +507,7 @@ def run_rollout_eval(
     # (should-stop positives) also count toward *_pos.
     per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_prob_sum: dict[str, float] = {k.name: 0.0 for k in LessonKind}
     per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
 
@@ -520,6 +527,9 @@ def run_rollout_eval(
             "per_kind_asm_n": dict(per_kind_n),
             "eot_acc": 0.0,
             "eot_pos_recall": 0.0,
+            "eot_prob": 0.0,
+            "trial_eot_prob": 0.0,
+            "per_kind_eot_prob": dict(zero),
             "per_kind_eot_acc": dict(zero),
             "per_kind_eot_pos_recall": dict(zero),
             "per_kind_eot_step_n": dict(per_kind_n),
@@ -613,13 +623,15 @@ def run_rollout_eval(
                     continue
 
                 s, k, cur_thp = current[i]
-                pred_stop = float(eot_probs[i]) > eot_threshold
+                p_eot = float(eot_probs[i])
+                pred_stop = p_eot > eot_threshold
 
                 # Score the head against ground truth on this pre-action state:
                 # it should fire iff the factory is already complete. `cur_thp`
                 # and `eot_probs[i]` are both this same state, so they align.
                 is_done = cur_thp >= 1.0
                 per_kind_eot_step_total[k.name] += 1
+                per_kind_eot_prob_sum[k.name] += p_eot
                 per_kind_eot_correct[k.name] += int(pred_stop == is_done)
                 if is_done:
                     per_kind_eot_pos_total[k.name] += 1
@@ -695,6 +707,17 @@ def run_rollout_eval(
         kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
         for kn, n in per_kind_eot_pos_total.items()
     }
+    per_kind_eot_prob = {
+        kn: (per_kind_eot_prob_sum[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_step_total.items()
+    }
+    # Step-weighted, so the pooled mean is over steps rather than over kinds —
+    # the same population per_kind_eot_prob is computed from.
+    def _pooled_eot_prob(trial: bool) -> float:
+        kinds = [k for k in LessonKind if LESSON_IS_TRIAL[k] == trial]
+        n = sum(per_kind_eot_step_total[k.name] for k in kinds)
+        tot = sum(per_kind_eot_prob_sum[k.name] for k in kinds)
+        return tot / n if n else 0.0
 
     if was_training:
         agent.train()
@@ -709,6 +732,9 @@ def run_rollout_eval(
         "per_kind_asm_n": dict(per_kind_asm_total),
         "eot_acc": eot_acc,
         "eot_pos_recall": eot_pos_recall,
+        "eot_prob": _pooled_eot_prob(trial=False),
+        "trial_eot_prob": _pooled_eot_prob(trial=True),
+        "per_kind_eot_prob": per_kind_eot_prob,
         "per_kind_eot_acc": per_kind_eot_acc,
         "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
         "per_kind_eot_step_n": dict(per_kind_eot_step_total),

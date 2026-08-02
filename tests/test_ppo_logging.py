@@ -272,6 +272,11 @@ class TestRolloutEpisodeMetrics:
             )
             assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
 
+    def test_eot_rate_is_logged_per_lesson(self):
+        # Aggregated eot_rate hides which lessons the policy quits on; the
+        # per-lesson split is what says whether early quitting is uniform.
+        assert self._metrics("SPLITTER_SPLIT")["rollout/SPLITTER_SPLIT/eot_rate"] == 1.0
+
     def test_entity_efficiency_is_required_over_placed(self):
         m = self._metrics()
         assert m["rollout/entity_efficiency"] == pytest.approx(3.0 / 4.0)

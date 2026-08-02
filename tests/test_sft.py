@@ -1050,6 +1050,9 @@ class TestRunRolloutEval:
             "per_kind_asm_n",
             "eot_acc",
             "eot_pos_recall",
+            "eot_prob",
+            "trial_eot_prob",
+            "per_kind_eot_prob",
             "per_kind_eot_acc",
             "per_kind_eot_pos_recall",
             "per_kind_eot_step_n",
@@ -1068,6 +1071,20 @@ class TestRunRolloutEval:
         )
         for kn, thp in per_kind.items():
             assert 0.0 <= thp <= 1.5, f"{kn}: throughput out of range: {thp}"
+
+        # EOT probabilities are means of a sigmoid, so they stay in [0, 1] and
+        # the pooled lesson mean sits inside the range of the kinds it pools.
+        assert 0.0 <= roll["eot_prob"] <= 1.0
+        assert 0.0 <= roll["trial_eot_prob"] <= 1.0
+        for p in roll["per_kind_eot_prob"].values():
+            assert 0.0 <= p <= 1.0
+        lessons = [
+            roll["per_kind_eot_prob"][k.name]
+            for k in LessonKind
+            if not LESSON_IS_TRIAL[k] and roll["per_kind_eot_step_n"][k.name] > 0
+        ]
+        assert lessons, "Sanity: at least one lesson was scored"
+        assert min(lessons) <= roll["eot_prob"] <= max(lessons)
 
     def test_default_max_level_evals_from_empty(self, registered_env):
         """With the default max_level (0), the rollout eval auto-resolves to
