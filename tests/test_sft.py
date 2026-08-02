@@ -35,6 +35,7 @@ from sft import (
     _iter_demo_pairs,
     _materialise,
     _steps_per_epoch,
+    _solve_rate,
     _solved_assembler_recipes,
     build_lr_schedule,
     extract_expert_actions,
@@ -982,6 +983,20 @@ class TestRolloutAsmItemAcc:
         assert roll["per_kind_asm_n"]["MOVE_ONE_ITEM"] == 0
 
 
+class TestSolveRate:
+    def test_counts_only_factories_that_reached_the_reference(self):
+        # Same mean (0.5), different skill: two solved factories vs four
+        # half-built ones.
+        assert _solve_rate([1.0, 1.0, 0.0, 0.0]) == 0.5
+        assert _solve_rate([0.5, 0.5, 0.5, 0.5]) == 0.0
+
+    def test_overshoot_counts_as_solved(self):
+        assert _solve_rate([1.2]) == 1.0
+
+    def test_empty_is_zero(self):
+        assert _solve_rate([]) == 0.0
+
+
 class TestRunRolloutEval:
     """End-to-end coverage of greedy rollout eval on held-out val factories."""
 
@@ -1045,6 +1060,9 @@ class TestRunRolloutEval:
             "trial_n",
             "per_kind",
             "per_kind_n",
+            "solve_rate",
+            "trial_solve_rate",
+            "per_kind_solve_rate",
             "asm_item_acc",
             "per_kind_asm_item_acc",
             "per_kind_asm_n",

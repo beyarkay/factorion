@@ -411,6 +411,12 @@ class RolloutEval(TypedDict):
     trial_n: int  # number of trial factories the eval scored
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    # Fraction of rollouts that reached the reference throughput, pooled the
+    # same way: a mean of 0.5 is a half-built factory everywhere or a solved one
+    # half the time, and only the latter is real build skill.
+    solve_rate: float
+    trial_solve_rate: float
+    per_kind_solve_rate: dict[str, float]  # solve_rate, keyed by LessonKind.name
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
@@ -426,6 +432,17 @@ class RolloutEval(TypedDict):
     per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
     per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
     per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+
+
+def _solve_rate(thputs: list) -> float:
+    """Fraction of rollouts that reached the reference throughput.
+
+    The mean throughput cannot say whether the policy half-builds everything or
+    fully builds some factories and nothing on the rest; only the second is on a
+    path to a working factory. `>= 1.0` is the same "is this factory finished?"
+    test the EOT head is scored against.
+    """
+    return sum(t >= 1.0 for t in thputs) / len(thputs) if thputs else 0.0
 
 
 def _solved_assembler_recipes(solved_CWH) -> set[int]:
@@ -522,6 +539,9 @@ def run_rollout_eval(
             "trial_n": 0,
             "per_kind": zero,
             "per_kind_n": per_kind_n,
+            "solve_rate": 0.0,
+            "trial_solve_rate": 0.0,
+            "per_kind_solve_rate": dict(zero),
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
             "per_kind_asm_n": dict(per_kind_n),
@@ -683,6 +703,9 @@ def run_rollout_eval(
         for kn, ts in per_kind_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
+    per_kind_solve_rate = {
+        kn: _solve_rate(ts) for kn, ts in per_kind_throughputs.items()
+    }
 
     asm_total_all = sum(per_kind_asm_total.values())
     asm_item_acc = (
@@ -727,6 +750,9 @@ def run_rollout_eval(
         "trial_n": len(trial_throughputs),
         "per_kind": per_kind,
         "per_kind_n": per_kind_n,
+        "solve_rate": _solve_rate(all_throughputs),
+        "trial_solve_rate": _solve_rate(trial_throughputs),
+        "per_kind_solve_rate": per_kind_solve_rate,
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
         "per_kind_asm_n": dict(per_kind_asm_total),

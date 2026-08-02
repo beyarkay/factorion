@@ -306,6 +306,15 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
 
+    # Held-out solve rate: what fraction of those factories the policy actually
+    # finished, rather than how far it got on average.
+    metrics["eval/solve_rate"] = roll["solve_rate"]
+    if roll["trial_n"] > 0:
+        metrics["eval/trial_solve_rate"] = roll["trial_solve_rate"]
+    for kn, rate in roll["per_kind_solve_rate"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            metrics[f"eval/{kn}/solve_rate"] = rate
+
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
     # the recipe-pick skill is trackable through RL (#264). Only surfaces for
@@ -1901,6 +1910,8 @@ if __name__ == "__main__":
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="max")
         wandb.define_metric("eval/trial_thput", summary="max")
+        wandb.define_metric("eval/solve_rate", summary="max")
+        wandb.define_metric("eval/trial_solve_rate", summary="max")
         wandb.define_metric("eval/asm_item_acc", summary="max")
         wandb.define_metric("eval/eot_acc", summary="max")
         wandb.define_metric("eval/eot_pos_recall", summary="max")
@@ -1910,6 +1921,7 @@ if __name__ == "__main__":
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="max")
+            wandb.define_metric(f"eval/{ln}/solve_rate", summary="max")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
