@@ -415,6 +415,16 @@ def _critic_stats(values: np.ndarray, returns: np.ndarray, advantages: np.ndarra
     }
 
 
+def _masked_mean(x_B: torch.Tensor, valid_B: torch.Tensor) -> torch.Tensor:
+    """Mean of ``x_B`` over the entries ``valid_B`` marks 1, ignoring the rest.
+
+    The floor of 1 on the denominator keeps an all-masked minibatch at 0
+    instead of NaN — every term is zero-weighted there anyway, so it
+    contributes no gradient.
+    """
+    return (x_B * valid_B).sum() / valid_B.sum().clamp(min=1.0)
+
+
 def _critic_diagnostics(
     values: np.ndarray,
     returns: np.ndarray,
@@ -2300,6 +2310,15 @@ if __name__ == "__main__":
         advantages_B = advantages_SE.reshape(-1)
         returns_B = returns_SE.reshape(-1)
         values_B = values_SE.reshape(-1)
+        # Gymnasium's NEXT_STEP autoreset (#233): the call right after an
+        # episode ends ignores the action, resets the sub-env and forces
+        # reward=0. Its stored transition is therefore junk — the action was
+        # never executed and its "next state" is an unrelated fresh factory —
+        # and `dones_SE[step] = next_done` already flags exactly those steps.
+        # Zero-weight them everywhere the update reads the batch. GAE needs no
+        # such guard: the preceding real terminal step is already cut off by
+        # `nextnonterminal = 0`, so the junk is confined to the junk step.
+        valid_B = 1.0 - dones_SE.reshape(-1)
 
         # Optimizing the policy and value network
         update_start = time.time()
@@ -2326,23 +2345,29 @@ if __name__ == "__main__":
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
                 ratio_B = logratio_B.exp()
 
+                valid_mB = valid_B[idxs]  # autoreset junk weighs 0 (#233)
+
                 with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    approx_kl = ((ratio_B - 1) - logratio_B).mean()
+                    approx_kl = _masked_mean((ratio_B - 1) - logratio_B, valid_mB)
                     # Keep the per-minibatch clipfrac on-device and convert once
                     # after the loop (was `.item()` per minibatch = a CUDA sync
                     # that stalled the optimiser pipeline). Logging-only.
-                    clipfracs.append(((ratio_B - 1.0).abs() > args.clip_coef).float().mean())
+                    clipfracs.append(_masked_mean(
+                        ((ratio_B - 1.0).abs() > args.clip_coef).float(), valid_mB
+                    ))
 
                 assert not torch.isnan(advantages_B).any(), f"Some advantages are NaN: {advantages_B=}"
                 advantages_mB = advantages_B[idxs]
                 if args.norm_adv:
-                    advantages_mB = (advantages_mB - advantages_mB.mean()) / (advantages_mB.std() + 1e-8)
+                    adv_mean = _masked_mean(advantages_mB, valid_mB)
+                    adv_var = _masked_mean((advantages_mB - adv_mean) ** 2, valid_mB)
+                    advantages_mB = (advantages_mB - adv_mean) / (adv_var.sqrt() + 1e-8)
 
                 # Policy loss
                 pg_loss1 = -advantages_mB * ratio_B
                 pg_loss2 = -advantages_mB * torch.clamp(ratio_B, 1 - args.clip_coef, 1 + args.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                pg_loss = _masked_mean(torch.max(pg_loss1, pg_loss2), valid_mB)
 
                 # Value loss
                 newvalue = newvalue_B.view(-1)
@@ -2355,11 +2380,11 @@ if __name__ == "__main__":
                     )
                     v_loss_clipped = (v_clipped - returns_B[idxs]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * v_loss_max.mean()
+                    v_loss = 0.5 * _masked_mean(v_loss_max, valid_mB)
                 else:
-                    v_loss = 0.5 * ((newvalue - returns_B[idxs]) ** 2).mean()
+                    v_loss = 0.5 * _masked_mean((newvalue - returns_B[idxs]) ** 2, valid_mB)
 
-                entropy_loss = entropy_B.mean()
+                entropy_loss = _masked_mean(entropy_B, valid_mB)
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
                 if in_warmup:
@@ -2388,9 +2413,10 @@ if __name__ == "__main__":
             )
 
         # Value-head (critic) diagnostics, global + per-lesson.
+        keep_B = valid_B.cpu().numpy() > 0  # drop the autoreset junk (#233)
         critic_metrics = _critic_diagnostics(
-            values_B.cpu().numpy(), returns_B.cpu().numpy(),
-            advantages_B.cpu().numpy(), kinds_SE.reshape(-1),
+            values_B.cpu().numpy()[keep_B], returns_B.cpu().numpy()[keep_B],
+            advantages_B.cpu().numpy()[keep_B], kinds_SE.reshape(-1)[keep_B],
         )
         explained_var = critic_metrics["critic/explained_variance"]  # losses/* back-compat
 
