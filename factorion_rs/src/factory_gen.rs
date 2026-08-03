@@ -3155,6 +3155,19 @@ fn walk_recipe_frontier(
     }
 }
 
+/// The crafting machine a trial's analytic ceiling assumes. A trial places no
+/// machine — the agent invents the factory — so the ceiling has to name one,
+/// and it must be the machine the agent can actually build with. When a second
+/// placeable crafting entity lands (a smelter tier), this becomes a choice
+/// rather than the only option.
+const CEILING_MACHINE: Item = Item::AssemblingMachine1;
+
+/// Items/second of `item` from one fully-fed [`CEILING_MACHINE`]: the
+/// recipe's own production rate scaled by the machine's multiplier.
+fn ceiling_thput(recipe: &Recipe, item: Item) -> Option<f64> {
+    Some(recipe.production_rate(item)? * CEILING_MACHINE.crafting_speed()?)
+}
+
 /// Build a TRIAL_RECIPE_TREE_DEPTH_`depth` trial: an RL-only scenario with no
 /// reference solution (see [`LessonKind::is_trial`]). A random craftable
 /// item whose recipe tree is at least `depth` deep becomes the sink; its
@@ -3171,10 +3184,9 @@ fn walk_recipe_frontier(
 /// marker may take it, so the agent always has somewhere to build against
 /// every marker.
 ///
-/// `max_throughput` is analytic: one fully-fed assembler's output rate of the
-/// sink recipe (`produces_rate`). `transform_flow` scales `produces` by input
-/// sufficiency and never beyond 1×, so this is the engine's single-machine
-/// ceiling — a clean chain that saturates one final assembler scores 1.0.
+/// `max_throughput` is analytic, in **items per second**: [`ceiling_thput`]
+/// of the sink recipe. `transform_flow` caps a crafting entity at exactly
+/// that, so a clean chain that saturates one final machine scores 1.0.
 fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<BuiltFactory> {
     let s = size as i64;
     // Every recipe is expandable regardless of assembler tier: the engine's
@@ -3203,7 +3215,7 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 
         let sink_item = sinks[rng.choice_index(sinks.len())];
         let recipe = index.get(&sink_item)?;
-        let max_throughput = recipe.produces_rate(sink_item).filter(|&r| r > 0.0)?;
+        let max_throughput = ceiling_thput(recipe, sink_item).filter(|&r| r > 0.0)?;
 
         let mut frontier: Vec<Item> = Vec::new();
         let mut deepest = 0;
@@ -3696,7 +3708,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{kind:?} seed={seed}: sink has no recipe"));
                 assert_eq!(
                     f.max_throughput,
-                    recipe.produces_rate(sink_item).unwrap(),
+                    ceiling_thput(recipe, sink_item).unwrap(),
                     "{kind:?} seed={seed}"
                 );
 

@@ -142,12 +142,33 @@ class TestTrialFactory:
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_analytic_max_throughput(self, kind):
         """The normalization ceiling is one fully-fed assembler's output rate
-        of the sink recipe — positive without any reference solution."""
+        of the sink recipe in items/s — positive without any reference
+        solution, and scaled by the recipe's crafting time so a 40s recipe
+        does not normalize against the same number as a 0.5s one (#355)."""
         f = build_factory(size=SIZE, kind=kind, seed=0)
         assert f is not None
         sink, _ = _markers(f)
+        recipe = recipes[sink]
         assert f.max_throughput > 0
-        assert f.max_throughput == recipes[sink].produces[sink]
+        assert f.max_throughput == pytest.approx(
+            recipe.produces[sink]
+            * str2ent("assembling_machine_1").crafting_speed
+            / recipe.crafting_time
+        )
+
+    def test_ceilings_span_the_recipe_table(self):
+        """Sanity on the fix: sink recipes differ by orders of magnitude in
+        real Factorio, so the trial ceilings must too. Before crafting time
+        entered the model these all collapsed onto the per-craft quantity
+        (93% of trials ceilinged at exactly 1.0)."""
+        ceilings = {
+            f.max_throughput
+            for kind in TRIAL_KINDS
+            for seed in range(200)
+            if (f := build_factory(size=SIZE, kind=kind, seed=seed)) is not None
+        }
+        assert len(ceilings) > 10, f"ceilings barely vary: {sorted(ceilings)}"
+        assert max(ceilings) / min(ceilings) > 100
 
     @pytest.mark.parametrize("kind", list(TRIAL_KINDS))
     def test_markers_sit_on_the_edge_working_inward(self, kind):
