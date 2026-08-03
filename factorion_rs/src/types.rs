@@ -2074,7 +2074,7 @@ mod tests {
         // A standard `crafting` recipe lists all three assembler tiers.
         let ec = get_recipe(Item::ElectronicCircuit).unwrap();
         assert_eq!(
-            ec.produced_by.iter().copied().collect::<Vec<_>>(),
+            ec.produced_by.to_vec(),
             vec![
                 Item::AssemblingMachine1,
                 Item::AssemblingMachine2,
@@ -2084,7 +2084,7 @@ mod tests {
         // The one `advanced-crafting` recipe excludes assembling machine 1.
         let eu = get_recipe(Item::EngineUnit).unwrap();
         assert_eq!(
-            eu.produced_by.iter().copied().collect::<Vec<_>>(),
+            eu.produced_by.to_vec(),
             vec![Item::AssemblingMachine2, Item::AssemblingMachine3]
         );
     }
