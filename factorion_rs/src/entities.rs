@@ -195,10 +195,12 @@ pub trait FactoryEntity {
     /// Return the edges this entity contributes to the graph.
     fn connections(&self, pos: (usize, usize), dir: Direction, world: &World) -> Vec<Edge>;
 
-    /// Given accumulated input flow rates, compute output flow rates.
+    /// Given accumulated input flow rates, compute output flow rates. Both
+    /// maps are in **items per second** — never per-craft quantities, which
+    /// is the unit a `Recipe` speaks (see [`crate::types::Recipe`]).
     fn transform_flow(&self, input: &HashMap<Item, f64>) -> HashMap<Item, f64>;
 
-    /// Maximum items/second this entity can transfer.
+    /// Maximum **items per second** this entity can transfer.
     /// Default delegates to Item::flow_rate().
     fn flow_rate(&self) -> f64 {
         self.kind().flow_rate()
@@ -434,19 +436,33 @@ impl FactoryEntity for AssemblingMachine {
             None => return HashMap::new(),
         };
 
-        // Find the minimum ratio of available input to required input
-        let mut min_ratio: f64 = 1.0;
-        for &(item, required) in recipe.consumes.iter() {
-            let available = input.get(&item).copied().unwrap_or(0.0);
-            let ratio = available / required;
-            min_ratio = min_ratio.min(ratio);
-        }
+        // The machine's ceiling in **crafts per second**. `crafting_time` is
+        // seconds per craft, so the rate is its reciprocal, scaled up by the
+        // entity's unitless multiplier — a faster machine does more crafts a
+        // second, a longer recipe fewer. Read off `self.kind()` so any future
+        // crafting entity (a smelter tier) is limited by the same code.
+        // Without this term crafting time has no effect on throughput and an
+        // artillery turret is as fast as an electronic circuit (#355).
+        let Some(mult) = self.kind().crafting_speed() else {
+            return HashMap::new();
+        };
+        let machine_limit = mult / recipe.crafting_time;
 
-        // Produce outputs scaled by the minimum ratio
+        // Ingredient supply, also in crafts per second: each ingredient's
+        // items/s over the quantity one craft wants of it. The scarcest
+        // ingredient sets the pace, and the machine caps it.
+        let craft_rate = recipe
+            .consumes
+            .iter()
+            .map(|&(item, qty)| input.get(&item).copied().unwrap_or(0.0) / qty)
+            .fold(machine_limit, f64::min);
+
+        // Back to items per second: a recipe that yields several of an item
+        // per craft yields them that many times faster.
         recipe
             .produces
             .iter()
-            .map(|&(item, rate)| (item, rate * min_ratio))
+            .map(|&(item, qty)| (item, qty * craft_rate))
             .collect()
     }
 }
@@ -1311,20 +1327,41 @@ mod tests {
             recipe_item: Some(Item::ElectronicCircuit),
         };
 
-        // Full input matches recipe exactly: 3 copper cable + 1 iron plate → 1 EC
+        // Input feeds exactly one craft per second; the AM1 ceiling for a
+        // 0.5s recipe is also 1 craft/s, so both branches agree at 1 EC/s.
         let input = HashMap::from([(Item::CopperCable, 3.0), (Item::IronPlate, 1.0)]);
         let output = asm.transform_flow(&input);
         assert!((output[&Item::ElectronicCircuit] - 1.0).abs() < 1e-9);
 
-        // Half copper cable available: ratio = min(1.5/3, 1/1) = 0.5 → 0.5 EC
+        // Input-limited: min(1.5/3, 1/1) = 0.5 crafts/s → 0.5 EC/s
         let input = HashMap::from([(Item::CopperCable, 1.5), (Item::IronPlate, 1.0)]);
         let output = asm.transform_flow(&input);
         assert!((output[&Item::ElectronicCircuit] - 0.5).abs() < 1e-9);
+
+        // Machine-limited: drowning it in ingredients does not beat the
+        // 0.5 crafting_speed / 0.5s crafting_time ceiling of 1 craft/s.
+        let input = HashMap::from([(Item::CopperCable, 300.0), (Item::IronPlate, 100.0)]);
+        let output = asm.transform_flow(&input);
+        assert!((output[&Item::ElectronicCircuit] - 1.0).abs() < 1e-9);
 
         // Missing ingredient → 0 output
         let input = HashMap::from([(Item::CopperCable, 3.0)]);
         let output = asm.transform_flow(&input);
         assert!((output[&Item::ElectronicCircuit] - 0.0).abs() < 1e-9);
+
+        // A slow recipe is slow: artillery turret is 40s, so one AM1 tops
+        // out at 0.5/40 = 0.0125/s no matter how much arrives.
+        let slow = AssemblingMachine {
+            recipe_item: Some(Item::ArtilleryTurret),
+        };
+        let input = HashMap::from([
+            (Item::AdvancedCircuit, 100.0),
+            (Item::Concrete, 100.0),
+            (Item::IronGearWheel, 100.0),
+            (Item::SteelPlate, 100.0),
+        ]);
+        let output = slow.transform_flow(&input);
+        assert!((output[&Item::ArtilleryTurret] - 0.0125).abs() < 1e-9);
     }
 
     #[test]

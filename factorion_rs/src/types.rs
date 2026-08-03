@@ -54,7 +54,6 @@ impl Direction {
     }
 
     /// The opposite direction.
-    #[allow(dead_code)]
     pub fn opposite(self) -> Self {
         match self {
             Direction::North => Direction::South,
@@ -503,16 +502,20 @@ impl Item {
         )
     }
 
-    /// Maximum items/second one TILE of this item can transfer when placed
-    /// as an entity (lane-aware entities cap each lane node at half this).
-    /// Returns 0.0 for non-placeable items.
-    #[allow(dead_code)]
+    /// Maximum **items per second** one TILE of this item can transfer when
+    /// placed as an entity (lane-aware entities cap each lane node at half
+    /// this). Returns 0.0 for non-placeable items.
     pub fn flow_rate(self) -> f64 {
         match self {
             Item::TransportBelt => 15.0,
             Item::Inserter => 0.86,
             Item::LongHandedInserter => 1.2,
-            Item::AssemblingMachine1 => 0.5,
+            // An assembler imposes no items/s cap of its own — like Source
+            // and Sink, its limit is set by `transform_flow`, where the
+            // recipe's crafting time and the machine's `crafting_speed`
+            // decide the rate. A finite number here would be a crafting
+            // speed wearing an items/s label.
+            Item::AssemblingMachine1 => f64::INFINITY,
             Item::UndergroundBelt => 15.0,
             Item::Sink => f64::INFINITY,
             Item::Source => f64::INFINITY,
@@ -603,6 +606,25 @@ impl Item {
         }
     }
 
+    /// This item's crafting speed when placed as a crafting machine — the
+    /// **unitless** multiplier on a recipe's own rate. A recipe carries a
+    /// speed in items/second (`Recipe::base_thput`); the machine
+    /// scales it, so foobar at 1/s comes out of an Assembling Machine 1 at
+    /// 0.5/s and out of an Assembling Machine 3 at 1.25/s. Base-game
+    /// normal-quality values (Factorio 1.0 and 2.0 agree).
+    ///
+    /// `None` means "does not craft" — it is not an assembler-only notion.
+    /// Smelting tiers carry a crafting speed the same way and belong here as
+    /// extra arms, not as a parallel mechanism.
+    pub fn crafting_speed(self) -> Option<f64> {
+        match self {
+            Item::AssemblingMachine1 => Some(0.5),
+            Item::AssemblingMachine2 => Some(0.75),
+            Item::AssemblingMachine3 => Some(1.25),
+            _ => None,
+        }
+    }
+
     /// Footprint (width, height) for placeable items.
     /// Width = perpendicular to flow, height = along flow.
     /// Non-placeable items return (1, 1).
@@ -649,10 +671,17 @@ impl Pos {
 /// empty recipe (no inputs or no outputs) is unrepresentable at compile
 /// time — there is no need for runtime checks of these invariants.
 ///
-/// `crafting_time` is the canonical wiki value (Base game) in **seconds
-/// per craft**, before any crafting-speed multiplier from the producing
-/// entity. For an Assembling Machine 1 (crafting_speed = 0.5), the
-/// real-time-per-craft is `crafting_time / crafting_speed`.
+/// **Units.** `consumes` and `produces` hold the canonical wiki quantities
+/// in **items per craft** — counts, not rates, and nothing may treat them as
+/// one (that confusion was #355). `crafting_time` is the canonical wiki value
+/// (Base game) in **seconds per craft**.
+///
+/// For a rate, use [`Recipe::consumption_rate`] / [`Recipe::production_rate`],
+/// which divide by `crafting_time` to give **items per second** at crafting
+/// speed 1.0; scale by the crafting entity's unitless
+/// [`Item::crafting_speed`] for its rate in a machine. Read the fields
+/// directly only when you genuinely want a per-craft count, as `total_raw`
+/// does.
 #[derive(Debug, Clone)]
 pub struct Recipe {
     pub consumes: NonEmpty<(Item, f64)>,
@@ -678,22 +707,31 @@ pub struct TotalRaw {
 }
 
 impl Recipe {
-    /// Look up the consumption rate for `item`, if present.
+    /// The recipe's own speed for an ingredient, in **items per second** —
+    /// the quantity one craft wants over the time one craft takes. `None` if
+    /// `item` is not an ingredient.
+    ///
+    /// This is the rate at crafting speed 1.0. Multiply by the crafting
+    /// entity's unitless [`Item::crafting_speed`] for the rate in a machine.
+    // Only the tests read this today. `expect` would be the self-cleaning
+    // choice, but the expectation is fulfilled in the lib build and
+    // unfulfilled in the test build, so it cannot hold for both configs.
     #[allow(dead_code)]
-    pub fn consumes_rate(&self, item: Item) -> Option<f64> {
-        self.consumes
-            .iter()
-            .find(|(i, _)| *i == item)
-            .map(|(_, r)| *r)
+    pub fn consumption_rate(&self, item: Item) -> Option<f64> {
+        let (_, qty) = self.consumes.iter().find(|(i, _)| *i == item)?;
+        Some(qty / self.crafting_time)
     }
 
-    /// Look up the production rate for `item`, if present.
-    #[allow(dead_code)]
-    pub fn produces_rate(&self, item: Item) -> Option<f64> {
-        self.produces
-            .iter()
-            .find(|(i, _)| *i == item)
-            .map(|(_, r)| *r)
+    /// The recipe's own speed for an output, in **items per second**. A
+    /// recipe that yields several per craft is faster by exactly that
+    /// factor — copper cable is 2 per 0.5s, so 4/s. `None` if `item` is not
+    /// an output.
+    ///
+    /// This is the rate at crafting speed 1.0. Multiply by the crafting
+    /// entity's unitless [`Item::crafting_speed`] for the rate in a machine.
+    pub fn production_rate(&self, item: Item) -> Option<f64> {
+        let (_, qty) = self.produces.iter().find(|(i, _)| *i == item)?;
+        Some(qty / self.crafting_time)
     }
 
     /// The total raw cost of one craft of this recipe, expanded through
@@ -737,10 +775,17 @@ fn raw_expand(item: Item, qty: f64, index: &HashMap<Item, Recipe>) -> (NonEmpty<
     let Some(recipe) = index.get(&item) else {
         return (NonEmpty::new((item, qty)), 0.0);
     };
-    // How many crafts yield `qty` of `item` (all recipes list positive
-    // output rates, so the filter only guards against malformed data).
-    let crafts = match recipe.produces_rate(item).filter(|p| *p > 0.0) {
-        Some(per_craft) => qty / per_craft,
+    // How many crafts yield `qty` of `item`. This is a count, not a rate, so
+    // it reads the per-craft quantity off `produces` directly (all recipes
+    // list positive outputs, so the filter only guards malformed data).
+    let per_craft = recipe
+        .produces
+        .iter()
+        .find(|(i, _)| *i == item)
+        .map(|(_, q)| *q)
+        .filter(|q| *q > 0.0);
+    let crafts = match per_craft {
+        Some(q) => qty / q,
         None => qty,
     };
     let mut time = crafts * recipe.crafting_time;
@@ -1906,40 +1951,122 @@ mod tests {
         );
     }
 
+    /// Rates here are items/second at crafting speed 1.0, so each is the
+    /// wiki quantity over the recipe's crafting time — every recipe below is
+    /// 0.5s, hence exactly double its per-craft count.
     #[test]
     fn test_recipes() {
         let ec = get_recipe(Item::ElectronicCircuit).unwrap();
-        assert_eq!(ec.consumes_rate(Item::CopperCable), Some(3.0));
-        assert_eq!(ec.consumes_rate(Item::IronPlate), Some(1.0));
-        assert_eq!(ec.produces_rate(Item::ElectronicCircuit), Some(1.0));
+        assert_eq!(ec.consumption_rate(Item::CopperCable), Some(6.0));
+        assert_eq!(ec.consumption_rate(Item::IronPlate), Some(2.0));
+        assert_eq!(ec.production_rate(Item::ElectronicCircuit), Some(2.0));
 
         let cc = get_recipe(Item::CopperCable).unwrap();
-        assert_eq!(cc.consumes_rate(Item::CopperPlate), Some(1.0));
-        assert_eq!(cc.produces_rate(Item::CopperCable), Some(2.0));
+        assert_eq!(cc.consumption_rate(Item::CopperPlate), Some(2.0));
+        assert_eq!(cc.production_rate(Item::CopperCable), Some(4.0));
 
         let igw = get_recipe(Item::IronGearWheel).unwrap();
-        assert_eq!(igw.consumes_rate(Item::IronPlate), Some(2.0));
-        assert_eq!(igw.produces_rate(Item::IronGearWheel), Some(1.0));
+        assert_eq!(igw.consumption_rate(Item::IronPlate), Some(4.0));
+        assert_eq!(igw.production_rate(Item::IronGearWheel), Some(2.0));
 
         let tb = get_recipe(Item::TransportBelt).unwrap();
-        assert_eq!(tb.consumes_rate(Item::IronGearWheel), Some(1.0));
-        assert_eq!(tb.consumes_rate(Item::IronPlate), Some(1.0));
-        assert_eq!(tb.produces_rate(Item::TransportBelt), Some(2.0));
+        assert_eq!(tb.consumption_rate(Item::IronGearWheel), Some(2.0));
+        assert_eq!(tb.consumption_rate(Item::IronPlate), Some(2.0));
+        assert_eq!(tb.production_rate(Item::TransportBelt), Some(4.0));
 
         let ins = get_recipe(Item::Inserter).unwrap();
-        assert_eq!(ins.consumes_rate(Item::ElectronicCircuit), Some(1.0));
-        assert_eq!(ins.consumes_rate(Item::IronGearWheel), Some(1.0));
-        assert_eq!(ins.consumes_rate(Item::IronPlate), Some(1.0));
-        assert_eq!(ins.produces_rate(Item::Inserter), Some(1.0));
+        assert_eq!(ins.consumption_rate(Item::ElectronicCircuit), Some(2.0));
+        assert_eq!(ins.consumption_rate(Item::IronGearWheel), Some(2.0));
+        assert_eq!(ins.consumption_rate(Item::IronPlate), Some(2.0));
+        assert_eq!(ins.production_rate(Item::Inserter), Some(2.0));
 
         let am1 = get_recipe(Item::AssemblingMachine1).unwrap();
-        assert_eq!(am1.consumes_rate(Item::ElectronicCircuit), Some(3.0));
-        assert_eq!(am1.consumes_rate(Item::IronGearWheel), Some(5.0));
-        assert_eq!(am1.consumes_rate(Item::IronPlate), Some(9.0));
-        assert_eq!(am1.produces_rate(Item::AssemblingMachine1), Some(1.0));
+        assert_eq!(am1.consumption_rate(Item::ElectronicCircuit), Some(6.0));
+        assert_eq!(am1.consumption_rate(Item::IronGearWheel), Some(10.0));
+        assert_eq!(am1.consumption_rate(Item::IronPlate), Some(18.0));
+        assert_eq!(am1.production_rate(Item::AssemblingMachine1), Some(2.0));
 
         assert!(get_recipe(Item::IronPlate).is_none());
         assert!(get_recipe(Item::CopperPlate).is_none());
+    }
+
+    /// Single-assembler output rates checked against Factorio 1.0 (the
+    /// values are unchanged in 2.0). Real time per craft is
+    /// `crafting_time / crafting_speed`, so an Assembling Machine 1
+    /// (speed 0.5) is exactly half as fast as the wiki's speed-1.0
+    /// reference — the column the recipe pages quote.
+    #[test]
+    fn test_production_rate_matches_factorio() {
+        // (recipe, items/craft, seconds/craft, items/s at crafting speed 1.0)
+        let cases = [
+            (Item::ElectronicCircuit, 1.0, 0.5, 2.0),
+            (Item::CopperCable, 2.0, 0.5, 4.0),
+            (Item::IronGearWheel, 1.0, 0.5, 2.0),
+            // The very slow end of the range: 40s per craft.
+            (Item::ArtilleryTurret, 1.0, 40.0, 0.025),
+        ];
+        for (item, per_craft, seconds, at_speed_1) in cases {
+            let recipe = get_recipe(item).unwrap();
+            assert_eq!(recipe.crafting_time, seconds, "{item:?}");
+            // The per-craft quantity is folded in, so copper cable's 2-per-
+            // craft makes it twice the rate of a 1-per-craft 0.5s recipe.
+            let (_, qty) = recipe.produces.iter().find(|(i, _)| *i == item).unwrap();
+            assert_eq!(*qty, per_craft, "{item:?}");
+
+            let rate = recipe.production_rate(item).unwrap();
+            assert!((rate - at_speed_1).abs() < 1e-12, "{item:?}: {rate}");
+
+            // A machine only multiplies that rate by a unitless number.
+            for machine in [
+                Item::AssemblingMachine1,
+                Item::AssemblingMachine2,
+                Item::AssemblingMachine3,
+            ] {
+                let mult = machine.crafting_speed().unwrap();
+                let got = rate * mult;
+                assert!(
+                    (got - at_speed_1 * mult).abs() < 1e-12,
+                    "{item:?} in {machine:?}: {got}"
+                );
+            }
+        }
+
+        // Concretely: an Assembling Machine 1 halves the recipe's rate, an
+        // Assembling Machine 3 multiplies it by 1.25.
+        let gears = get_recipe(Item::IronGearWheel).unwrap();
+        let base = gears.production_rate(Item::IronGearWheel).unwrap();
+        assert_eq!(base, 2.0);
+        assert_eq!(
+            base * Item::AssemblingMachine1.crafting_speed().unwrap(),
+            1.0
+        );
+        assert_eq!(
+            base * Item::AssemblingMachine3.crafting_speed().unwrap(),
+            2.5
+        );
+
+        // The spread the engine used to collapse: 0.0125 .. 20 items/s in an
+        // AM1, a 1600x range the bare per-craft quantity (1 vs 1) reported as
+        // identical.
+        let ec = get_recipe(Item::ElectronicCircuit)
+            .unwrap()
+            .production_rate(Item::ElectronicCircuit)
+            .unwrap();
+        let turret = get_recipe(Item::ArtilleryTurret)
+            .unwrap()
+            .production_rate(Item::ArtilleryTurret)
+            .unwrap();
+        assert!((ec / turret - 80.0).abs() < 1e-9);
+
+        // A crafting speed is a property of whatever entity crafts, not of
+        // assemblers specifically - everything that doesn't craft says so,
+        // and a future smelter tier answers here without new plumbing.
+        assert_eq!(Item::TransportBelt.crafting_speed(), None);
+        assert_eq!(Item::IronPlate.crafting_speed(), None);
+
+        // A rate needs the item to be on that side of the recipe.
+        assert_eq!(gears.production_rate(Item::CopperCable), None);
+        assert_eq!(gears.consumption_rate(Item::IronPlate), Some(4.0));
     }
 
     #[test]
@@ -1947,7 +2074,7 @@ mod tests {
         // A standard `crafting` recipe lists all three assembler tiers.
         let ec = get_recipe(Item::ElectronicCircuit).unwrap();
         assert_eq!(
-            ec.produced_by.iter().copied().collect::<Vec<_>>(),
+            ec.produced_by.to_vec(),
             vec![
                 Item::AssemblingMachine1,
                 Item::AssemblingMachine2,
@@ -1957,7 +2084,7 @@ mod tests {
         // The one `advanced-crafting` recipe excludes assembling machine 1.
         let eu = get_recipe(Item::EngineUnit).unwrap();
         assert_eq!(
-            eu.produced_by.iter().copied().collect::<Vec<_>>(),
+            eu.produced_by.to_vec(),
             vec![Item::AssemblingMachine2, Item::AssemblingMachine3]
         );
     }
@@ -1985,9 +2112,25 @@ mod tests {
         for (item, recipe) in all_recipes() {
             assert!(
                 recipe
-                    .produces_rate(item)
-                    .is_some_and(|amount| amount > 0.0),
+                    .produces
+                    .iter()
+                    .any(|&(i, qty)| i == item && qty > 0.0),
                 "{item:?} recipe key must be one of its positive outputs"
+            );
+        }
+    }
+
+    /// Every rate in the engine divides by `crafting_time`, unguarded — a
+    /// zero or negative one would hand an assembler an infinite ceiling
+    /// rather than fail. Nothing at runtime can produce one, so this guards
+    /// the next hand-edit of the recipe table instead.
+    #[test]
+    fn test_every_recipe_has_positive_crafting_time() {
+        for (item, recipe) in all_recipes() {
+            assert!(
+                recipe.crafting_time > 0.0,
+                "{item:?} has crafting_time {}; rates divide by it",
+                recipe.crafting_time
             );
         }
     }

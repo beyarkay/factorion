@@ -39,7 +39,6 @@ impl World {
 
     /// Create an empty world of given dimensions with default channel values.
     /// FOOTPRINT is initialized to 1 (available); all other channels are 0.
-    #[allow(dead_code)]
     pub fn empty(width: usize, height: usize) -> Self {
         let channels = NUM_CHANNELS;
         let mut data = vec![0; width * height * channels];
@@ -103,7 +102,6 @@ impl World {
     }
 
     /// Set a raw value at (x, y, channel).
-    #[allow(dead_code)]
     pub fn set(&mut self, x: usize, y: usize, channel: Channel, value: i64) {
         let idx = self.index(x, y, channel.index());
         self.data[idx] = value;
@@ -111,7 +109,6 @@ impl World {
 
     /// Place an entity at (x, y) with the given direction and item.
     /// `item = None` writes 0 to the items channel (no item set).
-    #[allow(dead_code)]
     pub fn place(&mut self, x: usize, y: usize, entity: Item, dir: Direction, item: Option<Item>) {
         self.set(x, y, Channel::Entities, entity as i64);
         self.set(x, y, Channel::Direction, dir as i64);
@@ -119,7 +116,6 @@ impl World {
     }
 
     /// Place an underground belt at (x, y) with the given direction and misc state.
-    #[allow(dead_code)]
     pub fn place_underground(&mut self, x: usize, y: usize, dir: Direction, misc: Misc) {
         self.set(x, y, Channel::Entities, Item::UndergroundBelt as i64);
         self.set(x, y, Channel::Direction, dir as i64);
