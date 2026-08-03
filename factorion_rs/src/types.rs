@@ -719,7 +719,7 @@ impl Recipe {
     #[allow(dead_code)]
     pub fn consumption_rate(&self, item: Item) -> Option<f64> {
         let (_, qty) = self.consumes.iter().find(|(i, _)| *i == item)?;
-        (self.crafting_time > 0.0).then(|| qty / self.crafting_time)
+        Some(qty / self.crafting_time)
     }
 
     /// The recipe's own speed for an output, in **items per second**. A
@@ -731,7 +731,7 @@ impl Recipe {
     /// entity's unitless [`Item::crafting_speed`] for the rate in a machine.
     pub fn production_rate(&self, item: Item) -> Option<f64> {
         let (_, qty) = self.produces.iter().find(|(i, _)| *i == item)?;
-        (self.crafting_time > 0.0).then(|| qty / self.crafting_time)
+        Some(qty / self.crafting_time)
     }
 
     /// The total raw cost of one craft of this recipe, expanded through
@@ -2116,6 +2116,21 @@ mod tests {
                     .iter()
                     .any(|&(i, qty)| i == item && qty > 0.0),
                 "{item:?} recipe key must be one of its positive outputs"
+            );
+        }
+    }
+
+    /// Every rate in the engine divides by `crafting_time`, unguarded — a
+    /// zero or negative one would hand an assembler an infinite ceiling
+    /// rather than fail. Nothing at runtime can produce one, so this guards
+    /// the next hand-edit of the recipe table instead.
+    #[test]
+    fn test_every_recipe_has_positive_crafting_time() {
+        for (item, recipe) in all_recipes() {
+            assert!(
+                recipe.crafting_time > 0.0,
+                "{item:?} has crafting_time {}; rates divide by it",
+                recipe.crafting_time
             );
         }
     }
