@@ -443,10 +443,10 @@ impl FactoryEntity for AssemblingMachine {
         // crafting entity (a smelter tier) is limited by the same code.
         // Without this term crafting time has no effect on throughput and an
         // artillery turret is as fast as an electronic circuit (#355).
-        let machine_limit = match self.kind().crafting_speed() {
-            Some(mult) if recipe.crafting_time > 0.0 => mult / recipe.crafting_time,
-            _ => return HashMap::new(),
+        let Some(mult) = self.kind().crafting_speed() else {
+            return HashMap::new();
         };
+        let machine_limit = mult / recipe.crafting_time;
 
         // Ingredient supply, also in crafts per second: each ingredient's
         // items/s over the quantity one craft wants of it. The scarcest

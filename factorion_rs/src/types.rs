@@ -719,7 +719,7 @@ impl Recipe {
     #[allow(dead_code)]
     pub fn consumption_rate(&self, item: Item) -> Option<f64> {
         let (_, qty) = self.consumes.iter().find(|(i, _)| *i == item)?;
-        (self.crafting_time > 0.0).then(|| qty / self.crafting_time)
+        Some(qty / self.crafting_time)
     }
 
     /// The recipe's own speed for an output, in **items per second**. A
@@ -731,7 +731,7 @@ impl Recipe {
     /// entity's unitless [`Item::crafting_speed`] for the rate in a machine.
     pub fn production_rate(&self, item: Item) -> Option<f64> {
         let (_, qty) = self.produces.iter().find(|(i, _)| *i == item)?;
-        (self.crafting_time > 0.0).then(|| qty / self.crafting_time)
+        Some(qty / self.crafting_time)
     }
 
     /// The total raw cost of one craft of this recipe, expanded through
@@ -2098,6 +2098,29 @@ mod tests {
                     .any(|&(i, qty)| i == item && qty > 0.0),
                 "{item:?} recipe key must be one of its positive outputs"
             );
+        }
+    }
+
+    /// The rate math divides by two things, both unguarded: `crafting_time`
+    /// and each ingredient's per-craft quantity. A zero divisor does not
+    /// fail loudly — it yields `inf` or `NaN`, and `f64::min` drops both, so
+    /// the constraint silently disappears and the assembler crafts at full
+    /// ceiling out of nothing. Runtime cannot produce one, so this guards the
+    /// next hand-edit of the recipe table instead.
+    #[test]
+    fn test_every_recipe_divisor_is_positive() {
+        for (item, recipe) in all_recipes() {
+            assert!(
+                recipe.crafting_time > 0.0,
+                "{item:?} has crafting_time {}; rates divide by it",
+                recipe.crafting_time
+            );
+            for &(ingredient, qty) in recipe.consumes.iter() {
+                assert!(
+                    qty > 0.0,
+                    "{item:?} consumes {qty} {ingredient:?}; supply divides by it"
+                );
+            }
         }
     }
 
