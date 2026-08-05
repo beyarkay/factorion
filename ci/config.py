@@ -145,6 +145,13 @@ def ppo_budget_seconds(total_timesteps: int) -> int:
     return int(total_timesteps / 200 * 2) + SETUP_SLACK_SECONDS
 
 
+# ── Limits on agent-authored commands ──────────────────────────────
+CLAUDE_MAX_TOTAL_TIMESTEPS = 2_000_000
+CLAUDE_MAX_NUM_SAMPLES = 5_000_000
+CLAUDE_MAX_SEEDS = 3
+CLAUDE_MAX_SWEEP_RUN_CAP = 10
+
+
 # ── Job specs ──────────────────────────────────────────────────────
 # The full override surface of CI training jobs. Serialized to JSON, handed to
 # the pod via env, and decoded by ci/jobs.py. If a knob isn't here, it can't

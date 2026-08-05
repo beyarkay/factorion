@@ -380,6 +380,89 @@ def _rollout_episode_metrics(
     }
 
 
+class SilArchive:
+    """Ring buffer of transitions from successful episodes, replayed by the
+    self-imitation step (#358). Stores (obs, action, discounted-return)
+    triples; capacity in transitions, oldest overwritten first."""
+
+    def __init__(self, capacity: int, obs_shape: tuple):
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
+        self._act = np.zeros((capacity, 7), dtype=np.int64)
+        self._ret = np.zeros(capacity, dtype=np.float32)
+        self._next = 0
+        self._size = 0
+
+    def __len__(self) -> int:
+        return self._size
+
+    def add_episode(self, obs_list, act_list, terminal_reward: float, gamma: float):
+        """Store one episode. The reward is terminal-only, so the return at
+        step t of a T-step episode is gamma^(T-1-t) * terminal_reward."""
+        T = len(obs_list)
+        for t, (o, a) in enumerate(zip(obs_list, act_list)):
+            i = self._next
+            self._obs[i] = o
+            self._act[i] = a
+            self._ret[i] = terminal_reward * gamma ** (T - 1 - t)
+            self._next = (self._next + 1) % self._obs.shape[0]
+            self._size = min(self._size + 1, self._obs.shape[0])
+
+    def sample(self, batch_size: int, rng: np.random.Generator):
+        idx = rng.integers(0, self._size, size=batch_size)
+        return self._obs[idx], self._act[idx], self._ret[idx]
+
+
+class SilEpisodeTracker:
+    """Assembles per-env episodes host-side during the rollout and archives
+    the successful trial ones.
+
+    Gymnasium's NEXT_STEP autoreset makes the step after a termination junk
+    (the action is swallowed, #233), so that step is skipped rather than
+    recorded as the new episode's first pair.
+    """
+
+    def __init__(self, num_envs: int, archive: SilArchive, gamma: float):
+        self._bufs: list[tuple[list, list]] = [([], []) for _ in range(num_envs)]
+        self._skip = [False] * num_envs
+        self.archive = archive
+        self.gamma = gamma
+        self.episodes_stored = 0
+
+    def step(self, obs_ECWH, action_EA, reward_E, done_E, kind_E):
+        """Record one vector-env step: the obs each env acted FROM, the action
+        taken, and the step's reward/done/kind. ``obs_ECWH`` must not be a
+        view of a buffer the caller will overwrite (slices of it are kept
+        until the episode ends)."""
+        for i in range(len(self._bufs)):
+            if self._skip[i]:
+                self._skip[i] = False
+                continue
+            obs_buf, act_buf = self._bufs[i]
+            obs_buf.append(obs_ECWH[i])
+            act_buf.append(np.array(action_EA[i], copy=True))
+            if done_E[i]:
+                reward = float(reward_E[i])
+                if LESSON_IS_TRIAL[LessonKind(int(kind_E[i]))] and reward > 0:
+                    self.archive.add_episode(obs_buf, act_buf, reward, self.gamma)
+                    self.episodes_stored += 1
+                self._bufs[i] = ([], [])
+                self._skip[i] = True
+
+
+def _sil_losses(logp_B, value_B, returns_B):
+    """SIL's two loss terms (Oh et al. 2018): imitate only where the achieved
+    return beats the current value estimate. Returns (policy_loss, value_loss,
+    positive-advantage fraction) — the advantage is detached, so the policy
+    term pushes log-prob only and the value term only pulls V up toward R."""
+    adv_B = (returns_B - value_B).detach().clamp(min=0)
+    policy_loss = -(logp_B * adv_B).mean()
+    value_loss = 0.5 * (returns_B - value_B).clamp(min=0).pow(2).mean()
+    frac_pos = (adv_B > 0).float().mean()
+    return policy_loss, value_loss, frac_pos
+
+
 def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """1 - Var(y_true - y_pred) / Var(y_true). NaN for a constant y_true."""
     if y_true.size == 0:
@@ -1870,6 +1953,9 @@ if __name__ == "__main__":
                 wandb.define_metric(f"critic/{ln}/{m}", summary="last")
         for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
             wandb.define_metric(f"optim/{m}", summary="last")
+        for m in ["policy_loss", "value_loss", "frac_positive_adv",
+                  "buffer_size", "episodes_stored"]:
+            wandb.define_metric(f"sil/{m}", summary="last")
         for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
             wandb.define_metric(f"perf/{m}", summary="last")
     print("Registering factorio Gym env")
@@ -2077,6 +2163,17 @@ if __name__ == "__main__":
             'num_missing_entities': float('inf'),
         }
     )
+    # Self-imitation state (#358). The tracker needs the obs each env acted
+    # FROM as a stable host array: SyncVectorEnv reuses its observation buffer
+    # across steps, so a copy is taken per step (num_envs x C x W x H floats —
+    # microseconds against the ~1ms env step).
+    if args.sil_updates_per_iter > 0:
+        sil_archive = SilArchive(args.sil_buffer_size, obs_shape)
+        sil_tracker = SilEpisodeTracker(args.num_envs, sil_archive, args.gamma)
+        sil_obs_host = np.array(next_obs_ECWH, dtype=np.float32, copy=True)
+    else:
+        sil_archive, sil_tracker, sil_obs_host = None, None, None
+    sil_rng = np.random.default_rng(args.seed)
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
     next_done = torch.zeros(args.num_envs, dtype=torch.float32, device=device)
     # Lesson currently loaded in each env, tracked host-side. Can't read
@@ -2224,6 +2321,11 @@ if __name__ == "__main__":
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
             next_done = np.logical_or(terminations, truncations)
             rewards_SE[step] = torch.as_tensor(reward, dtype=torch.float32, device=device)
+            if sil_tracker is not None:
+                # current_kind_E still names the episode each env just acted
+                # in (the autoreset refresh happens below).
+                sil_tracker.step(sil_obs_host, action_EA_np, reward, next_done, current_kind_E)
+                sil_obs_host = np.array(next_obs_ECWH, dtype=np.float32, copy=True)
             # Refresh the tracker for envs that reset this step (autoreset
             # surfaces the new episode's kind, masked by infos["_kind"]).
             if "kind" in infos:
@@ -2429,6 +2531,51 @@ if __name__ == "__main__":
                 f"or a rollout/update bookkeeping mismatch."
             )
 
+        # ── Self-imitation updates (#358): replay archived successful trial
+        # episodes so rare deliveries compound. Eager forward on the plain
+        # module (the compiled handles above are separate callables), so the
+        # CUDA-graph pools are untouched. Skipped during warmup — the actor is
+        # frozen and the archive is empty that early anyway.
+        sil_metrics: dict[str, float] = {}
+        sil_seconds = 0.0
+        if (
+            sil_archive is not None
+            and not in_warmup
+            and len(sil_archive) >= args.sil_batch_size
+        ):
+            t_sil = time.time()
+            sil_p_sum = sil_v_sum = sil_pos_sum = 0.0
+            for _ in range(args.sil_updates_per_iter):
+                obs_np, act_np, ret_np = sil_archive.sample(args.sil_batch_size, sil_rng)
+                sil_obs_B = torch.as_tensor(obs_np, device=device)
+                sil_act_B = torch.as_tensor(act_np, device=device)
+                sil_ret_B = torch.as_tensor(ret_np, device=device)
+                _a, sil_logp_B, _e, sil_value_B = agent.get_action_and_value(
+                    sil_obs_B, sil_act_B
+                )
+                sil_policy_loss, sil_value_loss, sil_frac_pos = _sil_losses(
+                    sil_logp_B, sil_value_B.reshape(-1), sil_ret_B
+                )
+                sil_loss = sil_policy_loss + args.sil_value_coef * sil_value_loss
+                optimizer.zero_grad(set_to_none=True)
+                sil_loss.backward()
+                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                optimizer.step()
+                sil_p_sum += float(sil_policy_loss)
+                sil_v_sum += float(sil_value_loss)
+                sil_pos_sum += float(sil_frac_pos)
+            n = args.sil_updates_per_iter
+            sil_seconds = time.time() - t_sil
+            sil_metrics = {
+                "sil/policy_loss": sil_p_sum / n,
+                "sil/value_loss": sil_v_sum / n,
+                "sil/frac_positive_adv": sil_pos_sum / n,
+            }
+        if sil_archive is not None and sil_tracker is not None:
+            sil_metrics["sil/buffer_size"] = float(len(sil_archive))
+            sil_metrics["sil/episodes_stored"] = float(sil_tracker.episodes_stored)
+            sil_metrics["perf/sil_seconds"] = sil_seconds
+
         # Value-head (critic) diagnostics, global + per-lesson.
         keep_B = valid_B.cpu().numpy() > 0  # drop the autoreset junk (#233)
         critic_metrics = _critic_diagnostics(
@@ -2480,6 +2627,7 @@ if __name__ == "__main__":
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
         iter_metrics.update(critic_metrics)
+        iter_metrics.update(sil_metrics)
         iter_metrics.update(eval_metrics)
 
         if iteration == 1:
