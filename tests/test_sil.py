@@ -33,19 +33,29 @@ class TestSilArchive:
         arch.add_episode(obs, act, terminal_reward=2.0, gamma=0.5)
         assert len(arch) == 3
         # gamma^(T-1-t) * r: the terminal step keeps the full reward.
-        assert arch._ret[:3] == pytest.approx([0.5, 1.0, 2.0])
+        _, _, ret_np = arch.sample(256, np.random.default_rng(0))
+        assert set(np.round(ret_np, 4)) == {0.5, 1.0, 2.0}
 
-    def test_ring_overwrites_oldest(self):
+    def test_eviction_removes_the_lowest_return_episode(self):
+        """Elite semantics: capacity pressure evicts by QUALITY, not age — a
+        stale high-return episode outlives a fresh mediocre one (#376)."""
         arch = SilArchive(capacity=4, obs_shape=OBS_SHAPE)
-        arch.add_episode(*_episode(3, fill=0), terminal_reward=1.0, gamma=1.0)
-        arch.add_episode(*_episode(3, fill=100), terminal_reward=5.0, gamma=1.0)
-        assert len(arch) == 4
+        arch.add_episode(*_episode(3, fill=0), terminal_reward=5.0, gamma=1.0)
+        arch.add_episode(*_episode(3, fill=100), terminal_reward=1.0, gamma=1.0)
+        assert len(arch) == 3, "the newer but weaker episode must be evicted"
         obs_np, act_np, ret_np = arch.sample(64, np.random.default_rng(0))
         assert obs_np.shape == (64, *OBS_SHAPE)
         assert act_np.shape == (64, 7)
-        # The first two transitions of episode one were overwritten, so every
-        # sampled return comes from {1.0 (ep1's last kept step), 5.0-chain}.
-        assert set(np.round(ret_np, 4)) <= {1.0, 5.0}
+        assert set(np.round(ret_np, 4)) == {5.0}
+        assert not (obs_np == 100).any()
+
+    def test_below_floor_episode_is_rejected_when_full(self):
+        arch = SilArchive(capacity=6, obs_shape=OBS_SHAPE)
+        arch.add_episode(*_episode(3, fill=0), terminal_reward=3.0, gamma=1.0)
+        arch.add_episode(*_episode(3, fill=1), terminal_reward=4.0, gamma=1.0)
+        arch.add_episode(*_episode(3, fill=2), terminal_reward=1.0, gamma=1.0)
+        _, _, ret_np = arch.sample(64, np.random.default_rng(0))
+        assert set(np.round(ret_np, 4)) == {3.0, 4.0}
 
 
 class TestSilEpisodeTracker:
@@ -84,7 +94,8 @@ class TestSilEpisodeTracker:
         self._step(tracker, 2.0, True, TRIAL, fill=3)    # episode 2 (archived)
         assert tracker.episodes_stored == 2
         assert len(arch) == 3, "episode 2 has 2 steps; the junk step is absent"
-        assert not (arch._obs[:3] == 99).any()
+        obs_np, _, _ = arch.sample(256, np.random.default_rng(0))
+        assert not (obs_np == 99).any()
 
 
 class TestSilLosses:

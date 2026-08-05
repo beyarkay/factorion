@@ -381,37 +381,55 @@ def _rollout_episode_metrics(
 
 
 class SilArchive:
-    """Ring buffer of transitions from successful episodes, replayed by the
-    self-imitation step (#358). Stores (obs, action, discounted-return)
-    triples; capacity in transitions, oldest overwritten first."""
+    """Elite episode store for the self-imitation step (#358).
+
+    Whole episodes ranked by terminal reward; over capacity (in transitions)
+    the LOWEST-return episodes are evicted, so the quality bar rises
+    monotonically as better deliveries arrive. This is the fix for naive
+    SIL\'s failure mode (#376): a recency ring kept replaying stale mediocre
+    builds forever. A stale but genuinely high-return episode is kept on
+    purpose — quality, not age, decides."""
 
     def __init__(self, capacity: int, obs_shape: tuple):
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-        self._obs = np.zeros((capacity,) + obs_shape, dtype=np.float32)
-        self._act = np.zeros((capacity, 7), dtype=np.int64)
-        self._ret = np.zeros(capacity, dtype=np.float32)
-        self._next = 0
-        self._size = 0
+        self.capacity = capacity
+        self._obs_shape = obs_shape
+        # Ascending by terminal reward, so eviction pops from the front.
+        self._episodes: list[tuple[float, np.ndarray, np.ndarray, np.ndarray]] = []
+        self._flat = None
 
     def __len__(self) -> int:
-        return self._size
+        return sum(len(e[3]) for e in self._episodes)
 
     def add_episode(self, obs_list, act_list, terminal_reward: float, gamma: float):
         """Store one episode. The reward is terminal-only, so the return at
-        step t of a T-step episode is gamma^(T-1-t) * terminal_reward."""
+        step t of a T-step episode is gamma^(T-1-t) * terminal_reward. An
+        episode below the current floor is itself the first evicted when the
+        archive is full."""
         T = len(obs_list)
-        for t, (o, a) in enumerate(zip(obs_list, act_list)):
-            i = self._next
-            self._obs[i] = o
-            self._act[i] = a
-            self._ret[i] = terminal_reward * gamma ** (T - 1 - t)
-            self._next = (self._next + 1) % self._obs.shape[0]
-            self._size = min(self._size + 1, self._obs.shape[0])
+        rets = terminal_reward * gamma ** (T - 1 - np.arange(T, dtype=np.float64))
+        self._episodes.append((
+            float(terminal_reward),
+            np.stack(obs_list).astype(np.float32),
+            np.stack(act_list).astype(np.int64),
+            rets.astype(np.float32),
+        ))
+        self._episodes.sort(key=lambda e: e[0])
+        while len(self) > self.capacity and len(self._episodes) > 1:
+            self._episodes.pop(0)
+        self._flat = None
 
     def sample(self, batch_size: int, rng: np.random.Generator):
-        idx = rng.integers(0, self._size, size=batch_size)
-        return self._obs[idx], self._act[idx], self._ret[idx]
+        if self._flat is None:
+            self._flat = (
+                np.concatenate([e[1] for e in self._episodes]),
+                np.concatenate([e[2] for e in self._episodes]),
+                np.concatenate([e[3] for e in self._episodes]),
+            )
+        obs, act, ret = self._flat
+        idx = rng.integers(0, len(ret), size=batch_size)
+        return obs[idx], act[idx], ret[idx]
 
 
 class SilEpisodeTracker:

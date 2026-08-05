@@ -137,20 +137,27 @@ class PpoArgs(SharedArgs):
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    sil_updates_per_iter: int = 4
+    sil_updates_per_iter: int = 2
     """self-imitation (SIL, Oh et al. 2018) minibatch updates per PPO
     iteration, replaying archived successful TRIAL episodes so a rare real
     delivery becomes persistent training signal instead of one gradient tick
     (#358). Trials only: lessons already deliver on-policy reward, and the
     (R - V)+ gate would zero most of their replay anyway. 0 disables SIL
-    entirely. Skipped during critic warmup."""
+    entirely. Skipped during critic warmup. 2 not 4: naive SIL (#376) showed
+    replay can overpower the base policy before the critic catches up."""
     sil_batch_size: int = 512
     """transitions per SIL minibatch (sampled uniformly from the archive)"""
     sil_buffer_size: int = 20_000
-    """SIL archive capacity in transitions (a ring buffer; ~250 trial
-    episodes at their typical ~80 steps). Oldest transitions overwritten."""
-    sil_value_coef: float = 0.01
-    """weight of SIL's value term 0.5*||(R - V)+||^2 (beta in the paper)"""
+    """SIL archive capacity in transitions (an ELITE store: whole episodes
+    ranked by terminal reward, lowest evicted first, so the quality bar
+    rises as better deliveries arrive — the #376 fix for stale-mediocrity
+    replay)."""
+    sil_value_coef: float = 0.5
+    """weight of SIL's value term 0.5*||(R - V)+||^2. 50x the paper's 0.01:
+    measured in #376, the archived trial states barely appear in PPO's fresh
+    batches, so at 0.01 the critic never absorbs the archive and the (R-V)+
+    replay pressure grows instead of decaying. The value term is the decay
+    mechanism; it must be strong enough to catch up."""
     ent_coef_start: float = 0.008034
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
