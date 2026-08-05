@@ -340,10 +340,12 @@ def _solved_belt_actions(env):
 
 
 class TestPerStepGapShaping:
-    """The gap-closing bonus is potential-based and paid per step
-    (F_t = gamma*Phi(s') - Phi(s)), so credit lands on the placement that
-    closed the gap instead of a terminal lump GAE discounts away (#353
-    post-mortem). Asserted against rewards the env actually paid."""
+    """The gap-closing bonus is paid per step as the plain difference
+    F_t = Phi(s') - Phi(s), so credit lands on the placement that closed the
+    gap instead of a terminal lump GAE discounts away (#353 post-mortem) —
+    and idling pays exactly 0, not the strict-PBS rent that taught the
+    cmp-bb6148a policy to quit trials at ~16 steps. Asserted against rewards
+    the env actually paid."""
 
     KIND = LessonKind.MOVE_ONE_ITEM
 
@@ -355,10 +357,10 @@ class TestPerStepGapShaping:
         return env
 
     def test_placement_that_closes_gap_pays_that_step(self):
-        """At gamma=1 the stream is exactly Phi(s')-Phi(s): rebuilding the
-        solved route pays each gap-closing placement on the spot, and a no-op
-        pays exactly 0."""
-        env = self._blank_env(gamma=1.0)
+        """The stream is exactly Phi(s')-Phi(s): rebuilding the solved route
+        pays each gap-closing placement on the spot, and a no-op pays
+        exactly 0."""
+        env = self._blank_env()
         mid_rewards, acrs = [], []
         for a in _solved_belt_actions(env):
             _, reward, _, _, info = env.step(a)
@@ -377,7 +379,7 @@ class TestPerStepGapShaping:
         _, terminal, terminated, _, info = env.step(eot)
         assert terminated
         assert terminal == pytest.approx(_expected_reward(env, info)), (
-            "at gamma=1 the terminal step carries no shaping (world unchanged)"
+            "the terminal step carries no shaping (world unchanged by eot)"
         )
 
     def test_return_ladder_from_blank(self):
@@ -386,7 +388,7 @@ class TestPerStepGapShaping:
         building, not banked from the reset state."""
         totals = []
         for frac in (0.0, 0.5, 1.0):
-            env = self._blank_env(gamma=1.0)
+            env = self._blank_env()
             actions = _solved_belt_actions(env)
             total = 0.0
             for a in actions[: round(len(actions) * frac)]:
@@ -409,20 +411,21 @@ class TestPerStepGapShaping:
         eot["eot"] = 1
         _, reward, _, _, info = env.step(eot)
         assert info["thput_raw"] == 0.0, "one missing entity breaks the chain"
-        assert reward <= 0.0, reward
+        assert reward == 0.0, reward
 
-    def test_holding_potential_is_taxed_at_the_discount(self):
-        """With gamma<1, idling on partial progress pays (gamma-1)*Phi < 0 per
-        step — the missing pressure to either keep building or declare done
-        (#352's diagnosis)."""
+    def test_idling_on_partial_progress_pays_exactly_zero(self):
+        """Holding progress is free — no strict-PBS rent. The rent version
+        (gamma*Phi' - Phi) priced every further step at -(1-gamma)*Phi, and
+        the cmp-bb6148a compare showed the policy answering rationally: quit
+        trials at ~16 steps and stop paying (trial_eot_rate 1.0,
+        eval/trial_thput decaying). Stopping is the terminal reward's job."""
         env = self._blank_env()
-        assert env.gamma < 1.0
         actions = _solved_belt_actions(env)
         for a in actions[: len(actions) // 2]:
             env.step(a)
         _, noop_r, _, _, info = env.step(_noop_action())
         assert info["almost_connected_reward"] > 0
-        assert noop_r < 0.0, noop_r
+        assert noop_r == 0.0, noop_r
 
     def test_whole_stream_worth_less_than_the_solve(self):
         """Summed over a perfect build, the shaping is a fraction of the solve
@@ -430,7 +433,7 @@ class TestPerStepGapShaping:
         connected-but-dead factory can never outrank a delivering one."""
         returns = {}
         for coef in (0.25, 0.0):
-            env = self._blank_env(gamma=1.0, connect_coef=coef)
+            env = self._blank_env(connect_coef=coef)
             total = 0.0
             for a in _solved_belt_actions(env):
                 _, r, _, _, _ = env.step(a)

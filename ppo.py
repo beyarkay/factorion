@@ -549,15 +549,13 @@ def make_env(
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
     connect_coef=PpoArgs.connect_coef,
-    gamma=PpoArgs.gamma,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
                        'reward_symlog_r0': reward_symlog_r0,
-                       'connect_coef': connect_coef,
-                       'gamma': gamma})
+                       'connect_coef': connect_coef})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -625,7 +623,6 @@ class FactorioEnv(gym.Env):
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
         connect_coef: float = PpoArgs.connect_coef,
-        gamma: float = PpoArgs.gamma,
     ):
         super().__init__()
         if entity_cost_scale < 0:
@@ -634,15 +631,9 @@ class FactorioEnv(gym.Env):
             raise ValueError("reward_symlog_r0 must be non-negative")
         if connect_coef < 0:
             raise ValueError("connect_coef must be non-negative")
-        if not (0 < gamma <= 1):
-            raise ValueError("gamma must be in (0, 1]")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
         self.connect_coef = connect_coef
-        # The learner's discount, used only by the potential-based shaping term
-        # (F_t = gamma*Phi(s') - Phi(s)); it must match PPO's gamma or the
-        # shaping stops telescoping to gamma^T * Phi(s_T) in the return.
-        self.gamma = gamma
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -1039,19 +1030,25 @@ class FactorioEnv(gym.Env):
             # constant large enough to matter on a belt lesson would beat a
             # perfect solve on a slow-recipe one outright.
             #
-            # Paid per step as F_t = gamma*Phi(s') - Phi(s), NOT once at the
+            # Paid per step as F_t = Phi(s') - Phi(s), NOT once at the
             # terminal step: the terminal form telescopes to the same return
             # but hands GAE (gamma*lambda ~ 0.88) a signal discounted to ~2%
             # thirty steps out, so no placement ever learns which move closed
             # the gap — the #353 compare showed exactly that (mechanism
-            # engaged, trial throughput fell). The discounted stream still
-            # sums to gamma^T * Phi(s_T) - Phi(s_0), so finishing with a more
-            # connected factory nets more return, and quitting early forfeits
-            # the rest of the climb.
+            # engaged, trial throughput fell).
+            #
+            # The PLAIN difference, not the strict potential-based form
+            # gamma*Phi(s') - Phi(s): the strict form charges -(1-gamma)*Phi
+            # rent per step for holding progress, and the cmp-bb6148a compare
+            # showed the policy answering rationally — build ~16 connected
+            # steps, fire EOT, stop paying rent (trial_eot_rate pinned at 1.0,
+            # eval/trial_thput decaying). With the plain difference idling
+            # pays exactly 0, a delete refunds exactly what its placement
+            # paid, and stopping is priced by the terminal reward alone.
             new_potential = (
                 self.connect_coef * almost_connected_reward * self._solved_reward_scale
             )
-            reward += self.gamma * new_potential - self._potential
+            reward += new_potential - self._potential
             self._potential = new_potential
 
         self._thput_raw = thput_raw
@@ -2004,7 +2001,6 @@ if __name__ == "__main__":
             args.entity_cost_scale,
             args.reward_symlog_r0,
             args.connect_coef,
-            args.gamma,
         )
         for i in range(args.num_envs)
     ]
@@ -2619,7 +2615,6 @@ if __name__ == "__main__":
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
                     args.connect_coef,
-                    args.gamma,
                 )
                 for i in range(num_render_envs)
             ])
