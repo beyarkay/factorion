@@ -137,6 +137,20 @@ class PpoArgs(SharedArgs):
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
+    sil_updates_per_iter: int = 4
+    """self-imitation (SIL, Oh et al. 2018) minibatch updates per PPO
+    iteration, replaying archived successful TRIAL episodes so a rare real
+    delivery becomes persistent training signal instead of one gradient tick
+    (#358). Trials only: lessons already deliver on-policy reward, and the
+    (R - V)+ gate would zero most of their replay anyway. 0 disables SIL
+    entirely. Skipped during critic warmup."""
+    sil_batch_size: int = 512
+    """transitions per SIL minibatch (sampled uniformly from the archive)"""
+    sil_buffer_size: int = 20_000
+    """SIL archive capacity in transitions (a ring buffer; ~250 trial
+    episodes at their typical ~80 steps). Oldest transitions overwritten."""
+    sil_value_coef: float = 0.01
+    """weight of SIL's value term 0.5*||(R - V)+||^2 (beta in the paper)"""
     ent_coef_start: float = 0.008034
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
