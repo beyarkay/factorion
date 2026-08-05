@@ -1513,6 +1513,17 @@ class AgentCNN(nn.Module):
                 head.bias.fill_(0.0)
                 head.bias.data[0] = 1.0
 
+        # Weight of the EOT head's entropy inside the summed `entropy` that
+        # sample_action returns. Bernoulli entropy peaks at p=0.5, so a plain
+        # sum lets PPO's entropy bonus drag the EOT head toward a coin flip —
+        # expected episode length ~2 — on the one bit with the most leverage
+        # over the return (#235). Defaults to the plain sum so SFT and every
+        # non-PPO consumer are untouched; PPO overrides it from
+        # PpoArgs.ent_mult_eot before compiling its handles. The per-head
+        # entropies stashed in _last_head_entropy stay unweighted, so the
+        # policy/* metrics remain comparable across weightings.
+        self.ent_mult_eot = 1.0
+
     def _encode_input(self, x_BCWH):
         """Expand the raw (B, len(Channel), W, H) observation into the conv's
         input by encoding the nominal channels categorically: learned
@@ -1742,7 +1753,10 @@ class AgentCNN(nn.Module):
             p_eot_B * F.logsigmoid(eot_logit_B)
             + (1.0 - p_eot_B) * F.logsigmoid(-eot_logit_B)
         )
-        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m + ent_eot
+        entropy_B = (
+            ent_tile + ent_e + ent_d + ent_i + ent_m
+            + self.ent_mult_eot * ent_eot
+        )
         self._last_head_entropy = {
             "tile": ent_tile.mean().detach(),
             "entity": ent_e.mean().detach(),
@@ -1963,6 +1977,8 @@ if __name__ == "__main__":
         attn_pos_embed=args.attn_pos_embed,
         global_feat_dim=args.global_feat_dim,
     )
+
+    agent.ent_mult_eot = args.ent_mult_eot
 
     if args.start_from is not None:
         if args.track:

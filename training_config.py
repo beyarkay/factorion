@@ -141,6 +141,11 @@ class PpoArgs(SharedArgs):
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
     """entropy coefficient at the end of training (low = more exploitation)"""
+    ent_mult_eot: float = 0.0
+    """weight of the EOT head's entropy inside the entropy bonus. The Bernoulli
+    entropy peaks at p(eot)=0.5, i.e. ~2-step episodes, so the default excludes
+    the EOT head from the bonus and lets reward pressure alone set the stopping
+    policy (#235). 1.0 recovers the previous plain sum over all six heads."""
     vf_coef: float = 0.794
     """coefficient of the value function"""
     entity_cost_scale: float = 0.001
