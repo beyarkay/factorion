@@ -47,6 +47,7 @@ pub enum LessonKind {
     TrialRecipeTreeDepth1 = 16,
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
+    Factory1IngredientEdge = 19,
 }
 
 impl LessonKind {
@@ -70,6 +71,7 @@ impl LessonKind {
             16 => Some(LessonKind::TrialRecipeTreeDepth1),
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
+            19 => Some(LessonKind::Factory1IngredientEdge),
             _ => None,
         }
     }
@@ -108,6 +110,7 @@ impl LessonKind {
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
+            LessonKind::Factory1IngredientEdge => "FACTORY_1_INGREDIENT_EDGE",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -141,6 +144,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
+        LessonKind::Factory1IngredientEdge,
         LessonKind::TrialRecipeTreeDepth1,
         LessonKind::TrialRecipeTreeDepth2,
         LessonKind::TrialRecipeTreeDepth3,
@@ -616,7 +620,12 @@ pub fn build_factory(
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::Factory1Ingredient => {
+            build_factory_1_ingredient(size, &mut rng, max_entities, false)
+        }
+        LessonKind::Factory1IngredientEdge => {
+            build_factory_1_ingredient(size, &mut rng, max_entities, true)
+        }
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
@@ -2480,10 +2489,17 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
 /// directions of its lane are tried, keeping the combination with the
 /// shortest route (ties random): a player rotates the source/sink and feeds
 /// the lane from whichever end gives the shortest belt line.
+/// With `edge_markers`, the source/sink use the trial marker convention
+/// (`build_recipe_tree_trial`): both sit on the grid edge, the source facing
+/// its wall's inward normal and the sink facing outward (pulling from its
+/// interior neighbour). This makes the lesson's observation — a blank grid
+/// with edge markers — match what a trial episode presents, while still
+/// carrying a known solution.
 fn build_factory_1_ingredient(
     size: usize,
     rng: &mut Rng,
     max_entities: f64,
+    edge_markers: bool,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 7 rows: input lane, input inserters, 3 assembler
@@ -2575,15 +2591,19 @@ fn build_factory_1_ingredient(
         // well as top/bottom. (No assembler-perimeter exclusion is needed:
         // every perimeter cell lies strictly between the two bands.)
         let free = available_cells(s, &reserved);
+        let on_edge =
+            |&(x, y): &Cell| !edge_markers || x == 0 || x == s - 1 || y == 0 || y == s - 1;
         let src_band: Vec<Cell> = free
             .iter()
             .copied()
             .filter(|&(_, y)| y <= in_lane_y)
+            .filter(on_edge)
             .collect();
         let snk_band: Vec<Cell> = free
             .iter()
             .copied()
             .filter(|&(_, y)| y >= out_lane_y)
+            .filter(on_edge)
             .collect();
         if src_band.is_empty() || snk_band.is_empty() {
             continue;
@@ -2610,7 +2630,11 @@ fn build_factory_1_ingredient(
         // cell (which must stay empty: sinks connect like belts, so a sink
         // pointing into a belt would FEED it, and output items leaking back
         // close a cycle the throughput engine scores as a dead factory).
-        let mut facing_choices = DIRS;
+        let mut facing_choices: Vec<Direction> = if edge_markers {
+            inward_normals(source_pos, s)
+        } else {
+            DIRS.to_vec()
+        };
         rng.shuffle(&mut facing_choices);
         let mut dir_choices = [Direction::East, Direction::West];
         rng.shuffle(&mut dir_choices);
@@ -2674,6 +2698,12 @@ fn build_factory_1_ingredient(
         // arrive on the exit cell travelling the lane direction (from the
         // lane belt behind it, or dropped by the inserter above it), which
         // also rules out a 180° reversal.
+        if edge_markers {
+            facing_choices = inward_normals(sink_pos, s)
+                .into_iter()
+                .map(Direction::opposite)
+                .collect();
+        }
         rng.shuffle(&mut facing_choices);
         rng.shuffle(&mut dir_choices);
         // (sink_dir, out_dir, exit, route)
@@ -3446,6 +3476,50 @@ mod tests {
         }
         assert!(built > 40, "most seeds should build, got {built}");
         assert!(asm_counts.len() > 1, "assembler count never varied");
+    }
+
+    #[test]
+    fn test_factory_1_ingredient_edge_markers() {
+        // Both markers follow the trial convention: on the grid edge, source
+        // facing its wall's inward normal, sink facing outward (so it pulls
+        // from its interior neighbour).
+        let s = 11i64;
+        let mut built = 0;
+        for seed in 0..50u64 {
+            let Some(f) = build_factory(
+                s as usize,
+                LessonKind::Factory1IngredientEdge,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            built += 1;
+            let (tp, unreachable) = tp_unreachable(&f.world);
+            assert!(tp > 0.0, "seed={seed}");
+            assert_eq!(unreachable, 0, "seed={seed} has orphan tiles");
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    let cell = (x as i64, y as i64);
+                    let dir = f.world.direction_at(x, y);
+                    match f.world.entity_at(x, y) {
+                        Some(Item::Source) => assert!(
+                            inward_normals(cell, s).contains(&dir),
+                            "seed={seed}: source at {cell:?} facing {dir:?} \
+                             is not on the edge working inward"
+                        ),
+                        Some(Item::Sink) => assert!(
+                            inward_normals(cell, s).contains(&dir.opposite()),
+                            "seed={seed}: sink at {cell:?} facing {dir:?} \
+                             is not on the edge facing outward"
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(built > 40, "most seeds should build, got {built}");
     }
 
     /// Every ingredient of `item`'s recipe either is a source or is itself
