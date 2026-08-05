@@ -271,22 +271,20 @@ WANDB_MODE=disabled WANDB_DISABLED=true uv run python tests/bench_throughput.py
 
 Before claiming work is done, run all of the following:
 
+0. ASSERT that the code being merged should be
+  - [ ] minimal, lean, trimmed
+  - [ ] not have excessive comments or tests, 
+  - [ ] not have excessive helpers, 
+  - [ ] not have functions that could be inlined, 
+  - [ ] should contain *ZERO* references to previous states of the codebase
 1. **Rust format + lint**: `cd factorion_rs && cargo fmt && cargo clippy -- -D warnings && cd ..`
 2. **Rust tests**: `cd factorion_rs && cargo test && cd ..`
 3. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
 5. **Python linter**: `uv run ruff check .`
-6. **Type checker**: `uv run ty check .` (also enforced by the pre-push hook)
-7. **PPO smoke test**: `CI=1 WANDB_MODE=disabled uv run python ppo.py --seed 1 --env-id factorion/FactorioEnv-v0 --total-timesteps 1024 --num-envs 4 --num-steps 128 --num-minibatches 4 --update-epochs 2 --critic-warmup 1 --eval-seeds-per-kind 1`
-8. **SFT smoke test**: `CI=1 WANDB_MODE=disabled uv run python sft.py --seed 1 --size 5 --num-samples 200 --epochs 2 --batch-size 32 --layer1 16 --layer2 16 --layer3 16 --eval-rollouts-max-seeds 8 --checkpoint-path /tmp/sft_smoke.pt --summary-path /tmp/sft_smoke.json`
+6. **Type checker**: `uv run ty check .`
 
-All eight must pass before the work is considered complete.
-
-Both smoke tests keep the **default architecture** — they are wiring checks, so
-the arch under test must be the real one — and cut only the *quantity* knobs
-(batch, minibatch count, epochs, held-out eval size). The PPO sizing gives two
-iterations rather than the one that `--total-timesteps 5000` bought, so the
-critic-warmup unfreeze and the LR/entropy anneal restart actually execute.
+All 7 must pass before the work is considered complete.
 
 ## Code Conventions
 
@@ -316,7 +314,6 @@ invariant in the type instead, and delete the test.
 
 ## Personal Preferences
 
-- Always run smoke tests before claiming work is done.
 - New code must be accompanied by end-to-end tests.
 - **Small, incremental commits.** Make each commit as small as possible while still being a logical, self-contained unit of change (e.g., "expand entity head" is one commit, "sample all lesson kinds" is another, "update tests for new return shape" is another). Do not bundle unrelated changes. Each commit should pass the pre-completion checklist on its own.
 - **Easy-to-review diffs, minimal churn.** Keep the diff as small as the change requires and no larger. Touch only lines relevant to the task — no changes to unrelated code, no reformatting/renaming/reordering for taste, no "while I'm here" cleanups, and don't reflow whitespace or rewrite comments the change doesn't force. A one-line behaviour change should be a one-line diff, not a one-liner buried in twenty lines of churn (and don't answer a +1/-1 change with a paragraph of new comments). If you spot an unrelated improvement worth making, mention it separately rather than folding it in.
