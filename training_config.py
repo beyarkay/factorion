@@ -168,8 +168,11 @@ class PpoArgs(SharedArgs):
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
-    """the target KL divergence threshold; early-stops the update's epochs. None
-    = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
+    """the target KL divergence threshold, checked per minibatch: the first
+    minibatch whose pre-step approx_kl exceeds it stops the whole update, so
+    one update's divergence is capped at ~this value (the old epoch-end check
+    let updates overshoot it by up to 68x). None = always run all
+    update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
     adam_epsilon: float = 6.891e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
