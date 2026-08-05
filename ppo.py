@@ -537,6 +537,24 @@ def _resolve_start_from(
     return path
 
 
+def train_kinds_from_args(args) -> Optional[list[LessonKind]]:
+    """The LessonKind list training rollouts sample from: every kind minus
+    args.exclude_train_kinds (comma-separated names). None when nothing is
+    excluded, keeping the env default (= all kinds) in charge."""
+    names = {n.strip() for n in args.exclude_train_kinds.split(",") if n.strip()}
+    unknown = names - {k.name for k in LessonKind}
+    if unknown:
+        raise ValueError(
+            f"unknown LessonKind name(s) in --exclude-train-kinds: {sorted(unknown)}"
+        )
+    if not names:
+        return None
+    kinds = [k for k in LessonKind if k.name not in names]
+    if not kinds:
+        raise ValueError("--exclude-train-kinds excludes every kind")
+    return kinds
+
+
 def make_env(
     env_id,
     idx,
@@ -545,12 +563,14 @@ def make_env(
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
+    train_kinds=None,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0})
+                       'reward_symlog_r0': reward_symlog_r0,
+                       'train_kinds': train_kinds})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -617,8 +637,15 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
+        train_kinds: Optional[typing.Sequence[LessonKind]] = None,
     ):
         super().__init__()
+        if train_kinds is not None and len(train_kinds) == 0:
+            raise ValueError("train_kinds must be None (= all) or non-empty")
+        # Kinds the random-sampling reset path draws from (None = every
+        # LessonKind). Only training rollouts restrict this; eval passes an
+        # explicit kind per seed and is unaffected.
+        self._train_kinds = list(train_kinds) if train_kinds is not None else None
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
         if reward_symlog_r0 < 0:
@@ -806,7 +833,7 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
+            kinds_list = self._train_kinds or list(LessonKind)
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
                 factory = build_factory(
@@ -1914,6 +1941,10 @@ if __name__ == "__main__":
         print("AMP: bf16 autocast enabled for forward passes")
 
     print(f"Setting up envs with {args}")
+    train_kinds = train_kinds_from_args(args)
+    if train_kinds is not None:
+        print(f"Training kinds: {[k.name for k in train_kinds]} "
+              f"(excluded: {args.exclude_train_kinds})")
     env_thunks = [
         make_env(
             args.env_id,
@@ -1923,6 +1954,7 @@ if __name__ == "__main__":
             run_name,
             args.entity_cost_scale,
             args.reward_symlog_r0,
+            train_kinds,
         )
         for i in range(args.num_envs)
     ]
@@ -2535,6 +2567,7 @@ if __name__ == "__main__":
                     run_name,
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
+                    train_kinds,
                 )
                 for i in range(num_render_envs)
             ])

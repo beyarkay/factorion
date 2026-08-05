@@ -137,6 +137,15 @@ class PpoArgs(SharedArgs):
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
+    exclude_train_kinds: str = (
+        "TRIAL_RECIPE_TREE_DEPTH_2,TRIAL_RECIPE_TREE_DEPTH_3"
+    )
+    """comma-separated LessonKind names excluded from TRAINING episode sampling
+    (the eval set still covers every kind). Default drops the deep trials:
+    they have delivered exactly zero reward in every recorded run at every
+    scale (0 successes up to 40M steps), yet their ~80-step episodes consume
+    ~30% of all env steps — reallocating those steps to kinds with gradient
+    signal is free. Empty string = train on everything."""
     ent_coef_start: float = 0.008034
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
