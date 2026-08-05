@@ -74,6 +74,10 @@ class SharedArgs:
     Sweep 91w8vyea showed it is not made redundant by attention — 0 was the
     worst setting and the metric peaked around 64."""
 
+    connect_coef: float = 0.25
+    """terminal bonus for closing the source→sink gap, as a fraction of what
+    solving that lesson pays (0 disables it)"""
+
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "factorion"

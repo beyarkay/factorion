@@ -255,6 +255,69 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
     unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
+/// Per source, the fraction of its initial distance to the nearest sink that
+/// the connected structure has closed (1 if its chain reaches a sink),
+/// averaged over sources. [`calc_throughput`] scores only complete
+/// source→sink paths, so every half-built factory ties with an empty grid;
+/// this grades the halves. Gap rather than chain length, so a belt spiral
+/// heading away from the sink earns nothing.
+pub fn almost_connected_reward(graph: &FactoryGraph) -> f64 {
+    let sources: Vec<usize> = (0..graph.node_count())
+        .filter(|&i| graph.nodes[i].entity_kind == Item::Source)
+        .collect();
+    let sinks: Vec<usize> = (0..graph.node_count())
+        .filter(|&i| graph.nodes[i].entity_kind == Item::Sink)
+        .collect();
+    if sources.is_empty() || sinks.is_empty() {
+        return 0.0;
+    }
+
+    let backward = reachable_from(&sinks, graph, true);
+    // Compare anchors, not nodes: a belt tile owns two lane nodes and a
+    // splitter four, and the pairwise scan below is quadratic in set size.
+    // Other sources are dropped: they reach the sink so they land in the
+    // backward set, but nothing can be attached to a source, so closing on
+    // one is not progress towards joining the live network.
+    let backward_anchors: HashSet<(usize, usize)> = backward
+        .iter()
+        .filter(|&&i| graph.nodes[i].entity_kind != Item::Source)
+        .map(|&i| graph.nodes[i].anchor)
+        .collect();
+    let sink_anchors: HashSet<(usize, usize)> =
+        sinks.iter().map(|&i| graph.nodes[i].anchor).collect();
+
+    let mut total = 0.0;
+    for &src in &sources {
+        let forward = reachable_from(&[src], graph, false);
+        if forward.iter().any(|i| backward.contains(i)) {
+            total += 1.0;
+            continue;
+        }
+        let (sx, sy) = graph.nodes[src].anchor;
+        // Distance at reset, when forward is just the source: a pure function
+        // of the marker positions, which no placement can move.
+        let start_gap = sink_anchors
+            .iter()
+            .map(|&(x, y)| sx.abs_diff(x) + sy.abs_diff(y))
+            .min()
+            .unwrap_or(1)
+            .max(1);
+        let forward_anchors: HashSet<(usize, usize)> =
+            forward.iter().map(|&i| graph.nodes[i].anchor).collect();
+        let gap = forward_anchors
+            .iter()
+            .flat_map(|&(fx, fy)| {
+                backward_anchors
+                    .iter()
+                    .map(move |&(bx, by)| fx.abs_diff(bx) + fy.abs_diff(by))
+            })
+            .min()
+            .unwrap_or(start_gap);
+        total += (1.0 - gap as f64 / start_gap as f64).clamp(0.0, 1.0);
+    }
+    total / sources.len() as f64
+}
+
 /// An inserter's accumulated input: greedily fill its capacity (0.86 i/s)
 /// from its predecessors in lane-priority order, per the wiki pickup rules.
 /// When picking from a belt perpendicular to the inserter, the NEAR lane is
@@ -862,5 +925,167 @@ mod tests {
             "one-of-two-sinks bypass should score 3.75, got {}",
             score
         );
+    }
+
+    #[test]
+    fn test_almost_connected_reward_markers_only_is_zero() {
+        let mut w = World::empty(6, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 0.0);
+    }
+
+    #[test]
+    fn test_almost_connected_reward_grows_towards_sink() {
+        let mut w = World::empty(6, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        let mut prev = 0.0;
+        for (x, expected) in [(1, 0.2), (2, 0.4), (3, 0.6)] {
+            w.place(x, 0, Item::TransportBelt, Direction::East, None);
+            let p = almost_connected_reward(&build_graph(&w));
+            assert!(
+                (p - expected).abs() < 1e-9,
+                "belt to x={x} should score {expected}, got {p}"
+            );
+            assert!(p > prev, "progress must be monotone: {p} <= {prev}");
+            prev = p;
+        }
+
+        // Closing the chain saturates the score.
+        w.place(4, 0, Item::TransportBelt, Direction::East, None);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 1.0);
+    }
+
+    #[test]
+    fn test_almost_connected_reward_ignores_belt_spiral_away_from_sink() {
+        let mut w = World::empty(9, 3);
+        w.place(4, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(8, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        let bare = almost_connected_reward(&build_graph(&w));
+
+        // A four-tile run heading west, directly away from the sink.
+        for x in [3, 2, 1, 0] {
+            w.place(x, 0, Item::TransportBelt, Direction::West, None);
+        }
+        assert_eq!(
+            almost_connected_reward(&build_graph(&w)),
+            bare,
+            "belt laid away from the sink must not earn progress"
+        );
+    }
+
+    #[test]
+    fn test_almost_connected_reward_counts_backward_from_sink() {
+        let mut w = World::empty(6, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(5, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        w.place(4, 0, Item::TransportBelt, Direction::East, None);
+        let p = almost_connected_reward(&build_graph(&w));
+        assert!((p - 0.2).abs() < 1e-9, "expected 0.2, got {p}");
+    }
+
+    #[test]
+    fn test_almost_connected_reward_averages_over_sources() {
+        let mut w = World::empty(3, 3);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(0, 2, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(2, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+
+        // Wire only the first source's row. It contributes its full 1/N, and
+        // the second source can still earn a fraction for whatever ground it
+        // has closed, so the exact total depends on the layout — what matters
+        // is that half the job scores at least half and short of a solve.
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        let p = almost_connected_reward(&build_graph(&w));
+        assert!(
+            (0.5..1.0).contains(&p),
+            "one of two sources wired should land in [0.5, 1.0), got {p}"
+        );
+
+        // Wiring the second source up the far column completes both chains.
+        w.place(1, 2, Item::TransportBelt, Direction::East, None);
+        w.place(2, 2, Item::TransportBelt, Direction::North, None);
+        w.place(2, 1, Item::TransportBelt, Direction::North, None);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 1.0);
+    }
+
+    /// Two snakes, each covering half the grid: one fed by the source, one
+    /// draining to the sink, separated by a blank row so they never join.
+    /// Maximises both reachable sets at once, which is the input the pairwise
+    /// gap scan is quadratic in.
+    fn packed_two_snake_world(n: usize) -> World {
+        fn snake(w: &mut World, y0: usize, y1: usize, n: usize) -> (usize, usize) {
+            let mut end = (0, y0);
+            for (i, y) in (y0..y1).enumerate() {
+                let eastward = i % 2 == 0;
+                let xs: Vec<usize> = if eastward {
+                    (0..n).collect()
+                } else {
+                    (0..n).rev().collect()
+                };
+                let dir = if eastward {
+                    Direction::East
+                } else {
+                    Direction::West
+                };
+                for &x in &xs {
+                    w.place(x, y, Item::TransportBelt, dir, None);
+                }
+                if let Some(&last) = xs.last() {
+                    if y != y1 - 1 {
+                        w.place(last, y, Item::TransportBelt, Direction::South, None);
+                    }
+                    end = (last, y);
+                }
+            }
+            end
+        }
+
+        let mut w = World::empty(n, n);
+        let half = n / 2;
+        snake(&mut w, 1, half, n);
+        let (ex, ey) = snake(&mut w, half + 1, n, n);
+        w.place(0, 0, Item::Source, Direction::South, Some(Item::IronPlate));
+        w.place(ex, ey, Item::Sink, Direction::East, Some(Item::IronPlate));
+        w
+    }
+
+    #[test]
+    fn test_almost_connected_reward_on_a_grid_packed_with_belts() {
+        let n = 32;
+        let graph = build_graph(&packed_two_snake_world(n));
+
+        let started = std::time::Instant::now();
+        let score = almost_connected_reward(&graph);
+        let elapsed = started.elapsed();
+
+        // Guard the stress itself: if a change to belt connectivity fragments
+        // the snakes, the sets shrink and this stops exercising anything.
+        assert!(
+            graph.node_count() > 1000,
+            "expected a densely connected graph, got {} nodes",
+            graph.node_count()
+        );
+        assert!(
+            (0.9..1.0).contains(&score),
+            "two near-touching snakes should score just under 1, got {score}"
+        );
+        // The gap scan is |forward| x |backward|, and both sets are ~every
+        // tile here. Deliberately loose — this is a guard against the cost
+        // becoming super-quadratic, not a benchmark.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "{n}x{n} packed grid took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_almost_connected_reward_without_sink_is_zero() {
+        let mut w = World::empty(4, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        assert_eq!(almost_connected_reward(&build_graph(&w)), 0.0);
     }
 }

@@ -150,6 +150,7 @@ class TestRolloutEpisodeMetrics:
             num_entities=4.0,
             min_entities_required=3.0,
             frac_reachable=0.75,
+            almost_connected_reward=0.4,
             entity_cost=12.5,
             cost_efficiency=0.9,
         )
@@ -178,6 +179,7 @@ class TestRolloutEpisodeMetrics:
                 num_entities=1.0,
                 min_entities_required=1.0,
                 frac_reachable=0.0,
+                almost_connected_reward=0.0,
                 entity_cost=4.0,
                 cost_efficiency=0.95,
             )
@@ -211,6 +213,7 @@ class TestTrialRolloutMetricsAreSeparate:
             num_entities=4.0,
             min_entities_required=3.0,
             frac_reachable=0.75,
+            almost_connected_reward=0.4,
             entity_cost=12.5,
             cost_efficiency=0.9,
             is_trial=is_trial,
