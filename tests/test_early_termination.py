@@ -313,77 +313,143 @@ class TestStepsTaken:
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
 
 
-class TestAlmostConnectedReward:
-    """Throughput is 0 for every partially-built factory alike, so the terminal
-    reward carries a dense bonus for closing the source→sink gap. Asserted
-    against rewards the env actually paid, never a formula recomputed here."""
 
-    @staticmethod
-    def _terminal(env, **reset_options):
-        env.reset(seed=7, options=reset_options)
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, _, _, info = env.step(action)
-        return reward, info
 
-    def test_partial_factories_form_a_gradient_at_zero_throughput(self):
-        """Removing more of a solved factory must score strictly worse, even
-        though every one of these delivers nothing. Without the bonus they all
-        pay exactly 0 and are indistinguishable — which is why the trials and
-        FACTORY_1_INGREDIENT had no gradient to climb."""
-        env = _make_env(size=11, max_steps=50, connect_coef=0.25)
-        rewards = []
-        for missing in (1, 2, 3, float("inf")):
-            reward, info = self._terminal(
-                env, num_missing_entities=missing, kind=LessonKind.MOVE_ONE_ITEM
-            )
-            assert info["thput_raw"] == 0.0, (
-                f"{missing} missing should break the chain, got "
-                f"{info['thput_raw']} items/s"
-            )
-            rewards.append(reward)
+def _solved_belt_actions(env):
+    """The solved factory's belt placements, ordered source-outward.
 
-        assert rewards == sorted(rewards, reverse=True), rewards
-        assert rewards[0] > rewards[-1]
-        assert rewards[-1] == 0.0, "a bare-markers grid is the zero of the scale"
+    Valid for single-route lessons (MOVE_ONE_ITEM): #349 routes are shortest
+    paths, so Manhattan distance from the source is strictly increasing along
+    the route and sorting by it recovers path order.
+    """
+    ent = env._solved_world_CWH[Channel.ENTITIES.value].numpy()
+    dir_ = env._solved_world_CWH[Channel.DIRECTION.value].numpy()
+    belt = str2ent("transport_belt").value
+    xs, ys = np.nonzero(ent == str2ent("stack_inserter").value)
+    sx, sy = int(xs[0]), int(ys[0])
+    tiles = [(int(x), int(y)) for x, y in zip(*np.nonzero(ent == belt))]
+    tiles.sort(key=lambda t: abs(t[0] - sx) + abs(t[1] - sy))
+    actions = []
+    for x, y in tiles:
+        a = _noop_action()
+        a["xy"] = np.array([x, y])
+        a["entity"] = belt
+        a["direction"] = int(dir_[x, y])
+        actions.append(a)
+    return actions
 
-    def test_solved_factory_outscores_any_partial_one(self):
-        shaped = _make_env(size=11, max_steps=50, connect_coef=0.25)
-        solved, info = self._terminal(shaped, num_missing_entities=0,
-                                      kind=LessonKind.MOVE_ONE_ITEM)
-        blank, _ = self._terminal(shaped, num_missing_entities=float("inf"),
-                                  kind=LessonKind.MOVE_ONE_ITEM)
-        assert info["almost_connected_reward"] == pytest.approx(1.0)
-        assert solved > blank
 
-    def test_bonus_never_outranks_a_solve_on_the_slowest_lesson(self):
-        """MEMORISE_4 solves at ~0.0017 items/s, the slowest there is. Scaling
-        the bonus by the lesson's own ceiling is what keeps a fully connected
-        but dead factory below a real solve — a flat coefficient would not."""
-        kind = LessonKind.MEMORISE_4_INGREDIENT_RECIPES
-        shaped = _make_env(size=11, max_steps=50, connect_coef=0.25)
-        solved, info = self._terminal(shaped, num_missing_entities=0, kind=kind)
+class TestPerStepGapShaping:
+    """The gap-closing bonus is potential-based and paid per step
+    (F_t = gamma*Phi(s') - Phi(s)), so credit lands on the placement that
+    closed the gap instead of a terminal lump GAE discounts away (#353
+    post-mortem). Asserted against rewards the env actually paid."""
 
-        # A solved factory is fully connected, so its bonus is the largest any
-        # dead factory on this lesson could earn: the rest of `solved` is the
-        # throughput the shaping must never be able to stand in for.
-        assert info["almost_connected_reward"] == pytest.approx(1.0)
-        unshaped = _make_env(size=11, max_steps=50, connect_coef=0.0)
-        solve_only, _ = self._terminal(unshaped, num_missing_entities=0, kind=kind)
-        assert solved - solve_only < solve_only, (
-            f"max bonus {solved - solve_only} must stay under the "
-            f"{solve_only} a real solve pays"
+    KIND = LessonKind.MOVE_ONE_ITEM
+
+    def _blank_env(self, **kwargs):
+        kwargs.setdefault("connect_coef", 0.25)
+        env = _make_env(size=11, max_steps=50, **kwargs)
+        env.reset(seed=7, options={"num_missing_entities": float("inf"),
+                                   "kind": self.KIND})
+        return env
+
+    def test_placement_that_closes_gap_pays_that_step(self):
+        """At gamma=1 the stream is exactly Phi(s')-Phi(s): rebuilding the
+        solved route pays each gap-closing placement on the spot, and a no-op
+        pays exactly 0."""
+        env = self._blank_env(gamma=1.0)
+        mid_rewards, acrs = [], []
+        for a in _solved_belt_actions(env):
+            _, reward, _, _, info = env.step(a)
+            mid_rewards.append(reward)
+            acrs.append(info["almost_connected_reward"])
+        assert acrs[-1] == pytest.approx(1.0), "full route must close the gap"
+        assert acrs == sorted(acrs), "rebuilding the route must be monotone"
+        assert all(r >= 0 for r in mid_rewards), mid_rewards
+        assert sum(mid_rewards) > 0, "the stream must pay before the terminal"
+
+        _, noop_r, _, _, _ = env.step(_noop_action())
+        assert noop_r == 0.0, "no progress, no pay"
+
+        eot = _noop_action()
+        eot["eot"] = 1
+        _, terminal, terminated, _, info = env.step(eot)
+        assert terminated
+        assert terminal == pytest.approx(_expected_reward(env, info)), (
+            "at gamma=1 the terminal step carries no shaping (world unchanged)"
         )
 
-    def test_zero_coef_pays_exactly_the_unshaped_reward(self):
-        kind = LessonKind.MOVE_ONE_ITEM
-        shaped, _ = self._terminal(
-            _make_env(size=11, max_steps=50, connect_coef=0.25),
-            num_missing_entities=0, kind=kind)
-        unshaped, info = self._terminal(
-            _make_env(size=11, max_steps=50, connect_coef=0.0),
-            num_missing_entities=0, kind=kind)
+    def test_return_ladder_from_blank(self):
+        """Building more of the route then stopping must collect strictly more
+        total reward — the ladder #353 wanted, in its honest form: earned by
+        building, not banked from the reset state."""
+        totals = []
+        for frac in (0.0, 0.5, 1.0):
+            env = self._blank_env(gamma=1.0)
+            actions = _solved_belt_actions(env)
+            total = 0.0
+            for a in actions[: round(len(actions) * frac)]:
+                _, r, _, _, _ = env.step(a)
+                total += r
+            eot = _noop_action()
+            eot["eot"] = 1
+            _, r, _, _, _ = env.step(eot)
+            totals.append(total + r)
+        assert totals == sorted(totals) and totals[0] < totals[-1], totals
+        assert totals[0] == 0.0, "a bare-markers quit is the zero of the scale"
 
-        assert info["almost_connected_reward"] == 0.0
-        assert unshaped == pytest.approx(_expected_reward(_make_env(), info))
-        assert shaped > unshaped
+    def test_no_credit_for_structure_the_agent_did_not_build(self):
+        """Quitting instantly on a factory that reset() delivered almost-solved
+        pays nothing: Phi(s_0) is baseline, not credit. (Under #353's terminal
+        form this banked the full bonus for free.)"""
+        env = _make_env(size=11, max_steps=50, connect_coef=0.25)
+        env.reset(seed=7, options={"num_missing_entities": 1, "kind": self.KIND})
+        eot = _noop_action()
+        eot["eot"] = 1
+        _, reward, _, _, info = env.step(eot)
+        assert info["thput_raw"] == 0.0, "one missing entity breaks the chain"
+        assert reward <= 0.0, reward
+
+    def test_holding_potential_is_taxed_at_the_discount(self):
+        """With gamma<1, idling on partial progress pays (gamma-1)*Phi < 0 per
+        step — the missing pressure to either keep building or declare done
+        (#352's diagnosis)."""
+        env = self._blank_env()
+        assert env.gamma < 1.0
+        actions = _solved_belt_actions(env)
+        for a in actions[: len(actions) // 2]:
+            env.step(a)
+        _, noop_r, _, _, info = env.step(_noop_action())
+        assert info["almost_connected_reward"] > 0
+        assert noop_r < 0.0, noop_r
+
+    def test_whole_stream_worth_less_than_the_solve(self):
+        """Summed over a perfect build, the shaping is a fraction of the solve
+        itself (connect_coef scales against each lesson's own ceiling), so a
+        connected-but-dead factory can never outrank a delivering one."""
+        returns = {}
+        for coef in (0.25, 0.0):
+            env = self._blank_env(gamma=1.0, connect_coef=coef)
+            total = 0.0
+            for a in _solved_belt_actions(env):
+                _, r, _, _, _ = env.step(a)
+                total += r
+            eot = _noop_action()
+            eot["eot"] = 1
+            _, r, _, _, info = env.step(eot)
+            returns[coef] = total + r
+            assert info["thput_raw"] > 0, "replay must actually solve the lesson"
+        shaping_total = returns[0.25] - returns[0.0]
+        assert 0 < shaping_total < returns[0.0]
+
+    def test_zero_coef_is_a_true_noop(self):
+        env = self._blank_env(connect_coef=0.0)
+        for a in _solved_belt_actions(env):
+            _, r, _, _, info = env.step(a)
+            assert r == 0.0
+            assert info["almost_connected_reward"] == 0.0
+        eot = _noop_action()
+        eot["eot"] = 1
+        _, terminal, _, _, info = env.step(eot)
+        assert terminal == pytest.approx(_expected_reward(env, info))

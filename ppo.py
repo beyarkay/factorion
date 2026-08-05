@@ -549,13 +549,15 @@ def make_env(
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
     connect_coef=PpoArgs.connect_coef,
+    gamma=PpoArgs.gamma,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
                        'reward_symlog_r0': reward_symlog_r0,
-                       'connect_coef': connect_coef})
+                       'connect_coef': connect_coef,
+                       'gamma': gamma})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -623,6 +625,7 @@ class FactorioEnv(gym.Env):
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
         connect_coef: float = PpoArgs.connect_coef,
+        gamma: float = PpoArgs.gamma,
     ):
         super().__init__()
         if entity_cost_scale < 0:
@@ -631,9 +634,15 @@ class FactorioEnv(gym.Env):
             raise ValueError("reward_symlog_r0 must be non-negative")
         if connect_coef < 0:
             raise ValueError("connect_coef must be non-negative")
+        if not (0 < gamma <= 1):
+            raise ValueError("gamma must be in (0, 1]")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
         self.connect_coef = connect_coef
+        # The learner's discount, used only by the potential-based shaping term
+        # (F_t = gamma*Phi(s') - Phi(s)); it must match PPO's gamma or the
+        # shaping stops telescoping to gamma^T * Phi(s_T) in the return.
+        self.gamma = gamma
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -859,6 +868,22 @@ class FactorioEnv(gym.Env):
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
         self._prev_match = self._compute_solution_match()
+        # Shaping state: the per-lesson reward scale, and Phi of the reset
+        # state. Phi(s_0) can be nonzero (protected pre-built structure counts
+        # toward connectedness), but the stream only ever pays *differences*,
+        # so structure the agent didn't build earns it nothing.
+        self._solved_reward_scale = (
+            math.log1p(self._max_throughput / self.reward_symlog_r0)
+            if self.reward_symlog_r0 > 0
+            else 0.0
+        )
+        if self.connect_coef > 0 and self._solved_reward_scale > 0:
+            self._almost_connected_reward = factorion_rs.py_almost_connected_reward(
+                self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
+        self._potential = (
+            self.connect_coef * self._almost_connected_reward * self._solved_reward_scale
+        )
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
 
@@ -903,6 +928,11 @@ class FactorioEnv(gym.Env):
         # reward and all episode-end-consumed values are still computed, so the
         # signature is unchanged.
         frac_hallucin = 0
+        # The shaping needs Phi of the just-mutated world on EVERY step (that's
+        # the point — per-placement credit), so almost_connected is computed on
+        # the fast path too. simulate_throughput stays terminal-only: the gap
+        # scan is ~5-10x cheaper than the full sim.
+        shaping_on = self.connect_coef > 0 and self._solved_reward_scale > 0
         if terminated or truncated or self._full_diagnostics:
             # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
             # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
@@ -911,7 +941,7 @@ class FactorioEnv(gym.Env):
             thput_raw, num_unreachable = factorion_rs.simulate_throughput(world_WHC)
             almost_connected_reward = (
                 factorion_rs.py_almost_connected_reward(world_WHC)
-                if self.connect_coef > 0
+                if shaping_on
                 else 0.0
             )
             thput_normed = (
@@ -968,10 +998,17 @@ class FactorioEnv(gym.Env):
             self._prev_match = curr_match
         else:
             # Non-terminal training step: emit placeholders for the logged-only
-            # diagnostics (the rollout never reads these mid-episode).
+            # diagnostics (the rollout never reads these mid-episode). The
+            # shaping potential is NOT a diagnostic, so it is still computed.
+            almost_connected_reward = (
+                factorion_rs.py_almost_connected_reward(
+                    self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+                )
+                if shaping_on
+                else 0.0
+            )
             thput_raw = 0.0
             thput_normed = 0.0
-            almost_connected_reward = 0.0
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
@@ -994,18 +1031,28 @@ class FactorioEnv(gym.Env):
                 # throughput at exactly zero; above the knee the two agree to
                 # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
                 reward = math.log1p(reward / self.reward_symlog_r0)
+        if shaping_on:
             # Dense credit for closing the source→sink gap, so a half-built
             # factory outscores an empty one. Weighted by what solving *this*
-            # lesson pays rather than a flat constant: achievable rates span
-            # 1600x, so a constant large enough to matter on a belt lesson
-            # would beat a perfect solve on a slow-recipe one outright.
-            if self.connect_coef > 0 and self.reward_symlog_r0 > 0:
-                # The generator's per-episode ceiling, not anything the agent
-                # built — so this scale is fixed and positive all episode.
-                solved_reward = math.log1p(
-                    self._max_throughput / self.reward_symlog_r0
-                )
-                reward += self.connect_coef * almost_connected_reward * solved_reward
+            # lesson pays (Phi = connect_coef * almost_connected * that scale)
+            # rather than a flat constant: achievable rates span 1600x, so a
+            # constant large enough to matter on a belt lesson would beat a
+            # perfect solve on a slow-recipe one outright.
+            #
+            # Paid per step as F_t = gamma*Phi(s') - Phi(s), NOT once at the
+            # terminal step: the terminal form telescopes to the same return
+            # but hands GAE (gamma*lambda ~ 0.88) a signal discounted to ~2%
+            # thirty steps out, so no placement ever learns which move closed
+            # the gap — the #353 compare showed exactly that (mechanism
+            # engaged, trial throughput fell). The discounted stream still
+            # sums to gamma^T * Phi(s_T) - Phi(s_0), so finishing with a more
+            # connected factory nets more return, and quitting early forfeits
+            # the rest of the climb.
+            new_potential = (
+                self.connect_coef * almost_connected_reward * self._solved_reward_scale
+            )
+            reward += self.gamma * new_potential - self._potential
+            self._potential = new_potential
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1957,6 +2004,7 @@ if __name__ == "__main__":
             args.entity_cost_scale,
             args.reward_symlog_r0,
             args.connect_coef,
+            args.gamma,
         )
         for i in range(args.num_envs)
     ]
@@ -2571,6 +2619,7 @@ if __name__ == "__main__":
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
                     args.connect_coef,
+                    args.gamma,
                 )
                 for i in range(num_render_envs)
             ])

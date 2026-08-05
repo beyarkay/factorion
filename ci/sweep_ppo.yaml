@@ -1,35 +1,24 @@
-# ci/sweep_ppo.yaml — isolate the source→sink connection bonus strength
+# ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
 #
 # Launched with: /ci sweep ppo
 #
 # Every run uses this branch and the same training configuration. The only
-# swept value is connect_coef, the weight of the terminal connection bonus
-# expressed as a fraction of what solving that lesson pays:
+# swept value is eta, exposed by PpoArgs as entity_cost_scale:
 #
-#   reward += connect_coef * almost_connected_reward * log1p(max_throughput / r0)
-#
-# Log-spaced over two orders of magnitude, bracketing both ends: 0.01 is
-# ~1% of a solve (expected negligible), 1.0 makes a fully-connected but
-# non-delivering factory worth exactly as much as a perfect solve (expected
-# degenerate). A sensible value should land between them.
-#
-# Ranked on eval/trial_thput: trials are what this change targets, and
-# eval/thput is dominated by the belt lessons that already score ~0.78.
-# Read eval/thput from the report as the do-no-harm guard.
+#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
 
 method: grid
 metric:
-  name: "eval/trial_thput"
+  name: "eval/thput"
   goal: maximize
 
 parameters:
-  connect_coef:
+  entity_cost_scale:
     values:
-      - 0.01
-      - 0.03
-      - 0.1
-      - 0.3
-      - 1.0
+      - 0.0
+      - 1.0e-4
+      - 1.0e-3
+      - 1.0e-2
 
 program: ppo.py
 
@@ -40,6 +29,6 @@ command:
   - --start-from
   - h76h80yb
   - --total-timesteps
-  - 1_500_000
+  - 2_000_000
   - --track
   - ${args}
