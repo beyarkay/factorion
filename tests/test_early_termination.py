@@ -24,12 +24,12 @@ def _make_env(size=5, max_steps=10, **kwargs):
 
 def _expected_reward(env, info):
     """The terminal reward the env's configured scheme should have paid."""
-    reward = info["thput_raw"] * info["cost_efficiency"]
-    flow = info["entity_flow"] * info["cost_efficiency"]
+    delivering = info["thput_raw"] > 0
+    base = info["thput_raw"] if delivering else info["entity_flow"]
+    reward = base * info["cost_efficiency"]
     if env.reward_symlog_r0 > 0:
         reward = math.log1p(reward / env.reward_symlog_r0)
-        flow = math.log1p(flow / env.reward_symlog_r0)
-    return reward + env.entity_flow_coef * flow
+    return reward if delivering else env.entity_flow_coef * reward
 
 
 def _noop_action():
@@ -168,7 +168,7 @@ class TestReward:
     def test_entity_cost_reduces_reward(self):
         """A non-zero entity cost lowers the reward below the pure
         throughput term."""
-        env = _make_env(size=5, max_steps=10, entity_flow_coef=0.0)
+        env = _make_env(size=5, max_steps=10)
         env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -183,9 +183,7 @@ class TestReward:
 
     def test_entity_cost_reduces_reward_multiplicatively_without_log(self):
         """With the log transform off, cost is a multiplier bounded in (0, 1]."""
-        env = _make_env(
-            size=5, max_steps=10, reward_symlog_r0=0.0, entity_flow_coef=0.0
-        )
+        env = _make_env(size=5, max_steps=10, reward_symlog_r0=0.0)
         env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -242,7 +240,8 @@ class TestReward:
 
 class TestEntityFlowPartialCredit:
     """A chain that moves items but hasn't reached a sink scores zero
-    throughput. The entity-flow term is what separates it from an empty grid."""
+    throughput. The entity-flow fallback is what separates it from an empty
+    grid — and it applies only while throughput is zero."""
 
     _DELTA = {1: (0, -1), 2: (1, 0), 3: (0, 1), 4: (-1, 0)}
 
@@ -280,6 +279,26 @@ class TestEntityFlowPartialCredit:
 
         assert info["entity_flow"] > 0
         assert reward == 0
+
+    def test_delivering_factory_ignores_entity_flow(self):
+        """The gate's whole point: once anything is delivered the proxy is off,
+        so extra flow-carrying tiles can only ever cost, never pay."""
+        env = _make_env(size=7, max_steps=10)
+        env.reset(
+            seed=42,
+            options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM},
+        )
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, _, _, info = env.step(action)
+
+        assert info["thput_raw"] > 0
+        assert info["entity_flow"] > 0
+        assert reward == pytest.approx(
+            math.log1p(
+                info["thput_raw"] * info["cost_efficiency"] / env.reward_symlog_r0
+            )
+        )
 
     def test_partial_credit_stays_far_below_solving(self):
         """Partial credit must be a nudge, not a substitute: finishing the

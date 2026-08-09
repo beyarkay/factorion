@@ -166,19 +166,23 @@ class PpoArgs(SharedArgs):
     exactly zero, so a factory that delivers nothing is never worse than an
     empty grid. 0 disables the compression."""
     entity_flow_coef: float = 0.02
-    """weight of the partial-credit term added to the terminal reward:
-    `entity_flow_coef * log1p(entity_flow * cost_efficiency / reward_symlog_r0)`,
-    where entity_flow is items/second summed over every placed entity (the
-    engine already computes it per node and previously discarded it). Throughput
-    alone is zero until items actually reach a sink, so a policy building from a
-    blank grid gets no gradient for a chain that is nearly complete; entity_flow
-    is nonzero as soon as one belt carries items, and grows as flow reaches
-    further. Spam is not the risk it looks like: only tiles that actually carry
-    items score, and a grid flooded with belts is mostly orphans — filling every
+    """weight of the fallback terminal reward paid when a factory delivers
+    nothing. Throughput is the objective whenever it is nonzero; below that it
+    is a flat zero however close the chain got, so a policy building from a
+    blank grid cannot tell "nearly done" from "empty grid". entity_flow —
+    items/second summed over every placed entity, which the engine already
+    computes per node and previously discarded — stands in for it there:
+    `entity_flow_coef * log1p(entity_flow * cost_efficiency / reward_symlog_r0)`.
+    The proxy is dropped the moment anything is delivered, so it can never pay
+    a working factory for flow-carrying decoys. Because it scales the whole
+    fallback branch uniformly, this coefficient sets how far the best
+    consolation prize sits below the worst real solve rather than reordering
+    anything within the branch: 0.02 caps the fallback near 0.24 against a
+    minimum solved-lesson reward of 1.62 (MEMORISE_2), a ~7x margin. Spam is
+    not the risk it looks like either — only tiles actually carrying items
+    score, and a grid flooded with belts is mostly orphans, so filling every
     free cell of an 11x11 measures *lower* entity_flow than the solved lesson
-    does. Sizing is set by the term's share of a solved lesson's reward, 2.6%
-    (belts) to 9% (MEMORISE_2), so finishing always dominates stopping short.
-    0 disables the term, recovering a throughput-only reward."""
+    does. 0 disables the fallback, recovering a throughput-only reward."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

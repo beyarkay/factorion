@@ -977,12 +977,13 @@ class FactorioEnv(gym.Env):
 
         reward = 0.0
         if terminated or truncated:
-            # Multiplication makes cost a secondary modifier of both terms: a
-            # factory earns throughput reward only for what reaches a sink and
-            # flow reward only for tiles actually carrying items, so entities
-            # can never pay for themselves by existing.
-            reward = thput_raw * cost_efficiency
-            flow_term = entity_flow * cost_efficiency
+            # Throughput is the objective; entity_flow only stands in for it
+            # while nothing has reached a sink and the real signal is a flat
+            # zero however close the chain got. The moment any item lands the
+            # proxy is dropped outright, so a delivering factory is never paid
+            # for flow it fails to deliver — only frugality still applies.
+            delivering = thput_raw > 0
+            reward = (thput_raw if delivering else entity_flow) * cost_efficiency
             if self.reward_symlog_r0 > 0:
                 # Compress so lessons whose ceilings differ by ~360x contribute
                 # comparable gradient. Compressing the cost-adjusted reward
@@ -990,12 +991,11 @@ class FactorioEnv(gym.Env):
                 # throughput at exactly zero; above the knee the two agree to
                 # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
                 reward = math.log1p(reward / self.reward_symlog_r0)
-                flow_term = math.log1p(flow_term / self.reward_symlog_r0)
-            # Partial credit for a chain that moves items but has not reached a
-            # sink, which the throughput term scores as flat zero however close
-            # it got. Sharing the compression keeps the term's scale comparable
-            # across lessons whose achievable items/s differ by orders.
-            reward += self.entity_flow_coef * flow_term
+            if not delivering:
+                # Scales the whole proxy branch, so it sets how far the best
+                # consolation prize sits below the worst real solve rather than
+                # reordering anything within the branch.
+                reward *= self.entity_flow_coef
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
