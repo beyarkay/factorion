@@ -2372,9 +2372,9 @@ fn build_memorise_recipes(
             // the inserter picks up straight off a source / drops straight onto
             // a sink). Trying both rectangle corners is the same straight walk
             // twice for a marker in line with the far cell, which keeps every
-            // candidate marker equally likely either way. A draw that nothing
-            // fits — a crowded or tiny grid — clamps down rather than rejecting
-            // a candidate the shorter arm would have satisfied.
+            // candidate marker equally likely either way. On a crowded or tiny
+            // grid the draw clamps down to the longest length that does fit, so
+            // an arm short of room still routes.
             let mut walks: Vec<Vec<Cell>> = Vec::new();
             for belt_count in (0..=rng.randint(0, MEMORISE_MAX_ARM_BELTS)).rev() {
                 for mx in far.0 - belt_count..=far.0 + belt_count {
@@ -2461,8 +2461,9 @@ fn build_memorise_recipes(
             place_marker(&mut world, pos, ent, dir, item_value);
         }
 
-        // Longer arms give belts more chances to be bypassed, so hold the
-        // no-orphan invariant here rather than leaning on the geometry.
+        // An arm's belts are only reachable if its own inserter drains them, and
+        // nothing about the layout guarantees that, so check the no-orphan
+        // invariant instead of trusting it.
         let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
