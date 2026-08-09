@@ -116,8 +116,8 @@ class TestDiffMarkdown:
         for token in ("PRBIG", "MAINBIG", "PRSMALL", "MAINSMALL"):
             assert token in md
         # Per-lesson tally: one better, one worse, one lesson at each.
-        assert "| `SPLITTER_SPLIT` | 1 | 0 | 1 |" in md
-        assert "| `MOVE_ONE_ITEM` | 2 | 1 | 0 |" in md
+        assert "| `SPLITTER_SPLIT` | 1 | 0 | 1 | 0.900 | 0.100 | -0.800 |" in md
+        assert "| `MOVE_ONE_ITEM` | 2 | 1 | 0 | 0.650 | 0.700 | +0.050 |" in md
 
     def test_identical_sides_say_so(self):
         md = diff_markdown([[_record("MOVE_ONE_ITEM", 1, 0.4)]], [[_record("MOVE_ONE_ITEM", 1, 0.4)]])
@@ -133,10 +133,18 @@ class TestDiffMarkdown:
     def test_truncates_to_the_comment_limit(self):
         pr = [[_record("MOVE_ONE_ITEM", i, 1.0, render="x" * 200) for i in range(200)]]
         main = [[_record("MOVE_ONE_ITEM", i, 0.0, render="y" * 200) for i in range(200)]]
-        md = diff_markdown(pr, main, max_chars=8000)
+        md = diff_markdown(pr, main, max_chars=8000, max_renders=200)
         assert len(md) <= 8000
         assert "further factories omitted" in md
         assert md.rstrip().endswith("</details>")
+
+    def test_caps_the_number_of_renders(self):
+        """Even a tiny-grid report has to stay readable."""
+        pr = [[_record("MOVE_ONE_ITEM", i, 1.0) for i in range(40)]]
+        main = [[_record("MOVE_ONE_ITEM", i, 0.0) for i in range(40)]]
+        md = diff_markdown(pr, main, max_renders=3)
+        assert md.count("Δthput") == 3
+        assert "37 further factories omitted; the 3 largest gaps are shown." in md
 
     def test_side_labels_carry_through(self):
         md = diff_markdown(
@@ -145,7 +153,7 @@ class TestDiffMarkdown:
             pr_label="cmp-abc-pr",
             main_label="cmp-abc-main",
         )
-        assert "cmp-abc-pr vs cmp-abc-main" in md
+        assert "cmp-abc-main vs cmp-abc-pr" in md
         assert "cmp-abc-pr  thput 0.400" in md
         assert "cmp-abc-main  thput 0.900" in md
 
@@ -174,7 +182,7 @@ class TestMultiSeedSides:
     def test_a_side_that_is_worse_everywhere_counts(self):
         md = self._sides([0.1, 0.2, 0.3], [0.4, 0.5, 0.9])
         assert "Δthput -0.400" in md
-        assert "| `MOVE_ONE_ITEM` | 1 | 0 | 1 |" in md
+        assert "| `MOVE_ONE_ITEM` | 1 | 0 | 1 | 0.600 | 0.200 | -0.400 |" in md
 
     def test_factories_missing_from_a_run_are_dropped(self):
         """A factory only some runs scored can't support a verdict."""

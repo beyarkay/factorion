@@ -24,6 +24,9 @@ from training_config import PpoArgs
 PER_KIND_DEFAULT = 50
 # GitHub caps a comment at 65536 chars; leave room for the report's own prose.
 MAX_CHARS_DEFAULT = 58_000
+# Nobody reads the 40th-largest gap, and a wall of grids buries the ones that
+# matter. The per-lesson tally still covers every factory.
+MAX_RENDERS_DEFAULT = 25
 # Throughputs come from the same simulator, so equal factories give bitwise
 # equal rates; anything above this is a real disagreement.
 THPUT_TOL = 1e-6
@@ -176,7 +179,8 @@ def _summary_table(
     pr_by_key: dict[tuple[str, int], list[dict]],
     main_by_key: dict[tuple[str, int], list[dict]],
 ) -> list[str]:
-    """Per-lesson tally of where the two sides ended up (movers first)."""
+    """Per-lesson tally of where the two sides ended up (movers first). The
+    throughput columns are means over every factory AND every seed."""
     by_kind: dict[str, list[tuple[str, int]]] = {}
     for key in keys:
         by_kind.setdefault(key[0], []).append(key)
@@ -198,13 +202,13 @@ def _summary_table(
         )
     rows.sort(key=lambda r: -abs(r[0]))
     lines = [
-        "| Lesson | factories | PR better | PR worse | PR thput | MAIN thput | mean Δ |",
+        "| Lesson | factories | PR better | PR worse | μ MAIN thput | μ PR thput | μ Δ |",
         "|---|---|---|---|---|---|---|",
     ]
     for mean_d, kind, n, better, worse, pr_mean, main_mean in rows:
         lines.append(
             f"| `{kind}` | {n} | {better} | {worse} "
-            f"| {pr_mean:.3f} | {main_mean:.3f} | {mean_d:+.3f} |"
+            f"| {main_mean:.3f} | {pr_mean:.3f} | {mean_d:+.3f} |"
         )
     return lines
 
@@ -216,6 +220,7 @@ def diff_markdown(
     pr_label: str = "PR",
     main_label: str = "MAIN",
     max_chars: int = MAX_CHARS_DEFAULT,
+    max_renders: int = MAX_RENDERS_DEFAULT,
 ) -> str:
     """Markdown report over one or more runs per side: a per-lesson tally, then
     every consistently-different factory rendered side by side, largest mean
@@ -238,7 +243,7 @@ def diff_markdown(
         "seed wandering is not reported."
     )
     lines = [
-        f"## Greedy factory diff: {pr_label} vs {main_label}",
+        f"## Greedy factory diff: {main_label} vs {pr_label}",
         "",
         f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
         f"a blank grid, stopping where its own EOT head fired. "
@@ -269,18 +274,18 @@ def diff_markdown(
                 "",
                 "```text",
                 _side_by_side(
-                    pr_rep["render"],
                     main_rep["render"],
-                    f"{pr_label}  thput {_thput_label(pr)}  "
-                    f"cost {pr_rep['entity_cost']:.1f}",
+                    pr_rep["render"],
                     f"{main_label}  thput {_thput_label(main)}  "
                     f"cost {main_rep['entity_cost']:.1f}",
+                    f"{pr_label}  thput {_thput_label(pr)}  "
+                    f"cost {pr_rep['entity_cost']:.1f}",
                 ),
                 "```",
                 "",
             ]
         )
-        if budget - len(block) < 200:
+        if shown >= max_renders or budget - len(block) < 200:
             break
         budget -= len(block)
         blocks.append(block)
@@ -288,8 +293,8 @@ def diff_markdown(
     tail = ["</details>"]
     if shown < len(differing):
         tail = [
-            f"_{len(differing) - shown} further factories omitted "
-            "(GitHub comment size limit)._",
+            f"_{len(differing) - shown} further factories omitted; "
+            f"the {shown} largest gaps are shown._",
             "",
         ] + tail
     return head + "\n".join(blocks) + "\n".join(tail)
@@ -306,6 +311,7 @@ def compare_checkpoints(
     project: str = PpoArgs.wandb_project_name,
     entity: Optional[str] = None,
     max_chars: int = MAX_CHARS_DEFAULT,
+    max_renders: int = MAX_RENDERS_DEFAULT,
 ) -> str:
     """Roll out every checkpoint over ONE shared factory set and diff the sides.
 
@@ -320,4 +326,5 @@ def compare_checkpoints(
         pr_label=pr_label,
         main_label=main_label,
         max_chars=max_chars,
+        max_renders=max_renders,
     )
