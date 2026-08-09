@@ -123,75 +123,135 @@ def _side_by_side(left: str, right: str, left_head: str, right_head: str) -> str
     return "\n".join(f"{a:<{width}}  |  {b}".rstrip() for a, b in zip(ls, rs))
 
 
-def _summary_table(pairs: list[tuple[dict, dict]]) -> list[str]:
+def _by_key(runs: list[list[dict]]) -> dict[tuple[str, int], list[dict]]:
+    """{(lesson, factory seed): one record per run}, dropping any factory a run
+    is missing — a verdict must never rest on a partially-covered factory."""
+    out: dict[tuple[str, int], list[dict]] = {}
+    for records in runs:
+        for r in records:
+            out.setdefault((r["kind"], r["seed"]), []).append(r)
+    return {k: v for k, v in out.items() if len(v) == len(runs)}
+
+
+def _thputs(recs: list[dict]) -> list[float]:
+    return [r["thput"] for r in recs]
+
+
+def _verdict(pr: list[dict], main: list[dict]) -> int:
+    """+1 when EVERY pr run beat EVERY main run on this factory, -1 when every
+    one lost it, 0 when the two ranges overlap.
+
+    A compare runs several training seeds per side, and one seed moving is
+    noise from that seed, not a property of the branch. Requiring the ranges
+    to be disjoint is the cheap version of "this reproduces": with one seed a
+    side it degenerates to "the throughput differs".
+    """
+    if min(_thputs(pr)) - max(_thputs(main)) > THPUT_TOL:
+        return 1
+    if min(_thputs(main)) - max(_thputs(pr)) > THPUT_TOL:
+        return -1
+    return 0
+
+
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs)
+
+
+def _representative(recs: list[dict]) -> dict:
+    """The median-throughput run's factory — the side's typical build, not its
+    luckiest or unluckiest one."""
+    return sorted(recs, key=lambda r: r["thput"])[len(recs) // 2]
+
+
+def _thput_label(recs: list[dict]) -> str:
+    """`0.700` for one run, `0.700 [0.60 0.70 0.80]` for several."""
+    shown = _representative(recs)["thput"]
+    if len(recs) == 1:
+        return f"{shown:.3f}"
+    return f"{shown:.3f} [{' '.join(f'{t:.2f}' for t in sorted(_thputs(recs)))}]"
+
+
+def _summary_table(
+    keys: list[tuple[str, int]],
+    pr_by_key: dict[tuple[str, int], list[dict]],
+    main_by_key: dict[tuple[str, int], list[dict]],
+) -> list[str]:
     """Per-lesson tally of where the two sides ended up (movers first)."""
-    by_kind: dict[str, list[tuple[dict, dict]]] = {}
-    for a, b in pairs:
-        by_kind.setdefault(a["kind"], []).append((a, b))
+    by_kind: dict[str, list[tuple[str, int]]] = {}
+    for key in keys:
+        by_kind.setdefault(key[0], []).append(key)
     rows = []
-    for kind, items in by_kind.items():
-        deltas = [a["thput"] - b["thput"] for a, b in items]
+    for kind, kind_keys in by_kind.items():
+        pr_t = [_mean(_thputs(pr_by_key[k])) for k in kind_keys]
+        main_t = [_mean(_thputs(main_by_key[k])) for k in kind_keys]
+        verdicts = [_verdict(pr_by_key[k], main_by_key[k]) for k in kind_keys]
         rows.append(
             (
-                sum(deltas) / len(deltas),
+                _mean(pr_t) - _mean(main_t),
                 kind,
-                len(items),
-                sum(1 for d in deltas if abs(d) > THPUT_TOL),
-                sum(1 for d in deltas if d > THPUT_TOL),
-                sum(1 for d in deltas if d < -THPUT_TOL),
-                sum(a["thput"] for a, _ in items) / len(items),
-                sum(b["thput"] for _, b in items) / len(items),
+                len(kind_keys),
+                sum(1 for v in verdicts if v > 0),
+                sum(1 for v in verdicts if v < 0),
+                _mean(pr_t),
+                _mean(main_t),
             )
         )
     rows.sort(key=lambda r: -abs(r[0]))
     lines = [
-        "| Lesson | factories | differ | PR better | PR worse | PR thput | MAIN thput | mean Δ |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Lesson | factories | PR better | PR worse | PR thput | MAIN thput | mean Δ |",
+        "|---|---|---|---|---|---|---|",
     ]
-    for mean_d, kind, n, differ, better, worse, pr_t, main_t in rows:
+    for mean_d, kind, n, better, worse, pr_mean, main_mean in rows:
         lines.append(
-            f"| `{kind}` | {n} | {differ} | {better} | {worse} "
-            f"| {pr_t:.3f} | {main_t:.3f} | {mean_d:+.3f} |"
+            f"| `{kind}` | {n} | {better} | {worse} "
+            f"| {pr_mean:.3f} | {main_mean:.3f} | {mean_d:+.3f} |"
         )
     return lines
 
 
 def diff_markdown(
-    pr_records: list[dict],
-    main_records: list[dict],
+    pr_runs: list[list[dict]],
+    main_runs: list[list[dict]],
     *,
     pr_label: str = "PR",
     main_label: str = "MAIN",
     max_chars: int = MAX_CHARS_DEFAULT,
 ) -> str:
-    """Markdown report: per-lesson tally, then every differing factory rendered
-    side by side, largest throughput gap first."""
-    pr_by_key = {(r["kind"], r["seed"]): r for r in pr_records}
-    main_by_key = {(r["kind"], r["seed"]): r for r in main_records}
+    """Markdown report over one or more runs per side: a per-lesson tally, then
+    every consistently-different factory rendered side by side, largest mean
+    throughput gap first."""
+    pr_by_key = _by_key(pr_runs)
+    main_by_key = _by_key(main_runs)
     keys = sorted(set(pr_by_key) & set(main_by_key))
     if not keys:
         return ""
-    pairs = [(pr_by_key[k], main_by_key[k]) for k in keys]
     differing = sorted(
-        (p for p in pairs if abs(p[0]["thput"] - p[1]["thput"]) > THPUT_TOL),
-        key=lambda p: -abs(p[0]["thput"] - p[1]["thput"]),
+        (k for k in keys if _verdict(pr_by_key[k], main_by_key[k])),
+        key=lambda k: -abs(
+            _mean(_thputs(pr_by_key[k])) - _mean(_thputs(main_by_key[k]))
+        ),
     )
 
+    seeds_note = (
+        f"{len(pr_runs)} run(s) per side; a factory counts as different only "
+        "when every run on one side beat every run on the other, so a single "
+        "seed wandering is not reported."
+    )
     lines = [
         f"## Greedy factory diff: {pr_label} vs {main_label}",
         "",
-        f"Both checkpoints rebuilt the same {len(pairs)} held-out factories from "
-        f"a blank grid, stopping where their own EOT head fired. "
-        f"{len(differing)} ended at a different throughput.",
+        f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
+        f"a blank grid, stopping where its own EOT head fired. "
+        f"{len(differing)} came out consistently different. {seeds_note}",
         "",
-        *_summary_table(pairs),
+        *_summary_table(keys, pr_by_key, main_by_key),
         "",
     ]
     if not differing:
-        return "\n".join(lines + ["Both sides built identically-performing factories."])
+        return "\n".join(lines + ["No factory moved consistently across seeds."])
 
     lines += [
-        f"<details><summary>{len(differing)} differing factories, "
+        f"<details><summary>{len(differing)} consistently different factories, "
         "largest throughput gap first</summary>",
         "",
         "",  # markdown inside a <details> only renders after a blank line
@@ -199,18 +259,22 @@ def diff_markdown(
     head = "\n".join(lines)
     blocks, shown = [], 0
     budget = max_chars - len(head)
-    for i, (pr, main) in enumerate(differing, start=1):
-        delta = pr["thput"] - main["thput"]
+    for i, key in enumerate(differing, start=1):
+        pr, main = pr_by_key[key], main_by_key[key]
+        delta = _mean(_thputs(pr)) - _mean(_thputs(main))
+        pr_rep, main_rep = _representative(pr), _representative(main)
         block = "\n".join(
             [
-                f"**{i}. `{pr['kind']}` seed {pr['seed']} — Δthput {delta:+.3f}**",
+                f"**{i}. `{key[0]}` factory {key[1]} — Δthput {delta:+.3f}**",
                 "",
                 "```text",
                 _side_by_side(
-                    pr["render"],
-                    main["render"],
-                    f"{pr_label}  thput {pr['thput']:.3f}  cost {pr['entity_cost']:.1f}",
-                    f"{main_label}  thput {main['thput']:.3f}  cost {main['entity_cost']:.1f}",
+                    pr_rep["render"],
+                    main_rep["render"],
+                    f"{pr_label}  thput {_thput_label(pr)}  "
+                    f"cost {pr_rep['entity_cost']:.1f}",
+                    f"{main_label}  thput {_thput_label(main)}  "
+                    f"cost {main_rep['entity_cost']:.1f}",
                 ),
                 "```",
                 "",
@@ -232,8 +296,8 @@ def diff_markdown(
 
 
 def compare_checkpoints(
-    pr_spec: str,
-    main_spec: str,
+    pr_specs: list[str],
+    main_specs: list[str],
     *,
     seed: int = 1,
     per_kind: int = PER_KIND_DEFAULT,
@@ -243,13 +307,16 @@ def compare_checkpoints(
     entity: Optional[str] = None,
     max_chars: int = MAX_CHARS_DEFAULT,
 ) -> str:
-    """Roll out both checkpoints over one shared factory set and diff them."""
+    """Roll out every checkpoint over ONE shared factory set and diff the sides.
+
+    `seed` picks the factory set, not the training seed of any checkpoint: all
+    of them must rebuild the same factories for the per-factory comparison to
+    mean anything.
+    """
     kw = dict(seed=seed, per_kind=per_kind, project=project, entity=entity)
-    pr_records = collect(pr_spec, **kw)  # ty: ignore[invalid-argument-type]
-    main_records = collect(main_spec, **kw)  # ty: ignore[invalid-argument-type]
     return diff_markdown(
-        pr_records,
-        main_records,
+        [collect(s, **kw) for s in pr_specs],  # ty: ignore[invalid-argument-type]
+        [collect(s, **kw) for s in main_specs],  # ty: ignore[invalid-argument-type]
         pr_label=pr_label,
         main_label=main_label,
         max_chars=max_chars,

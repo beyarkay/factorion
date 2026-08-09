@@ -282,16 +282,21 @@ def compare_renders(
     PPO@2M vs PPO@10M, seed vs seed.
 
     Args:
-        pr: Checkpoint shown on the left: local .pt path or W&B run id.
-        main: Checkpoint shown on the right.
-        seed: Seed of the shared held-out factory set both sides rebuild.
+        pr: Checkpoint(s) shown on the left, comma-separated: local .pt paths
+            or W&B run ids. Several = the seeds of one side, and a factory is
+            only reported when every one of them moved the same way.
+        main: Checkpoint(s) shown on the right.
+        seed: Seed of the shared held-out factory set every checkpoint rebuilds.
         per_kind: Factories per LessonKind (0 = the factory_diff default).
         out: Optional path to also write the markdown report to.
     """
     from factory_diff import PER_KIND_DEFAULT, compare_checkpoints
 
     md = compare_checkpoints(
-        pr, main, seed=seed, per_kind=per_kind or PER_KIND_DEFAULT
+        pr.split(","),
+        main.split(","),
+        seed=seed,
+        per_kind=per_kind or PER_KIND_DEFAULT,
     )
     print(md)
     if out:
