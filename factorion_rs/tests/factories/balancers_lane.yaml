@@ -1,0 +1,211 @@
+# Community lane balancers, decoded from published blueprints.
+
+description: |
+  lane_1_belt_output_balanced: a lane balancer, 1 belt(s) in, 1 out.
+  Decoded from Bilka's Lane Balancers.
+  Real Factorio delivers min(1,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+items:
+- { x: 2, y: 6, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@2,6 -> b@2,5
+  Y@2,4 -> b@2,3
+  Y@2,4 -> b@3,3
+  Y@3,4 -> b@2,3
+  Y@3,4 -> b@3,3
+  b@1,2 -> b@2,2
+  b@1,3 -> b@1,2
+  b@2,1 -> K@2,0
+  b@2,2 -> b@2,1
+  b@2,3 -> b@1,3
+  b@2,5 -> Y@2,4
+  b@3,2 -> b@2,2
+  b@3,3 -> b@3,2
+factory: |
+  .. .. K^ .. ..
+  .. .. b^ .. ..
+  .. b> b^ b< ..
+  .. b^ b< b^ ..
+  .. .. Y^^^Y ..
+  .. .. b^ .. ..
+  .. .. S^ .. ..
+---
+description: |
+  lane_1_belt_output_balanced_corner: a lane balancer, 1 belt(s) in, 1 out.
+  Decoded from Bilka's Lane Balancers.
+  Real Factorio delivers min(1,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+items:
+- { x: 2, y: 5, item: iron_plate }
+- { x: 0, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@2,5 -> b@2,4
+  Y@2,3 -> b@2,2
+  Y@2,3 -> b@3,2
+  Y@3,3 -> b@2,2
+  Y@3,3 -> b@3,2
+  b@1,2 -> K@0,2
+  b@2,1 -> b@2,2
+  b@2,2 -> b@1,2
+  b@2,4 -> Y@2,3
+  b@3,1 -> b@2,1
+  b@3,2 -> b@3,1
+factory: |
+  .. .. .. .. ..
+  .. .. bv b< ..
+  K< b< b< b^ ..
+  .. .. Y^^^Y ..
+  .. .. b^ .. ..
+  .. .. S^ .. ..
+---
+description: |
+  lane_2_belt_input_balanced: a lane balancer, 2 belt(s) in, 2 out.
+  Decoded from Bilka's Lane Balancers.
+  Real Factorio delivers min(2,2) x 15 = 30 items/s, split evenly over the 2 output belt(s).
+  The engine delivers 15 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 9, item: iron_plate }
+- { x: 3, y: 9, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@2,9 -> b@2,8
+  S@3,9 -> b@3,8
+  Y@1,6 -> b@1,5
+  Y@1,6 -> b@2,5
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,6 -> b@1,5
+  Y@2,6 -> b@2,5
+  Y@2,7 -> d@3,6
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,7 -> d@3,6
+  b@1,4 -> b@2,4
+  b@1,5 -> b@1,4
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+  b@2,4 -> b@2,3
+  b@2,5 -> b@3,5
+  b@2,8 -> Y@2,7
+  b@3,1 -> K@3,0
+  b@3,4 -> b@2,4
+  b@3,5 -> b@3,4
+  b@3,8 -> Y@3,7
+  d@3,6 -> u@3,3
+  u@3,3 -> Y@3,2
+factory: |
+  .. .. K^ K^ ..
+  .. .. b^ b^ ..
+  .. .. Y^^^Y ..
+  .. .. b^ u^ ..
+  .. b> b^ b< ..
+  .. b^ b> b^ ..
+  .. Y^^^Y d^ ..
+  .. .. Y^^^Y ..
+  .. .. b^ b^ ..
+  .. .. S^ S^ ..
+---
+description: |
+  lane_4_belt_input_balanced_wide: a lane balancer, 4 belt(s) in, 4 out.
+  Decoded from Bilka's Lane Balancers.
+  Real Factorio delivers min(4,4) x 15 = 60 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 30 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 2, y: 11, item: iron_plate }
+- { x: 3, y: 11, item: iron_plate }
+- { x: 4, y: 11, item: iron_plate }
+- { x: 5, y: 11, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@2,0 -> b@2,1
+  S@3,0 -> b@3,1
+  S@4,0 -> b@4,1
+  S@5,0 -> b@5,1
+  Y@1,4 -> b@1,5
+  Y@1,4 -> b@2,5
+  Y@2,2 -> b@2,3
+  Y@2,4 -> b@1,5
+  Y@2,4 -> b@2,5
+  Y@2,9 -> b@2,10
+  Y@2,9 -> b@3,10
+  Y@3,2 -> b@2,3
+  Y@3,3 -> d@3,4
+  Y@3,3 -> d@4,4
+  Y@3,6 -> b@3,7
+  Y@3,6 -> b@4,7
+  Y@3,9 -> b@2,10
+  Y@3,9 -> b@3,10
+  Y@4,2 -> b@5,3
+  Y@4,3 -> d@3,4
+  Y@4,3 -> d@4,4
+  Y@4,6 -> b@3,7
+  Y@4,6 -> b@4,7
+  Y@4,9 -> b@4,10
+  Y@4,9 -> b@5,10
+  Y@5,2 -> b@5,3
+  Y@5,4 -> b@5,5
+  Y@5,4 -> b@6,5
+  Y@5,9 -> b@4,10
+  Y@5,9 -> b@5,10
+  Y@6,4 -> b@5,5
+  Y@6,4 -> b@6,5
+  b@1,5 -> b@1,6
+  b@1,6 -> b@2,6
+  b@2,1 -> Y@2,2
+  b@2,10 -> K@2,11
+  b@2,3 -> Y@2,4
+  b@2,5 -> b@3,5
+  b@2,6 -> b@2,5
+  b@2,7 -> b@2,8
+  b@2,8 -> Y@2,9
+  b@3,1 -> Y@3,2
+  b@3,10 -> K@3,11
+  b@3,5 -> Y@3,6
+  b@3,7 -> b@2,7
+  b@4,1 -> Y@4,2
+  b@4,10 -> K@4,11
+  b@4,5 -> Y@4,6
+  b@4,7 -> b@5,7
+  b@5,1 -> Y@5,2
+  b@5,10 -> K@5,11
+  b@5,3 -> Y@5,4
+  b@5,5 -> b@4,5
+  b@5,6 -> b@5,5
+  b@5,7 -> b@5,8
+  b@5,8 -> Y@5,9
+  b@6,5 -> b@6,6
+  b@6,6 -> b@5,6
+  d@3,4 -> u@3,8
+  d@4,4 -> u@4,8
+  u@3,8 -> Y@3,9
+  u@4,8 -> Y@4,9
+factory: |
+  .. .. Sv Sv Sv Sv .. ..
+  .. .. bv bv bv bv .. ..
+  .. .. YvvvY YvvvY .. ..
+  .. .. bv YvvvY bv .. ..
+  .. YvvvY dv dv YvvvY ..
+  .. bv b> bv bv b< bv ..
+  .. b> b^ YvvvY b^ b< ..
+  .. .. bv b< b> bv .. ..
+  .. .. bv uv uv bv .. ..
+  .. .. YvvvY YvvvY .. ..
+  .. .. bv bv bv bv .. ..
+  .. .. Kv Kv Kv Kv .. ..
