@@ -165,6 +165,20 @@ class PpoArgs(SharedArgs):
     opposed to subtracting a log-space cost term) also keeps zero throughput at
     exactly zero, so a factory that delivers nothing is never worse than an
     empty grid. 0 disables the compression."""
+    entity_flow_coef: float = 0.02
+    """weight of the partial-credit term added to the terminal reward:
+    `entity_flow_coef * log1p(entity_flow * cost_efficiency / reward_symlog_r0)`,
+    where entity_flow is items/second summed over every placed entity (the
+    engine already computes it per node and previously discarded it). Throughput
+    alone is zero until items actually reach a sink, so a policy building from a
+    blank grid gets no gradient for a chain that is nearly complete; entity_flow
+    is nonzero as soon as one belt carries items, and grows as flow reaches
+    further. Spam is not the risk it looks like: only tiles that actually carry
+    items score, and a grid flooded with belts is mostly orphans — filling every
+    free cell of an 11x11 measures *lower* entity_flow than the solved lesson
+    does. Sizing is set by the term's share of a solved lesson's reward, 2.6%
+    (belts) to 9% (MEMORISE_2), so finishing always dominates stopping short.
+    0 disables the term, recovering a throughput-only reward."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

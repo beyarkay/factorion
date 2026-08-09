@@ -151,6 +151,7 @@ class TestRolloutEpisodeMetrics:
             min_entities_required=3.0,
             frac_reachable=0.75,
             entity_cost=12.5,
+            entity_flow=30.0,
             cost_efficiency=0.9,
         )
 
@@ -179,6 +180,7 @@ class TestRolloutEpisodeMetrics:
                 min_entities_required=1.0,
                 frac_reachable=0.0,
                 entity_cost=4.0,
+                entity_flow=30.0,
                 cost_efficiency=0.95,
             )
             assert m[f"rollout/{kind.name}/thput_raw"] == pytest.approx(1.23)
@@ -191,6 +193,8 @@ class TestRolloutEpisodeMetrics:
         m = self._metrics("SPLITTER_SPLIT")
         assert m["rollout/entity_cost"] == pytest.approx(12.5)
         assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
+        assert m["rollout/entity_flow"] == pytest.approx(30.0)
+        assert m["rollout/SPLITTER_SPLIT/entity_flow"] == pytest.approx(30.0)
         assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
         assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
 
@@ -212,6 +216,7 @@ class TestTrialRolloutMetricsAreSeparate:
             min_entities_required=3.0,
             frac_reachable=0.75,
             entity_cost=12.5,
+            entity_flow=30.0,
             cost_efficiency=0.9,
             is_trial=is_trial,
         )

@@ -25,9 +25,11 @@ def _make_env(size=5, max_steps=10, **kwargs):
 def _expected_reward(env, info):
     """The terminal reward the env's configured scheme should have paid."""
     reward = info["thput_raw"] * info["cost_efficiency"]
+    flow = info["entity_flow"] * info["cost_efficiency"]
     if env.reward_symlog_r0 > 0:
-        return math.log1p(reward / env.reward_symlog_r0)
-    return reward
+        reward = math.log1p(reward / env.reward_symlog_r0)
+        flow = math.log1p(flow / env.reward_symlog_r0)
+    return reward + env.entity_flow_coef * flow
 
 
 def _noop_action():
@@ -166,7 +168,7 @@ class TestReward:
     def test_entity_cost_reduces_reward(self):
         """A non-zero entity cost lowers the reward below the pure
         throughput term."""
-        env = _make_env(size=5, max_steps=10)
+        env = _make_env(size=5, max_steps=10, entity_flow_coef=0.0)
         env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -181,7 +183,9 @@ class TestReward:
 
     def test_entity_cost_reduces_reward_multiplicatively_without_log(self):
         """With the log transform off, cost is a multiplier bounded in (0, 1]."""
-        env = _make_env(size=5, max_steps=10, reward_symlog_r0=0.0)
+        env = _make_env(
+            size=5, max_steps=10, reward_symlog_r0=0.0, entity_flow_coef=0.0
+        )
         env.entity_cost_scale = 0.01
         env.reset(seed=42, options={"num_missing_entities": 0})
 
@@ -234,6 +238,65 @@ class TestReward:
         assert info["thput_raw"] == 0
         assert info["entity_cost"] == pytest.approx(2.0)
         assert reward == 0
+
+
+class TestEntityFlowPartialCredit:
+    """A chain that moves items but hasn't reached a sink scores zero
+    throughput. The entity-flow term is what separates it from an empty grid."""
+
+    _DELTA = {1: (0, -1), 2: (1, 0), 3: (0, 1), 4: (-1, 0)}
+
+    def _cut_solved_factory(self, env):
+        """Solve MOVE_ONE_ITEM, then delete the belt feeding the sink."""
+        env.reset(
+            seed=42,
+            options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM},
+        )
+        ent = env._world_CWH[Channel.ENTITIES.value].numpy()
+        dirs = env._world_CWH[Channel.DIRECTION.value].numpy()
+        (sx,), (sy,) = np.nonzero(ent == env._sink_id)
+        dx, dy = self._DELTA[int(dirs[sx, sy])]
+        assert ent[sx - dx, sy - dy] == str2ent("transport_belt").value
+        env._world_CWH[Channel.ENTITIES.value, sx - dx, sy - dy] = 0
+        env._world_CWH[Channel.DIRECTION.value, sx - dx, sy - dy] = 0
+
+        action = _noop_action()
+        action["eot"] = 1
+        return env.step(action)
+
+    def test_cut_chain_earns_flow_reward_but_no_throughput(self):
+        env = _make_env(size=7, max_steps=10)
+        _, reward, terminated, _, info = self._cut_solved_factory(env)
+
+        assert terminated is True
+        assert info["thput_raw"] == 0, "the cut chain must deliver nothing"
+        assert info["entity_flow"] > 0, "the remaining belts still carry items"
+        assert reward > 0
+        assert reward == pytest.approx(_expected_reward(env, info))
+
+    def test_zero_coef_recovers_a_throughput_only_reward(self):
+        env = _make_env(size=7, max_steps=10, entity_flow_coef=0.0)
+        _, reward, _, _, info = self._cut_solved_factory(env)
+
+        assert info["entity_flow"] > 0
+        assert reward == 0
+
+    def test_partial_credit_stays_far_below_solving(self):
+        """Partial credit must be a nudge, not a substitute: finishing the
+        chain has to dominate, or the policy learns to stop one belt short."""
+        cut_env = _make_env(size=7, max_steps=10)
+        _, cut_reward, _, _, _ = self._cut_solved_factory(cut_env)
+
+        solved_env = _make_env(size=7, max_steps=10)
+        solved_env.reset(
+            seed=42,
+            options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM},
+        )
+        action = _noop_action()
+        action["eot"] = 1
+        _, solved_reward, _, _, _ = solved_env.step(action)
+
+        assert cut_reward < 0.1 * solved_reward
 
 
 class TestLogRewardScaleCompression:
