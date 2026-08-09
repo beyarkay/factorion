@@ -888,8 +888,13 @@ impl FactoryEntity for Splitter {
                         let dst_is_belt =
                             matches!(dst_entity, Item::TransportBelt | Item::UndergroundBelt);
                         let dst_is_sink = matches!(dst_entity, Item::Source | Item::Sink);
+                        // Stacked splitters are the building block of every
+                        // belt balancer. A splitter only takes input on its
+                        // back, so it accepts this feed only facing the same
+                        // way — a side or head-on neighbour stays severed.
+                        let dst_is_splitter = dst_entity == Item::Splitter && dst_dir == dir;
                         let dst_not_opposing = dst_dir != dir.opposite();
-                        if (dst_is_belt || dst_is_sink)
+                        if (dst_is_belt || dst_is_sink || dst_is_splitter)
                             && dst_not_opposing
                             && !tile_set.contains(&out_pos)
                         {
@@ -1643,6 +1648,72 @@ mod tests {
             Some(Item::CopperCable),
         );
         assert!(!is_curved_belt(&w, (1, 1)));
+    }
+
+    #[test]
+    fn test_splitter_to_splitter_every_orientation_and_offset() {
+        // Two splitters, every direction pair × every relative offset: the
+        // edges between them must be exactly what the game gives. A splitter
+        // takes input only on its back, so a receiver has to face the same
+        // way; every tile-lane then fans out to every receiver, since a
+        // splitter balances internally and an item entering either tile can
+        // leave by either output.
+        use std::collections::HashSet;
+        let a_pos = (4, 4);
+        for a_dir in CARDINALS {
+            for b_dir in CARDINALS {
+                for bx in 1..=7 {
+                    for by in 1..=7 {
+                        let (b_pos, mut w) = ((bx, by), World::empty(9, 9));
+                        w.place_multi_tile(a_pos.0, a_pos.1, Item::Splitter, a_dir, None, 2, 1);
+                        // Overlapping footprints are not a placeable world.
+                        if !w.place_multi_tile(bx, by, Item::Splitter, b_dir, None, 2, 1) {
+                            continue;
+                        }
+
+                        let mut want: HashSet<Edge> = HashSet::new();
+                        for ((src, s_dir), (dst, d_dir)) in [
+                            ((a_pos, a_dir), (b_pos, b_dir)),
+                            ((b_pos, b_dir), (a_pos, a_dir)),
+                        ] {
+                            if s_dir != d_dir {
+                                continue;
+                            }
+                            let (ddx, ddy) = s_dir.delta();
+                            let src_tiles = entity_tiles(src.0, src.1, s_dir, 2, 1).unwrap();
+                            let recvs = entity_tiles(dst.0, dst.1, d_dir, 2, 1).unwrap();
+                            for recv in recvs {
+                                if !src_tiles.contains(&Pos::new(recv.x - ddx, recv.y - ddy)) {
+                                    continue;
+                                }
+                                let node = |p: Pos, l| {
+                                    NodeId::new(Item::Splitter, p.x as usize, p.y as usize, Some(l))
+                                };
+                                for &tile in &src_tiles {
+                                    want.extend(
+                                        Lane::iter().map(|l| (node(tile, l), node(recv, l))),
+                                    );
+                                }
+                            }
+                        }
+
+                        let got: HashSet<Edge> = [(a_pos, a_dir), (b_pos, b_dir)]
+                            .into_iter()
+                            .flat_map(|(pos, dir)| Splitter.connections(pos, dir, &w))
+                            .filter(|(s, d)| {
+                                s.entity_kind == Item::Splitter && d.entity_kind == Item::Splitter
+                            })
+                            .collect();
+                        assert_eq!(
+                            got,
+                            want,
+                            "A={a_dir:?}@{a_pos:?} B={b_dir:?}@{b_pos:?}\n{}",
+                            crate::render::render(&w)
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

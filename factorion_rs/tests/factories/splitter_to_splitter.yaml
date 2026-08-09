@@ -1,0 +1,50 @@
+description: |
+  Two splitters stacked back to back — the building block every belt balancer
+  is made of. A splitter's output side feeds whatever belt-connectable entity
+  sits in front of it, and another splitter is belt-connectable, so the full
+  15 i/s reaches the sink.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 0, y: 5, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@0,0 -> b@0,1
+  b@0,1 -> Y@0,2
+  Y@0,2 -> Y@0,3
+  Y@0,2 -> Y@1,3
+  Y@1,2 -> Y@0,3
+  Y@1,2 -> Y@1,3
+  Y@0,3 -> b@0,4
+  Y@1,3 -> b@0,4
+  b@0,4 -> K@0,5
+factory: |
+  Sv ..
+  bv ..
+  YvvvY
+  YvvvY
+  bv ..
+  Kv ..
+---
+description: |
+  The same pair staggered by a tile, so only one output faces the splitter
+  below. The other output backs up against bare ground and the whole 15 i/s
+  goes through the tile that does connect.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 2, y: 4, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@0,0 -> b@0,1
+  b@0,1 -> Y@0,2
+  Y@0,2 -> Y@1,3
+  Y@1,2 -> Y@1,3
+  Y@1,3 -> K@2,4
+  Y@2,3 -> K@2,4
+factory: |
+  Sv .. ..
+  bv .. ..
+  YvvvY ..
+  .. YvvvY
+  .. .. Kv
