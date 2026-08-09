@@ -64,7 +64,7 @@ use world::World;
 /// The score is the power mean (see [`factory_score`]) of each sink's
 /// achieved throughput of its configured item, so unused / under-served
 /// sinks drag it down rather than being hidden by a fully-fed sink.
-/// `entity_flow` is the items/s summed over every placed entity (markers
+/// `entity_flow` is the items/s carried by the placed entities (markers
 /// excluded), which unlike the score is nonzero for a factory whose flow has
 /// not reached a sink yet.
 #[cfg(feature = "pyo3-bindings")]

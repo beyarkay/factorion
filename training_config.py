@@ -170,19 +170,21 @@ class PpoArgs(SharedArgs):
     nothing. Throughput is the objective whenever it is nonzero; below that it
     is a flat zero however close the chain got, so a policy building from a
     blank grid cannot tell "nearly done" from "empty grid". entity_flow —
-    items/second summed over every placed entity, which the engine already
+    items/second carried by the placed entities, which the engine already
     computes per node and previously discarded — stands in for it there:
     `entity_flow_coef * log1p(entity_flow * cost_efficiency / reward_symlog_r0)`.
     The proxy is dropped the moment anything is delivered, so it can never pay
     a working factory for flow-carrying decoys. Because it scales the whole
     fallback branch uniformly, this coefficient sets how far the best
-    consolation prize sits below the worst real solve rather than reordering
-    anything within the branch: 0.02 caps the fallback near 0.24 against a
-    minimum solved-lesson reward of 1.62 (MEMORISE_2), a ~7x margin. Spam is
-    not the risk it looks like either — only tiles actually carrying items
-    score, and a grid flooded with belts is mostly orphans, so filling every
-    free cell of an 11x11 measures *lower* entity_flow than the solved lesson
-    does. 0 disables the fallback, recovering a throughput-only reward."""
+    consolation prize sits below a real solve rather than reordering anything
+    within the branch. At 0.02 the fallback tops out at 0.209 across every
+    lesson, against a 1st-percentile delivering reward of 0.976 (~4.7x) and a
+    median of 5.88; the two ranges cross on 0.39% of delivering states, all of
+    them MEMORISE_4 trickles under 0.002 items/s. Spam is not the risk it looks
+    like either — only tiles actually carrying items score, and a grid flooded
+    with belts is mostly orphans, so filling all 119 free cells of an 11x11
+    measures entity_flow 75 against a solved MOVE_ONE_ITEM's 150, worth 2.4% of
+    its reward. 0 disables the fallback, recovering a throughput-only reward."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

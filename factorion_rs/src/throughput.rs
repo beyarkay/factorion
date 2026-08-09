@@ -65,7 +65,7 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// Returns `(deliveries, num_unreachable, entity_flow)`: one [`SinkDelivery`]
 /// per sink (the item it was configured to accept and how much of that item
 /// reached it — collapse to a scalar score with [`factory_score`]), the orphan
-/// count, and the total items/s moving through the placed entities.
+/// count, and the total items/s carried by the placed entities.
 ///
 /// Algorithm:
 /// 1. Detect cycles → return no deliveries if any exist
@@ -227,14 +227,17 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, f64) 
         });
     }
 
-    // 4. Total items/s moving through the placed entities: every node's
-    //    output, which sums lane nodes back into their tile. The markers are
-    //    excluded — a source's output is a pre-set infinite supply and a sink
-    //    just re-emits its delivery — leaving a partial-credit signal over
-    //    exactly what the agent built, nonzero before anything reaches a sink.
+    // 4. Total items/s moving through the placed entities, which sums lane
+    //    nodes back into their tile. The markers are excluded — a source's
+    //    output is a pre-set infinite supply and a sink just re-emits its
+    //    delivery — leaving a signal over exactly what the agent built, and
+    //    one that is nonzero before anything reaches a sink. Multiplying the
+    //    fan-out division back out is what makes this items/s *carried*: a
+    //    node's stored output is its per-successor share, so a belt feeding
+    //    two branches stores 7.5 while moving 15.
     let entity_flow: f64 = (0..graph.node_count())
         .filter(|&i| !matches!(graph.nodes[i].entity_kind, Item::Source | Item::Sink))
-        .map(|i| node_outputs[i].values().sum::<f64>())
+        .map(|i| node_outputs[i].values().sum::<f64>() * graph.successors[i].len().max(1) as f64)
         .sum();
 
     // 5. Count unreachable ENTITIES (not nodes)
@@ -252,11 +255,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, f64) 
     (
         deliveries,
         count_unreachable_entities(graph, &on_path),
-        if entity_flow.is_finite() {
-            entity_flow
-        } else {
-            0.0
-        },
+        entity_flow,
     )
 }
 
@@ -430,6 +429,37 @@ mod tests {
         let (dels, _, flow) = with_sink_at(3, 1);
         assert_eq!(factory_score(&dels), 0.0);
         assert!((flow - 30.0).abs() < 1e-9, "dead-end flow {flow}");
+    }
+
+    /// A belt carries what it carries whether or not something forks off it.
+    /// `node_outputs` stores the per-successor share, so without multiplying
+    /// the fan-out division back out the tapped belt would report half its
+    /// load and bus-belt layouts would be systematically under-credited.
+    #[test]
+    fn test_entity_flow_counts_a_forking_belt_in_full() {
+        let with_tap = |tap: bool| {
+            let mut w = World::empty(5, 3);
+            w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+            for x in 1..4 {
+                w.place(x, 0, Item::TransportBelt, Direction::East, None);
+            }
+            w.place(4, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+            if tap {
+                w.place(2, 1, Item::Inserter, Direction::South, None);
+            }
+            calc_throughput(&build_graph(&w)).2
+        };
+
+        // Three belts x 15 i/s, nothing forking.
+        assert!((with_tap(false) - 45.0).abs() < 1e-9, "{}", with_tap(false));
+        // Tapping belt(2,0) starves what is downstream of it, but the tapped
+        // belt itself still moves a full 15 — the drop must come from the
+        // successors' reduced share, not from the fork halving the tap point.
+        let tapped = with_tap(true);
+        assert!(
+            (tapped - 38.36).abs() < 0.01,
+            "tapped run should keep belt(2,0) whole, got {tapped}"
+        );
     }
 
     #[test]
