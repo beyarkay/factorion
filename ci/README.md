@@ -42,6 +42,13 @@ What comes back as PR comments:
   `HEADLINE_PATTERNS` regexes in `ci/report.py` (thput overall + per
   lesson, overall + per-head accuracies for SFT; eval/rollout/critic
   headliners for PPO) — edit freely;
+- for `compare`: a second **factory-diff comment** (`factory_diff.py`): both
+  sides' checkpoints greedy-rebuild the same 50 held-out factories per lesson,
+  and every factory whose throughput disagrees is rendered side by side,
+  largest gap first — the qualitative read on what the PR's policy learned and
+  what it lost. Rendering runs on the GitHub runner (hence the extra torch +
+  Rust install step in `ci-command.yml`) and is best-effort: a failure there
+  never blocks the metric report;
 - for sweeps: the ranked **sweep report** when the sweep drains its run_cap.
 
 For jobs not tied to a PR (e.g. a production SFT run from main), use the
@@ -101,7 +108,9 @@ RunPod console (the pod's container logs; the job also tees to
 - `runner.sh` — pod-side setup (Rust build, deadline timer, hand-off).
 - `watchdog.py` — leaked-pod reaper (needs only `pip install runpod`).
 - `report.py` — every-metric compare report + assertions, per-run PR
-  summaries, sweep report, history CSV (`python -m ci history`).
+  summaries, sweep report, history CSV (`python -m ci history`), and the
+  compare's factory diff (`python -m ci compare-renders A B`, any two
+  checkpoints).
 - `github_api.py` — PR comments + commit statuses.
 - `stats.py` — dependency-free paired/Welch t-tests.
 - `sweep_ppo.yaml` / `sweep_sft.yaml` — W&B sweep configs.

@@ -331,6 +331,17 @@ def _post_compare_outcome(
         assertions=assertions,
     )
     _post(ctx, _missing_run_warnings(infos or []) + md)
+    # Best effort, and before the assertion exit below: a compare that spent
+    # hours on a GPU must still deliver the qualitative half of its report
+    # when rendering (or a failing assertion) would otherwise cut it short.
+    try:
+        from ci.report import compare_renders
+
+        renders = compare_renders(main_group=main_group, pr_group=pr_group)
+        if renders:
+            _post(ctx, renders)
+    except Exception:
+        print(f"could not post the factory renders:\n{traceback.format_exc()}", flush=True)
     state = "success" if ok else "failure"
     description = (
         "all assertions passed"
