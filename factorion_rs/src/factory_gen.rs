@@ -2211,23 +2211,44 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
     None
 }
 
+/// The most belts a MEMORISE arm may carry between its marker and its inserter.
+const MEMORISE_MAX_ARM_BELTS: i64 = 5;
+
+/// The cells of a shortest Manhattan walk from `from` to `to` — both ends
+/// included — bending at `corner`, which must share a row with one end and a
+/// column with the other (so the walk is a straight line or a single L).
+fn manhattan_walk(from: Cell, to: Cell, corner: Cell) -> Vec<Cell> {
+    let mut cells = vec![from];
+    let mut cur = from;
+    for target in [corner, to] {
+        while cur != target {
+            cur = if cur.0 != target.0 {
+                (cur.0 + (target.0 - cur.0).signum(), cur.1)
+            } else {
+                (cur.0, cur.1 + (target.1 - cur.1).signum())
+            };
+            cells.push(cur);
+        }
+    }
+    cells
+}
+
 /// Build a MEMORISE_`N`_INGREDIENT_RECIPES factory: a single assembler fed and
-/// drained by the most compact possible arms — every ingredient and product
-/// travels `source → belt → inserter → assembler → inserter → belt → sink` with
-/// **exactly one** belt between a source/sink and its inserter. The recipe is
-/// drawn at random from the [`all_recipes`] entries that consume exactly
+/// drained by one arm per ingredient and per product — every item travels
+/// `source → belts → inserter → assembler → inserter → belts → sink`. The recipe
+/// is drawn at random from the [`all_recipes`] entries that consume exactly
 /// `n_ingredients` items, so the number of input arms equals `n_ingredients`
 /// (one source per input) and there is one output arm per product. Each arm's
-/// inserter sits on a randomly-chosen, non-corner assembler perimeter slot, and
-/// the source/sink hangs off a randomly-chosen free neighbour of that arm's
-/// belt. The assembler anchor itself is random.
+/// inserter sits on a randomly-chosen, non-corner assembler perimeter slot; its
+/// belt count is drawn per arm from `0..=MEMORISE_MAX_ARM_BELTS` and the marker
+/// sits at the far end of a shortest (straight or single-L) run of that many
+/// belts. The assembler anchor itself is random.
 ///
 /// Splitting the memorise lesson by ingredient count lets each lesson drill a
 /// fixed input-arm count in isolation. The lesson teaches the policy to
 /// *memorise* which items a recipe consumes and produces (and the assembler's
-/// recipe tag), stripped of any long-belt routing — the routing is fixed at one
-/// tile, so only the recipe identity and the immediate inserter/belt geometry
-/// vary.
+/// recipe tag); the arm length varies so the layout itself cannot be memorised
+/// as a fixed motif and stamped at every marker (#371).
 fn memorise_recipe_pool(n_ingredients: usize) -> Vec<(Item, Recipe)> {
     let recipes = all_recipes();
     let eligible = |recipe: &Recipe, count: usize| {
@@ -2301,93 +2322,115 @@ fn build_memorise_recipes(
             .collect();
         // Source/sink markers must never sit on the assembler perimeter: a
         // source/sink there would be read as an inserter feeding/draining the
-        // assembler directly, bypassing this arm's belt+inserter.
+        // assembler directly, bypassing this arm's belts+inserter.
         let perim = all_perim_set(ax, ay, s);
 
         let slots = rng.sample(&PERIM_SLOTS, n_arms);
 
-        // Plan every arm, reserving cells as we go so arms can't overlap. Any
-        // arm that can't be placed rejects the whole candidate.
+        // Each arm's inserter and its FAR cell (an input inserter's pickup cell,
+        // an output inserter's drop cell) are pinned by the slot, so reserve
+        // them all up front — a long arm must not be able to take a cell some
+        // later arm has no alternative to.
         let mut occupied: HashSet<Cell> = asm_tiles.clone();
-        let mut inserters: Vec<(Cell, Direction)> = Vec::with_capacity(n_arms);
-        let mut belts: Vec<UgPlacement> = Vec::with_capacity(n_arms);
-        // (position, direction, carried-item, is_source)
-        let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
-
+        let mut inserters: Vec<(Cell, Direction, Cell)> = Vec::with_capacity(n_arms);
         let mut ok = true;
         for (idx, &(off_x, off_y, in_dir, out_dir)) in slots.iter().enumerate() {
-            let is_input = idx < n_in;
             let inserter_pos = (ax + off_x, ay + off_y);
             // Inserter faces INTO the assembler for inputs, OUT for outputs.
-            let inserter_dir = if is_input { in_dir } else { out_dir };
-            if !in_grid(inserter_pos, s) || occupied.contains(&inserter_pos) {
-                ok = false;
-                break;
-            }
-
-            // The single belt sits on the inserter's pickup cell (inputs) or
-            // drop cell (outputs) — one step away along the inserter's facing.
+            let inserter_dir = if idx < n_in { in_dir } else { out_dir };
             let dd = inserter_dir.delta();
-            let belt_pos = if is_input {
+            let far = if idx < n_in {
                 (inserter_pos.0 - dd.0, inserter_pos.1 - dd.1)
             } else {
                 (inserter_pos.0 + dd.0, inserter_pos.1 + dd.1)
             };
-            if !in_grid(belt_pos, s) || occupied.contains(&belt_pos) {
+            if !in_grid(inserter_pos, s)
+                || !in_grid(far, s)
+                || !occupied.insert(inserter_pos)
+                || !occupied.insert(far)
+            {
                 ok = false;
                 break;
             }
+            inserters.push((inserter_pos, inserter_dir, far));
+        }
+        if !ok {
+            continue;
+        }
 
-            // The source/sink hangs off any free neighbour of the belt other
-            // than the inserter. Enumerate in BFS_DELTAS order for determinism.
-            let mut candidates: Vec<Cell> = Vec::new();
-            for &(ndx, ndy) in &BFS_DELTAS {
-                let c = (belt_pos.0 + ndx, belt_pos.1 + ndy);
-                if c == inserter_pos || !in_grid(c, s) {
-                    continue;
-                }
-                if occupied.contains(&c) || perim.contains(&c) {
-                    continue;
-                }
-                candidates.push(c);
-            }
-            if candidates.is_empty() {
-                ok = false;
-                break;
-            }
-            let marker_pos = candidates[rng.choice_index(candidates.len())];
+        // Route every arm, reserving cells as we go so arms can't overlap. Any
+        // arm that can't be placed rejects the whole candidate.
+        let mut belts: Vec<UgPlacement> = Vec::new();
+        // (position, direction, carried-item, is_source)
+        let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
+        for (idx, &(inserter_pos, _, far)) in inserters.iter().enumerate() {
+            let is_input = idx < n_in;
+            let belt_count = rng.randint(0, MEMORISE_MAX_ARM_BELTS);
 
-            let (belt_dir, marker_dir, item_value, is_source) = if is_input {
-                // Belt carries toward the inserter; source faces the belt so it
-                // drops its item onto it.
-                let src_dir =
-                    match delta_to_dir(belt_pos.0 - marker_pos.0, belt_pos.1 - marker_pos.1) {
-                        Some(d) => d,
-                        None => {
-                            ok = false;
-                            break;
+            // The belts fill a shortest walk from the marker to the far cell, so
+            // the marker sits exactly `belt_count` steps away; a zero-belt arm
+            // puts it ON the far cell (sources and sinks connect like belts, so
+            // the inserter picks up straight off a source / drops straight onto
+            // a sink). Trying both rectangle corners is the same straight walk
+            // twice for a marker in line with the far cell, which keeps every
+            // candidate marker equally likely either way.
+            let mut walks: Vec<Vec<Cell>> = Vec::new();
+            for mx in far.0 - belt_count..=far.0 + belt_count {
+                for my in far.1 - belt_count..=far.1 + belt_count {
+                    let marker = (mx, my);
+                    if (mx - far.0).abs() + (my - far.1).abs() != belt_count {
+                        continue;
+                    }
+                    if !in_grid(marker, s) || perim.contains(&marker) {
+                        continue;
+                    }
+                    if marker != far && occupied.contains(&marker) {
+                        continue;
+                    }
+                    for corner in [(mx, far.1), (far.0, my)] {
+                        let walk = manhattan_walk(marker, far, corner);
+                        if walk[1..].iter().any(|c| *c != far && occupied.contains(c)) {
+                            continue;
                         }
-                    };
-                (inserter_dir, src_dir, input_items[idx] as i64, true)
+                        walks.push(walk);
+                    }
+                }
+            }
+            if walks.is_empty() {
+                ok = false;
+                break;
+            }
+
+            // Items flow marker → belts → inserter on an input arm, and
+            // inserter → belts → marker on an output one; either way the belts
+            // are the interior of the flow and the marker one of its ends.
+            let mut flow = walks.swap_remove(rng.choice_index(walks.len()));
+            if is_input {
+                flow.push(inserter_pos);
             } else {
-                // Belt carries toward the sink; the sink faces away from the
-                // belt so it pulls the item off it.
-                let snk_dir =
-                    match delta_to_dir(marker_pos.0 - belt_pos.0, marker_pos.1 - belt_pos.1) {
-                        Some(d) => d,
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    };
-                (snk_dir, snk_dir, output_items[idx - n_in] as i64, false)
+                flow.reverse();
+                flow.insert(0, inserter_pos);
+            }
+            let last = flow.len() - 1;
+            let step = |a: Cell, b: Cell| delta_to_dir(b.0 - a.0, b.1 - a.1);
+            let (Some(first_step), Some(end_step)) =
+                (step(flow[0], flow[1]), step(flow[last - 1], flow[last]))
+            else {
+                ok = false;
+                break;
             };
+            belts.extend(path_to_belts(&flow[1..last], end_step));
+            occupied.extend(flow[1..last].iter().copied());
 
-            inserters.push((inserter_pos, inserter_dir));
-            belts.push((belt_pos.0, belt_pos.1, belt_dir, Misc::None));
+            // A source faces the arm so it drops its item onto it; a sink faces
+            // away so it pulls the item off — both are the flow direction of the
+            // step at the marker's own end.
+            let (marker_pos, marker_dir, item_value, is_source) = if is_input {
+                (flow[0], first_step, input_items[idx] as i64, true)
+            } else {
+                (flow[last], end_step, output_items[idx - n_in] as i64, false)
+            };
             markers.push((marker_pos, marker_dir, item_value, is_source));
-            occupied.insert(inserter_pos);
-            occupied.insert(belt_pos);
             occupied.insert(marker_pos);
         }
         if !ok {
@@ -2403,7 +2446,7 @@ fn build_memorise_recipes(
 
         let mut world = World::empty(size, size);
         place_assembler(&mut world, ax, ay, recipe_item_value);
-        for &(pos, dir) in &inserters {
+        for &(pos, dir, _) in &inserters {
             place_inserter(&mut world, pos, dir);
         }
         place_belts(&mut world, &belts);
@@ -2412,7 +2455,10 @@ fn build_memorise_recipes(
             place_marker(&mut world, pos, ent, dir, item_value);
         }
 
-        if world_throughput(&world) <= 0.0 {
+        // Longer arms give belts more chances to be bypassed, so hold the
+        // no-orphan invariant here rather than leaning on the geometry.
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
 
@@ -3280,25 +3326,49 @@ mod tests {
         }
     }
 
+    const MEMORISE_KINDS: [(LessonKind, usize); 4] = [
+        (LessonKind::Memorise1IngredientRecipes, 1),
+        (LessonKind::Memorise2IngredientRecipes, 2),
+        (LessonKind::Memorise3IngredientRecipes, 3),
+        (LessonKind::Memorise4IngredientRecipes, 4),
+    ];
+
+    /// The belt cells of the arm that starts on `cell`, following each belt's
+    /// facing until the run leaves the belts (at an inserter or a sink).
+    fn arm_belts(world: &World, mut cell: Cell) -> Vec<Cell> {
+        let s = world.width() as i64;
+        let mut cells = Vec::new();
+        while in_grid(cell, s)
+            && world.entity_at(cell.0 as usize, cell.1 as usize) == Some(Item::TransportBelt)
+        {
+            cells.push(cell);
+            let (dx, dy) = world.direction_at(cell.0 as usize, cell.1 as usize).delta();
+            cell = (cell.0 + dx, cell.1 + dy);
+        }
+        cells
+    }
+
+    /// The number of 90° turns in a walk, or `None` if a step isn't one tile.
+    fn walk_turns(walk: &[Cell]) -> Option<usize> {
+        let steps: Option<Vec<Direction>> = walk
+            .windows(2)
+            .map(|w| delta_to_dir(w[1].0 - w[0].0, w[1].1 - w[0].1))
+            .collect();
+        Some(steps?.windows(2).filter(|d| d[0] != d[1]).count())
+    }
+
     #[test]
     fn test_memorise_recipes_smoke() {
         // Each per-ingredient-count memorise lesson should produce
-        // positive-throughput factories with one belt per arm (belts ==
-        // inserters), exactly one assembler unit, one sink, and exactly
-        // `n_ingredients` sources (one input arm per ingredient).
-        let kinds = [
-            (LessonKind::Memorise1IngredientRecipes, 1),
-            (LessonKind::Memorise2IngredientRecipes, 2),
-            (LessonKind::Memorise3IngredientRecipes, 3),
-            (LessonKind::Memorise4IngredientRecipes, 4),
-        ];
-        for (kind, n_ingredients) in kinds {
+        // positive-throughput factories with one inserter per arm, exactly one
+        // assembler unit, one sink, and exactly `n_ingredients` sources (one
+        // input arm per ingredient).
+        for (kind, n_ingredients) in MEMORISE_KINDS {
             let mut built = 0;
             for seed in 0..50u64 {
                 if let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) {
                     assert!(world_throughput(&f.world) > 0.0, "{kind:?} seed={seed}");
 
-                    let mut n_belt = 0;
                     let mut n_inserter = 0;
                     let mut n_assembler = 0;
                     let mut n_source = 0;
@@ -3306,7 +3376,6 @@ mod tests {
                     for x in 0..f.world.width() {
                         for y in 0..f.world.height() {
                             match f.world.entity_at(x, y) {
-                                Some(Item::TransportBelt) => n_belt += 1,
                                 Some(Item::Inserter) => n_inserter += 1,
                                 Some(Item::AssemblingMachine1) => n_assembler += 1,
                                 Some(Item::Source) => n_source += 1,
@@ -3315,11 +3384,6 @@ mod tests {
                             }
                         }
                     }
-                    // One belt per arm == one belt per inserter.
-                    assert_eq!(
-                        n_belt, n_inserter,
-                        "{kind:?} seed={seed}: belts != inserters"
-                    );
                     // The assembler is 3x3 → 9 tiles.
                     assert_eq!(n_assembler, 9, "{kind:?} seed={seed}: assembler not 3x3");
                     // One source per ingredient — the lesson's defining property.
@@ -3338,6 +3402,74 @@ mod tests {
                 }
             }
             assert!(built > 40, "{kind:?}: most seeds should build, got {built}");
+        }
+    }
+
+    #[test]
+    fn test_memorise_arms_vary_in_length_and_are_shortest_walks() {
+        // Arm length is drawn per arm, so across seeds the same lesson yields
+        // zero-belt arms (marker straight against the inserter) as well as arms
+        // several belts long — and every arm is a shortest marker→inserter walk:
+        // a straight line or a single L.
+        for (kind, _) in MEMORISE_KINDS {
+            let mut lengths: HashSet<usize> = HashSet::new();
+            for seed in 0..80u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                let world = &f.world;
+                let s = world.width() as i64;
+                for x in 0..world.width() {
+                    for y in 0..world.height() {
+                        let (cx, cy) = (x as i64, y as i64);
+                        let (dx, dy) = world.direction_at(x, y).delta();
+                        let ahead = (cx + dx, cy + dy);
+                        let behind = (cx - dx, cy - dy);
+                        // Both arm kinds reduce to the same marker-first walk.
+                        let walk = match world.entity_at(x, y) {
+                            Some(Item::Source) => {
+                                let mut walk = vec![(cx, cy)];
+                                walk.extend(arm_belts(world, ahead));
+                                walk
+                            }
+                            // An output arm starts on the drop cell of the
+                            // inserter that picks up from the assembler and ends
+                            // at its sink, so reverse it.
+                            Some(Item::Inserter)
+                                if in_grid(behind, s)
+                                    && world.entity_at(behind.0 as usize, behind.1 as usize)
+                                        == Some(Item::AssemblingMachine1) =>
+                            {
+                                let mut walk = arm_belts(world, ahead);
+                                let sink = walk.last().map_or(ahead, |&(bx, by)| {
+                                    let (sdx, sdy) =
+                                        world.direction_at(bx as usize, by as usize).delta();
+                                    (bx + sdx, by + sdy)
+                                });
+                                walk.push(sink);
+                                walk.reverse();
+                                walk
+                            }
+                            _ => continue,
+                        };
+                        lengths.insert(walk.len() - 1);
+                        let turns = walk_turns(&walk);
+                        assert!(
+                            matches!(turns, Some(0 | 1)),
+                            "{kind:?} seed={seed}: arm {walk:?} is not a straight \
+                             or single-L walk (turns={turns:?})"
+                        );
+                    }
+                }
+            }
+            assert!(
+                lengths.contains(&0),
+                "{kind:?}: no zero-belt arm in 80 seeds, got {lengths:?}"
+            );
+            assert!(
+                lengths.iter().any(|&n| n > 1),
+                "{kind:?}: no arm longer than one belt in 80 seeds, got {lengths:?}"
+            );
         }
     }
 

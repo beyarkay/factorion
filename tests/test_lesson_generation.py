@@ -2758,18 +2758,22 @@ class TestMoveOneItemChaosProtectedStub:
 
 # ── MEMORISE_*_INGREDIENT_RECIPES tests ─────────────────────────────────────
 #
-# The MEMORISE_N_INGREDIENT_RECIPES lessons drill *recipe identity*, stripped of
-# long-belt routing. A single 3×3 assembler (tagged with a randomly-chosen
-# recipe) is fed and drained by maximally-compact arms:
+# The MEMORISE_N_INGREDIENT_RECIPES lessons drill *recipe identity*. A single 3×3
+# assembler (tagged with a randomly-chosen recipe) is fed and drained by one arm
+# per ingredient and per product:
 #
-#   N× (source(input_i) → belt → input inserter) → assembler(recipe)
-#                                → output inserter → belt → sink(output)
+#   N× (source(input_i) → belts → input inserter) → assembler(recipe)
+#                                → output inserter → belts → sink(output)
 #
-# with exactly ONE belt between every source/sink and its inserter. Each lesson
-# fixes N — the recipe's ingredient count — so MEMORISE_N_INGREDIENT_RECIPES only
-# ever draws recipes with exactly N inputs and therefore places exactly N
-# sources. Recipes are derived from the live recipe table so the tests stay
-# correct as new recipes land.
+# Every arm carries 0..=MEMORISE_MAX_ARM_BELTS belts, drawn per arm, laid along a
+# shortest (straight or single-L) walk; a zero-belt arm puts the marker straight
+# against its inserter. Each lesson fixes N — the recipe's ingredient count — so
+# MEMORISE_N_INGREDIENT_RECIPES only ever draws recipes with exactly N inputs and
+# therefore places exactly N sources. Recipes are derived from the live recipe
+# table so the tests stay correct as new recipes land.
+
+# Mirrors `factory_gen.rs::MEMORISE_MAX_ARM_BELTS`.
+MEMORISE_MAX_ARM_BELTS = 5
 
 # (lesson_kind, expected ingredient/source count) for every memorise lesson.
 MEMORISE_KINDS = [
@@ -2814,9 +2818,10 @@ class TestMemoriseRecipesBasic:
         assert (ent == str2ent("sink").value).sum().item() == 1
         assert (ent == str2ent("source").value).sum().item() == n_ing
 
-    def test_one_belt_and_one_inserter_per_arm(self, kind, n_ing):
-        """The defining property: belts == inserters == sources + sinks. Each
-        arm contributes exactly one inserter and exactly one belt."""
+    def test_one_inserter_per_arm(self, kind, n_ing):
+        """The defining property: inserters == sources + sinks. Each arm
+        contributes exactly one inserter and at most MEMORISE_MAX_ARM_BELTS
+        belts."""
         f = build_factory(size=10, kind=kind, seed=42)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
@@ -2825,7 +2830,8 @@ class TestMemoriseRecipesBasic:
         n_ins = (ent == str2ent("inserter").value).sum().item()
         n_src = (ent == str2ent("source").value).sum().item()
         n_snk = (ent == str2ent("sink").value).sum().item()
-        assert n_belt == n_ins == n_src + n_snk
+        assert n_ins == n_src + n_snk
+        assert n_belt <= n_ins * MEMORISE_MAX_ARM_BELTS
 
     def test_nonzero_throughput(self, kind, n_ing):
         f = build_factory(size=10, kind=kind, seed=42)
@@ -2921,13 +2927,12 @@ class TestMemoriseRecipesNoOverlaps:
 @pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
 class TestMemoriseRecipesArmGeometry:
     """Every source reaches the assembler — and the assembler reaches the sink —
-    through EXACTLY one belt and one inserter. In the flow graph that is a
-    shortest path of exactly 3 edges (source → belt → inserter → assembler), the
-    precise encoding of "exactly one belt between a source/sink and its
-    inserter"."""
+    through one inserter and that arm's belts, and nothing else. In the flow
+    graph that is a shortest path of `2 + belts` edges (source → belts →
+    inserter → assembler), so an arm's length is bounded but never fixed."""
 
     @pytest.mark.parametrize("seed", range(10))
-    def test_one_belt_one_inserter_on_every_arm(self, kind, n_ing, seed):
+    def test_every_arm_is_belts_then_one_inserter(self, kind, n_ing, seed):
         f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
@@ -2936,19 +2941,39 @@ class TestMemoriseRecipesArmGeometry:
         sources = [n for n in G.nodes if n.startswith("S@")]
         sink = [n for n in G.nodes if n.startswith("K@")][0]
         asm = [n for n in G.nodes if n.startswith("a@")][0]
-        # source → belt → inserter → assembler  ==  3 edges
+        hops = 2 + MEMORISE_MAX_ARM_BELTS
+        # source → belts → inserter → assembler
         for s in sources:
             d = nx.shortest_path_length(G, s, asm)
-            assert d == 3, (
+            assert 2 <= d <= hops, (
                 f"seed={seed}: source {s} reaches assembler in {d} hops, "
-                f"expected 3 (source→belt→inserter→assembler)"
+                f"expected 2..{hops} (source→belts→inserter→assembler)"
             )
-        # assembler → inserter → belt → sink  ==  3 edges
+        # assembler → inserter → belts → sink
         d = nx.shortest_path_length(G, asm, sink)
-        assert d == 3, (
-            f"seed={seed}: assembler reaches sink in {d} hops, expected 3 "
-            f"(assembler→inserter→belt→sink)"
+        assert 2 <= d <= hops, (
+            f"seed={seed}: assembler reaches sink in {d} hops, expected "
+            f"2..{hops} (assembler→inserter→belts→sink)"
         )
+
+    def test_arm_lengths_vary_across_seeds(self, kind, n_ing):
+        """Belt count is drawn per arm, so over many seeds the lesson yields
+        zero-belt arms as well as arms several belts long — the whole point of
+        the lesson not being a single memorisable motif."""
+        import networkx as nx
+        lengths = set()
+        for seed in range(40):
+            f = build_factory(size=10, kind=kind, seed=seed)
+            assert f is not None
+            world, _ = blank_entities(f, num_missing_entities=0)
+            G = build_factory_graph(world.permute(1, 2, 0))
+            asm = [n for n in G.nodes if n.startswith("a@")][0]
+            sink = [n for n in G.nodes if n.startswith("K@")][0]
+            for s in [n for n in G.nodes if n.startswith("S@")]:
+                lengths.add(nx.shortest_path_length(G, s, asm) - 2)
+            lengths.add(nx.shortest_path_length(G, asm, sink) - 2)
+        assert 0 in lengths, f"{kind.name}: no zero-belt arm, saw {lengths}"
+        assert max(lengths) > 1, f"{kind.name}: no multi-belt arm, saw {lengths}"
 
 
 @pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
