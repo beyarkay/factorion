@@ -27,9 +27,8 @@ from ppo import (  # noqa: E402
     AgentCNN, PpoArgs, FactorioEnv, make_env, layer_init, _WARMUP_KL_TOL,
 )
 from helpers import Channel  # noqa: E402
-from factorion import LessonKind  # noqa: E402
+from factorion import OBS_CHANNELS, LessonKind  # noqa: E402
 
-NUM_CHANNELS = len(Channel)
 ENV_ID = "factorion/FactorioEnv-v0-rlckpt-test"
 
 
@@ -86,7 +85,7 @@ class TestFullBlankDefault:
 
 class TestEotAction:
     def test_eot_is_part_of_the_action(self, agent):
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         action, logp, entropy, value = agent.get_action_and_value(obs)
         assert "eot" in action
         assert action["eot"].shape == (4,)
@@ -100,7 +99,7 @@ class TestEotAction:
         index 6) must match the sampled log-prob, so PPO's importance ratio
         is well-defined and the eot head actually gets trained."""
         torch.manual_seed(0)
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(3, OBS_CHANNELS, 5, 5)
         action, logp, _, _ = agent.get_action_and_value(obs)
         x_B, y_B = action["xy"].unbind(dim=1)
         action_BA = torch.stack(
@@ -182,7 +181,7 @@ class TestCriticWarmupParamSplit:
         for p in actor_params:
             p.requires_grad_(False)
 
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         value = agent.get_value(obs)
         (value ** 2).mean().backward()
 
@@ -271,7 +270,7 @@ def forward_probe(registered_env):
     envs = _test_envs(registered_env)
     agent = _finetune_agent(envs)
     torch.manual_seed(0)
-    obs = torch.randn(8, NUM_CHANNELS, 5, 5)
+    obs = torch.randn(8, OBS_CHANNELS, 5, 5)
 
     action, logp_sampled, _, _ = agent.get_action_and_value(obs)
     stored = _pack_action(action)
@@ -362,7 +361,7 @@ def warmup_iteration(registered_env):
             p.requires_grad_(False)
     optimizer = torch.optim.Adam(agent.critic_head.parameters(), lr=1e-3)
 
-    obs_buf = torch.zeros((num_steps, num_envs, NUM_CHANNELS, size, size))
+    obs_buf = torch.zeros((num_steps, num_envs, OBS_CHANNELS, size, size))
     act_buf = torch.zeros((num_steps, num_envs, 7), dtype=torch.int64)
     logp_buf = torch.zeros((num_steps, num_envs))
     returns_buf = torch.zeros((num_steps, num_envs))
@@ -386,7 +385,7 @@ def warmup_iteration(registered_env):
         next_obs = torch.as_tensor(next_obs, dtype=torch.float32)
         returns_buf[step] = torch.as_tensor(reward, dtype=torch.float32)
 
-    obs_B = obs_buf.reshape(-1, NUM_CHANNELS, size, size)
+    obs_B = obs_buf.reshape(-1, OBS_CHANNELS, size, size)
     act_B = act_buf.reshape(-1, 7)
     logp_B = logp_buf.reshape(-1)
     returns_B = returns_buf.reshape(-1)

@@ -24,9 +24,8 @@ from ppo import (  # noqa: E402
 )
 from training_config import SharedArgs  # noqa: E402
 from helpers import Channel, Direction, Misc, items, recipes, str2ent, str2item  # noqa: E402
-from factorion import Footprint  # noqa: E402
+from factorion import OBS_CHANNELS, Footprint  # noqa: E402
 
-NUM_CHANNELS = len(Channel)
 _FOOTPRINT_AVAILABLE = Footprint.AVAILABLE.value
 
 
@@ -56,7 +55,7 @@ def agent(envs):
 class TestForwardPass:
     def test_output_shapes(self, agent):
         """Verify all output tensor shapes from get_action_and_value."""
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(2, OBS_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
 
         assert action_out["xy"].shape == (2, 2)
@@ -70,7 +69,7 @@ class TestForwardPass:
 
     def test_single_batch(self, agent):
         """Verify forward pass works with batch size 1."""
-        obs = torch.randn(1, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(1, OBS_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
 
         assert action_out["xy"].shape == (1, 2)
@@ -80,7 +79,7 @@ class TestForwardPass:
 
     def test_xy_within_bounds(self, agent):
         """Verify sampled x, y are within grid bounds."""
-        obs = torch.randn(16, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(16, OBS_CHANNELS, 5, 5)
         for _ in range(10):
             action_out, _, _, _ = agent.get_action_and_value(obs)
             x = action_out["xy"][:, 0]
@@ -90,14 +89,14 @@ class TestForwardPass:
 
     def test_get_value_shape(self, agent):
         """Verify get_value output shape."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         value = agent.get_value(obs)
         assert value.shape == (4,)
 
     def test_item_and_misc_within_head_bounds(self, agent):
         """Item and misc are now sampled from learned heads, so they must
         be valid indices into items/Misc — not the old hardcoded 0."""
-        obs = torch.randn(8, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(8, OBS_CHANNELS, 5, 5)
         action_out, _, _, _ = agent.get_action_and_value(obs)
         assert (action_out["item"] >= 0).all()
         assert (action_out["item"] < agent.num_items).all()
@@ -108,7 +107,7 @@ class TestForwardPass:
 class TestLogProbConsistency:
     def test_log_prob_matches_replay(self, agent):
         """Sample actions, then replay them and verify log_prob matches."""
-        obs = torch.randn(8, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(8, OBS_CHANNELS, 5, 5)
         action_out, logp_B, _, _ = agent.get_action_and_value(obs)
 
         # Reconstruct action tensor as the training loop does
@@ -131,7 +130,7 @@ class TestLogProbConsistency:
 
     def test_log_prob_is_negative(self, agent):
         """Log probabilities should be negative (prob < 1)."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         _, logp_B, _, _ = agent.get_action_and_value(obs)
         assert (logp_B < 0).all()
 
@@ -139,7 +138,7 @@ class TestLogProbConsistency:
 class TestEntropy:
     def test_entropy_is_positive(self, agent):
         """Entropy should be non-negative."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         _, _, entropy_B, _ = agent.get_action_and_value(obs)
         assert (entropy_B >= 0).all()
 
@@ -148,7 +147,7 @@ class TestGradientFlow:
     def test_gradients_flow_through_all_params(self, agent):
         """Verify gradients flow to encoder, tile_logits, and all four
         per-tile heads when the batch exercises every semantic choice."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         recipe_id = next(
             item.value
             for item in items.values()
@@ -183,7 +182,7 @@ class TestGradientFlow:
     def test_gradients_flow_during_update(self, agent):
         """Simulate the PPO update path (action not None) and check grads
         propagate through every head."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         with torch.no_grad():
             action_out, _, _, _ = agent.get_action_and_value(obs)
         x_B = action_out["xy"][:, 0]
@@ -214,7 +213,7 @@ class TestGradientFlow:
 class TestBatchConsistency:
     def test_single_vs_batch(self, agent):
         """Processing items one-at-a-time gives same results as batched."""
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(3, OBS_CHANNELS, 5, 5)
         # Create a fixed action to replay (within bounds for 5x5 grid)
         # 7 columns: xy(2), entity, direction, item, misc, eot
         action_tensor = torch.tensor(
@@ -300,17 +299,18 @@ class TestCategoricalInputEncoding:
     rather than fed as raw ordinal id floats."""
 
     def test_encoded_shape(self, agent):
-        """_encode_input expands len(Channel) into the conv's input channels:
-        two embeddings + two one-hots + footprint + two coordinate planes."""
+        """_encode_input expands OBS_CHANNELS into the conv's input channels:
+        two embeddings + two one-hots + footprint + flow + two coordinate
+        planes."""
         d = agent.cat_embed_dim
-        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1 + 2
-        enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 2 + 2
+        enc = agent._encode_input(torch.zeros(2, OBS_CHANNELS, 5, 5))
         assert enc.shape == (2, agent.input_channels, 5, 5)
 
     def test_direction_channel_is_one_hot(self, agent):
         """A direction id lands as a one-hot in the direction slice, not a
         scalar magnitude."""
-        obs = torch.zeros(1, NUM_CHANNELS, 5, 5)
+        obs = torch.zeros(1, OBS_CHANNELS, 5, 5)
         obs[0, Channel.DIRECTION.value, 1, 1] = 2.0
         d = agent.cat_embed_dim
         dir_slice = agent._encode_input(obs)[0, 2 * d : 2 * d + agent.num_directions, 1, 1]
@@ -320,8 +320,8 @@ class TestCategoricalInputEncoding:
     def test_distinct_entities_get_independent_encodings(self, agent):
         """The whole point: two different entity ids map to independent
         embeddings, not scalar multiples as the old float channel implied."""
-        obs1 = torch.zeros(1, NUM_CHANNELS, 5, 5)
-        obs2 = torch.zeros(1, NUM_CHANNELS, 5, 5)
+        obs1 = torch.zeros(1, OBS_CHANNELS, 5, 5)
+        obs2 = torch.zeros(1, OBS_CHANNELS, 5, 5)
         obs1[0, Channel.ENTITIES.value, 1, 1] = 1.0
         obs2[0, Channel.ENTITIES.value, 1, 1] = 3.0
         d = agent.cat_embed_dim
@@ -332,7 +332,7 @@ class TestCategoricalInputEncoding:
     def test_embedding_gradients_flow(self, agent):
         """Gradients reach the new entity/item embedding tables through a
         full forward + backward."""
-        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        obs = torch.zeros(2, OBS_CHANNELS, 5, 5)
         obs[:, Channel.ENTITIES.value] = 1.0
         obs[:, Channel.ITEMS.value] = 2.0
         _, logp_B, _, value_B = agent.get_action_and_value(obs)
@@ -361,7 +361,7 @@ class TestArchVariants:
     @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
     def test_forward_and_stored_action_recompute(self, envs, kwargs):
         agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
-        obs = torch.zeros(4, NUM_CHANNELS, 5, 5)
+        obs = torch.zeros(4, OBS_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
         assert logp_B.shape == entropy_B.shape == value_B.shape == (4,)
         assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
@@ -385,7 +385,7 @@ class TestArchVariants:
         agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
         clone = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
         clone.load_state_dict(agent.state_dict())
-        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        obs = torch.zeros(2, OBS_CHANNELS, 5, 5)
         torch.manual_seed(0)
         _, logp_a, _, val_a = agent.get_action_and_value(obs)
         torch.manual_seed(0)
@@ -397,7 +397,7 @@ class TestArchVariants:
         """CoordConv is fixed on: two extra normalized x/y planes are always
         appended to the encoder input."""
         agent = AgentCNN(envs, layers=(16, 16, 16))
-        enc = agent._encode_input(torch.zeros(1, NUM_CHANNELS, 5, 5))
+        enc = agent._encode_input(torch.zeros(1, OBS_CHANNELS, 5, 5))
         assert enc.shape == (1, agent.input_channels, 5, 5)
         x_plane, y_plane = enc[0, -2], enc[0, -1]
         assert x_plane[0, 0].item() == pytest.approx(-1.0)
@@ -415,7 +415,7 @@ class TestArchVariants:
         assert isinstance(agent.critic_head[-1], torch.nn.Linear)
         assert isinstance(agent.eot_head[-1], torch.nn.Linear)
         assert agent.critic_head[-1].in_features == 16 * 5 * 5
-        _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, OBS_CHANNELS, 5, 5))
         assert value_B.shape == (2,)
 
     def test_attn_on_by_default_off_when_zero(self, envs):
@@ -434,11 +434,11 @@ class TestArchVariants:
     def test_global_feat_dim_zero_disables_global_vector(self, envs):
         agent = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=0)
         assert not hasattr(agent, "global_proj")
-        enc, g = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        enc, g = agent.encode(torch.zeros(2, OBS_CHANNELS, 5, 5))
         assert g is None
         # Per-tile heads then read just the last_chan-wide column.
         assert agent.ent_head.in_features == 16
-        _, logp_B, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        _, logp_B, _, value_B = agent.get_action_and_value(torch.zeros(2, OBS_CHANNELS, 5, 5))
         assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
 
     def test_attn_is_identity_at_init(self, envs):
@@ -451,7 +451,7 @@ class TestArchVariants:
 
     def test_attn_preserves_channels_and_grid_size(self, envs):
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=32)
-        enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        enc, _ = agent.encode(torch.zeros(2, OBS_CHANNELS, 5, 5))
         # Attention is shape-preserving, so the per-tile heads still index a
         # last_chan-wide column at every one of the 5x5 cells.
         assert enc.shape == (2, 16, 5, 5)
@@ -473,7 +473,7 @@ class TestSampleAction:
     def test_get_action_and_value_delegates(self, agent):
         """The PPO wrapper is exactly sample_action(temperature=1) projected
         to a 4-tuple, so a seed-matched pair agrees on every field."""
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(3, OBS_CHANNELS, 5, 5)
         torch.manual_seed(0)
         action_a, logp_a, entropy_a, value_a = agent.get_action_and_value(obs)
         torch.manual_seed(0)
@@ -487,7 +487,7 @@ class TestSampleAction:
     def test_greedy_is_deterministic(self, agent):
         """temperature=0 is argmax on every head, so repeated calls (even
         without a fixed seed) return byte-identical actions."""
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         a = agent.sample_action(obs, temperature=0.0)["action"]
         b = agent.sample_action(obs, temperature=0.0)["action"]
         for k in ("xy", "entity", "direction", "item", "misc", "eot"):
@@ -497,7 +497,7 @@ class TestSampleAction:
         """The greedy action is the argmax of each head's returned log-probs —
         the invariant the builder UI relies on to condition its side panel on
         the same tile the top pick favours."""
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(2, OBS_CHANNELS, 5, 5)
         out = agent.sample_action(obs, temperature=0.0)
         heads = out["logp_heads"]
         tile_idx = heads["tile"].argmax(dim=-1)
@@ -517,7 +517,7 @@ class TestSampleAction:
         """With legal_mask=True the greedy tile pick lands only on empty,
         buildable cells — the guard the eval rollout needs so argmax can't
         livelock re-proposing a rejected tile."""
-        obs = torch.zeros(1, NUM_CHANNELS, 5, 5)
+        obs = torch.zeros(1, OBS_CHANNELS, 5, 5)
         # Buildable everywhere (footprint AVAILABLE), then occupy every tile
         # except (2, 3) and wall one of the occupied ones too.
         obs[0, _CH_FOOTPRINT] = _FOOTPRINT_AVAILABLE
@@ -531,7 +531,7 @@ class TestSampleAction:
     def test_replayed_action_recovers_logp(self, agent):
         """Passing a stored action recomputes its exact log-prob regardless of
         temperature — the PPO-update path, unchanged by the refactor."""
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(3, OBS_CHANNELS, 5, 5)
         out = agent.sample_action(obs, temperature=0.0)
         act = out["action"]
         stored = torch.cat(
@@ -551,7 +551,7 @@ class TestSampleAction:
     def test_compute_value_false_skips_critic(self, agent):
         """Greedy consumers pass compute_value=False (the builder UI even
         drops the critic head), so value must be None rather than computed."""
-        obs = torch.randn(2, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(2, OBS_CHANNELS, 5, 5)
         out = agent.sample_action(obs, temperature=0.0, compute_value=False)
         assert out["value"] is None
 
@@ -586,7 +586,7 @@ class TestSemanticActionMasking:
             agent.misc_head.bias[Misc.UNDERGROUND_DOWN.value] = 90.0
 
         out = agent.sample_action(
-            torch.zeros(1, NUM_CHANNELS, 5, 5), temperature=0.0
+            torch.zeros(1, OBS_CHANNELS, 5, 5), temperature=0.0
         )
         action = out["action"]
         assert action["entity"].item() == entity_id
@@ -634,7 +634,7 @@ class TestSemanticActionMasking:
             agent.ent_head.bias[belt_id] = 90.0
 
         out = agent.sample_action(
-            torch.zeros(1, NUM_CHANNELS, 5, 5), temperature=0.0
+            torch.zeros(1, OBS_CHANNELS, 5, 5), temperature=0.0
         )
         assert out["action"]["entity"].item() == belt_id
         assert torch.isneginf(out["logp_heads"]["entity"][0, invalid_entity_id])
@@ -651,6 +651,6 @@ class TestSemanticActionMasking:
             0,
         ]])
         out = agent.sample_action(
-            torch.zeros(1, NUM_CHANNELS, 5, 5), action=action
+            torch.zeros(1, OBS_CHANNELS, 5, 5), action=action
         )
         assert torch.isneginf(out["logp"]).all()

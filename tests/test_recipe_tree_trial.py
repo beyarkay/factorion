@@ -20,6 +20,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from factorion import (  # noqa: E402
+    CH_FLOW,
     LESSON_IS_TRIAL,
     Channel,
     Direction,
@@ -200,7 +201,7 @@ class TestTrialEnv:
         assert info["kind"] == LessonKind.TRIAL_RECIPE_TREE_DEPTH_2.value
         assert env._max_throughput > 0
         assert env.min_entities_required == 0
-        assert (obs == env._solved_world_CWH.numpy()).all()
+        assert (obs[:CH_FLOW] == env._solved_world_CWH.numpy()).all()
         action = {
             "xy": np.array([0, 0]),
             "entity": 0,

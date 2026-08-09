@@ -27,8 +27,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from factorion import Channel, Misc, entities, items, str2ent  # noqa: E402
-from ppo import AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
+from factorion import Channel, Misc, entities, items, observe, str2ent  # noqa: E402
+from ppo import OBS_CHANNELS, AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
 
 import factorion_rs  # noqa: E402
 
@@ -52,7 +52,7 @@ from rcon import RconClient, RconError  # noqa: E402, F401
 def _duck_envs(size: int):
     """Minimal vector-env shape surface needed to construct AgentCNN."""
     return SimpleNamespace(
-        single_observation_space=SimpleNamespace(shape=(len(Channel), size, size)),
+        single_observation_space=SimpleNamespace(shape=(OBS_CHANNELS, size, size)),
     )
 
 
@@ -140,7 +140,7 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
 
 
 # --------------------------------------------------------------------------- #
-# Request → obs tensor.
+# Request → world tensor.
 # --------------------------------------------------------------------------- #
 def _source_id() -> int:
     e = str2ent("source")
@@ -154,14 +154,14 @@ def _sink_id() -> int:
     return e.value
 
 
-def request_to_obs(req: dict) -> np.ndarray:
-    """Build the (C, W, H) tensor the policy expects from a request dict."""
+def request_to_world(req: dict) -> np.ndarray:
+    """Build the (C, W, H) world tensor a request describes. Wrap it in
+    `observe` to get the policy's input."""
     size = req["grid_size"]
-    C = len(Channel)
-    obs = np.zeros((C, size, size), dtype=np.float32)
+    world = np.zeros((len(Channel), size, size), dtype=np.float32)
 
     # The in-game region is a fixed square, so every tile is buildable.
-    obs[Channel.FOOTPRINT.value] = 1.0
+    world[Channel.FOOTPRINT.value] = 1.0
 
     src_id, snk_id = _source_id(), _sink_id()
 
@@ -178,7 +178,7 @@ def request_to_obs(req: dict) -> np.ndarray:
             # the configured source/sink item.
             continue
         item = str2ent(existing.get("item", existing.get("recipe", "empty")))
-        _apply_placement(obs, {
+        _apply_placement(world, {
             "xy": (int(existing["x"]), int(existing["y"])),
             "entity": entity.value,
             "direction": int(existing.get("direction", 0)),
@@ -188,28 +188,28 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     for s in req.get("sources", []):
         x, y = s["x"], s["y"]
-        obs[Channel.ENTITIES.value, x, y] = src_id
-        obs[Channel.DIRECTION.value, x, y] = s["direction"]
+        world[Channel.ENTITIES.value, x, y] = src_id
+        world[Channel.DIRECTION.value, x, y] = s["direction"]
         item = str2ent(s["item"])
         if item is not None:
-            obs[Channel.ITEMS.value, x, y] = item.value
+            world[Channel.ITEMS.value, x, y] = item.value
 
     for s in req.get("sinks", []):
         x, y = s["x"], s["y"]
-        obs[Channel.ENTITIES.value, x, y] = snk_id
-        obs[Channel.DIRECTION.value, x, y] = s["direction"]
+        world[Channel.ENTITIES.value, x, y] = snk_id
+        world[Channel.DIRECTION.value, x, y] = s["direction"]
         item = str2ent(s["item"])
         if item is not None:
-            obs[Channel.ITEMS.value, x, y] = item.value
+            world[Channel.ITEMS.value, x, y] = item.value
 
-    return obs
+    return world
 
 
 # --------------------------------------------------------------------------- #
 # Iterative inference: place one entity at a time, greedy (argmax).
 # --------------------------------------------------------------------------- #
-def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
-    x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
+def _argmax_action(agent: AgentCNN, world_CWH: np.ndarray, device) -> dict:
+    x = observe(world_CWH)[0].unsqueeze(0).to(device)
     with torch.no_grad():
         # temperature=0 = the shared sampler's greedy (argmax) mode.
         act = agent.sample_action(
@@ -224,8 +224,8 @@ def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     }
 
 
-def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
-    """Update obs in-place with the predicted entity. Returns True if the
+def _apply_placement(world_CWH: np.ndarray, action: dict) -> bool:
+    """Update the world in-place with the predicted entity. Returns True if the
     placement was non-empty (so we should keep iterating)."""
     ent_id = action["entity"]
     if ent_id == 0:  # no-op / empty
@@ -249,13 +249,13 @@ def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
         # Fall back to the anchor tile; better to under-mark than crash.
         tiles = [(x, y)]
 
-    _, W, H = obs_CWH.shape
+    _, W, H = world_CWH.shape
     for tx, ty in tiles:
         if 0 <= tx < W and 0 <= ty < H:
-            obs_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
-            obs_CWH[Channel.DIRECTION.value, tx, ty] = direction
-            obs_CWH[Channel.ITEMS.value, tx, ty] = action["item"]
-            obs_CWH[Channel.MISC.value, tx, ty] = action["misc"]
+            world_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
+            world_CWH[Channel.DIRECTION.value, tx, ty] = direction
+            world_CWH[Channel.ITEMS.value, tx, ty] = action["item"]
+            world_CWH[Channel.MISC.value, tx, ty] = action["misc"]
     return True
 
 
@@ -317,7 +317,7 @@ def run_inference(
 ) -> tuple[np.ndarray, dict]:
     """Iteratively place entities until eot_head signals "done", the model
     emits a no-op, or we hit the safety budget."""
-    obs = request_to_obs(req)
+    world = request_to_world(req)
 
     stats: dict = {
         "steps_taken": 0,
@@ -327,14 +327,14 @@ def run_inference(
     for step in range(max_steps):
         # Ask the model first: do you think we're done?
         with torch.no_grad():
-            x = torch.from_numpy(obs).unsqueeze(0).to(device)
+            x = observe(world)[0].unsqueeze(0).to(device)
             eot_p = float(agent.eot_prob(x).item())
         if eot_p > eot_threshold:
             log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
             stats["stop_reason"] = "eot"
             stats["steps_taken"] = step
             break
-        action = _argmax_action(agent, obs, device)
+        action = _argmax_action(agent, world, device)
         ent_id = action["entity"]
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
@@ -345,7 +345,7 @@ def run_inference(
             action["xy"][0], action["xy"][1],
             action["direction"], item_name, item_id, action["misc"],
         )
-        if not _apply_placement(obs, action):
+        if not _apply_placement(world, action):
             log.info("  → empty/no-op placement, stopping")
             stats["stop_reason"] = "empty"
             stats["steps_taken"] = step + 1
@@ -358,7 +358,7 @@ def run_inference(
     else:
         log.info("Reached max_steps=%d without eot/empty.", max_steps)
 
-    return obs, stats
+    return world, stats
 
 
 # --------------------------------------------------------------------------- #

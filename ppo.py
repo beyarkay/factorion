@@ -24,7 +24,11 @@ import torch.optim as optim
 import tyro
 import factorion_rs
 from factorion import (
+    CH_FLOW,
+    FLOW_SCALE,
     LESSON_IS_TRIAL,
+    MAX_ENTITY_FLOW,
+    OBS_CHANNELS,
     Channel,
     Direction,
     Footprint,
@@ -34,6 +38,7 @@ from factorion import (
     build_factory,
     entities,
     items,
+    observe,
     recipes,
     str2ent,
     str2item,
@@ -641,14 +646,16 @@ class FactorioEnv(gym.Env):
         self.max_steps = max_steps
 
         self._world_CWH = torch.zeros((len(Channel), self.size, self.size))
+        self._obs_CWH = torch.zeros((OBS_CHANNELS, self.size, self.size))
 
         self.max_id_in_tensor = max(len(items), len(entities), len(Direction))
-        # Observation is the world, with a square grid of tiles and one channel
-        # representing the entity ID, the other representing the direction
+        # Observation is the world — a square grid of tiles, one channel per
+        # entity ID / direction / … — plus the derived FLOW channel, whose
+        # eighths-of-an-item/s run well past any category id.
         self.observation_space = gym.spaces.Box(
             low=0,
-            high=self.max_id_in_tensor,
-            shape=(len(Channel), self.size, self.size),
+            high=max(self.max_id_in_tensor, int(FLOW_SCALE * MAX_ENTITY_FLOW)),
+            shape=(OBS_CHANNELS, self.size, self.size),
             dtype=np.int64,
         )
 
@@ -690,7 +697,7 @@ class FactorioEnv(gym.Env):
         self._full_diagnostics: bool = True
 
     def _get_obs(self):
-        return self._world_CWH
+        return self._obs_CWH
 
     def _get_info(self):
         return {
@@ -849,7 +856,8 @@ class FactorioEnv(gym.Env):
         self._original_world_CWH = torch.clone(self._world_CWH)
         self._prev_match = self._compute_solution_match()
         self.steps = 0
-        return self._world_CWH.cpu().numpy(), self._get_info()
+        self._obs_CWH, _, _ = observe(self._world_CWH)
+        return self._obs_CWH.cpu().numpy(), self._get_info()
 
     def step(self, action):
         self.actions.append(None)
@@ -881,27 +889,27 @@ class FactorioEnv(gym.Env):
         terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 
-        # The throughput sim + per-step diagnostics below are only *consumed* at
-        # episode end (the terminal reward uses thput_raw; the rollout reads
-        # thput/frac_reachable/num_entities for finished envs) or by callers that
-        # inspect every step (tests, monitoring). Mid-episode they feed neither
-        # the reward (zero until termination) nor any metric the
-        # PPO rollout reads, so when `_full_diagnostics` is off (training rollout
-        # envs) we skip the whole block on non-terminal steps — that's the
-        # ~31%-of-rollout simulate_throughput + numpy diagnostics. The terminal
-        # reward and all episode-end-consumed values are still computed, so the
-        # signature is unchanged.
+        # The engine runs every step: the observation carries a FLOW channel, so
+        # the agent's next input depends on the simulation the same way the
+        # terminal reward does. thput_raw is items/second; thput_normed in
+        # [0, 1] is raw / per-factory max (a perfectly-rebuilt factory scores
+        # 1.0 regardless of belt speed). self._max_throughput comes from the
+        # factory generator — see reset().
+        self._obs_CWH, thput_raw, num_unreachable = observe(self._world_CWH)
+        thput_normed = (
+            min(1.0, thput_raw / self._max_throughput)
+            if self._max_throughput > 0
+            else 0.0
+        )
+
+        # The per-step diagnostics below are only *consumed* at episode end (the
+        # rollout reads frac_reachable/num_entities for finished envs) or by
+        # callers that inspect every step (tests, monitoring). Mid-episode they
+        # feed neither the reward (zero until termination) nor any metric the
+        # PPO rollout reads, so when `_full_diagnostics` is off (training
+        # rollout envs) the whole block is skipped on non-terminal steps.
         frac_hallucin = 0
         if terminated or truncated or self._full_diagnostics:
-            # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
-            # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
-            # self._max_throughput comes from the factory generator — see reset().
-            thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
-            thput_normed = (
-                min(1.0, thput_raw / self._max_throughput)
-                if self._max_throughput > 0
-                else 0.0
-            )
             # Single zero-copy numpy view of the (torch) world for the per-step
             # diagnostics. Tiny-grid reductions; numpy on the shared buffer is far
             # cheaper than the per-op torch dispatch. Current (world just mutated).
@@ -952,8 +960,6 @@ class FactorioEnv(gym.Env):
         else:
             # Non-terminal training step: emit placeholders for the logged-only
             # diagnostics (the rollout never reads these mid-episode).
-            thput_raw = 0.0
-            thput_normed = 0.0
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
@@ -1365,7 +1371,7 @@ class AgentCNN(nn.Module):
         _obs_shape = envs.single_observation_space.shape
         self.width = _obs_shape[1]
         self.height = _obs_shape[2]
-        self.channels = len(Channel)
+        self.channels = OBS_CHANNELS
         # Source/sink (bulk_inserter, stack_inserter) live as the last two
         # catalog entries; they are env-spawned, never agent-placeable. Sizing
         # the head to len(entities)-2 makes them structurally impossible to
@@ -1398,10 +1404,11 @@ class AgentCNN(nn.Module):
         # is meaningless — the ids are nominal labels. Instead we encode each
         # channel categorically before the conv: a learned embedding for the
         # two wide vocabularies (entity/item, ~68 each) and a one-hot for the
-        # two narrow ones (direction=5, misc=3). FOOTPRINT is genuinely binary,
-        # so it stays a scalar channel. The embedding vocab covers the *full*
-        # catalog (len(entities)/len(items)) — the input can carry the env-only
-        # source/sink ids even though the entity head never emits them.
+        # two narrow ones (direction=5, misc=3). FOOTPRINT and FLOW are genuine
+        # magnitudes, so they stay scalar channels. The embedding vocab covers
+        # the *full* catalog (len(entities)/len(items)) — the input can carry
+        # the env-only source/sink ids even though the entity head never emits
+        # them.
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
@@ -1413,8 +1420,9 @@ class AgentCNN(nn.Module):
         ys = torch.linspace(-1.0, 1.0, self.height).view(1, self.height).expand(self.width, self.height)
         self.register_buffer("coord_grid", torch.stack([xs, ys], dim=0))
         # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint + the two coordinate channels.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1 + 2
+        # two one-hots + the scalar footprint and flow + the two coordinate
+        # channels.
+        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 2 + 2
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1514,10 +1522,11 @@ class AgentCNN(nn.Module):
                 head.bias.data[0] = 1.0
 
     def _encode_input(self, x_BCWH):
-        """Expand the raw (B, len(Channel), W, H) observation into the conv's
+        """Expand the raw (B, OBS_CHANNELS, W, H) observation into the conv's
         input by encoding the nominal channels categorically: learned
-        embeddings for entity/item, one-hots for direction/misc, and the raw
-        footprint scalar. Returns (B, self.input_channels, W, H).
+        embeddings for entity/item, one-hots for direction/misc, the raw
+        footprint scalar, and log-compressed flow. Returns
+        (B, self.input_channels, W, H).
 
         The channels carry category ids as floats; we cast to long to index.
         The clamp is a defensive no-op on valid observations (ids are bounded
@@ -1536,9 +1545,12 @@ class AgentCNN(nn.Module):
         dir_oh = F.one_hot(dir_idx, self.num_directions).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
+        # Flow spans 0.86 i/s (inserter) to 30 (splitter): log1p keeps that 35x
+        # range legible next to the one-hots instead of burying the slow end.
+        flow = torch.log1p(x_BCWH[:, CH_FLOW:CH_FLOW + 1] / FLOW_SCALE)
 
         coords = self.coord_grid.expand(x_BCWH.shape[0], -1, -1, -1)
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint, coords], dim=1)
+        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint, flow, coords], dim=1)
 
     def _global_feat(self, encoded_BCWH):
         """Pool the whole encoded map into a per-batch global-context vector

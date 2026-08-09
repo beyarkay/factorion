@@ -55,6 +55,7 @@ from factorion import (  # noqa: E402
     entities,
     items,
     new_world,
+    observe,
     plot_flow_network,
 )
 from ppo import (  # noqa: E402
@@ -329,7 +330,7 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
         plt.close("all")
 
     try:
-        throughput, num_unreachable = factorion_rs.simulate_throughput(
+        throughput, num_unreachable, _ = factorion_rs.simulate_throughput(
             world.numpy().astype(np.int64)
         )
         info = f"throughput: {throughput:.4f}  ·  unreachable nodes: {num_unreachable}"
@@ -581,7 +582,9 @@ def _predict(grid: list[list[dict]]) -> dict:
     size = world_WHC.shape[0]
     agent = _get_agent(size)
 
-    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    obs_CWH = (
+        observe(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
+    )
     W = obs_CWH.shape[2]
     H = obs_CWH.shape[3]
 
@@ -663,7 +666,9 @@ def _predict_action(grid: list[list[dict]]) -> dict:
     """
     world_WHC = build_world(grid)
     agent = _get_agent(world_WHC.shape[0])
-    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
+    obs_CWH = (
+        observe(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
+    )
 
     with torch.inference_mode():
         out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)

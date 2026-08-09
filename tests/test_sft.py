@@ -24,7 +24,7 @@ from helpers import (
     build_factory,
     str2ent,
 )
-from factorion import LESSON_IS_TRIAL, Footprint
+from factorion import OBS_CHANNELS, LESSON_IS_TRIAL, Footprint
 import sft
 from sft import (
     SftArgs,
@@ -256,7 +256,7 @@ class TestGenerateDataset:
         """Observations should have correct shape (C, W, H)."""
         args = SftArgs(seed=1, size=5, num_samples=50, max_level=2)
         obs, *_ = _materialise_args(args)
-        assert obs.shape[1] == len(Channel)  # channels
+        assert obs.shape[1] == OBS_CHANNELS  # channels
         assert obs.shape[2] == 5  # width
         assert obs.shape[3] == 5  # height
 
@@ -447,7 +447,7 @@ class TestStreamingDemoDataset:
         assert sum(b[0].shape[0] for b in batches) == target
         obs, tile, ent, dirn, item, misc, mask, eot = batches[0]
         assert obs.dtype == torch.uint8
-        assert obs.shape[1:] == (len(Channel), 5, 5)
+        assert obs.shape[1:] == (OBS_CHANNELS, 5, 5)
         assert mask.dtype == torch.bool
         assert mask.shape[1] == 5 * 5
         assert tile.shape[0] == obs.shape[0]
