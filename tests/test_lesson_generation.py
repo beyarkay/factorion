@@ -2931,49 +2931,54 @@ class TestMemoriseRecipesArmGeometry:
     graph that is a shortest path of `2 + belts` edges (source → belts →
     inserter → assembler), so an arm's length is bounded but never fixed."""
 
+    @staticmethod
+    def _arm_lengths(world):
+        """Belt count of every arm, from the flow graph: an arm is
+        marker → belts → inserter → assembler, so `hops - 2` is its belts."""
+        import networkx as nx
+        G = build_factory_graph(world.permute(1, 2, 0))
+        asm = [n for n in G.nodes if n.startswith("a@")][0]
+        sink = [n for n in G.nodes if n.startswith("K@")][0]
+        return [
+            nx.shortest_path_length(G, s, asm) - 2
+            for s in G.nodes
+            if s.startswith("S@")
+        ] + [nx.shortest_path_length(G, asm, sink) - 2]
+
     @pytest.mark.parametrize("seed", range(10))
-    def test_every_arm_is_belts_then_one_inserter(self, kind, n_ing, seed):
+    def test_arm_hops_account_for_every_belt(self, kind, n_ing, seed):
+        """No arm bypasses its own belts and no belt sits off an arm: the arms'
+        hop counts add up to exactly the belts on the grid."""
         f = build_factory(size=10, kind=kind, seed=seed)
         assert f is not None
         world, _ = blank_entities(f, num_missing_entities=0)
-        G = build_factory_graph(world.permute(1, 2, 0))
-        import networkx as nx
-        sources = [n for n in G.nodes if n.startswith("S@")]
-        sink = [n for n in G.nodes if n.startswith("K@")][0]
-        asm = [n for n in G.nodes if n.startswith("a@")][0]
-        hops = 2 + MEMORISE_MAX_ARM_BELTS
-        # source → belts → inserter → assembler
-        for s in sources:
-            d = nx.shortest_path_length(G, s, asm)
-            assert 2 <= d <= hops, (
-                f"seed={seed}: source {s} reaches assembler in {d} hops, "
-                f"expected 2..{hops} (source→belts→inserter→assembler)"
-            )
-        # assembler → inserter → belts → sink
-        d = nx.shortest_path_length(G, asm, sink)
-        assert 2 <= d <= hops, (
-            f"seed={seed}: assembler reaches sink in {d} hops, expected "
-            f"2..{hops} (assembler→inserter→belts→sink)"
+        lengths = self._arm_lengths(world)
+        n_belt = (
+            (world[Channel.ENTITIES.value] == str2ent("transport_belt").value).sum().item()
+        )
+        assert sum(lengths) == n_belt, (
+            f"seed={seed}: arms carry {sum(lengths)} belts ({lengths}) but the "
+            f"grid holds {n_belt} — an arm is bypassed or a belt is stray"
+        )
+        assert max(lengths) <= MEMORISE_MAX_ARM_BELTS, (
+            f"seed={seed}: arm lengths {lengths} exceed MEMORISE_MAX_ARM_BELTS"
         )
 
     def test_arm_lengths_vary_across_seeds(self, kind, n_ing):
-        """Belt count is drawn per arm, so over many seeds the lesson yields
-        zero-belt arms as well as arms several belts long — the whole point of
-        the lesson not being a single memorisable motif."""
-        import networkx as nx
+        """Belt count is drawn per arm, so over many seeds the lesson covers the
+        whole 0..MEMORISE_MAX_ARM_BELTS range — the point of the lesson not being
+        a single memorisable motif. Pinning the exact set also catches the Rust
+        cap drifting away from the value mirrored here."""
         lengths = set()
         for seed in range(40):
             f = build_factory(size=10, kind=kind, seed=seed)
             assert f is not None
             world, _ = blank_entities(f, num_missing_entities=0)
-            G = build_factory_graph(world.permute(1, 2, 0))
-            asm = [n for n in G.nodes if n.startswith("a@")][0]
-            sink = [n for n in G.nodes if n.startswith("K@")][0]
-            for s in [n for n in G.nodes if n.startswith("S@")]:
-                lengths.add(nx.shortest_path_length(G, s, asm) - 2)
-            lengths.add(nx.shortest_path_length(G, asm, sink) - 2)
-        assert 0 in lengths, f"{kind.name}: no zero-belt arm, saw {lengths}"
-        assert max(lengths) > 1, f"{kind.name}: no multi-belt arm, saw {lengths}"
+            lengths.update(self._arm_lengths(world))
+        assert lengths == set(range(MEMORISE_MAX_ARM_BELTS + 1)), (
+            f"{kind.name}: arm lengths {sorted(lengths)} don't cover "
+            f"0..{MEMORISE_MAX_ARM_BELTS}"
+        )
 
 
 @pytest.mark.parametrize("kind,n_ing", MEMORISE_KINDS)
