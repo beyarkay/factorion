@@ -77,8 +77,8 @@ class TestObserve:
         assert flow[4, 0] == 0.0
         assert (flow[:, 1:] == 0).all()
 
-    def test_disconnected_entity_carries_nothing(self):
-        """A belt off the source→sink path moves nothing in steady state."""
+    def test_entity_with_no_feeder_carries_nothing(self):
+        """A belt nothing feeds moves nothing, beside a flowing line."""
         world = make_world(5)
         set_entity(world, 0, 0, "stack_inserter", Direction.EAST, item_name="copper_cable")
         set_entity(world, 1, 0, "transport_belt", Direction.EAST)
@@ -88,6 +88,46 @@ class TestObserve:
         flow = observe(world.permute(2, 0, 1).contiguous())[0][CH_FLOW]
         assert flow[1, 0] > 0
         assert flow[2, 2] == 0
+
+    def test_a_chain_short_of_the_sink_still_carries(self):
+        """The channel advances one tile per belt while throughput stays flat
+        zero — the progress signal a value function has no other way to see.
+        Delivery stays legible at the sink, which reads its own rate."""
+        def partial(n_belts):
+            world = make_world(7)
+            set_entity(world, 0, 0, "stack_inserter", Direction.EAST, item_name="copper_cable")
+            for x in range(1, 1 + n_belts):
+                set_entity(world, x, 0, "transport_belt", Direction.EAST)
+            set_entity(world, 5, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
+            return observe(world.permute(2, 0, 1).contiguous())
+
+        for n_belts in range(1, 4):
+            obs, thput, _ = partial(n_belts)
+            flow = obs[CH_FLOW] / FLOW_SCALE
+            assert thput == 0.0
+            assert flow[n_belts, 0] == 15.0
+            assert flow[n_belts + 1, 0] == 0.0
+            assert flow[5, 0] == 0.0, "nothing has reached the sink"
+
+        obs, thput, _ = partial(4)
+        assert thput > 0
+        assert obs[CH_FLOW][5, 0] / FLOW_SCALE == 15.0
+
+    def test_a_broken_last_hop_reads_zero_at_the_sink(self):
+        """Turning the last belt away keeps the chain carrying but empties the
+        sink — the case unreachability flags but the score alone cannot place."""
+        world = make_world(6)
+        set_entity(world, 0, 0, "stack_inserter", Direction.EAST, item_name="copper_cable")
+        set_entity(world, 1, 0, "transport_belt", Direction.EAST)
+        set_entity(world, 2, 0, "transport_belt", Direction.NORTH)
+        set_entity(world, 3, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
+
+        obs, thput, _ = observe(world.permute(2, 0, 1).contiguous())
+        flow = obs[CH_FLOW] / FLOW_SCALE
+        assert thput == 0.0
+        assert flow[1, 0] == 15.0
+        assert flow[2, 0] == 15.0
+        assert flow[3, 0] == 0.0
 
     def test_channel_is_integer_valued_so_uint8_storage_is_lossless(self):
         """SFT keeps its demonstrations in uint8 — FLOW's eighths must survive
@@ -126,17 +166,21 @@ class TestObserve:
 
 class TestEnvObservation:
     def test_reset_exposes_the_channel(self):
-        """The env's observation carries FLOW from reset onward. A fully
-        blanked grid has no path at all, so it starts empty."""
+        """The env's observation carries FLOW from reset onward. Nothing is
+        built yet, so only the source markers — an infinite supply, clamped to
+        the channel's ceiling — carry anything."""
         env = FactorioEnv(size=11, idx=0)
         obs, _ = env.reset(seed=7, options={"kind": LessonKind.MOVE_ONE_ITEM})
 
         assert obs.shape == (OBS_CHANNELS, 11, 11)
-        assert obs[CH_FLOW].sum() == 0
+        source = obs[Channel.ENTITIES.value] == env._source_id
+        assert (obs[CH_FLOW][source] == MAX_ENTITY_FLOW * FLOW_SCALE).all()
+        assert (obs[CH_FLOW][~source] == 0).all()
 
         factory = build_factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=7)
         assert factory is not None
-        assert observe(factory.world_CWH)[0][CH_FLOW].sum() > 0
+        sink = factory.world_CWH[Channel.ENTITIES.value] == env._sink_id
+        assert (observe(factory.world_CWH)[0][CH_FLOW][sink] > 0).all()
 
     def test_step_refreshes_the_channel(self, registered_env):
         """Placing the belt that completes a line lights the whole line up in

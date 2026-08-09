@@ -252,14 +252,14 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, Vec<f
 
     // 5. Per-node carried flow. A node's stored output is what EACH successor
     //    receives (the fan-out split above), so multiplying it back out
-    //    recovers what the node itself moves. A node off every source→sink
-    //    path carries nothing in steady state: it either never fills or backs
-    //    up against a dead end.
+    //    recovers what the node itself moves. Reaching a sink is deliberately
+    //    NOT required: a chain built out from a source carries items long
+    //    before it lands, and that partial progress is exactly what a value
+    //    function needs to tell "nearly there" from "nothing yet". Whether the
+    //    items arrive is already legible at the sink's own node, which carries
+    //    its delivery.
     let node_flows: Vec<f64> = (0..graph.node_count())
         .map(|i| {
-            if !on_path.contains(&i) {
-                return 0.0;
-            }
             let out: f64 = node_outputs[i].values().sum();
             out * graph.successors[i].len().max(1) as f64
         })
@@ -277,6 +277,10 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, Vec<f
 /// over its lane nodes) across its whole footprint, in [`FLOW_SCALE`] eighths
 /// and clamped to [`MAX_ENTITY_FLOW`]. Returned flat in `(W, H)` row-major
 /// order, matching the world tensor's layout.
+///
+/// The clamp is per entity rather than a whole-grid bail-out, so one unbounded
+/// tile (a source, or a sink fed straight off one) cannot erase the rest of the
+/// map.
 pub fn flow_channel(
     graph: &FactoryGraph,
     node_flows: &[f64],
@@ -898,9 +902,8 @@ mod tests {
     }
 
     #[test]
-    fn test_flow_channel_zero_off_path() {
-        // A belt that reaches no sink moves nothing in steady state, so it
-        // reads zero even though the source→sink line beside it flows.
+    fn test_flow_channel_zero_without_a_feeder() {
+        // A belt nothing feeds carries nothing, even beside a flowing line.
         let mut w = World::empty(5, 3);
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
         w.place(1, 0, Item::TransportBelt, Direction::East, None);
@@ -910,6 +913,35 @@ mod tests {
         let f = flows_at(&w);
         assert_eq!(f[&(1, 0)], 15.0);
         assert_eq!(f[&(2, 2)], 0.0);
+    }
+
+    #[test]
+    fn test_flow_channel_credits_a_chain_short_of_the_sink() {
+        // Reaching a sink is not required to carry items: a chain built out
+        // from the source lights up tile by tile while the factory still
+        // scores zero. Whether anything arrives stays legible at the sink,
+        // which reads its own delivery — 0 here, 15 once the chain lands.
+        let build = |n_belts: usize| {
+            let mut w = World::empty(7, 2);
+            w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+            for x in 1..=n_belts {
+                w.place(x, 0, Item::TransportBelt, Direction::East, None);
+            }
+            w.place(5, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+            w
+        };
+
+        for n_belts in 1..4 {
+            let w = build(n_belts);
+            let (deliveries, _, _) = calc_throughput(&build_graph(&w));
+            assert_eq!(factory_score(&deliveries), 0.0);
+            let f = flows_at(&w);
+            assert_eq!(f[&(n_belts, 0)], 15.0, "belt {n_belts} should carry");
+            assert_eq!(f[&(n_belts + 1, 0)], 0.0, "the frontier ends here");
+            assert_eq!(f[&(5, 0)], 0.0, "nothing has reached the sink");
+        }
+
+        assert_eq!(flows_at(&build(4))[&(5, 0)], 15.0);
     }
 
     #[test]

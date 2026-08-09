@@ -1256,6 +1256,12 @@ def observe(
     separates the failures unreachability cannot see: a belt loop scores zero
     with every entity connected, and it reads zero flow throughout.
 
+    An entity carries items as soon as something feeds it — reaching a sink is
+    not required. A chain built out from a source therefore lights up tile by
+    tile while throughput is still flat zero, which is what lets a value
+    function tell "one belt short" from "nothing built". Whether the items
+    arrive stays legible at the sink, whose own tile carries its delivery.
+
     The throughput and unreachable count come back too because the engine
     computes all three in one pass — a caller that wants both never has to
     simulate twice.
