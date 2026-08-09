@@ -602,16 +602,16 @@ pub fn build_factory(
         }
         // LessonKind::Assemble2In1Out => build_assemble_2in1out(size, &mut rng, max_entities),
         LessonKind::Memorise1IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 1)
+            build_memorise_recipes(size, &mut rng, max_entities, 1, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise2IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 2)
+            build_memorise_recipes(size, &mut rng, max_entities, 2, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise3IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 3)
+            build_memorise_recipes(size, &mut rng, max_entities, 3, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::Memorise4IngredientRecipes => {
-            build_memorise_recipes(size, &mut rng, max_entities, 4)
+            build_memorise_recipes(size, &mut rng, max_entities, 4, MEMORISE_MAX_ARM_BELTS)
         }
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
@@ -2214,25 +2214,6 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
 /// The most belts a MEMORISE arm may carry between its marker and its inserter.
 const MEMORISE_MAX_ARM_BELTS: i64 = 5;
 
-/// The cells of a shortest Manhattan walk from `from` to `to` — both ends
-/// included — bending at `corner`, which must share a row with one end and a
-/// column with the other (so the walk is a straight line or a single L).
-fn manhattan_walk(from: Cell, to: Cell, corner: Cell) -> Vec<Cell> {
-    let mut cells = vec![from];
-    let mut cur = from;
-    for target in [corner, to] {
-        while cur != target {
-            cur = if cur.0 != target.0 {
-                (cur.0 + (target.0 - cur.0).signum(), cur.1)
-            } else {
-                (cur.0, cur.1 + (target.1 - cur.1).signum())
-            };
-            cells.push(cur);
-        }
-    }
-    cells
-}
-
 /// Build a MEMORISE_`N`_INGREDIENT_RECIPES factory: a single assembler fed and
 /// drained by one arm per ingredient and per product — every item travels
 /// `source → belts → inserter → assembler → inserter → belts → sink`. The recipe
@@ -2240,9 +2221,9 @@ fn manhattan_walk(from: Cell, to: Cell, corner: Cell) -> Vec<Cell> {
 /// `n_ingredients` items, so the number of input arms equals `n_ingredients`
 /// (one source per input) and there is one output arm per product. Each arm's
 /// inserter sits on a randomly-chosen, non-corner assembler perimeter slot; its
-/// belt count is drawn per arm from `0..=MEMORISE_MAX_ARM_BELTS` and the marker
-/// sits at the far end of a shortest (straight or single-L) run of that many
-/// belts. The assembler anchor itself is random.
+/// belt count is drawn per arm from `0..=max_arm_belts` and the marker sits at
+/// the far end of a shortest (straight or single-L) run of that many belts. The
+/// assembler anchor itself is random.
 ///
 /// Splitting the memorise lesson by ingredient count lets each lesson drill a
 /// fixed input-arm count in isolation. The lesson teaches the policy to
@@ -2280,6 +2261,7 @@ fn build_memorise_recipes(
     rng: &mut Rng,
     max_entities: f64,
     n_ingredients: usize,
+    max_arm_belts: i64,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     // Eligible recipes have exactly `n_ingredients` inputs (the lesson drills
@@ -2366,17 +2348,34 @@ fn build_memorise_recipes(
         for (idx, &(inserter_pos, _, far)) in inserters.iter().enumerate() {
             let is_input = idx < n_in;
 
-            // The belts fill a shortest walk from the marker to the far cell, so
-            // the marker sits exactly `belt_count` steps away; a zero-belt arm
-            // puts it ON the far cell (sources and sinks connect like belts, so
-            // the inserter picks up straight off a source / drops straight onto
-            // a sink). Trying both rectangle corners is the same straight walk
-            // twice for a marker in line with the far cell, which keeps every
-            // candidate marker equally likely either way. On a crowded or tiny
-            // grid the draw clamps down to the longest length that does fit, so
-            // an arm short of room still routes.
+            // Cells of the shortest marker→far walk that bends at `corner`,
+            // both ends included.
+            let walk_to_far = |marker: Cell, corner: Cell| {
+                let mut cells = vec![marker];
+                let mut cur = marker;
+                for target in [corner, far] {
+                    while cur != target {
+                        cur = if cur.0 != target.0 {
+                            (cur.0 + (target.0 - cur.0).signum(), cur.1)
+                        } else {
+                            (cur.0, cur.1 + (target.1 - cur.1).signum())
+                        };
+                        cells.push(cur);
+                    }
+                }
+                cells
+            };
+            // The belts fill that walk, so the marker sits exactly `belt_count`
+            // steps from the far cell; a zero-belt arm puts it ON the far cell
+            // (sources and sinks connect like belts, so the inserter picks up
+            // straight off a source / drops straight onto a sink). Trying both
+            // rectangle corners is the same straight walk twice for a marker in
+            // line with the far cell, which keeps every candidate marker equally
+            // likely either way. On a crowded or tiny grid the draw clamps down
+            // to the longest length that does fit, so an arm short of room still
+            // routes.
             let mut walks: Vec<Vec<Cell>> = Vec::new();
-            for belt_count in (0..=rng.randint(0, MEMORISE_MAX_ARM_BELTS)).rev() {
+            for belt_count in (0..=rng.randint(0, max_arm_belts)).rev() {
                 for mx in far.0 - belt_count..=far.0 + belt_count {
                     for my in far.1 - belt_count..=far.1 + belt_count {
                         let marker = (mx, my);
@@ -2390,7 +2389,7 @@ fn build_memorise_recipes(
                             continue;
                         }
                         for corner in [(mx, far.1), (far.0, my)] {
-                            let walk = manhattan_walk(marker, far, corner);
+                            let walk = walk_to_far(marker, corner);
                             if walk[1..].iter().any(|c| *c != far && occupied.contains(c)) {
                                 continue;
                             }
@@ -3485,13 +3484,10 @@ mod tests {
         // Every lesson that places an assembling machine 1 must tag it with a
         // recipe tier 1 can craft — the `produced_by` filter must exclude
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
-        let kinds = [
-            LessonKind::Memorise1IngredientRecipes,
-            LessonKind::Memorise2IngredientRecipes,
-            LessonKind::Memorise3IngredientRecipes,
-            LessonKind::Memorise4IngredientRecipes,
-            LessonKind::Factory1Ingredient,
-        ];
+        let kinds = MEMORISE_KINDS
+            .iter()
+            .map(|&(kind, _)| kind)
+            .chain([LessonKind::Factory1Ingredient]);
         for kind in kinds {
             let mut checked = 0;
             for seed in 0..60u64 {
