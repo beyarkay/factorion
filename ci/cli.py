@@ -273,6 +273,32 @@ def sweep_report(sweep: str, top_n: int = 5, out: str = "") -> None:
             f.write(md)
 
 
+def compare_renders(
+    pr: str, main: str, /, seed: int = 1, per_kind: int = 0, out: str = ""
+) -> None:
+    """Print the side-by-side factory diff of two checkpoints (see factory_diff.py).
+
+    The same report `/ci compare` posts, runnable on any pair — SFT vs PPO,
+    PPO@2M vs PPO@10M, seed vs seed.
+
+    Args:
+        pr: Checkpoint shown on the left: local .pt path or W&B run id.
+        main: Checkpoint shown on the right.
+        seed: Seed of the shared held-out factory set both sides rebuild.
+        per_kind: Factories per LessonKind (0 = the factory_diff default).
+        out: Optional path to also write the markdown report to.
+    """
+    from factory_diff import PER_KIND_DEFAULT, compare_checkpoints
+
+    md = compare_checkpoints(
+        pr, main, seed=seed, per_kind=per_kind or PER_KIND_DEFAULT
+    )
+    print(md)
+    if out:
+        with open(out, "w") as f:
+            f.write(md)
+
+
 def history(out: str = "ci/history.csv", limit: int = 500) -> None:
     """Regenerate the metrics-over-time CSV from W&B runs tagged `ci`.
 
