@@ -331,17 +331,6 @@ def _post_compare_outcome(
         assertions=assertions,
     )
     _post(ctx, _missing_run_warnings(infos or []) + md)
-    # Best effort, and before the assertion exit below: a compare that spent
-    # hours on a GPU must still deliver the qualitative half of its report
-    # when rendering (or a failing assertion) would otherwise cut it short.
-    try:
-        from ci.report import compare_renders
-
-        renders = compare_renders(main_group=main_group, pr_group=pr_group)
-        if renders:
-            _post(ctx, renders)
-    except Exception:
-        print(f"could not post the factory renders:\n{traceback.format_exc()}", flush=True)
     state = "success" if ok else "failure"
     description = (
         "all assertions passed"
@@ -351,6 +340,18 @@ def _post_compare_outcome(
         else "assertion failed or no runs to compare"
     )
     github_api.set_commit_status(ctx["sha"], state, COMPARE_STATUS_CONTEXT, description)
+    # Only now the slow part: minutes of CPU rollouts must not sit between the
+    # report and the commit status (the job can time out mid-render, and the
+    # status would stay pending forever). Best effort, and before the assertion
+    # exit, so neither a rendering failure nor a red assert costs the diff.
+    try:
+        from ci.report import compare_renders
+
+        renders = compare_renders(main_group=main_group, pr_group=pr_group)
+        if renders:
+            _post(ctx, renders)
+    except Exception:
+        print(f"could not post the factory renders:\n{traceback.format_exc()}", flush=True)
     if not ok:
         sys.exit(1)
 

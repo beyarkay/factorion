@@ -130,14 +130,6 @@ class TestDiffMarkdown:
         )
         assert md == ""
 
-    def test_truncates_to_the_comment_limit(self):
-        pr = [[_record("MOVE_ONE_ITEM", i, 1.0, render="x" * 200) for i in range(200)]]
-        main = [[_record("MOVE_ONE_ITEM", i, 0.0, render="y" * 200) for i in range(200)]]
-        md = diff_markdown(pr, main, max_chars=8000, max_renders=200)
-        assert len(md) <= 8000
-        assert "further factories omitted" in md
-        assert md.rstrip().endswith("</details>")
-
     def test_caps_the_number_of_renders(self):
         """Even a tiny-grid report has to stay readable."""
         pr = [[_record("MOVE_ONE_ITEM", i, 1.0) for i in range(40)]]
@@ -145,6 +137,7 @@ class TestDiffMarkdown:
         md = diff_markdown(pr, main, max_renders=3)
         assert md.count("Δthput") == 3
         assert "37 further factories omitted; the 3 largest gaps are shown." in md
+        assert md.rstrip().endswith("</details>")
 
     def test_side_labels_carry_through(self):
         md = diff_markdown(

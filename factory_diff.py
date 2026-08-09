@@ -2,28 +2,27 @@
 what does each one actually build?
 
 A compare report says whether a metric moved. This says *where* it moved and
-*what changed on the grid*: both checkpoints greedy-roll the same (lesson,
-seed) held-out factories, and every pair whose throughput differs is rendered
+*what changed on the grid*: every checkpoint greedy-rolls the same held-out
+factories, and each factory the two sides consistently disagree on is rendered
 side by side, biggest gap first — the view that tells "PPO learned X" apart
 from "PPO forgot Y".
 
-    uv run python -m ci compare-renders <pr_ckpt> <main_ckpt>
+    uv run python -m ci compare-renders <pr_ckpts> <main_ckpts>
 
-where each checkpoint is a local .pt path or a W&B run id.
+where a checkpoint is a local .pt path (assumed to be the `training_config.py`
+architecture) or a W&B run id (whose own config is used).
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import fields
+from statistics import mean
 from types import SimpleNamespace
-from typing import Optional
 
 from training_config import PpoArgs
 
 PER_KIND_DEFAULT = 50
-# GitHub caps a comment at 65536 chars; leave room for the report's own prose.
-MAX_CHARS_DEFAULT = 58_000
 # Nobody reads the 40th-largest gap, and a wall of grids buries the ones that
 # matter. The per-lesson tally still covers every factory.
 MAX_RENDERS_DEFAULT = 25
@@ -34,26 +33,21 @@ THPUT_TOL = 1e-6
 _ENV_ID = "factorion/FactorioEnv-v0-diff"
 
 
-def _resolve(spec: str, project: str, entity: Optional[str]) -> tuple[str, dict]:
-    """(local .pt path, training config) for a checkpoint spec. A path on disk
-    is used as-is (no config, so the `training_config.py` defaults apply);
-    anything else is a W&B run id whose model artifact is downloaded."""
-    from ppo import _resolve_wandb_checkpoint
-
-    if os.path.exists(spec):
-        return spec, {}
-    path, source = _resolve_wandb_checkpoint(spec, project, entity)
-    return path, source.get("config", {})
-
-
-def load_agent(spec: str, device, project: str, entity: Optional[str] = None):
-    """Load a checkpoint into an `AgentCNN` built to the run's own architecture."""
+def load_agent(spec: str, device):
+    """Load a checkpoint into an `AgentCNN` built to its run's architecture."""
     import gymnasium as gym
     import torch
 
-    from ppo import AgentCNN, layers_from_args, make_env
+    from ppo import AgentCNN, _resolve_wandb_checkpoint, layers_from_args, make_env
 
-    path, config = _resolve(spec, project, entity)
+    config: dict = {}
+    if os.path.exists(spec):
+        path = spec
+    else:
+        path, source = _resolve_wandb_checkpoint(
+            spec, PpoArgs.wandb_project_name, PpoArgs.wandb_entity
+        )
+        config = source.get("config", {})
     args = PpoArgs(**{f.name: config[f.name] for f in fields(PpoArgs) if f.name in config})
 
     if _ENV_ID not in gym.registry:
@@ -77,16 +71,7 @@ def load_agent(spec: str, device, project: str, entity: Optional[str] = None):
     return agent, args
 
 
-def collect(
-    spec: str,
-    *,
-    seed: int,
-    per_kind: int = PER_KIND_DEFAULT,
-    project: str = PpoArgs.wandb_project_name,
-    entity: Optional[str] = None,
-    device=None,
-    num_envs: int = 8,
-) -> list[dict]:
+def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[dict]:
     """Greedy-rollout `spec` over `per_kind` held-out factories per LessonKind.
 
     The factory set is PPO's own eval set at this seed, so two checkpoints
@@ -97,8 +82,8 @@ def collect(
     from ppo import _build_eval_set
     from sft import run_rollout_eval
 
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    agent, args = load_agent(spec, device, project, entity)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    agent, args = load_agent(spec, device)
     eval_args = SimpleNamespace(
         size=args.size, seed=seed, max_level=0, eval_seeds_per_kind=per_kind
     )
@@ -110,7 +95,6 @@ def collect(
         seeds_to_kind,
         device,
         max_seeds=len(seeds_to_kind),
-        num_envs=num_envs,
         records=records,
     )
     return records
@@ -120,9 +104,8 @@ def _side_by_side(left: str, right: str, left_head: str, right_head: str) -> str
     ls = [left_head, *left.splitlines()]
     rs = [right_head, *right.splitlines()]
     width = max(len(x) for x in ls)
-    height = max(len(ls), len(rs))
-    ls += [""] * (height - len(ls))
-    rs += [""] * (height - len(rs))
+    ls += [""] * (len(rs) - len(ls))
+    rs += [""] * (len(ls) - len(rs))
     return "\n".join(f"{a:<{width}}  |  {b}".rstrip() for a, b in zip(ls, rs))
 
 
@@ -156,22 +139,20 @@ def _verdict(pr: list[dict], main: list[dict]) -> int:
     return 0
 
 
-def _mean(xs: list[float]) -> float:
-    return sum(xs) / len(xs)
-
-
-def _representative(recs: list[dict]) -> dict:
-    """The median-throughput run's factory — the side's typical build, not its
-    luckiest or unluckiest one."""
-    return sorted(recs, key=lambda r: r["thput"])[len(recs) // 2]
-
-
-def _thput_label(recs: list[dict]) -> str:
-    """`0.700` for one run, `0.700 [0.60 0.70 0.80]` for several."""
-    shown = _representative(recs)["thput"]
-    if len(recs) == 1:
-        return f"{shown:.3f}"
-    return f"{shown:.3f} [{' '.join(f'{t:.2f}' for t in sorted(_thputs(recs)))}]"
+def _side_cell(recs: list[dict], label: str) -> tuple[str, str]:
+    """(header, render) for one side: its mean throughput (the number Δ and the
+    summary table are computed from), every seed's value, and the median run's
+    grid — the side's typical build, not its luckiest or unluckiest one."""
+    median = sorted(recs, key=lambda r: r["thput"])[len(recs) // 2]
+    seeds = (
+        "" if len(recs) == 1
+        else f" [{' '.join(f'{t:.2f}' for t in sorted(_thputs(recs)))}]"
+    )
+    head = (
+        f"{label}  thput {mean(_thputs(recs)):.3f}{seeds}  "
+        f"cost {median['entity_cost']:.1f}"
+    )
+    return head, median["render"]
 
 
 def _summary_table(
@@ -186,31 +167,21 @@ def _summary_table(
         by_kind.setdefault(key[0], []).append(key)
     rows = []
     for kind, kind_keys in by_kind.items():
-        pr_t = [_mean(_thputs(pr_by_key[k])) for k in kind_keys]
-        main_t = [_mean(_thputs(main_by_key[k])) for k in kind_keys]
+        pr_t = mean(mean(_thputs(pr_by_key[k])) for k in kind_keys)
+        main_t = mean(mean(_thputs(main_by_key[k])) for k in kind_keys)
         verdicts = [_verdict(pr_by_key[k], main_by_key[k]) for k in kind_keys]
-        rows.append(
-            (
-                _mean(pr_t) - _mean(main_t),
-                kind,
-                len(kind_keys),
-                sum(1 for v in verdicts if v > 0),
-                sum(1 for v in verdicts if v < 0),
-                _mean(pr_t),
-                _mean(main_t),
-            )
-        )
+        rows.append((pr_t - main_t, kind, len(kind_keys), verdicts, main_t, pr_t))
     rows.sort(key=lambda r: -abs(r[0]))
-    lines = [
+    return [
         "| Lesson | factories | PR better | PR worse | μ MAIN thput | μ PR thput | μ Δ |",
         "|---|---|---|---|---|---|---|",
+        *(
+            f"| `{kind}` | {n} | {sum(1 for v in verdicts if v > 0)} "
+            f"| {sum(1 for v in verdicts if v < 0)} "
+            f"| {main_t:.3f} | {pr_t:.3f} | {delta:+.3f} |"
+            for delta, kind, n, verdicts, main_t, pr_t in rows
+        ),
     ]
-    for mean_d, kind, n, better, worse, pr_mean, main_mean in rows:
-        lines.append(
-            f"| `{kind}` | {n} | {better} | {worse} "
-            f"| {main_mean:.3f} | {pr_mean:.3f} | {mean_d:+.3f} |"
-        )
-    return lines
 
 
 def diff_markdown(
@@ -219,7 +190,6 @@ def diff_markdown(
     *,
     pr_label: str = "PR",
     main_label: str = "MAIN",
-    max_chars: int = MAX_CHARS_DEFAULT,
     max_renders: int = MAX_RENDERS_DEFAULT,
 ) -> str:
     """Markdown report over one or more runs per side: a per-lesson tally, then
@@ -230,24 +200,22 @@ def diff_markdown(
     keys = sorted(set(pr_by_key) & set(main_by_key))
     if not keys:
         return ""
+
+    def delta(key) -> float:
+        return mean(_thputs(pr_by_key[key])) - mean(_thputs(main_by_key[key]))
+
     differing = sorted(
         (k for k in keys if _verdict(pr_by_key[k], main_by_key[k])),
-        key=lambda k: -abs(
-            _mean(_thputs(pr_by_key[k])) - _mean(_thputs(main_by_key[k]))
-        ),
-    )
-
-    seeds_note = (
-        f"{len(pr_runs)} run(s) per side; a factory counts as different only "
-        "when every run on one side beat every run on the other, so a single "
-        "seed wandering is not reported."
+        key=lambda k: -abs(delta(k)),
     )
     lines = [
         f"## Greedy factory diff: {main_label} vs {pr_label}",
         "",
         f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
         f"a blank grid, stopping where its own EOT head fired. "
-        f"{len(differing)} came out consistently different. {seeds_note}",
+        f"{len(differing)} came out consistently different. {len(pr_runs)} run(s) "
+        "per side; a factory counts as different only when every run on one side "
+        "beat every run on the other, so a single seed wandering is not reported.",
         "",
         *_summary_table(keys, pr_by_key, main_by_key),
         "",
@@ -255,49 +223,31 @@ def diff_markdown(
     if not differing:
         return "\n".join(lines + ["No factory moved consistently across seeds."])
 
+    shown = differing[:max_renders]
     lines += [
         f"<details><summary>{len(differing)} consistently different factories, "
         "largest throughput gap first</summary>",
         "",
         "",  # markdown inside a <details> only renders after a blank line
     ]
-    head = "\n".join(lines)
-    blocks, shown = [], 0
-    budget = max_chars - len(head)
-    for i, key in enumerate(differing, start=1):
-        pr, main = pr_by_key[key], main_by_key[key]
-        delta = _mean(_thputs(pr)) - _mean(_thputs(main))
-        pr_rep, main_rep = _representative(pr), _representative(main)
-        block = "\n".join(
-            [
-                f"**{i}. `{key[0]}` factory {key[1]} — Δthput {delta:+.3f}**",
-                "",
-                "```text",
-                _side_by_side(
-                    main_rep["render"],
-                    pr_rep["render"],
-                    f"{main_label}  thput {_thput_label(main)}  "
-                    f"cost {main_rep['entity_cost']:.1f}",
-                    f"{pr_label}  thput {_thput_label(pr)}  "
-                    f"cost {pr_rep['entity_cost']:.1f}",
-                ),
-                "```",
-                "",
-            ]
-        )
-        if shown >= max_renders or budget - len(block) < 200:
-            break
-        budget -= len(block)
-        blocks.append(block)
-        shown += 1
-    tail = ["</details>"]
-    if shown < len(differing):
-        tail = [
-            f"_{len(differing) - shown} further factories omitted; "
-            f"the {shown} largest gaps are shown._",
+    for i, key in enumerate(shown, start=1):
+        main_head, main_render = _side_cell(main_by_key[key], main_label)
+        pr_head, pr_render = _side_cell(pr_by_key[key], pr_label)
+        lines += [
+            f"**{i}. `{key[0]}` factory {key[1]} — Δthput {delta(key):+.3f}**",
             "",
-        ] + tail
-    return head + "\n".join(blocks) + "\n".join(tail)
+            "```text",
+            _side_by_side(main_render, pr_render, main_head, pr_head),
+            "```",
+            "",
+        ]
+    if len(shown) < len(differing):
+        lines += [
+            f"_{len(differing) - len(shown)} further factories omitted; "
+            f"the {len(shown)} largest gaps are shown._",
+            "",
+        ]
+    return "\n".join(lines + ["</details>"])
 
 
 def compare_checkpoints(
@@ -306,12 +256,6 @@ def compare_checkpoints(
     *,
     seed: int = 1,
     per_kind: int = PER_KIND_DEFAULT,
-    pr_label: str = "PR",
-    main_label: str = "MAIN",
-    project: str = PpoArgs.wandb_project_name,
-    entity: Optional[str] = None,
-    max_chars: int = MAX_CHARS_DEFAULT,
-    max_renders: int = MAX_RENDERS_DEFAULT,
 ) -> str:
     """Roll out every checkpoint over ONE shared factory set and diff the sides.
 
@@ -319,12 +263,7 @@ def compare_checkpoints(
     of them must rebuild the same factories for the per-factory comparison to
     mean anything.
     """
-    kw = dict(seed=seed, per_kind=per_kind, project=project, entity=entity)
     return diff_markdown(
-        [collect(s, **kw) for s in pr_specs],  # ty: ignore[invalid-argument-type]
-        [collect(s, **kw) for s in main_specs],  # ty: ignore[invalid-argument-type]
-        pr_label=pr_label,
-        main_label=main_label,
-        max_chars=max_chars,
-        max_renders=max_renders,
+        [collect(s, seed=seed, per_kind=per_kind) for s in pr_specs],
+        [collect(s, seed=seed, per_kind=per_kind) for s in main_specs],
     )

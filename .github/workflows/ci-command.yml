@@ -84,14 +84,14 @@ jobs:
       # (factory_diff.py greedy-rolls each checkpoint), which needs torch and
       # the Rust engine. Skipped for every other command — it costs minutes.
       - name: Install Rust toolchain
-        if: contains(github.event.comment.body, 'compare')
+        if: startsWith(github.event.comment.body, '/ci compare')
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        if: contains(github.event.comment.body, 'compare')
+        if: startsWith(github.event.comment.body, '/ci compare')
         with:
           workspaces: factorion_rs
       - name: Install rollout dependencies
-        if: contains(github.event.comment.body, 'compare')
+        if: startsWith(github.event.comment.body, '/ci compare')
         run: |
           uv pip install --system maturin
           uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
