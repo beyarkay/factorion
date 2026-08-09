@@ -1,0 +1,3328 @@
+# Community belt balancers, decoded from published blueprints.
+
+description: |
+  belt_1_to_1: a belt balancer, 1 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/2.
+  Real Factorio delivers min(1,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+items:
+- { x: 1, y: 4, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,4 -> b@1,3
+  b@1,1 -> K@1,0
+  b@1,2 -> b@1,1
+  b@1,3 -> b@1,2
+factory: |
+  .. K^ ..
+  .. b^ ..
+  .. b^ ..
+  .. b^ ..
+  .. S^ ..
+---
+description: |
+  belt_1_to_2: a belt balancer, 1 belt(s) in, 2 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/3.
+  Real Factorio delivers min(1,2) x 15 = 15 items/s, split evenly over the 2 output belt(s).
+items:
+- { x: 1, y: 4, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+graph: |
+  S@1,4 -> b@1,3
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  b@1,1 -> K@1,0
+  b@1,3 -> Y@1,2
+  b@2,1 -> K@2,0
+factory: |
+  .. K^ K^ ..
+  .. b^ b^ ..
+  .. Y^^^Y ..
+  .. b^ .. ..
+  .. S^ .. ..
+---
+description: |
+  belt_1_to_3: a belt balancer, 1 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/4.
+  Real Factorio delivers min(1,3) x 15 = 15 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 7, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+graph: |
+  S@4,7 -> b@4,6
+  Y@2,3 -> b@1,3
+  Y@2,3 -> b@1,4
+  Y@2,4 -> b@1,3
+  Y@2,4 -> b@1,4
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,4 -> b@3,3
+  Y@3,4 -> b@4,3
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,4 -> b@3,3
+  Y@4,4 -> b@4,3
+  b@1,2 -> b@2,2
+  b@1,3 -> b@1,2
+  b@1,4 -> b@1,5
+  b@1,5 -> b@2,5
+  b@2,1 -> K@2,0
+  b@2,2 -> b@2,1
+  b@2,5 -> b@3,5
+  b@3,1 -> K@3,0
+  b@3,3 -> Y@2,3
+  b@3,5 -> Y@3,4
+  b@4,1 -> K@4,0
+  b@4,3 -> Y@4,2
+  b@4,5 -> Y@4,4
+  b@4,6 -> b@4,5
+factory: |
+  .. .. K^ K^ K^ ..
+  .. .. b^ b^ b^ ..
+  .. b> b^ Y^^^Y ..
+  .. b^ Y< b< b^ ..
+  .. bv Y< Y^^^Y ..
+  .. b> b> b^ b^ ..
+  .. .. .. .. b^ ..
+  .. .. .. .. S^ ..
+---
+description: |
+  belt_1_to_4: a belt balancer, 1 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/5.
+  Real Factorio delivers min(1,4) x 15 = 15 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 5, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+graph: |
+  S@2,5 -> b@2,4
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  b@1,1 -> K@1,0
+  b@2,1 -> K@2,0
+  b@2,4 -> Y@2,3
+  b@3,1 -> K@3,0
+  b@4,1 -> K@4,0
+factory: |
+  .. K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y ..
+  .. .. Y^^^Y .. ..
+  .. .. b^ .. .. ..
+  .. .. S^ .. .. ..
+---
+description: |
+  belt_1_to_5: a belt balancer, 1 belt(s) in, 5 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/6.
+  Real Factorio delivers min(1,5) x 15 = 15 items/s, split evenly over the 5 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 5, y: 9, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 3 }
+- { item: iron_plate, per_second: 3 }
+- { item: iron_plate, per_second: 3 }
+- { item: iron_plate, per_second: 3 }
+- { item: iron_plate, per_second: 3 }
+graph: |
+  S@5,9 -> b@5,8
+  Y@1,6 -> b@2,7
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,3 -> b@1,3
+  Y@2,3 -> b@1,4
+  Y@2,4 -> b@1,3
+  Y@2,4 -> b@1,4
+  Y@2,6 -> b@2,7
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,4 -> b@2,5
+  Y@3,5 -> b@2,5
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,6 -> b@4,5
+  Y@4,6 -> b@5,5
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,6 -> b@4,5
+  Y@5,6 -> b@5,5
+  b@1,1 -> K@1,0
+  b@1,2 -> b@1,1
+  b@1,3 -> b@1,2
+  b@1,4 -> b@1,5
+  b@1,5 -> Y@1,6
+  b@2,1 -> K@2,0
+  b@2,5 -> Y@2,6
+  b@2,7 -> b@3,7
+  b@3,1 -> K@3,0
+  b@3,7 -> b@4,7
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,5 -> Y@3,5
+  b@4,7 -> Y@4,6
+  b@5,1 -> K@5,0
+  b@5,4 -> b@4,4
+  b@5,5 -> b@5,4
+  b@5,7 -> Y@5,6
+  b@5,8 -> b@5,7
+factory: |
+  .. K^ K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ b^ ..
+  .. b^ Y^^^Y Y^^^Y ..
+  .. b^ Y< Y^^^Y .. ..
+  .. bv Y< Y< b^ b< ..
+  .. bv bv Y< b< b^ ..
+  .. YvvvY .. Y^^^Y ..
+  .. .. b> b> b^ b^ ..
+  .. .. .. .. .. b^ ..
+  .. .. .. .. .. S^ ..
+---
+description: |
+  belt_1_to_6: a belt balancer, 1 belt(s) in, 6 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/7.
+  Real Factorio delivers min(1,6) x 15 = 15 items/s, split evenly over the 6 output belt(s).
+  The engine delivers 15 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 7, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 2.5 }
+- { item: iron_plate, per_second: 2.5 }
+- { item: iron_plate, per_second: 2.5 }
+- { item: iron_plate, per_second: 2.5 }
+- { item: iron_plate, per_second: 2.5 }
+- { item: iron_plate, per_second: 2.5 }
+graph: |
+  S@4,7 -> b@4,6
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@2,3 -> b@1,3
+  Y@2,3 -> b@1,4
+  Y@2,4 -> b@1,3
+  Y@2,4 -> b@1,4
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,4 -> b@3,3
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,4 -> b@3,3
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  b@1,1 -> K@1,0
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,5
+  b@1,5 -> b@2,5
+  b@2,1 -> K@2,0
+  b@2,5 -> b@3,5
+  b@3,1 -> K@3,0
+  b@3,3 -> Y@3,2
+  b@3,5 -> Y@3,4
+  b@4,1 -> K@4,0
+  b@4,5 -> Y@4,4
+  b@4,6 -> b@4,5
+  b@5,1 -> K@5,0
+  b@6,1 -> K@6,0
+factory: |
+  .. K^ K^ K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y ..
+  .. b^ Y< b^ Y^^^Y .. ..
+  .. bv Y< Y^^^Y .. .. ..
+  .. b> b> b^ b^ .. .. ..
+  .. .. .. .. b^ .. .. ..
+  .. .. .. .. S^ .. .. ..
+---
+description: |
+  belt_1_to_7: a belt balancer, 1 belt(s) in, 7 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/8.
+  Real Factorio delivers min(1,7) x 15 = 15 items/s, split evenly over the 7 output belt(s).
+  The engine delivers 15 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 7, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+- { item: iron_plate, per_second: 2.14286 }
+graph: |
+  S@3,7 -> b@3,6
+  Y@1,1 -> K@1,0
+  Y@1,1 -> K@2,0
+  Y@2,1 -> K@1,0
+  Y@2,1 -> K@2,0
+  Y@3,1 -> K@3,0
+  Y@3,1 -> K@4,0
+  Y@3,3 -> b@4,2
+  Y@4,1 -> K@3,0
+  Y@4,1 -> K@4,0
+  Y@4,3 -> b@4,2
+  Y@5,1 -> K@5,0
+  Y@5,1 -> K@6,0
+  Y@5,2 -> b@6,2
+  Y@5,3 -> b@6,2
+  Y@6,1 -> K@5,0
+  Y@6,1 -> K@6,0
+  Y@6,3 -> b@7,3
+  Y@6,3 -> b@7,4
+  Y@6,4 -> b@7,3
+  Y@6,4 -> b@7,4
+  b@3,4 -> Y@3,3
+  b@3,5 -> b@3,4
+  b@3,6 -> b@3,5
+  b@4,2 -> Y@5,2
+  b@4,4 -> Y@4,3
+  b@4,5 -> b@4,4
+  b@5,5 -> b@4,5
+  b@6,2 -> Y@6,1
+  b@6,5 -> b@5,5
+  b@7,1 -> K@7,0
+  b@7,2 -> b@7,1
+  b@7,3 -> b@7,2
+  b@7,4 -> b@7,5
+  b@7,5 -> b@6,5
+factory: |
+  .. K^ K^ K^ K^ K^ K^ K^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y b^ ..
+  .. .. Y^^^Y b> Y> b^ b^ ..
+  .. .. .. Y^^^Y Y> Y> b^ ..
+  .. .. .. b^ b^ .. Y> bv ..
+  .. .. .. b^ b^ b< b< b< ..
+  .. .. .. b^ .. .. .. .. ..
+  .. .. .. S^ .. .. .. .. ..
+---
+description: |
+  belt_1_to_8: a belt balancer, 1 belt(s) in, 8 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/9.
+  Real Factorio delivers min(1,8) x 15 = 15 items/s, split evenly over the 8 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 6, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+- { item: iron_plate, per_second: 1.875 }
+graph: |
+  S@4,6 -> b@4,5
+  Y@1,1 -> K@1,0
+  Y@1,1 -> K@2,0
+  Y@2,1 -> K@1,0
+  Y@2,1 -> K@2,0
+  Y@3,1 -> K@3,0
+  Y@3,1 -> K@4,0
+  Y@4,1 -> K@3,0
+  Y@4,1 -> K@4,0
+  Y@4,4 -> b@4,3
+  Y@4,4 -> b@5,3
+  Y@5,1 -> K@5,0
+  Y@5,1 -> K@6,0
+  Y@5,4 -> b@4,3
+  Y@5,4 -> b@5,3
+  Y@6,1 -> K@5,0
+  Y@6,1 -> K@6,0
+  Y@7,1 -> K@7,0
+  Y@7,1 -> K@8,0
+  Y@8,1 -> K@7,0
+  Y@8,1 -> K@8,0
+  b@3,3 -> Y@3,2
+  b@4,3 -> b@3,3
+  b@4,5 -> Y@4,4
+  b@5,3 -> b@6,3
+  b@6,3 -> Y@6,2
+factory: |
+  .. K^ K^ K^ K^ K^ K^ K^ K^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. Y^^^Y .. .. Y^^^Y .. ..
+  .. .. .. b^ b< b> b^ .. .. ..
+  .. .. .. .. Y^^^Y .. .. .. ..
+  .. .. .. .. b^ .. .. .. .. ..
+  .. .. .. .. S^ .. .. .. .. ..
+---
+description: |
+  belt_2_to_1: a belt balancer, 2 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/10.
+  Real Factorio delivers min(2,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+items:
+- { x: 1, y: 4, item: iron_plate }
+- { x: 2, y: 4, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,4 -> b@1,3
+  S@2,4 -> b@2,3
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@2,1
+  b@1,3 -> Y@1,2
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+factory: |
+  .. .. K^ ..
+  .. .. b^ ..
+  .. Y^^^Y ..
+  .. b^ b^ ..
+  .. S^ S^ ..
+---
+description: |
+  belt_2_to_2: a belt balancer, 2 belt(s) in, 2 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/11.
+  Real Factorio delivers min(2,2) x 15 = 30 items/s, split evenly over the 2 output belt(s).
+items:
+- { x: 1, y: 4, item: iron_plate }
+- { x: 2, y: 4, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,4 -> b@1,3
+  S@2,4 -> b@2,3
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  b@1,1 -> K@1,0
+  b@1,3 -> Y@1,2
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+factory: |
+  .. K^ K^ ..
+  .. b^ b^ ..
+  .. Y^^^Y ..
+  .. b^ b^ ..
+  .. S^ S^ ..
+---
+description: |
+  belt_2_to_3_long: a belt balancer, 2 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/12.
+  Real Factorio delivers min(2,3) x 15 = 30 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 22.5 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 8, item: iron_plate }
+- { x: 5, y: 8, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+graph: |
+  S@4,8 -> b@4,7
+  S@5,8 -> b@5,7
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,6 -> b@4,5
+  Y@4,6 -> b@5,5
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,6 -> b@4,5
+  Y@5,6 -> b@5,5
+  b@1,1 -> b@1,2
+  b@1,2 -> b@1,3
+  b@1,3 -> b@1,4
+  b@1,4 -> b@2,4
+  b@2,1 -> b@1,1
+  b@2,4 -> b@3,4
+  b@2,6 -> d@2,5
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@3,5 -> b@3,6
+  b@3,6 -> b@2,6
+  b@4,1 -> K@4,0
+  b@4,5 -> b@3,5
+  b@4,7 -> Y@4,6
+  b@5,1 -> K@5,0
+  b@5,3 -> Y@5,2
+  b@5,4 -> b@5,3
+  b@5,5 -> b@5,4
+  b@5,7 -> Y@5,6
+  d@2,5 -> u@2,3
+  u@2,3 -> Y@2,2
+factory: |
+  .. .. .. K^ K^ K^ ..
+  .. bv b< b^ b^ b^ ..
+  .. bv Y^^^Y Y^^^Y ..
+  .. bv u^ Y^^^Y b^ ..
+  .. b> b> b^ .. b^ ..
+  .. .. d^ bv b< b^ ..
+  .. .. b^ b< Y^^^Y ..
+  .. .. .. .. b^ b^ ..
+  .. .. .. .. S^ S^ ..
+---
+description: |
+  belt_2_to_3_wide: a belt balancer, 2 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/13.
+  Real Factorio delivers min(2,3) x 15 = 30 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 6, item: iron_plate }
+- { x: 5, y: 6, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+graph: |
+  S@4,6 -> b@4,5
+  S@5,6 -> b@5,5
+  Y@2,3 -> b@3,3
+  Y@2,3 -> d@3,4
+  Y@2,4 -> b@3,3
+  Y@2,4 -> d@3,4
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  b@1,1 -> b@1,2
+  b@1,2 -> b@1,3
+  b@1,3 -> Y@2,3
+  b@2,1 -> b@1,1
+  b@3,1 -> b@2,1
+  b@3,3 -> Y@3,2
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,5 -> b@4,4
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@5,3
+  b@5,5 -> b@5,4
+  b@6,1 -> K@6,0
+  b@6,3 -> Y@6,2
+  b@7,3 -> b@6,3
+  b@7,4 -> b@7,3
+  d@3,4 -> u@6,4
+  u@6,4 -> b@7,4
+factory: |
+  .. .. .. .. K^ K^ K^ .. ..
+  .. bv b< b< b^ b^ b^ .. ..
+  .. bv .. Y^^^Y Y^^^Y .. ..
+  .. b> Y> b^ Y^^^Y b^ b< ..
+  .. .. Y> d> b^ b^ u> b^ ..
+  .. .. .. .. b^ b^ .. .. ..
+  .. .. .. .. S^ S^ .. .. ..
+---
+description: |
+  belt_2_to_4: a belt balancer, 2 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/14.
+  Real Factorio delivers min(2,4) x 15 = 30 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 5, item: iron_plate }
+- { x: 3, y: 5, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+graph: |
+  S@2,5 -> b@2,4
+  S@3,5 -> b@3,4
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  b@1,1 -> K@1,0
+  b@2,1 -> K@2,0
+  b@2,4 -> Y@2,3
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@4,1 -> K@4,0
+factory: |
+  .. K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y ..
+  .. .. Y^^^Y .. ..
+  .. .. b^ b^ .. ..
+  .. .. S^ S^ .. ..
+---
+description: |
+  belt_2_to_5: a belt balancer, 2 belt(s) in, 5 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/15.
+  Real Factorio delivers min(2,5) x 15 = 30 items/s, split evenly over the 5 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 7, item: iron_plate }
+- { x: 4, y: 7, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 6 }
+- { item: iron_plate, per_second: 6 }
+- { item: iron_plate, per_second: 6 }
+- { item: iron_plate, per_second: 6 }
+- { item: iron_plate, per_second: 6 }
+graph: |
+  S@3,7 -> b@3,6
+  S@4,7 -> b@4,6
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,5 -> b@2,4
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,4 -> b@3,3
+  Y@3,4 -> b@4,3
+  Y@3,5 -> b@2,4
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,4 -> b@3,3
+  Y@4,4 -> b@4,3
+  Y@4,5 -> b@5,4
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,5 -> b@5,4
+  Y@6,2 -> b@6,1
+  Y@6,2 -> b@7,1
+  Y@6,3 -> b@7,3
+  Y@6,3 -> b@7,4
+  Y@6,4 -> b@7,3
+  Y@6,4 -> b@7,4
+  Y@7,2 -> b@6,1
+  Y@7,2 -> b@7,1
+  b@1,1 -> d@1,2
+  b@1,3 -> d@2,3
+  b@1,4 -> b@1,3
+  b@1,6 -> b@2,6
+  b@2,1 -> b@1,1
+  b@2,4 -> b@1,4
+  b@2,6 -> Y@2,5
+  b@3,1 -> K@3,0
+  b@3,3 -> Y@3,2
+  b@3,6 -> Y@3,5
+  b@4,1 -> K@4,0
+  b@4,3 -> Y@4,2
+  b@4,6 -> Y@4,5
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@6,4
+  b@5,6 -> Y@5,5
+  b@6,1 -> K@6,0
+  b@6,5 -> b@6,6
+  b@6,6 -> b@5,6
+  b@7,1 -> K@7,0
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,5
+  b@7,5 -> b@6,5
+  d@1,2 -> u@1,5
+  d@2,3 -> u@5,3
+  u@1,5 -> b@1,6
+  u@5,3 -> Y@6,3
+factory: |
+  .. .. .. K^ K^ K^ K^ K^ ..
+  .. bv b< b^ b^ b^ b^ b^ ..
+  .. dv Y^^^Y Y^^^Y Y^^^Y ..
+  .. b> d> b^ b^ u> Y> b^ ..
+  .. b^ b< Y^^^Y b> Y> bv ..
+  .. uv Y^^^Y Y^^^Y bv b< ..
+  .. b> b^ b^ b^ b^ b< .. ..
+  .. .. .. S^ S^ .. .. .. ..
+---
+description: |
+  belt_2_to_6: a belt balancer, 2 belt(s) in, 6 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/16.
+  Real Factorio delivers min(2,6) x 15 = 30 items/s, split evenly over the 6 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 8, item: iron_plate }
+- { x: 5, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+- { item: iron_plate, per_second: 5 }
+graph: |
+  S@4,8 -> b@4,7
+  S@5,8 -> b@5,7
+  Y@2,3 -> b@1,3
+  Y@2,3 -> b@1,4
+  Y@2,4 -> b@1,3
+  Y@2,4 -> b@1,4
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,4 -> b@3,3
+  Y@3,4 -> b@4,3
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,4 -> b@3,3
+  Y@4,4 -> b@4,3
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,4 -> b@5,3
+  Y@5,4 -> b@6,3
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@6,4 -> b@5,3
+  Y@6,4 -> b@6,3
+  Y@7,3 -> b@8,3
+  Y@7,3 -> b@8,4
+  Y@7,4 -> b@8,3
+  Y@7,4 -> b@8,4
+  b@1,2 -> b@2,2
+  b@1,3 -> b@1,2
+  b@1,4 -> b@1,5
+  b@1,5 -> b@2,5
+  b@2,1 -> K@2,0
+  b@2,2 -> b@2,1
+  b@2,5 -> b@3,5
+  b@3,1 -> K@3,0
+  b@3,3 -> Y@2,3
+  b@3,5 -> Y@3,4
+  b@4,1 -> K@4,0
+  b@4,3 -> Y@4,2
+  b@4,6 -> Y@4,5
+  b@4,7 -> b@4,6
+  b@5,1 -> K@5,0
+  b@5,3 -> Y@5,2
+  b@5,6 -> Y@5,5
+  b@5,7 -> b@5,6
+  b@6,1 -> K@6,0
+  b@6,3 -> Y@7,3
+  b@6,5 -> Y@6,4
+  b@7,1 -> K@7,0
+  b@7,2 -> b@7,1
+  b@7,5 -> b@6,5
+  b@8,2 -> b@7,2
+  b@8,3 -> b@8,2
+  b@8,4 -> b@8,5
+  b@8,5 -> b@7,5
+factory: |
+  .. .. K^ K^ K^ K^ K^ K^ .. ..
+  .. .. b^ b^ b^ b^ b^ b^ .. ..
+  .. b> b^ Y^^^Y Y^^^Y b^ b< ..
+  .. b^ Y< b< b^ b^ b> Y> b^ ..
+  .. bv Y< Y^^^Y Y^^^Y Y> bv ..
+  .. b> b> b^ Y^^^Y b^ b< b< ..
+  .. .. .. .. b^ b^ .. .. .. ..
+  .. .. .. .. b^ b^ .. .. .. ..
+  .. .. .. .. S^ S^ .. .. .. ..
+---
+description: |
+  belt_2_to_7: a belt balancer, 2 belt(s) in, 7 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/17.
+  Real Factorio delivers min(2,7) x 15 = 30 items/s, split evenly over the 7 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 8, item: iron_plate }
+- { x: 5, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+- { item: iron_plate, per_second: 4.28571 }
+graph: |
+  S@4,8 -> b@4,7
+  S@5,8 -> b@5,7
+  Y@2,3 -> b@1,3
+  Y@2,3 -> b@1,4
+  Y@2,4 -> b@1,3
+  Y@2,4 -> b@1,4
+  Y@2,5 -> b@3,5
+  Y@2,5 -> d@3,6
+  Y@2,6 -> b@3,5
+  Y@2,6 -> d@3,6
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,4 -> b@3,3
+  Y@3,4 -> b@4,3
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,4 -> b@3,3
+  Y@4,4 -> b@4,3
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,4 -> b@5,3
+  Y@5,4 -> b@6,3
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@6,4 -> b@5,3
+  Y@6,4 -> b@6,3
+  Y@7,2 -> b@7,1
+  Y@7,2 -> b@8,1
+  Y@8,2 -> b@7,1
+  Y@8,2 -> b@8,1
+  b@1,2 -> b@2,2
+  b@1,3 -> b@1,2
+  b@1,4 -> b@1,5
+  b@1,5 -> Y@2,5
+  b@2,1 -> K@2,0
+  b@2,2 -> b@2,1
+  b@3,1 -> K@3,0
+  b@3,3 -> Y@2,3
+  b@3,5 -> Y@3,4
+  b@4,1 -> K@4,0
+  b@4,3 -> Y@4,2
+  b@4,6 -> Y@4,5
+  b@4,7 -> b@4,6
+  b@5,1 -> K@5,0
+  b@5,3 -> Y@5,2
+  b@5,6 -> Y@5,5
+  b@5,7 -> b@5,6
+  b@6,1 -> K@6,0
+  b@6,3 -> b@7,3
+  b@6,5 -> Y@6,4
+  b@7,1 -> K@7,0
+  b@7,3 -> Y@7,2
+  b@7,5 -> b@6,5
+  b@7,6 -> b@7,5
+  b@8,1 -> K@8,0
+  d@3,6 -> u@6,6
+  u@6,6 -> b@7,6
+factory: |
+  .. .. K^ K^ K^ K^ K^ K^ K^ ..
+  .. .. b^ b^ b^ b^ b^ b^ b^ ..
+  .. b> b^ Y^^^Y Y^^^Y Y^^^Y ..
+  .. b^ Y< b< b^ b^ b> b^ .. ..
+  .. bv Y< Y^^^Y Y^^^Y .. .. ..
+  .. b> Y> b^ Y^^^Y b^ b< .. ..
+  .. .. Y> d> b^ b^ u> b^ .. ..
+  .. .. .. .. b^ b^ .. .. .. ..
+  .. .. .. .. S^ S^ .. .. .. ..
+---
+description: |
+  belt_2_to_8: a belt balancer, 2 belt(s) in, 8 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/18.
+  Real Factorio delivers min(2,8) x 15 = 30 items/s, split evenly over the 8 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 6, item: iron_plate }
+- { x: 5, y: 6, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+- { item: iron_plate, per_second: 3.75 }
+graph: |
+  S@4,6 -> b@4,5
+  S@5,6 -> b@5,5
+  Y@1,1 -> K@1,0
+  Y@1,1 -> K@2,0
+  Y@2,1 -> K@1,0
+  Y@2,1 -> K@2,0
+  Y@3,1 -> K@3,0
+  Y@3,1 -> K@4,0
+  Y@4,1 -> K@3,0
+  Y@4,1 -> K@4,0
+  Y@4,4 -> b@4,3
+  Y@4,4 -> b@5,3
+  Y@5,1 -> K@5,0
+  Y@5,1 -> K@6,0
+  Y@5,4 -> b@4,3
+  Y@5,4 -> b@5,3
+  Y@6,1 -> K@5,0
+  Y@6,1 -> K@6,0
+  Y@7,1 -> K@7,0
+  Y@7,1 -> K@8,0
+  Y@8,1 -> K@7,0
+  Y@8,1 -> K@8,0
+  b@3,3 -> Y@3,2
+  b@4,3 -> b@3,3
+  b@4,5 -> Y@4,4
+  b@5,3 -> b@6,3
+  b@5,5 -> Y@5,4
+  b@6,3 -> Y@6,2
+factory: |
+  .. K^ K^ K^ K^ K^ K^ K^ K^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. Y^^^Y .. .. Y^^^Y .. ..
+  .. .. .. b^ b< b> b^ .. .. ..
+  .. .. .. .. Y^^^Y .. .. .. ..
+  .. .. .. .. b^ b^ .. .. .. ..
+  .. .. .. .. S^ S^ .. .. .. ..
+---
+description: |
+  belt_3_to_1: a belt balancer, 3 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/19.
+  Real Factorio delivers min(3,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 4, y: 8, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  S@4,8 -> b@4,7
+  Y@2,3 -> b@3,4
+  Y@2,4 -> b@3,4
+  Y@3,3 -> b@3,2
+  Y@3,3 -> b@4,2
+  Y@3,6 -> b@4,5
+  Y@4,3 -> b@3,2
+  Y@4,3 -> b@4,2
+  Y@4,6 -> b@4,5
+  b@1,2 -> b@1,3
+  b@1,3 -> Y@2,3
+  b@1,4 -> Y@2,4
+  b@1,5 -> b@1,4
+  b@2,2 -> b@1,2
+  b@2,5 -> b@1,5
+  b@2,6 -> b@2,5
+  b@2,7 -> b@2,6
+  b@3,2 -> b@2,2
+  b@3,4 -> Y@3,3
+  b@3,7 -> Y@3,6
+  b@4,1 -> K@4,0
+  b@4,2 -> b@4,1
+  b@4,4 -> Y@4,3
+  b@4,5 -> b@4,4
+  b@4,7 -> Y@4,6
+factory: |
+  .. .. .. .. K^ ..
+  .. .. .. .. b^ ..
+  .. bv b< b< b^ ..
+  .. b> Y> Y^^^Y ..
+  .. b> Y> b^ b^ ..
+  .. b^ b< .. b^ ..
+  .. .. b^ Y^^^Y ..
+  .. .. b^ b^ b^ ..
+  .. .. S^ S^ S^ ..
+---
+description: |
+  belt_3_to_2: a belt balancer, 3 belt(s) in, 2 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/20.
+  Real Factorio delivers min(3,2) x 15 = 30 items/s, split evenly over the 2 output belt(s).
+items:
+- { x: 1, y: 8, item: iron_plate }
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,8 -> b@1,7
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@1,6 -> b@1,5
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@2,5 -> b@3,4
+  Y@2,6 -> b@1,5
+  Y@3,5 -> b@3,4
+  Y@3,6 -> d@4,5
+  Y@4,6 -> d@4,5
+  b@1,1 -> K@1,0
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,3
+  b@1,5 -> b@1,4
+  b@1,7 -> Y@1,6
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+  b@2,7 -> Y@2,6
+  b@3,2 -> b@3,3
+  b@3,3 -> b@2,3
+  b@3,4 -> b@4,4
+  b@3,7 -> Y@3,6
+  b@4,2 -> b@3,2
+  b@4,4 -> b@5,4
+  b@4,7 -> Y@4,6
+  b@5,4 -> b@5,5
+  b@5,5 -> b@5,6
+  b@5,6 -> b@5,7
+  b@5,7 -> b@4,7
+  d@4,5 -> u@4,3
+  u@4,3 -> b@4,2
+factory: |
+  .. K^ K^ .. .. .. ..
+  .. b^ b^ .. .. .. ..
+  .. Y^^^Y bv b< .. ..
+  .. b^ b^ b< u^ .. ..
+  .. b^ .. b> b> bv ..
+  .. b^ Y^^^Y d^ bv ..
+  .. Y^^^Y Y^^^Y bv ..
+  .. b^ b^ b^ b^ b< ..
+  .. S^ S^ S^ .. .. ..
+---
+description: |
+  belt_3_to_3: a belt balancer, 3 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/21.
+  Real Factorio delivers min(3,3) x 15 = 45 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 8, item: iron_plate }
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,8 -> b@1,7
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  Y@1,6 -> b@1,5
+  Y@2,5 -> d@2,4
+  Y@2,5 -> d@3,4
+  Y@2,6 -> b@1,5
+  Y@3,5 -> d@2,4
+  Y@3,5 -> d@3,4
+  Y@3,6 -> b@4,5
+  Y@4,6 -> b@4,5
+  Y@5,3 -> b@6,3
+  Y@5,3 -> b@6,4
+  Y@5,4 -> b@6,3
+  Y@5,4 -> b@6,4
+  b@1,3 -> b@2,3
+  b@1,4 -> b@1,3
+  b@1,5 -> b@1,4
+  b@1,7 -> Y@1,6
+  b@2,1 -> K@2,0
+  b@2,3 -> b@3,3
+  b@2,7 -> Y@2,6
+  b@3,1 -> K@3,0
+  b@3,3 -> b@4,3
+  b@3,7 -> Y@3,6
+  b@4,1 -> K@4,0
+  b@4,2 -> b@4,1
+  b@4,3 -> Y@5,3
+  b@4,4 -> Y@5,4
+  b@4,5 -> b@4,4
+  b@4,7 -> Y@4,6
+  b@5,2 -> b@4,2
+  b@5,5 -> b@5,6
+  b@5,6 -> b@5,7
+  b@5,7 -> b@4,7
+  b@6,2 -> b@5,2
+  b@6,3 -> b@6,2
+  b@6,4 -> b@6,5
+  b@6,5 -> b@5,5
+  d@2,4 -> u@2,2
+  d@3,4 -> u@3,2
+  u@2,2 -> b@2,1
+  u@3,2 -> b@3,1
+factory: |
+  .. .. K^ K^ K^ .. .. ..
+  .. .. b^ b^ b^ .. .. ..
+  .. .. u^ u^ b^ b< b< ..
+  .. b> b> b> b> Y> b^ ..
+  .. b^ d^ d^ b> Y> bv ..
+  .. b^ Y^^^Y b^ bv b< ..
+  .. Y^^^Y Y^^^Y bv .. ..
+  .. b^ b^ b^ b^ b< .. ..
+  .. S^ S^ S^ .. .. .. ..
+---
+description: |
+  belt_3_to_4: a belt balancer, 3 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/22.
+  Real Factorio delivers min(3,4) x 15 = 45 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 9, item: iron_plate }
+- { x: 3, y: 9, item: iron_plate }
+- { x: 4, y: 9, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 11.25 }
+- { item: iron_plate, per_second: 11.25 }
+- { item: iron_plate, per_second: 11.25 }
+- { item: iron_plate, per_second: 11.25 }
+graph: |
+  S@2,9 -> b@2,8
+  S@3,9 -> b@3,8
+  S@4,9 -> b@4,8
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,7 -> b@2,6
+  Y@2,7 -> b@3,6
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,7 -> b@2,6
+  Y@3,7 -> b@3,6
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,7 -> b@4,6
+  Y@4,7 -> b@5,6
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,7 -> b@4,6
+  Y@5,7 -> b@5,6
+  Y@6,3 -> b@5,3
+  Y@6,3 -> d@5,4
+  Y@6,4 -> b@5,3
+  Y@6,4 -> d@5,4
+  Y@6,5 -> b@7,5
+  Y@6,5 -> b@7,6
+  Y@6,6 -> b@7,5
+  Y@6,6 -> b@7,6
+  b@1,3 -> b@2,3
+  b@1,4 -> b@1,3
+  b@1,5 -> d@2,5
+  b@1,6 -> b@1,5
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+  b@2,6 -> b@1,6
+  b@2,8 -> Y@2,7
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@3,5 -> b@3,4
+  b@3,6 -> b@3,5
+  b@3,8 -> Y@3,7
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,5 -> b@4,4
+  b@4,6 -> b@4,5
+  b@4,8 -> Y@4,7
+  b@5,1 -> K@5,0
+  b@5,3 -> Y@5,2
+  b@5,6 -> Y@6,6
+  b@5,8 -> Y@5,7
+  b@6,7 -> b@6,8
+  b@6,8 -> b@5,8
+  b@7,4 -> Y@6,4
+  b@7,5 -> b@7,4
+  b@7,6 -> b@7,7
+  b@7,7 -> b@6,7
+  d@2,5 -> u@5,5
+  d@5,4 -> u@2,4
+  u@2,4 -> b@1,4
+  u@5,5 -> Y@6,5
+factory: |
+  .. .. K^ K^ K^ K^ .. .. ..
+  .. .. b^ b^ b^ b^ .. .. ..
+  .. .. Y^^^Y Y^^^Y .. .. ..
+  .. b> b^ Y^^^Y b^ Y< .. ..
+  .. b^ u< b^ b^ d< Y< b< ..
+  .. b> d> b^ b^ u> Y> b^ ..
+  .. b^ b< b^ b^ b> Y> bv ..
+  .. .. Y^^^Y Y^^^Y bv b< ..
+  .. .. b^ b^ b^ b^ b< .. ..
+  .. .. S^ S^ S^ .. .. .. ..
+---
+description: |
+  belt_3_to_6: a belt balancer, 3 belt(s) in, 6 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/24.
+  Real Factorio delivers min(3,6) x 15 = 45 items/s, split evenly over the 6 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 4, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+graph: |
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  S@4,8 -> b@4,7
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,5 -> b@2,4
+  Y@2,5 -> b@3,4
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,5 -> b@2,4
+  Y@3,5 -> b@3,4
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,5 -> b@4,4
+  Y@4,5 -> b@5,4
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,5 -> b@4,4
+  Y@5,5 -> b@5,4
+  Y@6,2 -> b@6,1
+  Y@6,2 -> b@7,1
+  Y@6,3 -> b@7,3
+  Y@6,3 -> b@7,4
+  Y@6,4 -> b@7,3
+  Y@6,4 -> b@7,4
+  Y@7,2 -> b@6,1
+  Y@7,2 -> b@7,1
+  b@1,3 -> d@2,3
+  b@1,4 -> b@1,3
+  b@2,1 -> K@2,0
+  b@2,4 -> b@1,4
+  b@2,6 -> Y@2,5
+  b@2,7 -> b@2,6
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@3,6 -> Y@3,5
+  b@3,7 -> b@3,6
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,6 -> Y@4,5
+  b@4,7 -> b@4,6
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@6,4
+  b@5,6 -> Y@5,5
+  b@6,1 -> K@6,0
+  b@6,5 -> b@6,6
+  b@6,6 -> b@5,6
+  b@7,1 -> K@7,0
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,5
+  b@7,5 -> b@6,5
+  d@2,3 -> u@5,3
+  u@5,3 -> Y@6,3
+factory: |
+  .. .. K^ K^ K^ K^ K^ K^ ..
+  .. .. b^ b^ b^ b^ b^ b^ ..
+  .. .. Y^^^Y Y^^^Y Y^^^Y ..
+  .. b> d> Y^^^Y u> Y> b^ ..
+  .. b^ b< b^ b^ b> Y> bv ..
+  .. .. Y^^^Y Y^^^Y bv b< ..
+  .. .. b^ b^ b^ b^ b< .. ..
+  .. .. b^ b^ b^ .. .. .. ..
+  .. .. S^ S^ S^ .. .. .. ..
+---
+description: |
+  belt_3_to_7: a belt balancer, 3 belt(s) in, 7 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/25.
+  Real Factorio delivers min(3,7) x 15 = 45 items/s, split evenly over the 7 output belt(s).
+  The engine delivers 15 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 4, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+- { item: iron_plate, per_second: 6.42857 }
+graph: |
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  S@4,8 -> b@4,7
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,5 -> b@2,4
+  Y@2,5 -> b@3,4
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,5 -> b@2,4
+  Y@3,5 -> b@3,4
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,5 -> b@4,4
+  Y@4,5 -> b@5,4
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,5 -> b@4,4
+  Y@5,5 -> b@5,4
+  Y@6,2 -> b@6,1
+  Y@6,2 -> b@7,1
+  Y@6,3 -> b@7,3
+  Y@6,4 -> b@7,3
+  Y@7,2 -> b@6,1
+  Y@7,2 -> b@7,1
+  Y@7,4 -> b@8,4
+  Y@7,4 -> b@8,5
+  Y@7,5 -> b@8,4
+  Y@7,5 -> b@8,5
+  b@1,3 -> d@2,3
+  b@1,4 -> b@1,3
+  b@2,1 -> K@2,0
+  b@2,4 -> b@1,4
+  b@2,6 -> Y@2,5
+  b@2,7 -> b@2,6
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@3,6 -> Y@3,5
+  b@3,7 -> b@3,6
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,6 -> Y@4,5
+  b@4,7 -> b@4,6
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@6,4
+  b@5,6 -> Y@5,5
+  b@6,1 -> K@6,0
+  b@6,6 -> b@5,6
+  b@7,1 -> K@7,0
+  b@7,3 -> Y@7,2
+  b@7,6 -> b@6,6
+  b@8,1 -> K@8,0
+  b@8,2 -> b@8,1
+  b@8,3 -> b@8,2
+  b@8,4 -> b@8,3
+  b@8,5 -> b@8,6
+  b@8,6 -> b@7,6
+  d@2,3 -> u@5,3
+  u@5,3 -> Y@6,3
+factory: |
+  .. .. K^ K^ K^ K^ K^ K^ K^ ..
+  .. .. b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. Y^^^Y Y^^^Y Y^^^Y b^ ..
+  .. b> d> Y^^^Y u> Y> b^ b^ ..
+  .. b^ b< b^ b^ b> Y> Y> b^ ..
+  .. .. Y^^^Y Y^^^Y .. Y> bv ..
+  .. .. b^ b^ b^ b^ b< b< b< ..
+  .. .. b^ b^ b^ .. .. .. .. ..
+  .. .. S^ S^ S^ .. .. .. .. ..
+---
+description: |
+  belt_3_to_8: a belt balancer, 3 belt(s) in, 8 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/26.
+  Real Factorio delivers min(3,8) x 15 = 45 items/s, split evenly over the 8 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 11, item: iron_plate }
+- { x: 4, y: 11, item: iron_plate }
+- { x: 5, y: 11, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+- { item: iron_plate, per_second: 5.625 }
+graph: |
+  S@3,11 -> b@3,10
+  S@4,11 -> b@4,10
+  S@5,11 -> b@5,10
+  Y@1,1 -> K@1,0
+  Y@1,1 -> K@2,0
+  Y@2,1 -> K@1,0
+  Y@2,1 -> K@2,0
+  Y@3,1 -> K@3,0
+  Y@3,1 -> K@4,0
+  Y@3,3 -> b@3,2
+  Y@3,3 -> b@4,2
+  Y@3,8 -> b@3,7
+  Y@3,8 -> b@4,7
+  Y@4,1 -> K@3,0
+  Y@4,1 -> K@4,0
+  Y@4,3 -> b@3,2
+  Y@4,3 -> b@4,2
+  Y@4,6 -> b@4,5
+  Y@4,6 -> b@5,5
+  Y@4,8 -> b@3,7
+  Y@4,8 -> b@4,7
+  Y@5,1 -> K@5,0
+  Y@5,1 -> K@6,0
+  Y@5,3 -> b@5,2
+  Y@5,3 -> b@6,2
+  Y@5,6 -> b@4,5
+  Y@5,6 -> b@5,5
+  Y@5,8 -> b@5,7
+  Y@5,8 -> b@6,7
+  Y@6,1 -> K@5,0
+  Y@6,1 -> K@6,0
+  Y@6,3 -> b@5,2
+  Y@6,3 -> b@6,2
+  Y@6,8 -> b@5,7
+  Y@6,8 -> b@6,7
+  Y@7,1 -> K@7,0
+  Y@7,1 -> K@8,0
+  Y@7,4 -> b@6,4
+  Y@7,4 -> d@6,5
+  Y@7,5 -> b@6,4
+  Y@7,5 -> d@6,5
+  Y@7,6 -> b@8,6
+  Y@7,6 -> b@8,7
+  Y@7,7 -> b@8,6
+  Y@7,7 -> b@8,7
+  Y@8,1 -> K@7,0
+  Y@8,1 -> K@8,0
+  b@2,2 -> Y@2,1
+  b@2,4 -> b@3,4
+  b@2,5 -> b@2,4
+  b@2,6 -> d@3,6
+  b@2,7 -> b@2,6
+  b@3,10 -> b@3,9
+  b@3,2 -> b@2,2
+  b@3,4 -> Y@3,3
+  b@3,7 -> b@2,7
+  b@3,9 -> Y@3,8
+  b@4,10 -> b@4,9
+  b@4,2 -> Y@4,1
+  b@4,5 -> Y@4,4
+  b@4,7 -> Y@4,6
+  b@4,9 -> Y@4,8
+  b@5,10 -> b@5,9
+  b@5,2 -> Y@5,1
+  b@5,5 -> Y@5,4
+  b@5,7 -> Y@5,6
+  b@5,9 -> Y@5,8
+  b@6,2 -> b@7,2
+  b@6,4 -> Y@6,3
+  b@6,7 -> Y@7,7
+  b@6,9 -> Y@6,8
+  b@7,2 -> Y@7,1
+  b@7,8 -> b@7,9
+  b@7,9 -> b@6,9
+  b@8,5 -> Y@7,5
+  b@8,6 -> b@8,5
+  b@8,7 -> b@8,8
+  b@8,8 -> b@7,8
+  d@3,6 -> u@6,6
+  d@6,5 -> u@3,5
+  u@3,5 -> b@2,5
+  u@6,6 -> Y@7,6
+factory: |
+  .. K^ K^ K^ K^ K^ K^ K^ K^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. b^ b< b^ b^ b> b^ .. ..
+  .. .. .. Y^^^Y Y^^^Y .. .. ..
+  .. .. b> b^ Y^^^Y b^ Y< .. ..
+  .. .. b^ u< b^ b^ d< Y< b< ..
+  .. .. b> d> Y^^^Y u> Y> b^ ..
+  .. .. b^ b< b^ b^ b> Y> bv ..
+  .. .. .. Y^^^Y Y^^^Y bv b< ..
+  .. .. .. b^ b^ b^ b^ b< .. ..
+  .. .. .. b^ b^ b^ .. .. .. ..
+  .. .. .. S^ S^ S^ .. .. .. ..
+---
+description: |
+  belt_4_to_1: a belt balancer, 4 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/27.
+  Real Factorio delivers min(4,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 5, item: iron_plate }
+- { x: 2, y: 5, item: iron_plate }
+- { x: 3, y: 5, item: iron_plate }
+- { x: 4, y: 5, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,5 -> b@1,4
+  S@2,5 -> b@2,4
+  S@3,5 -> b@3,4
+  S@4,5 -> b@4,4
+  Y@2,2 -> b@3,1
+  Y@3,2 -> b@3,1
+  b@1,4 -> Y@1,3
+  b@2,4 -> Y@2,3
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@4,4 -> Y@4,3
+factory: |
+  .. .. .. K^ .. ..
+  .. .. .. b^ .. ..
+  .. .. Y^^^Y .. ..
+  .. Y^^^Y Y^^^Y ..
+  .. b^ b^ b^ b^ ..
+  .. S^ S^ S^ S^ ..
+---
+description: |
+  belt_4_to_2: a belt balancer, 4 belt(s) in, 2 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/28.
+  Real Factorio delivers min(4,2) x 15 = 30 items/s, split evenly over the 2 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 5, item: iron_plate }
+- { x: 2, y: 5, item: iron_plate }
+- { x: 3, y: 5, item: iron_plate }
+- { x: 4, y: 5, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,5 -> b@1,4
+  S@2,5 -> b@2,4
+  S@3,5 -> b@3,4
+  S@4,5 -> b@4,4
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  b@1,4 -> Y@1,3
+  b@2,1 -> K@2,0
+  b@2,4 -> Y@2,3
+  b@3,1 -> K@3,0
+  b@3,4 -> Y@3,3
+  b@4,4 -> Y@4,3
+factory: |
+  .. .. K^ K^ .. ..
+  .. .. b^ b^ .. ..
+  .. .. Y^^^Y .. ..
+  .. Y^^^Y Y^^^Y ..
+  .. b^ b^ b^ b^ ..
+  .. S^ S^ S^ S^ ..
+---
+description: |
+  belt_4_to_3: a belt balancer, 4 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/29.
+  Real Factorio delivers min(4,3) x 15 = 45 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 9, item: iron_plate }
+- { x: 4, y: 9, item: iron_plate }
+- { x: 5, y: 9, item: iron_plate }
+- { x: 6, y: 9, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@3,9 -> b@3,8
+  S@4,9 -> b@4,8
+  S@5,9 -> b@5,8
+  S@6,9 -> b@6,8
+  Y@2,3 -> b@3,3
+  Y@2,3 -> d@3,4
+  Y@2,4 -> b@3,3
+  Y@2,4 -> d@3,4
+  Y@2,5 -> b@1,5
+  Y@2,6 -> b@1,5
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,7 -> b@3,6
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,6 -> b@4,5
+  Y@4,6 -> b@5,5
+  Y@4,7 -> b@3,6
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,6 -> b@4,5
+  Y@5,6 -> b@5,5
+  Y@5,7 -> b@6,6
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@6,7 -> b@6,6
+  b@1,2 -> b@1,3
+  b@1,3 -> Y@2,3
+  b@1,4 -> Y@2,4
+  b@1,5 -> b@1,4
+  b@2,1 -> b@2,2
+  b@2,2 -> b@1,2
+  b@3,1 -> b@2,1
+  b@3,3 -> Y@3,2
+  b@3,6 -> Y@2,6
+  b@3,8 -> Y@3,7
+  b@4,1 -> K@4,0
+  b@4,3 -> Y@4,2
+  b@4,4 -> b@4,3
+  b@4,5 -> b@4,4
+  b@4,8 -> Y@4,7
+  b@5,1 -> K@5,0
+  b@5,3 -> Y@5,2
+  b@5,4 -> b@5,3
+  b@5,5 -> b@5,4
+  b@5,8 -> Y@5,7
+  b@6,1 -> K@6,0
+  b@6,3 -> Y@6,2
+  b@6,6 -> b@7,6
+  b@6,8 -> Y@6,7
+  b@7,3 -> b@6,3
+  b@7,4 -> b@7,3
+  b@7,5 -> d@6,5
+  b@7,6 -> b@7,5
+  d@3,4 -> u@6,4
+  d@6,5 -> u@3,5
+  u@3,5 -> Y@2,5
+  u@6,4 -> b@7,4
+factory: |
+  .. .. .. .. K^ K^ K^ .. ..
+  .. .. bv b< b^ b^ b^ .. ..
+  .. bv b< Y^^^Y Y^^^Y .. ..
+  .. b> Y> b^ b^ b^ b^ b< ..
+  .. b> Y> d> b^ b^ u> b^ ..
+  .. b^ Y< u< b^ b^ d< b< ..
+  .. .. Y< b< Y^^^Y b> b^ ..
+  .. .. .. Y^^^Y Y^^^Y .. ..
+  .. .. .. b^ b^ b^ b^ .. ..
+  .. .. .. S^ S^ S^ S^ .. ..
+---
+description: |
+  belt_4_to_4: a belt balancer, 4 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/30.
+  Real Factorio delivers min(4,4) x 15 = 60 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 30 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 11, item: iron_plate }
+- { x: 2, y: 11, item: iron_plate }
+- { x: 3, y: 11, item: iron_plate }
+- { x: 4, y: 11, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,11 -> b@1,10
+  S@2,11 -> b@2,10
+  S@3,11 -> b@3,10
+  S@4,11 -> b@4,10
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@1,9 -> b@1,8
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@2,5 -> b@2,4
+  Y@2,5 -> b@3,4
+  Y@2,8 -> d@2,7
+  Y@2,8 -> d@3,7
+  Y@2,9 -> b@1,8
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,5 -> b@2,4
+  Y@3,5 -> b@3,4
+  Y@3,8 -> d@2,7
+  Y@3,8 -> d@3,7
+  Y@3,9 -> b@4,8
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,9 -> b@4,8
+  b@1,1 -> K@1,0
+  b@1,10 -> Y@1,9
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,3
+  b@1,6 -> b@2,6
+  b@1,7 -> b@1,6
+  b@1,8 -> b@1,7
+  b@2,1 -> K@2,0
+  b@2,10 -> Y@2,9
+  b@2,4 -> b@1,4
+  b@2,6 -> Y@2,5
+  b@3,1 -> K@3,0
+  b@3,10 -> Y@3,9
+  b@3,4 -> b@4,4
+  b@3,6 -> Y@3,5
+  b@4,1 -> K@4,0
+  b@4,10 -> Y@4,9
+  b@4,3 -> Y@4,2
+  b@4,4 -> b@4,3
+  b@4,6 -> b@3,6
+  b@4,7 -> b@4,6
+  b@4,8 -> b@4,7
+  d@2,7 -> u@2,3
+  d@3,7 -> u@3,3
+  u@2,3 -> Y@2,2
+  u@3,3 -> Y@3,2
+factory: |
+  .. K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y ..
+  .. b^ u^ u^ b^ ..
+  .. b^ b< b> b^ ..
+  .. .. Y^^^Y .. ..
+  .. b> b^ b^ b< ..
+  .. b^ d^ d^ b^ ..
+  .. b^ Y^^^Y b^ ..
+  .. Y^^^Y Y^^^Y ..
+  .. b^ b^ b^ b^ ..
+  .. S^ S^ S^ S^ ..
+---
+description: |
+  belt_4_to_5: a belt balancer, 4 belt(s) in, 5 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/31.
+  Real Factorio delivers min(4,5) x 15 = 60 items/s, split evenly over the 5 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 7, y: 12, item: iron_plate }
+- { x: 3, y: 1, item: iron_plate }
+- { x: 4, y: 1, item: iron_plate }
+- { x: 5, y: 1, item: iron_plate }
+- { x: 6, y: 1, item: iron_plate }
+- { x: 7, y: 1, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 12 }
+- { item: iron_plate, per_second: 12 }
+- { item: iron_plate, per_second: 12 }
+- { item: iron_plate, per_second: 12 }
+- { item: iron_plate, per_second: 12 }
+graph: |
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  S@7,12 -> b@7,11
+  Y@1,6 -> b@2,7
+  Y@2,2 -> K@3,1
+  Y@2,2 -> b@2,1
+  Y@2,6 -> b@2,7
+  Y@3,2 -> K@3,1
+  Y@3,2 -> b@2,1
+  Y@3,4 -> b@2,4
+  Y@3,4 -> b@2,5
+  Y@3,5 -> b@2,4
+  Y@3,5 -> b@2,5
+  Y@3,9 -> b@4,8
+  Y@3,9 -> d@3,8
+  Y@4,10 -> b@5,9
+  Y@4,2 -> K@4,1
+  Y@4,2 -> K@5,1
+  Y@4,5 -> b@4,4
+  Y@4,5 -> b@5,4
+  Y@4,9 -> b@4,8
+  Y@4,9 -> d@3,8
+  Y@5,10 -> b@5,9
+  Y@5,2 -> K@4,1
+  Y@5,2 -> K@5,1
+  Y@5,5 -> b@4,4
+  Y@5,5 -> b@5,4
+  Y@5,6 -> b@6,5
+  Y@6,10 -> b@7,9
+  Y@6,10 -> d@6,9
+  Y@6,2 -> K@6,1
+  Y@6,2 -> K@7,1
+  Y@6,6 -> b@6,5
+  Y@7,10 -> b@7,9
+  Y@7,10 -> d@6,9
+  Y@7,2 -> K@6,1
+  Y@7,2 -> K@7,1
+  b@1,1 -> b@1,2
+  b@1,2 -> b@1,3
+  b@1,3 -> b@1,4
+  b@1,4 -> b@1,5
+  b@1,5 -> Y@1,6
+  b@1,8 -> b@1,9
+  b@1,9 -> b@2,9
+  b@2,1 -> b@1,1
+  b@2,10 -> b@3,10
+  b@2,3 -> Y@2,2
+  b@2,4 -> b@2,3
+  b@2,5 -> Y@2,6
+  b@2,7 -> b@3,7
+  b@2,9 -> b@2,10
+  b@3,10 -> Y@3,9
+  b@3,6 -> b@4,6
+  b@3,7 -> b@3,6
+  b@4,11 -> Y@4,10
+  b@4,4 -> Y@3,4
+  b@4,6 -> Y@4,5
+  b@4,8 -> d@4,7
+  b@5,11 -> Y@5,10
+  b@5,4 -> Y@5,3
+  b@5,7 -> Y@5,6
+  b@5,8 -> b@5,7
+  b@5,9 -> b@5,8
+  b@6,11 -> Y@6,10
+  b@6,5 -> b@7,5
+  b@7,11 -> Y@7,10
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,3
+  b@7,5 -> b@7,4
+  b@7,8 -> d@6,8
+  b@7,9 -> b@7,8
+  d@3,8 -> u@3,3
+  d@4,7 -> u@4,3
+  u@2,8 -> b@1,8
+  u@3,3 -> Y@3,2
+  u@4,3 -> Y@4,2
+  u@6,7 -> Y@6,6
+factory: |
+  .. .. .. .. .. .. .. .. ..
+  .. bv b< K^ K^ K^ K^ K^ ..
+  .. bv Y^^^Y Y^^^Y Y^^^Y ..
+  .. bv b^ u^ u^ Y^^^Y b^ ..
+  .. bv b^ Y< b< b^ .. b^ ..
+  .. bv bv Y< Y^^^Y b> b^ ..
+  .. YvvvY b> b^ Y^^^Y .. ..
+  .. .. b> b^ d^ b^ u^ .. ..
+  .. bv u< d^ b^ b^ d< b< ..
+  .. b> bv Y^^^Y b^ d^ b^ ..
+  .. .. b> b^ Y^^^Y Y^^^Y ..
+  .. .. .. .. b^ b^ b^ b^ ..
+  .. .. .. .. S^ S^ S^ S^ ..
+---
+description: |
+  belt_4_to_6: a belt balancer, 4 belt(s) in, 6 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/32.
+  Real Factorio delivers min(4,6) x 15 = 60 items/s, split evenly over the 6 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 12, item: iron_plate }
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+- { item: iron_plate, per_second: 10 }
+graph: |
+  S@3,12 -> b@3,11
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@2,4 -> b@1,4
+  Y@2,4 -> b@1,5
+  Y@2,5 -> b@1,4
+  Y@2,5 -> b@1,5
+  Y@2,9 -> d@2,8
+  Y@2,9 -> d@3,8
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,5 -> b@3,4
+  Y@3,5 -> b@4,4
+  Y@3,9 -> d@2,8
+  Y@3,9 -> d@3,8
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,5 -> b@3,4
+  Y@4,5 -> b@4,4
+  Y@4,9 -> d@4,8
+  Y@4,9 -> d@5,8
+  Y@5,10 -> b@6,9
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,9 -> d@4,8
+  Y@5,9 -> d@5,8
+  Y@6,10 -> b@6,9
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  b@1,1 -> K@1,0
+  b@1,10 -> b@2,10
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,3
+  b@1,5 -> b@1,6
+  b@1,6 -> b@2,6
+  b@1,7 -> b@1,8
+  b@1,8 -> b@1,9
+  b@1,9 -> b@1,10
+  b@2,1 -> K@2,0
+  b@2,10 -> Y@2,9
+  b@2,6 -> b@3,6
+  b@2,7 -> b@1,7
+  b@3,1 -> K@3,0
+  b@3,11 -> Y@3,10
+  b@3,4 -> Y@2,4
+  b@3,6 -> Y@3,5
+  b@3,7 -> b@2,7
+  b@4,1 -> K@4,0
+  b@4,11 -> Y@4,10
+  b@4,4 -> Y@4,3
+  b@4,7 -> b@3,7
+  b@5,1 -> K@5,0
+  b@5,11 -> Y@5,10
+  b@5,5 -> b@6,5
+  b@5,7 -> b@4,7
+  b@6,1 -> K@6,0
+  b@6,11 -> Y@6,10
+  b@6,3 -> Y@6,2
+  b@6,4 -> b@6,3
+  b@6,5 -> b@6,4
+  b@6,7 -> b@5,7
+  b@6,8 -> b@6,7
+  b@6,9 -> b@6,8
+  d@2,8 -> u@2,3
+  d@3,8 -> u@3,3
+  d@4,8 -> u@4,6
+  d@5,8 -> u@5,6
+  u@2,3 -> Y@2,2
+  u@3,3 -> Y@3,2
+  u@4,6 -> Y@4,5
+  u@5,6 -> b@5,5
+factory: |
+  .. K^ K^ K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y ..
+  .. b^ u^ u^ Y^^^Y b^ ..
+  .. b^ Y< b< b^ .. b^ ..
+  .. bv Y< Y^^^Y b> b^ ..
+  .. b> b> b^ u^ u^ .. ..
+  .. bv b< b< b< b< b< ..
+  .. bv d^ d^ d^ d^ b^ ..
+  .. bv Y^^^Y Y^^^Y b^ ..
+  .. b> b^ Y^^^Y Y^^^Y ..
+  .. .. .. b^ b^ b^ b^ ..
+  .. .. .. S^ S^ S^ S^ ..
+---
+description: |
+  belt_4_to_8: a belt balancer, 4 belt(s) in, 8 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/34.
+  Real Factorio delivers min(4,8) x 15 = 60 items/s, split evenly over the 8 output belt(s).
+  The engine delivers 30 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 7, item: iron_plate }
+- { x: 4, y: 7, item: iron_plate }
+- { x: 5, y: 7, item: iron_plate }
+- { x: 6, y: 7, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+- { item: iron_plate, per_second: 7.5 }
+graph: |
+  S@3,7 -> b@3,6
+  S@4,7 -> b@4,6
+  S@5,7 -> b@5,6
+  S@6,7 -> b@6,6
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,5 -> b@3,4
+  Y@3,5 -> b@4,4
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,5 -> b@3,4
+  Y@4,5 -> b@4,4
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,5 -> b@5,4
+  Y@5,5 -> b@6,4
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@6,5 -> b@5,4
+  Y@6,5 -> b@6,4
+  Y@7,2 -> b@7,1
+  Y@7,2 -> b@8,1
+  Y@7,3 -> b@8,3
+  Y@7,3 -> b@8,4
+  Y@7,4 -> b@8,3
+  Y@7,4 -> b@8,4
+  Y@8,2 -> b@7,1
+  Y@8,2 -> b@8,1
+  b@1,1 -> K@1,0
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,3
+  b@1,5 -> b@1,4
+  b@2,1 -> K@2,0
+  b@2,3 -> d@3,3
+  b@2,4 -> b@2,3
+  b@3,1 -> K@3,0
+  b@3,4 -> b@2,4
+  b@3,6 -> Y@3,5
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,6 -> Y@4,5
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@5,3
+  b@5,6 -> Y@5,5
+  b@6,1 -> K@6,0
+  b@6,4 -> Y@7,4
+  b@6,6 -> Y@6,5
+  b@7,1 -> K@7,0
+  b@8,1 -> K@8,0
+  b@8,3 -> Y@8,2
+  b@8,4 -> b@8,5
+  b@8,5 -> d@7,5
+  d@3,3 -> u@6,3
+  d@7,5 -> u@2,5
+  u@2,5 -> b@1,5
+  u@6,3 -> Y@7,3
+factory: |
+  .. K^ K^ K^ K^ K^ K^ K^ K^ ..
+  .. b^ b^ b^ b^ b^ b^ b^ b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. b^ b> d> Y^^^Y u> Y> b^ ..
+  .. b^ b^ b< b^ b^ b> Y> bv ..
+  .. b^ u< Y^^^Y Y^^^Y d< b< ..
+  .. .. .. b^ b^ b^ b^ .. .. ..
+  .. .. .. S^ S^ S^ S^ .. .. ..
+---
+description: |
+  belt_5_to_1: a belt balancer, 5 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/35.
+  Real Factorio delivers min(5,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 8, item: iron_plate }
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 4, y: 8, item: iron_plate }
+- { x: 5, y: 8, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,8 -> b@1,7
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  S@4,8 -> b@4,7
+  S@5,8 -> b@5,7
+  Y@2,2 -> b@2,1
+  Y@2,2 -> b@3,1
+  Y@2,5 -> b@2,4
+  Y@3,2 -> b@2,1
+  Y@3,2 -> b@3,1
+  Y@3,5 -> b@2,4
+  Y@4,3 -> b@3,3
+  Y@4,4 -> b@3,3
+  Y@5,2 -> b@5,3
+  Y@5,2 -> b@6,3
+  Y@6,2 -> b@5,3
+  Y@6,2 -> b@6,3
+  b@1,7 -> Y@1,6
+  b@2,1 -> K@2,0
+  b@2,3 -> Y@2,2
+  b@2,4 -> b@2,3
+  b@2,7 -> Y@2,6
+  b@3,1 -> b@4,1
+  b@3,3 -> Y@3,2
+  b@3,7 -> Y@3,6
+  b@4,1 -> b@5,1
+  b@4,7 -> Y@4,6
+  b@5,1 -> Y@5,2
+  b@5,3 -> Y@4,3
+  b@5,6 -> b@6,6
+  b@5,7 -> b@5,6
+  b@6,3 -> b@6,4
+  b@6,4 -> Y@5,4
+  b@6,5 -> Y@5,5
+  b@6,6 -> b@6,5
+factory: |
+  .. .. K^ .. .. .. .. ..
+  .. .. b^ b> b> bv .. ..
+  .. .. Y^^^Y .. YvvvY ..
+  .. .. b^ b^ Y< b< bv ..
+  .. .. b^ .. Y< Y< b< ..
+  .. .. Y^^^Y .. Y< b< ..
+  .. Y^^^Y Y^^^Y b> b^ ..
+  .. b^ b^ b^ b^ b^ .. ..
+  .. S^ S^ S^ S^ S^ .. ..
+---
+description: |
+  belt_5_to_3: a belt balancer, 5 belt(s) in, 3 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/37.
+  Real Factorio delivers min(5,3) x 15 = 45 items/s, split evenly over the 3 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 12, item: iron_plate }
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 7, y: 12, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@3,12 -> b@3,11
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  S@7,12 -> b@7,11
+  Y@2,3 -> b@2,2
+  Y@2,3 -> b@3,2
+  Y@2,9 -> b@2,8
+  Y@3,3 -> b@2,2
+  Y@3,3 -> b@3,2
+  Y@3,5 -> b@3,4
+  Y@3,5 -> b@4,4
+  Y@3,9 -> b@2,8
+  Y@4,10 -> b@4,9
+  Y@4,10 -> d@5,9
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,5 -> b@3,4
+  Y@4,5 -> b@4,4
+  Y@4,7 -> b@4,6
+  Y@4,7 -> b@5,6
+  Y@5,10 -> b@4,9
+  Y@5,10 -> d@5,9
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,3 -> b@6,2
+  Y@5,7 -> b@4,6
+  Y@5,7 -> b@5,6
+  Y@6,10 -> b@7,9
+  Y@6,10 -> d@6,9
+  Y@6,3 -> b@6,2
+  Y@6,7 -> b@5,8
+  Y@6,8 -> b@5,8
+  Y@7,10 -> b@7,9
+  Y@7,10 -> d@6,9
+  b@1,10 -> b@2,10
+  b@1,2 -> d@1,3
+  b@1,4 -> b@2,4
+  b@1,5 -> b@1,4
+  b@1,9 -> b@1,10
+  b@2,10 -> Y@2,9
+  b@2,2 -> b@1,2
+  b@2,4 -> Y@2,3
+  b@2,6 -> b@3,6
+  b@2,7 -> b@2,6
+  b@2,8 -> b@2,7
+  b@3,1 -> K@3,0
+  b@3,10 -> Y@3,9
+  b@3,11 -> b@3,10
+  b@3,2 -> b@3,1
+  b@3,4 -> Y@3,3
+  b@3,6 -> Y@3,5
+  b@4,1 -> K@4,0
+  b@4,11 -> Y@4,10
+  b@4,3 -> Y@4,2
+  b@4,4 -> b@4,3
+  b@4,6 -> Y@4,5
+  b@4,9 -> Y@4,8
+  b@5,1 -> K@5,0
+  b@5,11 -> Y@5,10
+  b@5,6 -> b@6,6
+  b@5,8 -> Y@5,7
+  b@6,11 -> Y@6,10
+  b@6,2 -> b@7,2
+  b@6,5 -> d@5,5
+  b@6,6 -> b@7,6
+  b@7,11 -> Y@7,10
+  b@7,2 -> b@7,3
+  b@7,3 -> b@7,4
+  b@7,4 -> b@7,5
+  b@7,5 -> b@6,5
+  b@7,6 -> b@7,7
+  b@7,7 -> Y@6,7
+  b@7,8 -> Y@6,8
+  b@7,9 -> b@7,8
+  d@1,3 -> u@1,8
+  d@5,5 -> u@2,5
+  d@6,9 -> u@6,4
+  u@1,8 -> b@1,9
+  u@2,5 -> b@1,5
+  u@5,4 -> Y@5,3
+  u@6,4 -> Y@6,3
+factory: |
+  .. .. .. K^ K^ K^ .. .. ..
+  .. .. .. b^ b^ b^ .. .. ..
+  .. bv b< b^ Y^^^Y b> bv ..
+  .. dv Y^^^Y b^ Y^^^Y bv ..
+  .. b> b^ b^ b^ u^ u^ bv ..
+  .. b^ u< Y^^^Y d< b< b< ..
+  .. .. b> b^ b^ b> b> bv ..
+  .. .. b^ .. Y^^^Y Y< b< ..
+  .. uv b^ Y^^^Y b^ Y< b< ..
+  .. bv Y^^^Y b^ d^ d^ b^ ..
+  .. b> b^ b^ Y^^^Y Y^^^Y ..
+  .. .. .. b^ b^ b^ b^ b^ ..
+  .. .. .. S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_5_to_4: a belt balancer, 5 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/38.
+  Real Factorio delivers min(5,4) x 15 = 60 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 11, item: iron_plate }
+- { x: 2, y: 11, item: iron_plate }
+- { x: 3, y: 11, item: iron_plate }
+- { x: 4, y: 11, item: iron_plate }
+- { x: 5, y: 11, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,11 -> b@1,10
+  S@2,11 -> b@2,10
+  S@3,11 -> b@3,10
+  S@4,11 -> b@4,10
+  S@5,11 -> b@5,10
+  Y@1,1 -> K@1,0
+  Y@1,1 -> K@2,0
+  Y@1,9 -> b@1,8
+  Y@2,1 -> K@1,0
+  Y@2,1 -> K@2,0
+  Y@2,5 -> b@3,4
+  Y@2,5 -> d@2,4
+  Y@2,8 -> b@3,7
+  Y@2,9 -> b@1,8
+  Y@3,1 -> K@3,0
+  Y@3,1 -> K@4,0
+  Y@3,5 -> b@3,4
+  Y@3,5 -> d@2,4
+  Y@3,6 -> b@4,5
+  Y@3,8 -> b@3,7
+  Y@3,9 -> d@4,8
+  Y@4,1 -> K@3,0
+  Y@4,1 -> K@4,0
+  Y@4,2 -> b@5,1
+  Y@4,6 -> b@4,5
+  Y@4,9 -> d@4,8
+  Y@5,2 -> b@5,1
+  Y@5,6 -> b@4,7
+  Y@5,7 -> b@4,7
+  Y@5,9 -> b@6,8
+  Y@5,9 -> d@5,8
+  Y@6,5 -> b@6,6
+  Y@6,5 -> b@7,6
+  Y@6,9 -> b@6,8
+  Y@6,9 -> d@5,8
+  Y@7,5 -> b@6,6
+  Y@7,5 -> b@7,6
+  b@1,10 -> Y@1,9
+  b@1,2 -> Y@1,1
+  b@1,3 -> b@1,2
+  b@1,6 -> b@2,6
+  b@1,7 -> b@1,6
+  b@1,8 -> b@1,7
+  b@2,10 -> Y@2,9
+  b@2,6 -> Y@2,5
+  b@3,10 -> Y@3,9
+  b@3,2 -> Y@3,1
+  b@3,3 -> b@3,2
+  b@3,4 -> b@3,3
+  b@3,7 -> Y@3,6
+  b@4,10 -> Y@4,9
+  b@4,3 -> Y@4,2
+  b@4,5 -> b@5,5
+  b@4,7 -> Y@4,6
+  b@5,1 -> b@6,1
+  b@5,10 -> Y@5,9
+  b@5,4 -> b@6,4
+  b@5,5 -> b@5,4
+  b@6,1 -> b@6,2
+  b@6,10 -> Y@6,9
+  b@6,2 -> b@7,2
+  b@6,4 -> Y@6,5
+  b@6,6 -> Y@5,6
+  b@6,7 -> Y@5,7
+  b@6,8 -> b@6,7
+  b@7,10 -> b@6,10
+  b@7,2 -> b@7,3
+  b@7,3 -> d@6,3
+  b@7,6 -> b@7,7
+  b@7,7 -> b@7,8
+  b@7,8 -> b@7,9
+  b@7,9 -> b@7,10
+  d@4,8 -> u@4,4
+  d@5,8 -> u@5,3
+  u@2,2 -> Y@2,1
+  u@2,3 -> b@1,3
+  u@4,4 -> b@4,3
+  u@5,3 -> Y@5,2
+factory: |
+  .. K^ K^ K^ K^ .. .. .. ..
+  .. Y^^^Y Y^^^Y b> bv .. ..
+  .. b^ u^ b^ Y^^^Y b> bv ..
+  .. b^ u< b^ b^ u^ d< b< ..
+  .. .. d^ b^ u^ b> bv .. ..
+  .. .. Y^^^Y b> b^ YvvvY ..
+  .. b> b^ Y^^^Y Y< b< bv ..
+  .. b^ .. b^ b^ Y< b< bv ..
+  .. b^ Y^^^Y d^ d^ b^ bv ..
+  .. Y^^^Y Y^^^Y Y^^^Y bv ..
+  .. b^ b^ b^ b^ b^ b^ b< ..
+  .. S^ S^ S^ S^ S^ .. .. ..
+---
+description: |
+  belt_6_to_4: a belt balancer, 6 belt(s) in, 4 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/46.
+  Real Factorio delivers min(6,4) x 15 = 60 items/s, split evenly over the 4 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 12, item: iron_plate }
+- { x: 2, y: 12, item: iron_plate }
+- { x: 3, y: 12, item: iron_plate }
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 1, y: 0, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,12 -> b@1,11
+  S@2,12 -> b@2,11
+  S@3,12 -> b@3,11
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  Y@1,10 -> b@1,9
+  Y@1,2 -> b@1,1
+  Y@1,2 -> b@2,1
+  Y@2,10 -> b@1,9
+  Y@2,2 -> b@1,1
+  Y@2,2 -> b@2,1
+  Y@2,9 -> b@3,8
+  Y@3,10 -> d@4,9
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,7 -> b@4,6
+  Y@3,7 -> d@3,6
+  Y@3,9 -> b@3,8
+  Y@4,10 -> d@4,9
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,3 -> b@5,2
+  Y@4,7 -> b@4,6
+  Y@4,7 -> d@3,6
+  Y@5,10 -> b@6,9
+  Y@5,10 -> d@5,9
+  Y@5,3 -> b@5,2
+  Y@5,7 -> b@4,8
+  Y@5,8 -> b@4,8
+  Y@6,10 -> b@6,9
+  Y@6,10 -> d@5,9
+  b@1,1 -> K@1,0
+  b@1,11 -> Y@1,10
+  b@1,3 -> Y@1,2
+  b@1,4 -> b@1,3
+  b@1,5 -> b@1,4
+  b@1,7 -> b@2,7
+  b@1,8 -> b@1,7
+  b@1,9 -> b@1,8
+  b@2,1 -> K@2,0
+  b@2,11 -> Y@2,10
+  b@2,5 -> b@1,5
+  b@2,7 -> d@2,6
+  b@3,1 -> K@3,0
+  b@3,11 -> Y@3,10
+  b@3,5 -> b@2,5
+  b@3,8 -> Y@3,7
+  b@4,1 -> K@4,0
+  b@4,11 -> Y@4,10
+  b@4,5 -> b@3,5
+  b@4,6 -> b@5,6
+  b@4,8 -> Y@4,7
+  b@5,11 -> Y@5,10
+  b@5,2 -> b@6,2
+  b@5,5 -> b@4,5
+  b@5,6 -> b@6,6
+  b@6,11 -> Y@6,10
+  b@6,2 -> b@6,3
+  b@6,3 -> b@6,4
+  b@6,4 -> b@6,5
+  b@6,5 -> b@5,5
+  b@6,6 -> b@6,7
+  b@6,7 -> Y@5,7
+  b@6,8 -> Y@5,8
+  b@6,9 -> b@6,8
+  d@2,6 -> u@2,4
+  d@3,6 -> u@3,4
+  d@4,9 -> u@4,4
+  d@5,9 -> u@5,4
+  u@2,4 -> Y@2,3
+  u@3,4 -> Y@3,3
+  u@4,4 -> Y@4,3
+  u@5,4 -> Y@5,3
+factory: |
+  .. K^ K^ K^ K^ .. .. ..
+  .. b^ b^ b^ b^ .. .. ..
+  .. Y^^^Y Y^^^Y b> bv ..
+  .. b^ Y^^^Y Y^^^Y bv ..
+  .. b^ u^ u^ u^ u^ bv ..
+  .. b^ b< b< b< b< b< ..
+  .. .. d^ d^ b> b> bv ..
+  .. b> b^ Y^^^Y Y< b< ..
+  .. b^ .. b^ b^ Y< b< ..
+  .. b^ Y^^^Y d^ d^ b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y ..
+  .. b^ b^ b^ b^ b^ b^ ..
+  .. S^ S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_6_to_7: a belt balancer, 6 belt(s) in, 7 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/49.
+  Real Factorio delivers min(6,7) x 15 = 90 items/s, split evenly over the 7 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 7, y: 12, item: iron_plate }
+- { x: 8, y: 12, item: iron_plate }
+- { x: 9, y: 12, item: iron_plate }
+- { x: 10, y: 12, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+- { x: 9, y: 0, item: iron_plate }
+- { x: 10, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+- { item: iron_plate, per_second: 12.8571 }
+graph: |
+  S@10,12 -> b@10,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  S@7,12 -> b@7,11
+  S@8,12 -> b@8,11
+  S@9,12 -> b@9,11
+  Y@1,5 -> b@1,6
+  Y@1,5 -> b@2,6
+  Y@10,10 -> b@10,9
+  Y@10,2 -> b@10,1
+  Y@10,2 -> b@9,1
+  Y@2,5 -> b@1,6
+  Y@2,5 -> b@2,6
+  Y@3,3 -> b@3,2
+  Y@3,3 -> b@4,2
+  Y@4,3 -> b@3,2
+  Y@4,3 -> b@4,2
+  Y@4,6 -> b@4,5
+  Y@4,6 -> b@5,5
+  Y@4,9 -> d@4,8
+  Y@4,9 -> d@5,8
+  Y@5,10 -> d@6,9
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@5,6 -> b@4,5
+  Y@5,6 -> b@5,5
+  Y@5,9 -> d@4,8
+  Y@5,9 -> d@5,8
+  Y@6,10 -> d@6,9
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@7,10 -> b@7,9
+  Y@7,2 -> b@7,1
+  Y@7,2 -> b@8,1
+  Y@8,10 -> b@7,9
+  Y@8,2 -> b@7,1
+  Y@8,2 -> b@8,1
+  Y@8,5 -> b@9,5
+  Y@8,5 -> b@9,6
+  Y@8,6 -> b@9,5
+  Y@8,6 -> b@9,6
+  Y@8,9 -> d@8,8
+  Y@8,9 -> d@9,8
+  Y@9,10 -> b@10,9
+  Y@9,2 -> b@10,1
+  Y@9,2 -> b@9,1
+  Y@9,9 -> d@8,8
+  Y@9,9 -> d@9,8
+  b@1,6 -> b@1,7
+  b@1,7 -> b@1,8
+  b@1,8 -> b@1,9
+  b@1,9 -> b@2,9
+  b@10,1 -> K@10,0
+  b@10,11 -> Y@10,10
+  b@10,3 -> Y@10,2
+  b@10,4 -> b@10,3
+  b@10,5 -> b@10,4
+  b@10,6 -> b@10,5
+  b@10,7 -> b@9,7
+  b@10,8 -> b@10,7
+  b@10,9 -> b@10,8
+  b@2,2 -> b@2,3
+  b@2,3 -> b@2,4
+  b@2,4 -> Y@2,5
+  b@2,6 -> d@3,6
+  b@2,7 -> b@3,7
+  b@2,8 -> b@2,7
+  b@2,9 -> b@3,9
+  b@3,10 -> b@4,10
+  b@3,2 -> b@2,2
+  b@3,4 -> Y@3,3
+  b@3,5 -> b@3,4
+  b@3,7 -> b@4,7
+  b@3,9 -> b@3,10
+  b@4,1 -> K@4,0
+  b@4,10 -> Y@4,9
+  b@4,2 -> b@4,1
+  b@4,5 -> b@3,5
+  b@4,7 -> Y@4,6
+  b@5,1 -> K@5,0
+  b@5,11 -> Y@5,10
+  b@5,4 -> b@6,4
+  b@5,5 -> b@5,4
+  b@5,7 -> Y@5,6
+  b@6,1 -> K@6,0
+  b@6,11 -> Y@6,10
+  b@6,3 -> Y@6,2
+  b@6,4 -> b@6,3
+  b@6,5 -> b@7,5
+  b@6,7 -> b@5,7
+  b@7,1 -> K@7,0
+  b@7,11 -> Y@7,10
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,3
+  b@7,5 -> Y@8,5
+  b@7,7 -> b@6,7
+  b@7,8 -> d@6,8
+  b@7,9 -> b@7,8
+  b@8,1 -> K@8,0
+  b@8,11 -> Y@8,10
+  b@8,4 -> b@7,4
+  b@8,7 -> b@7,7
+  b@9,1 -> K@9,0
+  b@9,11 -> Y@9,10
+  b@9,4 -> b@8,4
+  b@9,5 -> b@9,4
+  b@9,6 -> b@10,6
+  b@9,7 -> b@8,7
+  d@4,8 -> u@4,4
+  d@5,8 -> u@5,3
+  d@8,8 -> u@8,3
+  d@9,8 -> u@9,3
+  u@3,8 -> b@2,8
+  u@4,4 -> Y@4,3
+  u@5,3 -> Y@5,2
+  u@6,6 -> b@6,5
+  u@7,6 -> Y@8,6
+  u@8,3 -> Y@8,2
+  u@9,3 -> Y@9,2
+factory: |
+  .. .. .. .. K^ K^ K^ K^ K^ K^ K^ ..
+  .. .. .. .. b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. bv b< b^ Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. bv Y^^^Y u^ b^ b^ u^ u^ b^ ..
+  .. .. bv b^ u^ b> b^ b^ b< b< b^ ..
+  .. YvvvY b^ b< b^ b> b> Y> b^ b^ ..
+  .. bv b> d> Y^^^Y u^ u> Y> b> b^ ..
+  .. bv b> b> b^ b^ b< b< b< b< b< ..
+  .. bv b^ u< d^ d^ d< b< d^ d^ b^ ..
+  .. b> b> bv Y^^^Y d^ b^ Y^^^Y b^ ..
+  .. .. .. b> b^ Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. .. .. .. b^ b^ b^ b^ b^ b^ ..
+  .. .. .. .. .. S^ S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_7_to_1: a belt balancer, 7 belt(s) in, 1 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/51.
+  Real Factorio delivers min(7,1) x 15 = 15 items/s, split evenly over the 1 output belt(s).
+  The engine delivers 7.5 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 9, item: iron_plate }
+- { x: 2, y: 9, item: iron_plate }
+- { x: 3, y: 9, item: iron_plate }
+- { x: 4, y: 9, item: iron_plate }
+- { x: 5, y: 9, item: iron_plate }
+- { x: 6, y: 9, item: iron_plate }
+- { x: 7, y: 9, item: iron_plate }
+- { x: 2, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,9 -> b@1,8
+  S@2,9 -> b@2,8
+  S@3,9 -> b@3,8
+  S@4,9 -> b@4,8
+  S@5,9 -> b@5,8
+  S@6,9 -> b@6,8
+  S@7,9 -> b@7,8
+  Y@2,3 -> b@2,2
+  Y@2,3 -> b@3,2
+  Y@2,6 -> b@2,5
+  Y@3,3 -> b@2,2
+  Y@3,3 -> b@3,2
+  Y@3,6 -> b@2,5
+  Y@4,4 -> b@3,4
+  Y@4,5 -> b@3,4
+  Y@5,7 -> b@5,6
+  Y@6,7 -> b@5,6
+  b@1,8 -> Y@1,7
+  b@2,1 -> K@2,0
+  b@2,2 -> b@2,1
+  b@2,4 -> Y@2,3
+  b@2,5 -> b@2,4
+  b@2,8 -> Y@2,7
+  b@3,2 -> b@4,2
+  b@3,4 -> Y@3,3
+  b@3,8 -> Y@3,7
+  b@4,2 -> b@5,2
+  b@4,8 -> Y@4,7
+  b@5,2 -> b@6,2
+  b@5,5 -> Y@4,5
+  b@5,6 -> b@5,5
+  b@5,8 -> Y@5,7
+  b@6,2 -> b@6,3
+  b@6,3 -> Y@5,3
+  b@6,4 -> Y@5,4
+  b@6,8 -> Y@6,7
+  b@7,4 -> b@6,4
+  b@7,5 -> b@7,4
+  b@7,6 -> b@7,5
+  b@7,7 -> b@7,6
+  b@7,8 -> b@7,7
+factory: |
+  .. .. K^ .. .. .. .. .. ..
+  .. .. b^ .. .. .. .. .. ..
+  .. .. b^ b> b> b> bv .. ..
+  .. .. Y^^^Y .. Y< b< .. ..
+  .. .. b^ b^ Y< Y< b< b< ..
+  .. .. b^ .. Y< b< .. b^ ..
+  .. .. Y^^^Y .. b^ .. b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y b^ ..
+  .. b^ b^ b^ b^ b^ b^ b^ ..
+  .. S^ S^ S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_7_to_2: a belt balancer, 7 belt(s) in, 2 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/52.
+  Real Factorio delivers min(7,2) x 15 = 30 items/s, split evenly over the 2 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 1, y: 8, item: iron_plate }
+- { x: 2, y: 8, item: iron_plate }
+- { x: 3, y: 8, item: iron_plate }
+- { x: 4, y: 8, item: iron_plate }
+- { x: 5, y: 8, item: iron_plate }
+- { x: 6, y: 8, item: iron_plate }
+- { x: 7, y: 8, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@1,8 -> b@1,7
+  S@2,8 -> b@2,7
+  S@3,8 -> b@3,7
+  S@4,8 -> b@4,7
+  S@5,8 -> b@5,7
+  S@6,8 -> b@6,7
+  S@7,8 -> b@7,7
+  Y@1,6 -> b@2,5
+  Y@2,6 -> b@2,5
+  Y@3,3 -> b@3,2
+  Y@3,6 -> b@4,5
+  Y@4,2 -> b@4,1
+  Y@4,2 -> b@5,1
+  Y@4,3 -> b@3,2
+  Y@4,6 -> b@4,5
+  Y@5,2 -> b@4,1
+  Y@5,2 -> b@5,1
+  Y@5,3 -> b@6,2
+  Y@5,6 -> b@5,5
+  Y@6,3 -> b@6,2
+  Y@6,6 -> b@5,5
+  Y@7,1 -> b@8,2
+  Y@7,2 -> b@8,2
+  Y@7,3 -> b@6,4
+  Y@7,4 -> b@6,4
+  b@1,7 -> Y@1,6
+  b@2,1 -> d@3,1
+  b@2,2 -> b@2,1
+  b@2,4 -> b@3,4
+  b@2,5 -> b@2,4
+  b@2,7 -> Y@2,6
+  b@3,2 -> b@2,2
+  b@3,4 -> Y@3,3
+  b@3,7 -> Y@3,6
+  b@4,1 -> K@4,0
+  b@4,4 -> Y@4,3
+  b@4,5 -> b@4,4
+  b@4,7 -> Y@4,6
+  b@5,1 -> K@5,0
+  b@5,4 -> Y@5,3
+  b@5,5 -> b@5,4
+  b@5,7 -> Y@5,6
+  b@6,2 -> Y@7,2
+  b@6,4 -> Y@6,3
+  b@6,7 -> Y@6,6
+  b@7,5 -> b@8,5
+  b@7,6 -> b@7,5
+  b@7,7 -> b@7,6
+  b@8,2 -> b@8,3
+  b@8,3 -> Y@7,3
+  b@8,4 -> Y@7,4
+  b@8,5 -> b@8,4
+  d@3,1 -> u@6,1
+  u@6,1 -> Y@7,1
+factory: |
+  .. .. .. .. K^ K^ .. .. .. ..
+  .. .. b> d> b^ b^ u> Y> .. ..
+  .. .. b^ b< Y^^^Y b> Y> bv ..
+  .. .. .. Y^^^Y Y^^^Y Y< b< ..
+  .. .. b> b^ b^ b^ b^ Y< b< ..
+  .. .. b^ .. b^ b^ .. b> b^ ..
+  .. Y^^^Y Y^^^Y Y^^^Y b^ .. ..
+  .. b^ b^ b^ b^ b^ b^ b^ .. ..
+  .. S^ S^ S^ S^ S^ S^ S^ .. ..
+---
+description: |
+  belt_7_to_6: a belt balancer, 7 belt(s) in, 6 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/56.
+  Real Factorio delivers min(7,6) x 15 = 90 items/s, split evenly over the 6 output belt(s).
+  The engine delivers 0 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 11, item: iron_plate }
+- { x: 5, y: 11, item: iron_plate }
+- { x: 6, y: 11, item: iron_plate }
+- { x: 7, y: 11, item: iron_plate }
+- { x: 8, y: 11, item: iron_plate }
+- { x: 9, y: 11, item: iron_plate }
+- { x: 10, y: 11, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+- { x: 9, y: 0, item: iron_plate }
+- { x: 10, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@10,11 -> b@10,10
+  S@4,11 -> b@4,10
+  S@5,11 -> b@5,10
+  S@6,11 -> b@6,10
+  S@7,11 -> b@7,10
+  S@8,11 -> b@8,10
+  S@9,11 -> b@9,10
+  Y@1,6 -> b@2,7
+  Y@10,1 -> K@10,0
+  Y@10,1 -> K@9,0
+  Y@10,9 -> b@10,8
+  Y@10,9 -> d@9,8
+  Y@2,6 -> b@2,7
+  Y@3,8 -> b@3,7
+  Y@3,8 -> d@4,7
+  Y@4,2 -> b@4,1
+  Y@4,5 -> b@4,4
+  Y@4,5 -> b@5,4
+  Y@4,8 -> b@3,7
+  Y@4,8 -> d@4,7
+  Y@5,1 -> K@5,0
+  Y@5,1 -> K@6,0
+  Y@5,2 -> b@4,1
+  Y@5,5 -> b@4,4
+  Y@5,5 -> b@5,4
+  Y@5,9 -> b@6,8
+  Y@5,9 -> d@5,8
+  Y@6,1 -> K@5,0
+  Y@6,1 -> K@6,0
+  Y@6,9 -> b@6,8
+  Y@6,9 -> d@5,8
+  Y@7,1 -> K@7,0
+  Y@7,1 -> K@8,0
+  Y@7,9 -> b@7,8
+  Y@7,9 -> d@8,8
+  Y@8,1 -> K@7,0
+  Y@8,1 -> K@8,0
+  Y@8,5 -> b@7,6
+  Y@8,5 -> d@7,5
+  Y@8,6 -> b@7,6
+  Y@8,6 -> d@7,5
+  Y@8,9 -> b@7,8
+  Y@8,9 -> d@8,8
+  Y@9,1 -> K@10,0
+  Y@9,1 -> K@9,0
+  Y@9,9 -> b@10,8
+  Y@9,9 -> d@9,8
+  b@1,2 -> b@1,3
+  b@1,3 -> b@1,4
+  b@1,4 -> b@1,5
+  b@1,5 -> Y@1,6
+  b@10,10 -> Y@10,9
+  b@10,2 -> Y@10,1
+  b@10,3 -> b@10,2
+  b@10,4 -> b@10,3
+  b@10,5 -> b@9,5
+  b@10,6 -> b@10,5
+  b@10,7 -> b@10,6
+  b@10,8 -> b@10,7
+  b@2,2 -> b@1,2
+  b@2,3 -> d@3,3
+  b@2,4 -> b@2,3
+  b@2,5 -> Y@2,6
+  b@2,7 -> b@2,8
+  b@2,8 -> b@2,9
+  b@2,9 -> b@3,9
+  b@3,1 -> b@3,2
+  b@3,2 -> b@2,2
+  b@3,4 -> b@2,4
+  b@3,6 -> b@4,6
+  b@3,7 -> b@3,6
+  b@3,9 -> Y@3,8
+  b@4,1 -> b@3,1
+  b@4,10 -> b@4,9
+  b@4,4 -> b@3,4
+  b@4,6 -> Y@4,5
+  b@4,9 -> Y@4,8
+  b@5,10 -> Y@5,9
+  b@5,4 -> b@6,4
+  b@5,6 -> Y@5,5
+  b@5,7 -> b@5,6
+  b@6,10 -> Y@6,9
+  b@6,4 -> b@7,4
+  b@6,6 -> d@6,5
+  b@6,7 -> b@5,7
+  b@6,8 -> b@6,7
+  b@7,10 -> Y@7,9
+  b@7,2 -> Y@7,1
+  b@7,3 -> b@7,2
+  b@7,4 -> b@8,4
+  b@7,6 -> b@6,6
+  b@7,7 -> b@8,7
+  b@7,8 -> b@7,7
+  b@8,10 -> Y@8,9
+  b@8,4 -> b@9,4
+  b@8,7 -> b@9,7
+  b@9,10 -> Y@9,9
+  b@9,4 -> b@10,4
+  b@9,5 -> Y@8,5
+  b@9,6 -> Y@8,6
+  b@9,7 -> b@9,6
+  d@4,7 -> u@4,3
+  d@5,8 -> u@5,3
+  d@8,8 -> u@8,3
+  d@9,8 -> u@9,3
+  u@3,5 -> b@2,5
+  u@4,3 -> Y@4,2
+  u@5,3 -> Y@5,2
+  u@6,2 -> Y@6,1
+  u@6,3 -> b@7,3
+  u@8,3 -> Y@8,2
+  u@9,3 -> Y@9,2
+factory: |
+  .. .. .. .. .. K^ K^ K^ K^ K^ K^ ..
+  .. .. .. bv b< Y^^^Y Y^^^Y Y^^^Y ..
+  .. bv b< b< Y^^^Y u^ b^ Y^^^Y b^ ..
+  .. bv b> d> u^ u^ u> b^ u^ u^ b^ ..
+  .. bv b^ b< b< b> b> b> b> b> b^ ..
+  .. bv bv u< Y^^^Y d^ d< Y< b< b< ..
+  .. YvvvY b> b^ b^ b^ b< Y< b< b^ ..
+  .. .. bv b^ d^ b^ b< b> b> b^ b^ ..
+  .. .. bv Y^^^Y d^ b^ b^ d^ d^ b^ ..
+  .. .. b> b^ b^ Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. .. .. b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. .. .. S^ S^ S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_7_to_7: a belt balancer, 7 belt(s) in, 7 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/57.
+  Real Factorio delivers min(7,7) x 15 = 105 items/s, split evenly over the 7 output belt(s).
+  The engine delivers 35.625 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 7, y: 12, item: iron_plate }
+- { x: 8, y: 12, item: iron_plate }
+- { x: 9, y: 12, item: iron_plate }
+- { x: 10, y: 12, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+- { x: 9, y: 0, item: iron_plate }
+- { x: 10, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@10,12 -> b@10,11
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  S@7,12 -> b@7,11
+  S@8,12 -> b@8,11
+  S@9,12 -> b@9,11
+  Y@10,10 -> b@10,9
+  Y@10,2 -> b@10,1
+  Y@10,2 -> b@9,1
+  Y@3,10 -> b@3,9
+  Y@3,10 -> d@4,9
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,6 -> b@3,5
+  Y@3,6 -> b@4,5
+  Y@4,10 -> b@3,9
+  Y@4,10 -> d@4,9
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,6 -> b@3,5
+  Y@4,6 -> b@4,5
+  Y@5,10 -> d@5,9
+  Y@5,10 -> d@6,9
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@6,10 -> d@5,9
+  Y@6,10 -> d@6,9
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@7,10 -> b@7,9
+  Y@7,2 -> b@7,1
+  Y@7,2 -> b@8,1
+  Y@8,10 -> b@7,9
+  Y@8,2 -> b@7,1
+  Y@8,2 -> b@8,1
+  Y@8,5 -> b@9,5
+  Y@8,5 -> b@9,6
+  Y@8,6 -> b@9,5
+  Y@8,6 -> b@9,6
+  Y@8,9 -> d@8,8
+  Y@8,9 -> d@9,8
+  Y@9,10 -> b@10,9
+  Y@9,2 -> b@10,1
+  Y@9,2 -> b@9,1
+  Y@9,9 -> d@8,8
+  Y@9,9 -> d@9,8
+  b@1,10 -> b@2,10
+  b@1,3 -> d@1,4
+  b@1,5 -> d@2,5
+  b@1,6 -> b@1,5
+  b@10,1 -> K@10,0
+  b@10,11 -> Y@10,10
+  b@10,3 -> Y@10,2
+  b@10,4 -> b@10,3
+  b@10,5 -> b@10,4
+  b@10,6 -> b@10,5
+  b@10,7 -> b@9,7
+  b@10,8 -> b@10,7
+  b@10,9 -> b@10,8
+  b@2,1 -> b@2,2
+  b@2,10 -> b@2,11
+  b@2,11 -> b@3,11
+  b@2,2 -> b@2,3
+  b@2,3 -> b@1,3
+  b@2,6 -> b@1,6
+  b@2,7 -> b@2,6
+  b@2,8 -> b@2,7
+  b@2,9 -> b@2,8
+  b@3,1 -> b@2,1
+  b@3,11 -> Y@3,10
+  b@3,3 -> Y@3,2
+  b@3,4 -> b@3,3
+  b@3,5 -> b@3,4
+  b@3,7 -> Y@3,6
+  b@3,8 -> b@3,7
+  b@3,9 -> b@2,9
+  b@4,1 -> K@4,0
+  b@4,11 -> Y@4,10
+  b@4,5 -> b@5,5
+  b@4,7 -> Y@4,6
+  b@4,8 -> b@3,8
+  b@5,1 -> K@5,0
+  b@5,11 -> Y@5,10
+  b@5,5 -> b@6,5
+  b@5,8 -> b@4,8
+  b@6,1 -> K@6,0
+  b@6,11 -> Y@6,10
+  b@6,3 -> Y@6,2
+  b@6,4 -> b@6,3
+  b@6,5 -> b@6,4
+  b@6,6 -> b@7,6
+  b@6,8 -> b@5,8
+  b@7,1 -> K@7,0
+  b@7,11 -> Y@7,10
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,3
+  b@7,6 -> Y@8,6
+  b@7,8 -> b@6,8
+  b@7,9 -> b@7,8
+  b@8,1 -> K@8,0
+  b@8,11 -> Y@8,10
+  b@8,4 -> b@7,4
+  b@8,7 -> d@7,7
+  b@9,1 -> K@9,0
+  b@9,11 -> Y@9,10
+  b@9,4 -> b@8,4
+  b@9,5 -> b@9,4
+  b@9,6 -> b@10,6
+  b@9,7 -> b@8,7
+  d@1,4 -> u@1,9
+  d@2,5 -> u@7,5
+  d@4,9 -> u@4,4
+  d@6,9 -> u@6,7
+  d@8,8 -> u@8,3
+  d@9,8 -> u@9,3
+  u@1,9 -> b@1,10
+  u@4,4 -> Y@4,3
+  u@5,4 -> Y@5,3
+  u@5,7 -> b@4,7
+  u@6,7 -> b@6,6
+  u@7,5 -> Y@8,5
+  u@8,3 -> Y@8,2
+  u@9,3 -> Y@9,2
+factory: |
+  .. .. .. .. K^ K^ K^ K^ K^ K^ K^ ..
+  .. .. bv b< b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. bv Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. bv b< b^ Y^^^Y b^ b^ u^ u^ b^ ..
+  .. dv .. b^ u^ u^ b^ b^ b< b< b^ ..
+  .. b> d> b^ b> b> b^ u> Y> b^ b^ ..
+  .. b^ b< Y^^^Y .. b> b> Y> b> b^ ..
+  .. .. b^ b^ b^ u< u^ d< b< b< b< ..
+  .. .. b^ b^ b< b< b< b< d^ d^ b^ ..
+  .. uv b^ b< d^ d^ d^ b^ Y^^^Y b^ ..
+  .. b> bv Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. b> b^ b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. .. .. S^ S^ S^ S^ S^ S^ S^ ..
+---
+description: |
+  belt_8_to_8: a belt balancer, 8 belt(s) in, 8 out.
+  Decoded from https://factoriobin.com/post/KafN8H7L/66.
+  Real Factorio delivers min(8,8) x 15 = 120 items/s, split evenly over the 8 output belt(s).
+  The engine delivers 45 items/s (see #388), so this is parked until it agrees.
+ignored: true
+items:
+- { x: 3, y: 12, item: iron_plate }
+- { x: 4, y: 12, item: iron_plate }
+- { x: 5, y: 12, item: iron_plate }
+- { x: 6, y: 12, item: iron_plate }
+- { x: 7, y: 12, item: iron_plate }
+- { x: 8, y: 12, item: iron_plate }
+- { x: 9, y: 12, item: iron_plate }
+- { x: 10, y: 12, item: iron_plate }
+- { x: 3, y: 0, item: iron_plate }
+- { x: 4, y: 0, item: iron_plate }
+- { x: 5, y: 0, item: iron_plate }
+- { x: 6, y: 0, item: iron_plate }
+- { x: 7, y: 0, item: iron_plate }
+- { x: 8, y: 0, item: iron_plate }
+- { x: 9, y: 0, item: iron_plate }
+- { x: 10, y: 0, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@10,12 -> b@10,11
+  S@3,12 -> b@3,11
+  S@4,12 -> b@4,11
+  S@5,12 -> b@5,11
+  S@6,12 -> b@6,11
+  S@7,12 -> b@7,11
+  S@8,12 -> b@8,11
+  S@9,12 -> b@9,11
+  Y@10,10 -> b@10,9
+  Y@10,2 -> b@10,1
+  Y@10,2 -> b@9,1
+  Y@3,10 -> b@3,9
+  Y@3,10 -> d@4,9
+  Y@3,2 -> b@3,1
+  Y@3,2 -> b@4,1
+  Y@3,6 -> b@3,5
+  Y@3,6 -> b@4,5
+  Y@4,10 -> b@3,9
+  Y@4,10 -> d@4,9
+  Y@4,2 -> b@3,1
+  Y@4,2 -> b@4,1
+  Y@4,6 -> b@3,5
+  Y@4,6 -> b@4,5
+  Y@5,10 -> d@5,9
+  Y@5,10 -> d@6,9
+  Y@5,2 -> b@5,1
+  Y@5,2 -> b@6,1
+  Y@6,10 -> d@5,9
+  Y@6,10 -> d@6,9
+  Y@6,2 -> b@5,1
+  Y@6,2 -> b@6,1
+  Y@7,10 -> b@7,9
+  Y@7,2 -> b@7,1
+  Y@7,2 -> b@8,1
+  Y@8,10 -> b@7,9
+  Y@8,2 -> b@7,1
+  Y@8,2 -> b@8,1
+  Y@8,5 -> b@9,5
+  Y@8,5 -> b@9,6
+  Y@8,6 -> b@9,5
+  Y@8,6 -> b@9,6
+  Y@8,9 -> d@8,8
+  Y@8,9 -> d@9,8
+  Y@9,10 -> b@10,9
+  Y@9,2 -> b@10,1
+  Y@9,2 -> b@9,1
+  Y@9,9 -> d@8,8
+  Y@9,9 -> d@9,8
+  b@1,5 -> d@2,5
+  b@1,6 -> b@1,5
+  b@10,1 -> K@10,0
+  b@10,11 -> Y@10,10
+  b@10,3 -> Y@10,2
+  b@10,4 -> b@10,3
+  b@10,5 -> b@10,4
+  b@10,6 -> b@10,5
+  b@10,7 -> b@9,7
+  b@10,8 -> b@10,7
+  b@10,9 -> b@10,8
+  b@2,6 -> b@1,6
+  b@2,7 -> b@2,6
+  b@2,8 -> b@2,7
+  b@2,9 -> b@2,8
+  b@3,1 -> K@3,0
+  b@3,11 -> Y@3,10
+  b@3,3 -> Y@3,2
+  b@3,4 -> b@3,3
+  b@3,5 -> b@3,4
+  b@3,7 -> Y@3,6
+  b@3,8 -> b@3,7
+  b@3,9 -> b@2,9
+  b@4,1 -> K@4,0
+  b@4,11 -> Y@4,10
+  b@4,5 -> b@5,5
+  b@4,7 -> Y@4,6
+  b@4,8 -> b@3,8
+  b@5,1 -> K@5,0
+  b@5,11 -> Y@5,10
+  b@5,5 -> b@6,5
+  b@5,8 -> b@4,8
+  b@6,1 -> K@6,0
+  b@6,11 -> Y@6,10
+  b@6,3 -> Y@6,2
+  b@6,4 -> b@6,3
+  b@6,5 -> b@6,4
+  b@6,6 -> b@7,6
+  b@6,8 -> b@5,8
+  b@7,1 -> K@7,0
+  b@7,11 -> Y@7,10
+  b@7,3 -> Y@7,2
+  b@7,4 -> b@7,3
+  b@7,6 -> Y@8,6
+  b@7,8 -> b@6,8
+  b@7,9 -> b@7,8
+  b@8,1 -> K@8,0
+  b@8,11 -> Y@8,10
+  b@8,4 -> b@7,4
+  b@8,7 -> d@7,7
+  b@9,1 -> K@9,0
+  b@9,11 -> Y@9,10
+  b@9,4 -> b@8,4
+  b@9,5 -> b@9,4
+  b@9,6 -> b@10,6
+  b@9,7 -> b@8,7
+  d@2,5 -> u@7,5
+  d@4,9 -> u@4,4
+  d@6,9 -> u@6,7
+  d@8,8 -> u@8,3
+  d@9,8 -> u@9,3
+  u@4,4 -> Y@4,3
+  u@5,4 -> Y@5,3
+  u@5,7 -> b@4,7
+  u@6,7 -> b@6,6
+  u@7,5 -> Y@8,5
+  u@8,3 -> Y@8,2
+  u@9,3 -> Y@9,2
+factory: |
+  .. .. .. K^ K^ K^ K^ K^ K^ K^ K^ ..
+  .. .. .. b^ b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. .. b^ Y^^^Y b^ b^ u^ u^ b^ ..
+  .. .. .. b^ u^ u^ b^ b^ b< b< b^ ..
+  .. b> d> b^ b> b> b^ u> Y> b^ b^ ..
+  .. b^ b< Y^^^Y .. b> b> Y> b> b^ ..
+  .. .. b^ b^ b^ u< u^ d< b< b< b< ..
+  .. .. b^ b^ b< b< b< b< d^ d^ b^ ..
+  .. .. b^ b< d^ d^ d^ b^ Y^^^Y b^ ..
+  .. .. .. Y^^^Y Y^^^Y Y^^^Y Y^^^Y ..
+  .. .. .. b^ b^ b^ b^ b^ b^ b^ b^ ..
+  .. .. .. S^ S^ S^ S^ S^ S^ S^ S^ ..

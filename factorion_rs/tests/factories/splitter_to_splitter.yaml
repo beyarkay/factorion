@@ -1,0 +1,29 @@
+description: |
+  Two splitters stacked back to back — the building block every belt balancer
+  is made of. A splitter's output side feeds whatever belt-connectable entity
+  sits in front of it, and another splitter is belt-connectable, so this
+  delivers a full belt in game.
+
+  The engine emits no edge between the two splitters (see #388): the upstream
+  one ends up with no outgoing edges and the downstream one with no incoming
+  edges, so the factory is severed and the sink receives 0. Parked until that
+  is fixed; unparking it is the acceptance test.
+ignored: true
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 0, y: 5, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 15 }
+graph: |
+  S@0,0 -> b@0,1
+  b@0,1 -> Y@0,2
+  Y@0,2 -> Y@0,3
+  Y@0,3 -> b@0,4
+  b@0,4 -> K@0,5
+factory: |
+  Sv ..
+  bv ..
+  YvvvY
+  YvvvY
+  bv ..
+  Kv ..
