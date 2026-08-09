@@ -1,8 +1,18 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::entities::{EntityEnum, FactoryEntity};
+use crate::entities::{entity_tiles, EntityEnum, FactoryEntity};
 use crate::graph::FactoryGraph;
 use crate::types::{Item, Lane};
+
+/// Fixed-point scale of the observation's FLOW channel: eighths of an item/s.
+/// The observation stays integer-valued (SFT keeps its demonstrations in
+/// uint8) while still separating an inserter's 0.86 i/s from a belt's 15.
+pub const FLOW_SCALE: f64 = 8.0;
+
+/// Ceiling of the FLOW channel, in items/s — a saturated splitter, the fastest
+/// entity in the catalog (four lane pools of 7.5). Sources model an infinite
+/// supply and sinks pass their input through, so both clamp here.
+pub const MAX_ENTITY_FLOW: f64 = 30.0;
 
 /// Exponent for the factory score's power mean over per-sink deliveries.
 ///
@@ -62,9 +72,11 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 
 /// Calculate the per-sink deliveries of a factory graph.
 ///
-/// Returns `(deliveries, num_unreachable)`, one [`SinkDelivery`] per sink:
-/// the item it was configured to accept and how much of that item reached
-/// it. Collapse to a scalar score with [`factory_score`].
+/// Returns `(deliveries, num_unreachable, node_flows)`: one [`SinkDelivery`]
+/// per sink (the item it was configured to accept and how much of that item
+/// reached it — collapse to a scalar score with [`factory_score`]), and the
+/// steady-state items/s carried by each node, indexed like `graph.nodes`.
+/// Paint the flows onto a grid with [`flow_channel`].
 ///
 /// Algorithm:
 /// 1. Detect cycles → return no deliveries if any exist
@@ -72,14 +84,14 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// 3. At each node, compute output from input using entity trait
 /// 4. Collect each sink's delivery of its configured item
 /// 5. Count unreachable nodes
-pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
+pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, Vec<f64>) {
     if graph.node_count() == 0 {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, Vec::new());
     }
 
     // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
     if has_cycle(graph) {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, vec![0.0; graph.node_count()]);
     }
 
     let sources: Vec<usize> = (0..graph.node_count())
@@ -94,6 +106,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         return (
             Vec::new(),
             count_unreachable_entities(graph, &HashSet::new()),
+            vec![0.0; graph.node_count()],
         );
     }
 
@@ -237,7 +250,65 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .copied()
         .collect();
 
-    (deliveries, count_unreachable_entities(graph, &on_path))
+    // 5. Per-node carried flow. A node's stored output is what EACH successor
+    //    receives (the fan-out split above), so multiplying it back out
+    //    recovers what the node itself moves. A node off every source→sink
+    //    path carries nothing in steady state: it either never fills or backs
+    //    up against a dead end.
+    let node_flows: Vec<f64> = (0..graph.node_count())
+        .map(|i| {
+            if !on_path.contains(&i) {
+                return 0.0;
+            }
+            let out: f64 = node_outputs[i].values().sum();
+            out * graph.successors[i].len().max(1) as f64
+        })
+        .collect();
+
+    (
+        deliveries,
+        count_unreachable_entities(graph, &on_path),
+        node_flows,
+    )
+}
+
+/// Paint [`calc_throughput`]'s per-node flows onto a `width × height` grid as
+/// the observation's FLOW channel: every entity's total carried items/s (summed
+/// over its lane nodes) across its whole footprint, in [`FLOW_SCALE`] eighths
+/// and clamped to [`MAX_ENTITY_FLOW`]. Returned flat in `(W, H)` row-major
+/// order, matching the world tensor's layout.
+pub fn flow_channel(
+    graph: &FactoryGraph,
+    node_flows: &[f64],
+    width: usize,
+    height: usize,
+) -> Vec<i64> {
+    let mut per_entity: HashMap<(usize, usize), f64> = HashMap::new();
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        *per_entity.entry(node.anchor).or_insert(0.0) += node_flows[idx];
+    }
+
+    let mut channel = vec![0i64; width * height];
+    for node in &graph.nodes {
+        let flow = per_entity.get(&node.anchor).copied().unwrap_or(0.0);
+        let value = (flow.clamp(0.0, MAX_ENTITY_FLOW) * FLOW_SCALE).round() as i64;
+        if value == 0 {
+            continue;
+        }
+        let (w, h) = node.entity_kind.size();
+        let tiles = match entity_tiles(node.anchor.0, node.anchor.1, node.direction, w, h) {
+            Some(t) => t,
+            None => continue,
+        };
+        for tile in tiles {
+            if let Some((tx, ty)) = tile.to_usize() {
+                if tx < width && ty < height {
+                    channel[tx * height + ty] = value;
+                }
+            }
+        }
+    }
+    channel
 }
 
 /// Count entity units with NO node on a source→sink path. Since dual lanes,
@@ -381,7 +452,7 @@ mod tests {
     fn test_empty_world_throughput() {
         let w = World::empty(5, 5);
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         assert!(output.is_empty());
         assert_eq!(unreachable, 0);
     }
@@ -399,7 +470,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Single sink, belt-limited to 15.0.
         assert_eq!(output.len(), 1);
@@ -425,7 +496,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Single sink, inserter-limited to 0.86.
         assert_eq!(output.len(), 1);
@@ -448,7 +519,7 @@ mod tests {
         w.place(2, 2, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // No path from source to sink → the sink's delivery is 0, so the
         // factory scores 0. All 3 entities are off any source→sink path.
@@ -514,7 +585,7 @@ mod tests {
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         let score = factory_score(&output);
         assert!(
             (score - 15.0).abs() < 1e-9,
@@ -541,7 +612,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // Two sinks, evenly split at 7.5 each. The power-mean score of two
         // equal deliveries is that per-sink value (7.5), not the 15.0 sum.
         assert_eq!(output.len(), 2);
@@ -569,7 +640,7 @@ mod tests {
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15.
         // Single sink → score is just its delivery (15.0).
         let score = factory_score(&output);
@@ -596,7 +667,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // 30 in, splitter passes 30, each of two output sinks gets 15. The
         // power-mean score of two full sinks is 15.0 (per-sink), not 30.0.
         assert_eq!(output.len(), 2);
@@ -615,7 +686,7 @@ mod tests {
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert!(output.is_empty());
     }
 
@@ -634,7 +705,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // The sink expects CopperCable; only raw CopperPlate is routed to it,
         // which is not its configured item, so it delivers 0 → factory scores 0.
@@ -677,7 +748,7 @@ mod tests {
         w.place(7, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Only the crafted CopperCable is delivered, inserter-limited to 0.86.
         assert_eq!(output.len(), 1);
@@ -720,7 +791,7 @@ mod tests {
                 w.place(4, 1, Item::Sink, Direction::East, Some(sink_item));
             });
             let g = build_graph(&w);
-            let (output, _) = calc_throughput(&g);
+            let (output, _, _) = calc_throughput(&g);
             assert_eq!(output.len(), 1);
             assert!(
                 (output[0].achieved - want).abs() < 1e-9,
@@ -740,7 +811,7 @@ mod tests {
                 w.place(2, 3, Item::Sink, Direction::South, Some(sink_item));
             });
             let g = build_graph(&w);
-            let (output, _) = calc_throughput(&g);
+            let (output, _, _) = calc_throughput(&g);
             assert_eq!(output.len(), 1);
             assert!(
                 (output[0].achieved - want).abs() < 1e-9,
@@ -766,13 +837,115 @@ mod tests {
         w.place(2, 3, Item::Sink, Direction::South, Some(Item::IronPlate));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert_eq!(output.len(), 1);
         assert!(
             (output[0].achieved - 0.86).abs() < 1e-9,
             "expected fallback pickup of 0.86, got {:?}",
             output
         );
+    }
+
+    /// Flow map of a world, keyed by tile, in items/s (undoing the channel's
+    /// eighths) so the expectations below read as belt/inserter rates.
+    fn flows_at(w: &World) -> HashMap<(usize, usize), f64> {
+        let g = build_graph(w);
+        let (_, _, node_flows) = calc_throughput(&g);
+        let channel = flow_channel(&g, &node_flows, w.width(), w.height());
+        let mut out = HashMap::new();
+        for x in 0..w.width() {
+            for y in 0..w.height() {
+                out.insert((x, y), channel[x * w.height() + y] as f64 / FLOW_SCALE);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_flow_channel_follows_the_belt() {
+        // Source → Belt → Belt → Sink: the whole line carries the belt's 15,
+        // the source clamps to the channel's ceiling (infinite supply), and
+        // every empty tile stays at zero.
+        let mut w = World::empty(5, 2);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let f = flows_at(&w);
+        assert_eq!(f[&(0, 0)], MAX_ENTITY_FLOW);
+        assert_eq!(f[&(1, 0)], 15.0);
+        assert_eq!(f[&(2, 0)], 15.0);
+        assert_eq!(f[&(3, 0)], 15.0);
+        assert_eq!(f[&(4, 0)], 0.0);
+        assert_eq!(f[&(1, 1)], 0.0);
+    }
+
+    #[test]
+    fn test_flow_channel_resolves_the_inserter_bottleneck() {
+        // The inserter throttles the line to 0.86 i/s — a rate the channel's
+        // eighths keep distinct from both zero and the belt's 15.
+        let mut w = World::empty(5, 1);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::Inserter, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let f = flows_at(&w);
+        assert_eq!(f[&(1, 0)], 0.875); // 0.86 i/s to the nearest eighth
+        assert_eq!(f[&(2, 0)], 0.875);
+        assert_eq!(f[&(3, 0)], 0.875);
+    }
+
+    #[test]
+    fn test_flow_channel_zero_off_path() {
+        // A belt that reaches no sink moves nothing in steady state, so it
+        // reads zero even though the source→sink line beside it flows.
+        let mut w = World::empty(5, 3);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+        w.place(2, 2, Item::TransportBelt, Direction::East, None);
+
+        let f = flows_at(&w);
+        assert_eq!(f[&(1, 0)], 15.0);
+        assert_eq!(f[&(2, 2)], 0.0);
+    }
+
+    #[test]
+    fn test_flow_channel_paints_multi_tile_footprints() {
+        // A splitter owns two tiles and four lane nodes; the channel reports
+        // the whole entity's 15 across both of them, not a per-lane share.
+        let mut w = World::empty(6, 2);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place_splitter(2, 0, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let f = flows_at(&w);
+        assert_eq!(f[&(2, 0)], 15.0);
+        assert_eq!(f[&(2, 1)], 15.0);
+    }
+
+    #[test]
+    fn test_flow_channel_zero_on_cycle() {
+        // A belt loop scores zero throughput while every entity still looks
+        // connected — exactly the case the flow channel makes visible.
+        let mut w = World::empty(5, 3);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::South, None);
+        w.place(2, 1, Item::TransportBelt, Direction::West, None);
+        w.place(1, 1, Item::TransportBelt, Direction::North, None);
+        w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
+
+        let g = build_graph(&w);
+        let (deliveries, unreachable, _) = calc_throughput(&g);
+        assert_eq!(factory_score(&deliveries), 0.0);
+        assert_eq!(unreachable, 0);
+        let f = flows_at(&w);
+        assert!(f.values().all(|&v| v == 0.0), "{f:?}");
     }
 
     #[test]
@@ -852,7 +1025,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert_eq!(output.len(), 2);
         assert!(output.iter().any(|d| (d.achieved - 15.0).abs() < 1e-9));
         assert!(output.iter().any(|d| d.achieved == 0.0));

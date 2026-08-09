@@ -15,6 +15,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import FactorioEnv, make_env  # noqa: E402
+from factorion import OBS_CHANNELS  # noqa: E402
 from helpers import Channel, Direction, Misc, make_world, set_entity, str2ent  # noqa: E402
 
 ENV_ID = "factorion/FactorioEnv-v0-mask-test"
@@ -75,8 +76,9 @@ class TestFootprintChannel:
         )
 
     def test_observation_space_shape(self, env):
-        """Observation space should have 5 channels."""
-        assert env.observation_space.shape[0] == len(Channel)
+        """Observation space should have one channel per world channel, plus
+        the derived FLOW channel."""
+        assert env.observation_space.shape[0] == OBS_CHANNELS
 
 
 class TestMaskedPlacement:
@@ -260,11 +262,11 @@ class TestThroughputWithMask:
         set_entity(world, 3, 0, "transport_belt", Direction.EAST)
         set_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "copper_cable")
 
-        t1, u1 = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+        t1, u1, _ = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
         world[2, 2, Channel.FOOTPRINT.value] = 0
         world[3, 3, Channel.FOOTPRINT.value] = 0
-        t2, u2 = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+        t2, u2, _ = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
         assert t1 == t2
         assert u1 == u2
