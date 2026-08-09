@@ -2365,7 +2365,6 @@ fn build_memorise_recipes(
         let mut markers: Vec<(Cell, Direction, i64, bool)> = Vec::with_capacity(n_arms);
         for (idx, &(inserter_pos, _, far)) in inserters.iter().enumerate() {
             let is_input = idx < n_in;
-            let belt_count = rng.randint(0, MEMORISE_MAX_ARM_BELTS);
 
             // The belts fill a shortest walk from the marker to the far cell, so
             // the marker sits exactly `belt_count` steps away; a zero-belt arm
@@ -2373,27 +2372,34 @@ fn build_memorise_recipes(
             // the inserter picks up straight off a source / drops straight onto
             // a sink). Trying both rectangle corners is the same straight walk
             // twice for a marker in line with the far cell, which keeps every
-            // candidate marker equally likely either way.
+            // candidate marker equally likely either way. A draw that nothing
+            // fits — a crowded or tiny grid — clamps down rather than rejecting
+            // a candidate the shorter arm would have satisfied.
             let mut walks: Vec<Vec<Cell>> = Vec::new();
-            for mx in far.0 - belt_count..=far.0 + belt_count {
-                for my in far.1 - belt_count..=far.1 + belt_count {
-                    let marker = (mx, my);
-                    if (mx - far.0).abs() + (my - far.1).abs() != belt_count {
-                        continue;
-                    }
-                    if !in_grid(marker, s) || perim.contains(&marker) {
-                        continue;
-                    }
-                    if marker != far && occupied.contains(&marker) {
-                        continue;
-                    }
-                    for corner in [(mx, far.1), (far.0, my)] {
-                        let walk = manhattan_walk(marker, far, corner);
-                        if walk[1..].iter().any(|c| *c != far && occupied.contains(c)) {
+            for belt_count in (0..=rng.randint(0, MEMORISE_MAX_ARM_BELTS)).rev() {
+                for mx in far.0 - belt_count..=far.0 + belt_count {
+                    for my in far.1 - belt_count..=far.1 + belt_count {
+                        let marker = (mx, my);
+                        if (mx - far.0).abs() + (my - far.1).abs() != belt_count {
                             continue;
                         }
-                        walks.push(walk);
+                        if !in_grid(marker, s) || perim.contains(&marker) {
+                            continue;
+                        }
+                        if marker != far && occupied.contains(&marker) {
+                            continue;
+                        }
+                        for corner in [(mx, far.1), (far.0, my)] {
+                            let walk = manhattan_walk(marker, far, corner);
+                            if walk[1..].iter().any(|c| *c != far && occupied.contains(c)) {
+                                continue;
+                            }
+                            walks.push(walk);
+                        }
                     }
+                }
+                if !walks.is_empty() {
+                    break;
                 }
             }
             if walks.is_empty() {
