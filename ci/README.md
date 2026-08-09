@@ -46,9 +46,10 @@ What comes back as PR comments:
   sides' checkpoints greedy-rebuild the same 50 held-out factories per lesson,
   and every factory whose throughput disagrees is rendered side by side,
   largest gap first — the qualitative read on what the PR's policy learned and
-  what it lost. Rendering runs on the GitHub runner (hence the extra torch +
-  Rust install step in `ci-command.yml`) and is best-effort: a failure there
-  never blocks the metric report;
+  what it lost. Rendering runs on the GitHub runner, which installs torch + the
+  Rust engine on demand (`_ensure_render_deps` — not a workflow step, because
+  `issue_comment` always runs the DEFAULT branch's YAML), and is best-effort: a
+  failure there never blocks the metric report;
 - for sweeps: the ranked **sweep report** when the sweep drains its run_cap.
 
 For jobs not tied to a PR (e.g. a production SFT run from main), use the

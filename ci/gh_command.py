@@ -316,6 +316,35 @@ def _missing_run_warnings(infos: list[dict]) -> str:
         return ""
 
 
+def _ensure_render_deps() -> None:
+    """Install what the factory diff needs (torch + the Rust engine) if the
+    runner doesn't already carry it.
+
+    Deliberately here and not a step in ci-command.yml: an `issue_comment`
+    workflow always runs the DEFAULT branch's YAML, so a step added on a PR
+    branch does not exist until after the merge — the diff could never be
+    exercised on the PR that introduces it. The dispatcher, by contrast, runs
+    from the PR head.
+    """
+    try:
+        import factorion_rs  # noqa: F401
+        import torch  # noqa: F401
+
+        return
+    except ModuleNotFoundError:
+        pass
+    import glob
+    import subprocess
+
+    rs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "factorion_rs")
+    pip = ["uv", "pip", "install", "--system"]
+    print("installing the factory-diff dependencies (torch + factorion_rs)", flush=True)
+    subprocess.run([*pip, "maturin", "numpy", "gymnasium", "networkx", "tqdm", "plotly", "pillow"], check=True)
+    subprocess.run([*pip, "torch", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
+    subprocess.run(["maturin", "build", "--release", "--out", "dist"], cwd=rs, check=True)
+    subprocess.run([*pip, *sorted(glob.glob(os.path.join(rs, "dist", "*.whl")))[-1:]], check=True)
+
+
 def _post_compare_outcome(
     ctx,
     assertions: list[str],
@@ -345,6 +374,7 @@ def _post_compare_outcome(
     # status would stay pending forever). Best effort, and before the assertion
     # exit, so neither a rendering failure nor a red assert costs the diff.
     try:
+        _ensure_render_deps()
         from ci.report import compare_renders
 
         renders = compare_renders(main_group=main_group, pr_group=pr_group)
