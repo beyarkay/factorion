@@ -2,7 +2,7 @@
 
 The observation the policy and critic see is the world's channels plus a
 derived FLOW channel: the steady-state items/s the engine computes through
-each entity. These cover the whole path — engine → `simulate` → env → network.
+each entity. These cover the whole path — engine → `update_with_flow_and_thput` → env → network.
 """
 
 import os
@@ -25,7 +25,7 @@ from factorion import (  # noqa: E402
     OBS_CHANNELS,
     LessonKind,
     build_factory,
-    simulate,
+    update_with_flow_and_thput,
 )
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 from helpers import (  # noqa: E402
@@ -54,11 +54,11 @@ def belt_line(middle="transport_belt"):
     return world.permute(2, 0, 1).contiguous()
 
 
-class TestSimulate:
+class TestUpdateWithFlowAndThput:
     def test_appends_flow_after_the_world_channels(self):
         """The world's channels come through untouched, with FLOW appended."""
         world = belt_line()
-        obs, thput, unreachable = simulate(world)
+        obs, thput, unreachable = update_with_flow_and_thput(world)
 
         assert obs.shape == (OBS_CHANNELS, 5, 5)
         assert (obs[:CH_FLOW] == world).all()
@@ -68,7 +68,7 @@ class TestSimulate:
     def test_flow_follows_the_line_and_stops_at_empty_tiles(self):
         """Every entity on the source→sink path carries the belt's 15 i/s
         (the source clamps to the channel's ceiling); empty tiles carry zero."""
-        flow = simulate(belt_line())[0][CH_FLOW] / FLOW_SCALE
+        flow = update_with_flow_and_thput(belt_line())[0][CH_FLOW] / FLOW_SCALE
 
         assert flow[0, 0] == MAX_ENTITY_FLOW
         assert flow[1, 0] == 15.0
@@ -85,7 +85,7 @@ class TestSimulate:
         set_entity(world, 2, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
         set_entity(world, 2, 2, "transport_belt", Direction.EAST)
 
-        flow = simulate(world.permute(2, 0, 1).contiguous())[0][CH_FLOW]
+        flow = update_with_flow_and_thput(world.permute(2, 0, 1).contiguous())[0][CH_FLOW]
         assert flow[1, 0] > 0
         assert flow[2, 2] == 0
 
@@ -99,7 +99,7 @@ class TestSimulate:
             for x in range(1, 1 + n_belts):
                 set_entity(world, x, 0, "transport_belt", Direction.EAST)
             set_entity(world, 5, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
-            return simulate(world.permute(2, 0, 1).contiguous())
+            return update_with_flow_and_thput(world.permute(2, 0, 1).contiguous())
 
         for n_belts in range(1, 4):
             obs, thput, _ = partial(n_belts)
@@ -122,7 +122,7 @@ class TestSimulate:
         set_entity(world, 2, 0, "transport_belt", Direction.NORTH)
         set_entity(world, 3, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
 
-        obs, thput, _ = simulate(world.permute(2, 0, 1).contiguous())
+        obs, thput, _ = update_with_flow_and_thput(world.permute(2, 0, 1).contiguous())
         flow = obs[CH_FLOW] / FLOW_SCALE
         assert thput == 0.0
         assert flow[1, 0] == 15.0
@@ -132,7 +132,7 @@ class TestSimulate:
     def test_channel_is_integer_valued_so_uint8_storage_is_lossless(self):
         """SFT keeps its demonstrations in uint8 — FLOW's eighths must survive
         the cast, including an inserter's sub-1 i/s rate."""
-        obs = simulate(belt_line(middle="inserter"))[0]
+        obs = update_with_flow_and_thput(belt_line(middle="inserter"))[0]
 
         assert (obs[CH_FLOW] == obs[CH_FLOW].round()).all()
         assert obs[CH_FLOW].max() <= 255
@@ -144,8 +144,8 @@ class TestSimulate:
         """Callers cast for the network themselves, so the observation must
         not silently promote an int64 world to float."""
         world = belt_line()
-        assert simulate(world)[0].dtype == world.dtype
-        assert simulate(world.float())[0].dtype == torch.float32
+        assert update_with_flow_and_thput(world)[0].dtype == world.dtype
+        assert update_with_flow_and_thput(world.float())[0].dtype == torch.float32
 
     def test_flow_is_zero_on_a_belt_loop(self):
         """A cycle scores zero throughput while every entity still looks
@@ -158,7 +158,7 @@ class TestSimulate:
         set_entity(world, 1, 1, "transport_belt", Direction.NORTH)
         set_entity(world, 3, 0, "bulk_inserter", Direction.EAST, item_name="copper_cable")
 
-        obs, thput, unreachable = simulate(world.permute(2, 0, 1).contiguous())
+        obs, thput, unreachable = update_with_flow_and_thput(world.permute(2, 0, 1).contiguous())
         assert thput == 0.0
         assert unreachable == 0
         assert (obs[CH_FLOW] == 0).all()
@@ -180,7 +180,7 @@ class TestEnvObservation:
         factory = build_factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=7)
         assert factory is not None
         sink = factory.world_CWH[Channel.ENTITIES.value] == env._sink_id
-        assert (simulate(factory.world_CWH)[0][CH_FLOW][sink] > 0).all()
+        assert (update_with_flow_and_thput(factory.world_CWH)[0][CH_FLOW][sink] > 0).all()
 
     def test_step_refreshes_the_channel(self, registered_env):
         """Placing the belt that completes a line lights the whole line up in

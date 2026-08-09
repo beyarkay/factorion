@@ -38,10 +38,10 @@ from factorion import (
     build_factory,
     entities,
     items,
-    simulate,
     recipes,
     str2ent,
     str2item,
+    update_with_flow_and_thput,
 )
 from PIL import Image, ImageDraw, ImageFont
 
@@ -856,7 +856,7 @@ class FactorioEnv(gym.Env):
         self._original_world_CWH = torch.clone(self._world_CWH)
         self._prev_match = self._compute_solution_match()
         self.steps = 0
-        self._obs_CWH, _, _ = simulate(self._world_CWH)
+        self._obs_CWH, _, _ = update_with_flow_and_thput(self._world_CWH)
         return self._obs_CWH.cpu().numpy(), self._get_info()
 
     def step(self, action):
@@ -895,7 +895,7 @@ class FactorioEnv(gym.Env):
         # [0, 1] is raw / per-factory max (a perfectly-rebuilt factory scores
         # 1.0 regardless of belt speed). self._max_throughput comes from the
         # factory generator — see reset().
-        self._obs_CWH, thput_raw, num_unreachable = simulate(self._world_CWH)
+        self._obs_CWH, thput_raw, num_unreachable = update_with_flow_and_thput(self._world_CWH)
         thput_normed = (
             min(1.0, thput_raw / self._max_throughput)
             if self._max_throughput > 0

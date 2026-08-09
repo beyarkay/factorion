@@ -35,8 +35,8 @@ from factorion import (  # noqa: E402
     blank_entities,
     build_factory,
     entities,
-    simulate,
     render_factory,
+    update_with_flow_and_thput,
 )
 
 from ppo import (  # noqa: E402
@@ -136,7 +136,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
             valid_mask[rx * H + ry] = True
 
         # uint8 obs / bool mask: ~8x smaller than int64/float32, cast at use.
-        obs = simulate(state)[0].to(torch.uint8)
+        obs = update_with_flow_and_thput(state)[0].to(torch.uint8)
         tile_idx = x * H + y
         entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
         direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
@@ -169,7 +169,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
     # placement targets; the SFT loop's placement_mask zeroes out the
     # placement losses for this sample. valid_mask=all-zero matches the
     # invariant "no remaining tiles to place".
-    terminal_obs = simulate(state)[0].to(torch.uint8)
+    terminal_obs = update_with_flow_and_thput(state)[0].to(torch.uint8)
     terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
     pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, 1))
 

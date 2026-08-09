@@ -94,7 +94,7 @@ class Channel(Enum):
 
 
 # The observation the policy and critic see is the world's channels plus one
-# derived FLOW channel appended after them (see :func:`simulate`). It is not a
+# derived FLOW channel appended after them (see :func:`update_with_flow_and_thput`). It is not a
 # world channel: nothing places it, and it is stale the moment a tile changes.
 CH_FLOW = len(Channel)
 OBS_CHANNELS = len(Channel) + 1
@@ -1243,12 +1243,11 @@ def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
     return factorion_rs.render_factory(world_WHC)
 
 
-def simulate(
+def update_with_flow_and_thput(
     world: "torch.Tensor | np.ndarray",
 ) -> Tuple[torch.Tensor, float, int]:
-    """One engine pass over a ``(C, W, H)`` world, returning everything it
-    produces: the network's input (the world's channels plus the derived FLOW
-    channel), the throughput, and the unreachable count. The observation keeps
+    """One engine pass over a ``(C, W, H)`` world → ``(obs, thput,
+    num_unreachable)``, where ``obs`` is the world's channels plus FLOW. Keeps
     the world's dtype — FLOW is integer-valued — so callers cast for the
     network themselves.
     """
