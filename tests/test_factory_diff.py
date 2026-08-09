@@ -117,6 +117,7 @@ class TestDiffMarkdown:
             assert token in md
         # Per-lesson tally: one better, one worse, one lesson at each.
         assert "| `SPLITTER_SPLIT` | 1 | 0 | 1 | 0.900 | 0.100 | -0.800 |" in md
+        assert "μ main thput" in md and "MAIN" not in md.split("```")[0]
         assert "| `MOVE_ONE_ITEM` | 2 | 1 | 0 | 0.650 | 0.700 | +0.050 |" in md
 
     def test_identical_sides_say_so(self):
@@ -138,6 +139,15 @@ class TestDiffMarkdown:
         assert md.count("Δthput") == 3
         assert "37 further factories omitted; the 3 largest gaps are shown." in md
         assert md.rstrip().endswith("</details>")
+
+    def test_note_lands_under_the_intro(self):
+        """Provenance links belong where a reader lands, above the grids."""
+        md = diff_markdown(
+            [[_record("MOVE_ONE_ITEM", 1, 0.4)]],
+            [[_record("MOVE_ONE_ITEM", 1, 0.9)]],
+            note="seed 1: PR [`abc`](u1) vs main [`def`](u2)",
+        )
+        assert md.index("[`abc`](u1)") < md.index("| Lesson |")
 
     def test_side_labels_carry_through(self):
         md = diff_markdown(

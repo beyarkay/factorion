@@ -173,7 +173,7 @@ def _summary_table(
         rows.append((pr_t - main_t, kind, len(kind_keys), verdicts, main_t, pr_t))
     rows.sort(key=lambda r: -abs(r[0]))
     return [
-        "| Lesson | factories | PR better | PR worse | μ MAIN thput | μ PR thput | μ Δ |",
+        "| Lesson | factories | PR better | PR worse | μ main thput | μ PR thput | μ Δ |",
         "|---|---|---|---|---|---|---|",
         *(
             f"| `{kind}` | {n} | {sum(1 for v in verdicts if v > 0)} "
@@ -189,7 +189,8 @@ def diff_markdown(
     main_runs: list[list[dict]],
     *,
     pr_label: str = "PR",
-    main_label: str = "MAIN",
+    main_label: str = "main",
+    note: str = "",
     max_renders: int = MAX_RENDERS_DEFAULT,
 ) -> str:
     """Markdown report over one or more runs per side: a per-lesson tally, then
@@ -217,6 +218,9 @@ def diff_markdown(
         "per side; a factory counts as different only when every run on one side "
         "beat every run on the other, so a single seed wandering is not reported.",
         "",
+        # Provenance (which runs, which groups) belongs where a reader lands,
+        # not in a footer under 25 grids.
+        *([note, ""] if note else []),
         *_summary_table(keys, pr_by_key, main_by_key),
         "",
     ]
@@ -256,6 +260,7 @@ def compare_checkpoints(
     *,
     seed: int = 1,
     per_kind: int = PER_KIND_DEFAULT,
+    note: str = "",
 ) -> str:
     """Roll out every checkpoint over ONE shared factory set and diff the sides.
 
@@ -266,4 +271,5 @@ def compare_checkpoints(
     return diff_markdown(
         [collect(s, seed=seed, per_kind=per_kind) for s in pr_specs],
         [collect(s, seed=seed, per_kind=per_kind) for s in main_specs],
+        note=note,
     )

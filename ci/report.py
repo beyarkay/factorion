@@ -483,20 +483,27 @@ def compare_renders(
     seeds = sorted(set(pr_runs) & set(main_runs))
     if not seeds:
         return ""
-    md = compare_checkpoints(
+    entity = api.default_entity
+    groups = " vs ".join(
+        f"[`{g}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{g})"
+        for g in (pr_group, main_group)
+    )
+    note = (
+        f"{per_kind} factories per lesson, {groups}. Checkpoints — "
+        + ", ".join(
+            f"seed {s}: PR [`{pr_runs[s].id}`]({pr_runs[s].url}) vs "
+            f"main [`{main_runs[s].id}`]({main_runs[s].url})"
+            for s in seeds
+        )
+        + "."
+    )
+    return compare_checkpoints(
         [pr_runs[s].id for s in seeds],
         [main_runs[s].id for s in seeds],
         seed=seeds[0],
         per_kind=per_kind,
+        note=note,
     )
-    if not md:
-        return ""
-    runs_line = ", ".join(
-        f"seed {s}: [`{pr_runs[s].id}`]({pr_runs[s].url}) vs "
-        f"[`{main_runs[s].id}`]({main_runs[s].url})"
-        for s in seeds
-    )
-    return f"{md}\n\n{per_kind} factories per lesson. PR vs main runs — {runs_line}."
 
 
 def sweep_report(sweep_path: str, top_n: int = 5) -> str:
