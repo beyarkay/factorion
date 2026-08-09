@@ -207,7 +207,7 @@ const PERIM_SLOTS: [(i64, i64, Direction, Direction); 12] = [
 /// the achieved-throughput score across its sinks.
 fn world_throughput(world: &World) -> f64 {
     let graph = build_graph(world);
-    let (deliveries, _) = calc_throughput(&graph);
+    let (deliveries, _, _) = calc_throughput(&graph);
     factory_score(&deliveries)
 }
 
@@ -1291,7 +1291,7 @@ fn build_splitter_split(
         }
         // Reject dead builds and any orphan tiles (a tunnel could otherwise
         // strand a belt off every source→sink path).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable, _) = calc_throughput(&build_graph(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
@@ -1569,7 +1569,7 @@ fn build_splitter_merge_sideloaded(
 
         // The full build must merge both 7.5 arms to a saturated (15) sink,
         // and the only orphans may be the two protected decoys.
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable, _) = calc_throughput(&build_graph(&world));
         if factory_score(&deliveries) < 14.9 || unreachable != decoys.len() {
             continue;
         }
@@ -1586,7 +1586,7 @@ fn build_splitter_merge_sideloaded(
                 Channel::Entities,
                 Item::TransportBelt as i64,
             );
-            let (d2, _) = calc_throughput(&build_graph(&w2));
+            let (d2, _, _) = calc_throughput(&build_graph(&w2));
             factory_score(&d2) > 9.0
         });
         if one_arm_saturates {
@@ -2786,7 +2786,7 @@ fn build_factory_1_ingredient(
 
         // Reject dead builds and orphan tiles; anything slower-but-flowing is
         // kept on purpose (the lesson wants a throughput spread).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable, _) = calc_throughput(&build_graph(&world));
         if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
             continue;
         }
@@ -3015,7 +3015,7 @@ fn build_cross_under_belt(
 
         // Both lines must deliver at full belt speed, and no entity may be an
         // orphan (off every source→sink path).
-        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        let (deliveries, unreachable, _) = calc_throughput(&build_graph(&world));
         if factory_score(&deliveries) < belt_flow - 1e-6 || unreachable != 0 {
             continue;
         }
@@ -3625,7 +3625,7 @@ mod tests {
 
     /// Throughput score and orphan-tile count of a placed world.
     fn tp_unreachable(world: &World) -> (f64, usize) {
-        let (deliveries, unreachable) = calc_throughput(&build_graph(world));
+        let (deliveries, unreachable, _) = calc_throughput(&build_graph(world));
         (factory_score(&deliveries), unreachable)
     }
 
@@ -4149,7 +4149,7 @@ mod tests {
                 continue;
             };
             built += 1;
-            let (dels, unreach) = calc_throughput(&build_graph(&f.world));
+            let (dels, unreach, _) = calc_throughput(&build_graph(&f.world));
             assert!(factory_score(&dels) > 14.9, "seed={seed}: full merge < 15");
             assert_eq!(unreach, 2, "seed={seed}: only the 2 decoys may be orphans");
             assert_eq!(
@@ -4175,7 +4175,7 @@ mod tests {
             for &(x, y) in &source_cells {
                 let mut w2 = f.world.clone();
                 w2.set(x, y, Channel::Entities, Item::TransportBelt as i64);
-                let (d2, _) = calc_throughput(&build_graph(&w2));
+                let (d2, _, _) = calc_throughput(&build_graph(&w2));
                 assert!(
                     factory_score(&d2) < 14.0,
                     "seed={seed}: one-arm build scored {} — a single source saturated the sink",

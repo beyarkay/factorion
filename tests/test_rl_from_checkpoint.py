@@ -152,6 +152,10 @@ class TestEotTerminationAndMetrics:
         a = PpoArgs()
         assert a.reward_symlog_r0 == 0.01
 
+    def test_entity_flow_coef_default(self):
+        a = PpoArgs()
+        assert a.entity_flow_coef == 0.05
+
 
 class TestCriticWarmupParamSplit:
     def _split(self, agent):

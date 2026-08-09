@@ -78,7 +78,7 @@ def run_scenario(kind: LessonKind, name: str, args: Args) -> dict:
             assert factory is not None
             world_cwh, min_ent = blank_entities(factory, num_missing_entities=0)
             world_whc = world_cwh.permute(1, 2, 0)
-            tp, unreachable = factorion_rs.simulate_throughput(
+            tp, unreachable, _ = factorion_rs.simulate_throughput(
                 world_whc.numpy().astype(np.int64)
             )
             generated += 1

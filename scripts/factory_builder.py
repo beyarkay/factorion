@@ -329,7 +329,7 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
         plt.close("all")
 
     try:
-        throughput, num_unreachable = factorion_rs.simulate_throughput(
+        throughput, num_unreachable, _ = factorion_rs.simulate_throughput(
             world.numpy().astype(np.int64)
         )
         info = f"throughput: {throughput:.4f}  ·  unreachable nodes: {num_unreachable}"

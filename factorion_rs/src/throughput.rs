@@ -62,9 +62,10 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 
 /// Calculate the per-sink deliveries of a factory graph.
 ///
-/// Returns `(deliveries, num_unreachable)`, one [`SinkDelivery`] per sink:
-/// the item it was configured to accept and how much of that item reached
-/// it. Collapse to a scalar score with [`factory_score`].
+/// Returns `(deliveries, num_unreachable, entity_flow)`: one [`SinkDelivery`]
+/// per sink (the item it was configured to accept and how much of that item
+/// reached it — collapse to a scalar score with [`factory_score`]), the orphan
+/// count, and the total items/s carried by the placed entities.
 ///
 /// Algorithm:
 /// 1. Detect cycles → return no deliveries if any exist
@@ -72,14 +73,14 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// 3. At each node, compute output from input using entity trait
 /// 4. Collect each sink's delivery of its configured item
 /// 5. Count unreachable nodes
-pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
+pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize, f64) {
     if graph.node_count() == 0 {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, 0.0);
     }
 
     // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
     if has_cycle(graph) {
-        return (Vec::new(), 0);
+        return (Vec::new(), 0, 0.0);
     }
 
     let sources: Vec<usize> = (0..graph.node_count())
@@ -94,6 +95,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         return (
             Vec::new(),
             count_unreachable_entities(graph, &HashSet::new()),
+            0.0,
         );
     }
 
@@ -225,7 +227,20 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         });
     }
 
-    // 4. Count unreachable ENTITIES (not nodes)
+    // 4. Total items/s moving through the placed entities, which sums lane
+    //    nodes back into their tile. The markers are excluded — a source's
+    //    output is a pre-set infinite supply and a sink just re-emits its
+    //    delivery — leaving a signal over exactly what the agent built, and
+    //    one that is nonzero before anything reaches a sink. Multiplying the
+    //    fan-out division back out is what makes this items/s *carried*: a
+    //    node's stored output is its per-successor share, so a belt feeding
+    //    two branches stores 7.5 while moving 15.
+    let entity_flow: f64 = (0..graph.node_count())
+        .filter(|&i| !matches!(graph.nodes[i].entity_kind, Item::Source | Item::Sink))
+        .map(|i| node_outputs[i].values().sum::<f64>() * graph.successors[i].len().max(1) as f64)
+        .sum();
+
+    // 5. Count unreachable ENTITIES (not nodes)
     // on_path = can_reach_sink ∩ reachable_from_source.
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
@@ -237,7 +252,11 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         .copied()
         .collect();
 
-    (deliveries, count_unreachable_entities(graph, &on_path))
+    (
+        deliveries,
+        count_unreachable_entities(graph, &on_path),
+        entity_flow,
+    )
 }
 
 /// Count entity units with NO node on a source→sink path. Since dual lanes,
@@ -381,9 +400,66 @@ mod tests {
     fn test_empty_world_throughput() {
         let w = World::empty(5, 5);
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         assert!(output.is_empty());
         assert_eq!(unreachable, 0);
+    }
+
+    /// `entity_flow` credits belts carrying items even when nothing has
+    /// reached a sink yet — the same two belts score 30 items/s of flow
+    /// whether or not the last hop to the sink exists, while the factory
+    /// score collapses to 0 without it.
+    #[test]
+    fn test_entity_flow_scores_a_dead_end_belt_run() {
+        // Only the sink's position differs: in line with the belts, or one
+        // row off so the run dead-ends beside it.
+        let with_sink_at = |sx, sy| {
+            let mut w = World::empty(4, 2);
+            w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+            w.place(1, 0, Item::TransportBelt, Direction::East, None);
+            w.place(2, 0, Item::TransportBelt, Direction::East, None);
+            w.place(sx, sy, Item::Sink, Direction::East, Some(Item::IronPlate));
+            calc_throughput(&build_graph(&w))
+        };
+
+        let (dels, _, flow) = with_sink_at(3, 0);
+        assert!((factory_score(&dels) - 15.0).abs() < 1e-9);
+        assert!((flow - 30.0).abs() < 1e-9, "connected flow {flow}");
+
+        let (dels, _, flow) = with_sink_at(3, 1);
+        assert_eq!(factory_score(&dels), 0.0);
+        assert!((flow - 30.0).abs() < 1e-9, "dead-end flow {flow}");
+    }
+
+    /// A belt carries what it carries whether or not something forks off it.
+    /// `node_outputs` stores the per-successor share, so without multiplying
+    /// the fan-out division back out the tapped belt would report half its
+    /// load and bus-belt layouts would be systematically under-credited.
+    #[test]
+    fn test_entity_flow_counts_a_forking_belt_in_full() {
+        let with_tap = |tap: bool| {
+            let mut w = World::empty(5, 3);
+            w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+            for x in 1..4 {
+                w.place(x, 0, Item::TransportBelt, Direction::East, None);
+            }
+            w.place(4, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+            if tap {
+                w.place(2, 1, Item::Inserter, Direction::South, None);
+            }
+            calc_throughput(&build_graph(&w)).2
+        };
+
+        // Three belts x 15 i/s, nothing forking.
+        assert!((with_tap(false) - 45.0).abs() < 1e-9, "{}", with_tap(false));
+        // Tapping belt(2,0) starves what is downstream of it, but the tapped
+        // belt itself still moves a full 15 — the drop must come from the
+        // successors' reduced share, not from the fork halving the tap point.
+        let tapped = with_tap(true);
+        assert!(
+            (tapped - 38.36).abs() < 0.01,
+            "tapped run should keep belt(2,0) whole, got {tapped}"
+        );
     }
 
     #[test]
@@ -399,7 +475,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Single sink, belt-limited to 15.0.
         assert_eq!(output.len(), 1);
@@ -425,7 +501,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Single sink, inserter-limited to 0.86.
         assert_eq!(output.len(), 1);
@@ -448,7 +524,7 @@ mod tests {
         w.place(2, 2, Item::TransportBelt, Direction::East, None);
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // No path from source to sink → the sink's delivery is 0, so the
         // factory scores 0. All 3 entities are off any source→sink path.
@@ -514,7 +590,7 @@ mod tests {
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         let score = factory_score(&output);
         assert!(
             (score - 15.0).abs() < 1e-9,
@@ -541,7 +617,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // Two sinks, evenly split at 7.5 each. The power-mean score of two
         // equal deliveries is that per-sink value (7.5), not the 15.0 sum.
         assert_eq!(output.len(), 2);
@@ -569,7 +645,7 @@ mod tests {
         w.place(4, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // Two inputs (15+15=30), splitter cap 30, 1 output belt caps at 15.
         // Single sink → score is just its delivery (15.0).
         let score = factory_score(&output);
@@ -596,7 +672,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
         // 30 in, splitter passes 30, each of two output sinks gets 15. The
         // power-mean score of two full sinks is 15.0 (per-sink), not 30.0.
         assert_eq!(output.len(), 2);
@@ -615,7 +691,7 @@ mod tests {
         w.place(0, 0, Item::Source, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert!(output.is_empty());
     }
 
@@ -634,7 +710,7 @@ mod tests {
         w.place(3, 0, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // The sink expects CopperCable; only raw CopperPlate is routed to it,
         // which is not its configured item, so it delivers 0 → factory scores 0.
@@ -677,7 +753,7 @@ mod tests {
         w.place(7, 2, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, unreachable) = calc_throughput(&g);
+        let (output, unreachable, _) = calc_throughput(&g);
 
         // Only the crafted CopperCable is delivered, inserter-limited to 0.86.
         assert_eq!(output.len(), 1);
@@ -720,7 +796,7 @@ mod tests {
                 w.place(4, 1, Item::Sink, Direction::East, Some(sink_item));
             });
             let g = build_graph(&w);
-            let (output, _) = calc_throughput(&g);
+            let (output, _, _) = calc_throughput(&g);
             assert_eq!(output.len(), 1);
             assert!(
                 (output[0].achieved - want).abs() < 1e-9,
@@ -740,7 +816,7 @@ mod tests {
                 w.place(2, 3, Item::Sink, Direction::South, Some(sink_item));
             });
             let g = build_graph(&w);
-            let (output, _) = calc_throughput(&g);
+            let (output, _, _) = calc_throughput(&g);
             assert_eq!(output.len(), 1);
             assert!(
                 (output[0].achieved - want).abs() < 1e-9,
@@ -766,7 +842,7 @@ mod tests {
         w.place(2, 3, Item::Sink, Direction::South, Some(Item::IronPlate));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert_eq!(output.len(), 1);
         assert!(
             (output[0].achieved - 0.86).abs() < 1e-9,
@@ -852,7 +928,7 @@ mod tests {
         w.place(4, 1, Item::Sink, Direction::East, Some(Item::CopperCable));
 
         let g = build_graph(&w);
-        let (output, _) = calc_throughput(&g);
+        let (output, _, _) = calc_throughput(&g);
         assert_eq!(output.len(), 2);
         assert!(output.iter().any(|d| (d.achieved - 15.0).abs() < 1e-9));
         assert!(output.iter().any(|d| d.achieved == 0.0));

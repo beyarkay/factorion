@@ -260,11 +260,11 @@ class TestThroughputWithMask:
         set_entity(world, 3, 0, "transport_belt", Direction.EAST)
         set_entity(world, 4, 0, "bulk_inserter", Direction.EAST, "copper_cable")
 
-        t1, u1 = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+        t1, u1, _ = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
         world[2, 2, Channel.FOOTPRINT.value] = 0
         world[3, 3, Channel.FOOTPRINT.value] = 0
-        t2, u2 = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+        t2, u2, _ = factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
 
         assert t1 == t2
         assert u1 == u2

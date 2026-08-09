@@ -338,6 +338,7 @@ def _rollout_episode_metrics(
     min_entities_required: float,
     frac_reachable: float,
     entity_cost: float,
+    entity_flow: float,
     cost_efficiency: float,
     is_trial: bool = False,
 ) -> dict:
@@ -369,6 +370,7 @@ def _rollout_episode_metrics(
         f"{agg}entity_efficiency": float(min_entities_required) / float(num_entities),
         f"{agg}frac_reachable": float(frac_reachable),
         f"{agg}entity_cost": float(entity_cost),
+        f"{agg}entity_flow": float(entity_flow),
         f"{agg}cost_efficiency": float(cost_efficiency),
         # Per-lesson breakdown — each averages over only this lesson's episodes.
         f"rollout/{lesson}/thput": float(thput_normed),
@@ -376,6 +378,7 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/reward": float(episode_return),
         f"rollout/{lesson}/length": float(episode_len),
         f"rollout/{lesson}/entity_cost": float(entity_cost),
+        f"rollout/{lesson}/entity_flow": float(entity_flow),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
 
@@ -545,12 +548,14 @@ def make_env(
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
+    entity_flow_coef=PpoArgs.entity_flow_coef,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0})
+                       'reward_symlog_r0': reward_symlog_r0,
+                       'entity_flow_coef': entity_flow_coef})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -617,14 +622,18 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
+        entity_flow_coef: float = PpoArgs.entity_flow_coef,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
         if reward_symlog_r0 < 0:
             raise ValueError("reward_symlog_r0 must be non-negative")
+        if entity_flow_coef < 0:
+            raise ValueError("entity_flow_coef must be non-negative")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
+        self.entity_flow_coef = entity_flow_coef
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -707,6 +716,7 @@ class FactorioEnv(gym.Env):
             'frac_hallucin': self._frac_hallucin,
             'final_dir_reward': self._final_dir_reward,
             'entity_cost': self._entity_cost,
+            'entity_flow': self._entity_flow,
             'cost_efficiency': self._cost_efficiency,
             'reward': self._reward,
             'cum_reward': self._cum_reward,
@@ -779,6 +789,7 @@ class FactorioEnv(gym.Env):
         self._frac_hallucin = 0
         self._final_dir_reward = 0
         self._entity_cost = 0
+        self._entity_flow = 0.0
         self._cost_efficiency = 1.0
         self._reward = 0
         self._terminated = False
@@ -896,7 +907,7 @@ class FactorioEnv(gym.Env):
             # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
             # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
             # self._max_throughput comes from the factory generator — see reset().
-            thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+            thput_raw, num_unreachable, entity_flow = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
             thput_normed = (
                 min(1.0, thput_raw / self._max_throughput)
                 if self._max_throughput > 0
@@ -954,6 +965,7 @@ class FactorioEnv(gym.Env):
             # diagnostics (the rollout never reads these mid-episode).
             thput_raw = 0.0
             thput_normed = 0.0
+            entity_flow = 0.0
             num_entities = 0
             frac_reachable = 0
             final_dir_reward = 0.0
@@ -965,10 +977,13 @@ class FactorioEnv(gym.Env):
 
         reward = 0.0
         if terminated or truncated:
-            # Multiplication makes cost a secondary modifier of achieved
-            # throughput: a no-output factory always earns zero terminal
-            # throughput reward, however many entities it contains.
-            reward = thput_raw * cost_efficiency
+            # Throughput is the objective; entity_flow only stands in for it
+            # while nothing has reached a sink and the real signal is a flat
+            # zero however close the chain got. The moment any item lands the
+            # proxy is dropped outright, so a delivering factory is never paid
+            # for flow it fails to deliver — only frugality still applies.
+            delivering = thput_raw > 0
+            reward = (thput_raw if delivering else entity_flow) * cost_efficiency
             if self.reward_symlog_r0 > 0:
                 # Compress so lessons whose ceilings differ by ~360x contribute
                 # comparable gradient. Compressing the cost-adjusted reward
@@ -976,6 +991,11 @@ class FactorioEnv(gym.Env):
                 # throughput at exactly zero; above the knee the two agree to
                 # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
                 reward = math.log1p(reward / self.reward_symlog_r0)
+            if not delivering:
+                # Scales the whole proxy branch, so it sets how far the best
+                # consolation prize sits below the worst real solve rather than
+                # reordering anything within the branch.
+                reward *= self.entity_flow_coef
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -983,6 +1003,7 @@ class FactorioEnv(gym.Env):
         self._frac_hallucin = frac_hallucin
         self._final_dir_reward = final_dir_reward
         self._entity_cost = entity_cost
+        self._entity_flow = entity_flow
         self._cost_efficiency = cost_efficiency
         self._reward = reward
         self._terminated = terminated
@@ -1010,6 +1031,7 @@ class FactorioEnv(gym.Env):
                 'frac_hallucin': frac_hallucin,
                 'final_dir_reward': final_dir_reward,
                 'entity_cost': entity_cost,
+                'entity_flow': entity_flow,
                 'cost_efficiency': cost_efficiency,
                 'completion_bonus': self.max_steps - self.steps,
                 'min_entities_required': self.min_entities_required,
@@ -1844,13 +1866,14 @@ if __name__ == "__main__":
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
+                  "frac_reachable", "entity_cost", "entity_flow",
+                  "cost_efficiency"]:
             wandb.define_metric(f"rollout/{m}", summary="last")
             wandb.define_metric(f"rollout/trial_{m}", summary="last")
         for ln in _LESSONS:
             for m in [
                 "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
+                "entity_flow", "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
         for m in ["entropy", "eot_prob"]:
@@ -1923,6 +1946,7 @@ if __name__ == "__main__":
             run_name,
             args.entity_cost_scale,
             args.reward_symlog_r0,
+            args.entity_flow_coef,
         )
         for i in range(args.num_envs)
     ]
@@ -2276,6 +2300,7 @@ if __name__ == "__main__":
                         min_entities_required=infos['min_entities_required'][i],
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
+                        entity_flow=infos["entity_flow"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
                         is_trial=is_trial,
                     ))
@@ -2535,6 +2560,7 @@ if __name__ == "__main__":
                     run_name,
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
+                    args.entity_flow_coef,
                 )
                 for i in range(num_render_envs)
             ])
