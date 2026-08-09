@@ -9,6 +9,7 @@ import base64
 import functools
 import glob
 import json
+import math
 import os
 import random
 import zlib
@@ -542,6 +543,27 @@ _BP_DIR_TO_MODEL = {
     12: Direction.WEST,
 }
 
+# The engine models one belt tier, so a higher-tier belt decodes to its yellow
+# equivalent: under-reporting speed keeps the layout intact, where dropping the
+# entity silently decodes a broken factory instead.
+_BELT_TIER_ALIASES = {
+    f"{tier}-{base}": base
+    for tier in ("fast", "express", "turbo")
+    for base in ("transport-belt", "underground-belt", "splitter")
+}
+
+# Collapsing the tiers is only sound while none of them is placeable — the fast
+# tier is already in the registry as a craftable item, but nothing that goes on
+# the grid moves faster than yellow. The day a tier becomes placeable, this
+# table starts reporting a blue belt at a yellow belt's rate, so break at
+# import rather than let that number through.
+_aliased_tiers = {name.replace("-", "_") for name in _BELT_TIER_ALIASES}
+assert not _aliased_tiers & {i.name for i in items.values() if i.is_placeable}, (
+    "a higher belt tier is placeable now, so it can no longer be aliased onto "
+    "the yellow tier: give blueprint2world the real mapping and revisit every "
+    "rate that assumed one belt speed"
+)
+
 # Arrow virtual signals in a constant-combinator marker encode the
 # source/sink direction (see factorion-mod/server/blueprint.py).
 _ARROW_TO_DIR = {
@@ -585,7 +607,7 @@ def _parse_combinator_marker(e):
 
 
 def blueprint2world(bp):
-    """Decode a Factorio 2.0 blueprint string into a (C, W, H) world
+    """Decode a Factorio blueprint string into a (C, W, H) world
     tensor matching the encoder in factorion-mod/server/blueprint.py.
 
     Conventions:
@@ -593,7 +615,8 @@ def blueprint2world(bp):
         an N×M entity rotated to occupy w×h tiles, top-left tile is
         floor(center - (w/2, h/2)).
       - Direction is a 16-step enum (0/4/8/12 = N/E/S/W). Diagonal
-        values (2/6/10/14) are rejected.
+        values (2/6/10/14) are rejected. Pre-2.0 blueprints encode the
+        same four facings in 8 steps, and are scaled up on read.
       - Inserter direction in a blueprint points to the drop tile;
         flip by +8 (mod 16) to get the pickup-pointing model
         direction.
@@ -603,7 +626,11 @@ def blueprint2world(bp):
         with the corresponding ITEMS / DIRECTION channel values.
     """
     obj = b64_to_dict(bp)
-    raw_entities = obj.get("blueprint", {}).get("entities", [])
+    blueprint = obj.get("blueprint", {})
+    raw_entities = blueprint.get("entities", [])
+    # Factorio 2.0 doubled the direction enum from 8 steps to 16; the major
+    # version sits in the top 16 bits of the packed version field.
+    dir_scale = 1 if (blueprint.get("version", 0) >> 48) >= 2 else 2
 
     # First pass: resolve each blueprint entity to a placement
     # (entity_name, top_left_x, top_left_y, w, h, direction, item_value, misc).
@@ -625,8 +652,8 @@ def blueprint2world(bp):
                 continue
             role, item_name, model_dir = parsed
             ent_name = "stack_inserter" if role == "source" else "bulk_inserter"
-            tlx = int(cx - 0.5)
-            tly = int(cy - 0.5)
+            tlx = math.floor(cx - 0.5)
+            tly = math.floor(cy - 0.5)
             item_val = 0
             if item_name is not None:
                 item_meta = str2item(item_name)
@@ -637,12 +664,12 @@ def blueprint2world(bp):
             )
             continue
 
-        proto = str2ent(name)
+        proto = str2ent(_BELT_TIER_ALIASES.get(name, name))
         if proto is None:
             print(f"WARN: skipping unknown entity {name} at ({cx},{cy})")
             continue
 
-        bp_dir = e.get("direction", 0)
+        bp_dir = e.get("direction", 0) * dir_scale
         if "inserter" in proto.name:
             # Blueprint direction = drop tile; model direction = pickup.
             bp_dir = (bp_dir + 8) % 16
@@ -658,8 +685,8 @@ def blueprint2world(bp):
         w, h = proto.width, proto.height
         if model_dir in (Direction.EAST, Direction.WEST):
             w, h = h, w
-        tlx = int(cx - w / 2)
-        tly = int(cy - h / 2)
+        tlx = math.floor(cx - w / 2)
+        tly = math.floor(cy - h / 2)
 
         item_val = 0
         if "assembling_machine" in proto.name:
