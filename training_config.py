@@ -165,7 +165,7 @@ class PpoArgs(SharedArgs):
     opposed to subtracting a log-space cost term) also keeps zero throughput at
     exactly zero, so a factory that delivers nothing is never worse than an
     empty grid. 0 disables the compression."""
-    entity_flow_coef: float = 0.02
+    entity_flow_coef: float = 0.05
     """weight of the fallback terminal reward paid when a factory delivers
     nothing. Throughput is the objective whenever it is nonzero; below that it
     is a flat zero however close the chain got, so a policy building from a
@@ -174,17 +174,29 @@ class PpoArgs(SharedArgs):
     computes per node and previously discarded — stands in for it there:
     `entity_flow_coef * log1p(entity_flow * cost_efficiency / reward_symlog_r0)`.
     The proxy is dropped the moment anything is delivered, so it can never pay
-    a working factory for flow-carrying decoys. Because it scales the whole
-    fallback branch uniformly, this coefficient sets how far the best
-    consolation prize sits below a real solve rather than reordering anything
-    within the branch. At 0.02 the fallback tops out at 0.209 across every
-    lesson, against a 1st-percentile delivering reward of 0.976 (~4.7x) and a
-    median of 5.88; the two ranges cross on 0.39% of delivering states, all of
-    them MEMORISE_4 trickles under 0.002 items/s. Spam is not the risk it looks
-    like either — only tiles actually carrying items score, and a grid flooded
-    with belts is mostly orphans, so filling all 119 free cells of an 11x11
-    measures entity_flow 75 against a solved MOVE_ONE_ITEM's 150, worth 2.4% of
-    its reward. 0 disables the fallback, recovering a throughput-only reward."""
+    a working factory for flow-carrying decoys.
+
+    Because it scales the whole fallback branch uniformly it reorders nothing
+    within the branch; it trades the branch's weight in the gradient against
+    how close the best consolation prize gets to a real solve. Both sides
+    measured on 448 sampled rollouts of h76h80yb (the PPO rollout
+    distribution), where 82% of visited states deliver nothing:
+
+        coef    dead sd / batch sd    ceiling    p1 delivering    overlap
+        0.02          2.1%             0.21          0.84           0.7%
+        0.05          5.4%             0.52          0.84           0.7%
+        0.08          9.0%             0.83          0.84           0.7%
+        0.10         11.4%             1.03          0.84           2.9%
+
+    Advantage normalisation divides by the batch spread, so `dead sd / batch
+    sd` is what the fallback is worth to the gradient; at 0.02 it is 2% and
+    likely to be lost. 0.05 nearly triples that while keeping the ceiling 1.6x
+    under the 1st-percentile delivering reward and the overlap flat. 0.08 buys
+    more still but leaves no margin at all (0.83 vs 0.84). Spam is not the risk
+    it looks like — only tiles actually carrying items score, and a grid
+    flooded with belts is mostly orphans, so filling all 119 free cells of an
+    11x11 measures entity_flow 75 against a solved MOVE_ONE_ITEM's 150. 0
+    disables the fallback, recovering a throughput-only reward."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

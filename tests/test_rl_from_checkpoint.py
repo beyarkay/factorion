@@ -154,7 +154,7 @@ class TestEotTerminationAndMetrics:
 
     def test_entity_flow_coef_default(self):
         a = PpoArgs()
-        assert a.entity_flow_coef == 0.02
+        assert a.entity_flow_coef == 0.05
 
 
 class TestCriticWarmupParamSplit:
