@@ -27,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from factorion import Channel, Misc, entities, items, observe, str2ent  # noqa: E402
+from factorion import Channel, Misc, entities, items, simulate, str2ent  # noqa: E402
 from ppo import OBS_CHANNELS, AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
 
 import factorion_rs  # noqa: E402
@@ -156,7 +156,7 @@ def _sink_id() -> int:
 
 def request_to_world(req: dict) -> np.ndarray:
     """Build the (C, W, H) world tensor a request describes. Wrap it in
-    `observe` to get the policy's input."""
+    `simulate` to get the policy's input."""
     size = req["grid_size"]
     world = np.zeros((len(Channel), size, size), dtype=np.float32)
 
@@ -209,7 +209,7 @@ def request_to_world(req: dict) -> np.ndarray:
 # Iterative inference: place one entity at a time, greedy (argmax).
 # --------------------------------------------------------------------------- #
 def _argmax_action(agent: AgentCNN, world_CWH: np.ndarray, device) -> dict:
-    x = observe(world_CWH)[0].unsqueeze(0).to(device)
+    x = simulate(world_CWH)[0].unsqueeze(0).to(device)
     with torch.no_grad():
         # temperature=0 = the shared sampler's greedy (argmax) mode.
         act = agent.sample_action(
@@ -327,7 +327,7 @@ def run_inference(
     for step in range(max_steps):
         # Ask the model first: do you think we're done?
         with torch.no_grad():
-            x = observe(world)[0].unsqueeze(0).to(device)
+            x = simulate(world)[0].unsqueeze(0).to(device)
             eot_p = float(agent.eot_prob(x).item())
         if eot_p > eot_threshold:
             log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)

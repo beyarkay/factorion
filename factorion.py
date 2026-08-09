@@ -94,7 +94,7 @@ class Channel(Enum):
 
 
 # The observation the policy and critic see is the world's channels plus one
-# derived FLOW channel appended after them (see :func:`observe`). It is not a
+# derived FLOW channel appended after them (see :func:`simulate`). It is not a
 # world channel: nothing places it, and it is stale the moment a tile changes.
 CH_FLOW = len(Channel)
 OBS_CHANNELS = len(Channel) + 1
@@ -1243,31 +1243,14 @@ def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
     return factorion_rs.render_factory(world_WHC)
 
 
-def observe(
+def simulate(
     world: "torch.Tensor | np.ndarray",
 ) -> Tuple[torch.Tensor, float, int]:
-    """Build the network input for a ``(C, W, H)`` world.
-
-    Returns ``(obs_CWH, thput, num_unreachable)``. The observation is the
-    world's channels plus a derived FLOW channel — the steady-state rate the
-    engine computes through each entity, in :data:`FLOW_SCALE` eighths of an
-    item/s. Where items actually go is expensive for a conv stack to infer
-    from entity ids and facings alone but nearly free for the engine, and it
-    separates the failures unreachability cannot see: a belt loop scores zero
-    with every entity connected, and it reads zero flow throughout.
-
-    An entity carries items as soon as something feeds it — reaching a sink is
-    not required. A chain built out from a source therefore lights up tile by
-    tile while throughput is still flat zero, which is what lets a value
-    function tell "one belt short" from "nothing built". Whether the items
-    arrive stays legible at the sink, whose own tile carries its delivery.
-
-    The throughput and unreachable count come back too because the engine
-    computes all three in one pass — a caller that wants both never has to
-    simulate twice.
-
-    FLOW is integer-valued, so the observation keeps the world's dtype and
-    callers cast for the network exactly as they already did.
+    """One engine pass over a ``(C, W, H)`` world, returning everything it
+    produces: the network's input (the world's channels plus the derived FLOW
+    channel), the throughput, and the unreachable count. The observation keeps
+    the world's dtype — FLOW is integer-valued — so callers cast for the
+    network themselves.
     """
     world_CWH = torch.as_tensor(world)
     # Contiguous, so the engine takes its whole-buffer copy rather than the

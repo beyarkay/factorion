@@ -55,7 +55,7 @@ from factorion import (  # noqa: E402
     entities,
     items,
     new_world,
-    observe,
+    simulate,
     plot_flow_network,
 )
 from ppo import (  # noqa: E402
@@ -583,7 +583,7 @@ def _predict(grid: list[list[dict]]) -> dict:
     agent = _get_agent(size)
 
     obs_CWH = (
-        observe(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
+        simulate(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
     )
     W = obs_CWH.shape[2]
     H = obs_CWH.shape[3]
@@ -667,7 +667,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
     world_WHC = build_world(grid)
     agent = _get_agent(world_WHC.shape[0])
     obs_CWH = (
-        observe(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
+        simulate(world_WHC.permute(2, 0, 1))[0].float().unsqueeze(0).to(_AGENT_DEVICE)
     )
 
     with torch.inference_mode():
