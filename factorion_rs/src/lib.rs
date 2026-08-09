@@ -60,17 +60,20 @@ use world::World;
 /// Input: numpy array of shape (W, H, C) with dtype i64, where channels are:
 ///   0: entity ID, 1: direction, 2: item/recipe, 3: misc (underground state), 4: footprint
 ///
-/// Returns: (score, num_unreachable).
+/// Returns: (score, num_unreachable, entity_flow).
 /// The score is the power mean (see [`factory_score`]) of each sink's
 /// achieved throughput of its configured item, so unused / under-served
 /// sinks drag it down rather than being hidden by a fully-fed sink.
+/// `entity_flow` is the items/s summed over every placed entity (markers
+/// excluded), which unlike the score is nonzero for a factory whose flow has
+/// not reached a sink yet.
 #[cfg(feature = "pyo3-bindings")]
 #[pyfunction]
-fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
+fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize, f64)> {
     let world = World::from_numpy(&world);
     let graph = build_graph(&world);
-    let (deliveries, num_unreachable) = calc_throughput(&graph);
-    Ok((factory_score(&deliveries), num_unreachable))
+    let (deliveries, num_unreachable, entity_flow) = calc_throughput(&graph);
+    Ok((factory_score(&deliveries), num_unreachable, entity_flow))
 }
 
 /// Python-facing shape of one sink's delivery: the sink's anchor tile, the
@@ -95,7 +98,7 @@ type PySinkDelivery = (usize, usize, Option<String>, f64);
 fn py_sink_deliveries(world: PyReadonlyArray3<i64>) -> PyResult<Vec<PySinkDelivery>> {
     let world = World::from_numpy(&world);
     let graph = build_graph(&world);
-    let (deliveries, _) = calc_throughput(&graph);
+    let (deliveries, _, _) = calc_throughput(&graph);
     Ok(deliveries
         .into_iter()
         .map(|d| {

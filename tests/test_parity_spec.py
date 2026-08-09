@@ -201,7 +201,7 @@ def test_expected_sink_rates_aggregate_to_engine_score():
             np.asarray(world).transpose(1, 2, 0).astype(np.int64)
         )
         world_whc = np.ascontiguousarray(world_whc)
-        score, _ = factorion_rs.simulate_throughput(world_whc)
+        score, _, _ = factorion_rs.simulate_throughput(world_whc)
         rates = [r for _, r in expected_sink_rates(world).values()]
         power_mean = (sum(r**0.5 for r in rates) / len(rates)) ** 2
         assert score == pytest.approx(power_mean), (kind.name, seed)

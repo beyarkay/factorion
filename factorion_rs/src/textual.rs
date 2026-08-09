@@ -571,7 +571,7 @@ pub(crate) fn parse_many(text: &str) -> Result<Vec<FactorySpec>, String> {
 /// float tolerance). Returns `Err` with the rendered factory on mismatch.
 pub(crate) fn check_throughput(spec: &FactorySpec) -> Result<(), String> {
     let graph = build_graph(&spec.world);
-    let (deliveries, _unreachable) = calc_throughput(&graph);
+    let (deliveries, _unreachable, _) = calc_throughput(&graph);
     let got: Vec<(Option<Item>, f64)> = deliveries.iter().map(|d| (d.item, d.achieved)).collect();
     let want: Vec<(Option<Item>, f64)> = spec
         .expected_throughput
