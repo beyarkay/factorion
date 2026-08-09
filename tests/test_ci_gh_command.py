@@ -9,6 +9,7 @@ the first real `/ci` comment exercises after merge.
 
 import base64
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -199,6 +200,38 @@ class TestCompareDispatch:
             gh_command.main()
         assert exc.value.code == 1
         assert [s[1] for s in gh_ctx["statuses"]] == ["pending", "failure"]
+
+    def test_render_deps_probe_never_imports_here(self, monkeypatch):
+        """The probe must run in a CHILD process: importing factorion_rs in
+        this one binds the repo's source directory (a namespace package with
+        no compiled symbols) into sys.modules, where it shadows the wheel the
+        install then builds — observed live on PR #383."""
+        import subprocess
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        gh_command._ensure_render_deps()
+        ((probe,),) = [(c,) for c in calls]  # exactly one call: the probe
+        assert probe[1] == "-c" and "import torch" in probe[2]
+
+    def test_render_deps_install_when_missing(self, monkeypatch):
+        import subprocess
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=len(calls) == 1)  # probe fails
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        gh_command._ensure_render_deps()
+        assert any("torch" in c and "--index-url" in c for c in calls[1:])
+        assert any(c[:2] == ["maturin", "build"] for c in calls[1:])
 
     def _stub_compare(self, monkeypatch, ok=True):
         monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)

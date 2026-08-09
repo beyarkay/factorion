@@ -326,23 +326,28 @@ def _ensure_render_deps() -> None:
     exercised on the PR that introduces it. The dispatcher, by contrast, runs
     from the PR head.
     """
-    try:
-        import factorion_rs  # noqa: F401
-        import torch  # noqa: F401
-
-        return
-    except ModuleNotFoundError:
-        pass
     import glob
+    import importlib
     import subprocess
+    import sys
 
-    rs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "factorion_rs")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Probed in a child process: importing factorion_rs here would bind the
+    # repo's own source directory (a namespace package with no compiled
+    # symbols) into sys.modules, where it shadows the wheel built below.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import torch, factorion"], cwd=root, capture_output=True
+    )
+    if probe.returncode == 0:
+        return
+    rs = os.path.join(root, "factorion_rs")
     pip = ["uv", "pip", "install", "--system"]
     print("installing the factory-diff dependencies (torch + factorion_rs)", flush=True)
     subprocess.run([*pip, "maturin", "numpy", "gymnasium", "networkx", "tqdm", "plotly", "pillow"], check=True)
     subprocess.run([*pip, "torch", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
     subprocess.run(["maturin", "build", "--release", "--out", "dist"], cwd=rs, check=True)
     subprocess.run([*pip, *sorted(glob.glob(os.path.join(rs, "dist", "*.whl")))[-1:]], check=True)
+    importlib.invalidate_caches()
 
 
 def _post_compare_outcome(
