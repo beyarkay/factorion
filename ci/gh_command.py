@@ -316,6 +316,40 @@ def _missing_run_warnings(infos: list[dict]) -> str:
         return ""
 
 
+def _ensure_render_deps() -> None:
+    """Install what the factory diff needs (torch + the Rust engine) if the
+    runner doesn't already carry it.
+
+    Deliberately here and not a step in ci-command.yml: an `issue_comment`
+    workflow always runs the DEFAULT branch's YAML, so a step added on a PR
+    branch does not exist until after the merge — the diff could never be
+    exercised on the PR that introduces it. The dispatcher, by contrast, runs
+    from the PR head.
+    """
+    import glob
+    import importlib
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Probed in a child process: importing factorion_rs here would bind the
+    # repo's own source directory (a namespace package with no compiled
+    # symbols) into sys.modules, where it shadows the wheel built below.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import torch, factorion"], cwd=root, capture_output=True
+    )
+    if probe.returncode == 0:
+        return
+    rs = os.path.join(root, "factorion_rs")
+    pip = ["uv", "pip", "install", "--system"]
+    print("installing the factory-diff dependencies (torch + factorion_rs)", flush=True)
+    subprocess.run([*pip, "maturin", "numpy", "gymnasium", "networkx", "tqdm", "plotly", "pillow"], check=True)
+    subprocess.run([*pip, "torch", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
+    subprocess.run(["maturin", "build", "--release", "--out", "dist"], cwd=rs, check=True)
+    subprocess.run([*pip, *sorted(glob.glob(os.path.join(rs, "dist", "*.whl")))[-1:]], check=True)
+    importlib.invalidate_caches()
+
+
 def _post_compare_outcome(
     ctx,
     assertions: list[str],
@@ -340,6 +374,19 @@ def _post_compare_outcome(
         else "assertion failed or no runs to compare"
     )
     github_api.set_commit_status(ctx["sha"], state, COMPARE_STATUS_CONTEXT, description)
+    # Only now the slow part: minutes of CPU rollouts must not sit between the
+    # report and the commit status (the job can time out mid-render, and the
+    # status would stay pending forever). Best effort, and before the assertion
+    # exit, so neither a rendering failure nor a red assert costs the diff.
+    try:
+        _ensure_render_deps()
+        from ci.report import compare_renders
+
+        renders = compare_renders(main_group=main_group, pr_group=pr_group)
+        if renders:
+            _post(ctx, renders)
+    except Exception:
+        print(f"could not post the factory renders:\n{traceback.format_exc()}", flush=True)
     if not ok:
         sys.exit(1)
 

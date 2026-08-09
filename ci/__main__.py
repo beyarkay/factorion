@@ -16,6 +16,7 @@ def main() -> None:
             "kill": cli.kill,
             "watchdog": cli.watchdog,
             "sweep-report": cli.sweep_report,
+            "compare-renders": cli.compare_renders,
             "history": cli.history,
             "post-pending-reports": cli.post_pending_reports,
         },

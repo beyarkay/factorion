@@ -25,6 +25,7 @@ from ci.config import (
     pod_url,
 )
 from ci.launch import create_sweep, launch, launch_compare, resolve_ref
+from factory_diff import PER_KIND_DEFAULT
 
 DEFAULT_GPU = GPU_FALLBACKS[0]
 
@@ -267,6 +268,37 @@ def sweep_report(sweep: str, top_n: int = 5, out: str = "") -> None:
     from ci import report
 
     md = report.sweep_report(sweep, top_n=top_n)
+    print(md)
+    if out:
+        with open(out, "w") as f:
+            f.write(md)
+
+
+def compare_renders(
+    pr: str,
+    main: str,
+    /,
+    seed: int = 1,
+    per_kind: int = PER_KIND_DEFAULT,
+    out: str = "",
+) -> None:
+    """Print the side-by-side factory diff of two checkpoints (see factory_diff.py).
+
+    The same report `/ci compare` posts, runnable on any pair — SFT vs PPO,
+    PPO@2M vs PPO@10M, seed vs seed.
+
+    Args:
+        pr: Checkpoint(s) shown on the left, comma-separated: local .pt paths
+            or W&B run ids. Several = the seeds of one side, and a factory is
+            only reported when every one of them moved the same way.
+        main: Checkpoint(s) shown on the right.
+        seed: Seed of the shared held-out factory set every checkpoint rebuilds.
+        per_kind: Factories per LessonKind.
+        out: Optional path to also write the markdown report to.
+    """
+    from factory_diff import compare_checkpoints
+
+    md = compare_checkpoints(pr.split(","), main.split(","), seed=seed, per_kind=per_kind)
     print(md)
     if out:
         with open(out, "w") as f:

@@ -313,8 +313,8 @@ def render_assertions_markdown(results: list[AssertionResult]) -> str:
     return "\n".join(lines)
 
 
-def _fetch_group(api, project_path: str, group: str) -> dict[int, dict[str, float]]:
-    """Fetch a W&B group's FINISHED runs as {seed: flattened summary}.
+def _group_runs(api, project_path: str, group: str) -> dict[int, Any]:
+    """A W&B group's FINISHED runs as {seed: run}.
 
     Two finished runs on one seed (a rerun into the same group) would
     silently shadow each other in the dict, so the newest wins and the
@@ -336,8 +336,13 @@ def _fetch_group(api, project_path: str, group: str) -> dict[int, dict[str, floa
             )
         if prev is None or (run.created_at or "") > (prev.created_at or ""):
             newest_by_seed[seed] = run
+    return newest_by_seed
+
+
+def _fetch_group(api, project_path: str, group: str) -> dict[int, dict[str, float]]:
+    """A W&B group's finished runs as {seed: flattened summary}."""
     out: dict[int, dict[str, float]] = {}
-    for seed, run in newest_by_seed.items():
+    for seed, run in _group_runs(api, project_path, group).items():
         summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
         out[seed] = flatten_summary(summary)
     return out
@@ -452,6 +457,53 @@ def compare_report(
         ok = all(r.passed for r in results)
         md = render_assertions_markdown(results) + "\n" + md
     return md, ok
+
+
+def compare_renders(
+    main_group: str, pr_group: str, per_kind: Optional[int] = None
+) -> str:
+    """Qualitative companion to `compare_report`: the factories each side's
+    policy actually builds, side by side wherever they disagree.
+
+    Every seed of both sides is rolled out over ONE shared factory set (the
+    lowest common seed's), so a factory is only reported as different when the
+    whole side moved, not one lucky seed. Empty string when no seed is shared
+    (the metric report already says so). Needs torch + factorion_rs, hence the
+    lazy import.
+    """
+    import wandb
+
+    from factory_diff import PER_KIND_DEFAULT, compare_checkpoints
+
+    per_kind = PER_KIND_DEFAULT if per_kind is None else per_kind
+    api = wandb.Api()
+    path = _project_path(api)
+    pr_runs = _group_runs(api, path, pr_group)
+    main_runs = _group_runs(api, path, main_group)
+    seeds = sorted(set(pr_runs) & set(main_runs))
+    if not seeds:
+        return ""
+    entity = api.default_entity
+    groups = " vs ".join(
+        f"[`{g}`](https://wandb.ai/{entity}/{WANDB_PROJECT}/groups/{g})"
+        for g in (pr_group, main_group)
+    )
+    note = (
+        f"{per_kind} factories per lesson, {groups}. Checkpoints — "
+        + ", ".join(
+            f"seed {s}: PR [`{pr_runs[s].id}`]({pr_runs[s].url}) vs "
+            f"main [`{main_runs[s].id}`]({main_runs[s].url})"
+            for s in seeds
+        )
+        + "."
+    )
+    return compare_checkpoints(
+        [pr_runs[s].id for s in seeds],
+        [main_runs[s].id for s in seeds],
+        seed=seeds[0],
+        per_kind=per_kind,
+        note=note,
+    )
 
 
 def sweep_report(sweep_path: str, top_n: int = 5) -> str:

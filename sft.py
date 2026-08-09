@@ -15,7 +15,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 import gymnasium as gym
 import numpy as np
@@ -35,6 +35,7 @@ from factorion import (  # noqa: E402
     blank_entities,
     build_factory,
     entities,
+    render_factory,
 )
 
 from ppo import (  # noqa: E402
@@ -439,6 +440,7 @@ def run_rollout_eval(
     max_seeds: int = 100,
     eot_threshold: float = 0.5,
     num_envs: int = 8,
+    records: Optional[list[dict]] = None,
 ) -> RolloutEval:
     """Greedy rollout eval on the held-out val factories.
 
@@ -465,6 +467,11 @@ def run_rollout_eval(
     The greedy tile argmax is restricted to legal (empty + buildable)
     tiles, so it can't livelock re-proposing an occupied tile the env
     keeps rejecting. Eval-only; training is untouched.
+
+    `records`, when given, also collects one dict per scored factory (seed,
+    kind, thput, entity_cost and the ASCII render of the world the model
+    stopped at) — the raw material for a qualitative diff of two policies
+    (`factory_diff.py`), which the aggregates alone cannot show.
 
     Returns a dict with:
         overall — mean throughput at the state the model stopped at;
@@ -567,10 +574,20 @@ def run_rollout_eval(
     def finish_slot(i: int, thput: float) -> None:
         """Record slot `i`'s finished rollout at `thput` and refill it from the
         seed queue, deactivating the slot once the queue is empty."""
-        _, k, _ = current[i]
+        s, k, _ = current[i]
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
+        if records is not None:
+            records.append(
+                {
+                    "seed": s,
+                    "kind": k.name,
+                    "thput": thput,
+                    "entity_cost": float(envs[i]._entity_cost),
+                    "render": render_factory(envs[i]._world_CWH),
+                }
+            )
 
         if not queue:
             active[i] = False

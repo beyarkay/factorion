@@ -29,3 +29,7 @@ assert pr:val/thput > main:val/thput
 
 `assert` sides: `pr:`/`test:` = this branch, `main:`/`base:` = baseline; ops
 `< > <= >= == ~=` (`~=` ≈ equal, append `+- tol`). Bare numbers are thresholds.
+
+A `compare` posts two comments: the every-metric table, then a factory diff —
+both sides rebuilding the same factories, rendered side by side wherever their
+throughput disagrees.
