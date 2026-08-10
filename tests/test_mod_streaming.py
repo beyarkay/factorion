@@ -99,11 +99,11 @@ def test_request_seeds_existing_entities_with_configuration():
         {"name": "splitter", "x": 1, "y": 7, "direction": 2},
     ]
 
-    obs = mod_server.request_to_obs(request)
-    ent = obs[Channel.ENTITIES.value]
-    direction = obs[Channel.DIRECTION.value]
-    item = obs[Channel.ITEMS.value]
-    misc = obs[Channel.MISC.value]
+    world = mod_server.request_to_world(request)
+    ent = world[Channel.ENTITIES.value]
+    direction = world[Channel.DIRECTION.value]
+    item = world[Channel.ITEMS.value]
+    misc = world[Channel.MISC.value]
 
     assert ent[1, 2] == _id("transport_belt")
     assert direction[1, 2] == 2

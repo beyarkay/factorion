@@ -36,6 +36,7 @@ from factorion import (  # noqa: E402
     build_factory,
     entities,
     render_factory,
+    update_with_flow_and_thput,
 )
 
 from ppo import (  # noqa: E402
@@ -60,7 +61,7 @@ from training_config import SftArgs  # noqa: E402
 def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
-    Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
+    Returns list of (obs_CWH, tile_idx, entity_id, direction_id, item_id,
     misc_id, valid_tile_mask, eot) tuples. The agent's action covers all
     four placement channels because the env (ppo.py FactorioEnv.step)
     rejects placements with mismatched channels — e.g. an underground belt
@@ -135,7 +136,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
             valid_mask[rx * H + ry] = True
 
         # uint8 obs / bool mask: ~8x smaller than int64/float32, cast at use.
-        obs = state.to(torch.uint8)
+        obs = update_with_flow_and_thput(state)[0].to(torch.uint8)
         tile_idx = x * H + y
         entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
         direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
@@ -168,7 +169,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
     # placement targets; the SFT loop's placement_mask zeroes out the
     # placement losses for this sample. valid_mask=all-zero matches the
     # invariant "no remaining tiles to place".
-    terminal_obs = state.to(torch.uint8)
+    terminal_obs = update_with_flow_and_thput(state)[0].to(torch.uint8)
     terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
     pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, 1))
 

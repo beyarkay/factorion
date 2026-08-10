@@ -93,6 +93,19 @@ class Channel(Enum):
     FOOTPRINT = 4
 
 
+# The observation the policy and critic see is the world's channels plus one
+# derived FLOW channel appended after them (see :func:`update_with_flow_and_thput`). It is not a
+# world channel: nothing places it, and it is stale the moment a tile changes.
+CH_FLOW = len(Channel)
+OBS_CHANNELS = len(Channel) + 1
+# FLOW is carried in eighths of an item/s, so the observation stays
+# integer-valued (SFT keeps its demonstrations in uint8) while still separating
+# an inserter's 0.86 i/s from a belt's 15, and is clamped to the rate of the
+# catalog's fastest entity. Both mirror `throughput.rs`, which encodes them.
+FLOW_SCALE = 8.0
+MAX_ENTITY_FLOW = 30.0
+
+
 class Footprint(Enum):
     UNAVAILABLE = 0
     AVAILABLE = 1
@@ -1228,6 +1241,30 @@ def render_factory(world: "Factory | torch.Tensor | np.ndarray") -> str:
         np.transpose(world_CWH, (1, 2, 0)).astype(np.int64)
     )
     return factorion_rs.render_factory(world_WHC)
+
+
+def update_with_flow_and_thput(
+    world: "torch.Tensor | np.ndarray",
+) -> Tuple[torch.Tensor, float, int]:
+    """One engine pass over a ``(C, W, H)`` world → ``(obs, thput,
+    num_unreachable)``, where ``obs`` is the world's channels plus FLOW. Keeps
+    the world's dtype — FLOW is integer-valued — so callers cast for the
+    network themselves.
+    """
+    world_CWH = torch.as_tensor(world)
+    # Contiguous, so the engine takes its whole-buffer copy rather than the
+    # per-element stride fallback — this runs on every env step.
+    world_WHC = np.ascontiguousarray(
+        np.transpose(world_CWH.numpy(), (1, 2, 0)), dtype=np.int64
+    )
+    thput, num_unreachable, flow_WH = factorion_rs.simulate_throughput(world_WHC)
+    obs = torch.empty(
+        (OBS_CHANNELS, world_CWH.shape[1], world_CWH.shape[2]),
+        dtype=world_CWH.dtype,
+    )
+    obs[:CH_FLOW] = world_CWH
+    obs[CH_FLOW] = torch.from_numpy(flow_WH)
+    return obs, thput, num_unreachable
 
 
 def blank_entities(

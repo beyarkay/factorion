@@ -117,7 +117,7 @@ just the inference path:
 from server import action_to_placement, load_agent, run_inference
 import torch
 agent = load_agent(...)
-obs, stats = run_inference(
+world, stats = run_inference(
     agent, fake_req, max_steps=64, device=torch.device("cpu"),
     on_placement=lambda action: print(action_to_placement(action)) or True,
 )

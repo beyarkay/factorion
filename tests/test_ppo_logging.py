@@ -27,10 +27,9 @@ from ppo import (  # noqa: E402
     _pearson_corr,
     _critic_diagnostics,
 )
-from factorion import LESSON_IS_TRIAL, LessonKind, build_factory  # noqa: E402
+from factorion import OBS_CHANNELS, LESSON_IS_TRIAL, LessonKind, build_factory  # noqa: E402
 from helpers import Channel  # noqa: E402
 
-NUM_CHANNELS = len(Channel)
 ENV_ID = "factorion/FactorioEnv-v0-ppolog-test"
 
 
@@ -110,7 +109,7 @@ class TestPerHeadEntropyStash:
             [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
         )
         agent = AgentCNN(envs, layers=(16, 16, 16))
-        obs = torch.randn(4, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(4, OBS_CHANNELS, 5, 5)
         agent.get_action_and_value(obs)
 
         assert set(agent._last_head_entropy) == {
@@ -126,7 +125,7 @@ class TestPerHeadEntropyStash:
             [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
         )
         agent = AgentCNN(envs, layers=(16, 16, 16))
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
+        obs = torch.randn(3, OBS_CHANNELS, 5, 5)
         _, _, entropy_B, _ = agent.get_action_and_value(obs)
         head_sum = sum(float(v) for v in agent._last_head_entropy.values())
         # entropy_B is per-sample (summed over heads); its mean should match the

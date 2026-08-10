@@ -124,5 +124,6 @@ def build_factory_graph(world_WHC):
 
 
 def rs_throughput(world):
-    """Throughput via the Rust engine's Python bindings."""
-    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))
+    """(score, num_unreachable) via the Rust engine's Python bindings; the
+    engine's third return, the observation FLOW channel, is dropped."""
+    return factorion_rs.simulate_throughput(world.numpy().astype(np.int64))[:2]

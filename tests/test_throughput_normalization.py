@@ -49,7 +49,7 @@ def _solved_max(size, kind, seed):
     """Raw items/s of the complete, correct factory for (size, kind, seed)."""
     factory = build_factory(size=size, kind=kind, seed=seed)
     assert factory is not None
-    tp, _ = factorion_rs.simulate_throughput(
+    tp, _, _ = factorion_rs.simulate_throughput(
         factory.world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
     )
     return float(tp)
