@@ -67,18 +67,18 @@ pub fn factory_score(deliveries: &[SinkDelivery]) -> f64 {
 /// it. Collapse to a scalar score with [`factory_score`].
 ///
 /// Algorithm:
-/// 1. Detect cycles → return no deliveries if any exist
-/// 2. BFS from sources (stack_inserters), propagating flow rates
-/// 3. At each node, compute output from input using entity trait
-/// 4. Collect each sink's delivery of its configured item
-/// 5. Count unreachable nodes
+/// 1. BFS from sources (stack_inserters), propagating flow rates
+/// 2. At each node, compute output from input using entity trait
+/// 3. Collect each sink's delivery of its configured item
+/// 4. Count unreachable nodes
+///
+/// Cycles need no special handling: a node on a belt loop (or fed only
+/// through one) never reaches in-degree 0, so Kahn's pass never processes it
+/// and it contributes zero flow while the rest of the world scores normally.
+/// That under-reports a fed loop with an exit, which does flow in the real
+/// game, but a loop must never zero the arms it is disjoint from (#381).
 pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     if graph.node_count() == 0 {
-        return (Vec::new(), 0);
-    }
-
-    // 1. Cycle detection — no deliveries (downstream treats as 0 throughput).
-    if has_cycle(graph) {
         return (Vec::new(), 0);
     }
 
@@ -100,7 +100,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     // Find nodes reachable from sources (for determining processing order)
     let reachable_from_sources = reachable_from(&sources, graph, false);
 
-    // 2. Kahn's algorithm: topological BFS from sources.
+    // 1. Kahn's algorithm: topological BFS from sources.
     // Count "true" in-degree (only from predecessors reachable from a source).
     let mut in_degree: Vec<usize> = graph
         .predecessors
@@ -202,7 +202,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         }
     }
 
-    // 3. Collect each sink's delivery. A sink only scores the item it is
+    // 2. Collect each sink's delivery. A sink only scores the item it is
     //    configured to receive — its tile's ITEMS channel, surfaced as
     //    `node.item`. Counting *any* item that reaches a sink would let a
     //    policy reward-hack assemble lessons (route raw input straight to
@@ -225,7 +225,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         });
     }
 
-    // 4. Count unreachable ENTITIES (not nodes)
+    // 3. Count unreachable ENTITIES (not nodes)
     // on_path = can_reach_sink ∩ reachable_from_source.
     // Note: reachable_from includes the start nodes themselves, so sources are in
     // reachable_from_source and sinks are in can_reach_sink. If there's a path from
@@ -313,38 +313,6 @@ fn pickup_input(
     input
 }
 
-/// Check if the graph has any cycles using DFS.
-fn has_cycle(graph: &FactoryGraph) -> bool {
-    let n = graph.node_count();
-    let mut visited = vec![0u8; n]; // 0=unvisited, 1=in-stack, 2=done
-
-    for start in 0..n {
-        if visited[start] != 0 {
-            continue;
-        }
-        let mut stack = vec![(start, 0usize)]; // (node, next_successor_index)
-        visited[start] = 1;
-
-        while let Some((node, succ_idx)) = stack.last_mut() {
-            if *succ_idx < graph.successors[*node].len() {
-                let next = graph.successors[*node][*succ_idx];
-                *succ_idx += 1;
-                if visited[next] == 1 {
-                    return true; // Back edge = cycle
-                }
-                if visited[next] == 0 {
-                    visited[next] = 1;
-                    stack.push((next, 0));
-                }
-            } else {
-                visited[*node] = 2;
-                stack.pop();
-            }
-        }
-    }
-    false
-}
-
 /// Find all nodes reachable from `starts`.
 /// If `reverse` is true, traverse predecessors instead of successors.
 fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> HashSet<usize> {
@@ -374,7 +342,7 @@ fn reachable_from(starts: &[usize], graph: &FactoryGraph, reverse: bool) -> Hash
 mod tests {
     use super::*;
     use crate::graph::build_graph;
-    use crate::types::{Direction, Misc, NodeId};
+    use crate::types::Direction;
     use crate::world::World;
 
     #[test]
@@ -457,50 +425,59 @@ mod tests {
         assert_eq!(unreachable, 3); // all 3 entities are disconnected
     }
 
+    /// Lay a closed 2×2 belt loop with its top-left corner at `(x, y)`.
+    fn place_loop(w: &mut World, x: usize, y: usize) {
+        w.place(x, y, Item::TransportBelt, Direction::East, None);
+        w.place(x + 1, y, Item::TransportBelt, Direction::South, None);
+        w.place(x + 1, y + 1, Item::TransportBelt, Direction::West, None);
+        w.place(x, y + 1, Item::TransportBelt, Direction::North, None);
+    }
+
     #[test]
-    fn test_has_cycle_detection() {
-        // Build a graph with a cycle manually
-        let mut g = FactoryGraph {
-            nodes: vec![
-                crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 0, 0, None),
-                    entity_kind: Item::TransportBelt,
-                    item: None,
-                    misc: Misc::None,
-                    recipe_item: None,
-                    anchor: (0, 0),
-                    direction: Direction::East,
-                    curved: false,
-                    input: HashMap::new(),
-                    output: HashMap::new(),
-                },
-                crate::graph::GraphNode {
-                    id: NodeId::new(Item::TransportBelt, 1, 0, None),
-                    entity_kind: Item::TransportBelt,
-                    item: None,
-                    misc: Misc::None,
-                    recipe_item: None,
-                    anchor: (1, 0),
-                    direction: Direction::East,
-                    curved: false,
-                    input: HashMap::new(),
-                    output: HashMap::new(),
-                },
-            ],
-            node_index: HashMap::from([
-                (NodeId::new(Item::TransportBelt, 0, 0, None), 0),
-                (NodeId::new(Item::TransportBelt, 1, 0, None), 1),
-            ]),
-            successors: vec![vec![1], vec![0]], // 0→1→0 cycle
-            predecessors: vec![vec![1], vec![0]],
-        };
+    fn test_disjoint_cycle_does_not_zero_the_world() {
+        // #381: a belt loop sharing nothing with the source→sink line used to
+        // zero every delivery in the world.
+        let mut w = World::empty(7, 7);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::TransportBelt, Direction::East, None);
+        w.place(3, 0, Item::TransportBelt, Direction::East, None);
+        w.place(4, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        place_loop(&mut w, 1, 3);
 
-        assert!(has_cycle(&g));
+        let (output, unreachable) = calc_throughput(&build_graph(&w));
 
-        // Make it acyclic
-        g.successors = vec![vec![1], vec![]];
-        g.predecessors = vec![vec![], vec![0]];
-        assert!(!has_cycle(&g));
+        assert_eq!(output.len(), 1);
+        assert!(
+            (output[0].achieved - 15.0).abs() < 1e-9,
+            "Expected 15.0, got {}",
+            output[0].achieved
+        );
+        assert_eq!(unreachable, 4); // the 4 loop belts, and nothing else
+    }
+
+    #[test]
+    fn test_source_fed_cycle_scores_zero_and_spares_the_other_arm() {
+        // A loop of belts has no exit (each belt faces one way), so a source
+        // feeding one delivers nothing — but only its own arm goes dark.
+        let mut w = World::empty(7, 7);
+        w.place(0, 0, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 0, Item::TransportBelt, Direction::East, None);
+        w.place(2, 0, Item::Sink, Direction::East, Some(Item::IronPlate));
+        w.place(0, 3, Item::Source, Direction::East, Some(Item::IronPlate));
+        w.place(1, 3, Item::TransportBelt, Direction::East, None);
+        place_loop(&mut w, 2, 3);
+
+        let (output, unreachable) = calc_throughput(&build_graph(&w));
+
+        assert_eq!(output.len(), 1);
+        assert!(
+            (output[0].achieved - 15.0).abs() < 1e-9,
+            "Expected 15.0, got {}",
+            output[0].achieved
+        );
+        // The fed arm: its source, its feeder belt and the 4 loop belts.
+        assert_eq!(unreachable, 6);
     }
 
     #[test]
