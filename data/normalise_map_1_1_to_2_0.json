@@ -1,0 +1,10 @@
+{
+  "stack-inserter": "bulk-inserter",
+  "stack-filter-inserter": "bulk-inserter",
+  "filter-inserter": "inserter",
+  "logistic-chest-active-provider": "active-provider-chest",
+  "logistic-chest-passive-provider": "passive-provider-chest",
+  "logistic-chest-storage": "storage-chest",
+  "logistic-chest-requester": "requester-chest",
+  "logistic-chest-buffer": "buffer-chest"
+}

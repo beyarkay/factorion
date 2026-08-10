@@ -1,0 +1,5 @@
+# generated training artifacts — never commit (multi-GB tensor caches,
+# checkpoints, local wandb run dirs)
+cache_*.npy
+*.pt
+wandb/
