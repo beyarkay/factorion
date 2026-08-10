@@ -2359,17 +2359,7 @@ if __name__ == "__main__":
                     ))
 
                 # Enforce target_kl per MINIBATCH, before applying this step.
-                # The old epoch-end check let the 32-minibatch inner loop run
-                # to completion after the target was crossed, and measured
-                # updates blew through it by up to 68x (approx_kl 1.37 vs
-                # target 0.02, ~5% of iterations) — each one an uncontrolled
-                # jump away from the rollout policy and, cumulatively, from
-                # the SFT prior. approx_kl here is measured before this
-                # minibatch's optimizer.step(), so stopping now caps the whole
-                # update's divergence at ~the target. (The `if` forces one
-                # device->host sync per minibatch; at ~65 ms of fwd+bwd per
-                # minibatch that is noise, unlike the per-op syncs the
-                # clipfrac comment above was written against.)
+                # See PR #374.
                 if args.target_kl is not None and approx_kl > args.target_kl:
                     kl_stop = True
                     break
