@@ -54,12 +54,7 @@ class SharedArgs:
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     attn_dim: int = 192
-    """model dim of the self-attention stage over the encoded map (the 121 grid
-    cells become tokens, so full attention is cheap and every head gets
-    grid-global information in one hop). The dominant win in the SFT arch
-    sweeps; the second sweep (91w8vyea) preferred 192-256 over 128. 0 disables
-    the stage, recovering a conv-only ablation baseline. Int not bool for W&B
-    sweeps."""
+    """model dim of the self-attention stage over the encoded map."""
     attn_heads: int = 12
     """self-attention head count (snapped down to a divisor of attn_dim)."""
     attn_layers: int = 4
@@ -70,9 +65,7 @@ class SharedArgs:
     sweeps."""
     global_feat_dim: int = 64
     """dim of the pooled (mean+max over space) global-context vector
-    concatenated onto the per-tile head inputs; 0 disables the global pathway.
-    Sweep 91w8vyea showed it is not made redundant by attention — 0 was the
-    worst setting and the metric peaked around 64."""
+    concatenated onto the per-tile head inputs; 0 disables the global pathway."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -103,8 +96,7 @@ class PpoArgs(SharedArgs):
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     start_from: Optional[str] = None
     """SFT checkpoint to start training from instead of from scratch: either a
-    local .pt path OR a W&B run id (e.g. an SFT run like 'j0s5y2mc', whose
-    model artifact is downloaded automatically)."""
+    local .pt path OR a W&B run id."""
     start_from_wandb: Optional[str] = None
     """wandb run id to continue from"""
 
@@ -146,62 +138,41 @@ class PpoArgs(SharedArgs):
     entity_cost_scale: float = 0.001
     """strength of the multiplicative terminal entity-cost penalty. Each
     entity costs its per-output recursively-expanded raw-item count plus
-    cumulative craft time; terminal reward is raw items/second divided by
-    (1 + entity_cost_scale * cost). This keeps zero-throughput reward at zero
-    and never makes the throughput component negative. 0 disables the penalty."""
+    cumulative craft time."""
     reward_symlog_r0: float = 0.01
     """reference flow (items/s) at which the terminal reward is log-compressed:
-    `log1p(thput_raw * cost_efficiency / r0)`.
-    Solved lessons differ ~360x in achievable items/s (belts 15, MEMORISE_2
-    0.043), so an uncompressed reward hands belt lessons two orders of
-    magnitude more gradient than assembler lessons and leaves the small end
-    under a shared critic's error floor. log1p turns those multiplicative scale
-    gaps into additive offsets, which baselines subtract off for free; r0 puts
-    the smallest flow we care about at the knee of the log (r0=1 would be plain
-    symlog, which only compresses the top and still leaves ~66x, while r0=0.01
-    brings the spread to ~4.5x). Being a monotone transform of a terminal-only
-    reward it cannot change which factory is optimal per lesson, only how
-    gradient is shared across them; compressing the cost-adjusted reward (as
-    opposed to subtracting a log-space cost term) also keeps zero throughput at
-    exactly zero, so a factory that delivers nothing is never worse than an
-    empty grid. 0 disables the compression."""
+    `log1p(thput_raw * cost_efficiency / r0)`."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
-    """the target KL divergence threshold; early-stops the update's epochs. None
-    = always run all update_epochs. (Why this default: EXPERIMENT_LOG.md.)"""
+    """the target KL divergence threshold, checked per minibatch."""
     adam_epsilon: float = 6.891e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0
     """L2 weight decay for the Adam optimiser."""
     tile_head_std: float = 0.03492
-    """Initialization std for the tile selection conv head (smaller = more uniform initial exploration)"""
+    """Initialization std for the tile selection conv head."""
     dropout: float = 0.0
     """Dropout probability in the CNN encoder."""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
     critic_warmup: int = 9
-    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze. An SFT checkpoint loads a trained actor but a random critic; without a warm-up the random critic's garbage advantages wreck the SFT policy in the first updates. Set 0 to disable for from-scratch runs. LR + entropy annealing start at unfreeze."""
+    """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze."""
     critic_lr_mult: float = 1.497
-    """Multiplier on the critic (value-head) learning rate relative to the actor's. >1 warms the value head faster — useful to shorten --critic-warmup (the warmup is dead time for the actor). 1.0 = unchanged (critic LR == actor LR)."""
+    """Multiplier on the critic (value-head) learning rate relative to the actor's."""
     critic_head_std: float = 0.1169
-    """Initialization std for the value head. Sets the magnitude of the untrained critic's outputs at PPO start, i.e. how large the initial 'garbage advantages' are that --critic-warmup absorbs; smaller = gentler on the SFT policy in the first updates. With --start-from the loaded SFT critic (never trained) is re-initialised to this std at PPO start."""
+    """Initialization std for the value head."""
     eval_every: int = 7
-    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration). Mirrors the SFT rollout eval so the curves overlay the SFT baseline. 0 disables."""
+    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
     amp: bool = False
-    """Run the policy/value forward passes under bf16 autocast (mixed precision).
-    Speeds up the GPU matmuls; helps most when the GPU is the bottleneck (less so
-    here, where the rollout is CPU-bound). Changes numerics, so the trajectory
-    (and time-to-quality) can shift."""
+    """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
     async_envs: bool = False
     """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
-    serially (SyncVectorEnv). At high --num-envs the serial CPU env-stepping is
-    the rollout bottleneck; AsyncVectorEnv fans it across cores. (At 16 envs the
-    IPC overhead makes it slower — only worth it with many envs.)"""
+    serially (SyncVectorEnv)."""
 
     # ── Time-to-quality benchmarking (offline; see tests/benchmarks/bench_run.sh ppo-quality) ──────────
     target_metric: Optional[str] = None
@@ -232,10 +203,7 @@ class PpoArgs(SharedArgs):
 class SftArgs(SharedArgs):
     start_from: Optional[str] = None
     """Checkpoint to resume training from instead of a fresh model: either a
-    local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74', whose
-    model artifact is downloaded automatically). Loads the full AgentCNN state
-    dict so a long run can be continued rather than restarted. Pair with
-    --wandb-run-id to also log into the same W&B run."""
+    local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74')."""
 
     # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
     num_samples: int = 45_000_000

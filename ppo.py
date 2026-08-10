@@ -2324,6 +2324,7 @@ if __name__ == "__main__":
         update_start = time.time()
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
+        kl_stop = False
         for epoch in range(args.update_epochs):
             pbar.set_description(f"optimiser epoch {epoch+1}/{args.update_epochs}; grad norm:{unclipped_grad_norm:5.2f}; kl:{approx_kl:5.3f}; thput:{final_thputs_100ma:.3f}")
             np.random.shuffle(idxs_B)
@@ -2356,6 +2357,12 @@ if __name__ == "__main__":
                     clipfracs.append(_masked_mean(
                         ((ratio_B - 1.0).abs() > args.clip_coef).float(), valid_mB
                     ))
+
+                # Enforce target_kl per MINIBATCH, before applying this step.
+                # See PR #374.
+                if args.target_kl is not None and approx_kl > args.target_kl:
+                    kl_stop = True
+                    break
 
                 assert not torch.isnan(advantages_B).any(), f"Some advantages are NaN: {advantages_B=}"
                 advantages_mB = advantages_B[idxs]
@@ -2401,7 +2408,7 @@ if __name__ == "__main__":
                 unclipped_grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 
-            if args.target_kl is not None and approx_kl > args.target_kl:
+            if kl_stop:
                 break
 
         if in_warmup:
