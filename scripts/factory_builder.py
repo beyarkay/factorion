@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import tyro  # noqa: E402
+import yaml  # noqa: E402
 
 os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("WANDB_DISABLED", "true")
@@ -56,6 +57,7 @@ from factorion import (  # noqa: E402
     items,
     new_world,
     plot_flow_network,
+    render_factory,
 )
 from ppo import (  # noqa: E402
     AgentCNN,
@@ -107,6 +109,15 @@ DISPLAY_NAME = {
     "stack_inserter": "source",
     "bulk_inserter": "sink",
 }
+# Inline rather than an emoji: the button carries no text, so a glyph the
+# user's font happens not to cover would leave it blank. `currentColor` keeps
+# it in step with whatever the button inherits.
+COPY_ICON = (
+    '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" '
+    'fill="none" stroke="currentColor" stroke-width="1.4">'
+    '<rect x="5.9" y="5.9" width="8.4" height="8.4" rx="1.5"/>'
+    '<path d="M10.6 3.2H3.2a1.5 1.5 0 0 0-1.5 1.5v7.4"/></svg>'
+)
 DIRECTIONS = ["NONE", "NORTH", "EAST", "SOUTH", "WEST"]
 MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 
@@ -338,6 +349,82 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
 
     edges = [[u, v] for u, v in G.edges]
     return {"png": png_b64, "info": info, "edges": edges}
+
+
+class _Flow(dict):
+    """A mapping the fixtures write inline (``- { x: 0, y: 0, item: … }``)."""
+
+
+class _Block(str):
+    """A string the fixtures write as a literal block scalar (``factory: |``)."""
+
+
+# Scoped to its own Dumper: `yaml.add_representer` would mutate the global one
+# for everything that imports this module.
+class _FixtureDumper(yaml.Dumper):
+    pass
+
+
+_FixtureDumper.add_representer(
+    _Flow,
+    lambda d, x: d.represent_mapping("tag:yaml.org,2002:map", x, flow_style=True),
+)
+_FixtureDumper.add_representer(
+    _Block,
+    lambda d, x: d.represent_scalar("tag:yaml.org,2002:str", x, style="|"),
+)
+
+
+def factory_yaml(grid: list[list[dict]]) -> str:
+    """Serialise a grid as a textual test fixture, ready to paste into
+    ``factorion_rs/tests/factories/*.yaml``.
+
+    The `factory:` block comes from the canonical renderer and `throughput:`
+    from the engine's own per-sink deliveries, so the fixture asserts what the
+    engine computes for this exact world. The FOOTPRINT channel has no fixture
+    form and is dropped — it gates placement legality, not throughput. Nor does
+    a sink with no item bound, so those are left out of `throughput:`.
+    """
+    world_WHC = build_world(grid)
+    protos = {it.name: it for it in items.values()}
+
+    # One binding per entity: `items:` resolves a coordinate to the whole
+    # footprint, so a 3x3 assembler needs one line rather than nine. Reading
+    # order reaches a multi-tile entity's anchor first, so the rest of its
+    # footprint is always still ahead of the walk.
+    claimed: set[tuple[int, int]] = set()
+    bindings: list[_Flow] = []
+    for y, row in enumerate(grid):
+        for x, cell in enumerate(row):
+            ent_name = cell.get("entity") or "empty"
+            if ent_name == "empty" or (x, y) in claimed:
+                continue
+            proto = protos[ent_name]
+            tiles = factorion_rs.py_entity_tiles(
+                x, y,
+                Direction[cell.get("direction", "NONE")].value,
+                proto.width, proto.height,
+            )
+            claimed.update(map(tuple, tiles or []))
+            item_name = cell.get("item") or "empty"
+            if item_name != "empty":
+                bindings.append(_Flow(x=x, y=y, item=item_name))
+
+    throughput = [
+        _Flow(item=item, per_second=rate)
+        for _x, _y, item, rate in factorion_rs.py_sink_deliveries(
+            world_WHC.numpy().astype(np.int64)
+        )
+        if item is not None
+    ]
+    doc: dict = {}
+    if bindings:
+        doc["items"] = bindings
+    if throughput:
+        doc["throughput"] = throughput
+    doc["factory"] = _Block(render_factory(world_WHC.permute(2, 0, 1)) + "\n")
+    # `width` off so a long flow mapping is never wrapped mid-entry.
+    return yaml.dump(doc, Dumper=_FixtureDumper, sort_keys=False, width=10**9)
 
 
 # ── Model inference ──────────────────────────────────────────────────────────
@@ -1105,6 +1192,13 @@ def render_index(default_size: int) -> str:
     box-shadow: inset 0 0 0 2px #0d47a1;
     vertical-align: middle; margin-right: 0.25em;
   }}
+  .copy-yaml {{
+    display: inline-flex; align-items: center; justify-content: center;
+    /* Fixed box so the ✓/✗ feedback can't resize the button mid-click. */
+    min-width: 2.1em; height: 1.6em; vertical-align: middle;
+    font-weight: normal; font-size: 12px; padding: 0;
+    margin-left: 0.4em; cursor: pointer;
+  }}
   .help-wrap {{ position: relative; display: inline-block; }}
   .kbd-help {{
     display: inline-block; font-size: 0.6em; font-weight: normal;
@@ -1225,7 +1319,10 @@ def render_index(default_size: int) -> str:
     <div class="grid-graph-row">
       <div id="grid-host"></div>
       <div class="graph-view">
-        <h3>Graph</h3>
+        <h3>Graph
+          <button class="copy-yaml" id="copy-yaml"
+                  title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>
+        </h3>
         <div class="info" id="info"></div>
         <img id="out-img" class="out-img" alt="" style="display:none">
         <details class="edges-details">
@@ -1905,6 +2002,31 @@ async function computeGraph() {{
   }}
 }}
 
+// Serialise `g` server-side (the renderer and the throughput engine both live
+// there) and put the fixture on the clipboard. The icon doubles as the status
+// readout — there is nowhere else on a scan card to put one.
+async function copyYaml(g, btn) {{
+  const icon = btn.innerHTML;
+  try {{
+    const resp = await fetch('/factory_yaml', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ grid: g }}),
+    }});
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    await navigator.clipboard.writeText(data.yaml);
+    console.log(data.yaml);
+    btn.textContent = '✓';
+  }} catch (e) {{
+    btn.textContent = '✗';
+    console.error(e);
+  }}
+  setTimeout(() => {{ btn.innerHTML = icon; }}, 1500);
+}}
+document.getElementById('copy-yaml').addEventListener('click', (ev) =>
+  copyYaml(grid, ev.currentTarget));
+
 document.getElementById('model-apply').addEventListener('click', applyPrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
 
@@ -2176,7 +2298,8 @@ function scanCard(r, showRef) {{
     ? 'stopped at ' + r.steps
     : 'no stop, ' + r.steps + ' steps';
   const head =
-    `<div class="hd">${{escHtml(r.kind)}}</div>` +
+    `<div class="hd">${{escHtml(r.kind)}}<button class="copy-yaml"` +
+    ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button></div>` +
     `<div class="sub">seed ${{r.seed}} · thput ${{r.thput_normed.toFixed(3)}}` +
     ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
     `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +
@@ -2188,6 +2311,10 @@ function scanCard(r, showRef) {{
     : '';
   card.innerHTML = head + `<div class="pair">${{built}}${{ref}}</div>`;
   card.title = 'Open this factory in the Build tab';
+  card.querySelector('.copy-yaml').addEventListener('click', (ev) => {{
+    ev.stopPropagation();  // the card's own click adopts the grid instead
+    copyYaml(r.grid, ev.currentTarget);
+  }});
   card.addEventListener('click', () => {{
     switchTab('build');
     adoptGrid(r.size, r.grid.map(row => row.map(c => Object.assign({{}}, c))));
@@ -2503,6 +2630,7 @@ class Handler(BaseHTTPRequestHandler):
             "/load_model",
             "/load_lesson",
             "/batch_rollout",
+            "/factory_yaml",
         ):
             self.send_error(404)
             return
@@ -2515,6 +2643,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
+            elif self.path == "/factory_yaml":
+                result = {"yaml": factory_yaml(payload["grid"])}
             elif self.path == "/predict":
                 if payload.get("detail") == "action":
                     result = _predict_action(payload["grid"])
