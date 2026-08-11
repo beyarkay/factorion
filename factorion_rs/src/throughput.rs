@@ -262,8 +262,12 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
 /// to their rates, since the hand grabs each as often as it comes past. No
 /// item can monopolise a mixed lane, just as no lane can monopolise the
 /// hand — a mixed belt costs an assembler throughput without starving it of
-/// any one ingredient. Lanes are visited in ascending supply for
-/// determinism (HashMap iteration order is not).
+/// any one ingredient.
+///
+/// Poorest lane first: a rich lane served early stops at its equal share
+/// and leaves the hand under-filled, since a poor lane cannot take up the
+/// slack afterwards. Equal supplies tie-break on index so a lane pair that
+/// shares an item accumulates in a fixed order and the result is bit-stable.
 fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
