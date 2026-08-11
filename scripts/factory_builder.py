@@ -108,6 +108,15 @@ DISPLAY_NAME = {
     "stack_inserter": "source",
     "bulk_inserter": "sink",
 }
+# Inline rather than an emoji: the button carries no text, so a glyph the
+# user's font happens not to cover would leave it blank. `currentColor` keeps
+# it in step with whatever the button inherits.
+COPY_ICON = (
+    '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" '
+    'fill="none" stroke="currentColor" stroke-width="1.4">'
+    '<rect x="5.9" y="5.9" width="8.4" height="8.4" rx="1.5"/>'
+    '<path d="M10.6 3.2H3.2a1.5 1.5 0 0 0-1.5 1.5v7.4"/></svg>'
+)
 DIRECTIONS = ["NONE", "NORTH", "EAST", "SOUTH", "WEST"]
 MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 
@@ -1166,8 +1175,11 @@ def render_index(default_size: int) -> str:
     vertical-align: middle; margin-right: 0.25em;
   }}
   .copy-yaml {{
-    text-transform: none; font-weight: normal; font-size: 11px;
-    padding: 0 0.4em; margin-left: 0.4em; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    /* Fixed box so the ✓/✗ feedback can't resize the button mid-click. */
+    min-width: 2.1em; height: 1.6em; vertical-align: middle;
+    font-weight: normal; font-size: 12px; padding: 0;
+    margin-left: 0.4em; cursor: pointer;
   }}
   .help-wrap {{ position: relative; display: inline-block; }}
   .kbd-help {{
@@ -1291,7 +1303,7 @@ def render_index(default_size: int) -> str:
       <div class="graph-view">
         <h3>Graph
           <button class="copy-yaml" id="copy-yaml"
-                  title="Copy this factory as a YAML test fixture">copy YAML</button>
+                  title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>
         </h3>
         <div class="info" id="info"></div>
         <img id="out-img" class="out-img" alt="" style="display:none">
@@ -1973,10 +1985,10 @@ async function computeGraph() {{
 }}
 
 // Serialise `g` server-side (the renderer and the throughput engine both live
-// there) and put the fixture on the clipboard. The button doubles as the
-// status readout — there is nowhere else on a scan card to put one.
+// there) and put the fixture on the clipboard. The icon doubles as the status
+// readout — there is nowhere else on a scan card to put one.
 async function copyYaml(g, btn) {{
-  const label = btn.textContent;
+  const icon = btn.innerHTML;
   try {{
     const resp = await fetch('/factory_yaml', {{
       method: 'POST',
@@ -1987,12 +1999,12 @@ async function copyYaml(g, btn) {{
     if (data.error) throw new Error(data.error);
     await navigator.clipboard.writeText(data.yaml);
     console.log(data.yaml);
-    btn.textContent = 'copied ✓';
+    btn.textContent = '✓';
   }} catch (e) {{
-    btn.textContent = 'copy failed';
+    btn.textContent = '✗';
     console.error(e);
   }}
-  setTimeout(() => {{ btn.textContent = label; }}, 1500);
+  setTimeout(() => {{ btn.innerHTML = icon; }}, 1500);
 }}
 document.getElementById('copy-yaml').addEventListener('click', (ev) =>
   copyYaml(grid, ev.currentTarget));
@@ -2269,7 +2281,7 @@ function scanCard(r, showRef) {{
     : 'no stop, ' + r.steps + ' steps';
   const head =
     `<div class="hd">${{escHtml(r.kind)}}<button class="copy-yaml"` +
-    ` title="Copy this factory as a YAML test fixture">copy YAML</button></div>` +
+    ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button></div>` +
     `<div class="sub">seed ${{r.seed}} · thput ${{r.thput_normed.toFixed(3)}}` +
     ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
     `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +

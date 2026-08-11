@@ -1088,6 +1088,8 @@ class TestRenderIndexCopyYaml:
         html = fb.render_index(default_size=11)
         assert 'id="copy-yaml"' in html                  # by the graph readout
         assert html.count('class="copy-yaml"') == 2      # + one per scan card
+        # The button is an icon, so its tooltip is the only thing naming it.
+        assert html.count('title="Copy this factory as a YAML test fixture"') == 2
         assert "fetch('/factory_yaml'" in html
         # A typo'd path fails silently as a 404, so pin it to the route list.
         assert "/factory_yaml" in inspect.getsource(fb.Handler.do_POST)
