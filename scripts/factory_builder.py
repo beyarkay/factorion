@@ -111,11 +111,13 @@ DISPLAY_NAME = {
     "stack_inserter": "source",
     "bulk_inserter": "sink",
 }
-def _stroke_icon(path: str, width: float = 2.2) -> str:
+
+
+def _stroke_icon(path: str) -> str:
     """A one-path inline SVG that inherits its colour from the text around it."""
     return (
         f'<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" '
-        f'fill="none" stroke="currentColor" stroke-width="{width}" '
+        f'fill="none" stroke="currentColor" stroke-width="2.2" '
         f'stroke-linecap="round" stroke-linejoin="round"><path d="{path}"/></svg>'
     )
 
@@ -125,7 +127,6 @@ def _stroke_icon(path: str, width: float = 2.2) -> str:
 # and this one carries the whole answer.
 OK_ICON = _stroke_icon("M3 8.5l3.5 3.5L13 4.5")
 BAD_ICON = _stroke_icon("M4 4l8 8M12 4l-8 8")
-FLOW_ICON = _stroke_icon("M2 8h9M8 4.5L11.5 8 8 11.5", width=1.7)
 
 # Inline rather than an emoji: the button carries no text, so a glyph the
 # user's font happens not to cover would leave it blank. `currentColor` keeps
@@ -1214,10 +1215,13 @@ def render_index(default_size: int) -> str:
     padding: 0.4em 0.6em;
     border: 1px solid #ddd; border-radius: 5px; background: #fafafa;
   }}
+  /* Tints the whole card with the verdict, so it reads from the corner of
+     the eye without competing with the grid for attention. */
+  .thput.ok {{ border-color: #9ccfad; background: #f6fbf7; }}
+  .thput.bad {{ border-color: #e6adad; background: #fdf7f7; }}
   .thput-icon {{ display: inline-flex; }}
   .thput-icon.ok {{ color: #1a7f37; }}
   .thput-icon.bad {{ color: #c62828; }}
-  .thput-icon.flow {{ color: #1a7f37; opacity: 0.5; }}
   .thput-value {{ font-weight: bold; }}
   .thput-sub {{ color: #888; font-size: 0.9em; }}
   .spinner {{
@@ -1522,7 +1526,6 @@ const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
 const EOT_STOP_THRESHOLD = {EOT_STOP_THRESHOLD};
 const OK_ICON = '{OK_ICON}';
 const BAD_ICON = '{BAD_ICON}';
-const FLOW_ICON = '{FLOW_ICON}';
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
 // successful /load_model call. Prediction calls are gated on it so we
 // don't pester the server with /predict when no checkpoint is loaded.
@@ -1826,29 +1829,30 @@ function clearSelected() {{
 const THPUT_LABEL = '<span>factory throughput:</span>';
 
 function showThputPending() {{
-  document.getElementById('thput').innerHTML = THPUT_LABEL +
+  const el = document.getElementById('thput');
+  el.className = 'thput';
+  el.innerHTML = THPUT_LABEL +
     '<span class="spinner"></span><span class="thput-sub">calculating…</span>';
 }}
 
 function showThput(data) {{
   const el = document.getElementById('thput');
   if (data.thput === null || data.thput === undefined) {{
+    el.className = 'thput';
     el.innerHTML = THPUT_LABEL +
       '<span class="thput-sub">' + escHtml(data.note || 'unavailable') + '</span>';
     return;
   }}
   const flowing = data.thput > 0;
+  el.className = flowing ? 'thput ok' : 'thput bad';
   el.innerHTML = THPUT_LABEL +
     '<span class="thput-icon ' + (flowing ? 'ok' : 'bad') + '">' +
       (flowing ? OK_ICON : BAD_ICON) + '</span>' +
     '<span class="thput-value">' + data.thput.toFixed(2) +
       ' items per second</span>' +
-    (flowing ? '<span class="thput-icon flow">' + FLOW_ICON + '</span>' : '') +
-    (flowing
-      ? (data.unreachable
-          ? '<span class="thput-sub">' + data.unreachable + ' unreachable</span>'
-          : '')
-      : '<span class="thput-sub">nothing reaches a sink</span>');
+    (flowing && data.unreachable
+      ? '<span class="thput-sub">' + data.unreachable + ' unreachable</span>'
+      : '');
 }}
 
 // Every response that already built the world carries the throughput, so this

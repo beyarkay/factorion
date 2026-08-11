@@ -1042,6 +1042,9 @@ class TestRenderIndexThroughput:
         assert "<svg" in fb.OK_ICON and "<svg" in fb.BAD_ICON
         assert "factory throughput:" in html
         assert "calculating…" in html
+        # The card itself carries the verdict, not just the icon.
+        assert ".thput.ok" in html and ".thput.bad" in html
+        assert "'thput ok' : 'thput bad'" in html
         assert 'class="spinner"' in html
         assert "items per second" in html
 
