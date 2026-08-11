@@ -256,10 +256,14 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
 /// so both lanes of a belt are in reach and neither starves the other —
 /// unlike the drop, which lands on exactly one lane. A lane that cannot
 /// fill its share leaves the rest to the lanes that can (max-min fair, so
-/// a single loaded lane still yields the full rate), which is what decides
-/// how the capacity divides when the two lanes carry different items.
-/// Lanes are visited in ascending supply, and items within one lane drain
-/// in id order, for determinism (HashMap iteration order is not).
+/// a single loaded lane still yields the full rate).
+///
+/// A lane's share is then divided across the items riding it in proportion
+/// to their rates, since the hand grabs each as often as it comes past. No
+/// item can monopolise a mixed lane, just as no lane can monopolise the
+/// hand — a mixed belt costs an assembler throughput without starving it of
+/// any one ingredient. Lanes are visited in ascending supply for
+/// determinism (HashMap iteration order is not).
 fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
@@ -274,18 +278,18 @@ fn pickup_input(
     let mut remaining = graph.nodes[node_idx].entity_kind.flow_rate();
     let mut input: HashMap<Item, f64> = HashMap::new();
     for (i, &(p, available)) in supply.iter().enumerate() {
-        let mut share = available.min(remaining / (supply.len() - i) as f64);
+        let share = available.min(remaining / (supply.len() - i) as f64);
         remaining -= share;
-        let mut items: Vec<(Item, f64)> = node_outputs[p].iter().map(|(&i, &r)| (i, r)).collect();
-        items.sort_by_key(|&(i, _)| i as i64);
-        for (item, rate) in items {
-            if share <= 0.0 {
-                break;
-            }
-            let take = rate.min(share);
+        for (&item, &rate) in &node_outputs[p] {
+            // A source offers an infinite rate of its single item, so the
+            // ratio is indeterminate; fall back to an even split.
+            let take = if available.is_finite() {
+                share * rate / available
+            } else {
+                share / node_outputs[p].len() as f64
+            };
             if take > 0.0 {
                 *input.entry(item).or_insert(0.0) += take;
-                share -= take;
             }
         }
     }

@@ -47,8 +47,8 @@ facing direction), and the two are **completely independent**:
 
 > **In Factorion:** each belt tile is two lane nodes (7.5 items/sec each)
 > in the flow graph; sideloading and inserter *drops* behave as described
-> here, but a pickup splits evenly over both lanes instead of preferring
-> the nearest.
+> here, but a pickup splits evenly over both lanes — and over the items on
+> each lane — instead of preferring the nearest.
 
 ### Curves & Placement
 

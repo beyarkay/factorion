@@ -70,9 +70,10 @@ drained by an inserter downstream won't double-count — the drainer looks at
 a different lane than the loader targeted.
 
 > **In Factorion:** a pickup takes an even share from every lane it reaches
-> rather than preferring one, since the hand sweeps the whole tile. A lane
-> that cannot fill its share leaves the remainder to the others, so a
-> single loaded lane still yields the full hand rate.
+> rather than preferring one, since the hand sweeps the whole tile, and
+> splits that share over the items on the lane in proportion to their
+> rates. A lane that cannot fill its share leaves the remainder to the
+> others, so a single loaded lane still yields the full hand rate.
 
 ### Splitters
 

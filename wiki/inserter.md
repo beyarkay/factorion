@@ -56,8 +56,10 @@ the lane it doesn't read first.
 
 > **In Factorion:** drops target the far lane (right lane when the belt is
 > parallel/anti-parallel). Pickups are *not* prioritised — the hand splits
-> its rate evenly over both lanes, so an inserter cannot unmix a two-item
-> belt, and a lane with nothing to give leaves its share to the other.
+> its rate evenly over both lanes, and each lane's share is divided across
+> the items riding it in proportion to their rates. A lane with nothing to
+> give leaves its share to the other. So an inserter cannot unmix a belt,
+> and nothing it can reach is ever starved by something it can also reach.
 
 ### Variants
 
