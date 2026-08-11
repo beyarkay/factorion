@@ -118,7 +118,7 @@ RunPod console (the pod's container logs; the job also tees to
 
 ## GitHub Actions (thin pointers into this directory)
 
-- `ci.yml` — lint + Python tests + Rust tests on PRs. No GPU jobs.
+- `ci.yml` — ruff + ty, fmt + clippy, Python tests + Rust tests on PRs. No GPU jobs.
 - `ci-command.yml` — the `/ci` comment dispatcher (collaborators only).
 - `ci-reporter.yml` — 30-min cron posting result comments for finished runs.
 - `pod-watchdog.yml` — the 6-hourly leaked-pod reaper.

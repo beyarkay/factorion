@@ -278,7 +278,7 @@ Before claiming work is done, run all of the following:
   - [ ] not have excessive helpers, 
   - [ ] not have functions that could be inlined, 
   - [ ] should contain *ZERO* references to previous states of the codebase
-1. **Rust format + lint**: `cd factorion_rs && cargo fmt && cargo clippy -- -D warnings && cd ..`
+1. **Rust format + lint**: `cd factorion_rs && cargo fmt && cargo clippy --all-targets -- -D warnings && cd ..`
 2. **Rust tests**: `cd factorion_rs && cargo test && cd ..`
 3. **Build the Rust extension**: `cd factorion_rs && maturin develop --release && cd ..`
 4. **Python tests**: `WANDB_MODE=disabled WANDB_DISABLED=true uv run python -m pytest tests/ -v`
