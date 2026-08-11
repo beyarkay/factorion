@@ -1035,10 +1035,15 @@ class TestRenderIndexThroughput:
     def test_readout_sits_above_the_grid(self):
         html = fb.render_index(default_size=11)
         assert html.index('id="thput"') < html.index('id="grid-host"')
-        # Both verdicts, and the spinner for the wait in between.
-        assert "=&gt;&gt;=" in html and "=X=" in html
-        assert "factory throughput: calculating…" in html
-        assert "class=\"spinner\"" in html
+        # Both verdicts, and the spinner for the wait in between. The icons
+        # are inline SVG so a viewer without the right font still gets one.
+        assert f"const OK_ICON = '{fb.OK_ICON}'" in html
+        assert f"const BAD_ICON = '{fb.BAD_ICON}'" in html
+        assert "<svg" in fb.OK_ICON and "<svg" in fb.BAD_ICON
+        assert "factory throughput:" in html
+        assert "calculating…" in html
+        assert 'class="spinner"' in html
+        assert "items per second" in html
 
     def test_readout_never_queues_behind_the_graph_image(self):
         """The whole point of the split: the graph call is ~1 s of matplotlib
