@@ -19,9 +19,11 @@ import base64
 import io
 import json
 import os
+import subprocess
 import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Iterator, Optional
@@ -375,9 +377,51 @@ _FixtureDumper.add_representer(
 )
 
 
-def factory_yaml(grid: list[list[dict]]) -> str:
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _git_commit(root: Path = _REPO_ROOT) -> Optional[str]:
+    """The checkout's short sha, `+dirty` when the tree has uncommitted
+    changes. ``None`` when git is missing or `root` isn't a repo — plenty of
+    environments are neither, and a fixture is still worth copying."""
+    def run(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+
+    try:
+        sha = run("rev-parse", "--short", "HEAD")
+        dirty = bool(run("status", "--porcelain"))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"commit {sha}{' +dirty' if dirty else ''}" if sha else None
+
+
+def _provenance(source: Optional[str]) -> Optional[str]:
+    """One line on where a copied factory came from: what produced it, the
+    checkout it was produced at, and when. Every part is best-effort, so an
+    environment missing git or a usable clock simply contributes less;
+    ``None`` when nothing at all is known."""
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OSError, ValueError):
+        stamp = None
+    known = [part for part in (source, _git_commit(), stamp) if part]
+    if not known:
+        return None
+    return "Captured from the factory builder — " + ", ".join(known) + "."
+
+
+def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
     """Serialise a grid as a textual test fixture, ready to paste into
     ``factorion_rs/tests/factories/*.yaml``.
+
+    ``source`` describes what produced the factory (e.g. ``"MOVE_ONE_ITEM
+    seed 4"``); it is folded into a generated ``description:`` alongside the
+    commit and timestamp. The caller owns that wording because only the page
+    knows whether a grid is a generator's output, a model's rebuild, or a
+    hand-edit of either.
 
     The `factory:` block comes from the canonical renderer and `throughput:`
     from the engine's own per-sink deliveries, so the fixture asserts what the
@@ -418,13 +462,21 @@ def factory_yaml(grid: list[list[dict]]) -> str:
         if item is not None
     ]
     doc: dict = {}
+    note = _provenance(source)
+    if note:
+        doc["description"] = _Block(note + "\n")
     if bindings:
         doc["items"] = bindings
     if throughput:
         doc["throughput"] = throughput
     doc["factory"] = _Block(render_factory(world_WHC.permute(2, 0, 1)) + "\n")
-    # `width` off so a long flow mapping is never wrapped mid-entry.
-    return yaml.dump(doc, Dumper=_FixtureDumper, sort_keys=False, width=10**9)
+    # `width` off so a long flow mapping is never wrapped mid-entry;
+    # `allow_unicode` so a non-ASCII description keeps its block style instead
+    # of being escaped into a quoted scalar.
+    return yaml.dump(
+        doc, Dumper=_FixtureDumper, sort_keys=False,
+        width=10**9, allow_unicode=True,
+    )
 
 
 # ── Model inference ──────────────────────────────────────────────────────────
@@ -1417,6 +1469,8 @@ let grid = [];           // grid[y][x] = cell dict
 let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
 let prediction = null;   // last /predict response (or null)
+let gridSource = null;   // what produced `grid`, or null if hand-built
+let gridSnapshot = '';   // `grid` as adopted, to detect later edits
 let autoApplying = false;
 let autoApplyGeneration = 0;
 let autoApplyFrame = null;
@@ -2005,13 +2059,13 @@ async function computeGraph() {{
 // Serialise `g` server-side (the renderer and the throughput engine both live
 // there) and put the fixture on the clipboard. The icon doubles as the status
 // readout — there is nowhere else on a scan card to put one.
-async function copyYaml(g, btn) {{
+async function copyYaml(g, btn, source) {{
   const icon = btn.innerHTML;
   try {{
     const resp = await fetch('/factory_yaml', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ grid: g }}),
+      body: JSON.stringify({{ grid: g, source }}),
     }});
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
@@ -2024,8 +2078,19 @@ async function copyYaml(g, btn) {{
   }}
   setTimeout(() => {{ btn.innerHTML = icon; }}, 1500);
 }}
+// What produced the grid on screen, for the fixture's provenance note.
+// Diffing against the snapshot taken when the grid was adopted is what keeps
+// a hand-edited factory from claiming to be that seed's own output; every
+// edit path already funnels through a wholesale swap or mutates `grid`, so
+// one comparison covers them all.
+function buildSource() {{
+  if (!gridSource) return null;
+  return JSON.stringify(grid) === gridSnapshot
+    ? gridSource
+    : gridSource + ', hand-edited';
+}}
 document.getElementById('copy-yaml').addEventListener('click', (ev) =>
-  copyYaml(grid, ev.currentTarget));
+  copyYaml(grid, ev.currentTarget, buildSource()));
 
 document.getElementById('model-apply').addEventListener('click', applyPrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
@@ -2107,11 +2172,13 @@ async function loadModel() {{
 // and prediction have to be dropped along with the old grid — otherwise the
 // ghost overlays and argmax border are drawn over a factory they don't
 // belong to — so every wholesale swap goes through here.
-function adoptGrid(size, cells) {{
+function adoptGrid(size, cells, source) {{
   SIZE = size;
   grid = cells;
   selected = null;
   prediction = null;
+  gridSource = source || null;
+  gridSnapshot = JSON.stringify(grid);
   document.getElementById('size').value = SIZE;
   renderGrid(); syncEditor();
   scheduleCompute();
@@ -2137,7 +2204,7 @@ async function generateLesson() {{
     }});
     const data = await resp.json();
     if (data.error) {{ status.textContent = 'error: ' + data.error; return; }}
-    adoptGrid(data.size, data.grid);
+    adoptGrid(data.size, data.grid, kind + ' seed ' + data.used_seed);
     document.getElementById('lesson-seed').value = data.next_seed;
     // `num_removed` is what blank_entities actually cleared, which can be
     // less than requested when the lesson protects most of its entities.
@@ -2158,11 +2225,7 @@ document.getElementById('lesson-generate').addEventListener('click', generateLes
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
   if (!Number.isFinite(n) || n < 2 || n > 20) return;
-  SIZE = n;
-  grid = newGrid(SIZE);
-  selected = null;
-  renderGrid(); syncEditor();
-  scheduleCompute();
+  adoptGrid(n, newGrid(n), null);
 }});
 document.getElementById('export').addEventListener('click', async () => {{
   const text = JSON.stringify({{ size: SIZE, grid }}, null, 2);
@@ -2311,13 +2374,18 @@ function scanCard(r, showRef) {{
     : '';
   card.innerHTML = head + `<div class="pair">${{built}}${{ref}}</div>`;
   card.title = 'Open this factory in the Build tab';
+  // The card holds what the model built from this lesson's markers, not the
+  // generator's own solution, so the seed alone would misdescribe it.
+  const source = r.kind + ' seed ' + r.seed + ', model rebuild';
   card.querySelector('.copy-yaml').addEventListener('click', (ev) => {{
     ev.stopPropagation();  // the card's own click adopts the grid instead
-    copyYaml(r.grid, ev.currentTarget);
+    copyYaml(r.grid, ev.currentTarget, source);
   }});
   card.addEventListener('click', () => {{
     switchTab('build');
-    adoptGrid(r.size, r.grid.map(row => row.map(c => Object.assign({{}}, c))));
+    adoptGrid(
+      r.size, r.grid.map(row => row.map(c => Object.assign({{}}, c))), source,
+    );
   }});
   return card;
 }}
@@ -2644,7 +2712,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
             elif self.path == "/factory_yaml":
-                result = {"yaml": factory_yaml(payload["grid"])}
+                result = {
+                    "yaml": factory_yaml(payload["grid"], payload.get("source"))
+                }
             elif self.path == "/predict":
                 if payload.get("detail") == "action":
                     result = _predict_action(payload["grid"])
