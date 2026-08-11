@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import tyro  # noqa: E402
+import yaml  # noqa: E402
 
 os.environ.setdefault("WANDB_MODE", "disabled")
 os.environ.setdefault("WANDB_DISABLED", "true")
@@ -350,6 +351,30 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     return {"png": png_b64, "info": info, "edges": edges}
 
 
+class _Flow(dict):
+    """A mapping the fixtures write inline (``- { x: 0, y: 0, item: … }``)."""
+
+
+class _Block(str):
+    """A string the fixtures write as a literal block scalar (``factory: |``)."""
+
+
+# Scoped to its own Dumper: `yaml.add_representer` would mutate the global one
+# for everything that imports this module.
+class _FixtureDumper(yaml.Dumper):
+    pass
+
+
+_FixtureDumper.add_representer(
+    _Flow,
+    lambda d, x: d.represent_mapping("tag:yaml.org,2002:map", x, flow_style=True),
+)
+_FixtureDumper.add_representer(
+    _Block,
+    lambda d, x: d.represent_scalar("tag:yaml.org,2002:str", x, style="|"),
+)
+
+
 def factory_yaml(grid: list[list[dict]]) -> str:
     """Serialise a grid as a textual test fixture, ready to paste into
     ``factorion_rs/tests/factories/*.yaml``.
@@ -357,7 +382,8 @@ def factory_yaml(grid: list[list[dict]]) -> str:
     The `factory:` block comes from the canonical renderer and `throughput:`
     from the engine's own per-sink deliveries, so the fixture asserts what the
     engine computes for this exact world. The FOOTPRINT channel has no fixture
-    form and is dropped — it gates placement legality, not throughput.
+    form and is dropped — it gates placement legality, not throughput. Nor does
+    a sink with no item bound, so those are left out of `throughput:`.
     """
     world_WHC = build_world(grid)
     protos = {it.name: it for it in items.values()}
@@ -367,7 +393,7 @@ def factory_yaml(grid: list[list[dict]]) -> str:
     # order reaches a multi-tile entity's anchor first, so the rest of its
     # footprint is always still ahead of the walk.
     claimed: set[tuple[int, int]] = set()
-    bindings: list[str] = []
+    bindings: list[_Flow] = []
     for y, row in enumerate(grid):
         for x, cell in enumerate(row):
             ent_name = cell.get("entity") or "empty"
@@ -382,31 +408,23 @@ def factory_yaml(grid: list[list[dict]]) -> str:
             claimed.update(map(tuple, tiles or []))
             item_name = cell.get("item") or "empty"
             if item_name != "empty":
-                bindings.append(f"- {{ x: {x}, y: {y}, item: {item_name} }}")
+                bindings.append(_Flow(x=x, y=y, item=item_name))
 
-    deliveries = factorion_rs.py_sink_deliveries(
-        world_WHC.numpy().astype(np.int64)
-    )
     throughput = [
-        f"- {{ item: {item}, per_second: {rate!r} }}"
-        for _x, _y, item, rate in deliveries
+        _Flow(item=item, per_second=rate)
+        for _x, _y, item, rate in factorion_rs.py_sink_deliveries(
+            world_WHC.numpy().astype(np.int64)
+        )
         if item is not None
     ]
-    # An untagged sink has no fixture form (`item:` is required), so name the
-    # tile that needs one rather than emitting an entry that cannot parse.
-    doc = [
-        f"# sink at ({x},{y}) has no item set — bind one and re-copy"
-        for x, y, item, _rate in deliveries
-        if item is None
-    ]
+    doc: dict = {}
     if bindings:
-        doc += ["items:"] + bindings
+        doc["items"] = bindings
     if throughput:
-        doc += ["throughput:"] + throughput
-    doc.append("factory: |")
-    rendered = render_factory(world_WHC.permute(2, 0, 1))
-    doc += [f"  {line}" for line in rendered.splitlines()]
-    return "\n".join(doc) + "\n"
+        doc["throughput"] = throughput
+    doc["factory"] = _Block(render_factory(world_WHC.permute(2, 0, 1)) + "\n")
+    # `width` off so a long flow mapping is never wrapped mid-entry.
+    return yaml.dump(doc, Dumper=_FixtureDumper, sort_keys=False, width=10**9)
 
 
 # ── Model inference ──────────────────────────────────────────────────────────

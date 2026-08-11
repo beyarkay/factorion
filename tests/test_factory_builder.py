@@ -999,7 +999,12 @@ class TestFactoryYaml:
 
     def test_document_matches_the_fixture_header(self):
         factory, grid = self._grid(self.ASSEMBLER_LESSON)
-        doc = yaml.safe_load(fb.factory_yaml(grid))
+        text = fb.factory_yaml(grid)
+        doc = yaml.safe_load(text)
+        # Style, not just value: a quoted `factory:` scalar or block-style
+        # bindings parse the same but read nothing like the fixtures.
+        assert "factory: |\n" in text
+        assert "\n- {x: " in text
         # `Header` is deny_unknown_fields, so a stray key is a parse error.
         assert set(doc) <= {"items", "throughput", "factory"}
         assert all(set(b) == {"x", "y", "item"} for b in doc["items"])
@@ -1046,7 +1051,7 @@ class TestFactoryYaml:
             for _x, _y, item, rate in factorion_rs.py_sink_deliveries(world_WHC)
         )
 
-    def test_untagged_sink_is_flagged_rather_than_emitted(self):
+    def test_untagged_sink_is_left_out(self):
         """A throughput entry requires an `item:`, so a sink with nothing
         bound has no fixture form. Emitting one anyway would make the whole
         document unparseable, taking the rest of the factory down with it."""
@@ -1059,9 +1064,7 @@ class TestFactoryYaml:
             ["stack_inserter", "transport_belt", "bulk_inserter"]
         ):
             grid[0][x] |= {"entity": entity, "direction": "EAST"}
-        text = fb.factory_yaml(grid)
-        assert "# sink at (2,0) has no item set" in text
-        assert set(yaml.safe_load(text)) == {"factory"}
+        assert set(yaml.safe_load(fb.factory_yaml(grid))) == {"factory"}
 
     def test_every_lesson_round_trips(self):
         """The generators are the main source of factories to copy, so every
