@@ -324,9 +324,12 @@ class TestRenderGraphPng:
                       "item": "copper_cable", "misc": "NONE",
                       "footprint": "AVAILABLE"}
         out = fb.render_graph_png(grid)
-        # A non-empty PNG was produced and throughput was computed.
         assert len(out["png"]) > 0
-        assert "throughput" in out["info"]
+        assert out["info"] == "6 nodes · 6 edges"
+        # Throughput deliberately does NOT ride on this response: it costs
+        # ~0.1 ms and this call costs ~1 s of matplotlib, so bundling them
+        # made the readout wait on the image.
+        assert "thput" not in out
         # The source→belt→belt→sink chain must be present (canonical
         # <char>@x,y node labels).
         flat = " ".join(u + " " + v for u, v in out["edges"])
@@ -525,6 +528,9 @@ class TestPredictSchema:
             result = fb._predict_action(_empty_grid(4))
             assert set(result) == {
                 "x", "y", "entity", "direction", "item", "misc", "eot_prob",
+                # The throughput rides along so the readout can track a
+                # held-`a` build without a request of its own.
+                "thput", "note",
             }
             assert 0 <= result["x"] < 4
             assert 0 <= result["y"] < 4
@@ -539,10 +545,7 @@ class TestPredictSchema:
             compact = fb._predict_action(grid)
             detailed = fb._predict(grid)
             assert compact == {
-                key: detailed[key]
-                for key in (
-                    "x", "y", "entity", "direction", "item", "misc", "eot_prob",
-                )
+                key: detailed[key] for key in compact
             }
         finally:
             path.unlink(missing_ok=True)
@@ -982,6 +985,88 @@ class TestRenderIndexScanTab:
             path.unlink(missing_ok=True)
         result = next(e for e in events if e["type"] == "result")
         assert read_fields <= set(result), read_fields - set(result)
+
+
+class TestThroughputReadout:
+    """The number above the grid is what a newbie reads to tell a working
+    factory from a broken one, so it must be right and must not wait on the
+    graph image."""
+
+    def test_reports_the_engines_number(self):
+        factory, _seed = fb._build_with_retry(LessonKind.SPLITTER_SPLIT, 11, 3)
+        grid = fb.world_CWH_to_grid(factory.world_CWH)
+        out = fb._throughput(fb.build_world(grid))
+        want, unreachable = factorion_rs.simulate_throughput(
+            fb.build_world(grid).numpy().astype(np.int64)
+        )
+        assert out == {"thput": want, "unreachable": unreachable}
+        assert out["thput"] > 0  # a solved lesson flows
+
+    def test_empty_grid_is_neutral_not_blocked(self):
+        """Zero and "nothing here yet" look identical in a number but not to
+        a user: a blank grid must not be flagged as a broken factory."""
+        out = fb._throughput(fb.build_world(_empty_grid(5)))
+        assert out["thput"] is None and out["note"]
+
+    def test_disconnected_factory_reads_as_blocked(self):
+        grid = _empty_grid(5)
+        grid[0][0] = {"entity": "stack_inserter", "direction": "EAST",
+                      "item": "copper_cable", "misc": "NONE",
+                      "footprint": "AVAILABLE"}
+        grid[4][4] = {"entity": "bulk_inserter", "direction": "EAST",
+                      "item": "copper_cable", "misc": "NONE",
+                      "footprint": "AVAILABLE"}
+        assert fb._throughput(fb.build_world(grid))["thput"] == 0
+
+    def test_rides_on_both_prediction_paths(self):
+        """Both are the responses that already built the world, so neither
+        should make the readout pay for a request of its own."""
+        path = _make_tiny_checkpoint(size=4, chan=8)
+        try:
+            fb._load_checkpoint(str(path))
+            grid = _empty_grid(4)
+            assert "thput" in fb._predict(grid)
+            assert "thput" in fb._predict_action(grid)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class TestRenderIndexThroughput:
+    def test_readout_sits_above_the_grid(self):
+        html = fb.render_index(default_size=11)
+        assert html.index('id="thput"') < html.index('id="grid-host"')
+        # Both verdicts, and the spinner for the wait in between.
+        assert "=&gt;&gt;=" in html and "=X=" in html
+        assert "factory throughput: calculating…" in html
+        assert "class=\"spinner\"" in html
+
+    def test_readout_never_queues_behind_the_graph_image(self):
+        """The whole point of the split: the graph call is ~1 s of matplotlib
+        and the server answers one request at a time, so a readout that waited
+        on it would be ~10000x slower than the number costs to compute."""
+        html = fb.render_index(default_size=11)
+        assert "setTimeout(computePrediction, 25)" in html
+        assert "setTimeout(computeGraph, 1000)" in html
+        # computeGraph must not be the thing that feeds the readout.
+        graph_fn = html.split("async function computeGraph(")[1].split("\n}")[0]
+        assert "showThput" not in graph_fn
+
+    def test_held_apply_updates_the_readout_as_it_builds(self):
+        html = fb.render_index(default_size=11)
+        loop = html.split("async function runAutoApply(")[1].split("\n}")[0]
+        assert "showThput(action)" in loop
+
+    def test_falls_back_to_its_own_endpoint_with_no_model(self):
+        """Without a checkpoint nothing else asks the server anything, and
+        hand-building a factory is exactly when the readout matters most."""
+        html = fb.render_index(default_size=11)
+        assert "fetch('/throughput'" in html
+        assert "/throughput" in inspect.getsource(fb.Handler.do_POST)
+        # The body up to the first `return;` is the no-model early exit.
+        fn = html.split("async function computePrediction(")[1].split("\n}")[0]
+        early_exit = fn.split("return;")[0]
+        assert "!modelLoaded" in early_exit
+        assert "computeThroughput()" in early_exit
 
 
 class TestFactoryYaml:

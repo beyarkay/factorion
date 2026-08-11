@@ -341,16 +341,32 @@ def render_graph_png(grid: list[list[dict]]) -> dict:
     finally:
         plt.close("all")
 
-    try:
-        throughput, num_unreachable = factorion_rs.simulate_throughput(
-            world.numpy().astype(np.int64)
-        )
-        info = f"throughput: {throughput:.4f}  ·  unreachable nodes: {num_unreachable}"
-    except Exception as e:
-        info = f"throughput failed: {e}"
-
     edges = [[u, v] for u, v in G.edges]
+    info = f"{len(G.nodes)} nodes · {len(edges)} edges"
     return {"png": png_b64, "info": info, "edges": edges}
+
+
+def _throughput(world_WHC: torch.Tensor) -> dict:
+    """Simulate a world's throughput, as fields to merge into a response.
+
+    Split out of :func:`render_graph_png` — where the number used to arrive
+    bundled with the graph image — because it costs ~0.1 ms against that
+    function's ~1 s of matplotlib. At that price every response that has
+    already built the world carries it, so the readout never waits on a
+    request of its own.
+
+    ``thput`` is ``None`` when there is no meaningful answer — an empty grid,
+    or a failed simulation — so the UI can stay neutral instead of reporting
+    a factory as blocked.
+    """
+    arr = world_WHC.numpy().astype(np.int64)
+    if not arr[:, :, Channel.ENTITIES.value].any():
+        return {"thput": None, "note": "nothing placed yet"}
+    try:
+        thput, unreachable = factorion_rs.simulate_throughput(arr)
+    except Exception as e:
+        return {"thput": None, "note": f"throughput failed: {e}"}
+    return {"thput": float(thput), "unreachable": int(unreachable)}
 
 
 class _Flow(dict):
@@ -784,6 +800,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         "misc_rest": misc_rest,
         "candidates": candidates,
         "eot_prob": eot_prob,
+        **_throughput(world_WHC),
     }
 
 
@@ -823,6 +840,9 @@ def _predict_action(grid: list[list[dict]]) -> dict:
         "item": _ITEM_NAMES.get(item, str(item)),
         "misc": _MISC_NAMES.get(misc, str(misc)),
         "eot_prob": eot_prob,
+        # Rides along so the readout tracks a held-`a` build as it happens,
+        # one placement behind, instead of going blank until the key is let go.
+        **_throughput(world_WHC),
     }
 
 
@@ -1167,7 +1187,27 @@ def render_index(default_size: int) -> str:
     display: flex; gap: 0.8em; align-items: flex-start;
     width: 100%; min-width: 0;
   }}
-  .grid-graph-row > #grid-host {{ flex: 0 0 auto; }}
+  .grid-graph-row > .grid-col {{
+    flex: 0 0 auto; display: flex; flex-direction: column; gap: 0.4em;
+  }}
+  /* The verdict sits above the grid because it is what the user is waiting
+     for after a build, and the flag reads before the digits do. */
+  .thput {{
+    display: flex; align-items: center; gap: 0.55em;
+    font-family: monospace; font-size: 0.92em; min-height: 1.5em;
+    padding: 0.4em 0.6em;
+    border: 1px solid #ddd; border-radius: 5px; background: #fafafa;
+  }}
+  .thput-flag {{ font-weight: bold; font-size: 1.15em; }}
+  .thput-flag.flowing {{ color: #1a7f37; }}
+  .thput-flag.blocked {{ color: #c62828; }}
+  .thput-sub {{ color: #888; font-size: 0.9em; }}
+  .spinner {{
+    width: 11px; height: 11px; flex: 0 0 auto;
+    border: 2px solid #d8d8d8; border-top-color: #666;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+  }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
   .graph-view {{ flex: 1 1 0; min-width: 0; }}
   .graph-view h3 {{ margin: 0 0 0.3em; font-size: 0.85em; text-transform: uppercase; color: #555; }}
   .controls {{ display: flex; gap: 0.4em; flex-wrap: wrap; align-items: center; }}
@@ -1369,7 +1409,10 @@ def render_index(default_size: int) -> str:
       <span id="lesson-status" class="help"></span>
     </div>
     <div class="grid-graph-row">
-      <div id="grid-host"></div>
+      <div class="grid-col">
+        <div class="thput" id="thput"></div>
+        <div id="grid-host"></div>
+      </div>
       <div class="graph-view">
         <h3>Graph
           <button class="copy-yaml" id="copy-yaml"
@@ -1757,15 +1800,63 @@ function clearSelected() {{
   scheduleCompute();
 }}
 
+// The verdict above the grid. The flag is the whole point: it answers "did my
+// factory work?" before anyone has to know what a good number looks like.
+function showThputPending() {{
+  document.getElementById('thput').innerHTML =
+    '<span class="spinner"></span>factory throughput: calculating…';
+}}
+
+function showThput(data) {{
+  const el = document.getElementById('thput');
+  if (data.thput === null || data.thput === undefined) {{
+    el.innerHTML =
+      '<span class="thput-sub">' + escHtml(data.note || 'no throughput') + '</span>';
+    return;
+  }}
+  const flowing = data.thput > 0;
+  el.innerHTML =
+    (flowing
+      ? '<span class="thput-flag flowing">=&gt;&gt;=</span>'
+      : '<span class="thput-flag blocked">=X=</span>') +
+    '<span>factory throughput: ' + data.thput.toFixed(4) + '</span>' +
+    (flowing
+      ? (data.unreachable
+          ? '<span class="thput-sub">' + data.unreachable + ' unreachable</span>'
+          : '')
+      : '<span class="thput-sub">nothing reaches a sink</span>');
+}}
+
+// Every response that already built the world carries the throughput, so this
+// is only for the case where nothing else will ask: no model loaded.
+async function computeThroughput() {{
+  try {{
+    const resp = await fetch('/throughput', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ grid }}),
+    }});
+    showThput(await resp.json());
+  }} catch (e) {{
+    showThput({{ thput: null, note: 'throughput failed: ' + e }});
+  }}
+}}
+
 let _predictionTimer = null;
 let _graphTimer = null;
-function scheduleCompute() {{
+function cancelCompute() {{
   clearTimeout(_predictionTimer);
   clearTimeout(_graphTimer);
+}}
+function scheduleCompute() {{
+  cancelCompute();
+  // Whatever number is on screen belongs to a grid that no longer exists.
+  showThputPending();
   if (autoApplying) return;
-  // Prediction is interactive; refresh it almost immediately. Matplotlib
-  // graph rendering is much heavier and shares the server thread, so only do
-  // it after the user has actually paused.
+  // Prediction is interactive; refresh it almost immediately, and the
+  // throughput rides back with it. Matplotlib graph rendering is ~1s and
+  // shares the server thread, so only do it after the user has actually
+  // paused — the readout must never queue behind it.
   _predictionTimer = setTimeout(computePrediction, 25);
   _graphTimer = setTimeout(computeGraph, 1000);
 }}
@@ -1800,6 +1891,7 @@ async function computePrediction() {{
     const out = document.getElementById('model-action');
     if (out) out.textContent = '';
     renderGrid();
+    computeThroughput();
     return;
   }}
   const info = document.getElementById('model-info');
@@ -1817,9 +1909,11 @@ async function computePrediction() {{
       if (out) out.textContent = '';
       prediction = null;
       renderGrid();
+      showThput({{ thput: null, note: 'error: ' + data.error }});
       return;
     }}
     prediction = data;
+    showThput(data);
     if (info) {{
       info.textContent = eotStop(data)
         ? eotStopMessage(data) + ' — no placement offered'
@@ -1929,6 +2023,7 @@ async function runAutoApply(generation) {{
     while (autoApplying && generation === autoApplyGeneration) {{
       const action = await requestFastPrediction();
       if (!autoApplying || generation !== autoApplyGeneration) break;
+      showThput(action);
       if (eotStop(action)) {{
         autoApplying = false;
         if (info) {{
@@ -1960,8 +2055,7 @@ async function runAutoApply(generation) {{
 
 function startAutoApply() {{
   if (autoApplying || !modelLoaded) return;
-  clearTimeout(_predictionTimer);
-  clearTimeout(_graphTimer);
+  cancelCompute();
   autoApplying = true;
   autoApplyGeneration += 1;
   runAutoApply(autoApplyGeneration);
@@ -1985,8 +2079,7 @@ function stopAutoApply() {{
 function beginApplyKey() {{
   if (!modelLoaded) return;
   applyKeyHeld = true;
-  clearTimeout(_predictionTimer);
-  clearTimeout(_graphTimer);
+  cancelCompute();
   // Preserve tap-to-apply: consume the visible prediction once, then only
   // enter the continuous request pump if the key remains down.
   let firstApply = Promise.resolve(true);
@@ -2598,6 +2691,7 @@ bindEditor();
 bindHelp();
 bindScan();
 refreshModelInfo();
+computeThroughput();
 </script>
 </body></html>"""
 
@@ -2699,6 +2793,7 @@ class Handler(BaseHTTPRequestHandler):
             "/load_lesson",
             "/batch_rollout",
             "/factory_yaml",
+            "/throughput",
         ):
             self.send_error(404)
             return
@@ -2711,6 +2806,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/graph":
                 result = render_graph_png(payload["grid"])
+            elif self.path == "/throughput":
+                result = _throughput(build_world(payload["grid"]))
             elif self.path == "/factory_yaml":
                 result = {
                     "yaml": factory_yaml(payload["grid"], payload.get("source"))
