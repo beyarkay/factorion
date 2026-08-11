@@ -22,8 +22,10 @@ import tempfile
 from pathlib import Path
 
 import gymnasium as gym
+import numpy as np
 import pytest
 import torch
+import yaml
 
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["WANDB_DISABLED"] = "true"
@@ -33,8 +35,16 @@ _NODE = shutil.which("node")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
+import factorion_rs  # noqa: E402
 import factory_builder as fb  # noqa: E402
-from factorion import Channel, LessonKind, entities, items  # noqa: E402
+from factorion import (  # noqa: E402
+    LESSON_IS_TRIAL,
+    Channel,
+    LessonKind,
+    entities,
+    items,
+    render_factory,
+)
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
 
 
@@ -972,6 +982,120 @@ class TestRenderIndexScanTab:
             path.unlink(missing_ok=True)
         result = next(e for e in events if e["type"] == "result")
         assert read_fields <= set(result), read_fields - set(result)
+
+
+class TestFactoryYaml:
+    """`factory_yaml` must emit a document the Rust fixture parser accepts
+    (`factorion_rs/src/textual.rs`), asserting what the engine computes for
+    that exact world — otherwise a pasted fixture fails the moment it lands
+    in `factorion_rs/tests/factories/`."""
+
+    ASSEMBLER_LESSON = LessonKind.MEMORISE_2_INGREDIENT_RECIPES
+
+    @staticmethod
+    def _grid(kind: LessonKind, size: int = 11, seed: int = 3):
+        factory, _seed = fb._build_with_retry(kind, size, seed)
+        return factory, fb.world_CWH_to_grid(factory.world_CWH)
+
+    def test_document_matches_the_fixture_header(self):
+        factory, grid = self._grid(self.ASSEMBLER_LESSON)
+        doc = yaml.safe_load(fb.factory_yaml(grid))
+        # `Header` is deny_unknown_fields, so a stray key is a parse error.
+        assert set(doc) <= {"items", "throughput", "factory"}
+        assert all(set(b) == {"x", "y", "item"} for b in doc["items"])
+        assert all(set(t) == {"item", "per_second"} for t in doc["throughput"])
+        # The grid is the canonical renderer's, not a second implementation.
+        assert doc["factory"].rstrip("\n") == render_factory(factory.world_CWH)
+
+    def test_multi_tile_entity_binds_once_at_its_anchor(self):
+        """`items:` resolves a coordinate to the whole footprint, so a 3x3
+        assembler is one line — and it must be the anchor tile, which is what
+        `build_graph` reads the recipe from."""
+        _factory, grid = self._grid(self.ASSEMBLER_LESSON)
+        doc = yaml.safe_load(fb.factory_yaml(grid))
+        tiles = {
+            (x, y)
+            for y, row in enumerate(grid)
+            for x, cell in enumerate(row)
+            if cell["entity"] == "assembling_machine_1"
+        }
+        assert len(tiles) == 9
+        anchor = min(tiles, key=lambda p: (p[1], p[0]))
+        singles = {
+            (x, y)
+            for y, row in enumerate(grid)
+            for x, cell in enumerate(row)
+            if cell["item"] != "empty" and (x, y) not in tiles
+        }
+        assert {(b["x"], b["y"]) for b in doc["items"]} == singles | {anchor}
+        for b in doc["items"]:
+            assert grid[b["y"]][b["x"]]["item"] == b["item"]
+
+    def test_throughput_is_the_engines_own_deliveries(self):
+        factory, grid = self._grid(LessonKind.SPLITTER_SPLIT)
+        doc = yaml.safe_load(fb.factory_yaml(grid))
+        world_WHC = np.ascontiguousarray(
+            np.transpose(np.asarray(factory.world_CWH), (1, 2, 0)).astype(np.int64)
+        )
+        # Exact equality, not a tolerance: the emitted rates have to survive
+        # the round trip through text.
+        assert sorted(
+            (t["item"], t["per_second"]) for t in doc["throughput"]
+        ) == sorted(
+            (item, rate)
+            for _x, _y, item, rate in factorion_rs.py_sink_deliveries(world_WHC)
+        )
+
+    def test_untagged_sink_is_flagged_rather_than_emitted(self):
+        """A throughput entry requires an `item:`, so a sink with nothing
+        bound has no fixture form. Emitting one anyway would make the whole
+        document unparseable, taking the rest of the factory down with it."""
+        blank = {
+            "entity": "empty", "direction": "NONE", "item": "empty",
+            "misc": "NONE", "footprint": "AVAILABLE",
+        }
+        grid = [[dict(blank) for _ in range(4)] for _ in range(4)]
+        for x, entity in enumerate(
+            ["stack_inserter", "transport_belt", "bulk_inserter"]
+        ):
+            grid[0][x] |= {"entity": entity, "direction": "EAST"}
+        text = fb.factory_yaml(grid)
+        assert "# sink at (2,0) has no item set" in text
+        assert set(yaml.safe_load(text)) == {"factory"}
+
+    def test_every_lesson_round_trips(self):
+        """The generators are the main source of factories to copy, so every
+        kind must serialise to a parseable document with something to assert
+        — a fixture declaring neither `throughput:` nor `graph:` is rejected
+        by the sweep in `textual.rs`."""
+        for kind in LessonKind:
+            factory, _seed = fb._build_with_retry(kind, 11, 0)
+            doc = yaml.safe_load(
+                fb.factory_yaml(fb.world_CWH_to_grid(factory.world_CWH))
+            )
+            assert doc["factory"].rstrip("\n") == render_factory(factory.world_CWH)
+            # Trials place only markers, so they have no sink deliveries to
+            # assert and are not fixture material.
+            if not LESSON_IS_TRIAL[kind]:
+                assert doc["throughput"], kind.name
+
+
+class TestRenderIndexCopyYaml:
+    """The copy button has to reach the endpoint the handler routes, on both
+    tabs."""
+
+    def test_both_tabs_offer_the_button(self):
+        html = fb.render_index(default_size=11)
+        assert 'id="copy-yaml"' in html                  # by the graph readout
+        assert html.count('class="copy-yaml"') == 2      # + one per scan card
+        assert "fetch('/factory_yaml'" in html
+        # A typo'd path fails silently as a 404, so pin it to the route list.
+        assert "/factory_yaml" in inspect.getsource(fb.Handler.do_POST)
+
+    def test_card_button_does_not_also_open_the_factory(self):
+        """A scan card adopts its grid on click; the button sits inside it."""
+        html = fb.render_index(default_size=11)
+        assert "ev.stopPropagation();" in html
 
 
 class TestIconCoverage:
