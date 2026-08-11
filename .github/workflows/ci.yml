@@ -28,6 +28,31 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+  rust-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: factorion_rs
+      - name: Check formatting
+        run: cd factorion_rs && cargo fmt --check
+      # --all-targets so #[cfg(test)] code is linted too; a plain `cargo
+      # clippy` silently skips every test module. Default features are left on
+      # so the pyo3 binding code is covered (clippy never links, so
+      # extension-module is fine here even though `cargo test` needs it off).
+      - name: Run clippy
+        run: cd factorion_rs && cargo clippy --all-targets -- -D warnings
+
   python-tests:
     runs-on: ubuntu-latest
     steps:
