@@ -1006,7 +1006,7 @@ class TestFactoryYaml:
         assert "factory: |\n" in text
         assert "\n- {x: " in text
         # `Header` is deny_unknown_fields, so a stray key is a parse error.
-        assert set(doc) <= {"items", "throughput", "factory"}
+        assert set(doc) <= {"description", "items", "throughput", "factory"}
         assert all(set(b) == {"x", "y", "item"} for b in doc["items"])
         assert all(set(t) == {"item", "per_second"} for t in doc["throughput"])
         # The grid is the canonical renderer's, not a second implementation.
@@ -1051,6 +1051,32 @@ class TestFactoryYaml:
             for _x, _y, item, rate in factorion_rs.py_sink_deliveries(world_WHC)
         )
 
+    def test_description_carries_the_provenance_it_can_get(self):
+        _factory, grid = self._grid(LessonKind.SPLITTER_SPLIT)
+        doc = yaml.safe_load(fb.factory_yaml(grid, "SPLITTER_SPLIT seed 3"))
+        assert "SPLITTER_SPLIT seed 3" in doc["description"]
+        # This checkout is a git repo, so the sha is a fact the note must
+        # carry rather than an optional nicety.
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=Path(fb.__file__).parent.parent,
+        ).stdout.strip()
+        assert head and head in doc["description"]
+
+    def test_provenance_degrades_instead_of_failing(self, monkeypatch, tmp_path):
+        """Plenty of environments have no git, no repo, or no useful clock.
+        Each missing part drops out on its own; only when nothing at all is
+        known does the key disappear."""
+        assert fb._git_commit(tmp_path) is None  # a real directory, not a repo
+        monkeypatch.setattr(fb, "_git_commit", lambda *a, **k: None)
+        _factory, grid = self._grid(LessonKind.SPLITTER_SPLIT)
+        doc = yaml.safe_load(fb.factory_yaml(grid, "SPLITTER_SPLIT seed 3"))
+        assert "commit" not in doc["description"]
+        assert "SPLITTER_SPLIT seed 3" in doc["description"]
+
+        monkeypatch.setattr(fb, "_provenance", lambda source: None)
+        assert "description" not in yaml.safe_load(fb.factory_yaml(grid))
+
     def test_untagged_sink_is_left_out(self):
         """A throughput entry requires an `item:`, so a sink with nothing
         bound has no fixture form. Emitting one anyway would make the whole
@@ -1064,7 +1090,7 @@ class TestFactoryYaml:
             ["stack_inserter", "transport_belt", "bulk_inserter"]
         ):
             grid[0][x] |= {"entity": entity, "direction": "EAST"}
-        assert set(yaml.safe_load(fb.factory_yaml(grid))) == {"factory"}
+        assert "throughput" not in yaml.safe_load(fb.factory_yaml(grid))
 
     def test_every_lesson_round_trips(self):
         """The generators are the main source of factories to copy, so every
@@ -1101,6 +1127,14 @@ class TestRenderIndexCopyYaml:
         """A scan card adopts its grid on click; the button sits inside it."""
         html = fb.render_index(default_size=11)
         assert "ev.stopPropagation();" in html
+
+    def test_page_sends_provenance_the_endpoint_reads(self):
+        """The lesson/seed is the page's to know, so a rename on either side
+        would otherwise silently start copying fixtures with no `description:`."""
+        html = fb.render_index(default_size=11)
+        assert "JSON.stringify({ grid: g, source })" in html
+        assert "source" in inspect.signature(fb.factory_yaml).parameters
+        assert 'payload.get("source")' in inspect.getsource(fb.Handler.do_POST)
 
 
 class TestIconCoverage:
