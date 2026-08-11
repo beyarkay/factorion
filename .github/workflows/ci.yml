@@ -47,9 +47,7 @@ jobs:
       - name: Check formatting
         run: cd factorion_rs && cargo fmt --check
       # --all-targets so #[cfg(test)] code is linted too; a plain `cargo
-      # clippy` silently skips every test module. Default features are left on
-      # so the pyo3 binding code is covered (clippy never links, so
-      # extension-module is fine here even though `cargo test` needs it off).
+      # clippy` silently skips every test module.
       - name: Run clippy
         run: cd factorion_rs && cargo clippy --all-targets -- -D warnings
 
@@ -101,10 +99,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      # pyo3's build script needs an interpreter to resolve the ABI.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: factorion_rs
+      # Default features on, so the pyo3 bindings are compiled in the same
+      # configuration that ships. The test binary links because nothing in the
+      # tests references libpython, which extension-module leaves undefined.
       - name: Run Rust tests
-        run: cd factorion_rs && cargo test --no-default-features
+        run: cd factorion_rs && cargo test
