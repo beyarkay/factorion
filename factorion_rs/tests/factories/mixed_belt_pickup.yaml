@@ -1,0 +1,58 @@
+description: |
+  A TRIAL_RECIPE_TREE_DEPTH_1 (personal_roboport, seed 22) grid as a policy
+  built it: 22 entities, every one of them on a source→sink path.
+
+  The recipe takes four ingredients but the build wires only three inserters
+  into the assembler, so iron_gear_wheel and battery share the belt at (9,4):
+  battery feeds it in-line from behind (both lanes), iron_gear_wheel arrives
+  perpendicular from the north and sideloads onto the right lane alone. The
+  inserter at (8,4) reaches across both lanes and splits its 0.86 i/s evenly,
+  so 0.43 i/s of each ingredient reaches the assembler and battery — needed
+  40% more often than gears — is what binds: 0.43/45 = 0.00956 roboports/s.
+
+  Sharing one inserter costs about half the 0.0191 i/s that four dedicated
+  inserters reach. It must not cost everything: a lane-priority pickup would
+  spend the whole swing on the in-line battery, starve the gears, and score a
+  fully-connected factory zero.
+items:
+- { x: 0, y: 9, item: advanced_circuit }
+- { x: 8, y: 0, item: steel_plate }
+- { x: 10, y: 2, item: iron_gear_wheel }
+- { x: 10, y: 4, item: battery }
+- { x: 5, y: 4, item: personal_roboport }   # assembler recipe (anchor = top-left)
+- { x: 10, y: 9, item: personal_roboport }  # sink
+throughput:
+- { item: personal_roboport, per_second: 0.009555555555555555 }
+factory: |
+  .. .. .. .. .. .. .. .. Sv .. ..
+  .. .. .. .. .. .. .. .. bv .. ..
+  .. .. .. .. .. .. bv b< b< bv S<
+  .. .. .. .. .. .. iv .. .. bv ..
+  .. .. .. .. .. aaaaaaaa i< b< S<
+  .. .. .. .. .. aa    aa .. .. ..
+  .. .. .. .. .. aaaaaaaa i> bv ..
+  .. .. .. .. .. i^ .. .. .. bv ..
+  .. .. .. .. .. b^ .. .. .. bv ..
+  S> b> b> b> b> b^ .. .. .. b> K>
+  .. .. .. .. .. .. .. .. .. .. ..
+---
+description: |
+  The same shared-inserter feed with the arithmetic stripped down:
+  copper_cable curves onto both lanes of the south belt then sideloads onto
+  the west belt's right lane, iron_plate feeds that belt in-line, and one
+  inserter carries both into an electronic_circuit assembler (3 cable : 1
+  plate). The even split hands over 0.43 of each, so the cable-hungry side
+  binds at 0.43/3 = 0.1433 circuits/s.
+items:
+- { x: 5, y: 0, item: copper_cable }
+- { x: 5, y: 1, item: iron_plate }
+- { x: 0, y: 0, item: electronic_circuit }  # assembler recipe (anchor = top-left)
+- { x: 1, y: 4, item: electronic_circuit }  # sink
+throughput:
+- { item: electronic_circuit, per_second: 0.14333333333333334 }
+factory: |
+  aaaaaaaa .. bv S<
+  aa    aa i< b< S<
+  aaaaaaaa .. .. ..
+  .. iv .. .. .. ..
+  .. Kv .. .. .. ..
