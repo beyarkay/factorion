@@ -56,7 +56,9 @@ Inserters can interact with any non-corner perimeter tile of the 3x3 body.
 - **Entity enum:** `EntityKind::AssemblingMachine1 = 3`
 - **Recipe:** Stored in the `Items` channel — the `Item` enum value indicates
   which recipe the machine is set to (e.g., `Item::ElectronicCircuit = 4`)
-- **Flow rate:** 0.5 items/sec (base crafting speed)
+- **Crafting speed:** `0.5×`, a unitless multiplier on a recipe's rate
+  (`Item::crafting_speed()`). Its `flow_rate()` is `INFINITY` — an assembler
+  has no per-tile transfer cap; the recipe sets its limit.
 - **Anchor:** Top-left corner of the 3x3 footprint
 
 ### Connection Logic
@@ -78,22 +80,31 @@ Specifically, "faces away" means:
 
 ### Transform Flow
 
-The `transform_flow` function implements recipe crafting:
+`transform_flow` works in **crafts per second**, because items/second of
+different ingredients are not comparable:
 
-1. Look up the recipe for the assigned item
-2. Find the **minimum ratio** of available input to required input across all
-   ingredients
-3. Scale output production by that ratio
+1. Look up the recipe for the assigned item.
+2. The machine's ceiling is `crafting_speed / crafting_time` — the multiplier
+   off the entity, the seconds-per-craft off the recipe.
+3. Each ingredient's supply is its items/second over the quantity **one craft**
+   wants of it. The scarcest ingredient sets the pace, capped by the machine.
+4. Multiply that craft rate by each output's per-craft quantity to get back to
+   items/second.
 
-Example: Electronic circuit needs 6 copper cable + 2 iron plate → 2 circuits.
-If only 3 copper cable is available, ratio = min(3/6, ∞) = 0.5, output = 1
-circuit.
+Example: electronic circuit is 3 copper cable + 1 iron plate → 1 circuit in
+0.5s. In an AM1 the machine ceiling is `0.5 / 0.5` = 1 craft/s. Fed one
+inserter per ingredient (0.86 i/s each), supply allows
+`min(0.86/3, 0.86/1)` = 0.287 crafts/s, so output is `1 × 0.287` = **0.287
+circuits/s** — ingredient-limited. Feed the same machine a 1.0s recipe and it
+tops out at 0.5 crafts/s instead, machine-limited. `assembler_input_limited`
+and `assembler_machine_speed_limited` in `factorion_rs/tests/factories/` pin
+both cases.
 
 ### Simplifications vs Real Factorio
 
 | Mechanic | Real Factorio | Factorion |
 |---|---|---|
-| Crafting time | Discrete per-item crafting | Continuous flow rate |
+| Crafting time | Discrete per-item crafting | Continuous, but the rate is the real one: `crafting_speed / crafting_time` |
 | Internal buffer | Stores ingredients and products | No buffer — instant flow |
 | Power | Requires electricity | No power simulation |
 | Tiers | AM1/AM2/AM3 | AM1 only |

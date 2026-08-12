@@ -3171,9 +3171,11 @@ class TestMemoriseRecipesConnectivity:
 class TestMemoriseRecipesThroughputPerRecipe:
     """Closed-form throughput from the live recipe table. One output inserter
     caps the result at INSERTER_CAP; each ingredient arm caps its input at
-    INSERTER_CAP too."""
+    INSERTER_CAP too; and the assembler itself can never beat
+    `crafting_speed / crafting_time` crafts per second."""
 
     INSERTER_CAP = 0.86
+    ASSEMBLER = str2ent("assembling_machine_1")
 
     @pytest.mark.parametrize("seed", range(10))
     def test_throughput_matches_recipe_closed_form(self, kind, n_ing, seed):
@@ -3185,12 +3187,12 @@ class TestMemoriseRecipesThroughputPerRecipe:
         snk = (ent == str2ent("sink").value).nonzero(as_tuple=False)[0]
         recipe_name = items[item[snk[0], snk[1]].item()].name
         recipe = recipes[recipe_name]
-        min_ratio = min(
-            1.0,
+        crafts_per_sec = min(
+            self.ASSEMBLER.crafting_speed / recipe.crafting_time,
             *(self.INSERTER_CAP / c for c in recipe.consumes.values()),
         )
         prod_count = next(iter(recipe.produces.values()))
-        expected = min(self.INSERTER_CAP, prod_count * min_ratio)
+        expected = min(self.INSERTER_CAP, prod_count * crafts_per_sec)
         tp, _ = rs_throughput(world.permute(1, 2, 0))
         assert abs(tp - expected) < 1e-3, (
             f"seed={seed}, recipe={recipe_name}: expected ≈ {expected}, got {tp}"

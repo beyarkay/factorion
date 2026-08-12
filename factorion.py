@@ -130,7 +130,11 @@ class Item:
     is_placeable: bool
     width: int
     height: int
-    flow: float
+    flow: float  # items/second one tile can transfer
+    # Dimensionless recipe multiplier; None unless this is a crafting
+    # machine. A recipe's items/s in this machine is
+    # `produces[item] * crafting_speed / crafting_time`.
+    crafting_speed: Optional[float] = None
 
 
 # Items are defined in Rust (factorion_rs/src/types.rs::all_items)
