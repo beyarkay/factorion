@@ -33,7 +33,7 @@ class SharedArgs:
     between the two so an SFT checkpoint loads into the PPO policy unchanged.
     """
 
-    seed: int = 1
+    seed: int = 2
     """seed of the experiment"""
     size: int = 11
     """the width and height of the factory grid"""
