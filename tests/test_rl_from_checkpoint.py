@@ -150,7 +150,7 @@ class TestEotTerminationAndMetrics:
 
     def test_reward_symlog_r0_default(self):
         a = PpoArgs()
-        assert a.reward_symlog_r0 == 0.01
+        assert a.reward_symlog_r0 == 0.0
 
 
 class TestCriticWarmupParamSplit:

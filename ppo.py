@@ -738,6 +738,16 @@ class FactorioEnv(gym.Env):
 
         return location_match, entity_match, direction_match
 
+    def _world_cost(self, ent_np):
+        """(entity_cost, cost_efficiency) of a world's entity channel."""
+        counts = np.bincount(
+            np.asarray(ent_np, dtype=np.int64).ravel(),
+            minlength=_N_ENTITIES,
+        )[:_N_ENTITIES]
+        entity_units = counts / _ENTITY_FOOTPRINT_AREAS
+        entity_cost = float(np.dot(entity_units, _ENTITY_UNIT_COSTS))
+        return entity_cost, 1.0 / (1.0 + self.entity_cost_scale * entity_cost)
+
     def _cache_solution_match(self):
         """Precompute the episode-constant pieces of `_compute_solution_match`.
         Called once per `reset`, after `_solved_world_CWH` is set. Cached as
@@ -847,6 +857,15 @@ class FactorioEnv(gym.Env):
 
         self.min_entities_required = min_entities_required
         self._original_world_CWH = torch.clone(self._world_CWH)
+        # Cost-adjusted score of the world as handed to the agent. The terminal
+        # reward pays only the improvement over this, so flow that exists
+        # before the agent acts (a protected obstruction line) earns nothing
+        # and destroying it earns negative (#339).
+        raw0, _ = factorion_rs.simulate_throughput(
+            self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+        )
+        _, ce0 = self._world_cost(self._world_CWH.numpy()[_CH_ENT])
+        self._reward_baseline = raw0 * ce0
         self._prev_match = self._compute_solution_match()
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
@@ -925,15 +944,7 @@ class FactorioEnv(gym.Env):
             else:
                 final_dir_reward = 0.0
 
-            counts = np.bincount(
-                np.asarray(ent_np, dtype=np.int64).ravel(),
-                minlength=_N_ENTITIES,
-            )[:_N_ENTITIES]
-            entity_units = counts / _ENTITY_FOOTPRINT_AREAS
-            entity_cost = float(np.dot(entity_units, _ENTITY_UNIT_COSTS))
-            cost_efficiency = 1.0 / (
-                1.0 + self.entity_cost_scale * entity_cost
-            )
+            entity_cost, cost_efficiency = self._world_cost(ent_np)
 
             # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
             if self._sol_n > 0:
@@ -965,17 +976,23 @@ class FactorioEnv(gym.Env):
 
         reward = 0.0
         if terminated or truncated:
-            # Multiplication makes cost a secondary modifier of achieved
-            # throughput: a no-output factory always earns zero terminal
-            # throughput reward, however many entities it contains.
-            reward = thput_raw * cost_efficiency
+            # Improvement over the reset state, scaled by the factory's
+            # reference rate. Marginal, so pre-existing protected flow pays
+            # zero and damaging it pays negative (#339). Ceiling-scaled, so
+            # within a lesson reward ratios equal raw throughput ratios —
+            # under γ < 1 a compressed reward makes stopping at a half-build
+            # beat finishing it (the measured lazy equilibrium, #371) — while
+            # lessons whose ceilings differ ~360x still contribute comparable
+            # gradient. Cost stays a multiplier on the achieved score: a
+            # no-output factory earns zero however many entities it contains.
+            if self._max_throughput > 0:
+                reward = (
+                    thput_raw * cost_efficiency - self._reward_baseline
+                ) / self._max_throughput
             if self.reward_symlog_r0 > 0:
-                # Compress so lessons whose ceilings differ by ~360x contribute
-                # comparable gradient. Compressing the cost-adjusted reward
-                # rather than subtracting a log-space cost term keeps zero
-                # throughput at exactly zero; above the knee the two agree to
-                # <0.005 anyway, since log1p(x*ce/r0) -> ln(x/r0) - ln(1/ce).
-                reward = math.log1p(reward / self.reward_symlog_r0)
+                reward = math.copysign(
+                    math.log1p(abs(reward) / self.reward_symlog_r0), reward
+                )
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
