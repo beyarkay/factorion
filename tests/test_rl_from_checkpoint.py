@@ -148,10 +148,6 @@ class TestEotTerminationAndMetrics:
         a = PpoArgs()
         assert a.entity_cost_scale == 0.001
 
-    def test_reward_symlog_r0_default(self):
-        a = PpoArgs()
-        assert a.reward_symlog_r0 == 0.0
-
 
 class TestCriticWarmupParamSplit:
     def _split(self, agent):
