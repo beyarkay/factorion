@@ -448,3 +448,29 @@ class TestWarmupIterationKl:
         assert max(warmup_iteration["kls"]) < target_kl, (
             "target_kl would break the epoch loop with the actor frozen"
         )
+
+
+class TestTrainingLegalMask:
+    """Training-time sampling is restricted to legal tiles, matching the
+    masked distribution eval/inference always used — invalid placements are
+    unrepresentable rather than cheap no-ops the entropy bonus subsidises."""
+
+    def test_sampled_tiles_are_legal(self, agent, registered_env):
+        env = FactorioEnv(size=5)
+        obs, _ = env.reset(seed=5, options={"kind": LessonKind.MOVE_ONE_ITEM})
+        obs_t = torch.as_tensor(np.asarray(obs), dtype=torch.float32)
+        obs_B = obs_t.unsqueeze(0).expand(64, -1, -1, -1)
+        action, logp, _, _ = agent.get_action_and_value(obs_B)
+        ent = obs_t[Channel.ENTITIES.value]
+        foot = obs_t[Channel.FOOTPRINT.value]
+        for x, y in action["xy"].tolist():
+            assert ent[x, y] == 0, f"sampled occupied tile ({x},{y})"
+            assert foot[x, y] != 0, f"sampled unbuildable tile ({x},{y})"
+        assert torch.isfinite(logp).all()
+
+    def test_full_grid_does_not_nan(self, agent):
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        obs[:, Channel.ENTITIES.value] = 1.0  # every tile occupied
+        obs[:, Channel.FOOTPRINT.value] = 1.0
+        _, logp, entropy, _ = agent.get_action_and_value(obs)
+        assert torch.isfinite(logp).all() and torch.isfinite(entropy).all()

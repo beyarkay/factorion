@@ -1623,7 +1623,7 @@ class AgentCNN(nn.Module):
         x_BCWH,
         *,
         temperature: float = 1.0,
-        legal_mask: bool = False,
+        legal_mask: bool = True,
         eot_threshold: float = 0.5,
         action=None,
         compute_value: bool = True,
@@ -1631,8 +1631,10 @@ class AgentCNN(nn.Module):
         """The one sampler every consumer routes through. temperature=1 is the
         stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
         (eot fires at p>eot_threshold) for eval / mod server / builder UI.
-        legal_mask restricts the tile pick to empty+buildable cells; `action`
-        replays a stored action to recompute its log-prob. Returns a dict of
+        The tile pick is restricted to empty+buildable cells — training,
+        eval and inference all act on this masked distribution;
+        legal_mask=False exposes the raw tile head (builder diagnostics only).
+        `action` replays a stored action to recompute its log-prob. Returns a dict of
         action / logp / entropy / value (None if not compute_value) / eot_prob
         / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
@@ -1645,9 +1647,12 @@ class AgentCNN(nn.Module):
         tile_logits_B1WH = self.tile_logits(encoded_BCWH)      # (B, 1, W, H)
         tile_logits_BN = tile_logits_B1WH.reshape(B, -1)       # (B, W*H)
         if legal_mask:
-            tile_logits_BN = tile_logits_BN.masked_fill(
-                ~_legal_tile_mask(x_BCWH), float("-inf")
-            )
+            mask_BN = _legal_tile_mask(x_BCWH)
+            # A fully-built grid has no legal tile; leave that row unmasked
+            # rather than softmax over all -inf (the pick is rejected by the
+            # env either way).
+            mask_BN |= ~mask_BN.any(dim=-1, keepdim=True)
+            tile_logits_BN = tile_logits_BN.masked_fill(~mask_BN, float("-inf"))
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
         if action is None:
@@ -1766,7 +1771,8 @@ class AgentCNN(nn.Module):
         }
 
     def get_action_and_value(self, x_BCWH, action=None):
-        """sample_action at temperature 1, projected to the (action, logp,
+        """sample_action at temperature 1 under the legal-tile mask, projected
+        to the (action, logp,
         entropy, value) 4-tuple the ~20 PPO/test callsites already unpack."""
         out = self.sample_action(x_BCWH, temperature=1.0, action=action)
         return out["action"], out["logp"], out["entropy"], out["value"]
