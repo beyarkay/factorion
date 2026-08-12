@@ -434,8 +434,8 @@ class TestFlattenSummary:
 
 
 class TestEndOfRunMetrics:
-    def test_tail_mean_averages_the_final_tenth(self):
-        assert tail_mean([0.0] * 90 + [1.0] * 10) == 1.0
+    def test_tail_mean_averages_the_final_fraction(self):
+        assert tail_mean([0.0] * 196 + [1.0] * 4) == 1.0
 
     def test_tail_mean_uses_at_least_three_points(self):
         assert math.isclose(tail_mean([0.0, 0.3, 0.6, 0.9]), 0.6)
@@ -443,7 +443,7 @@ class TestEndOfRunMetrics:
     def test_one_lucky_point_no_longer_decides_the_number(self):
         # The failure being fixed: a single logged point (final or best-ever)
         # IS the reported number, so a spike swings a comparison on its own.
-        assert math.isclose(tail_mean([0.5] * 199 + [1.0]), 0.525)
+        assert math.isclose(tail_mean([0.5] * 199 + [1.0]), 0.625)
 
     def test_sparse_metrics_average_their_own_points(self):
         # eval/* logs every 5th row, so the run's last rows carry no eval at

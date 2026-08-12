@@ -71,7 +71,10 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
 # reporting it decides comparisons on where a run happened to stop, or on its
 # single luckiest eval. Reports average the tail of the history instead.
 
-TAIL_FRACTION = 0.1
+# Enough points to average out eval noise, few enough that the tail is all one
+# policy: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
+# steps back and average in iterates that are genuinely worse.
+TAIL_FRACTION = 0.02
 TAIL_MIN_POINTS = 3
 
 # Rows to pull per run. W&B downsamples history above this; it is set well

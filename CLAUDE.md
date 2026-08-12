@@ -86,7 +86,7 @@ Numbers below are from W&B (`beyarkay/factorion`); the sha each was trained at i
 in the run's tags. **Three caveats before comparing anything to anything:**
 
 - **Where the number came from matters.** `/ci` reports every metric as an
-  end-of-run mean (its last 10% of logged points, ≥3), read from the run
+  end-of-run mean (its last 2% of logged points, ≥3), read from the run
   history. A W&B runs-table column is not that: it is the run summary, one
   logged point. Older PPO runs summarised `eval/*` to their **run maximum**,
   so a number quoted off that column (or off a pre-`fd5f657` CI comment) is a
