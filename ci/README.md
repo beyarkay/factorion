@@ -111,7 +111,8 @@ RunPod console (the pod's container logs; the job also tees to
 - `report.py` — every-metric compare report + assertions, per-run PR
   summaries, sweep report, history CSV (`python -m ci history`), and the
   compare's factory diff (`python -m ci compare-renders A B`, any two
-  checkpoints).
+  checkpoints). Every metric is reported as an end-of-run mean over the run's
+  history (`TAIL_FRACTION`), never as the single point in its W&B summary.
 - `github_api.py` — PR comments + commit statuses.
 - `stats.py` — dependency-free paired/Welch t-tests.
 - `sweep_ppo.yaml` / `sweep_sft.yaml` — W&B sweep configs.
