@@ -143,6 +143,13 @@ class PpoArgs(SharedArgs):
     """optional compression knee for the terminal reward: when > 0 the
     ceiling-normalized marginal reward r becomes sign(r) * log1p(|r| / r0).
     0 disables — the reward is already O(1) for every lesson."""
+    trial_reward_power: float = 0.5
+    """exponent applied (sign-preserving) to trial episodes' terminal reward.
+    Trials mostly succeed partially — a depth-1 episode delivering 5% of the
+    ceiling is real progress but pays 0.05 under the linear reward, so its
+    gradient share vanishes next to near-ceiling lesson episodes. p < 1
+    re-amplifies small successes (0.04 -> 0.2 at p=0.5) without changing
+    their ordering; 1.0 disables."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02

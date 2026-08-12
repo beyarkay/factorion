@@ -545,12 +545,14 @@ def make_env(
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
+    trial_reward_power=PpoArgs.trial_reward_power,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0})
+                       'reward_symlog_r0': reward_symlog_r0,
+                       'trial_reward_power': trial_reward_power})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -617,14 +619,18 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
+        trial_reward_power: float = PpoArgs.trial_reward_power,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
         if reward_symlog_r0 < 0:
             raise ValueError("reward_symlog_r0 must be non-negative")
+        if trial_reward_power <= 0:
+            raise ValueError("trial_reward_power must be positive")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
+        self.trial_reward_power = trial_reward_power
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -992,6 +998,10 @@ class FactorioEnv(gym.Env):
             if self.reward_symlog_r0 > 0:
                 reward = math.copysign(
                     math.log1p(abs(reward) / self.reward_symlog_r0), reward
+                )
+            if LESSON_IS_TRIAL[self._kind] and self.trial_reward_power != 1.0:
+                reward = math.copysign(
+                    abs(reward) ** self.trial_reward_power, reward
                 )
 
         self._thput_raw = thput_raw
@@ -1940,6 +1950,7 @@ if __name__ == "__main__":
             run_name,
             args.entity_cost_scale,
             args.reward_symlog_r0,
+            args.trial_reward_power,
         )
         for i in range(args.num_envs)
     ]
@@ -2559,6 +2570,7 @@ if __name__ == "__main__":
                     run_name,
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
+                    args.trial_reward_power,
                 )
                 for i in range(num_render_envs)
             ])

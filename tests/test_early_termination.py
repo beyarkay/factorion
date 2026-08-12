@@ -373,3 +373,41 @@ class TestStepsTaken:
         # Episode isn't over yet
         assert not terminated and not truncated
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
+
+
+class TestTrialRewardPower:
+    """Trial episodes' terminal reward is power-compressed (sign-preserving);
+    lesson episodes are untouched by the knob."""
+
+    def _damaged_terminal_reward(self, power, as_trial):
+        env = _make_env(size=5, max_steps=10, trial_reward_power=power)
+        env.reset(seed=42, options={"num_missing_entities": 0})
+        ent = env._world_CWH[Channel.ENTITIES.value].numpy()
+        xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
+        action = _noop_action()
+        action["xy"] = np.array([int(xs[0]), int(ys[0])])
+        env.step(action)
+        if as_trial:
+            env._kind = LessonKind.TRIAL_RECIPE_TREE_DEPTH_1
+        action = _noop_action()
+        action["eot"] = 1
+        _, reward, terminated, _, _ = env.step(action)
+        assert terminated
+        return reward
+
+    def test_trial_reward_is_power_compressed(self):
+        linear = self._damaged_terminal_reward(power=1.0, as_trial=True)
+        compressed = self._damaged_terminal_reward(power=0.5, as_trial=True)
+        assert linear < 0, "destroying a belt must pay negative"
+        assert compressed == pytest.approx(-(abs(linear) ** 0.5))
+        assert compressed < 0, "compression must preserve sign"
+
+    def test_lesson_reward_unaffected_by_power(self):
+        linear = self._damaged_terminal_reward(power=1.0, as_trial=False)
+        compressed = self._damaged_terminal_reward(power=0.5, as_trial=False)
+        assert linear < 0
+        assert compressed == pytest.approx(linear)
+
+    def test_nonpositive_power_rejected(self):
+        with pytest.raises(ValueError):
+            _make_env(trial_reward_power=0.0)
