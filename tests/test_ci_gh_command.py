@@ -348,7 +348,7 @@ class TestClaudeAuthoredLimits:
             (
                 "/ci ppo --start-from j0s5y2mc --total-timesteps 40000000",
                 "total_timesteps",
-                2_000_000,
+                5_000_000,
                 40000000,
             ),
         ],
@@ -399,7 +399,7 @@ class TestClaudeAuthoredLimits:
 
         specs = [_job_spec(p) for p in gh_ctx["pods"]]
         assert all(s["seeds"] == [1, 2, 3] for s in specs)
-        assert all(s["total_timesteps"] == 2_000_000 for s in specs)
+        assert all(s["total_timesteps"] == 5_000_000 for s in specs)
 
     @pytest.mark.parametrize(
         "run_cap,footer,launches",
