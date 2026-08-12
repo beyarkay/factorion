@@ -1,6 +1,5 @@
 """Tests for early termination when the agent solves the puzzle."""
 
-import math
 import os
 import sys
 
@@ -22,17 +21,15 @@ def _make_env(size=5, max_steps=10, **kwargs):
     return FactorioEnv(size=size, max_steps=max_steps, idx=0, **kwargs)
 
 
-def _expected_reward(env, info):
-    """The terminal reward the env's configured scheme should have paid."""
+def _expected_total(env, info):
+    """The episode's improvement over reset in reference-rate units — what the
+    dense per-step rewards must sum (or a lone effective step must pay)."""
     score = info["thput_raw"] * info["cost_efficiency"]
-    reward = (
+    return (
         (score - env._reward_baseline) / env._max_throughput
         if env._max_throughput > 0
         else 0.0
     )
-    if env.reward_symlog_r0 > 0:
-        return math.copysign(math.log1p(abs(reward) / env.reward_symlog_r0), reward)
-    return reward
 
 
 def _noop_action():
@@ -149,7 +146,7 @@ class TestReward:
 
         assert truncated is True
         assert terminated is False
-        assert reward == pytest.approx(_expected_reward(env, info))
+        assert reward == pytest.approx(_expected_total(env, info))
 
     def test_eot_action_terminates_episode(self):
         """A non-solved factory ends immediately when the agent declares eot=1,
@@ -166,19 +163,12 @@ class TestReward:
         assert truncated is False
         assert info["frac_invalid_actions"] == 0
         assert info["thput_normed"] < 1.0  # ended early, not a full solve
-        assert reward == pytest.approx(_expected_reward(env, info))
+        assert reward == pytest.approx(_expected_total(env, info))
 
-    @pytest.mark.parametrize("reward_symlog_r0", [0.0, 0.01])
-    def test_junk_placement_on_unimproved_factory_pays_negative(
-        self, reward_symlog_r0
-    ):
+    def test_junk_placement_on_unimproved_factory_pays_negative(self):
         """Adding an entity that raises cost without raising throughput drops
-        the score below the reset baseline, so the terminal reward goes
-        negative (and stays negative through the optional compression)."""
-        env = _make_env(
-            size=7, max_steps=10, reward_symlog_r0=reward_symlog_r0,
-            dense_reward=False,
-        )
+        the score below the reset baseline, so the reward goes negative."""
+        env = _make_env(size=7, max_steps=10)
         env.entity_cost_scale = 0.01
         env.reset(
             seed=42,
@@ -208,11 +198,10 @@ class TestReward:
 
         assert terminated is True
         assert info["thput_normed"] >= 1.0
-        assert reward == pytest.approx(_expected_reward(env, info))
+        assert reward == pytest.approx(_expected_total(env, info))
         assert reward < 0
 
-    @pytest.mark.parametrize("reward_symlog_r0", [0.0, 0.01])
-    def test_zero_throughput_cost_penalty_is_never_negative(self, reward_symlog_r0):
+    def test_zero_throughput_cost_penalty_is_never_negative(self):
         """Entities that deliver nothing must score exactly zero, not negative:
         else an empty grid beats a nearly-complete factory and the policy is
         rewarded for building nothing. Holds because cost multiplies the
@@ -223,7 +212,6 @@ class TestReward:
             max_steps=10,
             idx=0,
             entity_cost_scale=1_000_000.0,
-            reward_symlog_r0=reward_symlog_r0,
         )
         env.reset(seed=42, options={"num_missing_entities": 99})
 
@@ -313,23 +301,25 @@ class TestMarginalRewardBaseline:
         assert reward == 0.0
 
     def test_destroying_the_protected_line_pays_negative(self):
-        env = _make_env(size=11, max_steps=10, dense_reward=False)
+        env = _make_env(size=11, max_steps=10)
         self._reset_cross(env)
 
         ent = env._world_CWH[Channel.ENTITIES.value].numpy()
         xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
         action = _noop_action()
         action["xy"] = np.array([int(xs[0]), int(ys[0])])
-        _, mid_reward, terminated, truncated, _ = env.step(action)
-        assert not terminated and not truncated and mid_reward == 0
+        _, destroy_reward, terminated, truncated, _ = env.step(action)
+        assert not terminated and not truncated
+        assert destroy_reward < 0, "destroying flow must pay negative on that step"
 
         action = _noop_action()
         action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
+        _, eot_reward, terminated, _, info = env.step(action)
 
         assert terminated is True
         assert info["thput_raw"] < env._reward_baseline
-        assert reward < 0
+        assert eot_reward == pytest.approx(0.0), "the EOT step changed nothing"
+        assert destroy_reward + eot_reward == pytest.approx(_expected_total(env, info))
 
 
 class TestStepsTaken:
@@ -376,38 +366,3 @@ class TestStepsTaken:
         # Episode isn't over yet
         assert not terminated and not truncated
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
-
-
-class TestDenseReward:
-    """Dense mode pays the terminal marginal reward in telescoped per-step
-    form: the undiscounted episode sum must equal the terminal scheme on the
-    same trajectory, with credit landing on the step that moved the score."""
-
-    def _destroy_then_eot(self, dense):
-        env = _make_env(size=11, max_steps=10, dense_reward=dense)
-        env.reset(seed=42, options={"kind": LessonKind.CROSS_UNDER_BELT,
-                                    "num_missing_entities": 0})
-        ent = env._world_CWH[Channel.ENTITIES.value].numpy()
-        xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
-        action = _noop_action()
-        action["xy"] = np.array([int(xs[0]), int(ys[0])])
-        rewards = []
-        _, r, *_ = env.step(action)
-        rewards.append(r)
-        action = _noop_action()
-        action["eot"] = 1
-        _, r, terminated, _, _ = env.step(action)
-        rewards.append(r)
-        assert terminated
-        return rewards
-
-    def test_episode_sum_matches_terminal_scheme(self):
-        dense = self._destroy_then_eot(dense=True)
-        terminal = self._destroy_then_eot(dense=False)
-        assert sum(terminal[:-1]) == 0, "terminal scheme pays only at the end"
-        assert sum(dense) == pytest.approx(terminal[-1])
-
-    def test_credit_lands_on_the_causing_step(self):
-        dense = self._destroy_then_eot(dense=True)
-        assert dense[0] < 0, "destroying flow must pay negative immediately"
-        assert dense[1] == pytest.approx(0.0), "the EOT step changed nothing"

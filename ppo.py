@@ -544,15 +544,11 @@ def make_env(
     size,
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
-    reward_symlog_r0=PpoArgs.reward_symlog_r0,
-    dense_reward=PpoArgs.dense_reward,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
-                       'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0,
-                       'dense_reward': dense_reward})
+                       'entity_cost_scale': entity_cost_scale})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -618,17 +614,11 @@ class FactorioEnv(gym.Env):
         idx: Optional[int] = None,
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
-        reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
-        dense_reward: bool = PpoArgs.dense_reward,
     ):
         super().__init__()
         if entity_cost_scale < 0:
             raise ValueError("entity_cost_scale must be non-negative")
-        if reward_symlog_r0 < 0:
-            raise ValueError("reward_symlog_r0 must be non-negative")
         self.entity_cost_scale = entity_cost_scale
-        self.reward_symlog_r0 = reward_symlog_r0
-        self.dense_reward = dense_reward
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -909,113 +899,72 @@ class FactorioEnv(gym.Env):
         terminated = eot_declared
         truncated = (not terminated) and (self.steps > self.max_steps)
 
-        # The throughput sim + per-step diagnostics below are only *consumed* at
-        # episode end (the terminal reward uses thput_raw; the rollout reads
-        # thput/frac_reachable/num_entities for finished envs) or by callers that
-        # inspect every step (tests, monitoring). Mid-episode they feed neither
-        # the reward (zero until termination) nor any metric the
-        # PPO rollout reads, so when `_full_diagnostics` is off (training rollout
-        # envs) we skip the whole block on non-terminal steps — that's the
-        # ~31%-of-rollout simulate_throughput + numpy diagnostics. The terminal
-        # reward and all episode-end-consumed values are still computed, so the
-        # signature is unchanged.
+        # The dense reward pays the per-step score delta, so the throughput sim
+        # (and the cheap numpy diagnostics that ride along) runs on every step.
         frac_hallucin = 0
-        if terminated or truncated or self._full_diagnostics or self.dense_reward:
-            # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
-            # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
-            # self._max_throughput comes from the factory generator — see reset().
-            thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
-            thput_normed = (
-                min(1.0, thput_raw / self._max_throughput)
-                if self._max_throughput > 0
-                else 0.0
-            )
-            # Single zero-copy numpy view of the (torch) world for the per-step
-            # diagnostics. Tiny-grid reductions; numpy on the shared buffer is far
-            # cheaper than the per-op torch dispatch. Current (world just mutated).
-            wnp = self._world_CWH.numpy()
-            ent_np = wnp[_CH_ENT]
-            dir_np = wnp[_CH_DIR]
-            W, H = ent_np.shape
+        # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
+        # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
+        # self._max_throughput comes from the factory generator — see reset().
+        thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+        thput_normed = (
+            min(1.0, thput_raw / self._max_throughput)
+            if self._max_throughput > 0
+            else 0.0
+        )
+        # Single zero-copy numpy view of the (torch) world for the per-step
+        # diagnostics. Tiny-grid reductions; numpy on the shared buffer is far
+        # cheaper than the per-op torch dispatch. Current (world just mutated).
+        wnp = self._world_CWH.numpy()
+        ent_np = wnp[_CH_ENT]
+        dir_np = wnp[_CH_DIR]
+        W, H = ent_np.shape
 
-            # "reachable" fraction: penalise entities disconnected from the graph.
-            num_entities = int(np.count_nonzero(ent_np))
-            frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
+        # "reachable" fraction: penalise entities disconnected from the graph.
+        num_entities = int(np.count_nonzero(ent_np))
+        frac_reachable = 0 if num_entities == 2 else max(0, 1.0 - (float(num_unreachable) / (num_entities - 2)))
 
-            # Small shaping for a correctly-oriented final belt. Only meaningful
-            # with exactly one sink (MOVE_ONE_ITEM); zeroed otherwise.
-            sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
-            if len(sink_w) == 1:
-                w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
-                w_belt = min(max(w_sink, 1), W - 2)
-                h_belt = min(max(h_sink, 1), H - 2)
-                final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
-            else:
-                final_dir_reward = 0.0
-
-            entity_cost, cost_efficiency = self._world_cost(ent_np)
-
-            # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
-            if self._sol_n > 0:
-                tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
-            else:
-                tile_match_location = 1.0
-            tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
-            tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
-
-            # ── Delta-based shaping diagnostics (logged, NOT in reward) ──
-            curr_match = self._compute_solution_match()
-            loc_delta = curr_match[0] - self._prev_match[0]
-            ent_delta = curr_match[1] - self._prev_match[1]
-            dir_delta = curr_match[2] - self._prev_match[2]
-            self._prev_match = curr_match
+        # Small shaping for a correctly-oriented final belt. Only meaningful
+        # with exactly one sink (MOVE_ONE_ITEM); zeroed otherwise.
+        sink_w, sink_h = np.nonzero(ent_np == self._sink_id)
+        if len(sink_w) == 1:
+            w_sink, h_sink = int(sink_w[0]), int(sink_h[0])
+            w_belt = min(max(w_sink, 1), W - 2)
+            h_belt = min(max(h_sink, 1), H - 2)
+            final_dir_reward = 1.0 if dir_np[w_belt, h_belt] == dir_np[w_sink, h_sink] else 0.0
         else:
-            # Non-terminal training step: emit placeholders for the logged-only
-            # diagnostics (the rollout never reads these mid-episode).
-            thput_raw = 0.0
-            thput_normed = 0.0
-            num_entities = 0
-            frac_reachable = 0
             final_dir_reward = 0.0
-            entity_cost = 0.0
-            cost_efficiency = 1.0
-            tile_match_location = tile_match_entity = tile_match_direction = 0.0
-            curr_match = self._prev_match
-            loc_delta = ent_delta = dir_delta = 0.0
 
-        reward = 0.0
-        if self.dense_reward:
-            # Telescoped form of the terminal marginal reward: each step pays
-            # the change in ceiling-normalized cost-adjusted throughput, so the
-            # episode's undiscounted sum equals the terminal scheme exactly,
-            # but credit lands on the placement that caused it — improving an
-            # already-working build pays immediately instead of hinging on
-            # when the EOT fires.
-            score = (
-                thput_raw * cost_efficiency / self._max_throughput
-                if self._max_throughput > 0
-                else 0.0
-            )
-            reward = score - self._prev_score
-            self._prev_score = score
-        elif terminated or truncated:
-            # Improvement over the reset state, scaled by the factory's
-            # reference rate. Marginal, so pre-existing protected flow pays
-            # zero and damaging it pays negative (#339). Ceiling-scaled, so
-            # within a lesson reward ratios equal raw throughput ratios —
-            # under γ < 1 a compressed reward makes stopping at a half-build
-            # beat finishing it (the measured lazy equilibrium, #371) — while
-            # lessons whose ceilings differ ~360x still contribute comparable
-            # gradient. Cost stays a multiplier on the achieved score: a
-            # no-output factory earns zero however many entities it contains.
-            if self._max_throughput > 0:
-                reward = (
-                    thput_raw * cost_efficiency - self._reward_baseline
-                ) / self._max_throughput
-            if self.reward_symlog_r0 > 0:
-                reward = math.copysign(
-                    math.log1p(abs(reward) / self.reward_symlog_r0), reward
-                )
+        entity_cost, cost_efficiency = self._world_cost(ent_np)
+
+        # ── Diagnostic tile-match metrics (logged, NOT used in reward) ──
+        if self._sol_n > 0:
+            tile_match_location = float(np.count_nonzero(self._sol_mask & (ent_np != 0))) / self._sol_n
+        else:
+            tile_match_location = 1.0
+        tile_match_entity = float(np.mean(ent_np == self._sol_orig_ent))
+        tile_match_direction = float(np.mean(dir_np == self._sol_orig_dir))
+
+        # ── Delta-based shaping diagnostics (logged, NOT in reward) ──
+        curr_match = self._compute_solution_match()
+        loc_delta = curr_match[0] - self._prev_match[0]
+        ent_delta = curr_match[1] - self._prev_match[1]
+        dir_delta = curr_match[2] - self._prev_match[2]
+        self._prev_match = curr_match
+
+        # Telescoped form of the terminal marginal reward: each step pays the
+        # change in ceiling-normalized cost-adjusted throughput, so the
+        # episode's undiscounted sum is the improvement over the reset state in
+        # units of the factory's reference rate — pre-existing protected flow
+        # pays zero and damaging it pays negative (#339) — but credit lands on
+        # the placement that caused it: improving an already-working build
+        # pays immediately instead of hinging on when the EOT fires.
+        score = (
+            thput_raw * cost_efficiency / self._max_throughput
+            if self._max_throughput > 0
+            else 0.0
+        )
+        reward = score - self._prev_score
+        self._prev_score = score
 
         self._thput_raw = thput_raw
         self._thput_normed = thput_normed
@@ -1962,8 +1911,6 @@ if __name__ == "__main__":
             args.size,
             run_name,
             args.entity_cost_scale,
-            args.reward_symlog_r0,
-            args.dense_reward,
         )
         for i in range(args.num_envs)
     ]
@@ -2582,8 +2529,6 @@ if __name__ == "__main__":
                     args.size,
                     run_name,
                     args.entity_cost_scale,
-                    args.reward_symlog_r0,
-                    args.dense_reward,
                 )
                 for i in range(num_render_envs)
             ])

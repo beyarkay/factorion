@@ -138,17 +138,6 @@ class PpoArgs(SharedArgs):
     """strength of the multiplicative terminal entity-cost penalty. Each
     entity costs its per-output recursively-expanded raw-item count plus
     cumulative craft time."""
-    reward_symlog_r0: float = 0.0
-    """optional compression knee for the terminal reward: when > 0 the
-    ceiling-normalized marginal reward r becomes sign(r) * log1p(|r| / r0).
-    0 disables — the reward is already O(1) for every lesson."""
-    dense_reward: bool = True
-    """pay the terminal marginal reward in telescoped per-step form: each step
-    rewards the change in ceiling-normalized cost-adjusted throughput. The
-    undiscounted episode sum is identical to the terminal scheme; credit lands
-    on the placement that caused it, so improving an already-working build
-    (extra inserter, parallel assembler) pays immediately instead of hinging
-    on EOT timing. Costs a throughput sim per step in the training rollout."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
