@@ -139,9 +139,10 @@ class PpoArgs(SharedArgs):
     """strength of the multiplicative terminal entity-cost penalty. Each
     entity costs its per-output recursively-expanded raw-item count plus
     cumulative craft time."""
-    reward_symlog_r0: float = 0.01
-    """reference flow (items/s) at which the terminal reward is log-compressed:
-    `log1p(thput_raw * cost_efficiency / r0)`."""
+    reward_symlog_r0: float = 0.0
+    """optional compression knee for the terminal reward: when > 0 the
+    ceiling-normalized marginal reward r becomes sign(r) * log1p(|r| / r0).
+    0 disables — the reward is already O(1) for every lesson."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
