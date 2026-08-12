@@ -146,7 +146,7 @@ def ppo_budget_seconds(total_timesteps: int) -> int:
 
 
 # ── Limits on agent-authored commands ──────────────────────────────
-CLAUDE_MAX_TOTAL_TIMESTEPS = 2_000_000
+CLAUDE_MAX_TOTAL_TIMESTEPS = 5_000_000
 CLAUDE_MAX_NUM_SAMPLES = 5_000_000
 CLAUDE_MAX_SEEDS = 3
 CLAUDE_MAX_SWEEP_RUN_CAP = 10
