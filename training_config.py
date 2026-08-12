@@ -18,7 +18,7 @@ independently — e.g. `learning_rate`/`lr`, `dropout`, `weight_decay`,
 
 import typing
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 # Number of CNN encoder width slots (layer1..layer{NUM_LAYER_SLOTS}); every slot
 # with positive width becomes one conv layer (see ppo.layers_from_args).
@@ -113,6 +113,23 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
+    anneal_shape: Literal["linear", "wsd"] = "linear"
+    """Shape of the LR *and* entropy anneal (both ride the same progress
+    multiplier). `linear` decays across the whole post-critic-warmup window, so
+    every step's value depends on `total_timesteps` and two runs of different
+    length are only comparable at matched *fraction* of the run. `wsd`
+    (warmup-stable-decay) holds the peak through a stable phase and decays only
+    over the final `cooldown_frac`, so the stable phase is identical at any
+    budget: a short tuning run and the prefix of a long production run become
+    the same trajectory, comparable at matched `global_step`."""
+    lr_warmup_steps: int = 0
+    """Env steps of linear LR ramp from 0 to `learning_rate` at the start of the
+    anneal window (`wsd` only; 0 = start at peak). Measured in env steps rather
+    than iterations so it is unchanged by the total budget or the batch size."""
+    cooldown_frac: float = 0.2
+    """Fraction of the anneal window spent decaying to the end value (`wsd`
+    only). This is the one genuinely budget-dependent knob, which is why it is
+    expressed as a fraction — that form transfers across run lengths."""
     # gamma is fine for now, check sweep v3ohvfpl for details
     gamma: float = 0.9566
     """the discount factor gamma"""

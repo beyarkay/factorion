@@ -242,6 +242,8 @@ def _run_signature(args) -> str:
         sig += f"_{args.ent_coef_end:g}"
     if args.target_kl is not None:
         sig += f"-kl{args.target_kl:g}"
+    if args.anneal_shape != "linear":
+        sig += f"-{args.anneal_shape}{args.cooldown_frac:g}"
     if args.critic_warmup:
         sig += f"-cw{args.critic_warmup}"
     if args.start_from:
@@ -378,6 +380,61 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
+
+
+def _decay_multiplier(shape: str, done: int, total: int, cooldown_frac: float) -> float:
+    """Fraction of the start->end anneal span still remaining, in [0, 1]:
+    1.0 holds the start value (peak LR, `ent_coef_start`), 0.0 lands on the end
+    value. `done`/`total` are env steps into / spanning the anneal window.
+
+    `linear` decays across the whole window, so a run's value at a given step
+    depends on its total budget. `wsd` holds 1.0 until the final
+    `cooldown_frac`, making the stable phase budget-independent so runs of
+    different lengths are directly comparable at matched step (see
+    `PpoArgs.anneal_shape`). The 1-sqrt cooldown shape is from Hägele et al.
+    2024, which found it beats linear and cosine cooldowns."""
+    if total <= 0:
+        return 1.0
+    progress = min(1.0, max(0.0, done / total))
+    if shape != "wsd":
+        return 1.0 - progress
+    stable_end = 1.0 - cooldown_frac
+    if cooldown_frac <= 0.0 or progress <= stable_end:
+        return 1.0
+    return 1.0 - math.sqrt((progress - stable_end) / cooldown_frac)
+
+
+def _lr_warmup_multiplier(done: int, batch_size: int, warmup_steps: int) -> float:
+    """Linear 0->1 LR ramp over the anneal window's first `warmup_steps` env
+    steps. `done + batch_size` (steps completed by the *end* of this iteration)
+    keeps the first iteration off zero."""
+    if warmup_steps <= 0:
+        return 1.0
+    return min(1.0, (done + batch_size) / warmup_steps)
+
+
+def _iteration_schedule(args, iteration: int) -> tuple[float, float]:
+    """(actor LR, entropy coef) for a 1-based PPO iteration.
+
+    Both ride one progress multiplier, so `anneal_shape` moves them together —
+    making only one budget-independent would still leave runs of different
+    lengths incomparable. The window opens at the critic-warmup unfreeze: the
+    actor is frozen before that, so schedule spent there is spent on nothing.
+    Progress is tracked in env steps rather than iterations so `lr_warmup_steps`
+    means the same thing across batch sizes."""
+    in_warmup = iteration <= args.critic_warmup
+    anneal_total = max(1, args.num_iterations - args.critic_warmup)
+    anneal_iter = max(0, iteration - args.critic_warmup)
+    anneal_done = max(0, anneal_iter - 1) * args.batch_size
+    decay = 1.0 if in_warmup else _decay_multiplier(
+        args.anneal_shape, anneal_done, anneal_total * args.batch_size,
+        args.cooldown_frac)
+    frac = decay
+    if args.anneal_shape == "wsd" and not in_warmup:
+        frac *= _lr_warmup_multiplier(
+            anneal_done, args.batch_size, args.lr_warmup_steps)
+    ent_coef = args.ent_coef_end + decay * (args.ent_coef_start - args.ent_coef_end)
+    return frac * args.learning_rate, ent_coef
 
 
 def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -2133,24 +2190,13 @@ if __name__ == "__main__":
             set_actor_requires_grad(True)
             print(f"\nCritic warm-up complete; unfreezing actor at iteration {iteration}")
 
-        # Annealing schedules run over the post-warm-up window, so the actor
-        # gets its full LR/entropy schedule starting from the unfreeze point
-        # rather than burning it while frozen. During warm-up the critic
-        # trains at the un-annealed peak LR.
-        anneal_total = max(1, args.num_iterations - args.critic_warmup)
-        anneal_iter = max(0, iteration - args.critic_warmup)
+        lrnow, ent_coef = _iteration_schedule(args, iteration)
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
-            lrnow = frac * args.learning_rate
             # param_groups[0]=actor, [1]=critic. The critic can run at a higher LR
             # (critic_lr_mult) to warm the value head faster; 1.0 = unchanged.
             optimizer.param_groups[0]["lr"] = lrnow
             optimizer.param_groups[1]["lr"] = lrnow * args.critic_lr_mult
-
-        # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
-        ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
-        ent_coef = args.ent_coef_end + ent_frac * (args.ent_coef_start - args.ent_coef_end)
 
         # Per-iteration accumulators for the acting policy's distribution shape
         # (the policy/* metrics): summed over rollout steps, meaned at log time.

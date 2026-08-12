@@ -57,7 +57,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 - **Dual-lane belts** (`wiki/two-lane-system.md`, #65): graph nodes are NOT 1:1 with entities — belt-ish tiles (belt, UG, each splitter tile) emit one node per `Lane` (`NodeId.lane`), each capped at half the tile's `Item::flow_rate()` (belt tile 15 → 7.5/lane; a splitter is two belt tiles, so `flow_rate(Splitter)` is 15 per tile, 4 lane pools × 7.5 = 30 total); inserter/assembler/source/sink stay single-node. Node references use ONE canonical format everywhere (engine labels, `py_build_graph`, and fixture `graph:` blocks): `<entity_char>@x,y` plus `:L`/`:R` for lane nodes (grid-registry chars: `b@1,0:L`, `i@0,1`, `d`/`u`, `S`, `K`); fixture graph blocks may elide lane markers per document (entity-level, lane-projected comparison). All connection logic funnels through `entities.rs::calc_lane_aware_edges`: straight/curve/tunnel/splitter flow is lane-preserving; a perpendicular feed onto a belt with any other belt-connectable input sideloads onto the near-side lane (`belt_feeders`/`is_curved_belt` — lone side feed = curve; UG mouths and splitters never curve; a side feed onto a UG tile connects only the feeder lane over its surface half — aft of an entrance, fore of an exit); inserters drop onto exactly one lane (far when perpendicular, belt's right when in-line) and pick up with lane priority (near when perpendicular, left when in-line/curved) via greedy fill in `throughput.rs::pickup_input`.
 - **Rendering factories to ASCII** — when asked to "render"/"show"/"draw" factories, use the real renderer, never hand-roll one: `from factorion import render_factory; print(render_factory(factory))` (accepts a `Factory` or a `(C, W, H)` world tensor; Rust binding `factorion_rs.render_factory(world_WHC)` lives in `factorion_rs/src/render.rs`). It returns the two-char grid format the textual fixtures use — `b`=belt, `i`=inserter, `l`=long-handed inserter, `a`=assembler box, `Y`=splitter, `d`/`u`=underground down/up, `S`=source, `K`=sink, each plus a facing marker `^>v<`; `..` is an empty tile. To also show each factory's recipe, read the assembler's tagged item from the `ITEMS` channel (or the sink's carried item).
 - **Placing entities in a generator** (`factory_gen.rs`) — mutate the `World` through the existing `place_*` helpers, never hand-write `world.set(Channel::Entities/Direction, …)` for a belt/marker/splitter (same rule as the renderer above: don't re-implement a helper that exists). `place_belts(world, &[(x, y, dir, Misc)])` lays plain belts **and** underground tunnel ends, one tuple per tile; `place_marker` for sources/sinks, `place_splitter` for the 2-tile splitter, `place_assembler` for the 3×3. Route belt runs with `find_belt_path`/`find_belt_paths` (the UG-aware Dijkstra) and feed the returned placements straight into `place_belts`. Raw `world.set` on the entity channel is only for post-hoc tweaks (e.g. neutralising a tile inside a validation check), not layout.
-- **`ppo.py`**: `PpoArgs` (all PPO hyperparams + `start_from`, `critic_warmup`, `eval_every`; defined in `training_config.py`), `FactorioEnv` (`reset`/`step`; terminal reward = `thput_raw / (1 + entity_cost_scale * entity_cost)`, where entity cost is per-output recursively-expanded raw-item quantity + craft time; normalized throughput remains a reference-based evaluation diagnostic and is not used by the reward; `eot` is a real action that ends the episode; `info['kind']` carries the lesson for per-lesson logging), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`; stashes `_last_head_entropy`/`_last_eot_prob` for the policy/* metrics), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading), `_run_signature` (run name), `_build_eval_set`/`_run_greedy_eval` (the eval/ section).
+- **`ppo.py`**: `PpoArgs` (all PPO hyperparams + `start_from`, `critic_warmup`, `eval_every`; defined in `training_config.py`), `FactorioEnv` (`reset`/`step`; terminal reward = `thput_raw / (1 + entity_cost_scale * entity_cost)`, where entity cost is per-output recursively-expanded raw-item quantity + craft time; normalized throughput remains a reference-based evaluation diagnostic and is not used by the reward; `eot` is a real action that ends the episode; `info['kind']` carries the lesson for per-lesson logging), `AgentCNN` (encoder + per-head outputs: tile/entity/direction/item/misc + `critic_head` + `eot_head`; stashes `_last_head_entropy`/`_last_eot_prob` for the policy/* metrics), `_resolve_start_from`/`_resolve_wandb_checkpoint` (checkpoint loading), `_run_signature` (run name), `_build_eval_set`/`_run_greedy_eval` (the eval/ section), `_iteration_schedule` (per-iteration LR + entropy coefficient; see "Comparing runs across budgets" below).
 - **`sft.py`**: `run_rollout_eval` returns `RolloutEval` with `overall` and per-`LessonKind` breakdowns; the rollout ends when the EOT head crosses `rollout_eot_threshold` (as it does in the web UI and the mod server, and as the sampled `eot` action ends a PPO episode), so the scored factory is the one the model declared finished. Checkpoint selection is on that `val/thput`. PPO reuses this for its `eval/` metrics (lazy import to avoid the ppo↔sft cycle).
 
 ## W&B dashboards
@@ -143,6 +143,30 @@ above to shift when the next run lands.
 ## SFT → PPO handoff
 
 `ppo.py --start-from <ckpt>` loads the full SFT `AgentCNN` state dict (encoder + every policy/eot head). The **critic head is the only part SFT never trained**, so `--critic-warmup N` freezes the actor (encoder + policy heads) for N iterations and trains the value head alone against the fixed SFT features before joint PPO begins; LR anneal + entropy schedule restart at the unfreeze. For finetuning an SFT policy, set `--ent-coef-start/--ent-coef-end 0` and a small `--learning-rate` (e.g. 5e-5). Every episode builds from a full blank (the legacy `num_missing_entities` curriculum was removed).
+
+## Comparing runs across budgets
+
+`--anneal-shape` (`ppo.py:_iteration_schedule`) selects how the LR *and* the
+entropy coefficient decay; both ride one multiplier, so they always move
+together.
+
+- **`linear`** (default) decays across the whole post-critic-warmup window. Every
+  step's LR and `ent_coef` therefore depend on `total_timesteps`, so **two runs
+  with different budgets are only comparable at matched *fraction* of the run,
+  never at matched `global_step`.** This bit real comparisons: `seug3e5t` (10M)
+  vs `ot3lw16n` (2M) sat at 2x the LR and 1.8x the `ent_coef` at the same step,
+  and the longer run's `policy/entropy` climbed 1.77 -> 4.57 while the short
+  one's fell to 1.30.
+- **`wsd`** (warmup-stable-decay) holds the peak through a stable phase and
+  decays only over the final `--cooldown-frac` (default 0.2), with an optional
+  `--lr-warmup-steps` ramp measured in env steps. The stable phase is then
+  identical at any budget, so a short tuning run and the prefix of a long
+  production run are the same trajectory and compare directly at matched
+  `global_step`. Cooldown shape is 1-sqrt (Hägele et al. 2024).
+
+Use `wsd` for anything that will be compared against a differently-sized run, or
+when tuning at one budget to spend at another. `linear` is kept as the default so
+the baselines in "Baselines and best runs" stay reproducible.
 
 ## Python Environment
 
