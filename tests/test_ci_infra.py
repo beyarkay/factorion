@@ -35,9 +35,12 @@ from ci.report import (
     flatten_summary,
     metric_direction,
     render_compare_markdown,
+    run_metrics,
     run_summary_markdown,
     select_headline,
     select_unreported,
+    smooth_history,
+    tail_mean,
 )
 from ci.watchdog import decide_terminations
 
@@ -430,6 +433,57 @@ class TestFlattenSummary:
         }
 
 
+class TestEndOfRunMetrics:
+    def test_tail_mean_averages_the_final_tenth(self):
+        assert tail_mean([0.0] * 90 + [1.0] * 10) == 1.0
+
+    def test_tail_mean_uses_at_least_three_points(self):
+        assert math.isclose(tail_mean([0.0, 0.3, 0.6, 0.9]), 0.6)
+
+    def test_one_lucky_point_no_longer_decides_the_number(self):
+        # The failure being fixed: a single logged point (final or best-ever)
+        # IS the reported number, so a spike swings a comparison on its own.
+        assert math.isclose(tail_mean([0.5] * 199 + [1.0]), 0.525)
+
+    def test_sparse_metrics_average_their_own_points(self):
+        # eval/* logs every 5th row, so the run's last rows carry no eval at
+        # all — the tail has to be per metric, not the last rows of history.
+        rows = [
+            {"global_step": i, "rollout/thput": 0.5}
+            | ({"eval/thput": i / 50} if i % 5 == 0 else {})
+            for i in range(30)
+        ]
+        out = smooth_history(rows)
+        assert math.isclose(out["eval/thput"], 0.4)  # mean of 0.3, 0.4, 0.5
+        assert out["global_step"] == 29  # counters keep their last value
+
+    def test_internal_and_padded_keys_are_skipped(self):
+        # W&B pads a row with the keys it lacks, so None is the common case.
+        rows = [{"_step": 3, "note": "x", "flag": True, "bad": float("nan"), "m": 1.0}]
+        assert smooth_history(rows) == {"m": 1.0}
+        assert smooth_history([{"m": None}, {"m": 2.0}]) == {"m": 2.0}
+
+    def test_history_wins_over_the_summary_statistic(self):
+        class _Run:
+            id = "abc"
+            summary = {"eval": {"thput": {"max": 0.9}}}  # a define_metric peak
+
+            def history(self, samples, pandas):
+                return [{"eval/thput": v} for v in (0.1, 0.9, 0.2, 0.3, 0.4)]
+
+        assert math.isclose(run_metrics(_Run())["eval/thput"], 0.3)
+
+    def test_unreadable_history_falls_back_to_the_summary(self):
+        class _Run:
+            id = "abc"
+            summary = {"eval": {"thput": {"max": 0.9}}}
+
+            def history(self, samples, pandas):
+                raise RuntimeError("history gone")
+
+        assert run_metrics(_Run()) == {"eval/thput": 0.9}
+
+
 class TestMetricDirection:
     def test_heuristics(self):
         assert metric_direction("val/thput") == "higher"
@@ -516,7 +570,7 @@ class TestReporter:
             url="https://wandb.ai/x/y/runs/abc123",
             kind="sft",
             sha7=SHA[:7],
-            summary_flat={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
+            metrics={"val/thput": 0.31, "val/acc": 0.9, "obscure/x": 1.0},
         )
         assert "<!-- factorion-ci-run:abc123 -->" in md
         before_details, details = md.split("<details>", 1)
