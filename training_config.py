@@ -129,6 +129,13 @@ class PpoArgs(SharedArgs):
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
+    partial_blanking: bool = True
+    """blank a uniform-random number of entity units in [1, size*size] per
+    training episode instead of always the whole grid. Draws above a factory's
+    removable count blank everything, so most episodes of small factories still
+    start empty, while a fraction start near-complete and put reward within a
+    few placements. Trials are unaffected (nothing to blank). Eval always
+    blanks fully."""
     ent_coef_start: float = 0.008034
     """entropy coefficient at the start of training (high = more exploration)"""
     ent_coef_end: float = 0.0007372
