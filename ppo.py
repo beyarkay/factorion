@@ -545,12 +545,14 @@ def make_env(
     run_name,
     entity_cost_scale=PpoArgs.entity_cost_scale,
     reward_symlog_r0=PpoArgs.reward_symlog_r0,
+    dense_reward=PpoArgs.dense_reward,
 ):
     def thunk():
         kwargs: dict[str, Any] = {"render_mode": "rgb_array"} if capture_video else {}
         kwargs.update({'size': size, 'max_steps': size*size, 'idx': idx,
                        'entity_cost_scale': entity_cost_scale,
-                       'reward_symlog_r0': reward_symlog_r0})
+                       'reward_symlog_r0': reward_symlog_r0,
+                       'dense_reward': dense_reward})
         env = gym.make(env_id, **kwargs)
         if capture_video:
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}/env_{idx}", episode_trigger=lambda e: (e+1) % 10 == 0)
@@ -617,6 +619,7 @@ class FactorioEnv(gym.Env):
         options: Optional[dict] = None,
         entity_cost_scale: float = PpoArgs.entity_cost_scale,
         reward_symlog_r0: float = PpoArgs.reward_symlog_r0,
+        dense_reward: bool = PpoArgs.dense_reward,
     ):
         super().__init__()
         if entity_cost_scale < 0:
@@ -625,6 +628,7 @@ class FactorioEnv(gym.Env):
             raise ValueError("reward_symlog_r0 must be non-negative")
         self.entity_cost_scale = entity_cost_scale
         self.reward_symlog_r0 = reward_symlog_r0
+        self.dense_reward = dense_reward
         if render_mode is not None:
             self.metadata = {"render_modes": [render_mode], "render_fps": 2}
             self.render_mode = render_mode
@@ -866,6 +870,11 @@ class FactorioEnv(gym.Env):
         )
         _, ce0 = self._world_cost(self._world_CWH.numpy()[_CH_ENT])
         self._reward_baseline = raw0 * ce0
+        self._prev_score = (
+            self._reward_baseline / self._max_throughput
+            if self._max_throughput > 0
+            else 0.0
+        )
         self._prev_match = self._compute_solution_match()
         self.steps = 0
         return self._world_CWH.cpu().numpy(), self._get_info()
@@ -911,7 +920,7 @@ class FactorioEnv(gym.Env):
         # reward and all episode-end-consumed values are still computed, so the
         # signature is unchanged.
         frac_hallucin = 0
-        if terminated or truncated or self._full_diagnostics:
+        if terminated or truncated or self._full_diagnostics or self.dense_reward:
             # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
             # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
             # self._max_throughput comes from the factory generator — see reset().
@@ -975,7 +984,21 @@ class FactorioEnv(gym.Env):
             loc_delta = ent_delta = dir_delta = 0.0
 
         reward = 0.0
-        if terminated or truncated:
+        if self.dense_reward:
+            # Telescoped form of the terminal marginal reward: each step pays
+            # the change in ceiling-normalized cost-adjusted throughput, so the
+            # episode's undiscounted sum equals the terminal scheme exactly,
+            # but credit lands on the placement that caused it — improving an
+            # already-working build pays immediately instead of hinging on
+            # when the EOT fires.
+            score = (
+                thput_raw * cost_efficiency / self._max_throughput
+                if self._max_throughput > 0
+                else 0.0
+            )
+            reward = score - self._prev_score
+            self._prev_score = score
+        elif terminated or truncated:
             # Improvement over the reset state, scaled by the factory's
             # reference rate. Marginal, so pre-existing protected flow pays
             # zero and damaging it pays negative (#339). Ceiling-scaled, so
@@ -1940,6 +1963,7 @@ if __name__ == "__main__":
             run_name,
             args.entity_cost_scale,
             args.reward_symlog_r0,
+            args.dense_reward,
         )
         for i in range(args.num_envs)
     ]
@@ -2559,6 +2583,7 @@ if __name__ == "__main__":
                     run_name,
                     args.entity_cost_scale,
                     args.reward_symlog_r0,
+                    args.dense_reward,
                 )
                 for i in range(num_render_envs)
             ])

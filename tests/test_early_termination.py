@@ -175,7 +175,10 @@ class TestReward:
         """Adding an entity that raises cost without raising throughput drops
         the score below the reset baseline, so the terminal reward goes
         negative (and stays negative through the optional compression)."""
-        env = _make_env(size=7, max_steps=10, reward_symlog_r0=reward_symlog_r0)
+        env = _make_env(
+            size=7, max_steps=10, reward_symlog_r0=reward_symlog_r0,
+            dense_reward=False,
+        )
         env.entity_cost_scale = 0.01
         env.reset(
             seed=42,
@@ -310,7 +313,7 @@ class TestMarginalRewardBaseline:
         assert reward == 0.0
 
     def test_destroying_the_protected_line_pays_negative(self):
-        env = _make_env(size=11, max_steps=10)
+        env = _make_env(size=11, max_steps=10, dense_reward=False)
         self._reset_cross(env)
 
         ent = env._world_CWH[Channel.ENTITIES.value].numpy()
@@ -373,3 +376,38 @@ class TestStepsTaken:
         # Episode isn't over yet
         assert not terminated and not truncated
         assert "steps_taken" not in info, "steps_taken should not be in info mid-episode"
+
+
+class TestDenseReward:
+    """Dense mode pays the terminal marginal reward in telescoped per-step
+    form: the undiscounted episode sum must equal the terminal scheme on the
+    same trajectory, with credit landing on the step that moved the score."""
+
+    def _destroy_then_eot(self, dense):
+        env = _make_env(size=11, max_steps=10, dense_reward=dense)
+        env.reset(seed=42, options={"kind": LessonKind.CROSS_UNDER_BELT,
+                                    "num_missing_entities": 0})
+        ent = env._world_CWH[Channel.ENTITIES.value].numpy()
+        xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
+        action = _noop_action()
+        action["xy"] = np.array([int(xs[0]), int(ys[0])])
+        rewards = []
+        _, r, *_ = env.step(action)
+        rewards.append(r)
+        action = _noop_action()
+        action["eot"] = 1
+        _, r, terminated, _, _ = env.step(action)
+        rewards.append(r)
+        assert terminated
+        return rewards
+
+    def test_episode_sum_matches_terminal_scheme(self):
+        dense = self._destroy_then_eot(dense=True)
+        terminal = self._destroy_then_eot(dense=False)
+        assert sum(terminal[:-1]) == 0, "terminal scheme pays only at the end"
+        assert sum(dense) == pytest.approx(terminal[-1])
+
+    def test_credit_lands_on_the_causing_step(self):
+        dense = self._destroy_then_eot(dense=True)
+        assert dense[0] < 0, "destroying flow must pay negative immediately"
+        assert dense[1] == pytest.approx(0.0), "the EOT step changed nothing"
