@@ -83,7 +83,14 @@ The metric comes from a greedy rollout that blanks the **whole** grid and rebuil
 ## Baselines and best runs
 
 Numbers below are from W&B (`beyarkay/factorion`); the sha each was trained at is
-in the run's tags. **Two caveats before comparing anything to anything:**
+in the run's tags. **Three caveats before comparing anything to anything:**
+
+- **Where the number came from matters.** `/ci` reports every metric as an
+  end-of-run mean (its last 2% of logged points, ≥3), read from the run
+  history. A W&B runs-table column is not that: it is the run summary, one
+  logged point. Older PPO runs summarised `eval/*` to their **run maximum**,
+  so a number quoted off that column (or off a pre-`fd5f657` CI comment) is a
+  best-ever fluke and reads higher than the same run re-reported today.
 
 - **#328 renamed the metric.** Before `dc2f435` the EOT-respecting number was
   logged as `val/thput_eot` and `val/thput` meant "run to env-done, ignore the

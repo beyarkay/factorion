@@ -11,14 +11,12 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TypeGuard
 
 from ci.config import WANDB_PROJECT
 from ci.stats import mean, paired_t_test, stdev, welch_t_test
-from ci.wandb_metric import read_metric
 
-# define_metric(summary=...) stores its statistic under one of these keys
-# (kept in sync with ci/wandb_metric.py).
+# define_metric(summary=...) stores its statistic under one of these keys.
 _SUMMARY_STAT_KEYS = ("max", "min", "last", "mean", "value")
 
 # Substring heuristics for "which direction is better" — used only to attach a
@@ -37,16 +35,17 @@ def metric_direction(name: str) -> Optional[str]:
     return None
 
 
-def _is_number(v) -> bool:
+def _is_number(v) -> TypeGuard[float]:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
     """Flatten a W&B run summary into {slash/path: float}.
 
-    Handles the two representations that defeat naive access (see
-    ci/wandb_metric.py): slash-namespaced metrics stored as nested dicts, and
-    define_metric(summary=...) values stored as {"max": 0.4}-style stat dicts.
+    Handles the two representations that defeat naive access: slash-namespaced
+    metrics stored as nested dicts, and define_metric(summary=...) values
+    stored as {"max": 0.4}-style stat dicts. W&B's SummarySubDict is dict-LIKE
+    but does not subclass dict, hence the _json_dict unwrap at the call site.
     Keys starting with "_" (W&B internals) are skipped.
     """
     flat: dict[str, float] = {}
@@ -63,6 +62,82 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
             else:
                 flat.update(flatten_summary(val, prefix=path + "/"))
     return flat
+
+
+# ── End-of-run metrics ─────────────────────────────────────────────
+# A run's W&B summary holds ONE logged point per metric — the last, or
+# whatever single statistic define_metric picked. That is noise for a
+# stochastic policy (eval/thput swings between neighbouring evals), so
+# reporting it decides comparisons on where a run happened to stop, or on its
+# single luckiest eval. Reports average the tail of the history instead.
+
+# Enough points to average out eval noise, few enough that the tail is all one
+# policy: on a 40M-step run 2% is still ~25 evals, where 10% would reach 4M
+# steps back and average in iterates that are genuinely worse.
+TAIL_FRACTION = 0.02
+TAIL_MIN_POINTS = 3
+
+# Rows to pull per run. W&B downsamples history above this; it is set well
+# past the longest run on record (40M timesteps → 8.9k rows) so reports read
+# every point actually logged. `Run.scan_history` is NOT an alternative: it
+# pages by _step RANGE and stops at the first empty page, so it returns
+# nothing at all for runs whose step axis is sparse (global_step jumps by
+# batch_size, samples_seen by an epoch).
+HISTORY_SAMPLES = 100_000
+
+# Averaging a monotone ramp reports a point the run passed through rather than
+# where it ended, so counters and step axes keep their last value.
+_COUNTER_KEYS = frozenset(
+    {"global_step", "train/global_step", "train/samples_seen", "train/epoch"}
+)
+
+SMOOTHING_NOTE = (
+    f"Values are end-of-run means — each metric averaged over its last "
+    f"{TAIL_FRACTION:.0%} of logged points (at least {TAIL_MIN_POINTS}), not "
+    f"its final point."
+)
+
+
+def tail_mean(values: list[float]) -> float:
+    """Mean of the last TAIL_FRACTION of `values`, at least TAIL_MIN_POINTS."""
+    n = min(len(values), max(TAIL_MIN_POINTS, round(len(values) * TAIL_FRACTION)))
+    return mean(values[-n:])
+
+
+def smooth_history(rows) -> dict[str, float]:
+    """{metric: end-of-run value} from a run's history rows.
+
+    Metrics log at different cadences — eval/* every `--eval-every` iterations,
+    rollout/* every one — and W&B pads every row with the keys it is missing,
+    so each metric's tail is taken over the points it actually has rather than
+    over the run's last rows (where a sparse metric would contribute one point,
+    or none at all).
+    """
+    series: dict[str, list[float]] = {}
+    for row in rows:
+        for key, val in row.items():
+            if not key.startswith("_") and _is_number(val):
+                series.setdefault(key, []).append(float(val))
+    return {
+        key: vals[-1] if key in _COUNTER_KEYS else tail_mean(vals)
+        for key, vals in series.items()
+    }
+
+
+def run_metrics(run) -> dict[str, float]:
+    """A W&B run's reportable metrics, smoothed over the end of the run.
+
+    Falls back to the raw summary when the history can't be read, so a report
+    degrades to the noisier numbers rather than coming back empty.
+    """
+    try:
+        smoothed = smooth_history(run.history(samples=HISTORY_SAMPLES, pandas=False))
+    except Exception as e:
+        print(f"warning: could not read history for run {run.id}: {e}", flush=True)
+        smoothed = {}
+    if smoothed:
+        return smoothed
+    return flatten_summary(getattr(run.summary, "_json_dict", None) or dict(run.summary))
 
 
 @dataclass
@@ -94,7 +169,7 @@ class MetricRow:
 def compare_metric_rows(
     main: dict[int, dict[str, float]], pr: dict[int, dict[str, float]]
 ) -> list[MetricRow]:
-    """Compare every metric across two {seed: flat_summary} sides.
+    """Compare every metric across two {seed: metrics} sides.
 
     Uses a paired t-test on seeds present in both sides (>= 2), otherwise
     Welch's t-test on the unpaired values. Rows are sorted most-significant
@@ -207,6 +282,8 @@ def render_compare_markdown(
         "",
         f"Paired by seed where possible (paired t-test; Welch's otherwise). "
         f"Significance level: {alpha}.",
+        "",
+        SMOOTHING_NOTE,
         "",
     ]
     if headline_rows:
@@ -340,12 +417,11 @@ def _group_runs(api, project_path: str, group: str) -> dict[int, Any]:
 
 
 def _fetch_group(api, project_path: str, group: str) -> dict[int, dict[str, float]]:
-    """A W&B group's finished runs as {seed: flattened summary}."""
-    out: dict[int, dict[str, float]] = {}
-    for seed, run in _group_runs(api, project_path, group).items():
-        summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
-        out[seed] = flatten_summary(summary)
-    return out
+    """A W&B group's finished runs as {seed: end-of-run metrics}."""
+    return {
+        seed: run_metrics(run)
+        for seed, run in _group_runs(api, project_path, group).items()
+    }
 
 
 def _project_path(api) -> str:
@@ -530,9 +606,10 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
         )
 
     missing = float("-inf") if reverse else float("inf")
+    metrics = {r.id: run_metrics(r) for r in runs}
 
     def get_metric(run):
-        return read_metric(run.summary, metric_name, missing)
+        return metrics[run.id].get(metric_name, missing)
 
     runs.sort(key=get_metric, reverse=reverse)
     best_run = runs[0]
@@ -544,6 +621,8 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
     lines.append(f"| **Completed runs** | {len(runs)} |")
     lines.append(f"| **Metric** | `{metric_name}` ({metric_goal}) |")
     lines.append(f"| **Best value** | **{best_metric:.4f}** |")
+    lines.append("")
+    lines.append(SMOOTHING_NOTE)
     lines.append("")
 
     lines.append("### Best Hyperparameters\n")
@@ -601,7 +680,7 @@ def history_csv(out: str, limit: int = 500) -> int:
         tags = set(run.tags or [])
         sha = next((t.removeprefix("sha:") for t in tags if t.startswith("sha:")), "")
         kind = next((t.removeprefix("fci:") for t in tags if t.startswith("fci:")), "")
-        summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
+        metrics = run_metrics(run)
         row = {
             "created_at": run.created_at,
             "sha": sha,
@@ -609,11 +688,10 @@ def history_csv(out: str, limit: int = 500) -> int:
             "run_id": run.id,
             "name": run.name,
             "state": run.state,
-            "duration_s": summary.get("_runtime", ""),
+            "duration_s": run.summary.get("_runtime", ""),
         }
         for m in HISTORY_METRICS:
-            v = read_metric(summary, m, None)
-            row[m] = "" if v is None else v
+            row[m] = metrics.get(m, "")
         rows.append(row)
         if len(rows) >= limit:
             break
@@ -642,12 +720,12 @@ def run_summary_markdown(
     url: str,
     kind: str,
     sha7: str,
-    summary_flat: dict[str, float],
+    metrics: dict[str, float],
     headline: Optional[list[str]] = None,
 ) -> str:
     """Summary comment for a single finished CI run."""
     icon = "&#x2705;" if state == "finished" else "&#x274C;"
-    duration = summary_flat.get("_runtime")
+    duration = metrics.get("_runtime")
     import os
 
     repo = os.environ.get("GITHUB_REPOSITORY")
@@ -659,16 +737,18 @@ def run_summary_markdown(
         f"Commit {commit} &middot; [view on W&B]({url})"
         + (f" &middot; {int(duration) // 60} min" if duration else ""),
         "",
+        SMOOTHING_NOTE,
+        "",
     ]
     if headline is None:
-        headline = select_headline(summary_flat)
-    shown = [(m, summary_flat[m]) for m in headline if m in summary_flat]
+        headline = select_headline(metrics)
+    shown = [(m, metrics[m]) for m in headline if m in metrics]
     if shown:
         lines += ["| Metric | Value |", "|---|---|"]
         lines += [f"| `{m}` | {v:.4g} |" for m, v in shown]
     others = {
         m: v
-        for m, v in sorted(summary_flat.items())
+        for m, v in sorted(metrics.items())
         if m not in dict(shown) and not m.startswith("_")
     }
     if others:
@@ -767,11 +847,10 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
         if pr is None or not pr.isdigit():
             continue
         summary = getattr(run.summary, "_json_dict", None) or dict(run.summary)
-        flat = flatten_summary(summary)
-        if "_runtime" in summary and _is_number(summary["_runtime"]):
-            flat["_runtime"] = float(summary["_runtime"])
+        runtime = summary.get("_runtime")
         by_pr.setdefault(int(pr), []).append(
             {
+                "run": run,  # its history is only scanned if the run gets posted
                 "run_id": run.id,
                 "name": run.name,
                 "state": run.state,
@@ -782,7 +861,7 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
                 "sha7": next(
                     (t.removeprefix("sha:") for t in tags if t.startswith("sha:")), "?"
                 ),
-                "summary_flat": flat,
+                "runtime": float(runtime) if _is_number(runtime) else None,
                 "boot_failure": "boot-failure" in tags,
                 "boot_log_tail": str(summary.get("boot_log_tail", "")),
             }
@@ -801,6 +880,9 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
                     log_tail=c["boot_log_tail"],
                 )
             else:
+                metrics = run_metrics(c["run"])
+                if c["runtime"] is not None:
+                    metrics["_runtime"] = c["runtime"]
                 md = run_summary_markdown(
                     run_id=c["run_id"],
                     name=c["name"],
@@ -808,7 +890,7 @@ def post_pending_reports(window_days: int = 3, dry_run: bool = False) -> int:
                     url=c["url"],
                     kind=c["kind"],
                     sha7=c["sha7"],
-                    summary_flat=c["summary_flat"],
+                    metrics=metrics,
                 )
             if dry_run:
                 print(f"[dry-run] would comment on PR #{pr_number} for run {c['run_id']}")
