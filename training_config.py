@@ -67,6 +67,10 @@ class SharedArgs:
     """dim of the pooled (mean+max over space) global-context vector
     concatenated onto the per-tile head inputs; 0 disables the global pathway."""
 
+    connect_coef: float = 0.25
+    """terminal bonus for closing the source→sink gap, as a fraction of what
+    solving that lesson pays (0 disables it)"""
+
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "factorion"
