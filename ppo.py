@@ -1844,21 +1844,23 @@ if __name__ == "__main__":
         )
 
         # Define metric axes and summary aggregation. global_step (env steps)
-        # is the x-axis for every panel. eval/* (greedy held-out throughput) is
-        # the headline progress signal, so it summarises to its max.
+        # is the x-axis for every panel. Every metric summarises to its LAST
+        # value, eval/* included: a run-max summary reports the single luckiest
+        # eval a run ever logged, and that is the number the W&B runs table
+        # shows and the sweep controller ranks on.
         wandb.define_metric("*", step_metric="global_step")
         _LESSONS = [k.name for k in LessonKind]
-        wandb.define_metric("eval/thput", summary="max")
-        wandb.define_metric("eval/trial_thput", summary="max")
-        wandb.define_metric("eval/asm_item_acc", summary="max")
-        wandb.define_metric("eval/eot_acc", summary="max")
-        wandb.define_metric("eval/eot_pos_recall", summary="max")
+        wandb.define_metric("eval/thput", summary="last")
+        wandb.define_metric("eval/trial_thput", summary="last")
+        wandb.define_metric("eval/asm_item_acc", summary="last")
+        wandb.define_metric("eval/eot_acc", summary="last")
+        wandb.define_metric("eval/eot_pos_recall", summary="last")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
-            wandb.define_metric(f"eval/{ln}/thput", summary="max")
-            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="max")
-            wandb.define_metric(f"eval/{ln}/eot_acc", summary="max")
-            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="max")
+            wandb.define_metric(f"eval/{ln}/thput", summary="last")
+            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="last")
+            wandb.define_metric(f"eval/{ln}/eot_acc", summary="last")
+            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="last")
         for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
                   "invalid_frac", "num_entities", "entity_efficiency",
                   "frac_reachable", "entity_cost", "cost_efficiency"]:
