@@ -226,14 +226,13 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
     }
 
     // 4. Count unreachable ENTITIES (not nodes)
-    // on_path = can_reach_sink ∩ reachable_from_source.
+    // on_path = can_reach_sink ∩ reachable_from_sources.
     // Note: reachable_from includes the start nodes themselves, so sources are in
-    // reachable_from_source and sinks are in can_reach_sink. If there's a path from
+    // reachable_from_sources and sinks are in can_reach_sink. If there's a path from
     // source to sink, both will be in the intersection. If not, they're unreachable.
     let can_reach_sink = reachable_from(&sinks, graph, true); // reverse reachability
-    let reachable_from_source = reachable_from(&sources, graph, false);
     let on_path: HashSet<usize> = can_reach_sink
-        .intersection(&reachable_from_source)
+        .intersection(&reachable_from_sources)
         .copied()
         .collect();
 
