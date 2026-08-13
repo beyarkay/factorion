@@ -19,6 +19,7 @@ use crate::rng::Rng;
 use crate::throughput::{calc_throughput, factory_score};
 use crate::types::{all_items, all_recipes, Channel, Direction, Item, Misc, Recipe};
 use crate::world::World;
+use nonempty::NonEmpty;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::num::NonZeroUsize;
@@ -2553,16 +2554,19 @@ fn tunnels_crossed(routes: &[&[UgPlacement]], fixed: &[UgPlacement]) -> bool {
 
 /// The recipes an assembling machine 1 can actually craft (its `produced_by`
 /// lists tier 1) with exactly `n_ingredients` inputs and a single product —
-/// the pool the FACTORY_* lessons draw from.
-fn am1_recipes(n_ingredients: usize) -> Vec<(Item, Recipe)> {
-    all_recipes()
-        .into_iter()
-        .filter(|(_, r)| {
-            r.consumes.len() == n_ingredients
-                && r.produces.len() == 1
-                && r.produced_by.contains(&Item::AssemblingMachine1)
-        })
-        .collect()
+/// the pool the FACTORY_* lessons draw from. `None` when no recipe has that
+/// ingredient count, so a non-empty pool is guaranteed by the type.
+fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
+    NonEmpty::from_vec(
+        all_recipes()
+            .into_iter()
+            .filter(|(_, r)| {
+                r.consumes.len() == n_ingredients
+                    && r.produces.len() == 1
+                    && r.produced_by.contains(&Item::AssemblingMachine1)
+            })
+            .collect(),
+    )
 }
 
 /// Build a FACTORY_1_INGREDIENT factory: a row of assemblers all crafting the
@@ -2601,10 +2605,7 @@ fn build_factory_1_ingredient(
     if s < 7 {
         return None;
     }
-    let recipes = am1_recipes(1);
-    if recipes.is_empty() {
-        return None;
-    }
+    let recipes = am1_recipes(1)?;
     let mut count = (500).max(size * size * 16);
 
     while count > 0 {
@@ -2910,17 +2911,26 @@ enum WeaveTile {
     Run,
 }
 
+/// How a FACTORY_2_INGREDIENTS build delivers its two ingredients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Feed {
+    ReachOver,
+    Weave,
+    Shared,
+}
+
 /// Shortest belt route from a `source` marker to a lane `head` (arriving
-/// northward, the lanes' flow direction), trying all four source facings in
-/// shuffled order and keeping the shortest — FACTORY_1_INGREDIENT's route-1
-/// logic for a fixed lane direction. The source may drop straight onto the
-/// head (a zero-belt feed) but onto no other blocked cell; the route may open
-/// with a tunnel entrance on the drop cell itself. Returns the winning facing
-/// and route.
+/// along `end_dir` — the lane's flow direction, or pointing into a shared
+/// lane's head from its flank), trying all four source facings in shuffled
+/// order and keeping the shortest — FACTORY_1_INGREDIENT's route-1 logic for
+/// a fixed arrival. The source may drop straight onto the head (a zero-belt
+/// feed) but onto no other blocked cell; the route may open with a tunnel
+/// entrance on the drop cell itself. Returns the winning facing and route.
 fn route_source_to_head(
     rng: &mut Rng,
     source: Cell,
     head: Cell,
+    end_dir: Direction,
     s: i64,
     blocked: &HashSet<Cell>,
 ) -> Option<(Direction, Vec<UgPlacement>)> {
@@ -2933,14 +2943,7 @@ fn route_source_to_head(
         if !in_grid(out, s) || (out != head && blocked.contains(&out)) {
             continue;
         }
-        if let Some(p) = find_belt_path(
-            out,
-            head,
-            Direction::North,
-            s,
-            blocked,
-            Underground::On(Some(f)),
-        ) {
+        if let Some(p) = find_belt_path(out, head, end_dir, s, blocked, Underground::On(Some(f))) {
             if best.as_ref().is_none_or(|(_, bp)| p.len() < bp.len()) {
                 best = Some((f, p));
             }
@@ -2953,7 +2956,7 @@ fn route_source_to_head(
 /// assemblers all crafting one random two-ingredient recipe, both ingredients
 /// delivered up the west flank and the product drained to an east output lane
 /// ending in the sink (the whole world is then randomly flipped/rotated, so
-/// every orientation appears). Two feed patterns, chosen per attempt:
+/// every orientation appears). Three feed patterns, chosen per attempt:
 ///
 /// * **Reach-over**: two side-by-side belts. Each assembler taps the near
 ///   belt with 1-2 plain inserters and reaches OVER it to the far belt with
@@ -2963,6 +2966,11 @@ fn route_source_to_head(
 ///   drained sideways by a helper column of curves — and is back at surface
 ///   level at every `d`/`u` mouth between runs. The topmost mouth may be an
 ///   unpaired entrance: a stopper that just parks B for its inserter.
+/// * **Shared**: ONE dual-lane belt carries both ingredients — each source
+///   route ends beside the lane head and side-loads its item onto its own
+///   lane — and every assembler pulls its mix with 1-2 plain inserters (an
+///   inserter's pickup splits fairly across lanes, so even a single one
+///   feeds a two-ingredient recipe).
 ///
 /// Each assembler taps both ingredient lines on distinct rows of its own
 /// 3-row span and drains through 1-3 output inserters; every dead-end belt
@@ -2985,10 +2993,7 @@ fn build_factory_2_ingredients(
     if s < 8 {
         return None;
     }
-    let recipes = am1_recipes(2);
-    if recipes.is_empty() {
-        return None;
-    }
+    let recipes = am1_recipes(2)?;
     let mut count = (500).max(size * size * 16);
 
     // The machine count and output-lane direction are drawn ONCE, outside the
@@ -3018,7 +3023,7 @@ fn build_factory_2_ingredients(
         let (item_a, item_b) = (ingredients[0], ingredients[1]);
         let output_item = recipe.produces.first().0;
 
-        let weave = rng.choice_index(2) == 1;
+        let feed = [Feed::ReachOver, Feed::Weave, Feed::Shared][rng.choice_index(3)];
 
         // Vertical extent: 3n assembler rows, one row below for the source
         // band, and (for a north sink) one row above for the exit. The weave
@@ -3040,8 +3045,12 @@ fn build_factory_2_ingredients(
         // pair with it.
         let mut keepout: HashSet<Cell> = HashSet::new();
         let (head_a, head_b): (Cell, Cell);
+        // The direction each source route arrives at its head: the lane flow
+        // for a lane of its own, or pointing in from the flank for the
+        // shared lane's two side-loads.
+        let (arrive_a, arrive_b): (Direction, Direction);
 
-        if weave {
+        if feed == Feed::Weave {
             // The shared column, bottom-up from the tile above head_b
             // (t = 0 ↔ row src_row-1; the assembler j spans t = slack+3j ..
             // slack+3j+2). Grown as [run, up] groups over a leading `d` until
@@ -3169,6 +3178,7 @@ fn build_factory_2_ingredients(
             }
             head_a = (col_a, src_row);
             head_b = (col_b, src_row);
+            (arrive_a, arrive_b) = (Direction::North, Direction::North);
             keepout.insert((col_b, src_row - len - 1));
             if tiles[dead_run as usize - 1] == WeaveTile::Run {
                 keepout.insert((col_a, src_row - 1 - dead_run));
@@ -3179,7 +3189,7 @@ fn build_factory_2_ingredients(
                     keepout.insert((col_b, d_row - k));
                 }
             }
-        } else {
+        } else if feed == Feed::ReachOver {
             // Reach-over: per assembler 1-2 long-handed (far belt) and 1-2
             // plain (near belt) input inserters, on distinct rows.
             let (mut a_taps, mut b_taps): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
@@ -3214,8 +3224,34 @@ fn build_factory_2_ingredients(
             }
             head_a = (col_a, a_bot + 1);
             head_b = (col_b, b_bot + 1);
+            (arrive_a, arrive_b) = (Direction::North, Direction::North);
             keepout.insert((col_a, a_top - 1));
             keepout.insert((col_b, b_top - 1));
+        } else {
+            // Shared: every assembler pulls both ingredients off ONE
+            // dual-lane belt with 1-2 plain inserters. The lane ends in a
+            // head tile fed from BOTH flanks — two side feeds, so each
+            // side-loads its route's item onto its own lane.
+            let mut taps: Vec<i64> = Vec::new();
+            for i in 0..n_asm {
+                let ry = y0 + 3 * i;
+                let rows = [ry, ry + 1, ry + 2];
+                let k = rng.randint(1, 2) as usize;
+                for &r in &rng.sample(&rows, k) {
+                    inserters.push(((col_in, r), Item::Inserter));
+                    taps.push(r);
+                }
+            }
+            let (Some(&top), Some(&bottom)) = (taps.iter().min(), taps.iter().max()) else {
+                continue;
+            };
+            for r in top..=bottom + 1 {
+                belts.push((col_b, r, Direction::North, Misc::None));
+            }
+            head_a = (col_a, bottom + 1);
+            head_b = (col_in, bottom + 1);
+            (arrive_a, arrive_b) = (Direction::East, Direction::West);
+            keepout.insert((col_b, top - 1));
         }
 
         // Output: 1-3 east-side inserters per assembler onto the output lane,
@@ -3302,7 +3338,9 @@ fn build_factory_2_ingredients(
         blocked.extend([head_b, exit]);
         blocked.extend(nbhd(source_b));
         blocked.extend(nbhd(sink_pos));
-        let Some((dir_a, path_a)) = route_source_to_head(rng, source_a, head_a, s, &blocked) else {
+        let Some((dir_a, path_a)) =
+            route_source_to_head(rng, source_a, head_a, arrive_a, s, &blocked)
+        else {
             continue;
         };
         let path_a_cells = belt_cell_set(&path_a);
@@ -3311,7 +3349,9 @@ fn build_factory_2_ingredients(
         blocked.insert(exit);
         blocked.extend(nbhd(sink_pos));
         blocked.extend(path_a_cells.iter().copied());
-        let Some((dir_b, path_b)) = route_source_to_head(rng, source_b, head_b, s, &blocked) else {
+        let Some((dir_b, path_b)) =
+            route_source_to_head(rng, source_b, head_b, arrive_b, s, &blocked)
+        else {
             continue;
         };
 
@@ -4153,12 +4193,11 @@ mod tests {
     fn test_factory_2_ingredients_smoke() {
         // Positive throughput, no orphans, two sources carrying the recipe's
         // two ingredients, one sink carrying its product, whole 3×3
-        // assemblers each with 3-6 inserters. Both feed patterns — the
-        // long-handed reach-over and the underground weave — appear across
-        // seeds and never mix within one factory, and the markers sit at
-        // varying distances from the assembler block (the lanes extend).
+        // assemblers each with 2-6 inserters. All three feed patterns appear
+        // across seeds, and the markers sit at varying distances from the
+        // assembler block (the routes vary).
         let mut built = 0;
-        let (mut reach_over, mut weave) = (0, 0);
+        let (mut reach_over, mut weave, mut shared) = (0, 0, 0);
         let mut asm_counts: HashSet<usize> = HashSet::new();
         let (mut source_dists, mut sink_dists): (HashSet<i64>, HashSet<i64>) =
             (HashSet::new(), HashSet::new());
@@ -4188,17 +4227,19 @@ mod tests {
             let long = count_entity(&f.world, Item::LongHandedInserter);
             let n_inserter = count_entity(&f.world, Item::Inserter) + long;
             assert!(
-                (3 * n_asm..=6 * n_asm).contains(&n_inserter),
+                (2 * n_asm..=6 * n_asm).contains(&n_inserter),
                 "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
             );
+            // Feed-pattern signatures: only reach-over places long-handed
+            // inserters; the weave gadget always tunnels. A shared build
+            // whose ROUTES happen to tunnel is miscounted as a weave — rare
+            // enough that both buckets still fill over these fixed seeds.
             if long > 0 {
                 reach_over += 1;
-            } else {
-                assert!(
-                    count_entity(&f.world, Item::UndergroundBelt) > 0,
-                    "seed={seed}: weave factory without underground tiles"
-                );
+            } else if count_entity(&f.world, Item::UndergroundBelt) > 0 {
                 weave += 1;
+            } else {
+                shared += 1;
             }
             // The sources carry exactly the recipe's two ingredients, the
             // sink its product.
@@ -4253,8 +4294,9 @@ mod tests {
         assert!(built > 40, "most seeds should build, got {built}");
         assert!(asm_counts.len() > 1, "assembler count never varied");
         assert!(
-            reach_over > 0 && weave > 0,
-            "both feed patterns should appear: reach_over={reach_over} weave={weave}"
+            reach_over > 0 && weave > 0 && shared > 0,
+            "all feed patterns should appear: \
+             reach_over={reach_over} weave={weave} shared={shared}"
         );
         assert!(
             source_dists.len() > 1 && sink_dists.len() > 1,
