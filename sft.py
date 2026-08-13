@@ -30,7 +30,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
-    LESSON_WEIGHTS,
     Channel,
     LessonKind,
     blank_entities,
@@ -242,11 +241,11 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
-    concurrent workers never share a factory. Draws the kind furthest below its
-    LESSON_WEIGHTS share so output balances by weighted pair count, not by
-    lesson. Blanks at max_level (the full placement progression per lesson);
-    obs/mask are uint8/bool. Runs until `target` pairs are produced, or forever
-    when `target` is None. Callers own their own RNG seeding.
+    concurrent workers never share a factory. Draws the fewest-pairs kind each
+    step so output balances by pair count, not by lesson. Blanks at max_level
+    (the full placement progression per lesson); obs/mask are uint8/bool. Runs
+    until `target` pairs are produced, or forever when `target` is None. Callers
+    own their own RNG seeding.
     """
     # Trial kinds have no known solution, so they can never emit an expert
     # pair — left in the pool they'd stay at 0 samples forever and the
@@ -264,12 +263,10 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     seed = base_seed + worker_id
     produced = 0
     while target is None or produced < target:
-        # Draw the kind furthest below its weighted share: big factories emit
-        # ~10x more pairs, so drawing kinds evenly starves the rare
-        # recipe/assembler heads.
-        shares = {k: kind_samples[k.name] / LESSON_WEIGHTS[k] for k in available}
-        fewest = min(shares.values())
-        kind = random.choice([k for k in available if shares[k] == fewest])
+        # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
+        # uniform kind choice starves the rare recipe/assembler heads.
+        fewest = min(kind_samples[k.name] for k in available)
+        kind = random.choice([k for k in available if kind_samples[k.name] == fewest])
         seed += num_workers
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
