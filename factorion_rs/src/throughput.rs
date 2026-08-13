@@ -121,8 +121,6 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         in_queue.insert(s);
     }
 
-    let mut node_inputs: Vec<HashMap<Item, f64>> =
-        graph.nodes.iter().map(|n| n.input.clone()).collect();
     let mut node_outputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.output.clone()).collect();
 
@@ -154,7 +152,6 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
                     }
                     acc
                 };
-            node_inputs[node_idx] = accumulated_input.clone();
 
             // Compute output using stack-allocated enum dispatch (no heap allocation)
             let item = if entity_kind == Item::AssemblingMachine1 {
@@ -471,7 +468,6 @@ mod tests {
                     anchor: (0, 0),
                     direction: Direction::East,
                     curved: false,
-                    input: HashMap::new(),
                     output: HashMap::new(),
                 },
                 crate::graph::GraphNode {
@@ -483,7 +479,6 @@ mod tests {
                     anchor: (1, 0),
                     direction: Direction::East,
                     curved: false,
-                    input: HashMap::new(),
                     output: HashMap::new(),
                 },
             ],
