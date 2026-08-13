@@ -53,7 +53,7 @@ class TestEarlyTermination:
         without an eot the episode keeps running — the agent must declare done.
         """
         env = _make_env(size=5, max_steps=10)
-        env.reset(seed=42, options={"num_missing_entities": 0})
+        env.reset(seed=42, options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM})
 
         _, _, terminated, truncated, info = env.step(_noop_action())
 
@@ -114,7 +114,7 @@ class TestReward:
         """A factory already solved at reset earns nothing: the baseline
         absorbs its whole score, so eot-without-acting pays exactly zero."""
         env = _make_env(size=5, max_steps=10)
-        env.reset(seed=42, options={"num_missing_entities": 0})
+        env.reset(seed=42, options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM})
 
         action = _noop_action()
         action["eot"] = 1
