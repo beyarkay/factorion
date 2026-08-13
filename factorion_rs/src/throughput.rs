@@ -251,23 +251,12 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
     unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
-/// An inserter's accumulated input: split its capacity (0.86 i/s) evenly
-/// over the lanes it picks from. An inserter's hand sweeps the whole tile,
-/// so both lanes of a belt are in reach and neither starves the other —
-/// unlike the drop, which lands on exactly one lane. A lane that cannot
-/// fill its share leaves the rest to the lanes that can (max-min fair, so
-/// a single loaded lane still yields the full rate).
-///
-/// A lane's share is then divided across the items riding it in proportion
-/// to their rates, since the hand grabs each as often as it comes past. No
-/// item can monopolise a mixed lane, just as no lane can monopolise the
-/// hand — a mixed belt costs an assembler throughput without starving it of
-/// any one ingredient.
-///
-/// Poorest lane first: a rich lane served early stops at its equal share
-/// and leaves the hand under-filled, since a poor lane cannot take up the
-/// slack afterwards. Equal supplies tie-break on index so a lane pair that
-/// shares an item accumulates in a fixed order and the result is bit-stable.
+/// An inserter's accumulated input: its capacity split evenly over the
+/// lanes it reaches — the hand sweeps the whole tile, so unlike a drop it
+/// cannot prefer a lane — then across each lane's items in proportion to
+/// their rates. Poorest lane first: a rich lane served early would stop at
+/// its equal share and leave the hand under-filled, since a poor lane
+/// cannot take up the slack afterwards.
 fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
@@ -277,20 +266,25 @@ fn pickup_input(
         .iter()
         .map(|&p| (p, node_outputs[p].values().sum()))
         .collect();
-    supply.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+    supply.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     let mut remaining = graph.nodes[node_idx].entity_kind.flow_rate();
     let mut input: HashMap<Item, f64> = HashMap::new();
     for (i, &(p, available)) in supply.iter().enumerate() {
         let share = available.min(remaining / (supply.len() - i) as f64);
         remaining -= share;
+        // An empty lane has nothing to divide, and would turn the
+        // proportional split below into a 0/0.
+        if share <= 0.0 {
+            continue;
+        }
         for (&item, &rate) in &node_outputs[p] {
-            // A source offers an infinite rate of its single item, so the
-            // ratio is indeterminate; fall back to an even split.
+            // A source's rate is infinite, so the ratio is indeterminate —
+            // but it carries a single item, which takes the whole share.
             let take = if available.is_finite() {
                 share * rate / available
             } else {
-                share / node_outputs[p].len() as f64
+                share
             };
             if take > 0.0 {
                 *input.entry(item).or_insert(0.0) += take;
