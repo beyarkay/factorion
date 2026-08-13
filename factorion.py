@@ -196,18 +196,6 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
 }
 
 
-# Training sampling weight per lesson, normalised to a distribution. The four
-# MEMORISE lessons teach one narrow motif, so a quarter share each keeps them
-# from taking a third of the mixture (#408).
-_raw_lesson_weights = {
-    kind: 0.25 if kind.name.startswith("MEMORISE") else 1.0 for kind in LessonKind
-}
-LESSON_WEIGHTS: dict["LessonKind", float] = {
-    kind: weight / sum(_raw_lesson_weights.values())
-    for kind, weight in _raw_lesson_weights.items()
-}
-
-
 @dataclass(frozen=True)
 class Factory:
     """A complete, valid factory ready to be turned into a training lesson.
