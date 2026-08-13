@@ -52,7 +52,7 @@ class TestDeltaRewardShaping:
 
     def test_missing_entity_match_below_1(self, env):
         """When num_missing_entities=1, match values should be < 1.0."""
-        obs, info = env.reset(seed=42, options={"num_missing_entities": 1})
+        obs, info = env.reset(seed=42, options={"num_missing_entities": 1, "kind": LessonKind.MOVE_ONE_ITEM})
         obs, reward, term, trunc, info = env.step(NOOP)
         # At least one of location/entity match must be below 1.0
         assert info["shaping_location_match"] < 1.0 or info["shaping_entity_match"] < 1.0, (
