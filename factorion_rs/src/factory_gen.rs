@@ -2918,8 +2918,9 @@ enum WeaveTile {
 ///
 /// Each assembler taps both ingredient lines on distinct rows of its own
 /// 3-row span and drains through 1-3 output inserters; every dead-end belt
-/// tile is tapped (no orphans). Tap counts, run lengths, and the output-lane
-/// direction vary per seed, so throughput deliberately varies too.
+/// tile is tapped (no orphans). Tap counts, run lengths, the output-lane
+/// direction, and how far each lane extends past the block before its marker
+/// all vary per seed, so throughput deliberately varies too.
 fn build_factory_2_ingredients(
     size: usize,
     rng: &mut Rng,
@@ -2960,12 +2961,36 @@ fn build_factory_2_ingredients(
         let north_sink = rng.choice_index(2) == 1;
         let head = i64::from(north_sink);
 
-        // Vertical extent: 3n assembler rows, `spare` extra lane rows below
-        // the block, the source row, and (for a north sink) one row above.
-        let n_asm = rng.randint(1, (s - 1 - head) / 3);
-        let spare = rng.randint(0, (s - head - 3 * n_asm - 1).min(1));
-        let y0 = rng.randint(head, s - 3 * n_asm - spare - 1);
-        let src_row = y0 + 3 * n_asm + spare;
+        // The lesson is about packing MULTIPLE machines, so singles are rare:
+        // 1:4:4 odds over one/two/three machines (larger stacks, on grids
+        // that fit them, share the top bucket's odds).
+        let n_max = (s - 1 - head) / 3;
+        let mut n_asm = n_max;
+        let mut pick = rng.randint(1, 4 * n_max - 3);
+        for n in 1..=n_max {
+            let w = if n == 1 { 1 } else { 4 };
+            if pick <= w {
+                n_asm = n;
+                break;
+            }
+            pick -= w;
+        }
+
+        // Vertical extent: 3n assembler rows, one row below for the sources,
+        // and (for a north sink) one row above. The markers don't sit flush
+        // against the block: each lane may extend 0-3 straight tiles past it
+        // before its marker (the weave's two lines share one gadget and so
+        // one extension).
+        let y0 = rng.randint(head, s - 3 * n_asm - 1);
+        let bot = y0 + 3 * n_asm;
+        let ext_room = (s - 1 - bot).min(3);
+        let ext_b = rng.randint(0, ext_room);
+        let ext_a = if weave {
+            ext_b
+        } else {
+            rng.randint(0, ext_room)
+        };
+        let (src_a_row, src_row) = (bot + ext_a, bot + ext_b);
         let x0 = rng.randint(0, s - 8);
         let (col_a, col_b, col_in, ax) = (x0, x0 + 1, x0 + 2, x0 + 3);
         let (col_out_i, col_out) = (x0 + 6, x0 + 7);
@@ -2975,13 +3000,13 @@ fn build_factory_2_ingredients(
 
         if weave {
             // The shared column, bottom-up from the tile above the B source
-            // (t = 0 ↔ row src_row-1; the assembler j spans t = spare+3j ..
-            // spare+3j+2). Grown as [run, up] groups over a leading `d` until
+            // (t = 0 ↔ row src_row-1; the assembler j spans t = ext_b+3j ..
+            // ext_b+3j+2). Grown as [run, up] groups over a leading `d` until
             // the top assembler's span holds both a mouth and a run tile; a
             // `d` that never gets its `u` is a stopper, optionally carrying a
             // short dead-end run above it.
-            let max_t = 3 * n_asm + spare;
-            let top_lo = spare + 3 * (n_asm - 1);
+            let max_t = 3 * n_asm + ext_b;
+            let top_lo = ext_b + 3 * (n_asm - 1);
             let covered = |tiles: &[WeaveTile]| {
                 let in_top = |t: usize| t as i64 >= top_lo;
                 tiles
@@ -3030,7 +3055,7 @@ fn build_factory_2_ingredients(
                 continue;
             };
             let window_of = |t: i64| {
-                let j = (t - spare).div_euclid(3);
+                let j = (t - ext_b).div_euclid(3);
                 (0..n_asm).contains(&j).then_some(j)
             };
             let (Some(jm), Some(jr)) = (window_of(dead_mouth), window_of(dead_run)) else {
@@ -3038,7 +3063,7 @@ fn build_factory_2_ingredients(
             };
             let mut ok = true;
             for j in 0..n_asm {
-                let window = spare + 3 * j..(spare + 3 * j + 3).min(len);
+                let window = ext_b + 3 * j..(ext_b + 3 * j + 3).min(len);
                 let mouths: Vec<i64> = window.clone().filter(|&t| is_mouth(t)).collect();
                 let runs: Vec<i64> = window.filter(|&t| !is_mouth(t)).collect();
                 if mouths.is_empty() || runs.is_empty() {
@@ -3127,16 +3152,16 @@ fn build_factory_2_ingredients(
             let (Some(&a_top), Some(&b_top)) = (a_taps.iter().min(), b_taps.iter().min()) else {
                 continue;
             };
-            for (col, top) in [(col_a, a_top), (col_b, b_top)] {
-                for r in top..src_row {
+            for (col, top, src) in [(col_a, a_top, src_a_row), (col_b, b_top, src_row)] {
+                for r in top..src {
                     belts.push((col, r, Direction::North, Misc::None));
                 }
             }
         }
 
         // Output: 1-3 east-side inserters per assembler onto the output lane,
-        // which flows down to a sink on the source row or up to one above the
-        // block ("the belts can go up or down").
+        // which flows down or up ("the belts can go up or down") and extends
+        // 0-3 tiles past its last drop before the sink.
         let mut drop_rows: Vec<i64> = Vec::new();
         for i in 0..n_asm {
             let ry = y0 + 3 * i;
@@ -3152,15 +3177,17 @@ fn build_factory_2_ingredients(
             continue;
         };
         let (out_dir, sink_pos) = if north_sink {
-            for r in y0..=drop_hi {
+            let sink_row = drop_lo - 1 - rng.randint(0, (drop_lo - 1).min(3));
+            for r in sink_row + 1..=drop_hi {
                 belts.push((col_out, r, Direction::North, Misc::None));
             }
-            (Direction::North, (col_out, y0 - 1))
+            (Direction::North, (col_out, sink_row))
         } else {
-            for r in drop_lo..src_row {
+            let sink_row = drop_hi + 1 + rng.randint(0, (s - 2 - drop_hi).min(3));
+            for r in drop_lo..sink_row {
                 belts.push((col_out, r, Direction::South, Misc::None));
             }
-            (Direction::South, (col_out, src_row))
+            (Direction::South, (col_out, sink_row))
         };
 
         // Every assembler counts as ONE removable unit (matching
@@ -3183,7 +3210,7 @@ fn build_factory_2_ingredients(
         place_belts(&mut world, &belts);
         place_marker(
             &mut world,
-            (col_a, src_row),
+            (col_a, src_a_row),
             Item::Source,
             Direction::North,
             item_a as i64,
@@ -3963,10 +3990,13 @@ mod tests {
         // two ingredients, one sink carrying its product, whole 3×3
         // assemblers each with 3-6 inserters. Both feed patterns — the
         // long-handed reach-over and the underground weave — appear across
-        // seeds and never mix within one factory.
+        // seeds and never mix within one factory, and the markers sit at
+        // varying distances from the assembler block (the lanes extend).
         let mut built = 0;
         let (mut reach_over, mut weave) = (0, 0);
         let mut asm_counts: HashSet<usize> = HashSet::new();
+        let (mut source_dists, mut sink_dists): (HashSet<i64>, HashSet<i64>) =
+            (HashSet::new(), HashSet::new());
         for seed in 0..50u64 {
             let Some(f) = build_factory(
                 11,
@@ -4014,15 +4044,38 @@ mod tests {
             // sink its product.
             let mut source_items: Vec<Item> = Vec::new();
             let (mut sink_item, mut recipe_item) = (None, None);
+            let (mut markers, mut asm_tile_pos): (Vec<(Item, Cell)>, Vec<Cell>) =
+                (Vec::new(), Vec::new());
             for x in 0..f.world.width() {
                 for y in 0..f.world.height() {
+                    let c = (x as i64, y as i64);
                     match f.world.entity_at(x, y) {
-                        Some(Item::Source) => source_items.push(f.world.item_at(x, y).unwrap()),
-                        Some(Item::Sink) => sink_item = f.world.item_at(x, y),
-                        Some(Item::AssemblingMachine1) => recipe_item = f.world.item_at(x, y),
+                        Some(Item::Source) => {
+                            source_items.push(f.world.item_at(x, y).unwrap());
+                            markers.push((Item::Source, c));
+                        }
+                        Some(Item::Sink) => {
+                            sink_item = f.world.item_at(x, y);
+                            markers.push((Item::Sink, c));
+                        }
+                        Some(Item::AssemblingMachine1) => {
+                            recipe_item = f.world.item_at(x, y);
+                            asm_tile_pos.push(c);
+                        }
                         _ => {}
                     }
                 }
+            }
+            for (kind, (mx, my)) in markers {
+                let dist = asm_tile_pos
+                    .iter()
+                    .map(|&(x, y)| (mx - x).abs() + (my - y).abs())
+                    .min()
+                    .unwrap();
+                match kind {
+                    Item::Source => source_dists.insert(dist),
+                    _ => sink_dists.insert(dist),
+                };
             }
             let recipe = crate::types::get_recipe(recipe_item.unwrap()).unwrap();
             let consumed: HashSet<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
@@ -4042,6 +4095,11 @@ mod tests {
         assert!(
             reach_over > 0 && weave > 0,
             "both feed patterns should appear: reach_over={reach_over} weave={weave}"
+        );
+        assert!(
+            source_dists.len() > 1 && sink_dists.len() > 1,
+            "markers should sit at varying distances from the block: \
+             sources {source_dists:?}, sinks {sink_dists:?}"
         );
     }
 
