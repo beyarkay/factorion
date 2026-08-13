@@ -30,8 +30,6 @@ pub struct GraphNode {
     /// Inserters picking from a curve prefer its LEFT lane regardless of
     /// relative orientation.
     pub curved: bool,
-    /// Accumulated input flow rates per item type.
-    pub input: HashMap<Item, f64>,
     /// Computed output flow rates per item type.
     pub output: HashMap<Item, f64>,
 }
@@ -180,7 +178,6 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                     anchor,
                     direction,
                     curved,
-                    input: HashMap::new(),
                     output,
                 });
                 node_index.insert(node_id, idx);
