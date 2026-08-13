@@ -47,6 +47,7 @@ pub enum LessonKind {
     TrialRecipeTreeDepth1 = 16,
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
+    Factory2Ingredients = 19,
 }
 
 impl LessonKind {
@@ -70,6 +71,7 @@ impl LessonKind {
             16 => Some(LessonKind::TrialRecipeTreeDepth1),
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
+            19 => Some(LessonKind::Factory2Ingredients),
             _ => None,
         }
     }
@@ -108,6 +110,7 @@ impl LessonKind {
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
+            LessonKind::Factory2Ingredients => "FACTORY_2_INGREDIENTS",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -141,6 +144,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
+        LessonKind::Factory2Ingredients,
         LessonKind::TrialRecipeTreeDepth1,
         LessonKind::TrialRecipeTreeDepth2,
         LessonKind::TrialRecipeTreeDepth3,
@@ -617,6 +621,9 @@ pub fn build_factory(
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::Factory2Ingredients => {
+            build_factory_2_ingredients(size, &mut rng, max_entities)
+        }
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
@@ -686,6 +693,33 @@ fn rotate_world_cw(world: &World) -> World {
     out
 }
 
+/// Mirror a square world left-right: cell `(x, y)` → `(s-1-x, y)` with
+/// East/West facings swapped. Together with [`rotate_world_cw`] this reaches
+/// all 8 grid symmetries of a canonical layout.
+fn flip_world_x(world: &World) -> World {
+    let s = world.width();
+    debug_assert_eq!(s, world.height(), "flip assumes a square grid");
+    let mut out = World::empty(s, s);
+    for x in 0..s {
+        for y in 0..s {
+            if world.entity_at(x, y).is_none() {
+                continue;
+            }
+            let nx = s - 1 - x;
+            out.set(nx, y, Channel::Entities, world.get(x, y, Channel::Entities));
+            let ndir = match world.direction_at(x, y) {
+                Direction::East => Direction::West,
+                Direction::West => Direction::East,
+                d => d,
+            };
+            out.set(nx, y, Channel::Direction, ndir as i64);
+            out.set(nx, y, Channel::Items, world.get(x, y, Channel::Items));
+            out.set(nx, y, Channel::Misc, world.get(x, y, Channel::Misc));
+        }
+    }
+    out
+}
+
 /// Place a splitter's tiles (entity + facing) into the world.
 fn place_splitter(world: &mut World, tiles: &[Cell], dir: Direction) {
     for &(tx, ty) in tiles {
@@ -735,6 +769,13 @@ fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) 
 fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
     let (x, y) = (pos.0 as usize, pos.1 as usize);
     world.set(x, y, Channel::Entities, Item::Inserter as i64);
+    world.set(x, y, Channel::Direction, dir as i64);
+}
+
+/// Place a long-handed inserter at `pos` facing `dir`.
+fn place_long_inserter(world: &mut World, pos: Cell, dir: Direction) {
+    let (x, y) = (pos.0 as usize, pos.1 as usize);
+    world.set(x, y, Channel::Entities, Item::LongHandedInserter as i64);
     world.set(x, y, Channel::Direction, dir as i64);
 }
 
@@ -2848,6 +2889,339 @@ fn build_factory_1_ingredient(
     None
 }
 
+// ── FACTORY_2_INGREDIENTS: a column of tightly-stacked assemblers fed two
+// ingredients along one flank ────────────────────────────────────────────────
+
+/// One tile of the weave's shared column (indexed bottom-up): a `d`/`u`
+/// underground end where ingredient B is at surface level, or a plain-belt
+/// run tile carrying ingredient A across B's tunnel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WeaveTile {
+    Mouth(Misc),
+    Run,
+}
+
+/// Build a FACTORY_2_INGREDIENTS factory: a column of 1+ tightly-stacked 3×3
+/// assemblers all crafting one random two-ingredient recipe, both ingredients
+/// delivered up the west flank and the product drained to an east output lane
+/// ending in the sink (the whole world is then randomly flipped/rotated, so
+/// every orientation appears). Two feed patterns, chosen per attempt:
+///
+/// * **Reach-over**: two side-by-side belts. Each assembler taps the near
+///   belt with 1-2 plain inserters and reaches OVER it to the far belt with
+///   1-2 long-handed inserters (reach is exactly 2, skipping the near belt).
+/// * **Weave**: ONE shared column carries both ingredients. B dives
+///   underground exactly where A occupies the surface — runs of belt fed and
+///   drained sideways by a helper column of curves — and is back at surface
+///   level at every `d`/`u` mouth between runs. The topmost mouth may be an
+///   unpaired entrance: a stopper that just parks B for its inserter.
+///
+/// Each assembler taps both ingredient lines on distinct rows of its own
+/// 3-row span and drains through 1-3 output inserters; every dead-end belt
+/// tile is tapped (no orphans). Tap counts, run lengths, and the output-lane
+/// direction vary per seed, so throughput deliberately varies too.
+fn build_factory_2_ingredients(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Canonical footprint is 8 columns: ingredient-A lane (far belt / weave
+    // helper), ingredient-B lane (near belt / weave column), input inserters,
+    // 3 assembler columns, output inserters, output lane.
+    if s < 8 {
+        return None;
+    }
+    // Two-ingredient, single-product recipes the placed assembling machine 1
+    // can actually craft.
+    let recipes: Vec<(Item, Recipe)> = all_recipes()
+        .into_iter()
+        .filter(|(_, r)| {
+            r.consumes.len() == 2
+                && r.produces.len() == 1
+                && r.produced_by.contains(&Item::AssemblingMachine1)
+        })
+        .collect();
+    if recipes.is_empty() {
+        return None;
+    }
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut ingredients);
+        let (item_a, item_b) = (ingredients[0], ingredients[1]);
+        let output_item = recipe.produces.first().0;
+
+        let weave = rng.choice_index(2) == 1;
+        let north_sink = rng.choice_index(2) == 1;
+        let head = i64::from(north_sink);
+
+        // Vertical extent: 3n assembler rows, `spare` extra lane rows below
+        // the block, the source row, and (for a north sink) one row above.
+        let n_asm = rng.randint(1, (s - 1 - head) / 3);
+        let spare = rng.randint(0, (s - head - 3 * n_asm - 1).min(1));
+        let y0 = rng.randint(head, s - 3 * n_asm - spare - 1);
+        let src_row = y0 + 3 * n_asm + spare;
+        let x0 = rng.randint(0, s - 8);
+        let (col_a, col_b, col_in, ax) = (x0, x0 + 1, x0 + 2, x0 + 3);
+        let (col_out_i, col_out) = (x0 + 6, x0 + 7);
+
+        let mut belts: Vec<UgPlacement> = Vec::new();
+        let mut inserters: Vec<(Cell, Item)> = Vec::new();
+
+        if weave {
+            // The shared column, bottom-up from the tile above the B source
+            // (t = 0 ↔ row src_row-1; the assembler j spans t = spare+3j ..
+            // spare+3j+2). Grown as [run, up] groups over a leading `d` until
+            // the top assembler's span holds both a mouth and a run tile; a
+            // `d` that never gets its `u` is a stopper, optionally carrying a
+            // short dead-end run above it.
+            let max_t = 3 * n_asm + spare;
+            let top_lo = spare + 3 * (n_asm - 1);
+            let covered = |tiles: &[WeaveTile]| {
+                let in_top = |t: usize| t as i64 >= top_lo;
+                tiles
+                    .iter()
+                    .enumerate()
+                    .any(|(t, w)| in_top(t) && matches!(w, WeaveTile::Mouth(_)))
+                    && tiles
+                        .iter()
+                        .enumerate()
+                        .any(|(t, w)| in_top(t) && *w == WeaveTile::Run)
+            };
+            let mut tiles = vec![WeaveTile::Mouth(Misc::UndergroundDown)];
+            loop {
+                let remaining = max_t - tiles.len() as i64;
+                // Below the top assembler always keep pairing (a full group
+                // needs run(2+) + up = 3 rows); inside it, pair or stop 50/50.
+                if remaining >= 3 && ((tiles.len() as i64) < top_lo || rng.choice_index(2) == 0) {
+                    for _ in 0..rng.randint(2, (remaining - 1).min(4)) {
+                        tiles.push(WeaveTile::Run);
+                    }
+                    tiles.push(WeaveTile::Mouth(Misc::UndergroundUp));
+                    if covered(&tiles) || max_t - (tiles.len() as i64) < 1 {
+                        break;
+                    }
+                    tiles.push(WeaveTile::Mouth(Misc::UndergroundDown));
+                } else {
+                    for _ in 0..rng.randint(0, remaining.min(2)) {
+                        tiles.push(WeaveTile::Run);
+                    }
+                    break;
+                }
+            }
+
+            // The two dead ends — the topmost mouth (a final `u`, or an
+            // unpaired stopper `d`) and the topmost run tile — strand items
+            // unless tapped, so each is pinned to the assembler whose span
+            // holds it. Every assembler taps one mouth and one run tile.
+            let len = tiles.len() as i64;
+            let is_mouth = |t: i64| matches!(tiles[t as usize], WeaveTile::Mouth(_));
+            let (Some(dead_run), Some(dead_mouth)) = (
+                (0..len)
+                    .rev()
+                    .find(|&t| tiles[t as usize] == WeaveTile::Run),
+                (0..len).rev().find(|&t| is_mouth(t)),
+            ) else {
+                continue;
+            };
+            let window_of = |t: i64| {
+                let j = (t - spare).div_euclid(3);
+                (0..n_asm).contains(&j).then_some(j)
+            };
+            let (Some(jm), Some(jr)) = (window_of(dead_mouth), window_of(dead_run)) else {
+                continue;
+            };
+            let mut ok = true;
+            for j in 0..n_asm {
+                let window = spare + 3 * j..(spare + 3 * j + 3).min(len);
+                let mouths: Vec<i64> = window.clone().filter(|&t| is_mouth(t)).collect();
+                let runs: Vec<i64> = window.filter(|&t| !is_mouth(t)).collect();
+                if mouths.is_empty() || runs.is_empty() {
+                    ok = false;
+                    break;
+                }
+                let tm = if j == jm {
+                    dead_mouth
+                } else {
+                    mouths[rng.choice_index(mouths.len())]
+                };
+                let tr = if j == jr {
+                    dead_run
+                } else {
+                    runs[rng.choice_index(runs.len())]
+                };
+                for t in [tm, tr] {
+                    inserters.push(((col_in, src_row - 1 - t), Item::Inserter));
+                }
+            }
+            if !ok {
+                continue;
+            }
+
+            // Emit the column. A run's top tile turns off west — its `b<`
+            // hands A to the helper, or dead-ends for the topmost run —
+            // unless the run is a single tile (a west-facing tile would
+            // refuse the helper's head-on feed).
+            for t in 0..len {
+                let row = src_row - 1 - t;
+                match tiles[t as usize] {
+                    WeaveTile::Mouth(m) => belts.push((col_b, row, Direction::North, m)),
+                    WeaveTile::Run => {
+                        let top = t + 1 >= len || tiles[t as usize + 1] != WeaveTile::Run;
+                        let bottom = is_mouth(t - 1);
+                        let dir = if top && !bottom {
+                            Direction::West
+                        } else {
+                            Direction::North
+                        };
+                        belts.push((col_b, row, dir, Misc::None));
+                    }
+                }
+            }
+            // Helper column: A climbs it between runs — north from its source
+            // (or the previous run's turnoff) to each run's curve-in `b>`.
+            let mut lower_end = src_row - 1;
+            let mut t = 1;
+            while t < len {
+                if tiles[t as usize] == WeaveTile::Run {
+                    let bot_row = src_row - 1 - t;
+                    belts.push((col_a, bot_row, Direction::East, Misc::None));
+                    for r in bot_row + 1..=lower_end {
+                        belts.push((col_a, r, Direction::North, Misc::None));
+                    }
+                    while t < len && tiles[t as usize] == WeaveTile::Run {
+                        t += 1;
+                    }
+                    lower_end = src_row - t;
+                } else {
+                    t += 1;
+                }
+            }
+        } else {
+            // Reach-over: per assembler 1-2 long-handed (far belt) and 1-2
+            // plain (near belt) input inserters, on distinct rows.
+            let (mut a_taps, mut b_taps): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
+            for i in 0..n_asm {
+                let ry = y0 + 3 * i;
+                let rows = [ry, ry + 1, ry + 2];
+                let k_far = rng.randint(1, 2);
+                let k_near = rng.randint(1, 3 - k_far);
+                let picked = rng.sample(&rows, (k_far + k_near) as usize);
+                for (idx, &r) in picked.iter().enumerate() {
+                    if (idx as i64) < k_far {
+                        inserters.push(((col_in, r), Item::LongHandedInserter));
+                        a_taps.push(r);
+                    } else {
+                        inserters.push(((col_in, r), Item::Inserter));
+                        b_taps.push(r);
+                    }
+                }
+            }
+            // Each belt runs from its source up to its topmost tap and no
+            // further — an overshoot tile would strand items (orphans).
+            let (Some(&a_top), Some(&b_top)) = (a_taps.iter().min(), b_taps.iter().min()) else {
+                continue;
+            };
+            for (col, top) in [(col_a, a_top), (col_b, b_top)] {
+                for r in top..src_row {
+                    belts.push((col, r, Direction::North, Misc::None));
+                }
+            }
+        }
+
+        // Output: 1-3 east-side inserters per assembler onto the output lane,
+        // which flows down to a sink on the source row or up to one above the
+        // block ("the belts can go up or down").
+        let mut drop_rows: Vec<i64> = Vec::new();
+        for i in 0..n_asm {
+            let ry = y0 + 3 * i;
+            let rows = [ry, ry + 1, ry + 2];
+            let k_out = rng.randint(1, 3) as usize;
+            for &r in &rng.sample(&rows, k_out) {
+                inserters.push(((col_out_i, r), Item::Inserter));
+                drop_rows.push(r);
+            }
+        }
+        let (Some(&drop_lo), Some(&drop_hi)) = (drop_rows.iter().min(), drop_rows.iter().max())
+        else {
+            continue;
+        };
+        let (out_dir, sink_pos) = if north_sink {
+            for r in y0..=drop_hi {
+                belts.push((col_out, r, Direction::North, Misc::None));
+            }
+            (Direction::North, (col_out, y0 - 1))
+        } else {
+            for r in drop_lo..src_row {
+                belts.push((col_out, r, Direction::South, Misc::None));
+            }
+            (Direction::South, (col_out, src_row))
+        };
+
+        // Every assembler counts as ONE removable unit (matching
+        // blank_entities); markers are never blanked and don't count.
+        let total_entities = belts.len() + inserters.len() + n_asm as usize;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for i in 0..n_asm {
+            place_assembler(&mut world, ax, y0 + 3 * i, recipe_key as i64);
+        }
+        for &(pos, kind) in &inserters {
+            match kind {
+                Item::LongHandedInserter => place_long_inserter(&mut world, pos, Direction::East),
+                _ => place_inserter(&mut world, pos, Direction::East),
+            }
+        }
+        place_belts(&mut world, &belts);
+        place_marker(
+            &mut world,
+            (col_a, src_row),
+            Item::Source,
+            Direction::North,
+            item_a as i64,
+        );
+        place_marker(
+            &mut world,
+            (col_b, src_row),
+            Item::Source,
+            Direction::North,
+            item_b as i64,
+        );
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            out_dir,
+            output_item as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        // Reject dead builds and orphan tiles; anything slower-but-flowing is
+        // kept on purpose (the lesson wants a throughput spread).
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        return finish(world, total_entities, vec![], count);
+    }
+    None
+}
+
 // ── CROSS_UNDER_BELT: an obstruction belt-line cut + a crossing that tunnels
 // under it ──────────────────────────────────────────────────────────────────
 
@@ -3484,10 +3858,10 @@ mod tests {
         // Every lesson that places an assembling machine 1 must tag it with a
         // recipe tier 1 can craft — the `produced_by` filter must exclude
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
-        let kinds = MEMORISE_KINDS
-            .iter()
-            .map(|&(kind, _)| kind)
-            .chain([LessonKind::Factory1Ingredient]);
+        let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
+            LessonKind::Factory1Ingredient,
+            LessonKind::Factory2Ingredients,
+        ]);
         for kind in kinds {
             let mut checked = 0;
             for seed in 0..60u64 {
@@ -3581,6 +3955,129 @@ mod tests {
         }
         assert!(built > 40, "most seeds should build, got {built}");
         assert!(asm_counts.len() > 1, "assembler count never varied");
+    }
+
+    #[test]
+    fn test_factory_2_ingredients_smoke() {
+        // Positive throughput, no orphans, two sources carrying the recipe's
+        // two ingredients, one sink carrying its product, whole 3×3
+        // assemblers each with 3-6 inserters. Both feed patterns — the
+        // long-handed reach-over and the underground weave — appear across
+        // seeds and never mix within one factory.
+        let mut built = 0;
+        let (mut reach_over, mut weave) = (0, 0);
+        let mut asm_counts: HashSet<usize> = HashSet::new();
+        for seed in 0..50u64 {
+            let Some(f) = build_factory(
+                11,
+                LessonKind::Factory2Ingredients,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            built += 1;
+            let (tp, unreachable) = tp_unreachable(&f.world);
+            assert!(tp > 0.0, "seed={seed}");
+            assert_eq!(unreachable, 0, "seed={seed} has orphan tiles");
+            assert_eq!(count_entity(&f.world, Item::Source), 2, "seed={seed}");
+            assert_eq!(count_entity(&f.world, Item::Sink), 1, "seed={seed}");
+            let asm_tiles = count_entity(&f.world, Item::AssemblingMachine1);
+            assert!(
+                asm_tiles > 0 && asm_tiles.is_multiple_of(9),
+                "seed={seed}: assembler tiles {asm_tiles} not whole 3x3 machines"
+            );
+            let n_asm = asm_tiles / 9;
+            asm_counts.insert(n_asm);
+            let long = count_entity(&f.world, Item::LongHandedInserter);
+            let n_inserter = count_entity(&f.world, Item::Inserter) + long;
+            assert!(
+                (3 * n_asm..=6 * n_asm).contains(&n_inserter),
+                "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
+            );
+            if long > 0 {
+                assert_eq!(
+                    count_entity(&f.world, Item::UndergroundBelt),
+                    0,
+                    "seed={seed}: reach-over factories never tunnel"
+                );
+                reach_over += 1;
+            } else {
+                assert!(
+                    count_entity(&f.world, Item::UndergroundBelt) > 0,
+                    "seed={seed}: weave factory without underground tiles"
+                );
+                weave += 1;
+            }
+            // The sources carry exactly the recipe's two ingredients, the
+            // sink its product.
+            let mut source_items: Vec<Item> = Vec::new();
+            let (mut sink_item, mut recipe_item) = (None, None);
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    match f.world.entity_at(x, y) {
+                        Some(Item::Source) => source_items.push(f.world.item_at(x, y).unwrap()),
+                        Some(Item::Sink) => sink_item = f.world.item_at(x, y),
+                        Some(Item::AssemblingMachine1) => recipe_item = f.world.item_at(x, y),
+                        _ => {}
+                    }
+                }
+            }
+            let recipe = crate::types::get_recipe(recipe_item.unwrap()).unwrap();
+            let consumed: HashSet<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+            assert_eq!(
+                source_items.iter().copied().collect::<HashSet<Item>>(),
+                consumed,
+                "seed={seed}: sources don't match the recipe's ingredients"
+            );
+            assert_eq!(
+                sink_item,
+                Some(recipe.produces.first().0),
+                "seed={seed}: sink doesn't carry the recipe's product"
+            );
+        }
+        assert!(built > 40, "most seeds should build, got {built}");
+        assert!(asm_counts.len() > 1, "assembler count never varied");
+        assert!(
+            reach_over > 0 && weave > 0,
+            "both feed patterns should appear: reach_over={reach_over} weave={weave}"
+        );
+    }
+
+    #[test]
+    fn test_factory_2_ingredients_both_sources_necessary() {
+        // Erasing EITHER source zeroes throughput: with a two-ingredient
+        // recipe the assemblers cannot craft from one ingredient alone, so
+        // both delivery lines are throughput-necessary.
+        let mut checked = 0;
+        for seed in 0..20u64 {
+            let Some(f) = build_factory(
+                11,
+                LessonKind::Factory2Ingredients,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            for x in 0..f.world.width() {
+                for y in 0..f.world.height() {
+                    if f.world.entity_at(x, y) != Some(Item::Source) {
+                        continue;
+                    }
+                    let mut crippled = f.world.clone();
+                    crippled.set(x, y, Channel::Entities, 0);
+                    let (tp, _) = tp_unreachable(&crippled);
+                    assert_eq!(
+                        tp, 0.0,
+                        "seed={seed}: factory still flows without the source at ({x},{y})"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "no factories built");
     }
 
     /// Every ingredient of `item`'s recipe either is a source or is itself
