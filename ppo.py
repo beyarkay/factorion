@@ -25,6 +25,7 @@ import tyro
 import factorion_rs
 from factorion import (
     LESSON_IS_TRIAL,
+    LESSON_WEIGHTS,
     Channel,
     Direction,
     Footprint,
@@ -112,6 +113,10 @@ _CH_FOOTPRINT = Channel.FOOTPRINT.value
 # Footprint is two-valued (UNAVAILABLE / AVAILABLE) and exhaustive, so
 # "buildable" is exactly "not UNAVAILABLE" — only the one sentinel is named.
 _FOOTPRINT_UNAVAILABLE = Footprint.UNAVAILABLE.value
+
+# LESSON_WEIGHTS as the (kinds, probabilities) pair np_random.choice wants.
+_LESSON_KINDS = list(LESSON_WEIGHTS)
+_LESSON_PROBS = np.fromiter(LESSON_WEIGHTS.values(), dtype=np.float64)
 
 # Largest approx_kl a frozen actor can legitimately produce: the rollout and the
 # update run different compiled handles at different batch sizes, so their
@@ -796,7 +801,7 @@ class FactorioEnv(gym.Env):
         # O(steps^2) per episode, and grows as episodes lengthen during training).
         self._num_placed_entities = 0
         # Lesson kind is settable per-reset. Default (omitted or None) is
-        # uniform random sampling across LessonKind on every reset —
+        # a LESSON_WEIGHTS draw across LessonKind on every reset —
         # matches the project direction where lessons are data generators
         # rather than a fixed curriculum, so a single env naturally sees
         # all kinds. Pass a concrete LessonKind to pin one. The sampler
@@ -810,9 +815,10 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
             for _ in range(16):
-                kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
+                kind = _LESSON_KINDS[
+                    int(self.np_random.choice(len(_LESSON_KINDS), p=_LESSON_PROBS))
+                ]
                 factory = build_factory(
                     size=self.size, kind=kind, seed=self._seed,
                 )
