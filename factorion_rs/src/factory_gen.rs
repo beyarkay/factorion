@@ -765,17 +765,11 @@ fn place_assembler(world: &mut World, ax: i64, ay: i64, recipe_item_value: i64) 
     }
 }
 
-/// Place an inserter at `pos` facing `dir`.
-fn place_inserter(world: &mut World, pos: Cell, dir: Direction) {
+/// Place an inserter-family entity (`kind`: plain or long-handed) at `pos`
+/// facing `dir`.
+fn place_inserter(world: &mut World, pos: Cell, dir: Direction, kind: Item) {
     let (x, y) = (pos.0 as usize, pos.1 as usize);
-    world.set(x, y, Channel::Entities, Item::Inserter as i64);
-    world.set(x, y, Channel::Direction, dir as i64);
-}
-
-/// Place a long-handed inserter at `pos` facing `dir`.
-fn place_long_inserter(world: &mut World, pos: Cell, dir: Direction) {
-    let (x, y) = (pos.0 as usize, pos.1 as usize);
-    world.set(x, y, Channel::Entities, Item::LongHandedInserter as i64);
+    world.set(x, y, Channel::Entities, kind as i64);
     world.set(x, y, Channel::Direction, dir as i64);
 }
 
@@ -1805,8 +1799,13 @@ fn build_assemble_1in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
             output_item_value,
         );
         place_assembler(&mut world, ax, ay, recipe_item_value);
-        place_inserter(&mut world, in_inserter_pos, in_inserter_dir);
-        place_inserter(&mut world, out_inserter_pos, out_inserter_dir);
+        place_inserter(&mut world, in_inserter_pos, in_inserter_dir, Item::Inserter);
+        place_inserter(
+            &mut world,
+            out_inserter_pos,
+            out_inserter_dir,
+            Item::Inserter,
+        );
         place_belts(&mut world, &path1);
         place_belts(&mut world, &path2);
 
@@ -2236,9 +2235,9 @@ fn build_assemble_2in1out(size: usize, rng: &mut Rng, max_entities: f64) -> Opti
             output_item_value,
         );
         place_assembler(&mut world, ax, ay, recipe_item_value);
-        place_inserter(&mut world, in_a_pos, in_a_dir);
-        place_inserter(&mut world, in_b_pos, in_b_dir);
-        place_inserter(&mut world, out_pos, out_dir);
+        place_inserter(&mut world, in_a_pos, in_a_dir, Item::Inserter);
+        place_inserter(&mut world, in_b_pos, in_b_dir, Item::Inserter);
+        place_inserter(&mut world, out_pos, out_dir, Item::Inserter);
         place_belts(&mut world, &path_a);
         place_belts(&mut world, &path_b);
         place_belts(&mut world, &path_c);
@@ -2493,7 +2492,7 @@ fn build_memorise_recipes(
         let mut world = World::empty(size, size);
         place_assembler(&mut world, ax, ay, recipe_item_value);
         for &(pos, dir, _) in &inserters {
-            place_inserter(&mut world, pos, dir);
+            place_inserter(&mut world, pos, dir, Item::Inserter);
         }
         place_belts(&mut world, &belts);
         for &(pos, dir, item_value, is_source) in &markers {
@@ -2517,17 +2516,21 @@ fn build_memorise_recipes(
 /// Whether any underground tunnel in these routes is severed by a crossing:
 /// the engine pairs an entrance with the FIRST underground tile it meets
 /// ahead — whatever that tile's facing — so any other UG tile strictly inside
-/// a tunnel's span breaks the pair and orphans the downstream side. Relies on
-/// [`find_belt_paths`] emitting each tunnel's Down placement immediately
-/// followed by its Up.
-fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
-    let ug_tiles: HashSet<Cell> = paths
+/// a tunnel's span breaks the pair and orphans the downstream side. Routes
+/// must satisfy [`find_belt_paths`]' guarantee that each tunnel's Down
+/// placement is immediately followed by its Up; `fixed` placements only
+/// contribute their UG tiles to the crossing set (their own tunnels can't be
+/// crossed — every route is blocked from their surface spans).
+fn tunnels_crossed(routes: &[&[UgPlacement]], fixed: &[UgPlacement]) -> bool {
+    let ug_tiles: HashSet<Cell> = routes
         .iter()
+        .copied()
+        .chain([fixed])
         .flat_map(|p| p.iter())
         .filter(|&&(.., m)| m != Misc::None)
         .map(|&(x, y, ..)| (x, y))
         .collect();
-    for path in paths {
+    for path in routes {
         for pair in path.windows(2) {
             let (x, y, d, m) = pair[0];
             if m != Misc::UndergroundDown {
@@ -2546,6 +2549,20 @@ fn tunnels_crossed(paths: &[&[UgPlacement]]) -> bool {
         }
     }
     false
+}
+
+/// The recipes an assembling machine 1 can actually craft (its `produced_by`
+/// lists tier 1) with exactly `n_ingredients` inputs and a single product —
+/// the pool the FACTORY_* lessons draw from.
+fn am1_recipes(n_ingredients: usize) -> Vec<(Item, Recipe)> {
+    all_recipes()
+        .into_iter()
+        .filter(|(_, r)| {
+            r.consumes.len() == n_ingredients
+                && r.produces.len() == 1
+                && r.produced_by.contains(&Item::AssemblingMachine1)
+        })
+        .collect()
 }
 
 /// Build a FACTORY_1_INGREDIENT factory: a row of assemblers all crafting the
@@ -2584,16 +2601,7 @@ fn build_factory_1_ingredient(
     if s < 7 {
         return None;
     }
-    // Single-ingredient, single-product recipes the placed assembling machine 1
-    // can actually craft (its `produced_by` lists tier 1).
-    let recipes: Vec<(Item, Recipe)> = all_recipes()
-        .into_iter()
-        .filter(|(_, r)| {
-            r.consumes.len() == 1
-                && r.produces.len() == 1
-                && r.produced_by.contains(&Item::AssemblingMachine1)
-        })
-        .collect();
+    let recipes = am1_recipes(1);
     if recipes.is_empty() {
         return None;
     }
@@ -2823,7 +2831,7 @@ fn build_factory_1_ingredient(
         // under the other's underground tile — which severs the tunnel (the
         // engine pairs an entrance with the FIRST UG tile ahead, whatever its
         // facing) and orphans everything downstream. Reject such crossings.
-        if tunnels_crossed(&[&path1, &path2]) {
+        if tunnels_crossed(&[&path1, &path2], &[]) {
             continue;
         }
 
@@ -2853,7 +2861,7 @@ fn build_factory_1_ingredient(
             place_assembler(&mut world, ax, ay, recipe_item_value);
         }
         for &(pos, dir) in &inserters {
-            place_inserter(&mut world, pos, dir);
+            place_inserter(&mut world, pos, dir, Item::Inserter);
         }
         place_belts(&mut world, &lane_belts);
         place_belts(&mut world, &path1);
@@ -2897,7 +2905,8 @@ fn build_factory_1_ingredient(
 /// run tile carrying ingredient A across B's tunnel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WeaveTile {
-    Mouth(Misc),
+    Down,
+    Up,
     Run,
 }
 
@@ -2976,16 +2985,7 @@ fn build_factory_2_ingredients(
     if s < 8 {
         return None;
     }
-    // Two-ingredient, single-product recipes the placed assembling machine 1
-    // can actually craft.
-    let recipes: Vec<(Item, Recipe)> = all_recipes()
-        .into_iter()
-        .filter(|(_, r)| {
-            r.consumes.len() == 2
-                && r.produces.len() == 1
-                && r.produced_by.contains(&Item::AssemblingMachine1)
-        })
-        .collect();
+    let recipes = am1_recipes(2);
     if recipes.is_empty() {
         return None;
     }
@@ -3000,23 +3000,19 @@ fn build_factory_2_ingredients(
     let head = i64::from(north_sink);
     // The lesson is about packing MULTIPLE machines, so singles are rare:
     // 1:4:4 odds over one/two/three machines (larger stacks, on grids that
-    // fit them, share the top bucket's odds).
+    // fit them, share the top bucket's odds — a single with probability
+    // 1/(4·n_max-3), else uniform over 2..=n_max).
     let n_max = (s - 1 - head) / 3;
-    let mut n_asm = n_max;
-    let mut pick = rng.randint(1, 4 * n_max - 3);
-    for n in 1..=n_max {
-        let w = if n == 1 { 1 } else { 4 };
-        if pick <= w {
-            n_asm = n;
-            break;
-        }
-        pick -= w;
-    }
+    let n_asm = if rng.randint(1, 4 * n_max - 3) == 1 {
+        1
+    } else {
+        rng.randint(2, n_max)
+    };
 
     while count > 0 {
         count -= 1;
 
-        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        let (recipe_key, recipe) = &recipes[rng.choice_index(recipes.len())];
         let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
         rng.shuffle(&mut ingredients);
         let (item_a, item_b) = (ingredients[0], ingredients[1]);
@@ -3054,18 +3050,7 @@ fn build_factory_2_ingredients(
             // short dead-end run above it.
             let max_t = 3 * n_asm + slack;
             let top_lo = slack + 3 * (n_asm - 1);
-            let covered = |tiles: &[WeaveTile]| {
-                let in_top = |t: usize| t as i64 >= top_lo;
-                tiles
-                    .iter()
-                    .enumerate()
-                    .any(|(t, w)| in_top(t) && matches!(w, WeaveTile::Mouth(_)))
-                    && tiles
-                        .iter()
-                        .enumerate()
-                        .any(|(t, w)| in_top(t) && *w == WeaveTile::Run)
-            };
-            let mut tiles = vec![WeaveTile::Mouth(Misc::UndergroundDown)];
+            let mut tiles = vec![WeaveTile::Down];
             loop {
                 let remaining = max_t - tiles.len() as i64;
                 // Below the top assembler always keep pairing (a full group
@@ -3074,11 +3059,14 @@ fn build_factory_2_ingredients(
                     for _ in 0..rng.randint(2, (remaining - 1).min(4)) {
                         tiles.push(WeaveTile::Run);
                     }
-                    tiles.push(WeaveTile::Mouth(Misc::UndergroundUp));
-                    if covered(&tiles) || max_t - (tiles.len() as i64) < 1 {
+                    tiles.push(WeaveTile::Up);
+                    // The group's run at len-2 and `u` at len-1 put both tile
+                    // kinds in the top assembler's span once the string is
+                    // tall enough.
+                    if tiles.len() as i64 >= top_lo + 2 {
                         break;
                     }
-                    tiles.push(WeaveTile::Mouth(Misc::UndergroundDown));
+                    tiles.push(WeaveTile::Down);
                 } else {
                     for _ in 0..rng.randint(0, remaining.min(2)) {
                         tiles.push(WeaveTile::Run);
@@ -3092,7 +3080,7 @@ fn build_factory_2_ingredients(
             // unless tapped, so each is pinned to the assembler whose span
             // holds it. Every assembler taps one mouth and one run tile.
             let len = tiles.len() as i64;
-            let is_mouth = |t: i64| matches!(tiles[t as usize], WeaveTile::Mouth(_));
+            let is_mouth = |t: i64| tiles[t as usize] != WeaveTile::Run;
             let (Some(dead_run), Some(dead_mouth)) = (
                 (0..len)
                     .rev()
@@ -3142,7 +3130,12 @@ fn build_factory_2_ingredients(
             for t in 0..len {
                 let row = src_row - 1 - t;
                 match tiles[t as usize] {
-                    WeaveTile::Mouth(m) => belts.push((col_b, row, Direction::North, m)),
+                    WeaveTile::Down => {
+                        belts.push((col_b, row, Direction::North, Misc::UndergroundDown))
+                    }
+                    WeaveTile::Up => {
+                        belts.push((col_b, row, Direction::North, Misc::UndergroundUp))
+                    }
                     WeaveTile::Run => {
                         let top = t + 1 >= len || tiles[t as usize + 1] != WeaveTile::Run;
                         let bottom = is_mouth(t - 1);
@@ -3180,7 +3173,7 @@ fn build_factory_2_ingredients(
             if tiles[dead_run as usize - 1] == WeaveTile::Run {
                 keepout.insert((col_a, src_row - 1 - dead_run));
             }
-            if tiles[dead_mouth as usize] == WeaveTile::Mouth(Misc::UndergroundDown) {
+            if tiles[dead_mouth as usize] == WeaveTile::Down {
                 let d_row = src_row - 1 - dead_mouth;
                 for k in 1..=UNDERGROUND_MAX_OFFSET {
                     keepout.insert((col_b, d_row - k));
@@ -3272,8 +3265,13 @@ fn build_factory_2_ingredients(
         if src_band.len() < 2 {
             continue;
         }
-        let sources = rng.sample(&src_band, 2);
-        let (source_a, source_b) = (sources[0], sources[1]);
+        // A uniform distinct pair without `Rng::sample`'s whole-band copy.
+        let i = rng.choice_index(src_band.len());
+        let mut j = rng.choice_index(src_band.len() - 1);
+        if j >= i {
+            j += 1;
+        }
+        let (source_a, source_b) = (src_band[i], src_band[j]);
         let snk_band: Vec<Cell> = free
             .iter()
             .copied()
@@ -3316,12 +3314,16 @@ fn build_factory_2_ingredients(
         let Some((dir_b, path_b)) = route_source_to_head(rng, source_b, head_b, s, &blocked) else {
             continue;
         };
-        let path_b_cells = belt_cell_set(&path_b);
 
         // Sink route: exit → the cell behind the sink, all four sink facings
         // tried, shortest kept. The faced cell must stay empty (a sink
         // pointing into a belt would FEED it, and output items leaking back
         // close a cycle the throughput engine scores as a dead factory).
+        // Neither path ever takes the exit cell, so `sink_in == exit` stays
+        // exempt from the taken-cell check.
+        let mut taken = fixed;
+        taken.extend(path_a_cells);
+        taken.extend(belt_cells(&path_b));
         let mut facings = DIRS;
         rng.shuffle(&mut facings);
         let mut best: Option<(Direction, Vec<UgPlacement>)> = None;
@@ -3329,25 +3331,14 @@ fn build_factory_2_ingredients(
             let df = f.delta();
             let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
             let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
-            if !in_grid(sink_in, s)
-                || path_a_cells.contains(&sink_in)
-                || path_b_cells.contains(&sink_in)
-                || (sink_in != exit && fixed.contains(&sink_in))
-            {
+            if !in_grid(sink_in, s) || (sink_in != exit && taken.contains(&sink_in)) {
                 continue;
             }
-            if in_grid(sink_face, s)
-                && (fixed.contains(&sink_face)
-                    || path_a_cells.contains(&sink_face)
-                    || path_b_cells.contains(&sink_face)
-                    || sink_face == exit)
-            {
+            if in_grid(sink_face, s) && (taken.contains(&sink_face) || sink_face == exit) {
                 continue;
             }
-            let mut blocked = fixed.clone();
+            let mut blocked = taken.clone();
             blocked.insert(sink_face);
-            blocked.extend(path_a_cells.iter().copied());
-            blocked.extend(path_b_cells.iter().copied());
             if let Some(p) = find_belt_path(
                 exit,
                 sink_in,
@@ -3365,11 +3356,9 @@ fn build_factory_2_ingredients(
             continue;
         };
 
-        // A route tunnel spanning any other UG tile severs a pair. `belts`
-        // joins the check purely to contribute the weave mouths to the tile
-        // set (routes can't cross the gadget's own tunnels — their spans are
-        // blocked surface cells).
-        if tunnels_crossed(&[&belts, &path_a, &path_b, &path_k]) {
+        // A route tunnel spanning any other UG tile — a weave mouth included
+        // — severs a pair.
+        if tunnels_crossed(&[&path_a, &path_b, &path_k], &belts) {
             continue;
         }
 
@@ -3387,13 +3376,10 @@ fn build_factory_2_ingredients(
 
         let mut world = World::empty(size, size);
         for i in 0..n_asm {
-            place_assembler(&mut world, ax, y0 + 3 * i, recipe_key as i64);
+            place_assembler(&mut world, ax, y0 + 3 * i, *recipe_key as i64);
         }
         for &(pos, kind) in &inserters {
-            match kind {
-                Item::LongHandedInserter => place_long_inserter(&mut world, pos, Direction::East),
-                _ => place_inserter(&mut world, pos, Direction::East),
-            }
+            place_inserter(&mut world, pos, Direction::East, kind);
         }
         place_belts(&mut world, &belts);
         place_belts(&mut world, &path_a);
