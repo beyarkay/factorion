@@ -55,8 +55,11 @@ downstream will not short-circuit — the extracting inserter sees the item on
 the lane it doesn't read first.
 
 > **In Factorion:** drops target the far lane (right lane when the belt is
-> parallel/anti-parallel); pickups greedily drain the near lane first
-> (left lane when in-line or curved), topping up from the other lane.
+> parallel/anti-parallel). Pickups are *not* prioritised — the hand splits
+> its rate evenly over both lanes, and each lane's share is divided across
+> the items riding it in proportion to their rates. A lane with nothing to
+> give leaves its share to the other. So an inserter cannot unmix a belt,
+> and nothing it can reach is ever starved by something it can also reach.
 
 ### Variants
 
@@ -139,7 +142,7 @@ Python legacy names) but behave as infinite-capacity item endpoints.
 
 | Mechanic | Real Factorio | Factorion |
 |---|---|---|
-| Lane awareness | Drop on far lane, pick from near lane preferentially | No lanes |
+| Lane awareness | Drop on far lane, pick from near lane preferentially | Drop on far lane, pick evenly from both |
 | Stack size | 1 per swing (basic) | Not modeled — flow rate only |
 | Power | Requires electricity | No power simulation |
 | Variants | 5+ types | Basic only (+ Source/Sink) |

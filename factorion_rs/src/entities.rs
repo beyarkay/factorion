@@ -83,7 +83,7 @@ fn belt_feeders(world: &World, pos: (usize, usize)) -> Vec<Direction> {
 /// (and inserters treat it specially); with any other input mix the belt
 /// stays straight and side feeds become sideloads. Underground belts and
 /// splitters never curve.
-pub(crate) fn is_curved_belt(world: &World, pos: (usize, usize)) -> bool {
+fn is_curved_belt(world: &World, pos: (usize, usize)) -> bool {
     let (x, y) = pos;
     if world.entity_at(x, y) != Some(Item::TransportBelt) {
         return false;

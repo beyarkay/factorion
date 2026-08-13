@@ -69,6 +69,12 @@ The drop/pickup asymmetry means a belt loaded by an inserter upstream and
 drained by an inserter downstream won't double-count — the drainer looks at
 a different lane than the loader targeted.
 
+> **In Factorion:** a pickup takes an even share from every lane it reaches
+> rather than preferring one, since the hand sweeps the whole tile, and
+> splits that share over the items on the lane in proportion to their
+> rates. A lane that cannot fill its share leaves the remainder to the
+> others, so a single loaded lane still yields the full hand rate.
+
 ### Splitters
 
 See [[splitter]]. Splitters **preserve lanes**:
@@ -117,7 +123,7 @@ Rough blast radius if we wanted to add two-lane support:
 - Sideload: one edge from feeder belt (both lanes combined) → specific lane
   of receiver (1 edge, but to a per-lane node).
 - Inserter drop: edge to `(receiver_belt, far_lane)`.
-- Inserter pickup: two edges with priority (near > far).
+- Inserter pickup: two edges, an even share of the hand rate on each.
 - Splitter: lane-preserving, so edges only connect left→left and
   right→right, but each lane distributes independently across both outputs
   (4 edges per input belt: left_in→left_out0, left_in→left_out1,
