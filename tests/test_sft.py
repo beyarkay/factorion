@@ -24,7 +24,7 @@ from helpers import (
     build_factory,
     str2ent,
 )
-from factorion import LESSON_IS_TRIAL, Footprint
+from factorion import LESSON_IS_TRIAL, LESSON_WEIGHTS, Footprint
 import sft
 from sft import (
     SftArgs,
@@ -394,17 +394,20 @@ class TestGenerateDataset:
         assert len(set(kinds.tolist())) >= 2
 
     def test_pairs_balanced_across_kinds(self):
-        """Sampling balances by pair count, not by lesson: every kind lands
-        within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
+        """Sampling balances by weighted pair count, not by lesson: every kind
+        lands within a small band of its LESSON_WEIGHTS share. Uniform-by-lesson
+        would push this ratio to ~0.1."""
         from collections import Counter
 
         args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
         *_, kinds = _materialise_args(args)
-        vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
-        n_teachable = sum(1 for k in LessonKind if not LESSON_IS_TRIAL[k])
-        assert len(vals) == n_teachable, (
-            "every non-trial kind should contribute pairs"
-        )
+        counts = Counter(kinds.tolist())
+        vals = [
+            counts[k.value] / LESSON_WEIGHTS[k]
+            for k in LessonKind
+            if not LESSON_IS_TRIAL[k]
+        ]
+        assert min(vals) > 0, "every non-trial kind should contribute pairs"
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
 
     def test_obs_uint8_masks_bool(self):

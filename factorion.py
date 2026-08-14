@@ -196,6 +196,18 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
 }
 
 
+# The training mixture both trainers sample from, normalised to a distribution;
+# the per-lesson weights live in `factory_gen.rs::LessonKind::sampling_weight`.
+_raw_lesson_weights = {
+    LessonKind[name]: weight
+    for name, weight in factorion_rs.py_lesson_weights().items()
+}
+LESSON_WEIGHTS: dict["LessonKind", float] = {
+    kind: weight / sum(_raw_lesson_weights.values())
+    for kind, weight in _raw_lesson_weights.items()
+}
+
+
 @dataclass(frozen=True)
 class Factory:
     """A complete, valid factory ready to be turned into a training lesson.

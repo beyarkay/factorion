@@ -118,6 +118,35 @@ impl LessonKind {
         }
     }
 
+    /// Share of the training mixture, relative to the other lessons (Python
+    /// normalises these). Exhaustive so a new lesson must declare one; only
+    /// MEMORISE and FACTORY hold an assembler, so cutting MEMORISE without
+    /// raising FACTORY would starve the recipe and assembler heads (#408).
+    pub fn sampling_weight(self) -> f64 {
+        match self {
+            LessonKind::MoveOneItem => 1.0,
+            LessonKind::SplitterSplit => 1.0,
+            LessonKind::SplitterMergeSideloaded => 1.0,
+            LessonKind::MoveViaUgBelt => 1.0,
+            LessonKind::MoveOneItemChaos => 1.0,
+            LessonKind::CrossUnderBelt => 1.0,
+            // Four lessons, one motif (a single assembler, one inserter per
+            // arm); the freed budget goes to FACTORY, not to the belt lessons.
+            LessonKind::Memorise1IngredientRecipes => 0.5,
+            LessonKind::Memorise2IngredientRecipes => 0.5,
+            LessonKind::Memorise3IngredientRecipes => 0.5,
+            LessonKind::Memorise4IngredientRecipes => 0.5,
+            LessonKind::Factory1Ingredient => 2.0,
+            LessonKind::Factory2Ingredients => 2.0,
+            LessonKind::TrialRecipeTreeDepth1 => 1.0,
+            LessonKind::TrialRecipeTreeDepth2 => 1.0,
+            LessonKind::TrialRecipeTreeDepth3 => 1.0,
+            // Never generated (absent from `all_lesson_kinds`).
+            #[allow(deprecated)]
+            LessonKind::Assemble1In1Out | LessonKind::Assemble2In1Out => 0.0,
+        }
+    }
+
     /// Whether this lesson may leave orphan (unreachable) tiles in its solved
     /// factory. Almost every lesson must not (the no-orphan invariant), but
     /// `SPLITTER_MERGE_SIDELOADED` deliberately places protected empty "decoy"

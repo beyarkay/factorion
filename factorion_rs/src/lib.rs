@@ -332,6 +332,19 @@ fn py_lesson_allows_orphans(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(d.into())
 }
 
+/// Return `{NAME: float}` — each lesson kind's relative share of the training
+/// mixture. Keys and insertion order match `py_lesson_kinds`; Python normalises
+/// these into the `LESSON_WEIGHTS` distribution both trainers sample from.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_lesson_weights(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let d = PyDict::new(py);
+    for &kind in all_lesson_kinds() {
+        d.set_item(kind.name(), kind.sampling_weight())?;
+    }
+    Ok(d.into())
+}
+
 /// Return `{NAME: bool}` — whether each lesson kind is a *trial* (no known
 /// solution: the built world holds only source/sink markers, so it yields no
 /// imitation pairs and is RL-only). Keys and insertion order match
@@ -358,6 +371,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_allows_orphans, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_is_trial, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lesson_weights, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     m.add_function(wrap_pyfunction!(render_factory, m)?)?;
     Ok(())
