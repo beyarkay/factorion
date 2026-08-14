@@ -137,6 +137,7 @@ impl LessonKind {
             LessonKind::Memorise3IngredientRecipes => 0.5,
             LessonKind::Memorise4IngredientRecipes => 0.5,
             LessonKind::Factory1Ingredient => 2.0,
+            LessonKind::Factory2Ingredients => 2.0,
             LessonKind::TrialRecipeTreeDepth1 => 1.0,
             LessonKind::TrialRecipeTreeDepth2 => 1.0,
             LessonKind::TrialRecipeTreeDepth3 => 1.0,
