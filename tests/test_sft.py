@@ -1716,9 +1716,9 @@ class TestArtifactNameHelpers:
 
 
 class TestLRSchedule:
-    """The warmup→cosine schedule should ramp the LR up from a low value,
-    reach `args.lr` at the warmup boundary, and decay toward
-    `args.lr * args.min_lr_ratio` by the final step."""
+    """The WSD schedule should warm up to `args.lr` over an absolute step
+    count, hold `args.lr` flat, and cool down to `args.lr * args.min_lr_ratio`
+    over the final `cooldown_frac` of the run."""
 
     def _step_n(self, scheduler, optimizer, n):
         lrs = []
@@ -1729,40 +1729,33 @@ class TestLRSchedule:
         lrs.append(optimizer.param_groups[0]["lr"])
         return lrs
 
-    def test_warmup_then_cosine(self):
-        args = SftArgs(lr=1e-3, warmup_frac=0.1, min_lr_ratio=0.01)
+    def _lrs(self, args, total_steps):
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-        total_steps = 100
         scheduler = build_lr_schedule(optimizer, total_steps, args)
+        return self._step_n(scheduler, optimizer, total_steps)
 
-        lrs = self._step_n(scheduler, optimizer, total_steps)
+    def test_warmup_stable_decay(self):
+        args = SftArgs(lr=1e-3, warmup_steps=10, cooldown_frac=0.2, min_lr_ratio=0.01)
+        lrs = self._lrs(args, 100)
 
-        # Step 0 starts at warmup floor (lr * start_factor = lr * 1e-3)
-        assert lrs[0] == pytest.approx(args.lr * 1e-3, rel=0.01)
-        # Around the warmup→cosine handoff (~step 10) the LR should be at
-        # or near the peak lr
-        assert max(lrs[8:13]) >= args.lr * 0.95
-        # Final LR should be very close to the cosine floor
-        assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-4)
+        assert lrs[0] == pytest.approx(args.lr / 10, rel=1e-6)
+        assert lrs[10:81] == pytest.approx([args.lr] * 71, rel=1e-9)
+        # (1-sqrt) drops fast: a quarter into the cooldown it is already halfway.
+        assert lrs[85] == pytest.approx(args.lr * 0.5, rel=0.02)
+        assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-9)
 
-    def test_no_warmup_path(self):
-        args = SftArgs(lr=2e-3, warmup_frac=0.0, min_lr_ratio=0.1)
-        model = torch.nn.Linear(4, 4)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-        scheduler = build_lr_schedule(optimizer, 50, args)
+    def test_shared_prefix_across_run_lengths(self):
+        """The property the schedule exists for: two runs of different budgets
+        are on the same LR at the same step until the shorter one starts
+        cooling, so their curves are directly comparable."""
+        args = SftArgs(lr=1e-3, warmup_steps=50, cooldown_frac=0.2)
+        short = self._lrs(args, 1_000)
+        long = self._lrs(args, 100_000)
+        assert short[:800] == pytest.approx(long[:800], rel=1e-9)
 
-        lrs = self._step_n(scheduler, optimizer, 50)
-
-        # Cosine starts at peak and decays monotonically(-ish)
-        assert lrs[0] == pytest.approx(args.lr, rel=0.01)
-        assert lrs[-1] == pytest.approx(args.lr * args.min_lr_ratio, abs=args.lr * 1e-4)
-
-    def test_handles_one_step(self):
-        # cosine_steps = max(1, total_steps - warmup_steps) guards against
-        # tiny runs where total_steps <= warmup_steps. Should still build a
-        # valid scheduler.
-        args = SftArgs(lr=1e-3, warmup_frac=0.5)
+    def test_handles_run_shorter_than_warmup(self):
+        args = SftArgs(lr=1e-3, warmup_steps=300)
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         scheduler = build_lr_schedule(optimizer, 1, args)
