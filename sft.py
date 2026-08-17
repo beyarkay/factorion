@@ -10,6 +10,7 @@ Usage:
 
 import io
 import json
+import math
 import os
 import random
 import sys
@@ -367,37 +368,33 @@ def _steps_per_epoch(target, n_workers, batch_size):
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
-    """Linear warmup → cosine decay scheduler, stepped once per optimizer step.
+    """Warmup-Stable-Decay, stepped once per optimizer step.
 
-    Warmup goes from `lr * 1e-3` up to `lr` over the first
-    `total_steps * warmup_frac` steps; cosine then decays from `lr` to
-    `lr * min_lr_ratio` over the rest. `warmup_frac=0` skips warmup.
+    Linear warmup over `warmup_steps` up to `lr`, a stable phase holding `lr`,
+    then a `(1 - sqrt)` cooldown over the final `cooldown_frac` of the run down
+    to `lr * min_lr_ratio`. Only the cooldown depends on `total_steps`, so runs
+    of different budgets share their LR curve until their cooldowns diverge —
+    and a cooldown can be branched off a stable-phase checkpoint
+    (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
+    repeating the shared prefix. Cooldown shape from Hägele et al., "Scaling
+    Laws and Compute-Optimal Training Beyond Fixed Training Durations"
+    (NeurIPS 2024); defaults from sweep ndc8tvvy (run c0kwcui1).
     """
-    warmup_steps = (
-        max(1, int(round(total_steps * args.warmup_frac)))
-        if args.warmup_frac > 0
-        else 0
+    warmup = min(args.warmup_steps, total_steps - 1)
+    cooldown = max(
+        1, min(int(round(total_steps * args.cooldown_frac)), total_steps - warmup)
     )
-    cosine_steps = max(1, total_steps - warmup_steps)
-    eta_min = args.lr * args.min_lr_ratio
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=cosine_steps,
-        eta_min=eta_min,
-    )
-    if warmup_steps <= 0:
-        return cosine
-    warmup = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1e-3,
-        end_factor=1.0,
-        total_iters=warmup_steps,
-    )
-    return torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup, cosine],
-        milestones=[warmup_steps],
-    )
+    stable_end = total_steps - cooldown
+
+    def factor(step: int) -> float:
+        if step < warmup:
+            return (step + 1) / warmup
+        if step < stable_end:
+            return 1.0
+        t = min(1.0, (step - stable_end) / cooldown)
+        return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * (1.0 - math.sqrt(t))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
 class RolloutEval(TypedDict):
@@ -873,7 +870,7 @@ def train_sft(args: SftArgs):
         agent.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
 
-    # Scheduler spans every optimizer step (not every epoch) so warmup_frac
+    # Scheduler spans every optimizer step (not every epoch) so cooldown_frac
     # is a fraction of the whole run regardless of dataset size.
     total_steps = args.epochs * steps_per_epoch
     scheduler = build_lr_schedule(optimizer, total_steps, args)
