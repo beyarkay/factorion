@@ -376,9 +376,9 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     of different budgets share their LR curve until their cooldowns diverge —
     and a cooldown can be branched off a stable-phase checkpoint
     (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
-    repeating the shared prefix. Shape and defaults from Hägele et al.,
-    "Scaling Laws and Compute-Optimal Training Beyond Fixed Training
-    Durations" (NeurIPS 2024).
+    repeating the shared prefix. Cooldown shape from Hägele et al., "Scaling
+    Laws and Compute-Optimal Training Beyond Fixed Training Durations"
+    (NeurIPS 2024); defaults from sweep ndc8tvvy (run c0kwcui1).
     """
     warmup = min(args.warmup_steps, total_steps - 1)
     cooldown = max(

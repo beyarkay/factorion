@@ -211,15 +211,15 @@ class SftArgs(SharedArgs):
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 1e-3
+    lr: float = 0.001152
     """peak learning rate, held flat for the whole stable phase"""
     warmup_steps: int = 300
     """optimizer steps of linear warmup up to lr — absolute, not a fraction, so
     runs of different lengths warm up identically"""
-    cooldown_frac: float = 0.2
+    cooldown_frac: float = 0.295459
     """fraction of total steps for the final (1-sqrt) cooldown — the only phase
     that depends on run length"""
-    min_lr_ratio: float = 0.0
+    min_lr_ratio: float = 0.053792
     """LR at the final step, as a fraction of lr"""
     weight_decay: float = 1.661e-3
     """AdamW weight decay"""
