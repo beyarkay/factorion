@@ -248,11 +248,9 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     until `target` pairs are produced, or forever when `target` is None. Callers
     own their own RNG seeding.
     """
-    # Trial kinds have no known solution, so they can never emit an expert
-    # pair — left in the pool they'd stay at 0 samples forever and the
-    # fewest-pairs draw below would redraw them every time. Trials are
-    # RL-only; PPO samples them directly.
-    kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
+    # RL-efficiency experiment: pretrain on the single inefficient-route
+    # lesson only, so the RL finetune's job is purely "make the route shorter".
+    kinds = [LessonKind.MOVE_ONE_ITEM]
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
@@ -409,6 +407,8 @@ class RolloutEval(TypedDict):
     trial_n: int  # number of trial factories the eval scored
     per_kind: dict[str, float]  # overall, keyed by LessonKind.name
     per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    overall_entity_cost: float  # mean entity cost of the stopped worlds (lessons only)
+    per_kind_entity_cost: dict[str, float]  # entity cost, keyed by LessonKind.name
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
@@ -496,8 +496,10 @@ def run_rollout_eval(
     seeds_sorted = seeds_sorted[:max_seeds]
 
     per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
+    per_kind_entity_costs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
     # Lessons and trials accumulate separately — see RolloutEval.
     all_throughputs: list[float] = []
+    all_entity_costs: list[float] = []
     trial_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
@@ -519,6 +521,8 @@ def run_rollout_eval(
             "trial_n": 0,
             "per_kind": zero,
             "per_kind_n": per_kind_n,
+            "overall_entity_cost": 0.0,
+            "per_kind_entity_cost": dict(zero),
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
             "per_kind_asm_n": dict(per_kind_n),
@@ -575,13 +579,19 @@ def run_rollout_eval(
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
+        # Entity cost of the world the model stopped at: the efficiency half of
+        # the eval (thput says "does it work", this says "at what price").
+        cost = float(envs[i]._entity_cost)
+        per_kind_entity_costs[k.name].append(cost)
+        if not LESSON_IS_TRIAL[k]:
+            all_entity_costs.append(cost)
         if records is not None:
             records.append(
                 {
                     "seed": s,
                     "kind": k.name,
                     "thput": thput,
-                    "entity_cost": float(envs[i]._entity_cost),
+                    "entity_cost": cost,
                     "render": render_factory(envs[i]._world_CWH),
                 }
             )
@@ -685,6 +695,11 @@ def run_rollout_eval(
         for kn, ts in per_kind_throughputs.items()
     }
     per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
+    overall_entity_cost = float(np.mean(all_entity_costs)) if all_entity_costs else 0.0
+    per_kind_entity_cost = {
+        kn: (float(np.mean(cs)) if cs else 0.0)
+        for kn, cs in per_kind_entity_costs.items()
+    }
 
     asm_total_all = sum(per_kind_asm_total.values())
     asm_item_acc = (
@@ -718,6 +733,8 @@ def run_rollout_eval(
         "trial_n": len(trial_throughputs),
         "per_kind": per_kind,
         "per_kind_n": per_kind_n,
+        "overall_entity_cost": overall_entity_cost,
+        "per_kind_entity_cost": per_kind_entity_cost,
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
         "per_kind_asm_n": dict(per_kind_asm_total),
@@ -1427,9 +1444,13 @@ def train_sft(args: SftArgs):
             per_kind_thp_n = roll["per_kind_n"]
             per_kind_metrics["val/thput"] = overall_thp
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
+            per_kind_metrics["val/entity_cost"] = roll["overall_entity_cost"]
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput"] = thp
+            for kn, cost in roll["per_kind_entity_cost"].items():
+                if per_kind_thp_n[kn] > 0:
+                    per_kind_metrics[f"val/{kn}/entity_cost"] = cost
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once

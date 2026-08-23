@@ -256,7 +256,8 @@ def _build_eval_set(args) -> dict:
     range so seeds never collide across kinds; only seeds where build_factory
     succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
     out: dict = {}
-    for ki, kind in enumerate(LessonKind):
+    # RL-efficiency experiment: eval only the single lesson being trained.
+    for ki, kind in enumerate([LessonKind.MOVE_ONE_ITEM]):
         base = 9_000_000 + args.seed + ki * 100_000
         found, s = 0, base
         while found < args.eval_seeds_per_kind and s < base + 5000:
@@ -296,6 +297,13 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, thp in roll["per_kind"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
+
+    # Entity cost of the worlds the model stopped at — the efficiency readout
+    # RL is supposed to push down while eval/thput holds.
+    metrics["eval/entity_cost"] = roll["overall_entity_cost"]
+    for kn, cost in roll["per_kind_entity_cost"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            metrics[f"eval/{kn}/entity_cost"] = cost
 
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
@@ -795,11 +803,11 @@ class FactorioEnv(gym.Env):
         # of re-scanning self.actions every step (that was O(steps) per step =
         # O(steps^2) per episode, and grows as episodes lengthen during training).
         self._num_placed_entities = 0
-        # Lesson kind is settable per-reset. Default (omitted or None) is
-        # uniform random sampling across LessonKind on every reset —
-        # matches the project direction where lessons are data generators
-        # rather than a fixed curriculum, so a single env naturally sees
-        # all kinds. Pass a concrete LessonKind to pin one. The sampler
+        # Lesson kind is settable per-reset. Default (omitted or None) samples
+        # from the RL-efficiency experiment's single-lesson mix — the same
+        # inefficient-route lesson the SFT base was pretrained on, so the
+        # finetune's only job is shortening it. Pass a concrete LessonKind to
+        # pin one. The sampler
         # uses self.np_random which super().reset() seeded above, so the
         # choice is deterministic per episode seed.
         #
@@ -810,7 +818,7 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
+            kinds_list = [LessonKind.MOVE_ONE_ITEM]
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
                 factory = build_factory(
@@ -1830,12 +1838,14 @@ if __name__ == "__main__":
         _LESSONS = [k.name for k in LessonKind]
         wandb.define_metric("eval/thput", summary="last")
         wandb.define_metric("eval/trial_thput", summary="last")
+        wandb.define_metric("eval/entity_cost", summary="last")
         wandb.define_metric("eval/asm_item_acc", summary="last")
         wandb.define_metric("eval/eot_acc", summary="last")
         wandb.define_metric("eval/eot_pos_recall", summary="last")
         wandb.define_metric("eval/seconds", summary="last")
         for ln in _LESSONS:
             wandb.define_metric(f"eval/{ln}/thput", summary="last")
+            wandb.define_metric(f"eval/{ln}/entity_cost", summary="last")
             wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="last")
             wandb.define_metric(f"eval/{ln}/eot_acc", summary="last")
             wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="last")

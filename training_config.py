@@ -134,10 +134,13 @@ class PpoArgs(SharedArgs):
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.794
     """coefficient of the value function"""
-    entity_cost_scale: float = 0.001
+    entity_cost_scale: float = 0.01
     """strength of the multiplicative terminal entity-cost penalty. Each
     entity costs its per-output recursively-expanded raw-item count plus
-    cumulative craft time."""
+    cumulative craft time. Deliberately strong for the RL-efficiency
+    experiment: the lesson's wandering ~18-belt route earns ~0.73 while the
+    direct ~6-belt route earns ~0.89, so shortening the route is a
+    first-order term of the reward, not a tie-breaker."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
@@ -160,8 +163,10 @@ class PpoArgs(SharedArgs):
     """Initialization std for the value head."""
     eval_every: int = 7
     """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
-    eval_seeds_per_kind: int = 12
-    """Held-out factories per LessonKind in the greedy eval set."""
+    eval_seeds_per_kind: int = 64
+    """Held-out factories per LessonKind in the greedy eval set. Sized for the
+    RL-efficiency experiment's single-lesson mix, where this is the entire
+    eval sample and 12 would leave eval/thput too noisy to read."""
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
     amp: bool = False
