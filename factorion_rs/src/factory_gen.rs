@@ -838,35 +838,90 @@ fn build_move_one_item(
             None => continue,
         };
 
-        let mut world = World::empty(size, size);
-        place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
-        place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
-
-        // Route from the source's output cell to the sink's input cell, keeping
-        // the markers themselves clear (a random shortest belt path, so the
-        // lesson varies seed to seed; no tunnels).
         let (dr_s, dc_s) = source_dir.delta();
         let start = (source_wh.0 + dr_s, source_wh.1 + dc_s);
         let (dr_k, dc_k) = sink_dir.delta();
         let end = (sink_wh.0 - dr_k, sink_wh.1 - dc_k);
-        let mut blocked: HashSet<Cell> = HashSet::new();
-        blocked.insert(source_wh);
-        blocked.insert(sink_wh);
-        let sampled = Routes::Sampled(rng);
-        let paths = find_belt_paths(start, end, sink_dir, s, &blocked, Underground::Off, sampled);
-        let Some(chosen) = paths.into_iter().next() else {
+
+        let fixed: HashSet<Cell> = [source_wh, sink_wh].into_iter().collect();
+        if !in_grid(start, s) || !in_grid(end, s) {
             continue;
-        };
-        if (chosen.len() as f64) > max_entities {
+        }
+        if fixed.contains(&start) || fixed.contains(&end) || start == end {
             continue;
         }
 
-        place_belts(&mut world, &chosen);
+        // RL-efficiency experiment: the solved route is deliberately wasteful —
+        // source → random mid-tile → sink, still a full belt of throughput — so
+        // an RL finetune of the SFT prior has headroom to shorten it. The
+        // length floor rejects draws whose detour is negligible (a mid on or
+        // near the direct corridor).
+        let mut reserved = fixed.clone();
+        reserved.insert(start);
+        reserved.insert(end);
+        let mid_candidates = available_cells(s, &reserved);
+        if mid_candidates.is_empty() {
+            continue;
+        }
+        let mid = mid_candidates[rng.choice_index(mid_candidates.len())];
+
+        let mut blocked_a = fixed.clone();
+        blocked_a.insert(end);
+        let paths_a = find_belt_paths(
+            start,
+            mid,
+            source_dir,
+            s,
+            &blocked_a,
+            Underground::Off,
+            Routes::Sampled(rng),
+        );
+        let Some(belts_a) = paths_a.into_iter().next() else {
+            continue;
+        };
+        let cells_a = belt_cells(&belts_a);
+
+        let mut blocked_b = fixed.clone();
+        for &c in &cells_a {
+            if c != mid {
+                blocked_b.insert(c);
+            }
+        }
+        let paths_b = find_belt_paths(
+            mid,
+            end,
+            sink_dir,
+            s,
+            &blocked_b,
+            Underground::Off,
+            Routes::Sampled(rng),
+        );
+        let Some(belts_b) = paths_b.into_iter().next() else {
+            continue;
+        };
+        let cells_b = belt_cells(&belts_b);
+
+        let mut full_cells = cells_a.clone();
+        full_cells.extend_from_slice(&cells_b[1..]);
+        let full_belts = path_to_belts(&full_cells, sink_dir);
+
+        let direct = (start.0 - end.0).abs() + (start.1 - end.1).abs() + 1;
+        if (full_belts.len() as i64) < direct + 4 {
+            continue;
+        }
+        if (full_belts.len() as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        place_marker(&mut world, source_wh, Item::Source, source_dir, item_value);
+        place_marker(&mut world, sink_wh, Item::Sink, sink_dir, item_value);
+        place_belts(&mut world, &full_belts);
         if world_throughput(&world) <= 0.0 {
             continue;
         }
 
-        let total_entities = chosen.len();
+        let total_entities = full_belts.len();
         return finish(world, total_entities, vec![], count);
     }
     None
