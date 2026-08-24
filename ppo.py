@@ -1264,6 +1264,43 @@ def _categorical_entropy(logp_all_BN):
     return -(logp_all_BN.exp() * finite_logp).sum(-1)
 
 
+def _categorical_kl(logp_BN, logq_BN):
+    """KL(p ‖ q) between categorical log-prob rows sharing one -inf mask.
+
+    Shared mask is a precondition (the where() would silently drop mass q
+    assigns to a category p masks); it holds for the reference KL because
+    every mask is a function of the observation and the replayed action only,
+    so both policies mask identically."""
+    diff_BN = torch.where(logp_BN > float("-inf"), logp_BN - logq_BN, 0.0)
+    return (logp_BN.exp() * diff_BN).sum(-1)
+
+
+def _bernoulli_kl(z_B, zq_B):
+    """KL(Bernoulli(σ(z)) ‖ Bernoulli(σ(zq))) from raw logits."""
+    p_B = torch.sigmoid(z_B)
+    return p_B * (F.logsigmoid(z_B) - F.logsigmoid(zq_B)) + (1.0 - p_B) * (
+        F.logsigmoid(-z_B) - F.logsigmoid(-zq_B)
+    )
+
+
+# The KL-to-SFT-reference penalty (#237) covers only the placement heads: the
+# EOT head sets the episode horizon, which RL must stay free to move, so its
+# KL is logged but never penalized.
+_KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
+
+
+def _kl_to_ref_heads(cur, ref):
+    """Per-head closed-form KL(π_θ ‖ π_ref) at the replayed actions, (B,) each.
+
+    Both args hold the five placement heads' masked log-probs plus the raw
+    ``eot_logit``. Conditioning both policies on the same replayed tile/entity
+    keeps their legality/semantic masks identical, so each categorical KL is
+    exact — no sampling over the action space."""
+    kls = {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
+    kls["eot"] = _bernoulli_kl(cur["eot_logit"], ref["eot_logit"])
+    return kls
+
+
 def _select_action(logp_all_BN, temperature):
     """Pick one category per row: argmax at temperature==0 (greedy), else
     sample the temperature-scaled distribution (==1 is the on-policy sample).
@@ -1636,7 +1673,7 @@ class AgentCNN(nn.Module):
         legal_mask=False exposes the raw tile head (builder diagnostics only).
         `action` replays a stored action to recompute its log-prob. Returns a dict of
         action / logp / entropy / value (None if not compute_value) / eot_prob
-        / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
+        / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
         encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
         value_B = self.critic_value(encoded_BCWH, g_BG) if compute_value else None
@@ -1761,6 +1798,7 @@ class AgentCNN(nn.Module):
             "entropy": entropy_B,
             "value": value_B,
             "eot_prob": p_eot_B,
+            "eot_logit": eot_logit_B,
             "logp_heads": {
                 "tile": tile_logp_all_BN,
                 "entity": e_logp_all_BE,
