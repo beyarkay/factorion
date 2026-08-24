@@ -243,8 +243,8 @@ def _run_signature(args) -> str:
         sig += f"_{args.ent_coef_end:g}"
     if args.target_kl is not None:
         sig += f"-kl{args.target_kl:g}"
-    if args.kl_ref_coef:
-        sig += f"-klref{args.kl_ref_coef:g}"
+    if args.divergence_penalty:
+        sig += f"-div{args.divergence_penalty:g}"
     if args.critic_warmup:
         sig += f"-cw{args.critic_warmup}"
     if args.start_from:
@@ -1828,10 +1828,10 @@ if __name__ == "__main__":
     num_gsteps = args.num_envs * args.num_steps * args.num_iterations
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
-    if args.kl_ref_coef and args.start_from is None:
-        raise Exception(
-            "--kl-ref-coef requires --start-from: the KL anchor is the frozen "
-            "SFT reference policy (#237)"
+    if args.divergence_penalty and args.start_from is None:
+        print(
+            "--divergence-penalty is inert without --start-from: there is no "
+            "reference policy to anchor to (#237)"
         )
 
     run_name = _run_signature(args)
@@ -2021,7 +2021,7 @@ if __name__ == "__main__":
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
         # Frozen copy of the exact --start-from policy (snapshotted before the
-        # critic re-init below): the anchor for the kl_ref_coef penalty and the
+        # critic re-init below): the anchor for the divergence_penalty and the
         # policy/kl_to_ref drift metrics (#237).
         ref_agent = copy.deepcopy(agent).to(device)
         ref_agent.requires_grad_(False).eval()
@@ -2463,7 +2463,7 @@ if __name__ == "__main__":
                 if ref_heads is not None:
                     # Drift from the frozen SFT reference (#237). no_grad at
                     # β=0: the metrics still log but skip the graph build.
-                    with (contextlib.nullcontext() if args.kl_ref_coef else torch.no_grad()):
+                    with (contextlib.nullcontext() if args.divergence_penalty else torch.no_grad()):
                         kl_head_B = _kl_to_ref_heads(
                             {**out_mB["logp_heads"], "eot_logit": out_mB["eot_logit"]},
                             {k: v[idxs] for k, v in ref_heads.items()},
@@ -2484,8 +2484,8 @@ if __name__ == "__main__":
                     loss = v_loss * args.vf_coef
                 else:
                     loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
-                    if args.kl_ref_coef:
-                        loss = loss + args.kl_ref_coef * kl_ref
+                    if args.divergence_penalty and ref_heads is not None:
+                        loss = loss + args.divergence_penalty * kl_ref
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
