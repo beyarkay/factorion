@@ -1,24 +1,32 @@
-# ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
+# ci/sweep_ppo.yaml — β for the KL-to-SFT-reference penalty (#237)
 #
 # Launched with: /ci sweep ppo
 #
-# Every run uses this branch and the same training configuration. The only
-# swept value is eta, exposed by PpoArgs as entity_cost_scale:
-#
-#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
+# Every run finetunes the canonical SFT base for 5M steps; swept are
+# divergence_penalty (β on the KL(π_θ ‖ π_ref) anchor; 0 = penalty off, the
+# control arm) and the seed, so every β gets the same 3 seeds. run_cap
+# matches the 6x3 grid exactly.
 
 method: grid
+run_cap: 18
 metric:
   name: "eval/thput"
   goal: maximize
 
 parameters:
-  entity_cost_scale:
+  divergence_penalty:
     values:
       - 0.0
-      - 1.0e-4
-      - 1.0e-3
-      - 1.0e-2
+      - 0.005
+      - 0.01
+      - 0.02
+      - 0.05
+      - 0.1
+  seed:
+    values:
+      - 1
+      - 2
+      - 3
 
 program: ppo.py
 
@@ -29,6 +37,6 @@ command:
   - --start-from
   - h76h80yb
   - --total-timesteps
-  - 2_000_000
+  - 5_000_000
   - --track
   - ${args}
