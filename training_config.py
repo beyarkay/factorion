@@ -142,6 +142,12 @@ class PpoArgs(SharedArgs):
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
     """the target KL divergence threshold, checked per minibatch."""
+    kl_ref_coef: float = 0.0
+    """Weight β on the KL(π_θ ‖ π_ref) loss penalty anchoring the policy to the
+    frozen --start-from SFT reference (#237). Covers the five placement heads;
+    the EOT head's KL is logged but never penalized (it sets the episode
+    horizon). Requires --start-from when nonzero; at 0 the penalty is off but
+    the policy/kl_to_ref* drift metrics still log whenever --start-from is set."""
     adam_epsilon: float = 6.891e-06
     """The epsilon parameter for Adam"""
     weight_decay: float = 0.0

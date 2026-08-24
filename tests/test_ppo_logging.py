@@ -62,6 +62,12 @@ class TestRunSignature:
         assert "from" not in sig
         assert "kl" not in sig
 
+    def test_includes_kl_ref_coef_when_set(self):
+        assert "klref0.05" in _run_signature(
+            PpoArgs(start_from="j0s5y2mc", kl_ref_coef=0.05)
+        )
+        assert "klref" not in _run_signature(PpoArgs(start_from="j0s5y2mc"))
+
 
 # ── greedy-eval held-out set ────────────────────────────────────────────────
 

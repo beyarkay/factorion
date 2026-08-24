@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import os
@@ -242,6 +243,8 @@ def _run_signature(args) -> str:
         sig += f"_{args.ent_coef_end:g}"
     if args.target_kl is not None:
         sig += f"-kl{args.target_kl:g}"
+    if args.kl_ref_coef:
+        sig += f"-klref{args.kl_ref_coef:g}"
     if args.critic_warmup:
         sig += f"-cw{args.critic_warmup}"
     if args.start_from:
@@ -1825,6 +1828,12 @@ if __name__ == "__main__":
     num_gsteps = args.num_envs * args.num_steps * args.num_iterations
     print(f"batch_size: {args.batch_size}, minibatch_size: {args.minibatch_size}, num_iterations: {args.num_iterations}, num_gsteps: {num_gsteps}")
 
+    if args.kl_ref_coef and args.start_from is None:
+        raise Exception(
+            "--kl-ref-coef requires --start-from: the KL anchor is the frozen "
+            "SFT reference policy (#237)"
+        )
+
     run_name = _run_signature(args)
     run = None
     if args.track:
@@ -1888,10 +1897,11 @@ if __name__ == "__main__":
                 "cost_efficiency",
             ]:
                 wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob"]:
+        for m in ["entropy", "eot_prob", "kl_to_ref"]:
             wandb.define_metric(f"policy/{m}", summary="last")
         for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
             wandb.define_metric(f"policy/entropy_{h}", summary="last")
+            wandb.define_metric(f"policy/kl_to_ref_{h}", summary="last")
         for m in ["policy", "value", "entropy", "total", "approx_kl",
                   "clipfrac", "explained_variance"]:
             wandb.define_metric(f"losses/{m}", summary="last")
@@ -1998,6 +2008,7 @@ if __name__ == "__main__":
         global_feat_dim=args.global_feat_dim,
     )
 
+    ref_agent: Optional[AgentCNN] = None
     if args.start_from is not None:
         if args.track:
             _append_run_tags(run, f"start_from:{args.start_from}")
@@ -2009,6 +2020,11 @@ if __name__ == "__main__":
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+        # Frozen copy of the exact --start-from policy (snapshotted before the
+        # critic re-init below): the anchor for the kl_ref_coef penalty and the
+        # policy/kl_to_ref drift metrics (#237).
+        ref_agent = copy.deepcopy(agent).to(device)
+        ref_agent.requires_grad_(False).eval()
         # Re-init the loaded (untrained) critic to critic_head_std so the load doesn't clobber the knob.
         layer_init(agent.critic_head[-1], std=args.critic_head_std)
 
@@ -2055,8 +2071,9 @@ if __name__ == "__main__":
     # handle from rollout_act keeps the no_grad-inference and grad-train graph
     # pools from interleaving. The warm-up requires_grad flip and the v_loss-only
     # vs joint-loss change just trigger a one-time recompile of the affected
-    # graph.
-    update_act = maybe_compile(agent.get_action_and_value, device)
+    # graph. sample_action rather than its get_action_and_value projection: the
+    # update also needs the per-head distributions for the reference KL.
+    update_act = maybe_compile(agent.sample_action, device)
 
     # Two param groups so the critic warm-up + LR annealing can address actor
     # and critic LRs independently; group[0]=actor keeps the existing
@@ -2356,6 +2373,24 @@ if __name__ == "__main__":
 
         # Optimizing the policy and value network
         update_start = time.time()
+
+        # Reference head distributions for the whole batch, once per iteration:
+        # the reference is frozen and the batch fixed, so a per-epoch recompute
+        # would be pure waste. Eager (no CUDA-graph interplay with the update
+        # handle) and chunked at minibatch size to bound activation memory.
+        ref_heads: Optional[dict[str, torch.Tensor]] = None
+        if ref_agent is not None:
+            with torch.no_grad():
+                chunks = []
+                for start in range(0, args.batch_size, args.minibatch_size):
+                    sl = slice(start, start + args.minibatch_size)
+                    with amp_ctx():
+                        o = ref_agent.sample_action(
+                            obs_B[sl], action=actions_B[sl], compute_value=False
+                        )
+                    chunks.append({**o["logp_heads"], "eot_logit": o["eot_logit"]})
+                ref_heads = {k: torch.cat([c[k] for c in chunks]) for k in chunks[0]}
+
         idxs_B = np.arange(args.batch_size)
         clipfracs = []
         kl_stop = False
@@ -2372,11 +2407,9 @@ if __name__ == "__main__":
                 # still valid when autograd reads them.
                 torch.compiler.cudagraph_mark_step_begin()
                 with amp_ctx():
-                    _action_BA, newlogprobs_B, entropy_B, newvalue_B = update_act(
-                        obs_B[idxs],
-                        actions_B.long()[idxs]
-                    )
-                newlogprobs_B = newlogprobs_B.reshape(-1)
+                    out_mB = update_act(obs_B[idxs], action=actions_B.long()[idxs])
+                entropy_B, newvalue_B = out_mB["entropy"], out_mB["value"]
+                newlogprobs_B = out_mB["logp"].reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)
                 ratio_B = logratio_B.exp()
 
@@ -2426,6 +2459,22 @@ if __name__ == "__main__":
                     v_loss = 0.5 * _masked_mean((newvalue - returns_B[idxs]) ** 2, valid_mB)
 
                 entropy_loss = _masked_mean(entropy_B, valid_mB)
+
+                if ref_heads is not None:
+                    # Drift from the frozen SFT reference (#237). no_grad at
+                    # β=0: the metrics still log but skip the graph build.
+                    with (contextlib.nullcontext() if args.kl_ref_coef else torch.no_grad()):
+                        kl_head_B = _kl_to_ref_heads(
+                            {**out_mB["logp_heads"], "eot_logit": out_mB["eot_logit"]},
+                            {k: v[idxs] for k, v in ref_heads.items()},
+                        )
+                        kl_ref_means = {
+                            h: _masked_mean(kl_B, valid_mB) for h, kl_B in kl_head_B.items()
+                        }
+                        kl_ref = torch.stack(
+                            [kl_ref_means[h] for h in _KL_REF_PENALIZED_HEADS]
+                        ).sum()
+
                 assert not torch.isnan(pg_loss), "pg_loss is NaN, probably a bug"
                 assert not torch.isnan(v_loss), "v_loss is NaN, probably a bug"
                 if in_warmup:
@@ -2435,6 +2484,8 @@ if __name__ == "__main__":
                     loss = v_loss * args.vf_coef
                 else:
                     loss = pg_loss - ent_coef * entropy_loss + v_loss * args.vf_coef
+                    if args.kl_ref_coef:
+                        loss = loss + args.kl_ref_coef * kl_ref
 
                 optimizer.zero_grad(set_to_none=True)
                 assert not torch.isnan(loss), "Loss is NaN, probably a bug"
@@ -2503,6 +2554,12 @@ if __name__ == "__main__":
         }
         for h, s in _head_ent_sum.items():
             iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
+        if ref_agent is not None:
+            # Last-minibatch values, like losses/approx_kl. kl_to_ref is the
+            # penalized (placement-head) sum; eot drift stays on its own key.
+            iter_metrics["policy/kl_to_ref"] = kl_ref.item()
+            for h, kl in kl_ref_means.items():
+                iter_metrics[f"policy/kl_to_ref_{h}"] = kl.item()
         iter_metrics.update(critic_metrics)
         iter_metrics.update(eval_metrics)
 
