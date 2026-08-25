@@ -2,14 +2,13 @@
 #
 # Launched with: /ci sweep ppo
 #
-# Every run finetunes the canonical SFT base for 5M steps. β is a scale
-# parameter, so it is searched log-continuously: the 0.001 floor makes the
-# penalty term ~30x smaller than the policy-gradient loss even at full
-# drift (an effective no-penalty control), the 0.2 ceiling is 2x the
-# strength already measured to over-anchor. seed is a nuisance categorical
-# so the optimum must hold across seeds rather than chase one lucky one.
+# Replication grid for the Bayes sweep fpu947c0, which left both flanks of
+# the good window [4e-3, 1.3e-2] contested: below 3e-3 two of four runs
+# cratered (fat tail or bad luck?), and at 2e-2 the bracketing runs
+# disagreed. Six log-even β rungs (ratio 20^(1/5)) x three fresh seeds
+# (disjoint from that sweep's 0-2) measure the per-β spread directly.
 
-method: bayes
+method: grid
 run_cap: 18
 metric:
   name: "eval/thput"
@@ -17,14 +16,18 @@ metric:
 
 parameters:
   divergence_penalty:
-    distribution: log_uniform_values
-    min: 0.001
-    max: 0.2
+    values:
+      - 0.001
+      - 0.00182
+      - 0.00331
+      - 0.00603
+      - 0.011
+      - 0.02
   seed:
     values:
-      - 0
-      - 1
-      - 2
+      - 4
+      - 5
+      - 6
 
 program: ppo.py
 
