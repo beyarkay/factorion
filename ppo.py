@@ -1268,40 +1268,20 @@ def _categorical_entropy(logp_all_BN):
 
 
 def _categorical_kl(logp_BN, logq_BN):
-    """KL(p ‖ q) between categorical log-prob rows sharing one -inf mask.
-
-    Shared mask is a precondition (the where() would silently drop mass q
-    assigns to a category p masks); it holds for the reference KL because
-    every mask is a function of the observation and the replayed action only,
-    so both policies mask identically."""
+    """KL(p ‖ q) of categorical log-prob rows sharing one -inf mask (both
+    policies mask from the same obs + replayed action, so they always do)."""
     diff_BN = torch.where(logp_BN > float("-inf"), logp_BN - logq_BN, 0.0)
     return (logp_BN.exp() * diff_BN).sum(-1)
 
 
 def _bernoulli_kl(z_B, zq_B):
     """KL(Bernoulli(σ(z)) ‖ Bernoulli(σ(zq))) from raw logits."""
-    p_B = torch.sigmoid(z_B)
-    return p_B * (F.logsigmoid(z_B) - F.logsigmoid(zq_B)) + (1.0 - p_B) * (
-        F.logsigmoid(-z_B) - F.logsigmoid(-zq_B)
-    )
+    return F.softplus(zq_B) - F.softplus(z_B) + torch.sigmoid(z_B) * (z_B - zq_B)
 
 
-# The KL-to-SFT-reference penalty (#237) covers only the placement heads: the
-# EOT head sets the episode horizon, which RL must stay free to move, so its
-# KL is logged but never penalized.
+# The EOT head sets the episode horizon, which RL must stay free to move: the
+# penalty covers only the placement heads; EOT drift is logged, never penalized.
 _KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
-
-
-def _kl_to_ref_heads(cur, ref):
-    """Per-head closed-form KL(π_θ ‖ π_ref) at the replayed actions, (B,) each.
-
-    Both args hold the five placement heads' masked log-probs plus the raw
-    ``eot_logit``. Conditioning both policies on the same replayed tile/entity
-    keeps their legality/semantic masks identical, so each categorical KL is
-    exact — no sampling over the action space."""
-    kls = {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
-    kls["eot"] = _bernoulli_kl(cur["eot_logit"], ref["eot_logit"])
-    return kls
 
 
 def _select_action(logp_all_BN, temperature):
@@ -1831,7 +1811,7 @@ if __name__ == "__main__":
     if args.divergence_penalty and args.start_from is None:
         print(
             "--divergence-penalty is inert without --start-from: there is no "
-            "reference policy to anchor to (#237)"
+            "reference policy to anchor to"
         )
 
     run_name = _run_signature(args)
@@ -2020,9 +2000,7 @@ if __name__ == "__main__":
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
-        # Frozen copy of the exact --start-from policy (snapshotted before the
-        # critic re-init below): the anchor for the divergence_penalty and the
-        # policy/kl_to_ref drift metrics (#237).
+        # Snapshot the divergence-penalty anchor before the critic re-init below.
         ref_agent = copy.deepcopy(agent).to(device)
         ref_agent.requires_grad_(False).eval()
         # Re-init the loaded (untrained) critic to critic_head_std so the load doesn't clobber the knob.
@@ -2071,8 +2049,7 @@ if __name__ == "__main__":
     # handle from rollout_act keeps the no_grad-inference and grad-train graph
     # pools from interleaving. The warm-up requires_grad flip and the v_loss-only
     # vs joint-loss change just trigger a one-time recompile of the affected
-    # graph. sample_action rather than its get_action_and_value projection: the
-    # update also needs the per-head distributions for the reference KL.
+    # graph.
     update_act = maybe_compile(agent.sample_action, device)
 
     # Two param groups so the critic warm-up + LR annealing can address actor
@@ -2374,10 +2351,6 @@ if __name__ == "__main__":
         # Optimizing the policy and value network
         update_start = time.time()
 
-        # Reference head distributions for the whole batch, once per iteration:
-        # the reference is frozen and the batch fixed, so a per-epoch recompute
-        # would be pure waste. Eager (no CUDA-graph interplay with the update
-        # handle) and chunked at minibatch size to bound activation memory.
         ref_heads: Optional[dict[str, torch.Tensor]] = None
         if ref_agent is not None:
             with torch.no_grad():
@@ -2461,12 +2434,14 @@ if __name__ == "__main__":
                 entropy_loss = _masked_mean(entropy_B, valid_mB)
 
                 if ref_heads is not None:
-                    # Drift from the frozen SFT reference (#237). no_grad at
-                    # β=0: the metrics still log but skip the graph build.
+                    # no_grad at β=0: the kl metrics still log but skip the graph build.
                     with (contextlib.nullcontext() if args.divergence_penalty else torch.no_grad()):
-                        kl_head_B = _kl_to_ref_heads(
-                            {**out_mB["logp_heads"], "eot_logit": out_mB["eot_logit"]},
-                            {k: v[idxs] for k, v in ref_heads.items()},
+                        kl_head_B = {
+                            h: _categorical_kl(out_mB["logp_heads"][h], ref_heads[h][idxs])
+                            for h in _KL_REF_PENALIZED_HEADS
+                        }
+                        kl_head_B["eot"] = _bernoulli_kl(
+                            out_mB["eot_logit"], ref_heads["eot_logit"][idxs]
                         )
                         kl_ref_means = {
                             h: _masked_mean(kl_B, valid_mB) for h, kl_B in kl_head_B.items()

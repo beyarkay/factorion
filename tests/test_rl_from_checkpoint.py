@@ -7,7 +7,7 @@ sensible RL fine-tuning run rather than RL-from-scratch:
 2. full-blank build-from-empty task by default (num_missing_entities=inf),
 3. end-of-turn as a trained Bernoulli *action* that ends the episode,
 4. the critic warm-up actor/critic param split + freeze,
-5. the closed-form per-head KL to the frozen SFT reference policy (#237).
+5. the closed-form per-head KL to the frozen SFT reference policy.
 """
 
 import copy
@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
     AgentCNN, PpoArgs, FactorioEnv, make_env, layer_init, _WARMUP_KL_TOL,
-    _KL_REF_PENALIZED_HEADS, _bernoulli_kl, _categorical_kl, _kl_to_ref_heads,
+    _KL_REF_PENALIZED_HEADS, _bernoulli_kl, _categorical_kl,
 )
 from helpers import Channel  # noqa: E402
 from factorion import LessonKind  # noqa: E402
@@ -480,14 +480,21 @@ class TestTrainingLegalMask:
 
 
 def _flat_heads(agent, obs, stored):
-    """The per-head distributions _kl_to_ref_heads consumes, replayed at the
+    """The per-head distributions the KL block consumes, replayed at the
     stored actions — the exact tensors the PPO loop hands it."""
     out = agent.sample_action(obs, action=stored, compute_value=False)
     return {**out["logp_heads"], "eot_logit": out["eot_logit"]}
 
 
+def _kl_heads(cur, ref):
+    """The PPO loop's per-head KL block, replicated for the tests."""
+    kls = {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
+    kls["eot"] = _bernoulli_kl(cur["eot_logit"], ref["eot_logit"])
+    return kls
+
+
 class TestKlToRef:
-    """The KL(π_θ ‖ π_ref) anchor to the frozen SFT reference (#237)."""
+    """The KL(π_θ ‖ π_ref) anchor to the frozen SFT reference."""
 
     def test_categorical_kl_matches_torch_distributions(self):
         """On rows sharing a -inf mask (how every masked head reaches it), the
@@ -533,7 +540,7 @@ class TestKlToRef:
         """An unmoved policy has zero drift on every head — the value the
         metric must report at the start of a --start-from run."""
         agent, ref, obs, stored = replay
-        kls = _kl_to_ref_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
+        kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
         assert set(kls) == set(_KL_REF_PENALIZED_HEADS) | {"eot"}
         for h, kl_B in kls.items():
             assert torch.isfinite(kl_B).all(), f"{h} KL not finite"
@@ -545,7 +552,7 @@ class TestKlToRef:
         agent, ref, obs, stored = replay
         with torch.no_grad():
             ref.ent_head.weight.add_(torch.randn_like(ref.ent_head.weight) * 0.1)
-        kls = _kl_to_ref_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
+        kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
         assert kls["entity"].sum() > 0
         for h in ("tile", "direction", "item", "misc", "eot"):
             torch.testing.assert_close(kls[h], torch.zeros_like(kls[h]))
@@ -559,7 +566,7 @@ class TestKlToRef:
         ref.requires_grad_(False)
         with torch.no_grad():
             ref_heads = _flat_heads(ref, obs, stored)
-        kls = _kl_to_ref_heads(_flat_heads(agent, obs, stored), ref_heads)
+        kls = _kl_heads(_flat_heads(agent, obs, stored), ref_heads)
         sum(kls[h].mean() for h in _KL_REF_PENALIZED_HEADS).backward()
         assert agent.ent_head.weight.grad is not None
         assert agent.ent_head.weight.grad.abs().sum() > 0

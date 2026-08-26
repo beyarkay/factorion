@@ -144,7 +144,7 @@ class PpoArgs(SharedArgs):
     """the target KL divergence threshold, checked per minibatch."""
     divergence_penalty: float = 0.008
     """Weight β on the KL(π_θ ‖ π_ref) loss penalty anchoring the policy to the
-    frozen --start-from SFT reference (#237). Covers the five placement heads;
+    frozen --start-from SFT reference. Covers the five placement heads;
     the EOT head's KL is logged but never penalized (it sets the episode
     horizon). Inert without --start-from (there is no reference to anchor to);
     at 0 the penalty is off but the policy/kl_to_ref* drift metrics still log
