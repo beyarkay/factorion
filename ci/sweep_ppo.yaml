@@ -1,24 +1,33 @@
-# ci/sweep_ppo.yaml — isolate the PPO entity-cost penalty strength
+# ci/sweep_ppo.yaml — β for the KL-to-SFT-reference penalty (#237)
 #
 # Launched with: /ci sweep ppo
 #
-# Every run uses this branch and the same training configuration. The only
-# swept value is eta, exposed by PpoArgs as entity_cost_scale:
-#
-#   reward = thput_raw / (1 + entity_cost_scale * entity_cost)
+# Replication grid for the Bayes sweep fpu947c0, which left both flanks of
+# the good window [4e-3, 1.3e-2] contested: below 3e-3 two of four runs
+# cratered (fat tail or bad luck?), and at 2e-2 the bracketing runs
+# disagreed. Six log-even β rungs (ratio 20^(1/5)) x three fresh seeds
+# (disjoint from that sweep's 0-2) measure the per-β spread directly.
 
 method: grid
+run_cap: 18
 metric:
   name: "eval/thput"
   goal: maximize
 
 parameters:
-  entity_cost_scale:
+  divergence_penalty:
     values:
-      - 0.0
-      - 1.0e-4
-      - 1.0e-3
-      - 1.0e-2
+      - 0.001
+      - 0.00182
+      - 0.00331
+      - 0.00603
+      - 0.011
+      - 0.02
+  seed:
+    values:
+      - 4
+      - 5
+      - 6
 
 program: ppo.py
 
@@ -29,6 +38,6 @@ command:
   - --start-from
   - h76h80yb
   - --total-timesteps
-  - 2_000_000
+  - 5_000_000
   - --track
   - ${args}

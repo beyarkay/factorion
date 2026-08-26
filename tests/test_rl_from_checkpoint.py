@@ -6,9 +6,11 @@ sensible RL fine-tuning run rather than RL-from-scratch:
 1. throughput-dominant reward (solution-matching shaping off by default),
 2. full-blank build-from-empty task by default (num_missing_entities=inf),
 3. end-of-turn as a trained Bernoulli *action* that ends the episode,
-4. the critic warm-up actor/critic param split + freeze.
+4. the critic warm-up actor/critic param split + freeze,
+5. the closed-form per-head KL to the frozen SFT reference policy.
 """
 
+import copy
 import os
 import sys
 from typing import cast
@@ -25,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
     AgentCNN, PpoArgs, FactorioEnv, make_env, layer_init, _WARMUP_KL_TOL,
+    _KL_REF_PENALIZED_HEADS, _bernoulli_kl, _categorical_kl,
 )
 from helpers import Channel  # noqa: E402
 from factorion import LessonKind  # noqa: E402
@@ -474,3 +477,97 @@ class TestTrainingLegalMask:
         obs[:, Channel.FOOTPRINT.value] = 1.0
         _, logp, entropy, _ = agent.get_action_and_value(obs)
         assert torch.isfinite(logp).all() and torch.isfinite(entropy).all()
+
+
+def _flat_heads(agent, obs, stored):
+    """The per-head distributions the KL block consumes, replayed at the
+    stored actions — the exact tensors the PPO loop hands it."""
+    out = agent.sample_action(obs, action=stored, compute_value=False)
+    return {**out["logp_heads"], "eot_logit": out["eot_logit"]}
+
+
+def _kl_heads(cur, ref):
+    """The PPO loop's per-head KL block, replicated for the tests."""
+    kls = {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
+    kls["eot"] = _bernoulli_kl(cur["eot_logit"], ref["eot_logit"])
+    return kls
+
+
+class TestKlToRef:
+    """The KL(π_θ ‖ π_ref) anchor to the frozen SFT reference."""
+
+    def test_categorical_kl_matches_torch_distributions(self):
+        """On rows sharing a -inf mask (how every masked head reaches it), the
+        fused KL equals torch.distributions' — including zero-mass entries."""
+        torch.manual_seed(0)
+        a, b = torch.randn(2, 16, 9, dtype=torch.float64)
+        mask = torch.rand(16, 9) < 0.4
+        mask[:, 0] = False  # keep every row a valid distribution
+        a = a.masked_fill(mask, float("-inf"))
+        b = b.masked_fill(mask, float("-inf"))
+        logp = torch.log_softmax(a, dim=-1)
+        logq = torch.log_softmax(b, dim=-1)
+        expected = torch.distributions.kl_divergence(
+            torch.distributions.Categorical(logits=a),
+            torch.distributions.Categorical(logits=b),
+        )
+        torch.testing.assert_close(_categorical_kl(logp, logq), expected)
+        assert (_categorical_kl(logp, logp) == 0).all()
+
+    def test_bernoulli_kl_matches_torch_distributions(self):
+        torch.manual_seed(0)
+        z, zq = torch.randn(2, 32, dtype=torch.float64) * 4
+        expected = torch.distributions.kl_divergence(
+            torch.distributions.Bernoulli(logits=z),
+            torch.distributions.Bernoulli(logits=zq),
+        )
+        torch.testing.assert_close(_bernoulli_kl(z, zq), expected)
+        assert (_bernoulli_kl(z, z) == 0).all()
+
+    @pytest.fixture()
+    def replay(self, agent):
+        """A real partially-occupied obs (so the tile head carries -inf mask
+        entries) with actions sampled and packed the way the rollout stores them."""
+        env = FactorioEnv(size=5)
+        obs_np, _ = env.reset(seed=5, options={"kind": LessonKind.MOVE_ONE_ITEM})
+        obs = torch.as_tensor(np.asarray(obs_np), dtype=torch.float32)
+        obs = obs.unsqueeze(0).expand(8, -1, -1, -1)
+        torch.manual_seed(0)
+        action, _, _, _ = agent.get_action_and_value(obs)
+        return agent, copy.deepcopy(agent), obs, _pack_action(action)
+
+    def test_kl_to_self_is_zero(self, replay):
+        """An unmoved policy has zero drift on every head — the value the
+        metric must report at the start of a --start-from run."""
+        agent, ref, obs, stored = replay
+        kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
+        assert set(kls) == set(_KL_REF_PENALIZED_HEADS) | {"eot"}
+        for h, kl_B in kls.items():
+            assert torch.isfinite(kl_B).all(), f"{h} KL not finite"
+            torch.testing.assert_close(kl_B, torch.zeros_like(kl_B))
+
+    def test_perturbed_head_shows_only_in_its_own_kl(self, replay):
+        """Replaying the stored actions conditions every head identically on
+        both sides, so nudging one head's weights moves exactly that head's KL."""
+        agent, ref, obs, stored = replay
+        with torch.no_grad():
+            ref.ent_head.weight.add_(torch.randn_like(ref.ent_head.weight) * 0.1)
+        kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
+        assert kls["entity"].sum() > 0
+        for h in ("tile", "direction", "item", "misc", "eot"):
+            torch.testing.assert_close(kls[h], torch.zeros_like(kls[h]))
+
+    def test_penalty_gradient_reaches_the_policy(self, replay):
+        """β·KL must be a trainable loss term: its backward populates the
+        drifted head's grads while the frozen reference stays untouched."""
+        agent, ref, obs, stored = replay
+        with torch.no_grad():
+            agent.ent_head.weight.add_(torch.randn_like(agent.ent_head.weight) * 0.1)
+        ref.requires_grad_(False)
+        with torch.no_grad():
+            ref_heads = _flat_heads(ref, obs, stored)
+        kls = _kl_heads(_flat_heads(agent, obs, stored), ref_heads)
+        sum(kls[h].mean() for h in _KL_REF_PENALIZED_HEADS).backward()
+        assert agent.ent_head.weight.grad is not None
+        assert agent.ent_head.weight.grad.abs().sum() > 0
+        assert all(p.grad is None for p in ref.parameters())

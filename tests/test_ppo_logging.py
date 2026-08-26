@@ -62,6 +62,14 @@ class TestRunSignature:
         assert "from" not in sig
         assert "kl" not in sig
 
+    def test_includes_divergence_penalty_when_set(self):
+        assert "div0.05" in _run_signature(
+            PpoArgs(start_from="j0s5y2mc", divergence_penalty=0.05)
+        )
+        assert "div" not in _run_signature(
+            PpoArgs(start_from="j0s5y2mc", divergence_penalty=0)
+        )
+
 
 # ── greedy-eval held-out set ────────────────────────────────────────────────
 
