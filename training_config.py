@@ -16,6 +16,7 @@ independently — e.g. `learning_rate`/`lr`, `dropout`, `weight_decay`,
 `max_grad_norm`, `tile_head_std`) live on each dataclass, not on `SharedArgs`.
 """
 
+import math
 import typing
 from dataclasses import dataclass
 from typing import Optional
@@ -23,6 +24,37 @@ from typing import Optional
 # Number of CNN encoder width slots (layer1..layer{NUM_LAYER_SLOTS}); every slot
 # with positive width becomes one conv layer (see ppo.layers_from_args).
 NUM_LAYER_SLOTS = 8
+
+
+def wsd_multiplier(
+    step: int,
+    total_steps: int,
+    warmup_steps: int,
+    cooldown_frac: float,
+    min_ratio: float,
+) -> float:
+    """Warmup-Stable-Decay LR multiplier at 0-indexed `step` of `total_steps`.
+
+    Linear warmup over `warmup_steps` up to 1.0, a stable phase holding 1.0,
+    then a (1 - sqrt) cooldown over the final `cooldown_frac` of the run down
+    to `min_ratio`. Only the cooldown depends on `total_steps`, so runs of
+    different budgets share their curve until their cooldowns diverge.
+    Cooldown shape from Hägele et al., "Scaling Laws and Compute-Optimal
+    Training Beyond Fixed Training Durations" (NeurIPS 2024). Shared by
+    `sft.build_lr_schedule` (per optimizer step) and `ppo._iteration_lrs`
+    (per PPO iteration, one envelope each for actor and critic).
+    """
+    warmup = min(warmup_steps, total_steps - 1)
+    cooldown = max(
+        1, min(int(round(total_steps * cooldown_frac)), total_steps - warmup)
+    )
+    stable_end = total_steps - cooldown
+    if step < warmup:
+        return (step + 1) / warmup
+    if step < stable_end:
+        return 1.0
+    t = min(1.0, (step - stable_end) / cooldown)
+    return min_ratio + (1.0 - min_ratio) * (1.0 - math.sqrt(t))
 
 
 @dataclass
