@@ -145,6 +145,24 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
+    lr_warmup_iters: int = 0
+    """iterations of linear actor-LR warmup up to `learning_rate` at the start
+    of the post-critic-warmup window — absolute, not a fraction, so runs of
+    different lengths warm up identically (0 = start at peak)"""
+    lr_cooldown_frac: float = 0.3
+    """fraction of the post-critic-warmup window for the actor LR's final
+    (1 - sqrt) cooldown — the only phase that depends on run length (see
+    `wsd_multiplier`). Shape defaults mirror SFT's swept schedule (ndc8tvvy)
+    until a PPO-specific sweep."""
+    lr_min_ratio: float = 0.05
+    """actor LR at the final iteration, as a fraction of `learning_rate`"""
+    critic_lr_warmup_iters: int = 0
+    """as `lr_warmup_iters`, for the critic's independent envelope"""
+    critic_lr_cooldown_frac: float = 0.3
+    """as `lr_cooldown_frac`, for the critic's independent envelope"""
+    critic_lr_min_ratio: float = 0.05
+    """critic LR at the final iteration, as a fraction of its
+    `learning_rate * critic_lr_mult` peak"""
     gamma: float = 0.997
     """the discount factor gamma"""
     gae_lambda: float = 0.9187

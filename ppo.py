@@ -41,7 +41,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs
+from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs, wsd_multiplier
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -381,6 +381,36 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
+
+
+def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
+    """(actor LR, critic LR) for a 1-based PPO iteration.
+
+    Each follows its own WSD envelope (`wsd_multiplier`) over the
+    post-critic-warmup window — schedule spent while the actor is frozen would
+    be spent on nothing, so both hold their peak until the unfreeze. The
+    envelopes are independent so e.g. the critic can keep learning at full
+    rate while the actor cools; the critic's peak stays defined relative to
+    the actor's as `learning_rate * critic_lr_mult`."""
+    total = max(1, args.num_iterations - args.critic_warmup)
+    step = iteration - args.critic_warmup - 1
+    if step < 0:
+        actor_mult = critic_mult = 1.0
+    else:
+        actor_mult = wsd_multiplier(
+            step, total, args.lr_warmup_iters, args.lr_cooldown_frac, args.lr_min_ratio
+        )
+        critic_mult = wsd_multiplier(
+            step,
+            total,
+            args.critic_lr_warmup_iters,
+            args.critic_lr_cooldown_frac,
+            args.critic_lr_min_ratio,
+        )
+    return (
+        actor_mult * args.learning_rate,
+        critic_mult * args.learning_rate * args.critic_lr_mult,
+    )
 
 
 def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -2167,14 +2197,11 @@ if __name__ == "__main__":
         # trains at the un-annealed peak LR.
         anneal_total = max(1, args.num_iterations - args.critic_warmup)
         anneal_iter = max(0, iteration - args.critic_warmup)
-        # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
-            lrnow = frac * args.learning_rate
-            # param_groups[0]=actor, [1]=critic. The critic can run at a higher LR
-            # (critic_lr_mult) to warm the value head faster; 1.0 = unchanged.
+            lrnow, critic_lrnow = _iteration_lrs(args, iteration)
+            # param_groups[0]=actor, [1]=critic (see the optimizer construction).
             optimizer.param_groups[0]["lr"] = lrnow
-            optimizer.param_groups[1]["lr"] = lrnow * args.critic_lr_mult
+            optimizer.param_groups[1]["lr"] = critic_lrnow
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
         ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
