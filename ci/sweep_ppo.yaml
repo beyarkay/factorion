@@ -4,6 +4,11 @@
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
+# Before launching, refresh the --start-from base below: check W&B for the
+# latest + longest-running SFT run that uploaded a model artifact (runs
+# without one can't be loaded as a base, and beware PR-experiment runs such
+# as single-lesson trains — their val/thput is not comparable).
+#
 # Everything but the two LR envelopes stays at the training_config.py defaults;
 # the sweep picks the peaks and the shape knobs the envelopes added:
 #   - learning_rate: the peak the actor's stable phase holds for most of the
