@@ -388,24 +388,19 @@ def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
 
     Each follows its own WSD envelope (`wsd_multiplier`) over the
     post-critic-warmup window — schedule spent while the actor is frozen would
-    be spent on nothing, so both hold their peak (`learning_rate` / `critic_lr`)
-    until the unfreeze. The envelopes are independent so e.g. the critic can
-    keep learning at full rate while the actor cools."""
+    be spent on nothing. Through the freeze the critic holds its `critic_lr`
+    peak and the actor (frozen, so its LR is inert) holds its first
+    post-unfreeze value, keeping the logged schedule monotone. The critic gets
+    no warmup ramp: the freeze is its warmup, and a ramp after it would only
+    crash the LR it just trained at."""
     total = max(1, args.num_iterations - args.critic_warmup)
-    step = iteration - args.critic_warmup - 1
-    if step < 0:
-        actor_mult = critic_mult = 1.0
-    else:
-        actor_mult = wsd_multiplier(
-            step, total, args.lr_warmup_iters, args.lr_cooldown_frac, args.lr_min_ratio
-        )
-        critic_mult = wsd_multiplier(
-            step,
-            total,
-            args.critic_lr_warmup_iters,
-            args.critic_lr_cooldown_frac,
-            args.critic_lr_min_ratio,
-        )
+    step = max(0, iteration - args.critic_warmup - 1)
+    actor_mult = wsd_multiplier(
+        step, total, args.lr_warmup_iters, args.lr_cooldown_frac, args.lr_min_ratio
+    )
+    critic_mult = wsd_multiplier(
+        step, total, 0, args.critic_lr_cooldown_frac, args.critic_lr_min_ratio
+    )
     return actor_mult * args.learning_rate, critic_mult * args.critic_lr
 
 

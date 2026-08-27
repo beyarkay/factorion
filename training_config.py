@@ -156,8 +156,6 @@ class PpoArgs(SharedArgs):
     until a PPO-specific sweep."""
     lr_min_ratio: float = 0.05
     """actor LR at the final iteration, as a fraction of `learning_rate`"""
-    critic_lr_warmup_iters: int = 0
-    """as `lr_warmup_iters`, for the critic's independent envelope"""
     critic_lr_cooldown_frac: float = 0.3
     """as `lr_cooldown_frac`, for the critic's independent envelope"""
     critic_lr_min_ratio: float = 0.05

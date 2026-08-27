@@ -13,10 +13,10 @@
 #     range reaches further down than up.
 #   - critic_lr: the critic's peak. Only the value head rides it, so the
 #     range is wide — it reaches both below the actor's band and above it.
-#   - *_warmup_iters: absolute iteration counts, so what wins transfers
-#     unchanged to runs of any length. The critic already trains at peak
-#     through the critic_warmup freeze; 0 is in range so the sweep can say
-#     the post-unfreeze ramps are worthless.
+#   - lr_warmup_iters: an absolute iteration count, so what wins transfers
+#     unchanged to runs of any length; 0 is in range so the sweep can say the
+#     ramp is worthless. Only the actor has one — the critic-warmup freeze is
+#     the critic's warmup.
 #   - *_cooldown_frac: Hägele et al. report the benefit plateauing near 20%
 #     and as little as 5% sufficing on long runs; swept past both ends.
 #   - *_min_ratio: 0 (decay to zero) is in range, so the sweep can tell us
@@ -47,10 +47,6 @@ parameters:
 
   # ── Warmup ───────────────────────────────────────────────────────
   lr_warmup_iters:
-    distribution: int_uniform
-    min: 0
-    max: 40
-  critic_lr_warmup_iters:
     distribution: int_uniform
     min: 0
     max: 40

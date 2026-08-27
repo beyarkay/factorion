@@ -44,11 +44,20 @@ def test_wsd_multiplier_shape():
 
 
 def test_freeze_window_holds_both_peaks():
-    """While the actor is frozen the schedule must not advance — even a
-    configured warmup ramp waits for the unfreeze."""
-    args = make_args(critic_warmup=9, lr_warmup_iters=5, critic_lr_warmup_iters=5)
+    args = make_args(critic_warmup=9)
     for iteration in range(1, args.critic_warmup + 1):
         assert _iteration_lrs(args, iteration) == peaks(args)
+
+
+def test_freeze_window_is_continuous_with_the_unfreeze():
+    """With a warmup ramp, the frozen (inert) actor holds the ramp's first
+    value and the critic holds its peak — the logged schedule never plunges
+    at the unfreeze."""
+    args = make_args(critic_warmup=9, lr_warmup_iters=5)
+    for iteration in range(1, args.critic_warmup + 2):
+        lr, critic_lr = _iteration_lrs(args, iteration)
+        assert lr == pytest.approx(args.learning_rate / 5)
+        assert critic_lr == pytest.approx(args.critic_lr)
 
 
 def test_stable_phase_holds_peaks_and_is_budget_independent():
@@ -105,7 +114,7 @@ def test_flags_round_trip_through_tyro():
             "--lr-warmup-iters", "3",
             "--lr-cooldown-frac", "0.25",
             "--lr-min-ratio", "0.02",
-            "--critic-lr-warmup-iters", "4",
+            "--critic-lr", "1e-4",
             "--critic-lr-cooldown-frac", "0.4",
             "--critic-lr-min-ratio", "0.1",
         ],
@@ -113,6 +122,6 @@ def test_flags_round_trip_through_tyro():
     assert args.lr_warmup_iters == 3
     assert args.lr_cooldown_frac == 0.25
     assert args.lr_min_ratio == 0.02
-    assert args.critic_lr_warmup_iters == 4
+    assert args.critic_lr == 1e-4
     assert args.critic_lr_cooldown_frac == 0.4
     assert args.critic_lr_min_ratio == 0.1
