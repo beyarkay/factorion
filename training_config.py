@@ -137,7 +137,7 @@ class PpoArgs(SharedArgs):
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 3.369e-05
+    learning_rate: float = 6.379e-05
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -145,20 +145,19 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    lr_warmup_iters: int = 0
+    lr_warmup_iters: int = 22
     """iterations of linear actor-LR warmup up to `learning_rate` at the start
     of the post-critic-warmup window — absolute, not a fraction, so runs of
     different lengths warm up identically (0 = start at peak)"""
-    lr_cooldown_frac: float = 0.3
+    lr_cooldown_frac: float = 0.4097
     """fraction of the post-critic-warmup window for the actor LR's final
     (1 - sqrt) cooldown — the only phase that depends on run length (see
-    `wsd_multiplier`). Shape defaults mirror SFT's swept schedule (ndc8tvvy)
-    until a PPO-specific sweep."""
-    lr_min_ratio: float = 0.05
+    `wsd_multiplier`). Schedule defaults from sweep 663awt86 (run b3hbcpvf)."""
+    lr_min_ratio: float = 0.07785
     """actor LR at the final iteration, as a fraction of `learning_rate`"""
-    critic_lr_cooldown_frac: float = 0.3
+    critic_lr_cooldown_frac: float = 0.3607
     """as `lr_cooldown_frac`, for the critic's independent envelope"""
-    critic_lr_min_ratio: float = 0.05
+    critic_lr_min_ratio: float = 0.1232
     """critic LR at the final iteration, as a fraction of `critic_lr`"""
     gamma: float = 0.997
     """the discount factor gamma"""
@@ -208,7 +207,7 @@ class PpoArgs(SharedArgs):
     """path to write summary JSON (default: summary.json next to ppo.py)"""
     critic_warmup: int = 9
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze."""
-    critic_lr: float = 5.043e-05
+    critic_lr: float = 4.798e-06
     """peak learning rate of the critic (value head); the actor's peak is
     `learning_rate`."""
     critic_head_std: float = 0.1169

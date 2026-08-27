@@ -44,7 +44,7 @@ def test_wsd_multiplier_shape():
 
 
 def test_freeze_window_holds_both_peaks():
-    args = make_args(critic_warmup=9)
+    args = make_args(critic_warmup=9, lr_warmup_iters=0)
     for iteration in range(1, args.critic_warmup + 1):
         assert _iteration_lrs(args, iteration) == peaks(args)
 
@@ -60,9 +60,18 @@ def test_freeze_window_is_continuous_with_the_unfreeze():
         assert critic_lr == pytest.approx(args.critic_lr)
 
 
+SHAPE = dict(
+    lr_warmup_iters=0,
+    lr_cooldown_frac=0.3,
+    lr_min_ratio=0.05,
+    critic_lr_cooldown_frac=0.3,
+    critic_lr_min_ratio=0.05,
+)
+
+
 def test_stable_phase_holds_peaks_and_is_budget_independent():
-    short = make_args(num_iterations=100)
-    long = make_args(num_iterations=1000)
+    short = make_args(num_iterations=100, **SHAPE)
+    long = make_args(num_iterations=1000, **SHAPE)
     # Iterations 10..73 are inside the short run's stable phase (window 91,
     # cooldown 27); the long run must sit on the same values step for step.
     for iteration in range(10, 74):
@@ -71,7 +80,7 @@ def test_stable_phase_holds_peaks_and_is_budget_independent():
 
 
 def test_cooldown_lands_near_min_ratios():
-    args = make_args(num_iterations=100)
+    args = make_args(num_iterations=100, **SHAPE)
     lr, critic_lr = _iteration_lrs(args, args.num_iterations)
     peak_lr, peak_critic = peaks(args)
     # The last iteration sits one step short of the cooldown's endpoint, so it
