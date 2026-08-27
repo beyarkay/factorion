@@ -1874,55 +1874,12 @@ if __name__ == "__main__":
             f"k:{args.kernel_size}",
         )
 
-        # Define metric axes and summary aggregation. global_step (env steps)
-        # is the x-axis for every panel. Every metric summarises to its LAST
-        # value, eval/* included: a run-max summary reports the single luckiest
-        # eval a run ever logged, and that is the number the W&B runs table
-        # shows and the sweep controller ranks on.
+        # global_step (env steps) is the x-axis for every panel. Do NOT pass
+        # define_metric(..., summary=...): it writes the summary under a dotted
+        # key ("eval/thput.last") that the sweep controller and the runs table
+        # cannot resolve, leaving sweeps blind to their metric. The default
+        # summary is already the last logged value, under the plain key.
         wandb.define_metric("*", step_metric="global_step")
-        _LESSONS = [k.name for k in LessonKind]
-        wandb.define_metric("eval/thput", summary="last")
-        wandb.define_metric("eval/trial_thput", summary="last")
-        wandb.define_metric("eval/asm_item_acc", summary="last")
-        wandb.define_metric("eval/eot_acc", summary="last")
-        wandb.define_metric("eval/eot_pos_recall", summary="last")
-        wandb.define_metric("eval/seconds", summary="last")
-        for ln in _LESSONS:
-            wandb.define_metric(f"eval/{ln}/thput", summary="last")
-            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="last")
-            wandb.define_metric(f"eval/{ln}/eot_acc", summary="last")
-            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="last")
-        for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
-                  "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
-            wandb.define_metric(f"rollout/{m}", summary="last")
-            wandb.define_metric(f"rollout/trial_{m}", summary="last")
-        for ln in _LESSONS:
-            for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
-            ]:
-                wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob", "kl_to_ref"]:
-            wandb.define_metric(f"policy/{m}", summary="last")
-        for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
-            wandb.define_metric(f"policy/entropy_{h}", summary="last")
-            wandb.define_metric(f"policy/kl_to_ref_{h}", summary="last")
-        for m in ["policy", "value", "entropy", "total", "approx_kl",
-                  "clipfrac", "explained_variance"]:
-            wandb.define_metric(f"losses/{m}", summary="last")
-        for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
-                  "return_mean", "value_std", "return_std", "value_return_corr",
-                  "adv_abs_mean"]:
-            wandb.define_metric(f"critic/{m}", summary="last")
-        for ln in _LESSONS:
-            for m in ["explained_variance", "value_rmse", "value_bias",
-                      "value_return_corr", "n"]:
-                wandb.define_metric(f"critic/{ln}/{m}", summary="last")
-        for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
-            wandb.define_metric(f"optim/{m}", summary="last")
-        for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
-            wandb.define_metric(f"perf/{m}", summary="last")
     print("Registering factorio Gym env")
     # Register the factorio env. This runs only under __main__, so pass the
     # class directly rather than "ppo:FactorioEnv" — a string entry_point would
