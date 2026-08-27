@@ -388,10 +388,9 @@ def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
 
     Each follows its own WSD envelope (`wsd_multiplier`) over the
     post-critic-warmup window — schedule spent while the actor is frozen would
-    be spent on nothing, so both hold their peak until the unfreeze. The
-    envelopes are independent so e.g. the critic can keep learning at full
-    rate while the actor cools; the critic's peak stays defined relative to
-    the actor's as `learning_rate * critic_lr_mult`."""
+    be spent on nothing, so both hold their peak (`learning_rate` / `critic_lr`)
+    until the unfreeze. The envelopes are independent so e.g. the critic can
+    keep learning at full rate while the actor cools."""
     total = max(1, args.num_iterations - args.critic_warmup)
     step = iteration - args.critic_warmup - 1
     if step < 0:
@@ -407,10 +406,7 @@ def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
             args.critic_lr_cooldown_frac,
             args.critic_lr_min_ratio,
         )
-    return (
-        actor_mult * args.learning_rate,
-        critic_mult * args.learning_rate * args.critic_lr_mult,
-    )
+    return actor_mult * args.learning_rate, critic_mult * args.critic_lr
 
 
 def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -2088,7 +2084,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(
         [
             {"params": actor_params, "lr": args.learning_rate},
-            {"params": critic_params, "lr": args.learning_rate},
+            {"params": critic_params, "lr": args.critic_lr},
         ],
         lr=args.learning_rate,
         eps=args.adam_epsilon,

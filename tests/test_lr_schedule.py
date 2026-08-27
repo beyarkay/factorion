@@ -28,7 +28,7 @@ def make_args(num_iterations: int = 100, **overrides) -> PpoArgs:
 
 
 def peaks(args) -> tuple[float, float]:
-    return args.learning_rate, args.learning_rate * args.critic_lr_mult
+    return args.learning_rate, args.critic_lr
 
 
 def test_wsd_multiplier_shape():
@@ -77,14 +77,14 @@ def test_envelopes_are_independent():
     # (stable_end 45) but still in the critic's stable phase (stable_end 82).
     lr, critic_lr = _iteration_lrs(args, 69)
     assert lr < args.learning_rate
-    assert critic_lr == pytest.approx(args.learning_rate * args.critic_lr_mult)
+    assert critic_lr == pytest.approx(args.critic_lr)
 
 
 def test_actor_warmup_ramps_only_the_actor():
     args = make_args(lr_warmup_iters=10)
     lr, critic_lr = _iteration_lrs(args, args.critic_warmup + 1)
     assert lr == pytest.approx(args.learning_rate / 10)
-    assert critic_lr == pytest.approx(args.learning_rate * args.critic_lr_mult)
+    assert critic_lr == pytest.approx(args.critic_lr)
     assert _iteration_lrs(args, args.critic_warmup + 10)[0] == pytest.approx(
         args.learning_rate
     )

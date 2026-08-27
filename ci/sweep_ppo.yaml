@@ -11,8 +11,8 @@
 #     was tuned under the linear whole-run anneal, which spends most of its
 #     steps well below peak — the best WSD peak may well sit lower, so the
 #     range reaches further down than up.
-#   - critic_lr_mult: the critic's peak, relative to the actor's. Only the
-#     value head rides it, so the range is wide.
+#   - critic_lr: the critic's peak. Only the value head rides it, so the
+#     range is wide — it reaches both below the actor's band and above it.
 #   - *_warmup_iters: absolute iteration counts, so what wins transfers
 #     unchanged to runs of any length. The critic already trains at peak
 #     through the critic_warmup freeze; 0 is in range so the sweep can say
@@ -40,10 +40,10 @@ parameters:
     distribution: log_uniform_values
     min: 3e-6
     max: 1e-4
-  critic_lr_mult:
+  critic_lr:
     distribution: log_uniform_values
-    min: 0.25
-    max: 8.0
+    min: 3e-6
+    max: 3e-4
 
   # ── Warmup ───────────────────────────────────────────────────────
   lr_warmup_iters:

@@ -161,8 +161,7 @@ class PpoArgs(SharedArgs):
     critic_lr_cooldown_frac: float = 0.3
     """as `lr_cooldown_frac`, for the critic's independent envelope"""
     critic_lr_min_ratio: float = 0.05
-    """critic LR at the final iteration, as a fraction of its
-    `learning_rate * critic_lr_mult` peak"""
+    """critic LR at the final iteration, as a fraction of `critic_lr`"""
     gamma: float = 0.997
     """the discount factor gamma"""
     gae_lambda: float = 0.9187
@@ -211,8 +210,9 @@ class PpoArgs(SharedArgs):
     """path to write summary JSON (default: summary.json next to ppo.py)"""
     critic_warmup: int = 9
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze."""
-    critic_lr_mult: float = 1.497
-    """Multiplier on the critic (value-head) learning rate relative to the actor's."""
+    critic_lr: float = 5.043e-05
+    """peak learning rate of the critic (value head); the actor's peak is
+    `learning_rate`."""
     critic_head_std: float = 0.1169
     """Initialization std for the value head."""
     eval_every: int = 7
