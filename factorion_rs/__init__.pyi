@@ -23,6 +23,9 @@ class RecipeData(TypedDict):
     total_raw_time: float
 
 def simulate_throughput(world: NDArray[np.int64]) -> tuple[float, int]: ...
+def simulate_throughput_diagnostics(
+    world: NDArray[np.int64],
+) -> tuple[float, int, int, int, int, int, int, int]: ...
 def py_sink_deliveries(
     world: NDArray[np.int64],
 ) -> list[tuple[int, int, str | None, float]]: ...

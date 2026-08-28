@@ -936,8 +936,23 @@ class TestRolloutAsmItemAcc:
         roll = run_rollout_eval(
             agent, SftArgs(seed=1, size=size), seeds, torch.device("cpu"), max_seeds=2
         )
-        assert {"asm_item_acc", "per_kind_asm_item_acc", "per_kind_asm_n"} <= set(roll)
+        assert {
+            "asm_item_acc",
+            "per_kind_asm_item_acc",
+            "per_kind_asm_n",
+            "structural",
+            "trial_structural",
+            "per_kind_structural",
+        } <= set(roll)
         assert 0.0 <= roll["asm_item_acc"] <= 1.0
+        assert {
+            "asm_n",
+            "asm_without_input_n",
+            "asm_without_output_n",
+            "inserter_n",
+            "inserter_without_input_n",
+            "inserter_without_output_n",
+        } <= roll["structural"].keys()
 
     def test_correct_recipe_scores_one_wrong_scores_zero(self, registered_env):
         size = 9
@@ -1055,6 +1070,9 @@ class TestRunRolloutEval:
             "per_kind_eot_pos_recall",
             "per_kind_eot_step_n",
             "per_kind_eot_pos_n",
+            "structural",
+            "trial_structural",
+            "per_kind_structural",
         }
         overall, per_kind, per_kind_n = (
             roll["overall"],

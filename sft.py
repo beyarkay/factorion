@@ -404,6 +404,31 @@ class RolloutEval(TypedDict):
     per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
     per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
     per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+    structural: dict[str, float]
+    trial_structural: dict[str, float]
+    per_kind_structural: dict[str, dict[str, float]]
+
+
+_STRUCTURAL_COUNT_KEYS = (
+    "asm_n",
+    "asm_without_input_n",
+    "asm_without_output_n",
+    "inserter_n",
+    "inserter_without_input_n",
+    "inserter_without_output_n",
+)
+
+
+def _structural_metrics(counts: dict[str, int]) -> dict[str, float]:
+    metrics = {key: float(counts[key]) for key in _STRUCTURAL_COUNT_KEYS}
+    for entity in ("asm", "inserter"):
+        denominator = counts[f"{entity}_n"]
+        if denominator > 0:
+            for edge in ("input", "output"):
+                metrics[f"{entity}_without_{edge}_frac"] = (
+                    counts[f"{entity}_without_{edge}_n"] / denominator
+                )
+    return metrics
 
 
 def _solved_assembler_recipes(solved_CWH) -> set[int]:
@@ -493,6 +518,9 @@ def run_rollout_eval(
     per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_structural_counts = {
+        k.name: {key: 0 for key in _STRUCTURAL_COUNT_KEYS} for k in LessonKind
+    }
 
     if not seeds_sorted:
         if was_training:
@@ -514,6 +542,16 @@ def run_rollout_eval(
             "per_kind_eot_pos_recall": dict(zero),
             "per_kind_eot_step_n": dict(per_kind_n),
             "per_kind_eot_pos_n": dict(per_kind_n),
+            "structural": _structural_metrics(
+                {key: 0 for key in _STRUCTURAL_COUNT_KEYS}
+            ),
+            "trial_structural": _structural_metrics(
+                {key: 0 for key in _STRUCTURAL_COUNT_KEYS}
+            ),
+            "per_kind_structural": {
+                kn: _structural_metrics(counts)
+                for kn, counts in per_kind_structural_counts.items()
+            },
         }
 
     # Cap K at the number of seeds — spinning up more envs than work
@@ -554,13 +592,28 @@ def run_rollout_eval(
 
     obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
 
-    def finish_slot(i: int, thput: float) -> None:
+    def finish_slot(
+        i: int,
+        thput: float,
+        structural_counts: Optional[dict[str, int]] = None,
+    ) -> None:
         """Record slot `i`'s finished rollout at `thput` and refill it from the
         seed queue, deactivating the slot once the queue is empty."""
         s, k, _ = current[i]
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
+        if structural_counts is None:
+            diagnostics = factorion_rs.simulate_throughput_diagnostics(
+                envs[i]._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+            )
+            structural_counts = {
+                key: int(value)
+                for key, value in zip(_STRUCTURAL_COUNT_KEYS, diagnostics[2:])
+            }
+        for key, value in structural_counts.items():
+            per_kind_structural_counts[k.name][key] += value
+        structural = _structural_metrics(structural_counts)
         if records is not None:
             records.append(
                 {
@@ -569,6 +622,7 @@ def run_rollout_eval(
                     "thput": thput,
                     "entity_cost": float(envs[i]._entity_cost),
                     "render": render_factory(envs[i]._world_CWH),
+                    **structural,
                 }
             )
 
@@ -662,7 +716,11 @@ def run_rollout_eval(
                     continue
 
                 # The env ran out of room or steps before the head ever fired.
-                finish_slot(i, current[i][2])
+                finish_slot(
+                    i,
+                    current[i][2],
+                    {key: int(info[key]) for key in _STRUCTURAL_COUNT_KEYS},
+                )
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
     trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
@@ -695,6 +753,22 @@ def run_rollout_eval(
         kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
         for kn, n in per_kind_eot_pos_total.items()
     }
+    structural_counts = {
+        key: sum(
+            per_kind_structural_counts[k.name][key]
+            for k in LessonKind
+            if not LESSON_IS_TRIAL[k]
+        )
+        for key in _STRUCTURAL_COUNT_KEYS
+    }
+    trial_structural_counts = {
+        key: sum(
+            per_kind_structural_counts[k.name][key]
+            for k in LessonKind
+            if LESSON_IS_TRIAL[k]
+        )
+        for key in _STRUCTURAL_COUNT_KEYS
+    }
 
     if was_training:
         agent.train()
@@ -713,6 +787,12 @@ def run_rollout_eval(
         "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
         "per_kind_eot_step_n": dict(per_kind_eot_step_total),
         "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
+        "structural": _structural_metrics(structural_counts),
+        "trial_structural": _structural_metrics(trial_structural_counts),
+        "per_kind_structural": {
+            kn: _structural_metrics(counts)
+            for kn, counts in per_kind_structural_counts.items()
+        },
     }
 
 
@@ -1426,6 +1506,15 @@ def train_sft(args: SftArgs):
             for kn, acc in roll["per_kind_asm_item_acc"].items():
                 if per_kind_asm_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
+            for name, value in roll["structural"].items():
+                per_kind_metrics[f"val/{name}"] = value
+            if roll["trial_n"] > 0:
+                for name, value in roll["trial_structural"].items():
+                    per_kind_metrics[f"val/trial_{name}"] = value
+            for kn, structural in roll["per_kind_structural"].items():
+                if per_kind_thp_n[kn] > 0:
+                    for name, value in structural.items():
+                        per_kind_metrics[f"val/{kn}/{name}"] = value
         else:
             overall_thp = None
             rollout_seconds = None

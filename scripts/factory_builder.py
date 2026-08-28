@@ -902,7 +902,7 @@ def _reset_rollout_env(
 def _rollout_result(
     index: int, env: FactorioEnv, seed: int, info: dict, terminated: bool
 ) -> dict:
-    return {
+    result = {
         "type": "result",
         "index": index,
         "kind": env._kind.name,
@@ -919,6 +919,16 @@ def _rollout_result(
         "grid": world_CWH_to_grid(env._world_CWH),
         "solved_grid": world_CWH_to_grid(env._solved_world_CWH),
     }
+    for entity in ("asm", "inserter"):
+        denominator = int(info.get(f"{entity}_n", 0))
+        result[f"{entity}_n"] = denominator
+        for edge in ("input", "output"):
+            key = f"{entity}_without_{edge}_n"
+            numerator = int(info.get(key, 0))
+            result[key] = numerator
+            if denominator > 0:
+                result[f"{entity}_without_{edge}_frac"] = numerator / denominator
+    return result
 
 
 def _batch_rollout(

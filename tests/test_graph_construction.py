@@ -23,6 +23,7 @@ Two layers of coverage:
 
 import networkx as nx
 import pytest
+import factorion_rs
 
 from factorion import (
     Direction,
@@ -135,6 +136,18 @@ class TestHandcraftedGraphSnapshots:
             (br, _n("inserter", 3, 0)),
             (_n("inserter", 3, 0), _n("bulk_inserter", 4, 0)),
         }
+
+    def test_throughput_diagnostics_report_wired_assembler_and_inserters(self):
+        w = make_world(9)
+        set_entity(w, 0, 4, "source", Direction.EAST, "copper_plate")
+        set_entity(w, 1, 4, "inserter", Direction.EAST)
+        set_assembler(w, 2, 3, "copper_cable")
+        set_entity(w, 5, 4, "inserter", Direction.EAST)
+        set_entity(w, 6, 4, "transport_belt", Direction.EAST)
+        set_entity(w, 7, 4, "sink", Direction.EAST, "copper_cable")
+
+        diagnostics = factorion_rs.simulate_throughput_diagnostics(w.numpy())
+        assert diagnostics[2:] == (1, 0, 0, 2, 0, 0)
 
     def test_long_handed_inserter_reaches_two_tiles(self):
         # A long-handed inserter reaches TWO tiles: it picks up from the source
@@ -430,6 +443,7 @@ class TestFactorionRsCurrencyGuard:
         # not py_build_graph — exactly the state that produced the crash.
         stale = types.SimpleNamespace(
             simulate_throughput=lambda *a, **k: None,
+            simulate_throughput_diagnostics=lambda *a, **k: None,
             py_entity_tiles=lambda *a, **k: None,
             py_items=lambda *a, **k: {},
             py_recipes=lambda *a, **k: {},

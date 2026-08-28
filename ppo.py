@@ -311,6 +311,16 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if asm_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/asm_item_acc"] = acc
 
+    for name, value in roll["structural"].items():
+        metrics[f"eval/{name}"] = value
+    if roll["trial_n"] > 0:
+        for name, value in roll["trial_structural"].items():
+            metrics[f"eval/trial_{name}"] = value
+    for kn, structural in roll["per_kind_structural"].items():
+        if roll["per_kind_n"].get(kn, 0) > 0:
+            for name, value in structural.items():
+                metrics[f"eval/{kn}/{name}"] = value
+
     # EOT-head accuracy/recall from the same rollout. PPO has no expert-labelled
     # val set, so this on-rollout score is the only per-lesson EOT-head signal it
     # gets (mirrors SFT's val/{kind}/eot_acc + eot_pos_recall). Per-lesson
@@ -342,6 +352,12 @@ def _rollout_episode_metrics(
     frac_reachable: float,
     entity_cost: float,
     cost_efficiency: float,
+    asm_n: float = 0.0,
+    asm_without_input_n: float = 0.0,
+    asm_without_output_n: float = 0.0,
+    inserter_n: float = 0.0,
+    inserter_without_input_n: float = 0.0,
+    inserter_without_output_n: float = 0.0,
     is_trial: bool = False,
 ) -> dict:
     """Build the rollout/* metrics for one finished episode (overall + per-lesson).
@@ -361,7 +377,7 @@ def _rollout_episode_metrics(
     The per-lesson keys are already name-separated and are left alone.
     """
     agg = "rollout/trial_" if is_trial else "rollout/"
-    return {
+    metrics = {
         f"{agg}thput": float(thput_normed),
         f"{agg}thput_raw": float(thput_raw),
         f"{agg}reward": float(episode_return),
@@ -381,6 +397,48 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
+
+    structural_counts = {
+        "asm_n": float(asm_n),
+        "asm_without_input_n": float(asm_without_input_n),
+        "asm_without_output_n": float(asm_without_output_n),
+        "inserter_n": float(inserter_n),
+        "inserter_without_input_n": float(inserter_without_input_n),
+        "inserter_without_output_n": float(inserter_without_output_n),
+    }
+    for prefix in (agg, f"rollout/{lesson}/"):
+        metrics.update({f"{prefix}{key}": value for key, value in structural_counts.items()})
+        if asm_n > 0:
+            metrics[f"{prefix}asm_without_input_frac"] = asm_without_input_n / asm_n
+            metrics[f"{prefix}asm_without_output_frac"] = asm_without_output_n / asm_n
+        if inserter_n > 0:
+            metrics[f"{prefix}inserter_without_input_frac"] = (
+                inserter_without_input_n / inserter_n
+            )
+            metrics[f"{prefix}inserter_without_output_frac"] = (
+                inserter_without_output_n / inserter_n
+            )
+    return metrics
+
+
+def _aggregate_episode_metrics(metrics: dict[str, list[float]]) -> dict[str, float]:
+    means = {key: sum(values) / len(values) for key, values in metrics.items()}
+    for entity in ("asm", "inserter"):
+        denominator_suffix = f"{entity}_n"
+        for key, values in metrics.items():
+            if not key.endswith(denominator_suffix):
+                continue
+            denominator = sum(values)
+            if denominator <= 0:
+                continue
+            prefix = key[: -len(denominator_suffix)]
+            for edge in ("input", "output"):
+                numerator_key = f"{prefix}{entity}_without_{edge}_n"
+                if numerator_key in metrics:
+                    means[f"{prefix}{entity}_without_{edge}_frac"] = (
+                        sum(metrics[numerator_key]) / denominator
+                    )
+    return means
 
 
 def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
@@ -929,7 +987,27 @@ class FactorioEnv(gym.Env):
         # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
         # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
         # self._max_throughput comes from the factory generator — see reset().
-        thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
+        world_WHC = self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+        structural_counts = {}
+        if terminated or truncated:
+            diagnostics = factorion_rs.simulate_throughput_diagnostics(world_WHC)
+            thput_raw, num_unreachable = diagnostics[:2]
+            structural_counts = {
+                key: int(value)
+                for key, value in zip(
+                    (
+                        "asm_n",
+                        "asm_without_input_n",
+                        "asm_without_output_n",
+                        "inserter_n",
+                        "inserter_without_input_n",
+                        "inserter_without_output_n",
+                    ),
+                    diagnostics[2:],
+                )
+            }
+        else:
+            thput_raw, num_unreachable = factorion_rs.simulate_throughput(world_WHC)
         thput_normed = (
             min(1.0, thput_raw / self._max_throughput)
             if self._max_throughput > 0
@@ -1013,6 +1091,7 @@ class FactorioEnv(gym.Env):
             info = self._get_info()
             if terminated or truncated:
                 info.update({ 'steps_taken': self.steps })
+                info.update(structural_counts)
 
             num_placed_entities = self._num_placed_entities
 
@@ -2106,7 +2185,7 @@ if __name__ == "__main__":
     def _flush_episode_means() -> dict[str, float]:
         if not _episode_metrics:
             return {}
-        means = {k: sum(v) / len(v) for k, v in _episode_metrics.items()}
+        means = _aggregate_episode_metrics(_episode_metrics)
         _episode_metrics.clear()
         return means
 
@@ -2280,6 +2359,12 @@ if __name__ == "__main__":
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
+                        asm_n=infos["asm_n"][i],
+                        asm_without_input_n=infos["asm_without_input_n"][i],
+                        asm_without_output_n=infos["asm_without_output_n"][i],
+                        inserter_n=infos["inserter_n"][i],
+                        inserter_without_input_n=infos["inserter_without_input_n"][i],
+                        inserter_without_output_n=infos["inserter_without_output_n"][i],
                         is_trial=is_trial,
                     ))
 

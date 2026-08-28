@@ -37,6 +37,7 @@ import factorion_rs
 # web UI builds the flow graph). Fail fast at import with an actionable message.
 _REQUIRED_FACTORION_RS = (
     "simulate_throughput",
+    "simulate_throughput_diagnostics",
     "py_build_graph",
     "py_entity_tiles",
     "py_items",

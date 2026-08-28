@@ -23,6 +23,7 @@ from ppo import (  # noqa: E402
     _run_signature,
     _build_eval_set,
     _rollout_episode_metrics,
+    _aggregate_episode_metrics,
     _explained_variance,
     _pearson_corr,
     _critic_diagnostics,
@@ -107,6 +108,22 @@ class TestEnvExposesKind:
                   "misc": 0, "eot": 0}
         _, _, _, _, info2 = env.step(action)
         assert info2["kind"] == LessonKind.SPLITTER_SPLIT.value
+
+    def test_terminal_info_includes_structural_counts(self, registered_env):
+        env = FactorioEnv(size=9)
+        env.reset(seed=2, options={"kind": LessonKind.MEMORISE_1_INGREDIENT_RECIPES})
+        action = {"xy": [0, 0], "entity": 0, "direction": 0, "item": 0,
+                  "misc": 0, "eot": 1}
+        _, _, terminated, _, info = env.step(action)
+        assert terminated
+        assert {
+            "asm_n",
+            "asm_without_input_n",
+            "asm_without_output_n",
+            "inserter_n",
+            "inserter_without_input_n",
+            "inserter_without_output_n",
+        } <= info.keys()
 
 
 # ── per-head entropy + eot prob (policy/* metrics) ──────────────────────────
@@ -201,6 +218,42 @@ class TestRolloutEpisodeMetrics:
         assert m["rollout/SPLITTER_SPLIT/entity_cost"] == pytest.approx(12.5)
         assert m["rollout/cost_efficiency"] == pytest.approx(0.9)
         assert m["rollout/SPLITTER_SPLIT/cost_efficiency"] == pytest.approx(0.9)
+
+    def test_structural_counts_and_fractions_are_logged(self):
+        m = _rollout_episode_metrics(
+            "FACTORY_1_INGREDIENT",
+            episode_return=0.0,
+            episode_len=1.0,
+            thput_normed=0.0,
+            thput_raw=0.0,
+            ended_by_eot=1.0,
+            invalid_frac=0.0,
+            num_entities=8.0,
+            min_entities_required=4.0,
+            frac_reachable=0.5,
+            entity_cost=4.0,
+            cost_efficiency=0.9,
+            asm_n=2,
+            asm_without_input_n=1,
+            asm_without_output_n=2,
+            inserter_n=4,
+            inserter_without_input_n=1,
+            inserter_without_output_n=3,
+        )
+        assert m["rollout/asm_without_input_frac"] == pytest.approx(0.5)
+        assert m["rollout/asm_without_output_frac"] == pytest.approx(1.0)
+        assert m["rollout/inserter_without_input_frac"] == pytest.approx(0.25)
+        assert m["rollout/FACTORY_1_INGREDIENT/inserter_without_output_frac"] == pytest.approx(0.75)
+
+    def test_structural_fractions_are_entity_weighted(self):
+        metrics = {
+            "rollout/asm_n": [1.0, 9.0],
+            "rollout/asm_without_input_n": [1.0, 0.0],
+            "rollout/asm_without_output_n": [0.0, 9.0],
+        }
+        aggregated = _aggregate_episode_metrics(metrics)
+        assert aggregated["rollout/asm_without_input_frac"] == pytest.approx(0.1)
+        assert aggregated["rollout/asm_without_output_frac"] == pytest.approx(0.9)
 
 
 class TestTrialRolloutMetricsAreSeparate:
