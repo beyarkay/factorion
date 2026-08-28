@@ -946,9 +946,6 @@ class TestRolloutAsmItemAcc:
         } <= set(roll)
         assert 0.0 <= roll["asm_item_acc"] <= 1.0
         assert {
-            "asm_n",
-            "asm_without_input_n",
-            "asm_without_output_n",
             "inserter_n",
             "inserter_without_input_n",
             "inserter_without_output_n",

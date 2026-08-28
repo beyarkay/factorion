@@ -872,9 +872,6 @@ class TestBatchRollout:
         result = next(e for e in events if e["type"] == "result")
         assert result["stopped_by"] in ("eot", "max_steps")
         assert {
-            "asm_n",
-            "asm_without_input_n",
-            "asm_without_output_n",
             "inserter_n",
             "inserter_without_input_n",
             "inserter_without_output_n",

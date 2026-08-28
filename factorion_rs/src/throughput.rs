@@ -33,9 +33,6 @@ pub struct SinkDelivery {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StructuralDiagnostics {
-    pub assembler_count: usize,
-    pub assembler_without_input_count: usize,
-    pub assembler_without_output_count: usize,
     pub inserter_count: usize,
     pub inserter_without_input_count: usize,
     pub inserter_without_output_count: usize,
@@ -45,13 +42,6 @@ pub fn structural_diagnostics(graph: &FactoryGraph) -> StructuralDiagnostics {
     let mut diagnostics = StructuralDiagnostics::default();
     for (index, node) in graph.nodes.iter().enumerate() {
         match node.entity_kind {
-            Item::AssemblingMachine1 => {
-                diagnostics.assembler_count += 1;
-                diagnostics.assembler_without_input_count +=
-                    usize::from(graph.predecessors[index].is_empty());
-                diagnostics.assembler_without_output_count +=
-                    usize::from(graph.successors[index].is_empty());
-            }
             Item::Inserter | Item::LongHandedInserter => {
                 diagnostics.inserter_count += 1;
                 diagnostics.inserter_without_input_count +=
@@ -402,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_structural_diagnostics_count_wired_entities() {
+    fn test_structural_diagnostics_count_wired_inserters() {
         let mut w = World::empty(9, 5);
         w.place(0, 2, Item::Source, Direction::East, Some(Item::CopperPlate));
         w.place(1, 2, Item::Inserter, Direction::East, None);
@@ -423,7 +413,6 @@ mod tests {
         assert_eq!(
             diagnostics,
             StructuralDiagnostics {
-                assembler_count: 1,
                 inserter_count: 2,
                 ..StructuralDiagnostics::default()
             }
@@ -431,26 +420,14 @@ mod tests {
     }
 
     #[test]
-    fn test_structural_diagnostics_count_unwired_entities() {
+    fn test_structural_diagnostics_count_unwired_inserter() {
         let mut w = World::empty(10, 6);
-        w.place_multi_tile(
-            1,
-            1,
-            Item::AssemblingMachine1,
-            Direction::East,
-            Some(Item::CopperCable),
-            3,
-            3,
-        );
         w.place(8, 5, Item::LongHandedInserter, Direction::East, None);
 
         let diagnostics = structural_diagnostics(&build_graph(&w));
         assert_eq!(
             diagnostics,
             StructuralDiagnostics {
-                assembler_count: 1,
-                assembler_without_input_count: 1,
-                assembler_without_output_count: 1,
                 inserter_count: 1,
                 inserter_without_input_count: 1,
                 inserter_without_output_count: 1,

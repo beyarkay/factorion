@@ -919,15 +919,14 @@ def _rollout_result(
         "grid": world_CWH_to_grid(env._world_CWH),
         "solved_grid": world_CWH_to_grid(env._solved_world_CWH),
     }
-    for entity in ("asm", "inserter"):
-        denominator = int(info.get(f"{entity}_n", 0))
-        result[f"{entity}_n"] = denominator
-        for edge in ("input", "output"):
-            key = f"{entity}_without_{edge}_n"
-            numerator = int(info.get(key, 0))
-            result[key] = numerator
-            if denominator > 0:
-                result[f"{entity}_without_{edge}_frac"] = numerator / denominator
+    denominator = int(info.get("inserter_n", 0))
+    result["inserter_n"] = denominator
+    for edge in ("input", "output"):
+        key = f"inserter_without_{edge}_n"
+        numerator = int(info.get(key, 0))
+        result[key] = numerator
+        if denominator > 0:
+            result[f"inserter_without_{edge}_frac"] = numerator / denominator
     return result
 
 

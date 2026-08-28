@@ -410,9 +410,6 @@ class RolloutEval(TypedDict):
 
 
 _STRUCTURAL_COUNT_KEYS = (
-    "asm_n",
-    "asm_without_input_n",
-    "asm_without_output_n",
     "inserter_n",
     "inserter_without_input_n",
     "inserter_without_output_n",
@@ -421,13 +418,12 @@ _STRUCTURAL_COUNT_KEYS = (
 
 def _structural_metrics(counts: dict[str, int]) -> dict[str, float]:
     metrics = {key: float(counts[key]) for key in _STRUCTURAL_COUNT_KEYS}
-    for entity in ("asm", "inserter"):
-        denominator = counts[f"{entity}_n"]
-        if denominator > 0:
-            for edge in ("input", "output"):
-                metrics[f"{entity}_without_{edge}_frac"] = (
-                    counts[f"{entity}_without_{edge}_n"] / denominator
-                )
+    denominator = counts["inserter_n"]
+    if denominator > 0:
+        for edge in ("input", "output"):
+            metrics[f"inserter_without_{edge}_frac"] = (
+                counts[f"inserter_without_{edge}_n"] / denominator
+            )
     return metrics
 
 

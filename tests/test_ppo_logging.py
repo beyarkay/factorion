@@ -117,9 +117,6 @@ class TestEnvExposesKind:
         _, _, terminated, _, info = env.step(action)
         assert terminated
         assert {
-            "asm_n",
-            "asm_without_input_n",
-            "asm_without_output_n",
             "inserter_n",
             "inserter_without_input_n",
             "inserter_without_output_n",
@@ -233,27 +230,22 @@ class TestRolloutEpisodeMetrics:
             frac_reachable=0.5,
             entity_cost=4.0,
             cost_efficiency=0.9,
-            asm_n=2,
-            asm_without_input_n=1,
-            asm_without_output_n=2,
             inserter_n=4,
             inserter_without_input_n=1,
             inserter_without_output_n=3,
         )
-        assert m["rollout/asm_without_input_frac"] == pytest.approx(0.5)
-        assert m["rollout/asm_without_output_frac"] == pytest.approx(1.0)
         assert m["rollout/inserter_without_input_frac"] == pytest.approx(0.25)
         assert m["rollout/FACTORY_1_INGREDIENT/inserter_without_output_frac"] == pytest.approx(0.75)
 
     def test_structural_fractions_are_entity_weighted(self):
         metrics = {
-            "rollout/asm_n": [1.0, 9.0],
-            "rollout/asm_without_input_n": [1.0, 0.0],
-            "rollout/asm_without_output_n": [0.0, 9.0],
+            "rollout/inserter_n": [1.0, 9.0],
+            "rollout/inserter_without_input_n": [1.0, 0.0],
+            "rollout/inserter_without_output_n": [0.0, 9.0],
         }
         aggregated = _aggregate_episode_metrics(metrics)
-        assert aggregated["rollout/asm_without_input_frac"] == pytest.approx(0.1)
-        assert aggregated["rollout/asm_without_output_frac"] == pytest.approx(0.9)
+        assert aggregated["rollout/inserter_without_input_frac"] == pytest.approx(0.1)
+        assert aggregated["rollout/inserter_without_output_frac"] == pytest.approx(0.9)
 
 
 class TestTrialRolloutMetricsAreSeparate:

@@ -352,9 +352,6 @@ def _rollout_episode_metrics(
     frac_reachable: float,
     entity_cost: float,
     cost_efficiency: float,
-    asm_n: float = 0.0,
-    asm_without_input_n: float = 0.0,
-    asm_without_output_n: float = 0.0,
     inserter_n: float = 0.0,
     inserter_without_input_n: float = 0.0,
     inserter_without_output_n: float = 0.0,
@@ -399,18 +396,12 @@ def _rollout_episode_metrics(
     }
 
     structural_counts = {
-        "asm_n": float(asm_n),
-        "asm_without_input_n": float(asm_without_input_n),
-        "asm_without_output_n": float(asm_without_output_n),
         "inserter_n": float(inserter_n),
         "inserter_without_input_n": float(inserter_without_input_n),
         "inserter_without_output_n": float(inserter_without_output_n),
     }
     for prefix in (agg, f"rollout/{lesson}/"):
         metrics.update({f"{prefix}{key}": value for key, value in structural_counts.items()})
-        if asm_n > 0:
-            metrics[f"{prefix}asm_without_input_frac"] = asm_without_input_n / asm_n
-            metrics[f"{prefix}asm_without_output_frac"] = asm_without_output_n / asm_n
         if inserter_n > 0:
             metrics[f"{prefix}inserter_without_input_frac"] = (
                 inserter_without_input_n / inserter_n
@@ -423,21 +414,20 @@ def _rollout_episode_metrics(
 
 def _aggregate_episode_metrics(metrics: dict[str, list[float]]) -> dict[str, float]:
     means = {key: sum(values) / len(values) for key, values in metrics.items()}
-    for entity in ("asm", "inserter"):
-        denominator_suffix = f"{entity}_n"
-        for key, values in metrics.items():
-            if not key.endswith(denominator_suffix):
-                continue
-            denominator = sum(values)
-            if denominator <= 0:
-                continue
-            prefix = key[: -len(denominator_suffix)]
-            for edge in ("input", "output"):
-                numerator_key = f"{prefix}{entity}_without_{edge}_n"
-                if numerator_key in metrics:
-                    means[f"{prefix}{entity}_without_{edge}_frac"] = (
-                        sum(metrics[numerator_key]) / denominator
-                    )
+    denominator_suffix = "inserter_n"
+    for key, values in metrics.items():
+        if not key.endswith(denominator_suffix):
+            continue
+        denominator = sum(values)
+        if denominator <= 0:
+            continue
+        prefix = key[: -len(denominator_suffix)]
+        for edge in ("input", "output"):
+            numerator_key = f"{prefix}inserter_without_{edge}_n"
+            if numerator_key in metrics:
+                means[f"{prefix}inserter_without_{edge}_frac"] = (
+                    sum(metrics[numerator_key]) / denominator
+                )
     return means
 
 
@@ -996,9 +986,6 @@ class FactorioEnv(gym.Env):
                 key: int(value)
                 for key, value in zip(
                     (
-                        "asm_n",
-                        "asm_without_input_n",
-                        "asm_without_output_n",
                         "inserter_n",
                         "inserter_without_input_n",
                         "inserter_without_output_n",
@@ -2359,9 +2346,6 @@ if __name__ == "__main__":
                         frac_reachable=infos["frac_reachable"][i],
                         entity_cost=infos["entity_cost"][i],
                         cost_efficiency=infos["cost_efficiency"][i],
-                        asm_n=infos["asm_n"][i],
-                        asm_without_input_n=infos["asm_without_input_n"][i],
-                        asm_without_output_n=infos["asm_without_output_n"][i],
                         inserter_n=infos["inserter_n"][i],
                         inserter_without_input_n=infos["inserter_without_input_n"][i],
                         inserter_without_output_n=infos["inserter_without_output_n"][i],

@@ -74,7 +74,7 @@ fn simulate_throughput(world: PyReadonlyArray3<i64>) -> PyResult<(f64, usize)> {
 }
 
 #[cfg(feature = "pyo3-bindings")]
-type PyThroughputDiagnostics = (f64, usize, usize, usize, usize, usize, usize, usize);
+type PyThroughputDiagnostics = (f64, usize, usize, usize, usize);
 
 /// Calculate throughput and final-factory structural diagnostics with one
 /// canonical graph build.
@@ -90,9 +90,6 @@ fn simulate_throughput_diagnostics(
     Ok((
         factory_score(&deliveries),
         num_unreachable,
-        diagnostics.assembler_count,
-        diagnostics.assembler_without_input_count,
-        diagnostics.assembler_without_output_count,
         diagnostics.inserter_count,
         diagnostics.inserter_without_input_count,
         diagnostics.inserter_without_output_count,
