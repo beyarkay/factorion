@@ -41,7 +41,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs
+from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs, wsd_multiplier
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -381,6 +381,27 @@ def _rollout_episode_metrics(
         f"rollout/{lesson}/entity_cost": float(entity_cost),
         f"rollout/{lesson}/cost_efficiency": float(cost_efficiency),
     }
+
+
+def _iteration_lrs(args, iteration: int) -> tuple[float, float]:
+    """(actor LR, critic LR) for a 1-based PPO iteration.
+
+    Each follows its own WSD envelope (`wsd_multiplier`) over the
+    post-critic-warmup window — schedule spent while the actor is frozen would
+    be spent on nothing. Through the freeze the critic holds its `critic_lr`
+    peak and the actor (frozen, so its LR is inert) holds its first
+    post-unfreeze value, keeping the logged schedule monotone. The critic gets
+    no warmup ramp: the freeze is its warmup, and a ramp after it would only
+    crash the LR it just trained at."""
+    total = max(1, args.num_iterations - args.critic_warmup)
+    step = max(0, iteration - args.critic_warmup - 1)
+    actor_mult = wsd_multiplier(
+        step, total, args.lr_warmup_iters, args.lr_cooldown_frac, args.lr_min_ratio
+    )
+    critic_mult = wsd_multiplier(
+        step, total, 0, args.critic_lr_cooldown_frac, args.critic_lr_min_ratio
+    )
+    return actor_mult * args.learning_rate, critic_mult * args.critic_lr
 
 
 def _explained_variance(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -1848,55 +1869,12 @@ if __name__ == "__main__":
             f"k:{args.kernel_size}",
         )
 
-        # Define metric axes and summary aggregation. global_step (env steps)
-        # is the x-axis for every panel. Every metric summarises to its LAST
-        # value, eval/* included: a run-max summary reports the single luckiest
-        # eval a run ever logged, and that is the number the W&B runs table
-        # shows and the sweep controller ranks on.
+        # global_step (env steps) is the x-axis for every panel. Do NOT pass
+        # define_metric(..., summary=...): it writes the summary under a dotted
+        # key ("eval/thput.last") that the sweep controller and the runs table
+        # cannot resolve, leaving sweeps blind to their metric. The default
+        # summary is already the last logged value, under the plain key.
         wandb.define_metric("*", step_metric="global_step")
-        _LESSONS = [k.name for k in LessonKind]
-        wandb.define_metric("eval/thput", summary="last")
-        wandb.define_metric("eval/trial_thput", summary="last")
-        wandb.define_metric("eval/asm_item_acc", summary="last")
-        wandb.define_metric("eval/eot_acc", summary="last")
-        wandb.define_metric("eval/eot_pos_recall", summary="last")
-        wandb.define_metric("eval/seconds", summary="last")
-        for ln in _LESSONS:
-            wandb.define_metric(f"eval/{ln}/thput", summary="last")
-            wandb.define_metric(f"eval/{ln}/asm_item_acc", summary="last")
-            wandb.define_metric(f"eval/{ln}/eot_acc", summary="last")
-            wandb.define_metric(f"eval/{ln}/eot_pos_recall", summary="last")
-        for m in ["thput", "thput_raw", "reward", "length", "eot_rate",
-                  "invalid_frac", "num_entities", "entity_efficiency",
-                  "frac_reachable", "entity_cost", "cost_efficiency"]:
-            wandb.define_metric(f"rollout/{m}", summary="last")
-            wandb.define_metric(f"rollout/trial_{m}", summary="last")
-        for ln in _LESSONS:
-            for m in [
-                "thput", "thput_raw", "reward", "length", "entity_cost",
-                "cost_efficiency",
-            ]:
-                wandb.define_metric(f"rollout/{ln}/{m}", summary="last")
-        for m in ["entropy", "eot_prob", "kl_to_ref"]:
-            wandb.define_metric(f"policy/{m}", summary="last")
-        for h in ["tile", "entity", "direction", "item", "misc", "eot"]:
-            wandb.define_metric(f"policy/entropy_{h}", summary="last")
-            wandb.define_metric(f"policy/kl_to_ref_{h}", summary="last")
-        for m in ["policy", "value", "entropy", "total", "approx_kl",
-                  "clipfrac", "explained_variance"]:
-            wandb.define_metric(f"losses/{m}", summary="last")
-        for m in ["explained_variance", "value_rmse", "value_bias", "value_mean",
-                  "return_mean", "value_std", "return_std", "value_return_corr",
-                  "adv_abs_mean"]:
-            wandb.define_metric(f"critic/{m}", summary="last")
-        for ln in _LESSONS:
-            for m in ["explained_variance", "value_rmse", "value_bias",
-                      "value_return_corr", "n"]:
-                wandb.define_metric(f"critic/{ln}/{m}", summary="last")
-        for m in ["lr", "critic_lr", "ent_coef", "grad_norm", "critic_warmup"]:
-            wandb.define_metric(f"optim/{m}", summary="last")
-        for m in ["sps", "rollout_seconds", "update_seconds", "eval_seconds"]:
-            wandb.define_metric(f"perf/{m}", summary="last")
     print("Registering factorio Gym env")
     # Register the factorio env. This runs only under __main__, so pass the
     # class directly rather than "ppo:FactorioEnv" — a string entry_point would
@@ -2058,7 +2036,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(
         [
             {"params": actor_params, "lr": args.learning_rate},
-            {"params": critic_params, "lr": args.learning_rate},
+            {"params": critic_params, "lr": args.critic_lr},
         ],
         lr=args.learning_rate,
         eps=args.adam_epsilon,
@@ -2167,14 +2145,11 @@ if __name__ == "__main__":
         # trains at the un-annealed peak LR.
         anneal_total = max(1, args.num_iterations - args.critic_warmup)
         anneal_iter = max(0, iteration - args.critic_warmup)
-        # Annealing the rate if instructed to do so.
         if args.anneal_lr:
-            frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total
-            lrnow = frac * args.learning_rate
-            # param_groups[0]=actor, [1]=critic. The critic can run at a higher LR
-            # (critic_lr_mult) to warm the value head faster; 1.0 = unchanged.
+            lrnow, critic_lrnow = _iteration_lrs(args, iteration)
+            # param_groups[0]=actor, [1]=critic (see the optimizer construction).
             optimizer.param_groups[0]["lr"] = lrnow
-            optimizer.param_groups[1]["lr"] = lrnow * args.critic_lr_mult
+            optimizer.param_groups[1]["lr"] = critic_lrnow
 
         # Entropy coefficient annealing: linear from ent_coef_start to ent_coef_end
         ent_frac = 1.0 if in_warmup else 1.0 - (anneal_iter - 1.0) / anneal_total

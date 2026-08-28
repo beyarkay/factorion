@@ -10,7 +10,6 @@ Usage:
 
 import io
 import json
-import math
 import os
 import random
 import sys
@@ -55,7 +54,7 @@ from ppo import (  # noqa: E402
     _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
 )
-from training_config import SftArgs  # noqa: E402
+from training_config import SftArgs, wsd_multiplier  # noqa: E402
 
 
 def extract_expert_actions(solved_CWH, task_CWH):
@@ -368,33 +367,20 @@ def _steps_per_epoch(target, n_workers, batch_size):
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
-    """Warmup-Stable-Decay, stepped once per optimizer step.
+    """Warmup-Stable-Decay (`wsd_multiplier`), stepped once per optimizer step.
 
-    Linear warmup over `warmup_steps` up to `lr`, a stable phase holding `lr`,
-    then a `(1 - sqrt)` cooldown over the final `cooldown_frac` of the run down
-    to `lr * min_lr_ratio`. Only the cooldown depends on `total_steps`, so runs
-    of different budgets share their LR curve until their cooldowns diverge —
-    and a cooldown can be branched off a stable-phase checkpoint
+    Only the cooldown depends on `total_steps`, so runs of different budgets
+    share their LR curve until their cooldowns diverge — and a cooldown can be
+    branched off a stable-phase checkpoint
     (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
-    repeating the shared prefix. Cooldown shape from Hägele et al., "Scaling
-    Laws and Compute-Optimal Training Beyond Fixed Training Durations"
-    (NeurIPS 2024); defaults from sweep ndc8tvvy (run c0kwcui1).
+    repeating the shared prefix. Defaults from sweep ndc8tvvy (run c0kwcui1).
     """
-    warmup = min(args.warmup_steps, total_steps - 1)
-    cooldown = max(
-        1, min(int(round(total_steps * args.cooldown_frac)), total_steps - warmup)
+    return torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda step: wsd_multiplier(
+            step, total_steps, args.warmup_steps, args.cooldown_frac, args.min_lr_ratio
+        ),
     )
-    stable_end = total_steps - cooldown
-
-    def factor(step: int) -> float:
-        if step < warmup:
-            return (step + 1) / warmup
-        if step < stable_end:
-            return 1.0
-        t = min(1.0, (step - stable_end) / cooldown)
-        return args.min_lr_ratio + (1.0 - args.min_lr_ratio) * (1.0 - math.sqrt(t))
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
 class RolloutEval(TypedDict):

@@ -1,33 +1,78 @@
-# ci/sweep_ppo.yaml — β for the KL-to-SFT-reference penalty (#237)
+# ci/sweep_ppo.yaml — peaks + shape of the independent actor/critic WSD LR envelopes
 #
 # Launched with: /ci sweep ppo
+# Sweep results are reported (ci sweep-report), not auto-applied —
+# hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Replication grid for the Bayes sweep fpu947c0, which left both flanks of
-# the good window [4e-3, 1.3e-2] contested: below 3e-3 two of four runs
-# cratered (fat tail or bad luck?), and at 2e-2 the bracketing runs
-# disagreed. Six log-even β rungs (ratio 20^(1/5)) x three fresh seeds
-# (disjoint from that sweep's 0-2) measure the per-β spread directly.
+# Before launching, refresh the --start-from base below: check W&B for the
+# latest + longest-running SFT run that uploaded a model artifact (runs
+# without one can't be loaded as a base, and beware PR-experiment runs such
+# as single-lesson trains — their val/thput is not comparable).
+#
+# Everything but the two LR envelopes stays at the training_config.py defaults;
+# the sweep picks the peaks and the shape knobs the envelopes added:
+#   - learning_rate: the peak the actor's stable phase holds for most of the
+#     run, so the single most consequential number here. The previous default
+#     was tuned under the linear whole-run anneal, which spends most of its
+#     steps well below peak — the best WSD peak may well sit lower, so the
+#     range reaches further down than up.
+#   - critic_lr: the critic's peak. Only the value head rides it, so the
+#     range is wide — it reaches both below the actor's band and above it.
+#   - lr_warmup_iters: an absolute iteration count, so what wins transfers
+#     unchanged to runs of any length; 0 is in range so the sweep can say the
+#     ramp is worthless. Only the actor has one — the critic-warmup freeze is
+#     the critic's warmup.
+#   - *_cooldown_frac: Hägele et al. report the benefit plateauing near 20%
+#     and as little as 5% sufficing on long runs; swept past both ends.
+#   - *_min_ratio: 0 (decay to zero) is in range, so the sweep can tell us
+#     whether a nonzero floor is worth anything. The critic's range reaches
+#     higher — keeping the value head learning while the actor cools is the
+#     point of scheduling the two independently.
+#
+# 1M timesteps ≈ 244 iterations (~1 h/run): long enough that the stable phase
+# and the cooldown both register in eval/thput, short enough that 25 bayes
+# runs drain in about a pod-day.
 
-method: grid
-run_cap: 18
+method: bayes
+run_cap: 25
 metric:
   name: "eval/thput"
   goal: maximize
 
 parameters:
-  divergence_penalty:
-    values:
-      - 0.001
-      - 0.00182
-      - 0.00331
-      - 0.00603
-      - 0.011
-      - 0.02
-  seed:
-    values:
-      - 4
-      - 5
-      - 6
+  # ── Peaks ────────────────────────────────────────────────────────
+  learning_rate:
+    distribution: log_uniform_values
+    min: 3e-6
+    max: 1e-4
+  critic_lr:
+    distribution: log_uniform_values
+    min: 3e-6
+    max: 3e-4
+
+  # ── Warmup ───────────────────────────────────────────────────────
+  lr_warmup_iters:
+    distribution: int_uniform
+    min: 0
+    max: 40
+
+  # ── Cooldown ─────────────────────────────────────────────────────
+  lr_cooldown_frac:
+    distribution: uniform
+    min: 0.02
+    max: 0.5
+  critic_lr_cooldown_frac:
+    distribution: uniform
+    min: 0.02
+    max: 0.5
+  lr_min_ratio:
+    distribution: uniform
+    min: 0.0
+    max: 0.1
+  critic_lr_min_ratio:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
 
 program: ppo.py
 
@@ -38,6 +83,6 @@ command:
   - --start-from
   - h76h80yb
   - --total-timesteps
-  - 5_000_000
+  - 1_000_000
   - --track
   - ${args}
