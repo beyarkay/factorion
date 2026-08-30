@@ -158,19 +158,23 @@ a stream of *(partial-factory, correct-completion)* training pairs. Each
 - `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED` — flow splitting, and merging
   two side-load-limited (7.5 i/s) arms into one full belt via 2×1 splitters
 - `MOVE_VIA_UG_BELT`, `CROSS_UNDER_BELT` — underground belts and crossings
-- `MEMORISE_1..4_INGREDIENT_RECIPES`, `FACTORY_1_INGREDIENT` — assembling
-  machines, recipe selection, and multi-assembler lanes
+- `MEMORISE_1..4_INGREDIENT_RECIPES` — recipe selection only: SFT retains the
+  assembler demonstration and applies loss only to its item/recipe target
+- `FACTORY_1_INGREDIENT` — assembling machines and multi-assembler lanes
 - `TRIAL_RECIPE_TREE_DEPTH_1..3` — **trials**: only the source and sink markers
   are placed, there is no reference solution, and they are trained by RL alone
 
 Each lesson also has an **internal difficulty knob**: `num_missing_entities`
 ranges from 0 (full solution shown) up to all placeable entities (only the
 source/sink remain). Lesson *type* and difficulty are orthogonal — the agent
-sees diverse scenarios at every difficulty level.
+sees diverse scenarios at every difficulty level. MEMORISE is the exception:
+its factory is fully blanked so the assembler demonstration is always present,
+then every belt, inserter, and terminal demonstration is discarded.
 
 **Stage 2 — Supervised pre-training (SFT).** A multi-head classifier (tile +
 entity + direction + item + misc, plus the end-of-turn head) is trained on the
-lesson pairs via cross-entropy loss.
+lesson pairs via cross-entropy loss. MEMORISE examples train only the item head;
+they apply no tile, entity, direction, misc, or end-of-turn loss.
 This gives the policy a strong prior: it already "knows" how inserters
 connect belt segments, how splitters divide flow, etc., before any RL
 happens.

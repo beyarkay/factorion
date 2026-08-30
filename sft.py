@@ -165,7 +165,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
     # Terminal pair: every placement has been applied, so `state` now equals
     # `solved_CWH`. Emit a sample with eot=1 and sentinel zeros for
-    # placement targets; the SFT loop's placement_mask zeroes out the
+    # placement targets; the SFT loop's supervision masks zero out the
     # placement losses for this sample. valid_mask=all-zero matches the
     # invariant "no remaining tiles to place".
     terminal_obs = state.to(torch.uint8)
@@ -237,15 +237,86 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
+_MEMORISE_KINDS = frozenset(
+    {
+        LessonKind.MEMORISE_1_INGREDIENT_RECIPES,
+        LessonKind.MEMORISE_2_INGREDIENT_RECIPES,
+        LessonKind.MEMORISE_3_INGREDIENT_RECIPES,
+        LessonKind.MEMORISE_4_INGREDIENT_RECIPES,
+    }
+)
+
+
+def _lesson_demo_pairs(factory, kind: LessonKind, max_level: int):
+    """Extract the gradient-bearing demonstrations for one solved lesson.
+
+    MEMORISE lessons supervise recipe selection only.  Fully blanking them
+    guarantees that their sole assembler is present in the extracted action
+    sequence even when ``max_level`` is small; filtering the sequence before it
+    reaches the sampler means belt, inserter, and terminal pairs consume none of
+    the MEMORISE sample budget.
+
+    Other lesson kinds retain the ordinary partial/full reconstruction
+    progression, including their terminal EOT example.
+    """
+    is_memorise = kind in _MEMORISE_KINDS
+    missing_entities = factory.world_CWH.shape[1] ** 2 if is_memorise else max_level
+    task, _ = blank_entities(factory, num_missing_entities=missing_entities)
+    pairs = extract_expert_actions(factory.world_CWH, task)
+    if not is_memorise:
+        return pairs
+
+    recipe_pairs = [
+        pair for pair in pairs if pair[7] == 0 and pair[2] == _ASM_MACHINE_ENT_ID
+    ]
+    if len(recipe_pairs) != 1:
+        raise RuntimeError(
+            f"{kind.name} must emit exactly one assembler recipe demonstration; "
+            f"got {len(recipe_pairs)}"
+        )
+    return recipe_pairs
+
+
+def _supervision_masks(batch_eot, batch_kind):
+    """Return per-head masks for a collated SFT batch.
+
+    Every emitted row bears a gradient: normal placement rows supervise all
+    placement heads and EOT, normal terminal rows supervise EOT, and MEMORISE
+    rows supervise only the item/recipe head.
+    """
+    is_memorise = torch.zeros_like(batch_kind, dtype=torch.bool)
+    for kind in _MEMORISE_KINDS:
+        is_memorise |= batch_kind == kind.value
+
+    is_placement = batch_eot < 0.5
+    full_placement = is_placement & ~is_memorise
+    return {
+        "memorise": is_memorise,
+        "tile": full_placement,
+        "ent": full_placement,
+        "dir": full_placement,
+        "item": is_placement,
+        "misc": full_placement,
+        "eot": ~is_memorise,
+    }
+
+
+def _masked_mean(values, mask):
+    """Mean ``values`` over a boolean mask, returning a graph-connected zero."""
+    weights = mask.to(values.dtype)
+    return (values * weights).sum() / weights.sum().clamp(min=1.0)
+
+
 def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
-    concurrent workers never share a factory. Draws the fewest-pairs kind each
-    step so output balances by pair count, not by lesson. Blanks at max_level
-    (the full placement progression per lesson); obs/mask are uint8/bool. Runs
-    until `target` pairs are produced, or forever when `target` is None. Callers
-    own their own RNG seeding.
+    concurrent workers never share a factory. Draws the fewest-gradient-bearing-
+    examples kind each step so output balances by useful supervision, not by
+    lesson. Non-MEMORISE lessons blank at max_level and retain their full action
+    progression; MEMORISE lessons emit only their assembler recipe example.
+    Obs/mask are uint8/bool. Runs until `target` examples are produced, or
+    forever when `target` is None. Callers own their own RNG seeding.
     """
     # Trial kinds have no known solution, so they can never emit an expert
     # pair — left in the pool they'd stay at 0 samples forever and the
@@ -263,8 +334,8 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     seed = base_seed + worker_id
     produced = 0
     while target is None or produced < target:
-        # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
-        # uniform kind choice starves the rare recipe/assembler heads.
+        # Draw the kind with the fewest retained examples: big factories emit
+        # ~10x more actions, so uniform kind choice starves the rare recipe head.
         fewest = min(kind_samples[k.name] for k in available)
         kind = random.choice([k for k in available if kind_samples[k.name] == fewest])
         seed += num_workers
@@ -285,9 +356,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
                     )
             continue
         consecutive_fails[kind.name] = 0
-        task, _ = blank_entities(factory, num_missing_entities=max_level)
-
-        for pair in extract_expert_actions(factory.world_CWH, task):
+        for pair in _lesson_demo_pairs(factory, kind, max_level):
             yield (*pair, seed, kind.value)
             kind_samples[kind.name] += 1
             produced += 1
@@ -326,10 +395,11 @@ def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
 class StreamingDemoDataset(IterableDataset):
     """Generates SFT demonstrations on the fly, sharded across DataLoader workers.
 
-    Yields the model-input 8-tuple (obs uint8, tile, ent, dir, item, misc,
-    mask bool, eot) for `target` pairs per pass; worker w of W walks the disjoint
-    seed range base_seed+w mod W so no factory is produced twice. CPU generation
-    overlaps GPU training via DataLoader prefetch.
+    Yields the model-input 9-tuple (obs uint8, tile, ent, dir, item, misc,
+    mask bool, eot, kind) for `target` examples per pass; worker w of W walks the
+    disjoint seed range base_seed+w mod W so no factory is produced twice. Kind
+    selects the per-head supervision mask. CPU generation overlaps GPU training
+    via DataLoader prefetch.
     """
 
     def __init__(self, size, max_level, base_seed, target):
@@ -349,8 +419,8 @@ class StreamingDemoDataset(IterableDataset):
             self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
         ):
             # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
-            # training only needs the first 8 — seed/kind are val-only metadata.
-            yield row[:8]
+            # training drops the seed but retains kind for head-specific masks.
+            yield (*row[:8], row[9])
 
 
 def _steps_per_epoch(target, n_workers, batch_size):
@@ -748,11 +818,20 @@ def train_sft(args: SftArgs):
             print(f"Loading cached dataset from {args.dataset_cache} ...")
             # weights_only=False: our own locally-produced, trusted cache.
             cached_train = torch.load(args.dataset_cache, weights_only=False)
+            if not isinstance(cached_train, (tuple, list)) or len(cached_train) != 9:
+                raise ValueError(
+                    f"Dataset cache {args.dataset_cache} predates per-lesson "
+                    "supervision masks; delete it and rerun to regenerate it."
+                )
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
-            cached_train = _materialise(
+            materialised_train = _materialise(
                 args.size, max_level, train_base, target=args.num_samples
-            )[:8]
+            )
+            # Keep kind (index 9) so the training loop can suppress every
+            # non-item loss for MEMORISE examples. Seed (index 8) remains
+            # validation/debug-only metadata.
+            cached_train = (*materialised_train[:8], materialised_train[9])
             torch.save(cached_train, args.dataset_cache)
             print(f"Cached dataset to {args.dataset_cache}")
 
@@ -808,7 +887,15 @@ def train_sft(args: SftArgs):
         # cast to float per-batch), shuffled via a DataLoader over indices so no
         # data is copied per batch.
         (
-            tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
+            tr_obs,
+            tr_tile,
+            tr_ent,
+            tr_dir,
+            tr_item,
+            tr_misc,
+            tr_mask,
+            tr_eot,
+            tr_kind,
         ) = (
             cached_train[0].to(device),
             *(t.to(device) for t in cached_train[1:]),
@@ -840,7 +927,15 @@ def train_sft(args: SftArgs):
         )
     # Val goes GPU-resident too, iterated via an index DataLoader.
     (
-        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
+        va_obs,
+        va_tile,
+        va_ent,
+        va_dir,
+        va_item,
+        va_misc,
+        va_mask,
+        va_eot,
+        va_kind,
     ) = (
         val_tensors_cpu[0].to(device),
         *(t.to(device) for t in val_tensors_cpu[1:]),
@@ -866,7 +961,6 @@ def train_sft(args: SftArgs):
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
     bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
-    bce_eot = nn.BCEWithLogitsLoss()
 
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
@@ -911,8 +1005,8 @@ def train_sft(args: SftArgs):
     total_samples = args.epochs * n_train
     print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
 
-    # Train batch source yielding the 8 model-input tensors per batch (obs, tile,
-    # ent, dir, item, misc, mask, eot; obs/eot already float). Cached: gather
+    # Train batch source yielding the 9 model-input tensors per batch (obs, tile,
+    # ent, dir, item, misc, mask, eot, kind; obs/eot already float). Cached: gather
     # GPU-resident tensors by shuffled index (no host->device copy). Stream: pull
     # CPU batches from the generating workers and copy them to device
     # (non_blocking, overlapping the GPU step).
@@ -921,13 +1015,28 @@ def train_sft(args: SftArgs):
             for (idx_cpu,) in train_index_loader:
                 idx = idx_cpu.to(device)
                 yield (
-                    tr_obs[idx].float(), tr_tile[idx], tr_ent[idx], tr_dir[idx],
-                    tr_item[idx], tr_misc[idx], tr_mask[idx], tr_eot[idx],
+                    tr_obs[idx].float(),
+                    tr_tile[idx],
+                    tr_ent[idx],
+                    tr_dir[idx],
+                    tr_item[idx],
+                    tr_misc[idx],
+                    tr_mask[idx],
+                    tr_eot[idx],
+                    tr_kind[idx],
                 )
         else:
-            for b_obs, b_tile, b_ent, b_dir, b_item, b_misc, b_mask, b_eot in (
-                train_stream_loader
-            ):
+            for (
+                b_obs,
+                b_tile,
+                b_ent,
+                b_dir,
+                b_item,
+                b_misc,
+                b_mask,
+                b_eot,
+                b_kind,
+            ) in train_stream_loader:
                 yield (
                     b_obs.to(device, non_blocking=True).float(),
                     b_tile.to(device, non_blocking=True),
@@ -937,6 +1046,7 @@ def train_sft(args: SftArgs):
                     b_misc.to(device, non_blocking=True),
                     b_mask.to(device, non_blocking=True),
                     b_eot.to(device, non_blocking=True).float(),
+                    b_kind.to(device, non_blocking=True),
                 )
 
     def _batch_stream():
@@ -961,6 +1071,7 @@ def train_sft(args: SftArgs):
         acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
         acc_correct = torch.zeros((), device=device)
         acc_eot_correct = torch.zeros((), device=device)
+        acc_eot_total = torch.zeros((), device=device)
         acc_grad_norm = torch.zeros((), device=device)
         train_total = 0
         grad_norm_count = 0
@@ -973,29 +1084,34 @@ def train_sft(args: SftArgs):
             t_ready = time.time()
             train_data_s += t_ready - t_batch
             (
-                batch_obs, batch_tile, batch_ent, batch_dir,
-                batch_item, batch_misc, batch_mask, batch_eot,
+                batch_obs,
+                batch_tile,
+                batch_ent,
+                batch_dir,
+                batch_item,
+                batch_misc,
+                batch_mask,
+                batch_eot,
+                batch_kind,
             ) = batch
 
             encoded, g_B = agent.encode(batch_obs)
             B = encoded.shape[0]
-            # Placement loss is only meaningful for non-terminal samples;
-            # eot=1 samples carry sentinel placement targets. Normalise by
-            # the placement-sample count so the loss scale is independent
-            # of the per-batch mix of terminal / placement samples.
-            placement_mask = (batch_eot < 0.5).float()
-            n_place = placement_mask.sum().clamp(min=1.0)
+            supervision = _supervision_masks(batch_eot, batch_kind)
+            is_memorise = supervision["memorise"]
 
-            # EOT head — BCE on every sample.
+            # EOT is supervised on every ordinary sample, but never on
+            # MEMORISE's recipe-only rows.
             eot_logits = agent.eot_logit(encoded, g_B)
-            loss_eot = bce_eot(eot_logits, batch_eot)
+            loss_eot_per = bce_loss_none(eot_logits, batch_eot)
+            loss_eot = _masked_mean(loss_eot_per, supervision["eot"])
 
             # Tile logits — use BCE with multi-label mask so ALL valid
             # tiles are rewarded, not just the randomly-chosen one. Reduce
-            # to per-sample, mask off terminal samples, then average.
+            # to per-sample, then apply this head's supervision mask.
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
             loss_tile_per = bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
-            loss_tile = (loss_tile_per * placement_mask).sum() / n_place
+            loss_tile = _masked_mean(loss_tile_per, supervision["tile"])
 
             # Extract features at target tile for entity/direction/item/misc heads
             x_B = batch_tile // agent.height
@@ -1011,10 +1127,10 @@ def train_sft(args: SftArgs):
             loss_dir_per = ce_loss_none(dir_logits, batch_dir)
             loss_item_per = ce_loss_none(item_logits, batch_item)
             loss_misc_per = ce_loss_none(misc_logits, batch_misc)
-            loss_ent = (loss_ent_per * placement_mask).sum() / n_place
-            loss_dir = (loss_dir_per * placement_mask).sum() / n_place
-            loss_item = (loss_item_per * placement_mask).sum() / n_place
-            loss_misc = (loss_misc_per * placement_mask).sum() / n_place
+            loss_ent = _masked_mean(loss_ent_per, supervision["ent"])
+            loss_dir = _masked_mean(loss_dir_per, supervision["dir"])
+            loss_item = _masked_mean(loss_item_per, supervision["item"])
+            loss_misc = _masked_mean(loss_misc_per, supervision["misc"])
 
             loss = (
                 args.lw_tile * loss_tile
@@ -1039,11 +1155,23 @@ def train_sft(args: SftArgs):
             samples_seen += B
             pbar.update(B)
 
-            acc_loss += torch.stack([
-                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
-            ]).detach() * B
-            # Whole-action accuracy: the model agrees with the demo on
-            # every output for this sample. For placement samples (eot=0)
+            acc_loss += (
+                torch.stack(
+                    [
+                        loss,
+                        loss_tile,
+                        loss_ent,
+                        loss_dir,
+                        loss_item,
+                        loss_misc,
+                        loss_eot,
+                    ]
+                ).detach()
+                * B
+            )
+            # Whole-example accuracy: the model agrees with every supervised
+            # output. A MEMORISE row checks only item/recipe. For ordinary
+            # placement samples (eot=0)
             # that means all 5 placement heads correct AND EOT predicted
             # "not done". For terminal samples (eot=1) that means EOT
             # predicted "done"; placement targets are sentinels so they
@@ -1061,17 +1189,20 @@ def train_sft(args: SftArgs):
                 & (pred_item == batch_item)
                 & (pred_misc == batch_misc)
             )
-            is_place = placement_mask.bool()
             eot_pred_bool = eot_logits > 0
             eot_correct_t = eot_pred_bool == (batch_eot > 0.5)
-            correct = torch.where(
-                is_place,
+            ordinary_correct = torch.where(
+                supervision["tile"],
                 place_heads_correct & eot_correct_t,
                 eot_correct_t,
             )
+            correct = torch.where(
+                is_memorise, pred_item == batch_item, ordinary_correct
+            )
             acc_correct += correct.sum()
             train_total += B
-            acc_eot_correct += eot_correct_t.sum()
+            acc_eot_correct += eot_correct_t[supervision["eot"]].sum()
+            acc_eot_total += supervision["eot"].sum()
             # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
 
@@ -1101,7 +1232,7 @@ def train_sft(args: SftArgs):
             train_loss_eot,
         ) = (acc_loss / train_total).tolist()
         train_acc = (acc_correct / train_total).item()
-        train_eot_acc = (acc_eot_correct / train_total).item()
+        train_eot_acc = (acc_eot_correct / acc_eot_total.clamp(min=1)).item()
         grad_norm_sum = acc_grad_norm.item()
         train_seconds = time.time() - t_train
         train_compute_s = max(0.0, train_seconds - train_data_s)
@@ -1128,11 +1259,15 @@ def train_sft(args: SftArgs):
         val_nn_correct = {h: 0 for h in nn_heads}
         val_nn_total = {h: 0 for h in nn_heads}
         val_total = 0
-        val_place_total = 0
+        val_full_place_total = 0
+        val_item_total = 0
+        val_eot_total = 0
 
         # Per-LessonKind accumulators. Indexed by kind name to make wandb
         # panel keys read as "val/MOVE_ONE_ITEM/acc" rather than enum ints.
         per_kind_n = {k.name: 0 for k in LessonKind}
+        per_kind_full_place_n = {k.name: 0 for k in LessonKind}
+        per_kind_item_n = {k.name: 0 for k in LessonKind}
         per_kind_correct = {k.name: 0 for k in LessonKind}
         per_kind_tile_correct = {k.name: 0 for k in LessonKind}
         per_kind_ent_correct = {k.name: 0 for k in LessonKind}
@@ -1166,11 +1301,11 @@ def train_sft(args: SftArgs):
 
                 encoded, g_B = agent.encode(batch_obs)
                 B = encoded.shape[0]
-                placement_mask = (batch_eot < 0.5).float()
-                is_place = placement_mask.bool()
+                supervision = _supervision_masks(batch_eot, batch_kind)
+                is_memorise = supervision["memorise"]
 
                 eot_logits = agent.eot_logit(encoded, g_B)
-                loss_eot_per = bce_loss_none(eot_logits, batch_eot)
+                loss_eot_per = bce_loss_none(eot_logits, batch_eot) * supervision["eot"]
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
                 # Per-sample losses: needed so we can sum them within each
@@ -1180,7 +1315,7 @@ def train_sft(args: SftArgs):
                 # val/loss_tile comparable to train/loss_tile.
                 loss_tile_per = (
                     bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
-                    * placement_mask
+                    * supervision["tile"]
                 )
 
                 x_B = batch_tile // agent.height
@@ -1192,10 +1327,14 @@ def train_sft(args: SftArgs):
                 dir_logits = agent.dir_head(tile_features)
                 item_logits = agent.item_head(tile_features)
                 misc_logits = agent.misc_head(tile_features)
-                loss_ent_per = ce_loss_none(ent_logits, batch_ent) * placement_mask
-                loss_dir_per = ce_loss_none(dir_logits, batch_dir) * placement_mask
-                loss_item_per = ce_loss_none(item_logits, batch_item) * placement_mask
-                loss_misc_per = ce_loss_none(misc_logits, batch_misc) * placement_mask
+                loss_ent_per = ce_loss_none(ent_logits, batch_ent) * supervision["ent"]
+                loss_dir_per = ce_loss_none(dir_logits, batch_dir) * supervision["dir"]
+                loss_item_per = (
+                    ce_loss_none(item_logits, batch_item) * supervision["item"]
+                )
+                loss_misc_per = (
+                    ce_loss_none(misc_logits, batch_misc) * supervision["misc"]
+                )
 
                 loss_per_sample = (
                     args.lw_tile * loss_tile_per
@@ -1230,10 +1369,9 @@ def train_sft(args: SftArgs):
                 eot_pred_bool = eot_logits > 0
                 eot_correct_per = eot_pred_bool == (batch_eot > 0.5)
 
-                # Whole-sample accuracy. Placement sample (eot=0): all 5
-                # placement heads correct AND EOT predicted "not done".
-                # Terminal sample (eot=1): EOT predicted "done"; placement
-                # targets are sentinels so they don't enter the check.
+                # Whole-example accuracy. MEMORISE checks only its supervised
+                # item/recipe target. Ordinary placement samples require all
+                # placement heads plus EOT; ordinary terminals require EOT.
                 place_heads_correct = (
                     tile_hit
                     & ent_correct_per
@@ -1241,68 +1379,91 @@ def train_sft(args: SftArgs):
                     & item_correct_per
                     & misc_correct_per
                 )
-                correct_per = torch.where(
-                    is_place,
+                ordinary_correct = torch.where(
+                    supervision["tile"],
                     place_heads_correct & eot_correct_per,
                     eot_correct_per,
                 )
+                correct_per = torch.where(
+                    is_memorise, item_correct_per, ordinary_correct
+                )
                 val_correct += int(correct_per.sum().item())
-                val_tile_correct += tile_hit[is_place].sum().item()
-                val_ent_correct += ent_correct_per[is_place].sum().item()
-                val_dir_correct += dir_correct_per[is_place].sum().item()
-                val_item_correct += item_correct_per[is_place].sum().item()
-                val_misc_correct += misc_correct_per[is_place].sum().item()
+                val_tile_correct += tile_hit[supervision["tile"]].sum().item()
+                val_ent_correct += ent_correct_per[supervision["ent"]].sum().item()
+                val_dir_correct += dir_correct_per[supervision["dir"]].sum().item()
+                val_item_correct += item_correct_per[supervision["item"]].sum().item()
+                val_misc_correct += misc_correct_per[supervision["misc"]].sum().item()
                 val_total += B
-                val_place_total += int(is_place.sum().item())
+                val_full_place_total += int(supervision["tile"].sum().item())
+                val_item_total += int(supervision["item"].sum().item())
+                val_eot_total += int(supervision["eot"].sum().item())
 
                 # Per head: (correctness, "target is a real non-NONE option" mask).
                 nn_masks = {
-                    "ent": (ent_correct_per, is_place & (batch_ent != _EMPTY_ENT_ID)),
-                    "dir": (dir_correct_per, is_place & (batch_dir != _DIR_NONE_VAL)),
-                    "item": (item_correct_per, is_place & (batch_item != _EMPTY_ITEM_VAL)),
-                    "misc": (misc_correct_per, is_place & (batch_misc != _MISC_NONE_VAL)),
+                    "ent": (
+                        ent_correct_per,
+                        supervision["ent"] & (batch_ent != _EMPTY_ENT_ID),
+                    ),
+                    "dir": (
+                        dir_correct_per,
+                        supervision["dir"] & (batch_dir != _DIR_NONE_VAL),
+                    ),
+                    "item": (
+                        item_correct_per,
+                        supervision["item"] & (batch_item != _EMPTY_ITEM_VAL),
+                    ),
+                    "misc": (
+                        misc_correct_per,
+                        supervision["misc"] & (batch_misc != _MISC_NONE_VAL),
+                    ),
                 }
                 for h, (correct, m) in nn_masks.items():
                     val_nn_correct[h] += int((correct & m).sum().item())
                     val_nn_total[h] += int(m.sum().item())
 
-                val_eot_correct += int(eot_correct_per.sum().item())
-                is_pos = batch_eot > 0.5
+                val_eot_correct += int(eot_correct_per[supervision["eot"]].sum().item())
+                is_pos = (batch_eot > 0.5) & supervision["eot"]
                 val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
                 val_eot_pos_total += int(is_pos.sum().item())
 
-                # Per-kind aggregation: bucket placement metrics by kind on
-                # placement samples only (terminal samples carry no kind-
-                # specific placement signal; their eot loss is folded in
-                # via loss_per_sample). unique() keeps this
+                # Per-kind aggregation: normal lessons use placement rows;
+                # MEMORISE uses its item-only row. Terminal EOT is tracked by
+                # the dedicated counters below. unique() keeps this
                 # O(num_kinds_in_batch) so adding new LessonKind enum
                 # values has no cost here.
                 for k_val in batch_kind.unique().tolist():
                     k_name = kind_names[k_val]
-                    mask_k = (batch_kind == k_val) & is_place
+                    mask_k = (batch_kind == k_val) & supervision["item"]
+                    mask_k_full = (batch_kind == k_val) & supervision["tile"]
                     per_kind_n[k_name] += int(mask_k.sum().item())
+                    per_kind_full_place_n[k_name] += int(mask_k_full.sum().item())
+                    per_kind_item_n[k_name] += int(mask_k.sum().item())
                     per_kind_correct[k_name] += int(correct_per[mask_k].sum().item())
-                    per_kind_tile_correct[k_name] += int(tile_hit[mask_k].sum().item())
+                    per_kind_tile_correct[k_name] += int(
+                        tile_hit[mask_k_full].sum().item()
+                    )
                     per_kind_ent_correct[k_name] += int(
-                        ent_correct_per[mask_k].sum().item()
+                        ent_correct_per[mask_k_full].sum().item()
                     )
                     per_kind_dir_correct[k_name] += int(
-                        dir_correct_per[mask_k].sum().item()
+                        dir_correct_per[mask_k_full].sum().item()
                     )
                     per_kind_item_correct[k_name] += int(
                         item_correct_per[mask_k].sum().item()
                     )
                     per_kind_misc_correct[k_name] += int(
-                        misc_correct_per[mask_k].sum().item()
+                        misc_correct_per[mask_k_full].sum().item()
                     )
                     for h, (correct, m) in nn_masks.items():
                         mk = m & mask_k
-                        per_kind_nn_correct[h][k_name] += int((correct & mk).sum().item())
+                        per_kind_nn_correct[h][k_name] += int(
+                            (correct & mk).sum().item()
+                        )
                         per_kind_nn_total[h][k_name] += int(mk.sum().item())
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
                     # EOT spans the whole kind (placement + terminal), so use
                     # the full kind mask here, not the placement-only mask_k.
-                    kind_k = batch_kind == k_val
+                    kind_k = (batch_kind == k_val) & supervision["eot"]
                     kind_k_pos = kind_k & is_pos
                     per_kind_eot_correct[k_name] += int(
                         eot_correct_per[kind_k].sum().item()
@@ -1313,25 +1474,25 @@ def train_sft(args: SftArgs):
                     )
                     per_kind_eot_pos_total[k_name] += int(kind_k_pos.sum().item())
 
-        # Placement losses were already masked off on terminal samples (their
-        # per-sample contribution is zero), so dividing by val_place_total
-        # gives the average over the placement subset. The eot loss spans
-        # every sample, so it's divided by val_total.
-        place_norm = max(1, val_place_total)
+        # Each head uses the population that supervises it. MEMORISE rows enter
+        # only the item denominator; they do not dilute other head metrics.
+        full_place_norm = max(1, val_full_place_total)
+        item_norm = max(1, val_item_total)
+        eot_norm = max(1, val_eot_total)
         val_loss /= val_total
-        val_loss_tile /= place_norm
-        val_loss_ent /= place_norm
-        val_loss_dir /= place_norm
-        val_loss_item /= place_norm
-        val_loss_misc /= place_norm
-        val_loss_eot /= val_total
+        val_loss_tile /= full_place_norm
+        val_loss_ent /= full_place_norm
+        val_loss_dir /= full_place_norm
+        val_loss_item /= item_norm
+        val_loss_misc /= full_place_norm
+        val_loss_eot /= eot_norm
         val_acc = val_correct / val_total
-        val_tile_acc = val_tile_correct / place_norm
-        val_ent_acc = val_ent_correct / place_norm
-        val_dir_acc = val_dir_correct / place_norm
-        val_item_acc = val_item_correct / place_norm
-        val_misc_acc = val_misc_correct / place_norm
-        val_eot_acc = val_eot_correct / val_total
+        val_tile_acc = val_tile_correct / full_place_norm
+        val_ent_acc = val_ent_correct / full_place_norm
+        val_dir_acc = val_dir_correct / full_place_norm
+        val_item_acc = val_item_correct / item_norm
+        val_misc_acc = val_misc_correct / full_place_norm
+        val_eot_acc = val_eot_correct / eot_norm
         val_eot_pos_recall = (
             val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
         )
@@ -1353,29 +1514,41 @@ def train_sft(args: SftArgs):
                 continue
             per_kind_metrics[f"val/{k.name}/loss"] = per_kind_loss_sum[k.name] / n
             per_kind_metrics[f"val/{k.name}/acc"] = per_kind_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/tile_acc"] = (
-                per_kind_tile_correct[k.name] / n
-            )
-            per_kind_metrics[f"val/{k.name}/ent_acc"] = per_kind_ent_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/dir_acc"] = per_kind_dir_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/item_acc"] = (
-                per_kind_item_correct[k.name] / n
-            )
-            per_kind_metrics[f"val/{k.name}/misc_acc"] = (
-                per_kind_misc_correct[k.name] / n
-            )
+            full_n = per_kind_full_place_n[k.name]
+            if full_n > 0:
+                per_kind_metrics[f"val/{k.name}/tile_acc"] = (
+                    per_kind_tile_correct[k.name] / full_n
+                )
+                per_kind_metrics[f"val/{k.name}/ent_acc"] = (
+                    per_kind_ent_correct[k.name] / full_n
+                )
+                per_kind_metrics[f"val/{k.name}/dir_acc"] = (
+                    per_kind_dir_correct[k.name] / full_n
+                )
+                per_kind_metrics[f"val/{k.name}/misc_acc"] = (
+                    per_kind_misc_correct[k.name] / full_n
+                )
+            item_n = per_kind_item_n[k.name]
+            if item_n > 0:
+                per_kind_metrics[f"val/{k.name}/item_acc"] = (
+                    per_kind_item_correct[k.name] / item_n
+                )
             # EOT acc/recall use full-sample / positive-only denominators (NOT
             # n, which counts placement samples only). Mirrors the global
             # val/eot_acc + val/eot_pos_recall, but per LessonKind so we can see
             # which lessons the stop-signal misfires on.
             eot_n = per_kind_eot_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_acc"] = (
-                per_kind_eot_correct[k.name] / eot_n if eot_n > 0 else 0.0
-            )
+            if eot_n > 0:
+                per_kind_metrics[f"val/{k.name}/eot_acc"] = (
+                    per_kind_eot_correct[k.name] / eot_n
+                )
             eot_pos_n = per_kind_eot_pos_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
-                per_kind_eot_pos_correct[k.name] / eot_pos_n if eot_pos_n > 0 else 0.0
-            )
+            if eot_n > 0:
+                per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
+                    per_kind_eot_pos_correct[k.name] / eot_pos_n
+                    if eot_pos_n > 0
+                    else 0.0
+                )
 
             # Guarded per head so a metric only surfaces for kinds that actually
             # exercise a non-NONE target for it (else the ratio is meaningless).

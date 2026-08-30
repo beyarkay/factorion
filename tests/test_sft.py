@@ -33,7 +33,10 @@ from sft import (
     _humanize_count,
     _humanize_lr,
     _iter_demo_pairs,
+    _lesson_demo_pairs,
+    _masked_mean,
     _materialise,
+    _supervision_masks,
     _steps_per_epoch,
     _solved_assembler_recipes,
     build_lr_schedule,
@@ -394,8 +397,9 @@ class TestGenerateDataset:
         assert len(set(kinds.tolist())) >= 2
 
     def test_pairs_balanced_across_kinds(self):
-        """Sampling balances by pair count, not by lesson: every kind lands
-        within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
+        """Sampling balances by gradient-bearing example count, not by lesson:
+        every kind lands within a small band. Uniform-by-lesson would push this
+        ratio to ~0.1."""
         from collections import Counter
 
         args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
@@ -406,6 +410,50 @@ class TestGenerateDataset:
             "every non-trial kind should contribute pairs"
         )
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            LessonKind.MEMORISE_1_INGREDIENT_RECIPES,
+            LessonKind.MEMORISE_2_INGREDIENT_RECIPES,
+            LessonKind.MEMORISE_3_INGREDIENT_RECIPES,
+            LessonKind.MEMORISE_4_INGREDIENT_RECIPES,
+        ],
+    )
+    def test_memorise_emits_only_one_assembler_recipe_example(self, kind):
+        """MEMORISE contributes one useful row per factory regardless of
+        max_level; its belt/inserter progression and terminal EOT are discarded."""
+        factory = next(
+            f
+            for seed in range(2_000)
+            if (f := build_factory(size=11, kind=kind, seed=seed)) is not None
+        )
+
+        pairs = _lesson_demo_pairs(factory, kind, max_level=1)
+
+        assert len(pairs) == 1
+        _obs, _tile, ent, _dir, item, _misc, _valid, eot = pairs[0]
+        assert ent == str2ent("assembling_machine_1").value
+        assert item != 0
+        assert eot == 0
+
+    def test_memorise_stream_counts_only_retained_recipe_examples(self):
+        """Every emitted MEMORISE row comes from a distinct factory, proving
+        discarded action pairs do not advance the sample budget."""
+        random.seed(1)
+        rows = list(_iter_demo_pairs(8, 64, 1, 0, 1, target=1_000))
+        mem_values = {
+            LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value,
+            LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value,
+            LessonKind.MEMORISE_3_INGREDIENT_RECIPES.value,
+            LessonKind.MEMORISE_4_INGREDIENT_RECIPES.value,
+        }
+        mem_rows = [row for row in rows if row[9] in mem_values]
+
+        assert mem_rows
+        assert len({(row[8], row[9]) for row in mem_rows}) == len(mem_rows)
+        assert all(row[2] == str2ent("assembling_machine_1").value for row in mem_rows)
+        assert all(row[7] == 0 for row in mem_rows)
 
     def test_obs_uint8_masks_bool(self):
         """obs stored uint8 and masks bool (the memory cut); eot stays float."""
@@ -446,12 +494,13 @@ class TestStreamingDemoDataset:
         loader = DataLoader(ds, batch_size=64, num_workers=0)
         batches = list(loader)
         assert sum(b[0].shape[0] for b in batches) == target
-        obs, tile, ent, dirn, item, misc, mask, eot = batches[0]
+        obs, tile, ent, dirn, item, misc, mask, eot, kind = batches[0]
         assert obs.dtype == torch.uint8
         assert obs.shape[1:] == (len(Channel), 5, 5)
         assert mask.dtype == torch.bool
         assert mask.shape[1] == 5 * 5
         assert tile.shape[0] == obs.shape[0]
+        assert kind.shape[0] == obs.shape[0]
 
     def test_workers_walk_disjoint_seeds(self):
         """Sharding is leak-free: worker w of W walks a seed class no other
@@ -485,6 +534,49 @@ class TestStreamingDemoDataset:
         ds = StreamingDemoDataset(size=5, max_level=25, base_seed=1, target=target)
         loader = DataLoader(ds, batch_size=batch, num_workers=workers)
         assert len(list(loader)) == _steps_per_epoch(target, workers, batch)
+
+
+class TestSupervisionMasks:
+    def test_memorise_enables_only_item_head(self):
+        eot = torch.tensor([0.0, 1.0, 0.0])
+        kind = torch.tensor(
+            [
+                LessonKind.MOVE_ONE_ITEM.value,
+                LessonKind.MOVE_ONE_ITEM.value,
+                LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value,
+            ]
+        )
+
+        masks = _supervision_masks(eot, kind)
+
+        assert masks["tile"].tolist() == [True, False, False]
+        assert masks["ent"].tolist() == [True, False, False]
+        assert masks["dir"].tolist() == [True, False, False]
+        assert masks["item"].tolist() == [True, False, True]
+        assert masks["misc"].tolist() == [True, False, False]
+        assert masks["eot"].tolist() == [True, True, False]
+
+    def test_memorise_loss_has_gradient_only_for_item_term(self):
+        eot = torch.tensor([0.0])
+        kind = torch.tensor([LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value])
+        masks = _supervision_masks(eot, kind)
+        params = {
+            head: torch.tensor([2.0], requires_grad=True)
+            for head in ("tile", "ent", "dir", "item", "misc", "eot")
+        }
+
+        loss = sum(
+            _masked_mean(param.square(), masks[head]) for head, param in params.items()
+        )
+        loss.backward()
+
+        item_grad = params["item"].grad
+        assert item_grad is not None
+        assert item_grad.item() != 0.0
+        for head in ("tile", "ent", "dir", "misc", "eot"):
+            grad = params[head].grad
+            assert grad is not None
+            assert grad.item() == 0.0
 
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
@@ -1476,9 +1568,9 @@ class TestPerKindEotMetrics:
 
     def test_per_kind_eot_metrics_logged(self, monkeypatch, tmp_path):
         """train_sft must log val/<LESSON>/eot_acc and /eot_pos_recall for
-        every LessonKind present in the val split, each in [0, 1] and paired
-        1:1 with the existing per-kind placement /acc. The per-kind metrics go
-        only to wandb (not summary.json), so capture the logged dict via a
+        every ordinarily-supervised LessonKind in the val split. Recipe-only
+        MEMORISE kinds deliberately have neither metric. The per-kind metrics
+        go only to wandb (not summary.json), so capture the logged dict via a
         mock run."""
         import wandb
         from unittest.mock import MagicMock
@@ -1523,14 +1615,21 @@ class TestPerKindEotMetrics:
         for k in acc_keys + rec_keys:
             assert 0.0 <= logged[k] <= 1.0, f"{k}={logged[k]} out of [0, 1]"
 
-        # The per-kind eot keys must cover exactly the kinds that already get a
-        # placement /acc — same val split, same buckets, emitted together.
+        # The per-kind EOT keys cover every supervised kind except MEMORISE,
+        # whose only retained target is the assembler's item/recipe.
         place_kinds = {
             k.split("/")[1]
             for k in logged
             if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
         }
-        assert {k.split("/")[1] for k in acc_keys} == place_kinds
+        memorise_names = {
+            LessonKind.MEMORISE_1_INGREDIENT_RECIPES.name,
+            LessonKind.MEMORISE_2_INGREDIENT_RECIPES.name,
+            LessonKind.MEMORISE_3_INGREDIENT_RECIPES.name,
+            LessonKind.MEMORISE_4_INGREDIENT_RECIPES.name,
+        }
+        assert {k.split("/")[1] for k in acc_keys} == place_kinds - memorise_names
+        assert {k.split("/")[1] for k in rec_keys} == place_kinds - memorise_names
 
 
 class TestNotNoneHeadAccuracy:
