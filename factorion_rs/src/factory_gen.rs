@@ -2272,28 +2272,12 @@ const MEMORISE_MAX_ARM_BELTS: i64 = 5;
 /// recipe tag); the arm length varies so the layout itself cannot be memorised
 /// as a fixed motif and stamped at every marker (#371).
 fn memorise_recipe_pool(n_ingredients: usize) -> Vec<(Item, Recipe)> {
-    let recipes = all_recipes();
-    let eligible = |recipe: &Recipe, count: usize| {
-        recipe.consumes.len() == count && recipe.produced_by.contains(&Item::AssemblingMachine1)
-    };
-
-    // Equal pool sizes keep one ingredient-count lesson from covering more
-    // recipe identities than another. Registry order is stable, so truncating
-    // to the smallest bucket deterministically selects the first K recipes.
-    let mut pool_size = usize::MAX;
-    for count in 1..=4 {
-        pool_size = pool_size.min(
-            recipes
-                .iter()
-                .filter(|(_, recipe)| eligible(recipe, count))
-                .count(),
-        );
-    }
-
-    recipes
+    all_recipes()
         .into_iter()
-        .filter(|(_, recipe)| eligible(recipe, n_ingredients))
-        .take(pool_size)
+        .filter(|(_, recipe)| {
+            recipe.consumes.len() == n_ingredients
+                && recipe.produced_by.contains(&Item::AssemblingMachine1)
+        })
         .collect()
 }
 
@@ -3924,18 +3908,24 @@ mod tests {
     }
 
     #[test]
-    fn test_memorise_recipe_pools_are_equally_sized() {
+    fn test_memorise_recipe_pools_include_every_eligible_recipe() {
         let pools: Vec<_> = (1..=4).map(memorise_recipe_pool).collect();
         assert!(!pools[0].is_empty());
-        assert!(pools.windows(2).all(|pair| pair[0].len() == pair[1].len()));
 
         for (index, pool) in pools.iter().enumerate() {
             let ingredient_count = index + 1;
-            assert!(pool.iter().all(|(_, recipe)| {
-                recipe.consumes.len() == ingredient_count
-                    && recipe.produced_by.contains(&Item::AssemblingMachine1)
-            }));
+            let expected: Vec<_> = all_recipes()
+                .into_iter()
+                .filter(|(_, recipe)| {
+                    recipe.consumes.len() == ingredient_count
+                        && recipe.produced_by.contains(&Item::AssemblingMachine1)
+                })
+                .map(|(item, _)| item)
+                .collect();
+            let actual: Vec<_> = pool.iter().map(|(item, _)| *item).collect();
+            assert_eq!(actual, expected);
         }
+        assert!(pools.windows(2).any(|pair| pair[0].len() != pair[1].len()));
     }
 
     const MEMORISE_KINDS: [(LessonKind, usize); 4] = [

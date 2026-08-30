@@ -3131,10 +3131,8 @@ class TestMemoriseRecipesRecipeSelection:
             )
 
     def test_lessons_with_many_recipes_are_diverse(self):
-        """A lesson whose ingredient-count bucket holds several recipes draws a
-        variety of products over many seeds (the 5-ingredient bucket has a
-        single recipe, so it is excluded)."""
-        for kind, _ in MEMORISE_KINDS[:-1]:
+        """Every supported ingredient-count lesson draws multiple products."""
+        for kind, _ in MEMORISE_KINDS:
             products = set()
             for seed in range(80):
                 f = build_factory(size=12, kind=kind, seed=seed)
