@@ -221,9 +221,9 @@ def apply_placement_action(
     return False, invalid_reason_key, placed_action
 
 
-# HACK (not for merge): RL on the trials alone, the one thing we actually
-# care about — every lesson is only a proxy for it.
-TRIAL_KINDS = [k for k in LessonKind if LESSON_IS_TRIAL[k]]
+# HACK (not for merge): RL on the depth-1 trial alone, the one thing we
+# actually care about — every lesson is only a proxy for it.
+TRIAL_KINDS = [LessonKind.TRIAL_RECIPE_TREE_DEPTH_1]
 
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
