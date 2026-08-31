@@ -766,15 +766,15 @@ const ASSEMBLING_MACHINES: &[Item] = &[
     Item::AssemblingMachine3,
 ];
 
-/// All crafting recipes in the game. The single source of truth — both
-/// `get_recipe` and the Python-facing PyO3 binding read from this.
+/// Crafting recipes retained by the training environment. The single source of
+/// truth — both `get_recipe` and the Python-facing PyO3 binding read from this.
 ///
 /// Quantities are the canonical wiki recipe values (per craft, not
 /// per-second). Throughput math (`transform_flow`) is scale-invariant
 /// under uniform multiplication of consumes and produces.
 ///
-/// Curriculum balancing is applied by the MEMORISE_N_INGREDIENT_RECIPES
-/// sampler, not by omitting canonical recipes from this registry.
+/// Oil refinery is omitted because its five inputs do not belong to any of the
+/// supported 1–4 ingredient recipe lessons.
 pub fn all_recipes() -> Vec<(Item, Recipe)> {
     vec![
         // 1 copper plate -> 2 copper cables, 0.5s
@@ -1234,22 +1234,6 @@ pub fn all_recipes() -> Vec<(Item, Recipe)> {
                 consumes: nonempty![(Item::IronGearWheel, 2.0), (Item::Pipe, 3.0)],
                 produces: nonempty![(Item::OffshorePump, 1.0)],
                 crafting_time: 0.5,
-                produced_by: ASSEMBLING_MACHINES,
-            },
-        ),
-        // 10 EC + 10 IGW + 10 pipe + 15 steel_plate + 10 stone_brick -> 1 oil_refinery, 8s
-        (
-            Item::OilRefinery,
-            Recipe {
-                consumes: nonempty![
-                    (Item::ElectronicCircuit, 10.0),
-                    (Item::IronGearWheel, 10.0),
-                    (Item::Pipe, 10.0),
-                    (Item::SteelPlate, 15.0),
-                    (Item::StoneBrick, 10.0)
-                ],
-                produces: nonempty![(Item::OilRefinery, 1.0)],
-                crafting_time: 8.0,
                 produced_by: ASSEMBLING_MACHINES,
             },
         ),
@@ -1940,6 +1924,7 @@ mod tests {
 
         assert!(get_recipe(Item::IronPlate).is_none());
         assert!(get_recipe(Item::CopperPlate).is_none());
+        assert!(get_recipe(Item::OilRefinery).is_none());
     }
 
     #[test]
@@ -1990,6 +1975,13 @@ mod tests {
                 "{item:?} recipe key must be one of its positive outputs"
             );
         }
+    }
+
+    #[test]
+    fn test_every_recipe_has_a_supported_ingredient_count() {
+        assert!(all_recipes()
+            .iter()
+            .all(|(_, recipe)| (1..=4).contains(&recipe.consumes.len())));
     }
 
     #[test]
