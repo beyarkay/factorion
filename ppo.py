@@ -221,6 +221,10 @@ def apply_placement_action(
     return False, invalid_reason_key, placed_action
 
 
+# HACK (not for merge): RL on the trials alone, the one thing we actually
+# care about — every lesson is only a proxy for it.
+TRIAL_KINDS = [k for k in LessonKind if LESSON_IS_TRIAL[k]]
+
 moving_average_length = 500
 end_of_episode_thputs = deque(maxlen=moving_average_length)
 for _ in range(moving_average_length):
@@ -259,7 +263,7 @@ def _build_eval_set(args) -> dict:
     range so seeds never collide across kinds; only seeds where build_factory
     succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
     out: dict = {}
-    for ki, kind in enumerate(LessonKind):
+    for ki, kind in enumerate(TRIAL_KINDS):
         base = 9_000_000 + args.seed + ki * 100_000
         found, s = 0, base
         while found < args.eval_seeds_per_kind and s < base + 5000:
@@ -834,7 +838,7 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
+            kinds_list = TRIAL_KINDS
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
                 factory = build_factory(
