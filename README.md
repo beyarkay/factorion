@@ -25,9 +25,7 @@ progressed significantly): https://api.wandb.ai/links/beyarkay/wmccb7fq
 The pipeline is SFT pretraining followed by PPO finetuning, on an 11×11 grid.
 Headline numbers, all from W&B project `beyarkay/factorion`:
 
-- **SFT base `h76h80yb`** (50M samples, 12.7 h) is the checkpoint everything
-  currently starts from. On the current lesson mix it rebuilds held-out
-  factories to **≈0.67** of their reference throughput.
+- **SFT base `hcozpmwt`** (100M samples).
 - **PPO lifts that to ≈0.78** (`eval/thput`, 3 seeds × 2.5M timesteps,
   2026-07-30). Belt and "memorise this recipe" lessons are essentially solved
   (0.9–1.0); `FACTORY_1_INGREDIENT` is the weak one at ~0.3.
@@ -37,7 +35,7 @@ Headline numbers, all from W&B project `beyarkay/factorion`:
   score ~0.11; depth-2 and depth-3 are still exactly 0. This is the number that
   actually matters, and it is the open problem.
 - Multi-hour PPO runs are not reliably better than short ones — a 40M-step run
-  *degraded* from 0.68 to 0.42. [#339](https://github.com/beyarkay/factorion/issues/339)
+  _degraded_ from 0.68 to 0.42. [#339](https://github.com/beyarkay/factorion/issues/339)
   measures why (a lesson that pays 25% for doing nothing, plus an end-of-turn
   head that truncates exploration ~16×).
 
@@ -151,7 +149,7 @@ finetune with RL:
 **Stage 1 — Data generation via lessons.** Hand-written factory generators
 (`build_factory()`, implemented in `factorion_rs/src/factory_gen.rs`) produce
 known-correct factories and then blank out N entities from them. The result is
-a stream of *(partial-factory, correct-completion)* training pairs. Each
+a stream of _(partial-factory, correct-completion)_ training pairs. Each
 **lesson type** covers a different entity/layout pattern:
 
 - `MOVE_ONE_ITEM`, `MOVE_ONE_ITEM_CHAOS` — belt routing
@@ -165,7 +163,7 @@ a stream of *(partial-factory, correct-completion)* training pairs. Each
 
 Each lesson also has an **internal difficulty knob**: `num_missing_entities`
 ranges from 0 (full solution shown) up to all placeable entities (only the
-source/sink remain). Lesson *type* and difficulty are orthogonal — the agent
+source/sink remain). Lesson _type_ and difficulty are orthogonal — the agent
 sees diverse scenarios at every difficulty level.
 
 **Stage 2 — Supervised pre-training (SFT).** A multi-head classifier (tile +
@@ -181,7 +179,7 @@ lesson-generator's solutions when a better layout exists. Starting from a
 decent pretrained policy means the sparse-reward problem (most factories
 throughput=0) bites much less than in the original RL-from-scratch setup.
 Point `--start-from` at either a local `.pt` file or a W&B run id (e.g. the
-current SFT base `h76h80yb`, whose model artifact is fetched automatically),
+current SFT base `hcozpmwt`, whose model artifact is fetched automatically),
 and use `--critic-warmup` to train the fresh value head before unfreezing the
 policy. The aim is for PPO to beat the SFT base's throughput on the same
 lesson mix — currently ≈0.67, which PPO takes to ≈0.78.
@@ -223,14 +221,14 @@ a basic green-circuits factory — and belt routing is largely solved: the agent
 scores 0.9–1.0 of reference throughput on the belt, splitter and underground
 lessons, and picks the right recipe for a named output most of the time.
 
-What is *not* solved is building a factory from nothing but a source and a
+What is _not_ solved is building a factory from nothing but a source and a
 sink marker, with no reference layout to imitate. That is what the `TRIAL_*`
 kinds measure, and only the shallowest (one crafting step) scores above zero.
 [#339](https://github.com/beyarkay/factorion/issues/339) measures why: a random
 policy stumbles into a working belt route about 1 episode in 107, and into a
 working assembler setup 0 times in 1,200 — belt routing is disjunctive (any
-connected path pays) while crafting is conjunctive (right recipe *and* both
-ingredient arms *and* correctly oriented inserters, with zero reward until
+connected path pays) while crafting is conjunctive (right recipe _and_ both
+ingredient arms _and_ correctly oriented inserters, with zero reward until
 every piece is simultaneously right).
 
 Here is the intermediate goal:
@@ -272,7 +270,7 @@ uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
 uv run python ppo.py \
     --seed 1 \
     --env-id factorion/FactorioEnv-v0 \
-    --start-from h76h80yb \
+    --start-from hcozpmwt \
     --track \
     --wandb-project-name factorion \
     --total-timesteps 500000

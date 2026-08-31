@@ -98,11 +98,11 @@ factorion-mod/
    This installs dependencies and builds the Rust extension when needed,
    installs and enables the mod, downloads the run's latest model artifact,
    reads the exact grid/encoder architecture from W&B, and waits for Factorio.
-   It defaults to checkpoint `h76h80yb`; pass a local checkpoint or another W&B
+   It defaults to checkpoint `hcozpmwt`; pass a local checkpoint or another W&B
    run as the first argument, or set `FACTORION_CHECKPOINT`.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
-   region brush and run `h76h80yb` both use a fixed 11×11 grid; checkpoints
+   region brush and run `hcozpmwt` both use a fixed 11×11 grid; checkpoints
    trained at another size are rejected with a clear error.
 
 For a manual or headless setup, start the server directly. `--checkpoint`
@@ -110,7 +110,7 @@ accepts a local `.pt`, bare W&B run id, or `entity/project/id`:
 
 ```bash
 uv run python factorion-mod/server/server.py \
-  --checkpoint h76h80yb \
+  --checkpoint hcozpmwt \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -119,6 +119,7 @@ For local files, an `agent.hp.json` sidecar with
 automatically.
 
 3. In Factorio:
+
    - Press `Ctrl+T` to receive the blue region tool plus ten source belts and
      ten sink belts.
    - Click once with the blue **region tool**. It stamps an 11×11 region
@@ -132,6 +133,7 @@ automatically.
      entities were placed and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
+
    - `Ctrl+P` — request prediction
    - `Ctrl+R` — clear the region and model-placed entities
    - `Ctrl+T` — re-grant the region tool and endpoint belts
@@ -229,7 +231,7 @@ To check on the first live run (in rough order):
 4. Power: machines/inserters show `working`, not `no_power`, in
    `status_counts` (substation ring + electric-energy-interface).
 5. AM1 accepts 3-5-ingredient recipes on the all-recipes force
-   (MEMORISE_3.._5 lessons).
+   (MEMORISE_3..\_5 lessons).
 6. `game.speed` actually reached (wall-clock per run ≈
    (warmup+measure)/60/speed seconds, CPU permitting).
 
@@ -271,7 +273,7 @@ Server-callable remote methods exposed by the mod:
   in-game. For GUI hosting, `config.ini`'s `local-rcon-socket` /
   `local-rcon-password` is the only path (no env-vars, no in-game UI).
 - **Poking mod `storage` directly from RCON** — `/silent-command` runs
-  in *level scope*, not mod scope. The mod's `remote.add_interface`
+  in _level scope_, not mod scope. The mod's `remote.add_interface`
   methods are the only way in.
 - **`game.reload_script()` picking up `control.lua` edits from disk** —
   reloads from the **save's embedded mod scripts**, so changes only

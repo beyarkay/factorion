@@ -32,7 +32,7 @@ Manual path:
 ```bash
 # from the repo root, so `factorion` and `factorion_rs` import cleanly
 uv run python factorion-mod/server/server.py \
-  --checkpoint h76h80yb \
+  --checkpoint hcozpmwt \
   --rcon-host 127.0.0.1 \
   --rcon-port 27015 \
   --rcon-password factorion
@@ -72,16 +72,21 @@ or the next pending request JSON:
   "request_id": "1234-5-7",
   "grid_size": 11,
   "entities": [
-    {"name": "transport-belt", "x": 2, "y": 3, "direction": 2},
-    {"name": "assembling-machine-1", "x": 4, "y": 4, "direction": 0,
-     "item": "iron-gear-wheel"}
+    { "name": "transport-belt", "x": 2, "y": 3, "direction": 2 },
+    {
+      "name": "assembling-machine-1",
+      "x": 4,
+      "y": 4,
+      "direction": 0,
+      "item": "iron-gear-wheel"
+    }
   ],
-  "sources": [{"x": 0, "y": 3, "direction": 2, "item": "iron-plate"}],
-  "sinks":   [{"x": 10, "y": 3, "direction": 2, "item": "iron-plate"}]
+  "sources": [{ "x": 0, "y": 3, "direction": 2, "item": "iron-plate" }],
+  "sinks": [{ "x": 10, "y": 3, "direction": 2, "item": "iron-plate" }]
 }
 ```
 
-`direction` uses Factorion's enum (1=N, 2=E, 3=S, 4=W), *not* Factorio's
+`direction` uses Factorion's enum (1=N, 2=E, 3=S, 4=W), _not_ Factorio's
 16-step runtime convention; the server converts before emitting.
 Ctrl-P snapshots supported entities already inside the region into `entities`,
 including their complete rotated footprint, recipes, and underground-belt
