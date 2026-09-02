@@ -6,6 +6,8 @@ directly; nothing talks to RunPod, W&B, or GitHub.
 """
 
 import math
+import os
+import subprocess
 import time
 
 from ci.config import (
@@ -25,6 +27,7 @@ from ci.config import (
     sft_budget_seconds,
 )
 from ci.gh_command import parse_comment
+from ci.launch import BOOTSTRAP
 from ci import jobs as ci_jobs
 from ci.jobs import _compare_subjob, ppo_command, run_compare, sft_command, sweep_agent_command
 from ci.report import (
@@ -639,3 +642,101 @@ class TestSelectHeadline:
             "perf/eval_seconds",
             "perf/sps",
         ]
+
+
+class TestBootstrapGit:
+    """GitHub 401s anonymous git for this public repo from RunPod, so the pod
+    must authenticate; a pod has no tty, so the credential challenge otherwise
+    kills the launch as "could not read Username" (nine pods, 2026-09-02).
+
+    Runs the real BOOTSTRAP with /workspace and HOME redirected into tmp_path
+    and git/curl/python/sleep stubbed, so nothing here touches the network.
+    """
+
+    TOKEN = "ghs_examplesecretvalue"
+
+    def _run(self, tmp_path, clone_failures, token=""):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        budget = tmp_path / "failures"
+        budget.write_text(str(clone_failures))
+        (bin_dir / "git").write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = clone ]; then\n'
+            f'  n=$(cat {budget})\n'
+            f'  if [ "$n" -gt 0 ]; then echo $((n - 1)) > {budget}; exit 128; fi\n'
+            '  mkdir -p "$4/ci" && echo "touch runner_ran" > "$4/ci/runner.sh"\n'
+            "fi\n"
+            "exit 0\n"
+        )
+        # A prompt-free git is the point: a stub that could block would hide it.
+        (bin_dir / "python").write_text("#!/bin/sh\nexit 0\n")
+        (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        # Stands in for a GitHub that refuses this IP anonymously but honours a
+        # token, which is the case the diagnostics exist to identify.
+        (bin_dir / "curl").write_text(
+            "#!/bin/sh\n"
+            "if grep -q x-access-token; then echo 'HTTP/2 200'; else echo 'HTTP/2 401'; fi\n"
+        )
+        for stub in bin_dir.iterdir():
+            stub.chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-c", BOOTSTRAP.replace("/workspace", str(tmp_path / "ws"))],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HOME": str(tmp_path),
+                "FCI_REPO_URL": "https://github.com/beyarkay/factorion",
+                "FCI_SHA": SHA,
+                "FCI_GITHUB_TOKEN": token,
+            },
+            capture_output=True,
+            text=True,
+        )
+        return proc, budget
+
+    def test_transient_clone_failure_is_retried(self, tmp_path):
+        # A single retry is not enough for a refusal that persists, so the last
+        # allowed attempt must still be able to recover.
+        proc, budget = self._run(tmp_path, clone_failures=5)
+        assert proc.returncode == 0, proc.stdout
+        assert budget.read_text().strip() == "0", "the clone was not retried"
+        assert (tmp_path / "ws" / "factorion" / "runner_ran").exists()
+
+    def test_token_reaches_git_but_never_the_uploaded_log(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=0, token=self.TOKEN)
+        assert proc.returncode == 0, proc.stdout
+        assert (tmp_path / ".git-credentials").read_text() == (
+            f"https://x-access-token:{self.TOKEN}@github.com\n"
+        )
+        # boot.log is uploaded to W&B, so a leak there is a published secret.
+        assert self.TOKEN not in proc.stdout
+        assert self.TOKEN not in (tmp_path / "ws" / "boot.log").read_text()
+        assert "token present" in proc.stdout
+
+    def test_no_token_still_attempts_anonymously(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=0)
+        assert proc.returncode == 0, proc.stdout
+        assert not (tmp_path / ".git-credentials").exists()
+        assert "token absent" in proc.stdout
+
+    def test_persistent_failure_fails_with_diagnostics(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=99)
+        assert proc.returncode != 0
+        # Whatever refuses the next clone must say so in the log itself.
+        assert "clone diagnostics" in proc.stdout
+        assert "HTTP/2 401" in proc.stdout
+        assert "authenticated:" not in proc.stdout
+
+    def test_diagnostics_tell_a_refused_ip_from_a_bad_token(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=99, token=self.TOKEN)
+        assert proc.returncode != 0
+        # Anonymous refused but authenticated accepted is the signature of an
+        # IP-level refusal; both refused would instead indict the token.
+        anon, auth = proc.stdout.split("authenticated:")
+        assert "HTTP/2 401" in anon.split("anonymous:")[1]
+        assert "HTTP/2 200" in auth
+        assert self.TOKEN not in proc.stdout
+
+    def test_git_never_waits_on_a_credential_prompt(self):
+        assert "GIT_TERMINAL_PROMPT=0" in BOOTSTRAP
