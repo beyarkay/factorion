@@ -7,7 +7,8 @@ backbone of reporting**.
 ## Triggering jobs: comment `/ci ...` on a PR
 
 `/ci help` posts this grammar with examples. Square brackets mark optional
-flags (don't type the brackets).
+flags (don't type the brackets); counts (`N`) accept an SI-ish suffix —
+`500k`, `5M`, `4.5M`, `2B`.
 
 ```
 /ci sft [--num-samples N]                  # SFT from scratch at the PR head
