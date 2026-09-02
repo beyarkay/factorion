@@ -350,10 +350,8 @@ ARCH_VARIANTS = [
     {"attn_dim": 0},   # conv-only ablation baseline
     {"attn_dim": 16},
     {"attn_dim": 32},
-    {"global_feat_dim": 0},   # no pooled global vector
     {"attn_pos_embed": 0},    # attention without positional embedding
     {"attn_dim": 24, "attn_heads": 4, "attn_layers": 1},
-    {"attn_dim": 0, "global_feat_dim": 0},  # pure conv, window-only heads
 ]
 
 
@@ -431,16 +429,6 @@ class TestArchVariants:
         off = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
         assert off.attn_dim == 0 and not hasattr(off, "attn")
 
-    def test_global_feat_dim_zero_disables_global_vector(self, envs):
-        agent = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=0)
-        assert not hasattr(agent, "global_proj")
-        enc, g = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
-        assert g is None
-        # Per-tile heads then read just the last_chan-wide column.
-        assert agent.ent_head.in_features == 16
-        _, logp_B, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
-        assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
-
     def test_attn_is_identity_at_init(self, envs):
         """The out projection is zero-initialised, so the residual attention
         stage is exactly identity at init — the trunk starts as the plain
@@ -451,7 +439,7 @@ class TestArchVariants:
 
     def test_attn_preserves_channels_and_grid_size(self, envs):
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=32)
-        enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
+        enc = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
         # Attention is shape-preserving, so the per-tile heads still index a
         # last_chan-wide column at every one of the 5x5 cells.
         assert enc.shape == (2, 16, 5, 5)

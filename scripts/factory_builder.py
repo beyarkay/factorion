@@ -775,10 +775,8 @@ def _predict(grid: list[list[dict]]) -> dict:
 
         # Ghost overlays need the greedy per-head pick at EVERY tile, not just
         # the sampled one — a whole-grid matmul on the shared heads.
-        encoded_BCWH, g_1G = agent.encode(obs_CWH)
+        encoded_BCWH = agent.encode(obs_CWH)
         feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        if g_1G is not None:
-            feats_all = torch.cat([feats_all, g_1G.expand(W * H, -1)], dim=1)
         ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
         dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
         item_pick = agent.item_head(feats_all).argmax(dim=-1)

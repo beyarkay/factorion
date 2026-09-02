@@ -95,9 +95,6 @@ class SharedArgs:
     """1 = add a learned per-cell positional embedding to the attention tokens
     (self-attention is otherwise permutation-invariant). Int not bool for W&B
     sweeps."""
-    global_feat_dim: int = 0
-    """dim of the pooled (mean+max over space) global-context vector
-    concatenated onto the per-tile head inputs; 0 disables the global pathway."""
 
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""

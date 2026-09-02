@@ -624,7 +624,7 @@ class TestSFTLossConvergence:
         for epoch in range(5):
             agent.train()
             batch_obs = obs.float()
-            encoded, g = agent.encode(batch_obs)
+            encoded = agent.encode(batch_obs)
             B = encoded.shape[0]
 
             tile_logits = agent.tile_logits(encoded).reshape(B, -1)
@@ -633,7 +633,7 @@ class TestSFTLossConvergence:
             x_B = tiles // agent.height
             y_B = tiles % agent.height
             batch_idx = torch.arange(B)
-            tile_features = agent.tile_features(encoded, g, batch_idx, x_B, y_B)
+            tile_features = agent.tile_features(encoded, batch_idx, x_B, y_B)
 
             ent_logits = agent.ent_head(tile_features)
             dir_logits = agent.dir_head(tile_features)
