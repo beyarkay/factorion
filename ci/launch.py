@@ -81,15 +81,32 @@ PY
     python -c 'import os, runpod; runpod.api_key = os.environ["RUNPOD_API_KEY"]; runpod.terminate_pod(os.environ["RUNPOD_POD_ID"])' || true
 }
 trap on_exit EXIT
+# GitHub intermittently answers an anonymous clone of a PUBLIC repo with a 401
+# (actions/checkout#2351). A pod has no tty, so the credential challenge dies
+# as "could not read Username" and burns a whole GPU pod launch. Refuse the
+# prompt so the real error surfaces, and ride the burst out: observed refusals
+# span minutes, so the backoff must too (SETUP_SLACK_SECONDS budgets for it).
+export GIT_TERMINAL_PROMPT=0
+retry() {
+    local n=1
+    until "$@"; do
+        if [ "$n" -ge 6 ]; then return 1; fi
+        echo "[fci] '$*' failed; retrying in $((n * 30))s (attempt $((n + 1))/6)"
+        sleep "$((n * 30))"
+        n=$((n + 1))
+    done
+}
 echo "[fci] cloning ${FCI_REPO_URL} @ ${FCI_SHA}"
 cd /workspace
-git clone --quiet "${FCI_REPO_URL}" factorion
+# git only clears its half-written directory when it dies gracefully, so a
+# retried clone starts by clearing it unconditionally.
+retry bash -c 'rm -rf factorion && git clone --quiet "$FCI_REPO_URL" factorion'
 cd factorion
 # The head commit can leave every branch tip before the pod boots (PR merged
 # and its branch deleted, or force-pushed), so a plain clone won't contain it.
 # Fetch the exact SHA directly — GitHub still serves it via refs/pull/* — so
 # the checkout succeeds instead of dying with "reference is not a tree".
-git fetch --quiet origin "${FCI_SHA}"
+retry git fetch --quiet origin "${FCI_SHA}"
 git checkout --quiet "${FCI_SHA}"
 bash ci/runner.sh
 """

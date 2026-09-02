@@ -6,6 +6,8 @@ directly; nothing talks to RunPod, W&B, or GitHub.
 """
 
 import math
+import os
+import subprocess
 import time
 
 from ci.config import (
@@ -25,6 +27,7 @@ from ci.config import (
     sft_budget_seconds,
 )
 from ci.gh_command import parse_comment
+from ci.launch import BOOTSTRAP
 from ci import jobs as ci_jobs
 from ci.jobs import _compare_subjob, ppo_command, run_compare, sft_command, sweep_agent_command
 from ci.report import (
@@ -639,3 +642,59 @@ class TestSelectHeadline:
             "perf/eval_seconds",
             "perf/sps",
         ]
+
+
+class TestBootstrapGit:
+    """The pod bootstrap must survive a transient GitHub refusal.
+
+    A pod has no tty, so an anonymous request GitHub rejects turns into an
+    unanswerable credential prompt and kills the launch (W&B 8ssuq14n). Runs
+    the real BOOTSTRAP with /workspace redirected and git/python/sleep stubbed.
+    """
+
+    def _run(self, tmp_path, clone_failures):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        budget = tmp_path / "failures"
+        budget.write_text(str(clone_failures))
+        (bin_dir / "git").write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = clone ]; then\n'
+            f'  n=$(cat {budget})\n'
+            f'  if [ "$n" -gt 0 ]; then echo $((n - 1)) > {budget}; exit 128; fi\n'
+            '  mkdir -p "$4/ci" && echo "touch runner_ran" > "$4/ci/runner.sh"\n'
+            "fi\n"
+            "exit 0\n"
+        )
+        # A prompt-free git is the point: a stub that could block would hide it.
+        (bin_dir / "python").write_text("#!/bin/sh\nexit 0\n")
+        (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for stub in bin_dir.iterdir():
+            stub.chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-c", BOOTSTRAP.replace("/workspace", str(tmp_path / "ws"))],
+            env={
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "FCI_REPO_URL": "https://github.com/beyarkay/factorion",
+                "FCI_SHA": SHA,
+            },
+            capture_output=True,
+            text=True,
+        )
+        return proc, budget
+
+    def test_transient_clone_failure_is_retried(self, tmp_path):
+        # The observed burst refused every clone for minutes, so a single
+        # retry is not enough: the last allowed attempt must still recover.
+        proc, budget = self._run(tmp_path, clone_failures=5)
+        assert proc.returncode == 0, proc.stdout
+        assert budget.read_text().strip() == "0", "the clone was not retried"
+        assert (tmp_path / "ws" / "factorion" / "runner_ran").exists()
+
+    def test_persistent_clone_failure_still_fails(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=99)
+        assert proc.returncode != 0
+
+    def test_git_never_waits_on_a_credential_prompt(self):
+        assert "GIT_TERMINAL_PROMPT=0" in BOOTSTRAP
