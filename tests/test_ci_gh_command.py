@@ -334,6 +334,43 @@ class TestSweepDispatch:
         assert gh_ctx["pods"] == []
 
 
+class TestSiCounts:
+    """Cost knobs take SI-ish suffixes: a /ci comment is hand-typed, and
+    miscounting the zeros in 40000000 is how a 10x run gets launched."""
+
+    @pytest.mark.parametrize(
+        "command,field,expected",
+        [
+            ("/ci sft --num-samples 5M", "num_samples", 5_000_000),
+            ("/ci sft --num-samples 4.5M", "num_samples", 4_500_000),
+            ("/ci sft --num-samples 500k", "num_samples", 500_000),
+            ("/ci sft --num-samples 200000", "num_samples", 200_000),
+            (
+                "/ci ppo --start-from j0s5y2mc --total-timesteps 1.5M",
+                "total_timesteps",
+                1_500_000,
+            ),
+            (
+                "/ci ppo --start-from j0s5y2mc --total-timesteps 2B",
+                "total_timesteps",
+                2_000_000_000,
+            ),
+        ],
+    )
+    def test_suffix_scales_the_count(self, gh_ctx, monkeypatch, command, field, expected):
+        monkeypatch.setenv("COMMENT_BODY", command)
+        gh_command.main()
+        assert _job_spec(gh_ctx["pods"][0])[field] == expected
+
+    @pytest.mark.parametrize("written", ["5MB", "1e6", "0.5", "-5M"])
+    def test_nonsense_count_launches_nothing(self, gh_ctx, monkeypatch, written):
+        monkeypatch.setenv("COMMENT_BODY", f"/ci sft --num-samples {written}")
+        with pytest.raises(SystemExit):
+            gh_command.main()
+        assert gh_ctx["pods"] == []
+        assert "could not parse" in gh_ctx["comments"][0][1]
+
+
 class TestClaudeAuthoredLimits:
     """A /ci comment signed by Claude Code is capped to the ci/config.py
     CLAUDE_MAX_*; the same command typed by a human is not."""
@@ -433,7 +470,7 @@ class TestBadInput:
         gh_command.main()
         ((_, body),) = gh_ctx["comments"]
         for snippet in (
-            "/ci sft --num-samples 5000000",  # concrete example, not just grammar
+            "/ci sft --num-samples 5M",  # concrete example, not just grammar
             "/ci ppo --start-from",
             "/ci compare sft",
             "/ci compare ppo --start-from",
