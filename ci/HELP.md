@@ -10,15 +10,15 @@ comes from `training_config.py`. Full grammar: `ci/README.md`.
 /ci sweep ppo --pods 4
 
 # single runs
-/ci sft --num-samples 5000000
-/ci ppo --start-from abc123 --total-timesteps 40000000
+/ci sft --num-samples 5M
+/ci ppo --start-from abc123 --total-timesteps 40M
 
 # comparisons — N seeds/side; add `assert` lines for a pass/fail status
 /ci compare sft --seeds 3
 assert pr:val/thput > main:val/thput
 assert pr:val/acc >= 0.5
 
-/ci compare ppo --start-from abc123 --total-timesteps 40000000 --seeds 3
+/ci compare ppo --start-from abc123 --total-timesteps 40M --seeds 3
 assert pr:val/thput > main:val/thput
 
 # pods
@@ -26,6 +26,9 @@ assert pr:val/thput > main:val/thput
 /ci kill abc123                    # or: /ci kill --all
 /ci watchdog --dry-run
 ```
+
+`--num-samples`/`--total-timesteps` take a plain count or an SI-ish
+suffix: `500k`, `5M`, `4.5M`, `2B`.
 
 `assert` sides: `pr:`/`test:` = this branch, `main:`/`base:` = baseline; ops
 `< > <= >= == ~=` (`~=` ≈ equal, append `+- tol`). Bare numbers are thresholds.
