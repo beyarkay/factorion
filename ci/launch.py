@@ -97,13 +97,25 @@ if [ -n "${FCI_GITHUB_TOKEN:-}" ]; then
 else
     fci_token=absent
 fi
+probe_refs() {
+    # Credentials travel in curl's stdin config, never argv, since /proc is
+    # world-readable. Only response headers are ever printed.
+    printf 'url = %s/info/refs?service=git-upload-pack\\n%s\\n' "${FCI_REPO_URL}" "${1:-}" |
+        curl -sSI -K - 2>&1 |
+        grep -iE '^(HTTP/|www-authenticate|retry-after|x-ratelimit|x-github-request-id)' || true
+}
 diagnose_git() {
     echo "[fci] --- clone diagnostics ---"
     echo "[fci] $(git --version), token ${fci_token}"
-    # 401 means GitHub is refusing us and the token is the fix; 200 means the
-    # fault is inside the pod. Never echoes the token itself.
-    curl -sSI "${FCI_REPO_URL}/info/refs?service=git-upload-pack" 2>&1 |
-        grep -iE '^(HTTP/|www-authenticate|retry-after|x-ratelimit|x-github-request-id)' || true
+    # anon 401 + auth 200 = GitHub refusing this IP and the token is doing its
+    # job; both 401 = the token is wrong (expired, wrong repo, no Contents
+    # read); anon 200 = the fault is inside the pod, not at GitHub.
+    echo "[fci] anonymous:"
+    probe_refs
+    if [ -n "${FCI_GITHUB_TOKEN:-}" ]; then
+        echo "[fci] authenticated:"
+        probe_refs "user = x-access-token:${FCI_GITHUB_TOKEN}"
+    fi
     echo "[fci] --- end diagnostics ---"
 }
 retry() {

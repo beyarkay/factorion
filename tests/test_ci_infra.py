@@ -672,7 +672,12 @@ class TestBootstrapGit:
         # A prompt-free git is the point: a stub that could block would hide it.
         (bin_dir / "python").write_text("#!/bin/sh\nexit 0\n")
         (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
-        (bin_dir / "curl").write_text("#!/bin/sh\necho 'HTTP/2 401'\n")
+        # Stands in for a GitHub that refuses this IP anonymously but honours a
+        # token, which is the case the diagnostics exist to identify.
+        (bin_dir / "curl").write_text(
+            "#!/bin/sh\n"
+            "if grep -q x-access-token; then echo 'HTTP/2 200'; else echo 'HTTP/2 401'; fi\n"
+        )
         for stub in bin_dir.iterdir():
             stub.chmod(0o755)
         proc = subprocess.run(
@@ -721,6 +726,17 @@ class TestBootstrapGit:
         # Whatever refuses the next clone must say so in the log itself.
         assert "clone diagnostics" in proc.stdout
         assert "HTTP/2 401" in proc.stdout
+        assert "authenticated:" not in proc.stdout
+
+    def test_diagnostics_tell_a_refused_ip_from_a_bad_token(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=99, token=self.TOKEN)
+        assert proc.returncode != 0
+        # Anonymous refused but authenticated accepted is the signature of an
+        # IP-level refusal; both refused would instead indict the token.
+        anon, auth = proc.stdout.split("authenticated:")
+        assert "HTTP/2 401" in anon.split("anonymous:")[1]
+        assert "HTTP/2 200" in auth
+        assert self.TOKEN not in proc.stdout
 
     def test_git_never_waits_on_a_credential_prompt(self):
         assert "GIT_TERMINAL_PROMPT=0" in BOOTSTRAP
