@@ -52,7 +52,7 @@ Historically the project did RL-from-scratch with heavy scaffolding (curriculum 
 
 ## W&B dashboards
 
-Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr3.369e-05-ent0.008034_0.0007372-kl0.02-cw9-fromhcozpmwt-c128-128-128-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
+Runs are named by a hyperparameter signature, not a timestamp (`ppo.py:_run_signature`, `sft.py:_artifact_name`), e.g. `ppo-s11-lr3.369e-05-ent0.008034_0.0007372-kl0.02-cw9-fromhcozpmwt-c128-seed1`. `global_step` (env steps) is the PPO x-axis. PPO logs once per iteration into these sections (see `define_metric` block in `ppo.py`):
 
 - **`eval/`** — periodic EOT-respecting greedy held-out throughput (`eval/thput`, `eval/{LESSON}/thput`), every `--eval-every` iters; directly overlay-able with the SFT baseline. **This is the headline progress signal**, and the sweep metric (`ci/sweep_ppo.yaml`).
 - **`rollout/`** — on-policy sampled episode stats (`thput`, `thput_raw`, `reward`, `length`, `eot_rate`, `invalid_frac`, `num_entities`, `entity_efficiency`, `frac_reachable`, `entity_cost`, `cost_efficiency`) + per-lesson `rollout/{LESSON}/{thput,thput_raw,reward,length,entity_cost,cost_efficiency}` (raw items/s kept alongside the normalized throughput so lessons with very different ceilings stay comparable).
