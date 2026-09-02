@@ -53,6 +53,8 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FCI_GITHUB_TOKEN: ${{ secrets.FCI_GITHUB_TOKEN }}
           CI_COMMAND: ${{ inputs.command }}
           CI_REF: ${{ inputs.ref }}
         run: |

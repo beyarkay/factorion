@@ -87,6 +87,9 @@ jobs:
           COMMENT_URL: ${{ github.event.comment.html_url }}
           PR_NUMBER: ${{ github.event.issue.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional long-lived read token for the pod's clone; without it the
+          # pod falls back to GITHUB_TOKEN, which dies with this job.
+          FCI_GITHUB_TOKEN: ${{ secrets.FCI_GITHUB_TOKEN }}
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
         run: |

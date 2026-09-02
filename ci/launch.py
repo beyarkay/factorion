@@ -81,12 +81,31 @@ PY
     python -c 'import os, runpod; runpod.api_key = os.environ["RUNPOD_API_KEY"]; runpod.terminate_pod(os.environ["RUNPOD_POD_ID"])' || true
 }
 trap on_exit EXIT
-# GitHub intermittently answers an anonymous clone of a PUBLIC repo with a 401
-# (actions/checkout#2351). A pod has no tty, so the credential challenge dies
-# as "could not read Username" and burns a whole GPU pod launch. Refuse the
-# prompt so the real error surfaces, and ride the burst out: observed refusals
-# span minutes, so the backoff must too (SETUP_SLACK_SECONDS budgets for it).
+# GitHub answers anonymous git for this PUBLIC repo with a 401 from RunPod's
+# egress IPs — every pod, for over an hour on 2026-09-02. A pod has no tty, so
+# the challenge died as "could not read Username" and burned the launch while
+# saying nothing about the cause. So: authenticate, keep refusing the prompt so
+# a credential fault still reads as one, and print the HTTP status on the way
+# out so the next failure diagnoses itself instead of needing an autopsy.
 export GIT_TERMINAL_PROMPT=0
+if [ -n "${FCI_GITHUB_TOKEN:-}" ]; then
+    # A credential store, never a token-bearing remote URL: git echoes the
+    # remote URL in its error messages and boot.log is uploaded to W&B.
+    (umask 077; printf 'https://x-access-token:%s@github.com\\n' "${FCI_GITHUB_TOKEN}" > ~/.git-credentials)
+    git config --global credential.helper store
+    fci_token=present
+else
+    fci_token=absent
+fi
+diagnose_git() {
+    echo "[fci] --- clone diagnostics ---"
+    echo "[fci] $(git --version), token ${fci_token}"
+    # 401 means GitHub is refusing us and the token is the fix; 200 means the
+    # fault is inside the pod. Never echoes the token itself.
+    curl -sSI "${FCI_REPO_URL}/info/refs?service=git-upload-pack" 2>&1 |
+        grep -iE '^(HTTP/|www-authenticate|retry-after|x-ratelimit|x-github-request-id)' || true
+    echo "[fci] --- end diagnostics ---"
+}
 retry() {
     local n=1
     until "$@"; do
@@ -96,17 +115,23 @@ retry() {
         n=$((n + 1))
     done
 }
-echo "[fci] cloning ${FCI_REPO_URL} @ ${FCI_SHA}"
+echo "[fci] cloning ${FCI_REPO_URL} @ ${FCI_SHA} (token ${fci_token})"
 cd /workspace
 # git only clears its half-written directory when it dies gracefully, so a
 # retried clone starts by clearing it unconditionally.
-retry bash -c 'rm -rf factorion && git clone --quiet "$FCI_REPO_URL" factorion'
+if ! retry bash -c 'rm -rf factorion && git clone --quiet "$FCI_REPO_URL" factorion'; then
+    diagnose_git
+    exit 128
+fi
 cd factorion
 # The head commit can leave every branch tip before the pod boots (PR merged
 # and its branch deleted, or force-pushed), so a plain clone won't contain it.
 # Fetch the exact SHA directly — GitHub still serves it via refs/pull/* — so
 # the checkout succeeds instead of dying with "reference is not a tree".
-retry git fetch --quiet origin "${FCI_SHA}"
+if ! retry git fetch --quiet origin "${FCI_SHA}"; then
+    diagnose_git
+    exit 128
+fi
 git checkout --quiet "${FCI_SHA}"
 bash ci/runner.sh
 """
@@ -191,6 +216,13 @@ def launch(
         "FCI_BOOT_B64": base64.b64encode(BOOTSTRAP.encode()).decode(),
         "FCI_JOB_B64": base64.b64encode(json.dumps(spec).encode()).decode(),
         "FCI_REPO_URL": repo_url,
+        # GitHub 401s anonymous git from RunPod, so the pod's clone must
+        # authenticate. FCI_GITHUB_TOKEN wins because the workflow's automatic
+        # GITHUB_TOKEN is revoked when the launching job ends — which, for the
+        # fire-and-forget sft/ppo path, is before a slow-booting pod clones.
+        "FCI_GITHUB_TOKEN": (
+            os.environ.get("FCI_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+        ),
         "FCI_SHA": job.sha,
         "FCI_DEADLINE": str(deadline),
         "FCI_WANDB_PROJECT": WANDB_PROJECT,

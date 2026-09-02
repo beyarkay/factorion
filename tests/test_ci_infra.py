@@ -645,14 +645,17 @@ class TestSelectHeadline:
 
 
 class TestBootstrapGit:
-    """The pod bootstrap must survive a transient GitHub refusal.
+    """GitHub 401s anonymous git for this public repo from RunPod, so the pod
+    must authenticate; a pod has no tty, so the credential challenge otherwise
+    kills the launch as "could not read Username" (nine pods, 2026-09-02).
 
-    A pod has no tty, so an anonymous request GitHub rejects turns into an
-    unanswerable credential prompt and kills the launch (W&B 8ssuq14n). Runs
-    the real BOOTSTRAP with /workspace redirected and git/python/sleep stubbed.
+    Runs the real BOOTSTRAP with /workspace and HOME redirected into tmp_path
+    and git/curl/python/sleep stubbed, so nothing here touches the network.
     """
 
-    def _run(self, tmp_path, clone_failures):
+    TOKEN = "ghs_examplesecretvalue"
+
+    def _run(self, tmp_path, clone_failures, token=""):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         budget = tmp_path / "failures"
@@ -669,6 +672,7 @@ class TestBootstrapGit:
         # A prompt-free git is the point: a stub that could block would hide it.
         (bin_dir / "python").write_text("#!/bin/sh\nexit 0\n")
         (bin_dir / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        (bin_dir / "curl").write_text("#!/bin/sh\necho 'HTTP/2 401'\n")
         for stub in bin_dir.iterdir():
             stub.chmod(0o755)
         proc = subprocess.run(
@@ -676,8 +680,10 @@ class TestBootstrapGit:
             env={
                 **os.environ,
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HOME": str(tmp_path),
                 "FCI_REPO_URL": "https://github.com/beyarkay/factorion",
                 "FCI_SHA": SHA,
+                "FCI_GITHUB_TOKEN": token,
             },
             capture_output=True,
             text=True,
@@ -685,16 +691,36 @@ class TestBootstrapGit:
         return proc, budget
 
     def test_transient_clone_failure_is_retried(self, tmp_path):
-        # The observed burst refused every clone for minutes, so a single
-        # retry is not enough: the last allowed attempt must still recover.
+        # A single retry is not enough for a refusal that persists, so the last
+        # allowed attempt must still be able to recover.
         proc, budget = self._run(tmp_path, clone_failures=5)
         assert proc.returncode == 0, proc.stdout
         assert budget.read_text().strip() == "0", "the clone was not retried"
         assert (tmp_path / "ws" / "factorion" / "runner_ran").exists()
 
-    def test_persistent_clone_failure_still_fails(self, tmp_path):
+    def test_token_reaches_git_but_never_the_uploaded_log(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=0, token=self.TOKEN)
+        assert proc.returncode == 0, proc.stdout
+        assert (tmp_path / ".git-credentials").read_text() == (
+            f"https://x-access-token:{self.TOKEN}@github.com\n"
+        )
+        # boot.log is uploaded to W&B, so a leak there is a published secret.
+        assert self.TOKEN not in proc.stdout
+        assert self.TOKEN not in (tmp_path / "ws" / "boot.log").read_text()
+        assert "token present" in proc.stdout
+
+    def test_no_token_still_attempts_anonymously(self, tmp_path):
+        proc, _ = self._run(tmp_path, clone_failures=0)
+        assert proc.returncode == 0, proc.stdout
+        assert not (tmp_path / ".git-credentials").exists()
+        assert "token absent" in proc.stdout
+
+    def test_persistent_failure_fails_with_diagnostics(self, tmp_path):
         proc, _ = self._run(tmp_path, clone_failures=99)
         assert proc.returncode != 0
+        # Whatever refuses the next clone must say so in the log itself.
+        assert "clone diagnostics" in proc.stdout
+        assert "HTTP/2 401" in proc.stdout
 
     def test_git_never_waits_on_a_credential_prompt(self):
         assert "GIT_TERMINAL_PROMPT=0" in BOOTSTRAP
