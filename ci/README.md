@@ -7,7 +7,8 @@ backbone of reporting**.
 ## Triggering jobs: comment `/ci ...` on a PR
 
 `/ci help` posts this grammar with examples. Square brackets mark optional
-flags (don't type the brackets).
+flags (don't type the brackets); counts (`N`) accept an SI-ish suffix —
+`500k`, `5M`, `4.5M`, `2B`.
 
 ```
 /ci sft [--num-samples N]                  # SFT from scratch at the PR head
@@ -126,4 +127,10 @@ RunPod console (the pod's container logs; the job also tees to
 - `launch.yml` — manual `workflow_dispatch` bridge to the same CLI.
 
 Secrets used: `RUNPOD_API_KEY`, `WANDB_API_KEY` (plus the automatic
-`GITHUB_TOKEN`).
+`GITHUB_TOKEN`), and optionally `FCI_GITHUB_TOKEN`.
+
+GitHub 401s anonymous git from RunPod's egress IPs, so the pod authenticates
+its clone. It prefers `FCI_GITHUB_TOKEN` — a long-lived `contents: read` token
+— and falls back to the workflow's automatic `GITHUB_TOKEN`, which is revoked
+when the launching job ends and so only reliably covers the blocking `compare`
+path, not fire-and-forget `sft`/`ppo` launches.
