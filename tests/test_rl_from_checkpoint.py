@@ -198,8 +198,8 @@ class TestCriticHeadStd:
         orthogonal (1, N) init makes the row's L2 norm equal to the std."""
         small = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=0.01)
         big = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=1.0)
-        small_weight = cast(torch.Tensor, small.critic_head[-1].weight)
-        big_weight = cast(torch.Tensor, big.critic_head[-1].weight)
+        small_weight = cast(torch.Tensor, small.critic_head.weight)
+        big_weight = cast(torch.Tensor, big.critic_head.weight)
         assert small_weight.norm().item() < big_weight.norm().item()
         assert small_weight.norm().item() == pytest.approx(0.01, abs=1e-3)
         assert big_weight.norm().item() == pytest.approx(1.0, abs=1e-2)
@@ -208,10 +208,10 @@ class TestCriticHeadStd:
         """The post-load re-init (layer_init on the value head) rewrites it in
         place to the requested std, so a checkpoint's untrained critic doesn't
         clobber --critic-head-std."""
-        head_weight = agent.critic_head[-1].weight
+        head_weight = agent.critic_head.weight
         before = head_weight.detach().clone()
-        layer_init(agent.critic_head[-1], std=0.02)
-        assert head_weight is agent.critic_head[-1].weight  # in place
+        layer_init(agent.critic_head, std=0.02)
+        assert head_weight is agent.critic_head.weight  # in place
         assert not torch.equal(before, head_weight)
         assert head_weight.norm().item() == pytest.approx(0.02, abs=1e-3)
 
