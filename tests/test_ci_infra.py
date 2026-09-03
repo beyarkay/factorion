@@ -8,7 +8,9 @@ directly; nothing talks to RunPod, W&B, or GitHub.
 import math
 import os
 import subprocess
+import sys
 import time
+from types import SimpleNamespace
 
 from ci.config import (
     MAX_POD_AGE_SECONDS,
@@ -44,6 +46,7 @@ from ci.report import (
     select_unreported,
     smooth_history,
     tail_mean,
+    wait_for_groups,
 )
 from ci.watchdog import decide_terminations
 
@@ -740,3 +743,59 @@ class TestBootstrapGit:
 
     def test_git_never_waits_on_a_credential_prompt(self):
         assert "GIT_TERMINAL_PROMPT=0" in BOOTSTRAP
+
+
+class _FakeApi:
+    """A wandb.Api stand-in scripted per poll: an int is that many finished
+    runs per group, an Exception is raised from runs()."""
+
+    def __init__(self, script):
+        self._script = script
+        self.polls = 0
+        self.default_entity = "me"
+
+    def flush(self):
+        self.polls += 1
+        assert self.polls <= len(self._script), "wait ran past its script"
+
+    def runs(self, path, filters=None, order=None):
+        outcome = self._script[self.polls - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return [SimpleNamespace(state="finished")] * outcome
+
+
+class TestWaitForGroups:
+    """A compare polls W&B for hours while its GPU pods burn. Every
+    wandb.Api() re-authenticates through the wandb-core sidecar under an
+    un-retried ~19s deadline, so re-creating the client each tick turned a
+    latency spike into a dead compare (PR #443)."""
+
+    def _wait(self, monkeypatch, script, expect_each=2):
+        api = _FakeApi(script)
+        self.clients = 0
+
+        def make_api():
+            self.clients += 1
+            return api
+
+        monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(Api=make_api))
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        wait_for_groups(
+            main_group="m",
+            pr_group="p",
+            expect_each=expect_each,
+            timeout_seconds=600,
+            poll_seconds=0,
+        )
+        return api
+
+    def test_one_client_serves_every_poll(self, monkeypatch):
+        api = self._wait(monkeypatch, [0, 0, 0, 0, 2])
+        assert api.polls == 5, "the run listings must be refetched each poll"
+        assert self.clients == 1, "one handshake for the whole wait, not one per poll"
+
+    def test_a_failed_poll_retries_instead_of_ending_the_wait(self, monkeypatch):
+        boom = RuntimeError("the service process is busy")
+        api = self._wait(monkeypatch, [boom, boom, 2])
+        assert api.polls == 3

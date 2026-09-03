@@ -449,19 +449,30 @@ def wait_for_groups(
     """
     import wandb
 
+    # One client for the whole wait: constructing an Api re-authenticates
+    # through the wandb-core sidecar under a hard ~19s deadline with no
+    # retry, and a compare polls for hours. flush() is the supported way to
+    # drop the cached run listings, which is all a fresh client bought.
+    api = wandb.Api()
     deadline = time.time() + timeout_seconds
     pods_all_gone_since = None
     while time.time() < deadline:
-        api = wandb.Api()  # fresh client: avoid cached run listings
-        path = _project_path(api)
-        counts = {}
-        for group in (main_group, pr_group):
-            runs = api.runs(path, filters={"group": group})
-            counts[group] = sum(1 for r in runs if r.state == "finished")
-        print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
+        try:
+            api.flush()
+            path = _project_path(api)
+            counts = {}
+            for group in (main_group, pr_group):
+                runs = api.runs(path, filters={"group": group})
+                counts[group] = sum(1 for r in runs if r.state == "finished")
+            print(f"finished runs: {counts} (want {expect_each} each)", flush=True)
+        except Exception as e:
+            # The pods outlive this poll, so a blip must not end the wait —
+            # the GPU time is already spent and the report is the only payoff.
+            counts = {}
+            print(f"W&B poll failed; retrying next tick: {e}", flush=True)
         if on_poll is not None:
             on_poll()  # e.g. refresh the PR launch comment's live statuses
-        if all(c >= expect_each for c in counts.values()):
+        if counts and all(c >= expect_each for c in counts.values()):
             return
 
         if pod_ids:
