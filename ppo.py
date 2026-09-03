@@ -1390,7 +1390,6 @@ class AgentCNN(nn.Module):
         attn_heads=SharedArgs.attn_heads,
         attn_layers=SharedArgs.attn_layers,
         attn_pos_embed=SharedArgs.attn_pos_embed,
-        global_feat_dim=SharedArgs.global_feat_dim,
     ):
         super().__init__()
         # Grid size from the vector env's single observation space (shape
@@ -1493,17 +1492,6 @@ class AgentCNN(nn.Module):
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
 
-        # A pooled mean+max summary of the whole map, concatenated onto each
-        # per-tile feature column so the windowed heads also see grid-global
-        # context (the #290 pathway). 0 disables it.
-        self.global_feat_dim = global_feat_dim
-        if global_feat_dim > 0:
-            self.global_proj = nn.Sequential(
-                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
-                nn.ReLU(),
-            )
-        head_in = last_chan + global_feat_dim
-
         flat_dim = last_chan * self.width * self.height
 
         # Project encoded state to value
@@ -1527,10 +1515,10 @@ class AgentCNN(nn.Module):
         # consistently — e.g. an underground_belt placement must carry
         # misc=UNDERGROUND_DOWN/UP, and an assembling_machine_1 placement
         # must carry a recipe in `item`.
-        self.ent_head = layer_init(nn.Linear(head_in, self.num_entities))
-        self.dir_head = layer_init(nn.Linear(head_in, self.num_directions))
-        self.item_head = layer_init(nn.Linear(head_in, self.num_items))
-        self.misc_head = layer_init(nn.Linear(head_in, self.num_misc))
+        self.ent_head = layer_init(nn.Linear(last_chan, self.num_entities))
+        self.dir_head = layer_init(nn.Linear(last_chan, self.num_directions))
+        self.item_head = layer_init(nn.Linear(last_chan, self.num_items))
+        self.misc_head = layer_init(nn.Linear(last_chan, self.num_misc))
 
         # Bias every head toward its "empty / NONE" slot (value 0) so a
         # freshly-initialised policy mostly proposes no-ops, matching the
@@ -1565,47 +1553,30 @@ class AgentCNN(nn.Module):
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
         return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
 
-    def _global_feat(self, encoded_BCWH):
-        """Pool the whole encoded map into a per-batch global-context vector
-        (mean+max over the W,H axes, projected to global_feat_dim). Feeds the
-        per-tile heads the grid-wide information their windowed features lack."""
-        mean_BC = encoded_BCWH.mean(dim=(2, 3))
-        max_BC = encoded_BCWH.amax(dim=(2, 3))
-        return self.global_proj(torch.cat([mean_BC, max_BC], dim=1))
-
     # All consumers (PPO, SFT, the builder UI, the mod server) go through these
     # four helpers, so an architecture change lands in one place.
 
     def encode(self, x_BCWH):
-        """Encoder forward + global-context vector. Returns (map, g) where
-        map is (B, last_chan, W, H) and g is the pooled (B, global_feat_dim)
-        global vector, or None when global_feat_dim=0. The optional attention
-        stage refines the map in place (shape-preserving), so g summarises the
-        attention-refined features."""
+        """Encoder forward, (B, last_chan, W, H). The optional attention stage
+        refines the map in place (shape-preserving)."""
         encoded = self.encoder(self._encode_input(x_BCWH))
         if self.attn_dim > 0:
             encoded = self.attn(encoded)
-        g = self._global_feat(encoded) if self.global_feat_dim > 0 else None
-        return encoded, g
+        return encoded
 
-    def tile_features(self, encoded_BCWH, g_BG, batch_idx_B, x_B, y_B):
+    def tile_features(self, encoded_BCWH, batch_idx_B, x_B, y_B):
         """Input row for the ent/dir/item/misc heads: the encoded feature
-        column at (x, y), concatenated with the global-context vector when
-        one exists (global_feat_dim>0)."""
-        feats = encoded_BCWH[batch_idx_B, :, x_B, y_B]
-        if g_BG is not None:
-            feats = torch.cat([feats, g_BG], dim=1)
-        return feats
+        column at (x, y)."""
+        return encoded_BCWH[batch_idx_B, :, x_B, y_B]
 
-    def critic_value(self, encoded_BCWH, g_BG):
+    def critic_value(self, encoded_BCWH):
         return self.critic_head(encoded_BCWH).squeeze(-1)
 
-    def eot_logit(self, encoded_BCWH, g_BG):
+    def eot_logit(self, encoded_BCWH):
         return self.eot_head(encoded_BCWH).squeeze(-1)
 
     def get_value(self, x_BCWH):
-        encoded, g = self.encode(x_BCWH)
-        return self.critic_value(encoded, g)
+        return self.critic_value(self.encode(x_BCWH))
 
     def eot_prob(self, x_BCWH):
         """End-of-turn probability per observation, in [0, 1].
@@ -1615,8 +1586,7 @@ class AgentCNN(nn.Module):
         this from inference rollouts to decide whether the agent thinks
         the factory is finished.
         """
-        encoded, g = self.encode(x_BCWH)
-        return torch.sigmoid(self.eot_logit(encoded, g))
+        return torch.sigmoid(self.eot_logit(self.encode(x_BCWH)))
 
     def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
         """Boolean stop signal per observation. Threshold defaults to 0.5;
@@ -1674,8 +1644,8 @@ class AgentCNN(nn.Module):
         action / logp / entropy / value (None if not compute_value) / eot_prob
         / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
-        value_B = self.critic_value(encoded_BCWH, g_BG) if compute_value else None
+        encoded_BCWH = self.encode(x_BCWH)  # (B, last_chan, W, H)
+        value_B = self.critic_value(encoded_BCWH) if compute_value else None
 
         B = encoded_BCWH.shape[0]
 
@@ -1707,7 +1677,7 @@ class AgentCNN(nn.Module):
         # overwritten on the next replay; recreating it is trivially cheap and
         # torch.compile folds it into the graph.
         batch_idx = torch.arange(B, device=encoded_BCWH.device)
-        tile_features_BC = self.tile_features(encoded_BCWH, g_BG, batch_idx, x_B, y_B)
+        tile_features_BC = self.tile_features(encoded_BCWH, batch_idx, x_B, y_B)
 
         # --- Entity / direction / item / misc heads (conditioned on tile features) ---
         logits_e_BE = self.ent_head(tile_features_BC)
@@ -1719,7 +1689,7 @@ class AgentCNN(nn.Module):
             dim=-1,
         )
 
-        eot_logit_B = self.eot_logit(encoded_BCWH, g_BG)
+        eot_logit_B = self.eot_logit(encoded_BCWH)
         p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
@@ -1958,7 +1928,6 @@ if __name__ == "__main__":
         attn_heads=args.attn_heads,
         attn_layers=args.attn_layers,
         attn_pos_embed=args.attn_pos_embed,
-        global_feat_dim=args.global_feat_dim,
     )
 
     ref_agent: Optional[AgentCNN] = None
