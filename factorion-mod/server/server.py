@@ -65,7 +65,6 @@ class Hyperparams:
     attn_heads: int = 12
     attn_layers: int = 4
     attn_pos_embed: int = 1
-    global_feat_dim: int = 0
 
     @classmethod
     def from_mapping(cls, values: dict) -> "Hyperparams":
@@ -89,7 +88,6 @@ class Hyperparams:
             attn_heads=int(values.get("attn_heads", 12)),
             attn_layers=int(values.get("attn_layers", 4)),
             attn_pos_embed=int(values.get("attn_pos_embed", 1)),
-            global_feat_dim=int(values.get("global_feat_dim", 0)),
         )
 
     @classmethod
@@ -119,9 +117,9 @@ def resolve_checkpoint(
 
 def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentCNN:
     log.info(
-        "Loading checkpoint %s (grid=%d, layers=%s, kernel=%d, attention=%d, global=%d)",
+        "Loading checkpoint %s (grid=%d, layers=%s, kernel=%d, attention=%d)",
         ckpt_path, hp.grid_size, "/".join(map(str, hp.layers)), hp.kernel_size,
-        hp.attn_dim, hp.global_feat_dim,
+        hp.attn_dim,
     )
     agent = AgentCNN(
         _duck_envs(hp.grid_size),
@@ -131,7 +129,6 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
         attn_heads=hp.attn_heads,
         attn_layers=hp.attn_layers,
         attn_pos_embed=hp.attn_pos_embed,
-        global_feat_dim=hp.global_feat_dim,
     ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
     agent.load_state_dict(state)

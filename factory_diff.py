@@ -61,7 +61,6 @@ def load_agent(spec: str, device):
         attn_heads=args.attn_heads,
         attn_layers=args.attn_layers,
         attn_pos_embed=args.attn_pos_embed,
-        global_feat_dim=args.global_feat_dim,
     )
     envs.close()
     # PPO saves after torch.compile, which prefixes every parameter name.
