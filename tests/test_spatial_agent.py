@@ -50,7 +50,7 @@ def envs(registered_env):
 @pytest.fixture()
 def agent(envs):
     """Create an AgentCNN with default params."""
-    return AgentCNN(envs, layers=(32, 64, 64))
+    return AgentCNN(envs, conv_channels=32)
 
 
 class TestForwardPass:
@@ -252,11 +252,11 @@ class TestRegularisation:
         assert PpoArgs().weight_decay == 0.0
 
     def test_default_agent_carries_inert_dropout(self, agent):
-        """Default AgentCNN has Dropout2d layers (so the knob exists) but
-        at p=0 they are the identity."""
+        """Default AgentCNN has a Dropout2d layer (so the knob exists) but
+        at p=0 it is the identity."""
         drops = [m for m in agent.encoder if isinstance(m, torch.nn.Dropout2d)]
-        assert len(drops) == 3
-        assert all(d.p == 0.0 for d in drops)
+        assert len(drops) == 1
+        assert drops[0].p == 0.0
 
     def test_dropout_zero_is_deterministic_in_train(self, agent):
         """p=0 in train() mode is a true no-op: repeated encodes match."""
@@ -269,7 +269,7 @@ class TestRegularisation:
     def test_dropout_active_varies_in_train(self, envs):
         """p>0 in train() mode resamples the mask each pass, so the only
         source of variation — dropout — makes two encodes differ."""
-        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
+        agent = AgentCNN(envs, conv_channels=32, dropout=0.5)
         agent.train()
         obs = torch.randn(2, agent.input_channels, 5, 5)
         assert not torch.allclose(agent.encoder(obs), agent.encoder(obs))
@@ -277,7 +277,7 @@ class TestRegularisation:
     def test_dropout_inert_in_eval(self, envs):
         """Dropout is disabled in eval() regardless of p, so inference is
         deterministic even with a high drop probability."""
-        agent = AgentCNN(envs, layers=(32, 64, 64), dropout=0.5)
+        agent = AgentCNN(envs, conv_channels=32, dropout=0.5)
         agent.eval()
         obs = torch.randn(2, agent.input_channels, 5, 5)
         torch.testing.assert_close(agent.encoder(obs), agent.encoder(obs))
@@ -360,7 +360,7 @@ ARCH_VARIANTS = [
 class TestArchVariants:
     @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
     def test_forward_and_stored_action_recompute(self, envs, kwargs):
-        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        agent = AgentCNN(envs, conv_channels=16, **kwargs)
         obs = torch.zeros(4, NUM_CHANNELS, 5, 5)
         action_out, logp_B, entropy_B, value_B = agent.get_action_and_value(obs)
         assert logp_B.shape == entropy_B.shape == value_B.shape == (4,)
@@ -382,8 +382,8 @@ class TestArchVariants:
 
     @pytest.mark.parametrize("kwargs", ARCH_VARIANTS)
     def test_state_dict_roundtrip(self, envs, kwargs):
-        agent = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
-        clone = AgentCNN(envs, layers=(16, 16, 16), **kwargs)
+        agent = AgentCNN(envs, conv_channels=16, **kwargs)
+        clone = AgentCNN(envs, conv_channels=16, **kwargs)
         clone.load_state_dict(agent.state_dict())
         obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
         torch.manual_seed(0)
@@ -396,7 +396,7 @@ class TestArchVariants:
     def test_critic_and_eot_heads_flatten_the_map(self, envs):
         """Both value/eot heads are Flatten -> Linear, and `head[-1]` reaches
         the Linear (ppo.py's --start-from critic re-init depends on it)."""
-        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
+        agent = AgentCNN(envs, conv_channels=16, attn_dim=0)
         assert isinstance(agent.critic_head[-1], torch.nn.Linear)
         assert isinstance(agent.eot_head[-1], torch.nn.Linear)
         assert agent.critic_head[-1].in_features == 16 * 5 * 5
@@ -404,7 +404,7 @@ class TestArchVariants:
         assert value_B.shape == (2,)
 
     def test_attn_on_by_default_off_when_zero(self, envs):
-        on = AgentCNN(envs, layers=(16, 16, 16))
+        on = AgentCNN(envs, conv_channels=16)
         assert on.attn_dim > 0 and hasattr(on, "attn")
         # Head count and depth default to the SharedArgs (swept-winning) values.
         assert len(on.attn.transformer.layers) == SharedArgs.attn_layers
@@ -413,15 +413,15 @@ class TestArchVariants:
         assert on.attn.pos_embed is not None
         assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)
 
-        off = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
+        off = AgentCNN(envs, conv_channels=16, attn_dim=0)
         assert off.attn_dim == 0 and not hasattr(off, "attn")
 
     def test_global_feat_dim_zero_disables_global_vector(self, envs):
-        agent = AgentCNN(envs, layers=(16, 16, 16), global_feat_dim=0)
+        agent = AgentCNN(envs, conv_channels=16, global_feat_dim=0)
         assert not hasattr(agent, "global_proj")
         enc, g = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert g is None
-        # Per-tile heads then read just the last_chan-wide column.
+        # Per-tile heads then read just the conv_channels-wide column.
         assert agent.ent_head.in_features == 16
         _, logp_B, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert torch.isfinite(logp_B).all() and torch.isfinite(value_B).all()
@@ -430,22 +430,22 @@ class TestArchVariants:
         """The out projection is zero-initialised, so the residual attention
         stage is exactly identity at init — the trunk starts as the plain
         conv encoder and only leans on attention as training moves it."""
-        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=16)
+        agent = AgentCNN(envs, conv_channels=16, attn_dim=16)
         x = torch.randn(3, 16, 5, 5)
         torch.testing.assert_close(agent.attn(x), x)
 
     def test_attn_preserves_channels_and_grid_size(self, envs):
-        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=32)
+        agent = AgentCNN(envs, conv_channels=16, attn_dim=32)
         enc, _ = agent.encode(torch.zeros(2, NUM_CHANNELS, 5, 5))
         # Attention is shape-preserving, so the per-tile heads still index a
-        # last_chan-wide column at every one of the 5x5 cells.
+        # conv_channels-wide column at every one of the 5x5 cells.
         assert enc.shape == (2, 16, 5, 5)
         assert agent.tile_logits.in_channels == 16
 
     def test_attn_heads_snap_to_divisor(self, envs):
         """A small attn_dim not divisible by the fixed head count must still
         construct — heads snap down to the largest divisor."""
-        agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=4)
+        agent = AgentCNN(envs, conv_channels=16, attn_dim=4)
         num_heads = agent.attn.transformer.layers[0].self_attn.num_heads
         assert 4 % num_heads == 0 and num_heads == 4
 

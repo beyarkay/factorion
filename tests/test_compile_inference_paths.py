@@ -35,7 +35,7 @@ def envs():
 
 @pytest.fixture(scope="module")
 def agent(envs):
-    return AgentCNN(envs, layers=(16, 16, 16))
+    return AgentCNN(envs, conv_channels=16)
 
 
 def test_cpu_returns_fn_untouched(agent):

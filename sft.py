@@ -42,7 +42,6 @@ from ppo import (  # noqa: E402
     AgentCNN,
     FactorioEnv,
     make_env,
-    layers_from_args,
     assert_device_ok,
     cuda_env_info,
     _resolve_start_from,
@@ -210,11 +209,7 @@ def _artifact_name(args: "SftArgs") -> str:
     get their own artifact. `best_val_acc` deliberately goes to the alias
     instead, since baking a varying number into the name would defeat
     versioning."""
-    # Encode the full layer list (one token per conv layer) so runs that
-    # differ in depth or width get distinct artifacts; append a kernel suffix
-    # only for non-default kernels.
-    layers = layers_from_args(args)
-    chan_str = "c" + "-".join(str(c) for c in layers)
+    chan_str = f"c{args.conv_channels}"
     if args.kernel_size != 3:
         chan_str += f"-k{args.kernel_size}"
     return (
@@ -770,7 +765,7 @@ def train_sft(args: SftArgs):
 
     agent = AgentCNN(
         envs,
-        layers=layers_from_args(args),
+        conv_channels=args.conv_channels,
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
         dropout=args.dropout,
@@ -1604,7 +1599,7 @@ def train_sft(args: SftArgs):
                 "best_val_throughput": best_val_throughput,
                 "best_val_acc": best_val_acc,
                 "size": args.size,
-                "layers": layers_from_args(args),
+                "conv_channels": args.conv_channels,
                 "kernel_size": args.kernel_size,
                 "num_samples": args.num_samples,
                 "epochs": args.epochs,

@@ -50,7 +50,7 @@ def envs(registered_env):
 
 @pytest.fixture()
 def agent(envs):
-    return AgentCNN(envs, layers=(16, 16, 16))
+    return AgentCNN(envs, conv_channels=16)
 
 
 class TestFullBlankDefault:
@@ -196,8 +196,8 @@ class TestCriticHeadStd:
     def test_construction_scales_value_head_magnitude(self, envs):
         """A smaller critic_head_std yields a smaller-magnitude value head; the
         orthogonal (1, N) init makes the row's L2 norm equal to the std."""
-        small = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=0.01)
-        big = AgentCNN(envs, layers=(16, 16, 16), critic_head_std=1.0)
+        small = AgentCNN(envs, conv_channels=16, critic_head_std=0.01)
+        big = AgentCNN(envs, conv_channels=16, critic_head_std=1.0)
         small_weight = cast(torch.Tensor, small.critic_head[-1].weight)
         big_weight = cast(torch.Tensor, big.critic_head[-1].weight)
         assert small_weight.norm().item() < big_weight.norm().item()
@@ -228,7 +228,7 @@ class TestCriticHeadStd:
 # Every forward below is hoisted into a module-scoped fixture: the assertions
 # are one-liners but a forward is the expensive part, so each is done once.
 
-_ATTN_KW = dict(layers=(16, 16, 16), attn_dim=32, attn_heads=4, attn_layers=1)
+_ATTN_KW = dict(conv_channels=16, attn_dim=32, attn_heads=4, attn_layers=1)
 
 
 def _finetune_agent(envs):

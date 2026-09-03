@@ -117,7 +117,7 @@ class TestPerHeadEntropyStash:
         envs = gym.vector.SyncVectorEnv(
             [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
         )
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, conv_channels=16)
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         agent.get_action_and_value(obs)
 
@@ -133,7 +133,7 @@ class TestPerHeadEntropyStash:
         envs = gym.vector.SyncVectorEnv(
             [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
         )
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, conv_channels=16)
         obs = torch.randn(3, NUM_CHANNELS, 5, 5)
         _, _, entropy_B, _ = agent.get_action_and_value(obs)
         head_sum = sum(float(v) for v in agent._last_head_entropy.values())
