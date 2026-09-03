@@ -76,8 +76,8 @@ class SharedArgs:
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
     layer1: int = 128
-    layer2: int = 128
-    layer3: int = 128
+    layer2: int = 0
+    layer3: int = 0
     layer4: int = 0
     layer5: int = 0
     layer6: int = 0

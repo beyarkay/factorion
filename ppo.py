@@ -1434,16 +1434,9 @@ class AgentCNN(nn.Module):
         self.cat_embed_dim = cat_embed_dim
         self.ent_embed = nn.Embedding(len(entities), cat_embed_dim)
         self.item_embed = nn.Embedding(len(items), cat_embed_dim)
-        # CoordConv (Liu et al. 2018): two constant normalized-(x, y) channels
-        # so the translation-equivariant conv stack can express absolute
-        # position (which no receptive field alone can). Always on.
-        self.coord_grid: torch.Tensor
-        xs = torch.linspace(-1.0, 1.0, self.width).view(self.width, 1).expand(self.width, self.height)
-        ys = torch.linspace(-1.0, 1.0, self.height).view(1, self.height).expand(self.width, self.height)
-        self.register_buffer("coord_grid", torch.stack([xs, ys], dim=0))
         # Encoder input channels after categorical expansion: two embeddings +
-        # two one-hots + the scalar footprint + the two coordinate channels.
-        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1 + 2
+        # two one-hots + the scalar footprint.
+        self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
         # Variable-depth conv encoder: one conv layer per entry in `layers`,
         # that entry giving the layer's channel width. `kernel_size` sets each
         # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
@@ -1554,9 +1547,7 @@ class AgentCNN(nn.Module):
         dir_oh = F.one_hot(dir_idx, self.num_directions).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         misc_oh = F.one_hot(misc_idx, self.num_misc).permute(0, 3, 1, 2).to(x_BCWH.dtype)
         footprint = x_BCWH[:, _CH_FOOTPRINT:_CH_FOOTPRINT + 1]  # (B, 1, W, H), scalar
-
-        coords = self.coord_grid.expand(x_BCWH.shape[0], -1, -1, -1)
-        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint, coords], dim=1)
+        return torch.cat([ent_e, item_e, dir_oh, misc_oh, footprint], dim=1)
 
     # All consumers (PPO, SFT, the builder UI, the mod server) go through these
     # four helpers, so an architecture change lands in one place.

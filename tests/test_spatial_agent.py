@@ -301,9 +301,9 @@ class TestCategoricalInputEncoding:
 
     def test_encoded_shape(self, agent):
         """_encode_input expands len(Channel) into the conv's input channels:
-        two embeddings + two one-hots + footprint + two coordinate planes."""
+        two embeddings + two one-hots + footprint."""
         d = agent.cat_embed_dim
-        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1 + 2
+        assert agent.input_channels == 2 * d + agent.num_directions + agent.num_misc + 1
         enc = agent._encode_input(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert enc.shape == (2, agent.input_channels, 5, 5)
 
@@ -390,21 +390,6 @@ class TestArchVariants:
         _, logp_b, _, val_b = clone.get_action_and_value(obs)
         torch.testing.assert_close(logp_a, logp_b)
         torch.testing.assert_close(val_a, val_b)
-
-    def test_coord_channels_always_present(self, envs):
-        """CoordConv is fixed on: two extra normalized x/y planes are always
-        appended to the encoder input."""
-        agent = AgentCNN(envs, layers=(16, 16, 16))
-        enc = agent._encode_input(torch.zeros(1, NUM_CHANNELS, 5, 5))
-        assert enc.shape == (1, agent.input_channels, 5, 5)
-        x_plane, y_plane = enc[0, -2], enc[0, -1]
-        assert x_plane[0, 0].item() == pytest.approx(-1.0)
-        assert x_plane[4, 0].item() == pytest.approx(1.0)
-        assert y_plane[0, 0].item() == pytest.approx(-1.0)
-        assert y_plane[0, 4].item() == pytest.approx(1.0)
-        # x varies along W only, y along H only.
-        torch.testing.assert_close(x_plane[:, 0], x_plane[:, 4])
-        torch.testing.assert_close(y_plane[0, :], y_plane[4, :])
 
     def test_critic_and_eot_heads_flatten_the_map(self, envs):
         """Both value/eot heads are Flatten -> Linear, and `head[-1]` reaches
