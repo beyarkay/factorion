@@ -538,9 +538,12 @@ def cmd_sweep(args, ctx) -> None:
 def _wait_for_sweep(sweep_path: str, timeout_seconds: int = MAX_WAIT_SECONDS) -> None:
     import wandb
 
+    # Reuse one client and refetch the sweep in place: each wandb.Api() costs
+    # an un-retried ~19s sidecar handshake, and this loop runs for hours.
+    sweep = wandb.Api().sweep(sweep_path)
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        sweep = wandb.Api().sweep(sweep_path)
+        sweep.load(force=True)
         if str(sweep.state).upper() in ("FINISHED", "CANCELLED", "CANCELED"):
             return
         print(f"sweep state: {sweep.state}", flush=True)
