@@ -232,16 +232,14 @@ _ATTN_KW = dict(layers=(16, 16, 16), attn_dim=32, attn_heads=4, attn_layers=1)
 
 
 def _finetune_agent(envs):
-    """An agent whose attention stage is NOT the identity.
+    """An agent whose attention stage contributes at trained-checkpoint scale.
 
-    `_SelfAttnStack.out_proj` is zero-init, so a freshly built agent's
-    attention stage is exact identity and anything stochastic inside it cannot
-    reach the outputs — a non-deterministic forward is invisible from scratch
-    and only surfaces once `--start-from` loads a checkpoint that has trained.
-    Every guard below needs a non-identity stage to have any teeth. The std is
-    picked so the test arch (1 attention layer, dim 32) reproduces the same
-    artifact magnitude the production arch did (approx_kl ~0.3), which is what
-    makes the clipfrac and target_kl guards sensitive too.
+    Anything stochastic inside the attention stage reaches the outputs in
+    proportion to the out-projection's magnitude, so the guards below only
+    have teeth at the scale a `--start-from` checkpoint has trained to. The
+    std is picked so the test arch (1 attention layer, dim 32) reproduces the
+    artifact magnitude the production arch showed (approx_kl ~0.3), which is
+    what makes the clipfrac and target_kl guards sensitive too.
     """
     agent = AgentCNN(envs, **_ATTN_KW)
     with torch.no_grad():

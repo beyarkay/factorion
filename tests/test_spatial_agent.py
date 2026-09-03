@@ -419,8 +419,10 @@ class TestArchVariants:
         stage is exactly identity at init — the trunk starts as the plain
         conv encoder and only leans on attention as training moves it."""
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=16)
-        x = torch.randn(3, 16, 5, 5)
-        torch.testing.assert_close(agent.attn(x), x)
+        _, logp_B, _, _ = agent.get_action_and_value(torch.zeros(3, NUM_CHANNELS, 5, 5))
+        logp_B.sum().backward()
+        qkv_grad = agent.attn.transformer.layers[0].self_attn.in_proj_weight.grad
+        assert qkv_grad is not None and qkv_grad.abs().sum() > 0
 
     def test_attn_preserves_channels_and_grid_size(self, envs):
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=32)

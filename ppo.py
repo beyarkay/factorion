@@ -1329,9 +1329,13 @@ def _legal_tile_mask(x_BCWH):
 
 class _SelfAttnStack(nn.Module):
     """Self-attention over the encoded map so every cell sees every other in
-    one hop. Each cell's feature column is a token; the residual out-projection
-    is zero-init, so the stage is identity at init and shape-preserving
-    (grid-sized in == grid-sized out)."""
+    one hop. Each cell's feature column is a token; the stage is shape-preserving
+    (grid-sized in == grid-sized out).
+
+    The residual out-projection is small but non-zero at init. Zero would make
+    the stage exact identity, and since every attention weight's gradient
+    passes through this projection, none of them would learn until it grew
+    away from zero. 0.1 keeps the branch well under the conv map's scale."""
 
     def __init__(self, channels, dim, heads, layers, num_tokens, pos_embed, dropout):
         super().__init__()
@@ -1341,7 +1345,7 @@ class _SelfAttnStack(nn.Module):
         while dim % heads != 0 and heads > 1:
             heads -= 1
         self.in_proj = layer_init(nn.Linear(channels, dim))
-        self.out_proj = layer_init(nn.Linear(dim, channels), std=0.0, bias_const=0.0)
+        self.out_proj = layer_init(nn.Linear(dim, channels), std=0.1)
         self.pos_embed = (
             nn.Parameter(torch.zeros(1, num_tokens, dim)) if pos_embed else None
         )
