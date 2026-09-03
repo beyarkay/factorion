@@ -59,7 +59,7 @@ def _duck_envs(size: int):
 @dataclass
 class Hyperparams:
     grid_size: int = 11
-    layers: tuple[int, ...] = (93, 69, 96)
+    conv_channels: int = 128
     kernel_size: int = 3
     attn_dim: int = 0
     attn_heads: int = 12
@@ -69,21 +69,14 @@ class Hyperparams:
 
     @classmethod
     def from_mapping(cls, values: dict) -> "Hyperparams":
-        """Read W&B's layer1..8 config or a sidecar's layers list."""
+        """Read a W&B run config or a sidecar's hyperparameter mapping."""
         size = int(values.get("size", values.get("grid_size", cls.grid_size)))
-        if "layers" in values:
-            layers = tuple(int(v) for v in values["layers"] if int(v) > 0)
-        else:
-            layers = tuple(
-                int(values.get(f"layer{i}", 0))
-                for i in range(1, 9)
-                if int(values.get(f"layer{i}", 0)) > 0
-            )
-        if not layers:
-            raise ValueError("checkpoint config has no positive-width encoder layers")
+        conv_channels = int(values.get("conv_channels", 0))
+        if conv_channels <= 0:
+            raise ValueError("checkpoint config has no positive encoder conv width")
         return cls(
             grid_size=size,
-            layers=layers,
+            conv_channels=conv_channels,
             kernel_size=int(values.get("kernel_size", 3)),
             attn_dim=int(values.get("attn_dim", 0)),
             attn_heads=int(values.get("attn_heads", 12)),
@@ -119,13 +112,13 @@ def resolve_checkpoint(
 
 def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentCNN:
     log.info(
-        "Loading checkpoint %s (grid=%d, layers=%s, kernel=%d, attention=%d, global=%d)",
-        ckpt_path, hp.grid_size, "/".join(map(str, hp.layers)), hp.kernel_size,
+        "Loading checkpoint %s (grid=%d, c=%d, kernel=%d, attention=%d, global=%d)",
+        ckpt_path, hp.grid_size, hp.conv_channels, hp.kernel_size,
         hp.attn_dim, hp.global_feat_dim,
     )
     agent = AgentCNN(
         _duck_envs(hp.grid_size),
-        layers=hp.layers,
+        conv_channels=hp.conv_channels,
         kernel_size=hp.kernel_size,
         attn_dim=hp.attn_dim,
         attn_heads=hp.attn_heads,

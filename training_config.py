@@ -21,10 +21,6 @@ import typing
 from dataclasses import dataclass
 from typing import Optional
 
-# Number of CNN encoder width slots (layer1..layer{NUM_LAYER_SLOTS}); every slot
-# with positive width becomes one conv layer (see ppo.layers_from_args).
-NUM_LAYER_SLOTS = 8
-
 
 def wsd_multiplier(
     step: int,
@@ -61,7 +57,7 @@ def wsd_multiplier(
 class SharedArgs:
     """Defaults common to PPO (`PpoArgs`) and SFT (`SftArgs`) with identical values.
 
-    The CNN encoder shape (`layer1..8`, `kernel_size`) and `size` MUST match
+    The CNN encoder shape (`conv_channels`, `kernel_size`) and `size` MUST match
     between the two so an SFT checkpoint loads into the PPO policy unchanged.
     """
 
@@ -70,19 +66,8 @@ class SharedArgs:
     size: int = 11
     """the width and height of the factory grid"""
 
-    # CNN encoder width per layer slot. The encoder uses every slot with
-    # positive width, in order; a slot of 0 drops that layer. Exposing depth +
-    # per-layer width as independent numeric slots (rather than one categorical
-    # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
-    # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 128
-    layer2: int = 0
-    layer3: int = 0
-    layer4: int = 0
-    layer5: int = 0
-    layer6: int = 0
-    layer7: int = 0
-    layer8: int = 0
+    conv_channels: int = 128
+    """width of the single conv layer feeding the attention stage"""
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
     attn_dim: int = 192

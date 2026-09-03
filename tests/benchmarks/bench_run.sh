@@ -27,7 +27,7 @@ case "$KIND" in
       --gae-lambda 0.9021936994100002 --gamma 0.9957335539938416 \
       --max-grad-norm 1.979 --clip-coef 0.2746 --target-kl 0.02 --vf-coef 0.7426 \
       --critic-warmup 0 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
-      --layer1 93 --layer2 69 --layer3 96 \
+      --conv-channels 93 \
       --eval-every 0 \
       --total-timesteps "$TOTAL_TIMESTEPS" \
       --summary-path "${SUMMARY_PATH:-/tmp/bench_ppo_speed.json}" "$@"
@@ -47,7 +47,7 @@ case "$KIND" in
       --gae-lambda 0.9021936994100002 --gamma 0.9957335539938416 \
       --max-grad-norm 1.979 --clip-coef 0.2746 --target-kl 0.02 \
       --critic-warmup 5 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
-      --layer1 93 --layer2 69 --layer3 96 \
+      --conv-channels 93 \
       --eval-every 0 \
       --target-metric rollout/reward --target-value -0.15 \
       --quality-ema-alpha 0.4 --max-seconds 300 --total-timesteps 100000000 \
@@ -61,7 +61,7 @@ case "$KIND" in
     CACHE="${CACHE:-checkpoints/sft_bench_ds_60k.pt}"
     WANDB_MODE=disabled WANDB_DISABLED=true uv run python sft.py \
       --seed 1 --size 11 --num-samples 60000 --epochs 10 --batch-size 512 \
-      --layer1 93 --layer2 69 --layer3 96 \
+      --conv-channels 93 \
       --no-eval-rollouts \
       --dataset-cache "$CACHE" \
       --checkpoint-path "${CKPT:-/tmp/bench_sft_ckpt.pt}" \

@@ -41,7 +41,7 @@ def n_channels(envs):
 @pytest.fixture()
 def agent(envs):
     """Create an uncompiled AgentCNN."""
-    return AgentCNN(envs, layers=(32, 64, 64))
+    return AgentCNN(envs, conv_channels=32)
 
 
 @pytest.fixture()

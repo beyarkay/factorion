@@ -41,7 +41,7 @@ from factorion import (
 )
 from PIL import Image, ImageDraw, ImageFont
 
-from training_config import NUM_LAYER_SLOTS, PpoArgs, SharedArgs, wsd_multiplier
+from training_config import PpoArgs, SharedArgs, wsd_multiplier
 
 # Entity/item ids used in FactorioEnv.step's per-step validity checks. str2ent/
 # str2item linear-scan the entity/item tables on every call, and step() calls
@@ -236,8 +236,7 @@ def _append_run_tags(run, *tags: str) -> None:
 def _run_signature(args) -> str:
     """Filename-safe W&B run name encoding the key hyperparameters, so runs are
     identifiable at a glance instead of by timestamp (mirrors SFT's naming).
-    e.g. ``ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1``."""
-    layers = "-".join(str(c) for c in layers_from_args(args))
+    e.g. ``ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c128-seed1``."""
     sig = f"ppo-s{args.size}-lr{args.learning_rate:g}-ent{args.ent_coef_start:g}"
     if args.ent_coef_end != args.ent_coef_start:
         sig += f"_{args.ent_coef_end:g}"
@@ -249,7 +248,7 @@ def _run_signature(args) -> str:
         sig += f"-cw{args.critic_warmup}"
     if args.start_from:
         sig += f"-from{args.start_from}"
-    sig += f"-c{layers}-seed{args.seed}"
+    sig += f"-c{args.conv_channels}-seed{args.seed}"
     return sig
 
 
@@ -1199,20 +1198,6 @@ class FactorioEnv(gym.Env):
         return np.asarray(canvas, dtype=np.uint8)
 
 
-def layers_from_args(args) -> list[int]:
-    """Compact the ``layer1..layer{NUM_LAYER_SLOTS}`` width slots on an
-    ``PpoArgs``/``SftArgs`` into the CNN encoder's channel list: every slot with
-    positive width becomes one conv layer, in slot order; a zero-width slot is
-    dropped. This lets a W&B Bayesian sweep tune the encoder's depth *and*
-    per-layer width as independent numeric dimensions (drive a slot toward 0 to
-    remove a layer) instead of an opaque categorical "64,64,64" string."""
-    slots = [getattr(args, f"layer{i}") for i in range(1, NUM_LAYER_SLOTS + 1)]
-    layers = [c for c in slots if c > 0]
-    if not layers:
-        raise ValueError("at least one of layer1..layer8 must have positive width")
-    return layers
-
-
 def assert_device_ok(device) -> None:
     if device.type in ("cuda", "mps"):
         return
@@ -1376,7 +1361,7 @@ class AgentCNN(nn.Module):
     def __init__(
         self,
         envs,
-        layers=tuple(layers_from_args(SharedArgs)),
+        conv_channels=SharedArgs.conv_channels,
         kernel_size=SharedArgs.kernel_size,
         tile_head_std=0.01,
         critic_head_std=1.0,
@@ -1438,36 +1423,14 @@ class AgentCNN(nn.Module):
         # Encoder input channels after categorical expansion: two embeddings +
         # two one-hots + the scalar footprint.
         self.input_channels = 2 * cat_embed_dim + self.num_directions + self.num_misc + 1
-        # Variable-depth conv encoder: one conv layer per entry in `layers`,
-        # that entry giving the layer's channel width. `kernel_size` sets each
-        # layer's receptive field (RF = 1 + len(layers) * (kernel_size - 1));
-        # padding is pinned to kernel_size // 2 so every conv preserves the
-        # W x H spatial dims ("same" convolution). That invariant is
+        # Padding pinned to kernel_size // 2 keeps the conv "same", which is
         # load-bearing: the tile head emits one logit per grid cell and the
         # per-tile heads index encoded[:, :, x, y], both of which require the
         # feature map to stay exactly grid-sized.
-        #
-        # nn.Dropout2d(dropout) (spatial dropout) trails each ReLU; p=0.0 is a
-        # no-op and dropout is inert in eval(). Because it inserts a non-conv
-        # module between convs, conv weights no longer sit at encoder.0/2/4 —
-        # anything reading them back from a checkpoint must locate by shape.
         if kernel_size % 2 == 0:
             raise ValueError(f"kernel_size must be odd, got {kernel_size}")
-        if len(layers) == 0:
-            raise ValueError("layers must contain at least one conv layer")
-        conv_stack = []
-        in_ch = self.input_channels
-        for ch in layers:
-            conv_stack.append(
-                layer_init(nn.Conv2d(in_ch, ch, kernel_size=kernel_size, padding=kernel_size // 2))
-            )
-            conv_stack.append(nn.ReLU())
-            conv_stack.append(nn.Dropout2d(dropout))
-            in_ch = ch
-        self.encoder = nn.Sequential(*conv_stack)
-        self.layers = tuple(layers)
-        self.kernel_size = kernel_size
-        last_chan = layers[-1]  # encoder output channels — feeds every head
+        conv = nn.Conv2d(self.input_channels, conv_channels, kernel_size, padding=kernel_size // 2)
+        self.encoder = nn.Sequential(layer_init(conv), nn.ReLU(), nn.Dropout2d(dropout))
 
         # Self-attention over the encoded map (shape-preserving; see encode()):
         # the grid-global mixing the arch sweep found decisive. attn_dim=0
@@ -1475,7 +1438,7 @@ class AgentCNN(nn.Module):
         self.attn_dim = attn_dim
         if attn_dim > 0:
             self.attn = _SelfAttnStack(
-                channels=last_chan,
+                channels=conv_channels,
                 dim=attn_dim,
                 heads=attn_heads,
                 layers=attn_layers,
@@ -1486,7 +1449,7 @@ class AgentCNN(nn.Module):
         num_params_encoder = sum(p.numel() for p in self.encoder.parameters())
         print(
             f"Encoder has {num_params_encoder} params "
-            f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
+            f"(conv_channels={conv_channels}, kernel_size={kernel_size})"
         )
 
         # A pooled mean+max summary of the whole map, concatenated onto each
@@ -1495,12 +1458,12 @@ class AgentCNN(nn.Module):
         self.global_feat_dim = global_feat_dim
         if global_feat_dim > 0:
             self.global_proj = nn.Sequential(
-                layer_init(nn.Linear(2 * last_chan, global_feat_dim)),
+                layer_init(nn.Linear(2 * conv_channels, global_feat_dim)),
                 nn.ReLU(),
             )
-        head_in = last_chan + global_feat_dim
+        head_in = conv_channels + global_feat_dim
 
-        flat_dim = last_chan * self.width * self.height
+        flat_dim = conv_channels * self.width * self.height
 
         # Project encoded state to value
         self.critic_head = nn.Sequential(
@@ -1516,7 +1479,7 @@ class AgentCNN(nn.Module):
         )
 
         # Tile selection: 1x1 conv producing one logit per spatial position
-        self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
+        self.tile_logits = layer_init(nn.Conv2d(conv_channels, 1, kernel_size=1), std=tile_head_std)
 
         # Per-tile entity/direction/item/misc heads (conditioned on selected
         # tile features). The env's step() requires all four to be set
@@ -1574,7 +1537,7 @@ class AgentCNN(nn.Module):
 
     def encode(self, x_BCWH):
         """Encoder forward + global-context vector. Returns (map, g) where
-        map is (B, last_chan, W, H) and g is the pooled (B, global_feat_dim)
+        map is (B, conv_channels, W, H) and g is the pooled (B, global_feat_dim)
         global vector, or None when global_feat_dim=0. The optional attention
         stage refines the map in place (shape-preserving), so g summarises the
         attention-refined features."""
@@ -1670,7 +1633,7 @@ class AgentCNN(nn.Module):
         action / logp / entropy / value (None if not compute_value) / eot_prob
         / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
-        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, last_chan, W, H), (B, G)|None
+        encoded_BCWH, g_BG = self.encode(x_BCWH)  # (B, conv_channels, W, H), (B, G)|None
         value_B = self.critic_value(encoded_BCWH, g_BG) if compute_value else None
 
         B = encoded_BCWH.shape[0]
@@ -1856,7 +1819,7 @@ if __name__ == "__main__":
             f"seed:{args.seed}",
             f"size:{args.size}",
             f"timesteps:{args.total_timesteps//1000}K",
-            f"layers:{'-'.join(map(str, layers_from_args(args)))}",
+            f"channels:{args.conv_channels}",
             f"k:{args.kernel_size}",
         )
 
@@ -1941,11 +1904,10 @@ if __name__ == "__main__":
             fe._num_envs = args.num_envs
             fe._full_diagnostics = False
 
-    encoder_layers = layers_from_args(args)
-    print(f"Creating agent with layers={encoder_layers}, {args.kernel_size=}, {args.tile_head_std=}, {args.critic_head_std=}, {args.dropout=} ")
+    print(f"Creating agent with {args.conv_channels=}, {args.kernel_size=}, {args.tile_head_std=}, {args.critic_head_std=}, {args.dropout=} ")
     agent = AgentCNN(
         envs,
-        layers=encoder_layers,
+        conv_channels=args.conv_channels,
         kernel_size=args.kernel_size,
         tile_head_std=args.tile_head_std,
         critic_head_std=args.critic_head_std,

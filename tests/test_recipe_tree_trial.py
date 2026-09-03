@@ -250,7 +250,7 @@ class TestTrialEvalIsScoredApart:
         from ppo import AgentCNN, make_env
 
         envs = gym.vector.SyncVectorEnv([make_env(EVAL_ENV_ID, 0, False, SIZE, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, conv_channels=16)
         envs.close()
         return agent
 
@@ -259,8 +259,7 @@ class TestTrialEvalIsScoredApart:
         from sft import run_rollout_eval
         from training_config import SftArgs
 
-        args = SftArgs(seed=1, size=SIZE, max_level=2 * SIZE,
-                       layer1=16, layer2=16, layer3=16)
+        args = SftArgs(seed=1, size=SIZE, max_level=2 * SIZE, conv_channels=16)
         return run_rollout_eval(
             self._agent(), args, seeds, device=torch.device("cpu"),
             max_seeds=len(seeds),

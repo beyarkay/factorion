@@ -199,7 +199,7 @@ has to be routed with respect to a sink in the other.
 
 - **Input**: The network takes the environment's `(Channels, Width, Height)`
   tensor as input.
-- **Architecture**: A stack of convolutional layers extracts spatial features,
+- **Architecture**: A single convolutional layer extracts local features,
   a transformer encoder then mixes them globally (the 121 grid cells become
   tokens, so full attention is cheap), and a pooled global-context vector is
   concatenated onto the per-tile head inputs.

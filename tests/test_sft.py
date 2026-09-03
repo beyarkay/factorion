@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import (
     TINY_ARCH,
-    TINY_ARCH_ARGS,
     Channel,
     Direction,
     LessonKind,
@@ -41,7 +40,7 @@ from sft import (
     run_rollout_eval,
     train_sft,
 )
-from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args, _legal_tile_mask
+from ppo import FactorioEnv, AgentCNN, make_env, _legal_tile_mask
 
 
 def _materialise_args(args):
@@ -590,7 +589,7 @@ class TestSFTCheckpointLoading:
                 max_level=2,
                 epochs=1,
                 batch_size=32,
-                **TINY_ARCH_ARGS,
+                **TINY_ARCH,
                 eval_rollouts_max_seeds=8,
                 start_from=ckpt,
                 checkpoint_path=str(tmp_path / "resumed.pt"),
@@ -670,7 +669,7 @@ class TestTrainSFTEndToEnd:
             max_level=2,
             epochs=2,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             eval_rollouts_max_seeds=8,
             checkpoint_path=ckpt,
             summary_path=summary,
@@ -699,7 +698,7 @@ class TestTrainSFTEndToEnd:
                 num_samples=300,
                 epochs=1,
                 batch_size=64,
-                **TINY_ARCH_ARGS,
+                **TINY_ARCH,
                 eval_rollouts_max_seeds=8,
                 dataset_cache=cache,
                 checkpoint_path=str(tmp_path / f"ckpt_{tag}.pt"),
@@ -739,7 +738,7 @@ class TestSFTDropout:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             eval_rollouts_max_seeds=8,
             dropout=0.5,
             checkpoint_path=str(tmp_path / "drop.pt"),
@@ -750,12 +749,11 @@ class TestSFTDropout:
 
 
 class TestTrackedArtifact:
-    """The track=True checkpoint-upload path. No test exercised it, so #146's
-    chan1/2/3 -> layers rename left a stale args.chan1 in the artifact metadata
-    that crashed every tracked run with AttributeError *after* training — only
-    at upload. This pins the path end-to-end."""
+    """The track=True checkpoint-upload path: artifact metadata is read off
+    `args` only at upload, so a field renamed out from under it crashes the run
+    *after* training has finished."""
 
-    def test_tracked_run_finishes_with_layer_metadata(self, monkeypatch, tmp_path):
+    def test_tracked_run_finishes_with_arch_metadata(self, monkeypatch, tmp_path):
         import wandb
         from unittest.mock import MagicMock
 
@@ -778,7 +776,7 @@ class TestTrackedArtifact:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -787,9 +785,8 @@ class TestTrackedArtifact:
         train_sft(args)  # must not raise at the artifact step
 
         meta = captured["metadata"]
-        assert meta["layers"] == [16, 16, 16]
+        assert meta["conv_channels"] == 16
         assert meta["kernel_size"] == 3
-        assert "chan1" not in meta
 
     def test_run_named_by_artifact_name(self, monkeypatch, tmp_path):
         """The W&B run name is the full hyperparameter signature (== the model
@@ -817,7 +814,7 @@ class TestTrackedArtifact:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1028,7 +1025,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1, "Sanity: at least one valid lesson"
@@ -1087,7 +1084,7 @@ class TestRunRolloutEval:
             seed=1,
             size=size,
             num_samples=50,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         assert args.max_level == 0, "default must be the auto sentinel"
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
@@ -1116,7 +1113,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=6)
         assert len(val_seeds_to_kind) >= 3
@@ -1143,7 +1140,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         roll = run_rollout_eval(
             agent,
@@ -1170,7 +1167,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
 
@@ -1228,7 +1225,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         device = torch.device("cpu")
@@ -1278,20 +1275,22 @@ class TestRunRolloutEval:
     def _run_with_recorded_proposals(self, monkeypatch):
         """Run a greedy rollout eval with a FactorioEnv that records, for every
         step, the (entity, footprint) the *proposed anchor tile* held in the
-        world just before the placement was applied. Returns that list."""
+        world just before the placement was applied, plus how many tiles were
+        legal at all. Returns that list."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
         agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
-        recorded: list[tuple[int, int]] = []
+        recorded: list[tuple[int, int, int]] = []
 
         class RecordingEnv(FactorioEnv):
             def step(self, action):
                 x, y = action["xy"]
                 ent = int(self._world_CWH[Channel.ENTITIES.value, x, y])
                 foot = int(self._world_CWH[Channel.FOOTPRINT.value, x, y])
-                recorded.append((ent, foot))
+                obs = torch.as_tensor(self._world_CWH[None], dtype=torch.float32)
+                recorded.append((ent, foot, int(_legal_tile_mask(obs).sum())))
                 return super().step(action)
 
         monkeypatch.setattr(sft, "FactorioEnv", RecordingEnv)
@@ -1301,7 +1300,7 @@ class TestRunRolloutEval:
             size=size,
             num_samples=50,
             max_level=2 * size,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
         assert len(val_seeds_to_kind) >= 1
@@ -1318,13 +1317,16 @@ class TestRunRolloutEval:
     def test_masking_only_proposes_legal_tiles(self, registered_env, monkeypatch):
         """The greedy tile argmax must only ever propose legal placement
         targets: the anchor tile is empty (ENTITIES == empty) and buildable
-        (FOOTPRINT == AVAILABLE) at the moment of every step."""
+        (FOOTPRINT == AVAILABLE) at the moment of every step. Steps with no
+        legal tile left are excluded: the mask is then all -inf and the argmax
+        has nowhere legal to land (the env rejects the placement)."""
         empty_id = str2ent("empty").value
         recorded = self._run_with_recorded_proposals(monkeypatch)
-        assert recorded, "rollout should have proposed at least one tile"
+        scored = [(ent, foot) for ent, foot, n_legal in recorded if n_legal]
+        assert scored, "rollout should have proposed at least one tile"
         illegal = [
             (ent, foot)
-            for ent, foot in recorded
+            for ent, foot in scored
             if ent != empty_id or foot != Footprint.AVAILABLE.value
         ]
         assert not illegal, (
@@ -1498,7 +1500,7 @@ class TestPerKindEotMetrics:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             track=True,
             eval_rollouts=False,  # skip the slow greedy rollout
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1562,7 +1564,7 @@ class TestNotNoneHeadAccuracy:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             track=True,
             eval_rollouts=False,  # skip the slow greedy rollout
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1619,7 +1621,7 @@ class TestNotNoneHeadAccuracy:
             max_level=2,
             epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY_ARCH,
             track=True,
             eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -1673,29 +1675,9 @@ class TestArtifactNameHelpers:
             epochs=50,
             batch_size=1024,
             lr=3e-4,
-            layer1=48,
-            layer2=48,
-            layer3=48,
+            conv_channels=48,
         )
-        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48"
-
-    def test_artifact_name_encodes_depth(self):
-        """Depth is part of the suffix: a 4-layer encoder of the same width
-        must not collide with a 3-layer one (else the deeper run would file
-        under the shallower run's artifact)."""
-        three = SftArgs(layer1=48, layer2=48, layer3=48, layer4=0)
-        four = SftArgs(layer1=48, layer2=48, layer3=48, layer4=48)
-        assert _artifact_name(three).endswith("-c48-48-48")
-        assert _artifact_name(four).endswith("-c48-48-48-48")
-        assert _artifact_name(three) != _artifact_name(four)
-
-    def test_artifact_name_asymmetric_channels(self):
-        """Differing per-layer widths expand into the full list, so a
-        c32-64-64 run can't accidentally file under a c48-48-48 run."""
-        args = SftArgs(layer1=32, layer2=64, layer3=64)
-        # Assert only the channel suffix (the behaviour under test) so this
-        # doesn't break when the default size/samples/epochs/lr change.
-        assert _artifact_name(args).endswith("-c32-64-64")
+        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48"
 
     def test_artifact_name_kernel_size_suffix(self):
         """A non-default kernel size appends -k{N} so two runs differing only

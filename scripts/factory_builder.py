@@ -541,23 +541,14 @@ _DIR_NAMES = {d.value: d.name for d in Direction}
 _MISC_NAMES = {m.value: m.name for m in Misc}
 
 
-def _encoder_arch(state) -> tuple[list[int], int]:
-    """Infer the encoder architecture (per-layer channel widths, kernel size)
-    from a checkpoint's conv weights. Filters by 4-D weight shape and sorts by
-    layer index rather than hardcoding `encoder.0/2/4`, so any depth/kernel and
-    interleaved non-conv layers (e.g. Dropout2d) reconstruct correctly — no
-    sidecar, no assumption of exactly three layers."""
-    conv_keys = sorted(
-        (
-            k
-            for k, v in state.items()
-            if k.startswith("encoder.") and k.endswith(".weight") and v.dim() == 4
-        ),
-        key=lambda k: int(k.split(".")[1]),
+def _encoder_arch(state) -> tuple[int, int]:
+    """Infer (conv width, kernel size) from a checkpoint's conv weight, found by
+    4-D shape rather than at a hardcoded index — no sidecar needed."""
+    key = next(
+        k for k, v in state.items()
+        if k.startswith("encoder.") and k.endswith(".weight") and v.dim() == 4
     )
-    layers = [int(state[k].shape[0]) for k in conv_keys]
-    kernel_size = int(state[conv_keys[0]].shape[-1])
-    return layers, kernel_size
+    return int(state[key].shape[0]), int(state[key].shape[-1])
 
 
 def _load_checkpoint(path: str) -> None:
@@ -576,10 +567,10 @@ def _load_checkpoint(path: str) -> None:
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
     _AGENT_CACHE.clear()
-    layers, kernel_size = _encoder_arch(state)
+    conv_channels, kernel_size = _encoder_arch(state)
     print(
         f"Loaded checkpoint {path} "
-        f"(layers={layers}, kernel_size={kernel_size}, device={_AGENT_DEVICE})"
+        f"(conv_channels={conv_channels}, kernel_size={kernel_size}, device={_AGENT_DEVICE})"
     )
 
 
@@ -590,12 +581,12 @@ def _model_info() -> dict:
     if _CHECKPOINT_STATE is None:
         return {"loaded": False}
     s = _CHECKPOINT_STATE
-    layers, kernel_size = _encoder_arch(s)
+    conv_channels, kernel_size = _encoder_arch(s)
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
         "source": _CHECKPOINT_SOURCE,
-        "layers": layers,
+        "conv_channels": conv_channels,
         "kernel_size": kernel_size,
         "device": str(_AGENT_DEVICE),
     }
@@ -631,14 +622,14 @@ def _get_agent(size: int) -> AgentCNN:
     if size in _AGENT_CACHE:
         return _AGENT_CACHE[size]
 
-    layers, kernel_size = _encoder_arch(_CHECKPOINT_STATE)
+    conv_channels, kernel_size = _encoder_arch(_CHECKPOINT_STATE)
 
     env_id = "factorion/FactorioEnv-v0-fb"
     if env_id not in gym.registry:
         gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
     try:
-        agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
+        agent = AgentCNN(envs, conv_channels=conv_channels, kernel_size=kernel_size)
     finally:
         envs.close()
     # Several tensors are grid-size-dependent, so their saved shapes are wrong
@@ -649,13 +640,13 @@ def _get_agent(size: int) -> AgentCNN:
     # critic_head: always dropped (the critic isn't called during inference,
     # so loading it is wasted work even on a size match).
     #
-    # eot_head (Linear(layers[-1]*W*H, 1)) and attn.pos_embed
+    # eot_head (Linear(conv_channels*W*H, 1)) and attn.pos_embed
     # ((1, W*H, attn_dim)): dropped on size mismatch (random init is fine —
     # the UI doesn't act on the eot signal), kept on a size match so the UI's
     # eot panel shows the real trained prediction. Pre-#103 checkpoints have no
     # eot_head keys at all → load_state_dict (strict=False) leaves the
     # freshly-initialised head in place.
-    expected_flat = layers[-1] * size * size
+    expected_flat = conv_channels * size * size
     saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
     keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
     saved_pos = _CHECKPOINT_STATE.get("attn.pos_embed")
@@ -2232,7 +2223,7 @@ async function refreshModelInfo() {{
     const data = await resp.json();
     if (data.loaded) {{
       modelLoaded = true;
-      const shape = 'layers=' + (data.layers || []).join('-') +
+      const shape = 'c=' + data.conv_channels +
         ' k=' + data.kernel_size + ' ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{

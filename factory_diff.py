@@ -38,7 +38,7 @@ def load_agent(spec: str, device):
     import gymnasium as gym
     import torch
 
-    from ppo import AgentCNN, _resolve_wandb_checkpoint, layers_from_args, make_env
+    from ppo import AgentCNN, _resolve_wandb_checkpoint, make_env
 
     config: dict = {}
     if os.path.exists(spec):
@@ -55,7 +55,7 @@ def load_agent(spec: str, device):
     envs = gym.vector.SyncVectorEnv([make_env(_ENV_ID, 0, False, args.size, "diff")])
     agent = AgentCNN(
         envs,
-        layers=layers_from_args(args),
+        conv_channels=args.conv_channels,
         kernel_size=args.kernel_size,
         attn_dim=args.attn_dim,
         attn_heads=args.attn_heads,

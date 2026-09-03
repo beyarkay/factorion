@@ -60,7 +60,7 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
         gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
     try:
-        agent = AgentCNN(envs, layers=(chan, chan, chan))
+        agent = AgentCNN(envs, conv_channels=chan)
     finally:
         envs.close()
     fd, path = tempfile.mkstemp(suffix=".pt")
@@ -422,8 +422,8 @@ class TestCheckpointLoading:
     def test_load_compiled_checkpoint(self):
         """A PPO checkpoint is saved after torch.compile, so every key
         carries an ``_orig_mod.`` prefix. The builder must strip it:
-        otherwise _encoder_arch finds zero conv keys and crashes with
-        IndexError (regression for switching to a PPO model in the UI)."""
+        otherwise _encoder_arch finds no conv key and crashes with
+        StopIteration (regression for switching to a PPO model in the UI)."""
         path = _make_compiled_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
@@ -435,7 +435,7 @@ class TestCheckpointLoading:
             )
             info = fb._model_info()
             assert info["loaded"] is True
-            assert info["layers"] == [8, 8, 8]
+            assert info["conv_channels"] == 8
             assert info["kernel_size"] == 3
             # And the agent must build + load the weights without falling
             # back to a fully random net (eot_head kept on size match).
@@ -810,7 +810,7 @@ class TestModelInfo:
             info = fb._model_info()
             assert info["loaded"] is True
             assert info["path"] == str(path)
-            assert info["layers"] == [8, 8, 8]
+            assert info["conv_channels"] == 8
         finally:
             path.unlink(missing_ok=True)
 
