@@ -649,20 +649,13 @@ def _get_agent(size: int) -> AgentCNN:
     # critic_head: always dropped (the critic isn't called during inference,
     # so loading it is wasted work even on a size match).
     #
-    # eot_head (Linear(layers[-1]*W*H, 1)) and attn.pos_embed
-    # ((1, W*H, attn_dim)): dropped on size mismatch (random init is fine —
-    # the UI doesn't act on the eot signal), kept on a size match so the UI's
-    # eot panel shows the real trained prediction. Pre-#103 checkpoints have no
-    # eot_head keys at all → load_state_dict (strict=False) leaves the
-    # freshly-initialised head in place.
-    expected_flat = layers[-1] * size * size
-    saved_eot_w = _CHECKPOINT_STATE.get("eot_head.1.weight")
-    keep_eot = saved_eot_w is not None and saved_eot_w.shape[1] == expected_flat
+    # attn.pos_embed ((1, W*H, attn_dim)): dropped on size mismatch, kept on
+    # a size match. Pre-#103 checkpoints have no eot_head keys at all →
+    # load_state_dict (strict=False) leaves the freshly-initialised head in
+    # place.
     saved_pos = _CHECKPOINT_STATE.get("attn.pos_embed")
     keep_pos = saved_pos is not None and saved_pos.shape[1] == size * size
     drop_prefixes: tuple[str, ...] = ("critic_head.",)
-    if not keep_eot:
-        drop_prefixes = drop_prefixes + ("eot_head.",)
     if not keep_pos:
         drop_prefixes = drop_prefixes + ("attn.pos_embed",)
     filtered = {
@@ -671,8 +664,8 @@ def _get_agent(size: int) -> AgentCNN:
     }
     missing, unexpected = agent.load_state_dict(filtered, strict=False)
     ignorable = {
-        "critic_head.1.weight", "critic_head.1.bias",
-        "eot_head.1.weight", "eot_head.1.bias",
+        "critic_head.weight", "critic_head.bias",
+        "eot_head.weight", "eot_head.bias",
         "attn.pos_embed",
     }
     real_missing = [k for k in missing if k not in ignorable]

@@ -1439,7 +1439,7 @@ class TestEotHead:
         B, C, W, H = 4, agent.channels, agent.width, agent.height
         x = torch.zeros((B, C, W, H), dtype=torch.float32)
         enc = agent.encoder(agent._encode_input(x))
-        logits = agent.eot_head(enc).squeeze(-1)
+        logits = agent.eot_logit(enc)
         assert logits.shape == (B,), (
             f"eot_head output should be (B,), got {logits.shape}"
         )

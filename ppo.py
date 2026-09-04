@@ -1492,20 +1492,13 @@ class AgentCNN(nn.Module):
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
 
-        flat_dim = last_chan * self.width * self.height
-
-        # Project encoded state to value
-        self.critic_head = nn.Sequential(
-            nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=critic_head_std)
-        )
+        # Value and end-of-turn are grid-global questions, so both heads read
+        # the map mean-pooled over space: every cell shares one weight vector.
+        self.critic_head = layer_init(nn.Linear(last_chan, 1), std=critic_head_std)
 
         # Bias init at -2 so an untrained model defaults to "not finished"
         # (sigmoid(-2) ≈ 0.12).
-        self.eot_head = nn.Sequential(
-            nn.Flatten(),
-            layer_init(nn.Linear(flat_dim, 1), std=1.0, bias_const=-2.0),
-        )
+        self.eot_head = layer_init(nn.Linear(last_chan, 1), std=1.0, bias_const=-2.0)
 
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
@@ -1570,10 +1563,10 @@ class AgentCNN(nn.Module):
         return encoded_BCWH[batch_idx_B, :, x_B, y_B]
 
     def critic_value(self, encoded_BCWH):
-        return self.critic_head(encoded_BCWH).squeeze(-1)
+        return self.critic_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
 
     def eot_logit(self, encoded_BCWH):
-        return self.eot_head(encoded_BCWH).squeeze(-1)
+        return self.eot_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
 
     def get_value(self, x_BCWH):
         return self.critic_value(self.encode(x_BCWH))
@@ -1946,7 +1939,7 @@ if __name__ == "__main__":
         ref_agent = copy.deepcopy(agent).to(device)
         ref_agent.requires_grad_(False).eval()
         # Re-init the loaded (untrained) critic to critic_head_std so the load doesn't clobber the knob.
-        layer_init(agent.critic_head[-1], std=args.critic_head_std)
+        layer_init(agent.critic_head, std=args.critic_head_std)
 
     agent.to(device)
 

@@ -391,13 +391,16 @@ class TestArchVariants:
         torch.testing.assert_close(logp_a, logp_b)
         torch.testing.assert_close(val_a, val_b)
 
-    def test_critic_and_eot_heads_flatten_the_map(self, envs):
-        """Both value/eot heads are Flatten -> Linear, and `head[-1]` reaches
-        the Linear (ppo.py's --start-from critic re-init depends on it)."""
+    def test_critic_and_eot_heads_pool_the_map(self, envs):
+        """Value/eot read the spatially mean-pooled map, so they are
+        invariant to a permutation of the cells."""
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
-        assert isinstance(agent.critic_head[-1], torch.nn.Linear)
-        assert isinstance(agent.eot_head[-1], torch.nn.Linear)
-        assert agent.critic_head[-1].in_features == 16 * 5 * 5
+        assert agent.critic_head.in_features == 16
+        assert agent.eot_head.in_features == 16
+        enc = torch.randn(2, 16, 5, 5)
+        perm = enc.flatten(2)[:, :, torch.randperm(25)].reshape(2, 16, 5, 5)
+        torch.testing.assert_close(agent.critic_value(enc), agent.critic_value(perm))
+        torch.testing.assert_close(agent.eot_logit(enc), agent.eot_logit(perm))
         _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert value_B.shape == (2,)
 
