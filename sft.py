@@ -69,8 +69,8 @@ _PLACEMENT_PHASE = {
     "inserter": 1,
     "long_handed_inserter": 1,
     "transport_belt": 2,
-    "splitter": 2,
-    "underground_belt": 3,
+    "splitter": 3,
+    "underground_belt": 4,
 }
 
 
