@@ -1073,6 +1073,21 @@ def build_graph_nx(world_WHC):
     return G
 
 
+def count_dangling_inserters(world_CWH) -> tuple[int, int]:
+    """(inserters with no input, inserters with no output) per the engine's
+    factory graph. A finished factory should have zero of each: every inserter
+    the agent places should both pick up from and drop onto something."""
+    arr = world_CWH.permute(1, 2, 0).to(torch.int64).numpy()
+    nodes, edges = factorion_rs.py_build_graph(arr)
+    fed = {dst for _, dst in edges}
+    draining = {src for src, _ in edges}
+    inserters = [i for i, label in enumerate(nodes) if label[0] in "il"]
+    return (
+        sum(i not in fed for i in inserters),
+        sum(i not in draining for i in inserters),
+    )
+
+
 def _remove_entities(
     world_CWH, num_missing_entities, protected_positions=None
 ):

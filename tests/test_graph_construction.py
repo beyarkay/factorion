@@ -30,6 +30,7 @@ from factorion import (
     Misc,
     blank_entities,
     build_factory,
+    count_dangling_inserters,
 )
 from helpers import (
     build_factory_graph,
@@ -216,6 +217,27 @@ class TestHandcraftedGraphSnapshots:
         nodes, edges = _summary(build_factory_graph(w))
         assert nodes == {_n("inserter", 1, 1), _n("inserter", 2, 1)}
         assert edges == set()
+
+    def test_dangling_inserters_are_counted(self):
+        # The recurring rebuild failure: the feed belt runs straight past the
+        # inserter's aft cell and points into its side, so nothing feeds it.
+        w = make_world(11)
+        set_entity(w, 0, 9, "source", Direction.EAST, "steel_plate")
+        for x in (1, 2, 3):
+            set_entity(w, x, 9, "transport_belt", Direction.EAST)
+        set_entity(w, 4, 9, "inserter", Direction.NORTH)
+        set_assembler(w, 4, 6, "heat_pipe")
+        set_entity(w, 7, 7, "inserter", Direction.EAST)
+        set_entity(w, 8, 7, "sink", Direction.EAST, "heat_pipe")
+        assert count_dangling_inserters(w.permute(2, 0, 1)) == (1, 0)
+
+        # Routing the belt to the aft cell wires it; a bare inserter dangles
+        # on both sides, and inserter → inserter never counts as either.
+        set_entity(w, 4, 10, "transport_belt", Direction.EAST)
+        assert count_dangling_inserters(w.permute(2, 0, 1)) == (0, 0)
+        set_entity(w, 0, 0, "long_handed_inserter", Direction.EAST)
+        set_entity(w, 1, 0, "inserter", Direction.EAST)
+        assert count_dangling_inserters(w.permute(2, 0, 1)) == (2, 2)
 
     def test_opposing_belts_do_not_connect(self):
         # A belt never feeds a belt pointing straight back at it.
