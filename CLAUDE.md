@@ -70,6 +70,21 @@ The metric comes from a greedy rollout that blanks the **whole** grid and rebuil
 
 **The RL goal is for PPO's achieved throughput to exceed the SFT base's throughput on the same lesson mix (≈0.67 for `hcozpmwt`).** Per-lesson the SFT base is uneven — belt and memorise lessons are near-solved while `FACTORY_1_INGREDIENT` sits ~0.3. The longer-run goal is `eval/trial_thput` climbing well above zero — nothing imitative can produce it.
 
+## Comparing a PR against main on a metric
+
+Never judge a compare from endpoint values, the report table, or a fixed
+"within noise" threshold. Pull both sides' full history of the metric from
+W&B, interpolate onto a common x-axis (`train/samples_seen` for SFT,
+`global_step` for PPO), and analyse the **difference curve** PR − main:
+smooth it (rolling window ≈ 10% of the run) and report, over the second half
+of the run, the mean smoothed difference, the fraction of points where the raw
+difference is positive, and the difference's own point-to-point std. A gap that
+keeps one sign at ≳ 90% of points and clears the diff's std is real even at one
+seed per side; a gap that flips sign or decays toward zero is not. Always say
+whether the gap is growing, steady, or closing. Endpoint deltas understate a
+steady gap by about half and invert small per-lesson ones, and a seed std
+measured at another sample budget or architecture does not transfer.
+
 ## SFT → PPO handoff
 
 `ppo.py --start-from <ckpt>` loads the full SFT `AgentCNN` state dict (encoder + every policy/eot head). The **critic head is the only part SFT never trained**, so `--critic-warmup N` freezes the actor (encoder + policy heads) for N iterations and trains the value head alone against the fixed SFT features before joint PPO begins; LR envelopes + entropy schedule restart at the unfreeze. For finetuning an SFT policy, set `--ent-coef-start/--ent-coef-end 0` and a small `--learning-rate` (e.g. 5e-5); `--divergence-penalty β` additionally anchors the actor to the loaded checkpoint with a `β·KL(π_θ ‖ π_ref)` loss penalty against a frozen copy (#237), guarding SFT skills on lessons the current reward isn't exercising. Every episode builds from a full blank (the legacy `num_missing_entities` curriculum was removed).
