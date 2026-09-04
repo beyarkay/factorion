@@ -24,7 +24,7 @@ from helpers import (
     build_factory,
     str2ent,
 )
-from factorion import LESSON_IS_TRIAL, Footprint
+from factorion import LESSON_IS_TRIAL, Footprint, entities
 import sft
 from sft import (
     SftArgs,
@@ -38,6 +38,7 @@ from sft import (
     _solved_assembler_recipes,
     build_lr_schedule,
     extract_expert_actions,
+    _PLACEMENT_PHASE,
     run_rollout_eval,
     train_sft,
 )
@@ -95,6 +96,36 @@ class TestExtractExpertActions:
         assert torch.equal(
             state[Channel.DIRECTION.value], solved[Channel.DIRECTION.value]
         ), "Directions should match after replaying all actions"
+
+    @pytest.mark.parametrize(
+        "kind", [LessonKind.MEMORISE_2_INGREDIENT_RECIPES, LessonKind.CROSS_UNDER_BELT]
+    )
+    def test_placements_come_phase_by_phase(self, kind):
+        """Assemblers, then inserters, then belts, then undergrounds — and each
+        step's mask offers only the current phase's remaining tiles."""
+        factory = next(
+            f for f in (build_factory(size=11, kind=kind, seed=s) for s in range(50))
+            if f is not None
+        )
+        solved = factory.world_CWH
+        task, _ = blank_entities(factory, num_missing_entities=121)
+        pairs = extract_expert_actions(solved, task)[:-1]
+        H = solved.shape[2]
+
+        def phase_of(tile_idx):
+            ent = int(solved[Channel.ENTITIES.value, tile_idx // H, tile_idx % H])
+            return _PLACEMENT_PHASE[str(entities[ent].name)]
+
+        phases = [phase_of(p[1]) for p in pairs]
+        assert phases == sorted(phases)
+        assert len(set(phases)) >= 2, "want several phases in play"
+        for step, (_, tile_idx, *_rest, mask, _eot) in enumerate(pairs):
+            offered = mask.nonzero().flatten().tolist()
+            assert tile_idx in offered
+            assert {phase_of(t) for t in offered} == {phases[step]}
+            assert set(offered) == {
+                p[1] for p in pairs[step:] if phase_of(p[1]) == phases[step]
+            }
 
     def test_no_actions_when_identical(self):
         """No actions needed when solved == task."""

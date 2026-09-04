@@ -58,6 +58,22 @@ from ppo import (  # noqa: E402
 from training_config import SftArgs, wsd_multiplier  # noqa: E402
 
 
+# Anchors before the things that attach to them, so every placement is
+# conditioned on what it must connect to. With no ordering the tile head lays
+# belts first (they hold most of the multi-label mass at every step) and greedy
+# rollouts commit to arm routes before the assembler they must meet exists,
+# then drop it where the arms happened to converge — beside an inserter's aft
+# cell as often as on it (#451).
+_PLACEMENT_PHASE = {
+    "assembling_machine_1": 0,
+    "inserter": 1,
+    "long_handed_inserter": 1,
+    "transport_belt": 2,
+    "splitter": 2,
+    "underground_belt": 3,
+}
+
+
 def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
@@ -77,8 +93,9 @@ def extract_expert_actions(solved_CWH, task_CWH):
     tile, not one per occupied cell — placing the anchor fills the whole
     footprint at execution time.
 
-    Actions are applied sequentially in random order, so intermediate states
-    reflect realistic observations the agent would see.
+    Actions are applied phase by phase (`_PLACEMENT_PHASE`), in random order
+    within a phase, and each step's valid_tile_mask covers only the current
+    phase's remaining tiles.
 
     `eot` (end-of-turn) is 0 for every placement step (the factory still
     has entities to place) and 1 for a single terminal pair appended at
@@ -121,18 +138,25 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
     diff_locs = [loc for loc in diff_locs if tuple(loc) not in secondary_tiles]
 
-    # Shuffle for diversity
+    def phase(loc) -> int:
+        ent = int(solved_CWH[Channel.ENTITIES.value, loc[0], loc[1]])
+        return _PLACEMENT_PHASE[entities[ent].name]
+
+    # Shuffle for diversity within a phase; the stable sort keeps phases apart.
     random.shuffle(diff_locs)
+    diff_locs.sort(key=phase)
 
     state = task_CWH.clone()
     pairs = []
 
-    # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
+    # Build per-step valid_mask = the remaining anchor tiles of this phase.
     remaining_locs = [tuple(loc) for loc in diff_locs]
 
     for step, (x, y) in enumerate(diff_locs):
         valid_mask = torch.zeros(W * H, dtype=torch.bool)
         for rx, ry in remaining_locs[step:]:
+            if phase((rx, ry)) != phase((x, y)):
+                break
             valid_mask[rx * H + ry] = True
 
         # uint8 obs / bool mask: ~8x smaller than int64/float32, cast at use.
