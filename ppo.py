@@ -311,6 +311,16 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         if asm_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/asm_item_acc"] = acc
 
+    # Dangling-inserter counts (should be zero): the belt-stops-short-of-the-
+    # inserter and inserter-feeds-inserter failures, visible without rendering.
+    for j, name in enumerate(("inserters_no_input", "inserters_no_output")):
+        metrics[f"eval/{name}"] = roll["dangling_inserters"][j]
+        if roll["trial_n"] > 0:
+            metrics[f"eval/trial_{name}"] = roll["trial_dangling_inserters"][j]
+        for kn, counts in roll["per_kind_dangling_inserters"].items():
+            if roll["per_kind_n"].get(kn, 0) > 0:
+                metrics[f"eval/{kn}/{name}"] = counts[j]
+
     # EOT-head accuracy/recall from the same rollout. PPO has no expert-labelled
     # val set, so this on-rollout score is the only per-lesson EOT-head signal it
     # gets (mirrors SFT's val/{kind}/eot_acc + eot_pos_recall). Per-lesson
