@@ -34,6 +34,7 @@ from factorion import (  # noqa: E402
     LessonKind,
     blank_entities,
     build_factory,
+    count_dangling_inserters,
     entities,
     render_factory,
 )
@@ -404,6 +405,11 @@ class RolloutEval(TypedDict):
     per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
     per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
     per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+    # `count_dangling_inserters` totals (no-input, no-output) over the scored
+    # factories — should be zero — lessons/trials pooled apart like `overall`.
+    dangling_inserters: tuple[int, int]
+    trial_dangling_inserters: tuple[int, int]
+    per_kind_dangling_inserters: dict[str, tuple[int, int]]
 
 
 def _solved_assembler_recipes(solved_CWH) -> set[int]:
@@ -493,6 +499,7 @@ def run_rollout_eval(
     per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_dangling: dict[str, tuple[int, int]] = {k.name: (0, 0) for k in LessonKind}
 
     if not seeds_sorted:
         if was_training:
@@ -514,6 +521,9 @@ def run_rollout_eval(
             "per_kind_eot_pos_recall": dict(zero),
             "per_kind_eot_step_n": dict(per_kind_n),
             "per_kind_eot_pos_n": dict(per_kind_n),
+            "dangling_inserters": (0, 0),
+            "trial_dangling_inserters": (0, 0),
+            "per_kind_dangling_inserters": per_kind_dangling,
         }
 
     # Cap K at the number of seeds — spinning up more envs than work
@@ -561,6 +571,9 @@ def run_rollout_eval(
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
+        no_input, no_output = count_dangling_inserters(envs[i]._world_CWH)
+        acc_in, acc_out = per_kind_dangling[k.name]
+        per_kind_dangling[k.name] = (acc_in + no_input, acc_out + no_output)
         if records is not None:
             records.append(
                 {
@@ -568,6 +581,8 @@ def run_rollout_eval(
                     "kind": k.name,
                     "thput": thput,
                     "entity_cost": float(envs[i]._entity_cost),
+                    "inserters_no_input": no_input,
+                    "inserters_no_output": no_output,
                     "render": render_factory(envs[i]._world_CWH),
                 }
             )
@@ -696,6 +711,10 @@ def run_rollout_eval(
         for kn, n in per_kind_eot_pos_total.items()
     }
 
+    def pooled_dangling(trial: bool) -> tuple[int, int]:
+        pairs = [per_kind_dangling[k.name] for k in LessonKind if LESSON_IS_TRIAL[k] == trial]
+        return sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+
     if was_training:
         agent.train()
     return {
@@ -713,6 +732,9 @@ def run_rollout_eval(
         "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
         "per_kind_eot_step_n": dict(per_kind_eot_step_total),
         "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
+        "dangling_inserters": pooled_dangling(trial=False),
+        "trial_dangling_inserters": pooled_dangling(trial=True),
+        "per_kind_dangling_inserters": per_kind_dangling,
     }
 
 
@@ -1425,6 +1447,13 @@ def train_sft(args: SftArgs):
             for kn, acc in roll["per_kind_asm_item_acc"].items():
                 if per_kind_asm_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
+            for j, name in enumerate(("inserters_no_input", "inserters_no_output")):
+                per_kind_metrics[f"val/{name}"] = roll["dangling_inserters"][j]
+                if roll["trial_n"] > 0:
+                    per_kind_metrics[f"val/trial_{name}"] = roll["trial_dangling_inserters"][j]
+                for kn, counts in roll["per_kind_dangling_inserters"].items():
+                    if per_kind_thp_n[kn] > 0:
+                        per_kind_metrics[f"val/{kn}/{name}"] = counts[j]
         else:
             overall_thp = None
             rollout_seconds = None

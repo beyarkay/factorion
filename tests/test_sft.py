@@ -1054,6 +1054,9 @@ class TestRunRolloutEval:
             "per_kind_eot_pos_recall",
             "per_kind_eot_step_n",
             "per_kind_eot_pos_n",
+            "dangling_inserters",
+            "trial_dangling_inserters",
+            "per_kind_dangling_inserters",
         }
         overall, per_kind, per_kind_n = (
             roll["overall"],
