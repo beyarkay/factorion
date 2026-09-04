@@ -83,8 +83,9 @@ class SharedArgs:
     layer6: int = 0
     layer7: int = 0
     layer8: int = 0
-    kernel_size: int = 3
-    """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
+    kernel_size: int = 1
+    """conv kernel size (odd); 1 is a per-cell projection with no spatial
+    mixing, leaving all of it to attention. Padding is kernel_size // 2 ("same")."""
     attn_dim: int = 192
     """model dim of the self-attention stage over the encoded map."""
     attn_heads: int = 12

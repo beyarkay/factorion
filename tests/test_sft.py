@@ -787,7 +787,7 @@ class TestTrackedArtifact:
 
         meta = captured["metadata"]
         assert meta["layers"] == [16, 16, 16]
-        assert meta["kernel_size"] == 3
+        assert meta["kernel_size"] == args.kernel_size
         assert "chan1" not in meta
 
     def test_run_named_by_artifact_name(self, monkeypatch, tmp_path):
@@ -1698,12 +1698,10 @@ class TestArtifactNameHelpers:
 
     def test_artifact_name_kernel_size_suffix(self):
         """A non-default kernel size appends -k{N} so two runs differing only
-        in receptive field get distinct artifacts; the default k=3 adds no
-        token (keeps existing names stable)."""
-        # Default kernel (3) adds no suffix; a non-default kernel appends
-        # -k{N}. Derive from the default name so this survives default changes.
+        in receptive field get distinct artifacts; the default adds no token
+        (keeps existing names stable)."""
         base = _artifact_name(SftArgs())
-        assert not base.endswith(("-k3", "-k5", "-k7"))
+        assert not base.endswith(("-k1", "-k3", "-k5", "-k7"))
         assert _artifact_name(SftArgs(kernel_size=5)) == base + "-k5"
 
     def test_artifact_name_stable_across_runs(self):

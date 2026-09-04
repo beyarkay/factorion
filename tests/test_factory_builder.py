@@ -46,6 +46,7 @@ from factorion import (  # noqa: E402
     render_factory,
 )
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from training_config import SharedArgs  # noqa: E402
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -436,7 +437,7 @@ class TestCheckpointLoading:
             info = fb._model_info()
             assert info["loaded"] is True
             assert info["layers"] == [8, 8, 8]
-            assert info["kernel_size"] == 3
+            assert info["kernel_size"] == SharedArgs.kernel_size
             # And the agent must build + load the weights without falling
             # back to a fully random net (eot_head kept on size match).
             agent = fb._get_agent(4)

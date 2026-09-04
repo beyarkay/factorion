@@ -215,7 +215,7 @@ def _artifact_name(args: "SftArgs") -> str:
     # only for non-default kernels.
     layers = layers_from_args(args)
     chan_str = "c" + "-".join(str(c) for c in layers)
-    if args.kernel_size != 3:
+    if args.kernel_size != SftArgs.kernel_size:
         chan_str += f"-k{args.kernel_size}"
     return (
         f"sft-s{args.size}"
