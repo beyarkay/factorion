@@ -438,7 +438,7 @@ class TestCheckpointLoading:
             assert info["layers"] == [8, 8, 8]
             assert info["kernel_size"] == 3
             # And the agent must build + load the weights without falling
-            # back to a fully random net (eot_head kept on size match).
+            # back to a fully random net.
             agent = fb._get_agent(4)
             assert agent is not None
         finally:
@@ -592,31 +592,19 @@ class TestPredictSchema:
         finally:
             path.unlink(missing_ok=True)
 
-    def test_eot_head_loaded_on_size_match_dropped_on_mismatch(self):
-        """When the UI grid size matches the checkpoint size, the trained
-        eot_head weights must be loaded. When they differ, the head is
-        dropped (random-init) so cross-size loading doesn't crash on the
-        flat_dim shape mismatch."""
+    def test_eot_head_loaded_at_any_size(self):
+        """The pooled eot_head is grid-size independent, so the trained
+        weights load whether or not the UI size matches the checkpoint."""
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             assert fb._CHECKPOINT_STATE is not None
-            saved_w = fb._CHECKPOINT_STATE["eot_head.1.weight"]
-
-            # Size match → eot_head should match the checkpoint exactly.
+            saved_w = fb._CHECKPOINT_STATE["eot_head.weight"]
             # _get_agent moves the model to _AGENT_DEVICE (mps/cuda on
             # local, cpu on CI); pull weights back to cpu for comparison.
-            agent4 = fb._get_agent(4)
-            # torch types Sequential[i].weight as `Tensor | Module`, so .cpu() trips ty
-            assert torch.equal(agent4.eot_head[1].weight.cpu(), saved_w.cpu()), (  # ty: ignore[invalid-argument-type]
-                "eot_head must load when UI size == checkpoint size; "
-                "otherwise the UI shows a random-init eot prediction"
-            )
-
-            # Size mismatch → eot_head is the model's init, not the saved
-            # weights (and shapes differ so they can't be equal anyway).
-            agent6 = fb._get_agent(6)
-            assert agent6.eot_head[1].weight.shape != saved_w.shape
+            for size in (4, 6):
+                agent = fb._get_agent(size)
+                assert torch.equal(agent.eot_head.weight.cpu(), saved_w.cpu())
         finally:
             path.unlink(missing_ok=True)
 
