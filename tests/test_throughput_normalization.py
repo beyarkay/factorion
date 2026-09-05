@@ -30,7 +30,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import factorion_rs  # noqa: E402
-from factorion import LessonKind, build_factory  # noqa: E402
+from factorion import Channel, LessonKind, build_factory, str2ent  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
@@ -158,3 +158,24 @@ def test_normed_stays_in_unit_interval(kind):
         _, _, _, _, info = env.step(_noop_action())
         assert 0.0 <= info["thput_normed"] <= 1.0
         assert info["thput_raw"] >= 0.0
+
+
+def test_factory_lesson_reference_scores_about_one_over_n():
+    """FACTORY_* normalizes by the analytic full-row ceiling, not the sampled
+    build's own rate (#426): its reference is one sample from a deliberate
+    throughput spread, so rebuilding it perfectly never reaches 1.0, and
+    scores at most ``1 / machines`` when that sample holds a single machine.
+    """
+    size, kind = 11, LessonKind.FACTORY_1_INGREDIENT
+    asm = str2ent("assembling_machine_1").value
+    singles = []
+    for seed in range(40):
+        factory = build_factory(size=size, kind=kind, seed=seed)
+        if factory is None:
+            continue
+        score = _solved_max(size, kind, seed) / factory.max_throughput
+        assert score <= 1.0, f"seed={seed}: the reference beats its own ceiling"
+        if int((factory.world_CWH[Channel.ENTITIES.value] == asm).sum()) // 9 == 1:
+            singles.append(score)
+    assert singles, "no single-machine reference among 40 seeds"
+    assert max(singles) <= 1 / (size // 3)

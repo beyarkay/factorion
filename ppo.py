@@ -873,10 +873,12 @@ class FactorioEnv(gym.Env):
         # diagnostic now that the solved world is known.
         self._cache_solution_match()
         # Per-factory maximum throughput: the items/s reference we normalize
-        # the agent's raw throughput by, so a perfect build scores 1.0
-        # regardless of its absolute speed. The generator supplies it: the
-        # solved world's simulated rate for scripted lessons, an analytic
-        # ceiling for trial kinds (no reference solution to simulate).
+        # the agent's raw throughput by. The generator supplies it: the solved
+        # world's simulated rate where that is the best layout the lesson
+        # builds, an analytic ceiling for trial kinds (no reference solution to
+        # simulate) and for the FACTORY_* kinds (whose reference is one sample
+        # from a deliberate throughput spread, so a denser build beats it and
+        # the uncapped score pays for never stopping — #426).
         # GH #161 tracks rollouts with no generator-built factory at all.
         self._max_throughput = float(factory.max_throughput)
         self._world_CWH, min_entities_required = blank_entities(

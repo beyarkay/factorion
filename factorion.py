@@ -218,9 +218,12 @@ class Factory:
             inside :func:`_remove_entities` and need not appear here.
         max_throughput: the items/s reference the training loop normalizes
             achieved throughput by (a "perfect" build scores 1.0): the
-            simulated rate of the solved world for kinds with a known
-            solution, an analytic ceiling for trial kinds (which have no
-            reference solution to simulate — see ``LESSON_IS_TRIAL``).
+            simulated rate of the solved world for kinds whose reference is
+            the best layout they can produce, an analytic ceiling for the
+            trial kinds (which have no reference solution to simulate — see
+            ``LESSON_IS_TRIAL``) and for the FACTORY_* kinds (whose reference
+            is one sample from a deliberate throughput spread, so a denser
+            build beats it — see #426).
     """
 
     world_CWH: torch.Tensor
