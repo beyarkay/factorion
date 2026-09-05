@@ -2563,13 +2563,14 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
 /// the sink in the output-lane half — wired to the lane ends by the UG-aware
 /// belt router, so routing distance varies per seed.
 ///
-/// The row is always packed to capacity, so the reference rate is the whole
-/// row's and a single well-inserted assembler can't beat it — the
-/// composition gap pays in every episode (#410). Throughput still varies:
-/// the per-assembler input/output inserter counts (1-3 each) and the
-/// recipe's crafting time combine so a given factory may be input-inserter
-/// limited, recipe-speed limited, or output-inserter limited — giving the
-/// critic both good and bad layouts to rank. Dead or orphan-tile candidates
+/// The row is always packed to capacity and every machine has at least two
+/// inserters per side, so the reference rate strictly exceeds what a single
+/// well-inserted assembler can reach — the composition gap pays in every
+/// episode (#410; `test_factory_1_ingredient_needs_every_assembler`).
+/// Throughput still varies: the per-assembler input/output inserter counts
+/// (2-3 each) and the recipe's crafting time combine so a given factory may
+/// be input-inserter limited, recipe-speed limited, or output-inserter
+/// limited — giving the critic both good and bad layouts to rank. Dead or orphan-tile candidates
 /// are prevented constructively (the sink's faced cell stays empty so the sink never feeds
 /// a belt and closes a cycle; crossed tunnels are rejected before placement);
 /// the final throughput/orphan gate remains as a safety net.
@@ -2612,8 +2613,8 @@ fn build_factory_1_ingredient(
         let in_lane_y = ay - 2;
         let out_lane_y = ay + 4;
 
-        // Per assembler: 1-3 input inserters on the north side (facing south,
-        // into the machine) and 1-3 output inserters on the south side (facing
+        // Per assembler: 2-3 input inserters on the north side (facing south,
+        // into the machine) and 2-3 output inserters on the south side (facing
         // south, away from it). Their pickup/drop cells fix the lane extents.
         let mut asm_tiles: HashSet<Cell> = HashSet::new();
         let mut inserters: Vec<(Cell, Direction)> = Vec::new();
@@ -2625,12 +2626,12 @@ fn build_factory_1_ingredient(
             anchors.push(ax);
             asm_tiles.extend((0..3).flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy))));
             let cols = [ax, ax + 1, ax + 2];
-            let k_in = rng.randint(1, 3) as usize;
+            let k_in = rng.randint(2, 3) as usize;
             for &x in &rng.sample(&cols, k_in) {
                 inserters.push(((x, ay - 1), Direction::South));
                 pickup_xs.push(x);
             }
-            let k_out = rng.randint(1, 3) as usize;
+            let k_out = rng.randint(2, 3) as usize;
             for &x in &rng.sample(&cols, k_out) {
                 inserters.push(((x, ay + 3), Direction::South));
                 drop_xs.push(x);
@@ -2955,12 +2956,12 @@ fn route_source_to_head(
 ///   unpaired entrance: a stopper that just parks B for its inserter.
 /// * **Shared**: ONE dual-lane belt carries both ingredients — each source
 ///   route ends beside the lane head and side-loads its item onto its own
-///   lane — and every assembler pulls its mix with 1-2 plain inserters (an
-///   inserter's pickup splits fairly across lanes, so even a single one
-///   feeds a two-ingredient recipe).
+///   lane — and every assembler pulls its mix with 2-3 plain inserters (an
+///   inserter's pickup splits fairly across lanes, so each one feeds both
+///   ingredients).
 ///
 /// Each assembler taps both ingredient lines on distinct rows of its own
-/// 3-row span and drains through 1-3 output inserters; every dead-end belt
+/// 3-row span and drains through 2-3 output inserters; every dead-end belt
 /// tile is tapped (no orphans). Like FACTORY_1_INGREDIENT, the markers sit at
 /// semi-arbitrary free cells — the two sources anywhere below the block, the
 /// sink beyond the output exit — wired to the lane heads / drained from the
@@ -3208,14 +3209,14 @@ fn build_factory_2_ingredients(
             keepout.insert((col_b, b_top - 1));
         } else {
             // Shared: every assembler pulls both ingredients off ONE
-            // dual-lane belt with 1-2 plain inserters. The lane ends in a
+            // dual-lane belt with 2-3 plain inserters. The lane ends in a
             // head tile fed from BOTH flanks — two side feeds, so each
             // side-loads its route's item onto its own lane.
             let mut taps: Vec<i64> = Vec::new();
             for i in 0..n_asm {
                 let ry = y0 + 3 * i;
                 let rows = [ry, ry + 1, ry + 2];
-                let k = rng.randint(1, 2) as usize;
+                let k = rng.randint(2, 3) as usize;
                 for &r in &rng.sample(&rows, k) {
                     inserters.push(((col_in, r), Item::Inserter));
                     taps.push(r);
@@ -3233,14 +3234,14 @@ fn build_factory_2_ingredients(
             keepout.insert((col_b, top - 1));
         }
 
-        // Output: 1-3 east-side inserters per assembler onto the output lane,
+        // Output: 2-3 east-side inserters per assembler onto the output lane,
         // which flows down or up ("the belts can go up or down") to its exit
         // cell — the route to the sink starts there.
         let mut drop_rows: Vec<i64> = Vec::new();
         for i in 0..n_asm {
             let ry = y0 + 3 * i;
             let rows = [ry, ry + 1, ry + 2];
-            let k_out = rng.randint(1, 3) as usize;
+            let k_out = rng.randint(2, 3) as usize;
             for &r in &rng.sample(&rows, k_out) {
                 inserters.push(((col_out_i, r), Item::Inserter));
                 drop_rows.push(r);
@@ -4112,8 +4113,8 @@ mod tests {
     fn test_factory_1_ingredient_smoke() {
         // Positive throughput, exactly one source and one sink, the row
         // packed with the three 3×3 assemblers an 11-wide grid fits (with or
-        // without a gap column), and per-assembler inserter counts within 1-3
-        // per side (2-6 total per machine).
+        // without a gap column), and per-assembler inserter counts within 2-3
+        // per side (4-6 total per machine).
         let mut built = 0;
         for seed in 0..50u64 {
             let Some(f) = build_factory(
@@ -4140,7 +4141,7 @@ mod tests {
             assert_eq!(n_asm, 3, "seed={seed}: row not packed to capacity");
             let n_inserter = count_entity(&f.world, Item::Inserter);
             assert!(
-                (2 * n_asm..=6 * n_asm).contains(&n_inserter),
+                (4 * n_asm..=6 * n_asm).contains(&n_inserter),
                 "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
             );
             // The source and sink lie strictly on opposite sides of the
@@ -4174,10 +4175,46 @@ mod tests {
     }
 
     #[test]
+    fn test_factory_1_ingredient_needs_every_assembler() {
+        // Every reference out-produces the best a SINGLE machine in the row
+        // layout can do — three plain inserters in, three out — so a
+        // one-assembler build can never match `max_throughput` (#410).
+        let per_side = 3.0 * Item::Inserter.flow_rate();
+        let mut checked = 0;
+        for seed in 0..50u64 {
+            let Some(f) = build_factory(
+                11,
+                LessonKind::Factory1Ingredient,
+                seed,
+                true,
+                f64::INFINITY,
+            ) else {
+                continue;
+            };
+            let recipe_item = (0..f.world.width())
+                .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
+                .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::AssemblingMachine1))
+                .and_then(|(x, y)| f.world.item_at(x, y))
+                .unwrap();
+            let recipe = crate::types::get_recipe(recipe_item).unwrap();
+            let (_, consumed) = *recipe.consumes.first();
+            let (_, produced) = *recipe.produces.first();
+            let single = (produced * (per_side / consumed).min(1.0)).min(per_side);
+            assert!(
+                f.max_throughput > single + 1e-9,
+                "seed={seed}: {recipe_item:?} reference {} <= single-assembler bound {single}",
+                f.max_throughput
+            );
+            checked += 1;
+        }
+        assert!(checked > 40, "most seeds should build, got {checked}");
+    }
+
+    #[test]
     fn test_factory_2_ingredients_smoke() {
         // Positive throughput, no orphans, two sources carrying the recipe's
         // two ingredients, one sink carrying its product, the column packed
-        // with the three 3×3 assemblers an 11-tall grid fits, each with 2-6
+        // with the three 3×3 assemblers an 11-tall grid fits, each with 4-6
         // inserters. All three feed patterns appear across seeds, and the
         // markers sit at varying distances from the assembler block (the
         // routes vary).
@@ -4211,7 +4248,7 @@ mod tests {
             let long = count_entity(&f.world, Item::LongHandedInserter);
             let n_inserter = count_entity(&f.world, Item::Inserter) + long;
             assert!(
-                (2 * n_asm..=6 * n_asm).contains(&n_inserter),
+                (4 * n_asm..=6 * n_asm).contains(&n_inserter),
                 "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
             );
             // Feed-pattern signatures: only reach-over places long-handed
