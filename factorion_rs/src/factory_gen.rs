@@ -2570,10 +2570,13 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
 /// Throughput still varies: the per-assembler input/output inserter counts
 /// (2-3 each) and the recipe's crafting time combine so a given factory may
 /// be input-inserter limited, recipe-speed limited, or output-inserter
-/// limited — giving the critic both good and bad layouts to rank. Dead or orphan-tile candidates
-/// are prevented constructively (the sink's faced cell stays empty so the sink never feeds
-/// a belt and closes a cycle; crossed tunnels are rejected before placement);
-/// the final throughput/orphan gate remains as a safety net.
+/// limited — giving the critic both good and bad layouts to rank, which is
+/// why `max_throughput` is the analytic [`assembler_row_ceiling`] of a full
+/// row rather than this one sample from that spread. Dead or orphan-tile
+/// candidates are prevented constructively (the sink's faced cell stays empty
+/// so the sink never feeds a belt and closes a cycle; crossed tunnels are
+/// rejected before placement); the final throughput/orphan gate remains as a
+/// safety net.
 ///
 /// Built in a canonical orientation — a horizontal assembler row, input lane
 /// north, output lane south — then the whole world is rotated by a random
@@ -2880,7 +2883,11 @@ fn build_factory_1_ingredient(
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        // A gapless row packs the most machines the width allows.
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(&recipe, s / 3),
+            ..finish(world, total_entities, vec![], count)?
+        });
     }
     None
 }
@@ -2968,7 +2975,8 @@ fn route_source_to_head(
 /// exit by the UG-aware belt router, all four facings tried per marker and
 /// the shortest route kept. Tap counts, run lengths, the output-lane
 /// direction, and the routes all vary per seed, so throughput deliberately
-/// varies too.
+/// varies too — and, as in FACTORY_1_INGREDIENT, `max_throughput` is the
+/// analytic full-column [`assembler_row_ceiling`].
 fn build_factory_2_ingredients(
     size: usize,
     rng: &mut Rng,
@@ -3429,7 +3437,11 @@ fn build_factory_2_ingredients(
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        // The stack always leaves one row below it for the source band.
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(recipe, (s - 1) / 3),
+            ..finish(world, total_entities, vec![], count)?
+        });
     }
     None
 }
@@ -3863,6 +3875,29 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
     None
 }
 
+/// The throughput ceiling of an assembler lesson: `machines` saturated
+/// assemblers crafting `recipe`, each fed and drained through the three
+/// inserter slots one face of a 3×3 machine offers in these layouts. Being
+/// `machines` single-machine ceilings, it scores a one-machine build at
+/// `1 / machines`.
+///
+/// Normalizing by the sampled build's own rate instead makes `max_throughput`
+/// a floor: packing the row (#453) fixed the machine count, but the inserter
+/// counts and the feed pattern are still drawn per seed, so the reference
+/// rate varies within one recipe (up to 2.5× on FACTORY_2_INGREDIENTS) and
+/// the uncapped PPO score pays a policy for out-building the unlucky draw
+/// (#426). The terms are the engine's own limits — an assembler scales
+/// `produces` by input sufficiency and never past 1×, the input inserters
+/// share their capacity across every ingredient a craft needs (the best split
+/// caps the ratio at `feed / Σ consumes`), and the output inserters drain at
+/// most `feed`.
+fn assembler_row_ceiling(recipe: &Recipe, machines: i64) -> f64 {
+    let feed = 3.0 * Item::Inserter.flow_rate();
+    let per_craft: f64 = recipe.consumes.iter().map(|&(_, qty)| qty).sum();
+    let produces = recipe.produces.first().1;
+    machines as f64 * (produces * (feed / per_craft).min(1.0)).min(feed)
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -4176,10 +4211,9 @@ mod tests {
 
     #[test]
     fn test_factory_1_ingredient_needs_every_assembler() {
-        // Every reference out-produces the best a SINGLE machine in the row
-        // layout can do — three plain inserters in, three out — so a
-        // one-assembler build can never match `max_throughput` (#410).
-        let per_side = 3.0 * Item::Inserter.flow_rate();
+        // Every reference build out-produces the best a SINGLE machine in the
+        // row layout can do — three plain inserters in, three out — so a
+        // one-assembler build can never match it (#410).
         let mut checked = 0;
         for seed in 0..50u64 {
             let Some(f) = build_factory(
@@ -4197,13 +4231,12 @@ mod tests {
                 .and_then(|(x, y)| f.world.item_at(x, y))
                 .unwrap();
             let recipe = crate::types::get_recipe(recipe_item).unwrap();
-            let (_, consumed) = *recipe.consumes.first();
-            let (_, produced) = *recipe.produces.first();
-            let single = (produced * (per_side / consumed).min(1.0)).min(per_side);
+            let single = assembler_row_ceiling(&recipe, 1);
+            let reference = tp_unreachable(&f.world).0;
             assert!(
-                f.max_throughput > single + 1e-9,
-                "seed={seed}: {recipe_item:?} reference {} <= single-assembler bound {single}",
-                f.max_throughput
+                reference > single + 1e-9,
+                "seed={seed}: {recipe_item:?} reference {reference} <= \
+                 single-assembler bound {single}"
             );
             checked += 1;
         }
@@ -4323,6 +4356,53 @@ mod tests {
             "markers should sit at varying distances from the block: \
              sources {source_dists:?}, sinks {sink_dists:?}"
         );
+    }
+
+    #[test]
+    fn test_factory_lesson_max_throughput_is_a_ceiling() {
+        // `max_throughput` is the analytic ceiling for the machines the grid
+        // fits, not the sampled build's own rate (#426). The reference still
+        // draws 2-3 inserters a side, so its rate varies and a
+        // better-inserted build beats it — but nothing beats the ceiling.
+        // Being `machines` single-machine ceilings, it also puts a
+        // one-machine build at exactly `1 / machines`. It stays attainable,
+        // though — some build gets most of the way there.
+        for (size, machines) in [(11usize, 3i64), (14, 4)] {
+            for kind in [
+                LessonKind::Factory1Ingredient,
+                LessonKind::Factory2Ingredients,
+            ] {
+                let mut best: f64 = 0.0;
+                for seed in 0..120u64 {
+                    let Some(f) = build_factory(size, kind, seed, true, f64::INFINITY) else {
+                        continue;
+                    };
+                    let recipe_item = (0..f.world.width())
+                        .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
+                        .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::AssemblingMachine1))
+                        .and_then(|(x, y)| f.world.item_at(x, y))
+                        .unwrap_or_else(|| panic!("{kind:?} seed={seed}: no assembler"));
+                    let recipe = crate::types::get_recipe(recipe_item)
+                        .unwrap_or_else(|| panic!("{kind:?} seed={seed}: no recipe"));
+                    assert_eq!(
+                        f.max_throughput,
+                        machines as f64 * assembler_row_ceiling(&recipe, 1),
+                        "{kind:?} size={size} seed={seed}"
+                    );
+                    let tp = tp_unreachable(&f.world).0;
+                    assert!(
+                        tp <= f.max_throughput,
+                        "{kind:?} size={size} seed={seed}: {tp} beats the ceiling {}",
+                        f.max_throughput
+                    );
+                    best = best.max(tp / f.max_throughput);
+                }
+                assert!(
+                    best > 0.5,
+                    "{kind:?} size={size}: ceiling unattainable, best build scored {best}"
+                );
+            }
+        }
     }
 
     #[test]
