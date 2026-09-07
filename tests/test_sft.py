@@ -8,6 +8,7 @@ import pytest
 import torch
 import gymnasium as gym
 import numpy as np
+import factorion_rs
 
 os.environ["WANDB_MODE"] = "disabled"
 os.environ["WANDB_DISABLED"] = "true"
@@ -65,7 +66,7 @@ class TestExtractExpertActions:
 
         # Replay placement actions onto task world. The action carries all
         # four placement channels (entity, direction, item, misc) — the
-        # agent is responsible for each. Skip terminal pairs (eot=1) which
+        # agent is responsible for each. Skip the terminal pair (empty mask), which
         # carry sentinel placement targets, not real placements.
         state = task.clone()
         for (
@@ -76,9 +77,9 @@ class TestExtractExpertActions:
             item_id,
             misc_id,
             valid_mask,
-            eot,
+            pred_thput,
         ) in pairs:
-            if eot == 1:
+            if not valid_mask.any():
                 continue
             H = state.shape[2]
             x = tile_idx // H
@@ -106,7 +107,7 @@ class TestExtractExpertActions:
 
     def test_action_count_matches_missing(self):
         """Number of pairs should equal num_missing_entities placement
-        actions + 1 terminal (eot=1) pair."""
+        actions + 1 terminal pair."""
         for seed in [1, 7, 42]:
             factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
             assert factory is not None
@@ -121,10 +122,9 @@ class TestExtractExpertActions:
                 f"seed={seed}: expected {min_ent} placement pairs + 1 "
                 f"terminal pair, got {len(pairs)}"
             )
-            # Exactly one terminal pair, appended last.
-            eot_flags = [p[7] for p in pairs]
-            assert eot_flags[:-1] == [0] * min_ent
-            assert eot_flags[-1] == 1
+            # Exactly one terminal pair (empty placement mask), appended last.
+            assert all(p[6].any() for p in pairs[:-1])
+            assert not pairs[-1][6].any()
 
     def test_intermediate_states_are_sequential(self):
         """Each observation should reflect previously applied actions."""
@@ -149,7 +149,7 @@ class TestExtractExpertActions:
 
     def test_entity_ids_are_valid(self):
         """All extracted placement entity IDs should be valid (non-empty)
-        entity values. Terminal pairs (eot=1) carry sentinel zeros and are
+        entity values. Terminal pairs carry sentinel zeros and are
         excluded from this check."""
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
         assert factory is not None
@@ -158,8 +158,8 @@ class TestExtractExpertActions:
         assert factory is not None
         task, _ = blank_entities(factory, num_missing_entities=2)
         pairs = extract_expert_actions(solved, task)
-        for _, _, entity_id, direction_id, _, _, _, eot in pairs:
-            if eot == 1:
+        for _, _, entity_id, direction_id, _, _, valid_mask, _pred_thput in pairs:
+            if not valid_mask.any():
                 continue
             assert entity_id != str2ent("empty").value, (
                 "Expert actions shouldn't place empty"
@@ -191,10 +191,10 @@ class TestExtractExpertActions:
                 task, _ = blank_entities(factory, num_missing_entities=2)
             except Exception:
                 continue
-            for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(
+            for _, _, ent_id, _, _, misc_id, valid_mask, _pred_thput in extract_expert_actions(
                 solved, task
             ):
-                if eot == 1:
+                if not valid_mask.any():
                     continue
                 if ent_id == ug_id:
                     assert misc_id != Misc.NONE.value, (
@@ -238,7 +238,7 @@ class TestGenerateDataset:
     def test_generates_correct_count(self):
         """Dataset should have the requested number of samples."""
         args = SftArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = (
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, pred_thputs, seeds, kinds = (
             _materialise_args(args)
         )
         assert len(obs) == 100
@@ -248,7 +248,7 @@ class TestGenerateDataset:
         assert len(items_t) == 100
         assert len(miscs_t) == 100
         assert len(masks) == 100
-        assert len(eots) == 100
+        assert len(pred_thputs) == 100
         assert len(seeds) == 100
         assert len(kinds) == 100
 
@@ -336,10 +336,10 @@ class TestGenerateDataset:
                 continue
             solved = factory.world_CWH
             task, _ = blank_entities(factory, num_missing_entities=20)
-            for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(
+            for _, _, ent_id, _, item_id, _, valid_mask, _pred_thput in extract_expert_actions(
                 solved, task
             ):
-                if eot == 1:
+                if not valid_mask.any():
                     continue
                 if ent_id == asm_id:
                     asm_pair_count += 1
@@ -408,13 +408,13 @@ class TestGenerateDataset:
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
 
     def test_obs_uint8_masks_bool(self):
-        """obs stored uint8 and masks bool (the memory cut); eot stays float."""
+        """obs stored uint8 and masks bool (the memory cut); pred_thput stays float."""
         args = SftArgs(seed=1, size=8, num_samples=300, max_level=4)
-        obs, *_, masks, eots, _seeds, _kinds = _materialise_args(args)
+        obs, *_, masks, pred_thputs, _seeds, _kinds = _materialise_args(args)
         assert obs.dtype == torch.uint8
         assert masks.dtype == torch.bool
         assert int(obs.max()) < 256  # nothing overflowed the uint8 range
-        assert eots.dtype == torch.float
+        assert pred_thputs.dtype == torch.float
 
     def test_unbuildable_kinds_dropped_not_hung(self):
         """A lesson kind that can't fit the grid (a side-load gadget or an
@@ -446,7 +446,7 @@ class TestStreamingDemoDataset:
         loader = DataLoader(ds, batch_size=64, num_workers=0)
         batches = list(loader)
         assert sum(b[0].shape[0] for b in batches) == target
-        obs, tile, ent, dirn, item, misc, mask, eot = batches[0]
+        obs, tile, ent, dirn, item, misc, mask, pred_thput = batches[0]
         assert obs.dtype == torch.uint8
         assert obs.shape[1:] == (len(Channel), 5, 5)
         assert mask.dtype == torch.bool
@@ -608,7 +608,7 @@ class TestSFTLossConvergence:
     def test_loss_decreases_on_small_dataset(self, registered_env):
         """SFT loss should decrease when training on a small expert dataset."""
         args = SftArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = _materialise_args(
+        obs, tiles, ents, dirs, items_t, miscs_t, masks, _pred_thputs, _, _ = _materialise_args(
             args
         )
 
@@ -1048,12 +1048,12 @@ class TestRunRolloutEval:
             "asm_item_acc",
             "per_kind_asm_item_acc",
             "per_kind_asm_n",
-            "eot_acc",
-            "eot_pos_recall",
-            "per_kind_eot_acc",
-            "per_kind_eot_pos_recall",
-            "per_kind_eot_step_n",
-            "per_kind_eot_pos_n",
+            "pred_thput_acc",
+            "pred_thput_pos_recall",
+            "per_kind_pred_thput_acc",
+            "per_kind_pred_thput_pos_recall",
+            "per_kind_pred_thput_step_n",
+            "per_kind_pred_thput_pos_n",
             "dangling_inserters",
             "trial_dangling_inserters",
             "per_kind_dangling_inserters",
@@ -1155,127 +1155,6 @@ class TestRunRolloutEval:
         )
         assert roll["overall"] == 0.0
         assert sum(roll["per_kind_n"].values()) == 0
-
-    def test_eot_head_stops_the_rollout(self, registered_env):
-        """The EOT head ends the rollout, so the threshold decides how far the
-        agent gets to build. A threshold above 1 means the head never fires and
-        the rollout runs to env-done; a threshold below 0 means it fires before
-        the first placement, so every rollout stops after one scored step and
-        scores the untouched reset factory (throughput 0)."""
-        size = 5
-        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, **TINY_ARCH)
-        envs.close()
-
-        args = SftArgs(
-            seed=1,
-            size=size,
-            num_samples=50,
-            max_level=2 * size,
-            **TINY_ARCH_ARGS,
-        )
-        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
-
-        # sigmoid(logit) < 1 always, so threshold 10 -> EOT never fires.
-        never = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device=torch.device("cpu"),
-            eot_threshold=10.0,
-            max_seeds=len(val_seeds_to_kind),
-        )
-        assert 0.0 <= never["overall"] <= 1.5
-
-        # sigmoid(logit) > 0 always, so threshold -1 -> EOT fires before the
-        # first placement.
-        always = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device=torch.device("cpu"),
-            eot_threshold=-1.0,
-            max_seeds=len(val_seeds_to_kind),
-        )
-        assert always["overall"] == 0.0, (
-            "EOT firing before the first placement must score the reset factory (0)"
-        )
-
-        # The ASSERT: the head stops the rollout rather than just annotating it,
-        # so an immediately-firing head places nothing at all.
-        n_rollouts = len(val_seeds_to_kind)
-        assert sum(always["per_kind_eot_step_n"].values()) == n_rollouts, (
-            "an immediate stop must be exactly one scored step per rollout"
-        )
-        assert sum(never["per_kind_eot_step_n"].values()) > n_rollouts, (
-            "a silent head must keep placing past the first step"
-        )
-
-    def test_rollout_eot_head_scoring(self, registered_env):
-        """The rollout scores the EOT head on every state it visits, against
-        ground truth: a pre-action state is a should-stop positive iff the
-        factory is already complete (thput_normed >= 1.0). Forcing the head to
-        never / always fire (via the threshold) pins both ends. A head that
-        always fires stops on the blank reset factory: one scored step per
-        rollout, wrong every time, and it never reaches a completed factory to
-        recall. A silent head keeps placing to env-done, so it is right on
-        exactly the not-done steps and recalls no positive."""
-        size = 5
-        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
-        agent = AgentCNN(envs, **TINY_ARCH)
-        envs.close()
-
-        args = SftArgs(
-            seed=1,
-            size=size,
-            num_samples=50,
-            max_level=2 * size,
-            **TINY_ARCH_ARGS,
-        )
-        val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
-        device = torch.device("cpu")
-        max_seeds = len(val_seeds_to_kind)
-
-        never = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device,
-            max_seeds=max_seeds,
-            eot_threshold=10.0,
-        )
-        always = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device,
-            max_seeds=max_seeds,
-            eot_threshold=-1.0,
-        )
-
-        for roll in (never, always):
-            assert 0.0 <= roll["eot_acc"] <= 1.0
-            assert 0.0 <= roll["eot_pos_recall"] <= 1.0
-            for kn, acc in roll["per_kind_eot_acc"].items():
-                assert 0.0 <= acc <= 1.0
-                if roll["per_kind_eot_step_n"][kn] == 0:
-                    assert acc == 0.0, f"{kn}: no steps but acc {acc}"
-
-        # Firing on the blank reset factory is wrong, and stopping there means
-        # no completed factory is ever visited — so there is nothing to recall.
-        always_steps = sum(always["per_kind_eot_step_n"].values())
-        assert always_steps == max_seeds
-        assert sum(always["per_kind_eot_pos_n"].values()) == 0
-        assert always["eot_acc"] == 0.0
-        assert always["eot_pos_recall"] == 0.0
-
-        # A silent head runs the full trajectory: strictly more scored steps,
-        # correct on exactly the not-done ones, and no positive recalled.
-        never_steps = sum(never["per_kind_eot_step_n"].values())
-        never_pos = sum(never["per_kind_eot_pos_n"].values())
-        assert never_steps > always_steps
-        assert never["eot_acc"] == pytest.approx((never_steps - never_pos) / never_steps)
-        assert never["eot_pos_recall"] == 0.0, "silent head recalls no positive"
 
     def _run_with_recorded_proposals(self, monkeypatch):
         """Run a greedy rollout eval with a FactorioEnv that records, for every
@@ -1391,13 +1270,12 @@ class TestLegalTileMask:
         assert idx == 0, "all-illegal row falls back to tile 0"
 
 
-class TestEotHead:
-    """Tests for the binary end-of-turn head."""
+class TestThroughputHead:
+    """Tests for current-factory raw-throughput regression."""
 
-    def test_eot_label_per_lesson(self):
-        """A lesson with N missing entities emits N placement pairs
-        (eot=0) followed by one terminal pair (eot=1) whose obs equals
-        the fully-solved factory."""
+    def test_pred_thput_label_per_lesson(self):
+        """Every state is labelled with raw throughput; the final label matches
+        direct simulation of the fully solved factory."""
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
         assert factory is not None
         solved, _ = blank_entities(factory, num_missing_entities=0)
@@ -1405,10 +1283,12 @@ class TestEotHead:
         assert factory is not None
         task, min_ent = blank_entities(factory, num_missing_entities=3)
         pairs = extract_expert_actions(solved, task)
-        # eot flag is at index 7 in the tuple
-        eots = [p[7] for p in pairs]
-        assert sum(eots) == 1, f"Expected exactly one terminal pair, got {sum(eots)}"
-        assert eots[-1] == 1, "Terminal pair must come last"
+        # pred_thput flag is at index 7 in the tuple
+        pred_thputs = [p[7] for p in pairs]
+        solved_raw, _ = factorion_rs.simulate_throughput(
+            solved.permute(1, 2, 0).to(torch.int64).numpy()
+        )
+        assert pred_thputs[-1] == pytest.approx(solved_raw)
         # Terminal observation equals solved (entities + directions). obs is
         # uint8, so cast to compare against the int64 solved world.
         terminal_obs = pairs[-1][0]
@@ -1421,63 +1301,47 @@ class TestEotHead:
             solved[Channel.DIRECTION.value],
         )
 
-    def test_eot_tensor_in_dataset(self):
-        """_materialise must return a per-pair eot tensor with values
+    def test_pred_thput_tensor_in_dataset(self):
+        """_materialise must return a per-pair pred_thput tensor with values
         in {0.0, 1.0} and at least one positive (terminal) example."""
         args = SftArgs(seed=1, size=5, num_samples=200, max_level=4)
-        *_, eots, _seeds, _kinds = _materialise_args(args)
-        assert eots.dtype == torch.float
-        assert set(eots.unique().tolist()).issubset({0.0, 1.0})
-        assert eots.sum().item() >= 1, "Dataset must contain >=1 terminal pair"
+        *_, pred_thputs, _seeds, _kinds = _materialise_args(args)
+        assert pred_thputs.dtype == torch.float
+        assert (pred_thputs >= 0.0).all()
+        assert (pred_thputs > 0.0).any(), "Dataset must contain a flowing factory"
 
-    def test_eot_head_exists_and_forwards(self, registered_env):
-        """AgentCNN must expose an eot_head producing a single logit per
+    def test_pred_thput_head_exists_and_forwards(self, registered_env):
+        """AgentCNN must expose an pred_thput_head producing a single logit per
         observation."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
-        assert hasattr(agent, "eot_head"), "AgentCNN must have an eot_head"
-        # Forward a fake batch through the encoder + eot_head.
+        assert hasattr(agent, "pred_thput_head"), "AgentCNN must have an pred_thput_head"
+        # Forward a fake batch through the encoder + pred_thput_head.
         B, C, W, H = 4, agent.channels, agent.width, agent.height
         x = torch.zeros((B, C, W, H), dtype=torch.float32)
         enc = agent.encoder(agent._encode_input(x))
-        logits = agent.eot_logit(enc)
-        assert logits.shape == (B,), (
-            f"eot_head output should be (B,), got {logits.shape}"
-        )
+        predictions = agent.predict_throughput(enc)
+        assert predictions.shape == (B,)
+        assert (predictions >= 0).all()
 
-    def test_eot_prob_and_should_stop_shapes(self, registered_env):
-        """`eot_prob` returns a [0,1] tensor of shape (B,); `eot_should_stop`
-        returns a bool tensor of the same shape. These are the methods
-        inference rollouts call to decide 'I'm done here'."""
+    def test_predict_current_throughput_shapes(self, registered_env):
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
-
-        B = 3
-        x = torch.zeros(
-            (B, agent.channels, agent.width, agent.height), dtype=torch.float32
-        )
-        probs = agent.eot_prob(x)
-        assert probs.shape == (B,)
-        assert (probs >= 0).all() and (probs <= 1).all()
-
-        stop = agent.eot_should_stop(x, threshold=0.5)
-        assert stop.shape == (B,)
-        assert stop.dtype == torch.bool
-
-        # Threshold = 1.0 → never stop; threshold = 0.0 → always stop.
-        assert not agent.eot_should_stop(x, threshold=1.0).any()
-        assert agent.eot_should_stop(x, threshold=-0.01).all()
+        x = torch.zeros((3, agent.channels, agent.width, agent.height))
+        predictions = agent.get_predicted_throughput(x)
+        assert predictions.shape == (3,)
+        assert (predictions >= 0).all()
 
 
-class TestPerKindEotMetrics:
-    """val/<LESSON>/eot_acc and /eot_pos_recall — the per-LessonKind breakdown
-    of the global EOT stop-signal metrics."""
+class TestPerKindThroughputMetrics:
+    """val/<LESSON>/pred_thput_acc and /pred_thput_pos_recall — the per-LessonKind breakdown
+    of the global throughput stop-signal metrics."""
 
-    def test_per_kind_eot_metrics_logged(self, monkeypatch, tmp_path):
-        """train_sft must log val/<LESSON>/eot_acc and /eot_pos_recall for
+    def test_per_kind_pred_thput_metrics_logged(self, monkeypatch, tmp_path):
+        """train_sft must log val/<LESSON>/pred_thput_acc and /pred_thput_pos_recall for
         every LessonKind present in the val split, each in [0, 1] and paired
         1:1 with the existing per-kind placement /acc. The per-kind metrics go
         only to wandb (not summary.json), so capture the logged dict via a
@@ -1511,21 +1375,21 @@ class TestPerKindEotMetrics:
         acc_keys = [
             k
             for k in logged
-            if k.startswith("val/") and k.endswith("/eot_acc") and k != "val/eot_acc"
+            if k.startswith("val/") and k.endswith("/pred_thput_acc") and k != "val/pred_thput_acc"
         ]
         rec_keys = [
             k
             for k in logged
             if k.startswith("val/")
-            and k.endswith("/eot_pos_recall")
-            and k != "val/eot_pos_recall"
+            and k.endswith("/pred_thput_pos_recall")
+            and k != "val/pred_thput_pos_recall"
         ]
-        assert acc_keys, "expected per-kind val/<LESSON>/eot_acc to be logged"
-        assert rec_keys, "expected per-kind val/<LESSON>/eot_pos_recall to be logged"
+        assert acc_keys, "expected per-kind val/<LESSON>/pred_thput_acc to be logged"
+        assert rec_keys, "expected per-kind val/<LESSON>/pred_thput_pos_recall to be logged"
         for k in acc_keys + rec_keys:
             assert 0.0 <= logged[k] <= 1.0, f"{k}={logged[k]} out of [0, 1]"
 
-        # The per-kind eot keys must cover exactly the kinds that already get a
+        # The per-kind pred_thput keys must cover exactly the kinds that already get a
         # placement /acc — same val split, same buckets, emitted together.
         place_kinds = {
             k.split("/")[1]
@@ -1540,7 +1404,7 @@ class TestNotNoneHeadAccuracy:
     accuracy restricted to samples whose target is a real (non-NONE) option, so
     the dominant NONE class stops inflating the plain *_acc metrics."""
 
-    _HEADS = ["ent", "dir", "item", "misc", "eot"]
+    _HEADS = ["ent", "dir", "item", "misc", "pred_thput"]
 
     def test_not_none_metrics_logged(self, monkeypatch, tmp_path):
         """train_sft must log the global val/not_none_<HEAD>_acc for every head
@@ -1600,8 +1464,8 @@ class TestNotNoneHeadAccuracy:
             if "/not_none_" in k and k.endswith("_acc") and k.count("/") == 2:
                 assert 0.0 <= v <= 1.0, f"{k}={v} out of [0, 1]"
 
-    def test_not_none_eot_acc_equals_pos_recall(self, monkeypatch, tmp_path):
-        """EOT's not-none option is the positive (stop) class, so its not-none
+    def test_not_none_pred_thput_acc_equals_pos_recall(self, monkeypatch, tmp_path):
+        """throughput's not-none option is the positive (stop) class, so its not-none
         accuracy is exactly the positive-class recall already logged."""
         import wandb
         from unittest.mock import MagicMock
@@ -1629,7 +1493,7 @@ class TestNotNoneHeadAccuracy:
         )
         train_sft(args)
 
-        assert logged["val/not_none_eot_acc"] == logged["val/eot_pos_recall"]
+        assert logged["val/not_none_pred_thput_acc"] == logged["val/pred_thput_pos_recall"]
 
 
 class TestArtifactNameHelpers:

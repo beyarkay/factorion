@@ -150,7 +150,7 @@ class _OneStepAgent:
     def __init__(self):
         self.calls = 0
 
-    def eot_prob(self, _obs):
+    def get_predicted_throughput(self, _obs):
         self.calls += 1
         return torch.tensor([0.0 if self.calls == 1 else 1.0])
 
@@ -183,7 +183,7 @@ def test_request_error_still_releases_pending_state():
 
 
 @pytest.mark.parametrize(("accepted", "stop_reason"), [
-    (True, "eot"), (False, "placement_error"),
+    (True, "target_thput"), (False, "placement_error"),
 ])
 def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_reason):
     action = _action("transport_belt", xy=(1, 5), direction=2)

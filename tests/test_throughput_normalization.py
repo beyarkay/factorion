@@ -85,7 +85,7 @@ def _solved_max(size, kind, seed):
 #
 #     assert info["thput_normed"] == pytest.approx(1.0)
 #     # Reaching the per-factory max scores 1.0, but on this branch a solve does
-#     # NOT auto-terminate — the agent ends the episode via the eot action, so a
+#     # NOT auto-terminate — the agent ends the episode via the pred_thput action, so a
 #     # no-op step on a solved factory keeps running.
 #     assert terminated is False
 #     assert truncated is False

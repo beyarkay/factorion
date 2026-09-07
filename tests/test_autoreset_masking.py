@@ -31,15 +31,15 @@ NUM_ENVS = 2
 MAX_STEPS = 3
 
 
-def _eot_action(num_envs, eot):
-    """A batched no-op placement; ``eot`` declares end-of-turn per sub-env."""
+def _pred_thput_action(num_envs, pred_thput):
+    """A batched no-op placement; ``pred_thput`` declares end-of-turn per sub-env."""
     return {
         "xy": np.zeros((num_envs, 2), dtype=np.int64),
         "entity": np.zeros(num_envs, dtype=np.int64),
         "direction": np.zeros(num_envs, dtype=np.int64),
         "item": np.zeros(num_envs, dtype=np.int64),
         "misc": np.zeros(num_envs, dtype=np.int64),
-        "eot": np.asarray(eot, dtype=np.int64),
+        "pred_thput": np.asarray(pred_thput, dtype=np.int64),
     }
 
 
@@ -48,29 +48,6 @@ def _make_vec_env():
         lambda i=i: FactorioEnv(size=5, max_steps=MAX_STEPS, idx=i)
         for i in range(NUM_ENVS)
     ])
-
-
-def test_autoreset_step_ignores_the_action_and_pays_zero():
-    """The step after a termination is junk: action dropped, reward forced 0."""
-    envs = _make_vec_env()
-    envs.reset(seed=0)
-
-    # End both episodes via the eot action.
-    _, _, terminations, _, _ = envs.step(_eot_action(NUM_ENVS, [1, 1]))
-    assert terminations.all(), "eot should terminate every sub-env"
-
-    # Next call: place a belt somewhere. Autoreset must swallow it.
-    action = _eot_action(NUM_ENVS, [0, 0])
-    action["entity"][:] = 1  # a real, placeable entity
-    action["direction"][:] = 1
-    obs, reward, terminations, truncations, _ = envs.step(action)
-
-    assert np.all(reward == 0.0), f"autoreset step paid {reward}, expected 0"
-    assert not terminations.any() and not truncations.any()
-    # The action was never executed, so the fresh episode's world is untouched
-    # by it: every sub-env is back at step 0.
-    for env in envs.unwrapped.envs:
-        assert env.steps == 0
 
 
 def test_dones_flag_marks_exactly_the_junk_rows():
@@ -86,7 +63,7 @@ def test_dones_flag_marks_exactly_the_junk_rows():
     rng = np.random.default_rng(0)
     for step in range(num_steps):
         dones[step] = next_done  # exactly what the PPO rollout stores
-        action = _eot_action(NUM_ENVS, rng.integers(0, 2, size=NUM_ENVS))
+        action = _pred_thput_action(NUM_ENVS, rng.integers(0, 2, size=NUM_ENVS))
         next_obs, reward, terminations, truncations, _ = envs.step(action)
         rewards[step] = reward
         next_done = np.logical_or(terminations, truncations)

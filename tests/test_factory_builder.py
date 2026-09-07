@@ -527,7 +527,7 @@ class TestPredictSchema:
             fb._load_checkpoint(str(path))
             result = fb._predict_action(_empty_grid(4))
             assert set(result) == {
-                "x", "y", "entity", "direction", "item", "misc", "eot_prob",
+                "x", "y", "entity", "direction", "item", "misc", "predicted_thput",
                 # The throughput rides along so the readout can track a
                 # held-`a` build without a request of its own.
                 "thput", "note",
@@ -579,32 +579,31 @@ class TestPredictSchema:
         finally:
             path.unlink(missing_ok=True)
 
-    def test_predict_returns_eot_prob(self):
-        """_predict must surface `eot_prob` in [0, 1] so the UI can show
-        the model's "I'm done" probability."""
+    def test_predict_returns_predicted_thput(self):
+        """_predict surfaces a non-negative raw items/second estimate."""
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             result = fb._predict(_empty_grid(4))
-            assert "eot_prob" in result
-            assert isinstance(result["eot_prob"], float)
-            assert 0.0 <= result["eot_prob"] <= 1.0
+            assert "predicted_thput" in result
+            assert isinstance(result["predicted_thput"], float)
+            assert result["predicted_thput"] >= 0.0
         finally:
             path.unlink(missing_ok=True)
 
-    def test_eot_head_loaded_at_any_size(self):
-        """The pooled eot_head is grid-size independent, so the trained
+    def test_pred_thput_head_loaded_at_any_size(self):
+        """The pooled pred_thput_head is grid-size independent, so the trained
         weights load whether or not the UI size matches the checkpoint."""
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             assert fb._CHECKPOINT_STATE is not None
-            saved_w = fb._CHECKPOINT_STATE["eot_head.weight"]
+            saved_w = fb._CHECKPOINT_STATE["pred_thput_head.weight"]
             # _get_agent moves the model to _AGENT_DEVICE (mps/cuda on
             # local, cpu on CI); pull weights back to cpu for comparison.
             for size in (4, 6):
                 agent = fb._get_agent(size)
-                assert torch.equal(agent.eot_head.weight.cpu(), saved_w.cpu())
+                assert torch.equal(agent.pred_thput_head.weight.cpu(), saved_w.cpu())
         finally:
             path.unlink(missing_ok=True)
 
@@ -700,14 +699,14 @@ const stops = ${JSON.stringify(mode)} !== 'never_stops';
 requestFastPrediction = async () => ({
   x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
   item: 'empty', misc: 'NONE',
-  eot_prob: (stops && applied >= STOP_AFTER) ? 0.9 : 0.01,
+  predicted_thput: (stops && applied >= STOP_AFTER) ? 1.1 : 0.01,
 });
 applyCandidate = async () => { applied += 1; return applied < CAP; };
 modelLoaded = true;
 (async () => {
   if (${JSON.stringify(mode)} === 'tap') {
     prediction = { x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
-                   item: 'empty', misc: 'NONE', eot_prob: 0.9 };
+                   item: 'empty', misc: 'NONE', predicted_thput: 1.1 };
     beginApplyKey();
     await new Promise((r) => setTimeout(r, 250));
     endApplyKey();
@@ -716,7 +715,7 @@ modelLoaded = true;
     autoApplyGeneration = 7;
     await runAutoApply(7);
   }
-  return { applied, autoApplying, threshold: EOT_STOP_THRESHOLD };
+  return { applied, autoApplying, threshold: throughput_STOP_THRESHOLD };
 })();
 `;
 console.log(JSON.stringify(await eval(src + driver)));
@@ -724,9 +723,9 @@ console.log(JSON.stringify(await eval(src + driver)));
 
 
 @pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
-class TestHoldToApplyRespectsEot:
+class TestHoldToApplyRespectsThroughput:
     """Holding `a` is a rollout, so the model's stop head must end it — the UI
-    kept placing entities until the grid refused them, long past eot."""
+    kept placing entities until the grid refused them, long past pred_thput."""
 
     def _drive(self, tmp_path: Path, mode: str) -> dict:
         html = fb.render_index(default_size=11)
@@ -743,22 +742,22 @@ class TestHoldToApplyRespectsEot:
         assert proc.returncode == 0, f"node failed:\n{proc.stderr}"
         return json.loads(proc.stdout.strip().splitlines()[-1])
 
-    def test_loop_stops_on_the_step_eot_fires(self, tmp_path):
+    def test_loop_stops_on_the_step_pred_thput_fires(self, tmp_path):
         out = self._drive(tmp_path, "stops")
         assert out["applied"] == 3, (
             "the loop must apply exactly the placements the model offered "
-            "before it declared itself done"
+            "before its raw-throughput prediction reached the target"
         )
         assert out["autoApplying"] is False
 
-    def test_loop_keeps_building_while_eot_stays_low(self, tmp_path):
-        """The stop is the head firing, not the loop being timid: with eot
+    def test_loop_keeps_building_while_pred_thput_stays_low(self, tmp_path):
+        """The stop is the head firing, not the loop being timid: with pred_thput
         pinned low it runs until the grid stops accepting placements."""
         out = self._drive(tmp_path, "never_stops")
         assert out["applied"] == 50
 
     def test_holding_a_on_a_finished_factory_places_nothing(self, tmp_path):
-        """The visible prediction is already suppressed at eot > threshold, so
+        """The visible prediction is already suppressed at pred_thput > threshold, so
         the key that consumes it must not apply the hidden placement either."""
         out = self._drive(tmp_path, "tap")
         assert out["applied"] == 0
@@ -858,7 +857,7 @@ class TestBatchRollout:
         finally:
             path.unlink(missing_ok=True)
         result = next(e for e in events if e["type"] == "result")
-        assert result["stopped_by"] in ("eot", "max_steps")
+        assert result["stopped_by"] in ("target_thput", "max_steps")
         for grid in (result["grid"], result["solved_grid"]):
             assert len(grid) == 11 and all(len(row) == 11 for row in grid)
         assert any(
