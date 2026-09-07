@@ -595,8 +595,8 @@ class TestSelectHeadline:
             "val/MOVE_ONE_ITEM/acc",  # per-lesson acc stays in the long tail
             "val/acc",
             "val/tile_acc",
-            "val/eot_acc",
-            "val/eot_pos_recall",  # not an accuracy
+            "val/pred_thput_acc",
+            "val/pred_thput_pos_recall",  # not an accuracy
             "perf/train_seconds",
             "train/loss",
         ]
@@ -607,7 +607,6 @@ class TestSelectHeadline:
             "val/SOME_FUTURE_LESSON_9/thput",
             "val/SPLITTER_SPLIT/thput",
             "val/acc",
-            "val/eot_acc",
             "val/tile_acc",
             "perf/train_seconds",
         ]
@@ -619,7 +618,7 @@ class TestSelectHeadline:
             "rollout/reward",
             "rollout/length",
             "rollout/invalid_frac",
-            "rollout/eot_rate",  # not headline
+            "rollout/pred_thput_rate",  # not headline
             "rollout/MOVE_ONE_ITEM/thput",
             "rollout/SOME_FUTURE_LESSON_9/thput",  # lessons matched, not hardcoded
             "rollout/MOVE_ONE_ITEM/reward",  # per-lesson non-thput stays in the tail

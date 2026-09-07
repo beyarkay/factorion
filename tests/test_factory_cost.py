@@ -64,13 +64,11 @@ def test_entity_cost_charges_multitile_entity_once_and_sums_types():
         "direction": 0,
         "item": 0,
         "misc": 0,
-        "eot": 1,
     }
-    _, _, terminated, _, info = env.step(action)
+    entity_cost, _ = env._world_cost(entity_grid.numpy())
 
-    assert terminated
     assert _ENTITY_FOOTPRINT_AREAS[assembler.value] == 9
-    assert info["entity_cost"] == pytest.approx(33.25 + 2.0 + 7.75)
+    assert entity_cost == pytest.approx(33.25 + 2.0 + 7.75)
 
 
 def test_two_underground_belts_cost_more_than_four_transport_belts():

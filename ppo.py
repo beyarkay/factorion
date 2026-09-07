@@ -287,7 +287,7 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         eval_seeds_to_kind,
         device,
         max_seeds=len(eval_seeds_to_kind),
-        eot_threshold=0.5,
+        target_thput=args.rollout_target_thput,
         num_envs=args.eval_num_envs,
     )
     metrics = {"eval/thput": roll["overall"]}
@@ -321,20 +321,20 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
             if roll["per_kind_n"].get(kn, 0) > 0:
                 metrics[f"eval/{kn}/{name}"] = counts[j]
 
-    # EOT-head accuracy/recall from the same rollout. PPO has no expert-labelled
-    # val set, so this on-rollout score is the only per-lesson EOT-head signal it
-    # gets (mirrors SFT's val/{kind}/eot_acc + eot_pos_recall). Per-lesson
+    # throughput-head accuracy/recall from the same rollout. PPO has no expert-labelled
+    # val set, so this on-rollout score is the only per-lesson throughput-head signal it
+    # gets (mirrors SFT's val/{kind}/pred_thput_acc + pred_thput_pos_recall). Per-lesson
     # positive recall only surfaces once a lesson actually reaches a done state.
-    metrics["eval/eot_acc"] = roll["eot_acc"]
-    metrics["eval/eot_pos_recall"] = roll["eot_pos_recall"]
-    eot_step_n = roll["per_kind_eot_step_n"]
-    eot_pos_n = roll["per_kind_eot_pos_n"]
-    for kn, acc in roll["per_kind_eot_acc"].items():
-        if eot_step_n.get(kn, 0) > 0:
-            metrics[f"eval/{kn}/eot_acc"] = acc
-    for kn, rec in roll["per_kind_eot_pos_recall"].items():
-        if eot_pos_n.get(kn, 0) > 0:
-            metrics[f"eval/{kn}/eot_pos_recall"] = rec
+    metrics["eval/pred_thput_acc"] = roll["pred_thput_acc"]
+    metrics["eval/pred_thput_pos_recall"] = roll["pred_thput_pos_recall"]
+    pred_thput_step_n = roll["per_kind_pred_thput_step_n"]
+    pred_thput_pos_n = roll["per_kind_pred_thput_pos_n"]
+    for kn, acc in roll["per_kind_pred_thput_acc"].items():
+        if pred_thput_step_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/pred_thput_acc"] = acc
+    for kn, rec in roll["per_kind_pred_thput_pos_recall"].items():
+        if pred_thput_pos_n.get(kn, 0) > 0:
+            metrics[f"eval/{kn}/pred_thput_pos_recall"] = rec
     return metrics
 
 
@@ -345,7 +345,6 @@ def _rollout_episode_metrics(
     episode_len: float,
     thput_normed: float,
     thput_raw: float,
-    ended_by_eot: float,
     invalid_frac: float,
     num_entities: float,
     min_entities_required: float,
@@ -376,7 +375,6 @@ def _rollout_episode_metrics(
         f"{agg}thput_raw": float(thput_raw),
         f"{agg}reward": float(episode_return),
         f"{agg}length": float(episode_len),
-        f"{agg}eot_rate": float(ended_by_eot),
         f"{agg}invalid_frac": float(invalid_frac),
         f"{agg}num_entities": float(num_entities),
         f"{agg}entity_efficiency": float(min_entities_required) / float(num_entities),
@@ -687,7 +685,6 @@ class FactorioEnv(gym.Env):
             "direction": gym.spaces.Discrete(len(Direction)),
             "item": gym.spaces.Discrete(len(items)),
             "misc": gym.spaces.Discrete(len(Misc)),
-            "eot": gym.spaces.Discrete(2),
         })
         # Cache source/sink IDs (non-placeable prototypes)
         self._source_id = str2ent('stack_inserter').value
@@ -905,33 +902,25 @@ class FactorioEnv(gym.Env):
 
     def step(self, action):
         self.actions.append(None)
-        eot_declared = int(action.get("eot", 0)) == 1
         # Track only which invalid_reason fired (None = valid). The full 10-key
         # dict is built lazily at info time — it's logged-only and read just for
         # finished envs, so building it every step was wasted work.
-        if eot_declared:
-            action_is_invalid = False  # EOT carries no placement to validate.
-            invalid_reason_key = None
-        else:
-            (
-                action_is_invalid,
-                invalid_reason_key,
-                placed_action,
-            ) = apply_placement_action(
-                self._world_CWH,
-                action,
-                source_id=self._source_id,
-                sink_id=self._sink_id,
-            )
-            if placed_action is not None:
-                self.actions[-1] = placed_action
-                if placed_action["entity"] != "empty":
-                    self._num_placed_entities += 1
+        (
+            action_is_invalid,
+            invalid_reason_key,
+            placed_action,
+        ) = apply_placement_action(
+            self._world_CWH, action, source_id=self._source_id, sink_id=self._sink_id
+        )
+        if placed_action is not None:
+            self.actions[-1] = placed_action
+            if placed_action["entity"] != "empty":
+                self._num_placed_entities += 1
 
         self.invalid_actions += 1 if action_is_invalid else 0
 
-        terminated = eot_declared
-        truncated = (not terminated) and (self.steps > self.max_steps)
+        terminated = False
+        truncated = self.steps > self.max_steps
 
         # The dense reward pays the per-step score delta, so the throughput sim
         # (and the cheap numpy diagnostics that ride along) runs on every step.
@@ -991,7 +980,7 @@ class FactorioEnv(gym.Env):
         # units of the factory's reference rate — pre-existing protected flow
         # pays zero and damaging it pays negative (#339) — but credit lands on
         # the placement that caused it: improving an already-working build
-        # pays immediately instead of hinging on when the EOT fires.
+        # pays immediately instead of hinging on when the throughput fires.
         score = (
             thput_raw * cost_efficiency / self._max_throughput
             if self._max_throughput > 0
@@ -1310,8 +1299,8 @@ def _bernoulli_kl(z_B, zq_B):
     return F.softplus(zq_B) - F.softplus(z_B) + torch.sigmoid(z_B) * (z_B - zq_B)
 
 
-# The EOT head sets the episode horizon, which RL must stay free to move: the
-# penalty covers only the placement heads; EOT drift is logged, never penalized.
+# The throughput head sets the episode horizon, which RL must stay free to move: the
+# penalty covers only the placement heads; throughput drift is logged, never penalized.
 _KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
 
 
@@ -1502,13 +1491,13 @@ class AgentCNN(nn.Module):
             f"({len(layers)} layers {tuple(layers)}, kernel_size={kernel_size})"
         )
 
-        # Value and end-of-turn are grid-global questions, so both heads read
+        # Value and throughput are grid-global questions, so both heads read
         # the map mean-pooled over space: every cell shares one weight vector.
         self.critic_head = layer_init(nn.Linear(last_chan, 1), std=critic_head_std)
 
-        # Bias init at -2 so an untrained model defaults to "not finished"
-        # (sigmoid(-2) ≈ 0.12).
-        self.eot_head = layer_init(nn.Linear(last_chan, 1), std=1.0, bias_const=-2.0)
+        # Bias init at -2 so an untrained model predicts low raw throughput
+        # (softplus(-2) ≈ 0.13 items/second).
+        self.pred_thput_head = layer_init(nn.Linear(last_chan, 1), std=1.0, bias_const=-2.0)
 
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
@@ -1575,26 +1564,15 @@ class AgentCNN(nn.Module):
     def critic_value(self, encoded_BCWH):
         return self.critic_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
 
-    def eot_logit(self, encoded_BCWH):
-        return self.eot_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
+    def predict_throughput(self, encoded_BCWH):
+        """Predict raw items/second throughput of the current observed factory."""
+        return F.softplus(self.pred_thput_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1))
 
     def get_value(self, x_BCWH):
         return self.critic_value(self.encode(x_BCWH))
 
-    def eot_prob(self, x_BCWH):
-        """End-of-turn probability per observation, in [0, 1].
-
-        Kept off the `get_action_and_value` return tuple so the ~20 PPO /
-        test callsites unpacking that 4-tuple don't have to change. Use
-        this from inference rollouts to decide whether the agent thinks
-        the factory is finished.
-        """
-        return torch.sigmoid(self.eot_logit(self.encode(x_BCWH)))
-
-    def eot_should_stop(self, x_BCWH, threshold: float = 0.5):
-        """Boolean stop signal per observation. Threshold defaults to 0.5;
-        lower it if the model rambles, raise it if it stops short."""
-        return self.eot_prob(x_BCWH) > threshold
+    def get_predicted_throughput(self, x_BCWH):
+        return self.predict_throughput(self.encode(x_BCWH))
 
     def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
         """Apply the action grammar implied by the selected entity.
@@ -1633,19 +1611,20 @@ class AgentCNN(nn.Module):
         *,
         temperature: float = 1.0,
         legal_mask: bool = True,
-        eot_threshold: float = 0.5,
         action=None,
         compute_value: bool = True,
     ):
-        """The one sampler every consumer routes through. temperature=1 is the
-        stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
-        (eot fires at p>eot_threshold) for eval / mod server / builder UI.
+        """The one sampler every consumer routes through.
+
+        ``temperature=1`` samples placement actions for PPO; ``temperature=0``
+        greedily selects them. The throughput prediction is returned separately
+        and is never part of the action distribution.
         The tile pick is restricted to empty+buildable cells — training,
         eval and inference all act on this masked distribution;
         legal_mask=False exposes the raw tile head (builder diagnostics only).
         `action` replays a stored action to recompute its log-prob. Returns a dict of
-        action / logp / entropy / value (None if not compute_value) / eot_prob
-        / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
+        action / logp / entropy / value (None if not compute_value) /
+        predicted_thput / logp_heads."""
         # Encode input once and reuse for both action and value heads
         encoded_BCWH = self.encode(x_BCWH)  # (B, last_chan, W, H)
         value_B = self.critic_value(encoded_BCWH) if compute_value else None
@@ -1692,8 +1671,7 @@ class AgentCNN(nn.Module):
             dim=-1,
         )
 
-        eot_logit_B = self.eot_logit(encoded_BCWH)
-        p_eot_B = torch.sigmoid(eot_logit_B)
+        predicted_thput_B = self.predict_throughput(encoded_BCWH)
 
         if action is None:
             ent_B = _select_action(e_logp_all_BE, temperature)
@@ -1708,28 +1686,19 @@ class AgentCNN(nn.Module):
             dir_B = _select_action(d_logp_all_BD, temperature)
             item_B = _select_action(i_logp_all_BI, temperature)
             misc_B = _select_action(m_logp_all_BM, temperature)
-            eot_B = (
-                (p_eot_B > eot_threshold).float()
-                if temperature == 0.0
-                else torch.bernoulli(p_eot_B)
-            )
         else:
             dir_B = action[:, 3]
             item_B = action[:, 4]
             misc_B = action[:, 5]
-            eot_B = action[:, 6].float()
 
         # --- Log probs and entropy ---
-        # Bernoulli(logits) log-prob of eot_B is -BCE_with_logits; its entropy
-        # is the closed form -(p*log p + (1-p)*log(1-p)) (numerically equal to
-        # the Bernoulli object, verified in tests/test_spatial_agent.py).
+        # The throughput regression is not an action and contributes no log-probability.
         logp_B = (
             _categorical_logp(tile_logp_all_BN, tile_idx_B) +
             _categorical_logp(e_logp_all_BE, ent_B) +
             _categorical_logp(d_logp_all_BD, dir_B) +
             _categorical_logp(i_logp_all_BI, item_B) +
-            _categorical_logp(m_logp_all_BM, misc_B) +
-            -F.binary_cross_entropy_with_logits(eot_logit_B, eot_B, reduction="none")
+            _categorical_logp(m_logp_all_BM, misc_B)
         )
         # Per-head entropies, summed into the joint entropy used by PPO. Kept
         # individually so the rollout can log policy/entropy_{head} (which heads
@@ -1741,20 +1710,14 @@ class AgentCNN(nn.Module):
         ent_d = _categorical_entropy(d_logp_all_BD)
         ent_i = _categorical_entropy(i_logp_all_BI)
         ent_m = _categorical_entropy(m_logp_all_BM)
-        ent_eot = -(
-            p_eot_B * F.logsigmoid(eot_logit_B)
-            + (1.0 - p_eot_B) * F.logsigmoid(-eot_logit_B)
-        )
-        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m + ent_eot
+        entropy_B = ent_tile + ent_e + ent_d + ent_i + ent_m
         self._last_head_entropy = {
             "tile": ent_tile.mean().detach(),
             "entity": ent_e.mean().detach(),
             "direction": ent_d.mean().detach(),
             "item": ent_i.mean().detach(),
             "misc": ent_m.mean().detach(),
-            "eot": ent_eot.mean().detach(),
         }
-        self._last_eot_prob = p_eot_B.mean().detach()
 
         action_out = {
             "xy": torch.stack([x_B, y_B], dim=1),
@@ -1762,15 +1725,13 @@ class AgentCNN(nn.Module):
             "entity": ent_B,
             "item": item_B,
             "misc": misc_B,
-            "eot": eot_B,
         }
         return {
             "action": action_out,
             "logp": logp_B,
             "entropy": entropy_B,
             "value": value_B,
-            "eot_prob": p_eot_B,
-            "eot_logit": eot_logit_B,
+            "predicted_thput": predicted_thput_B,
             "logp_heads": {
                 "tile": tile_logp_all_BN,
                 "entity": e_logp_all_BE,
@@ -1954,7 +1915,7 @@ if __name__ == "__main__":
     agent.to(device)
 
     # Split params into critic (the value head) vs actor (encoder + every
-    # policy/eot head). Captured BEFORE torch.compile so the names are clean
+    # policy/pred_thput head). Captured BEFORE torch.compile so the names are clean
     # (compile prepends "_orig_mod."); the param tensors themselves are the
     # same objects the optimiser and compiled module share, so freezing one
     # list freezes the live params. The critic head is the only part SFT
@@ -2028,7 +1989,7 @@ if __name__ == "__main__":
     obs_shape = envs.single_observation_space.shape
     assert obs_shape is not None, "vector env must expose a concrete observation shape"
     obs_SECWH = torch.zeros((args.num_steps, args.num_envs) + obs_shape, dtype=torch.float32, device=device)
-    ACTION_SPACE_SHAPE = (7,)  # xy(2), entity, direction, item, misc, eot
+    ACTION_SPACE_SHAPE = (6,)  # xy(2), entity, direction, item, misc
     actions_SEA = torch.zeros((args.num_steps, args.num_envs) + ACTION_SPACE_SHAPE, dtype=torch.int64, device=device)
     logprobs_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
     rewards_SE = torch.zeros((args.num_steps, args.num_envs), dtype=torch.float32, device=device)
@@ -2124,8 +2085,7 @@ if __name__ == "__main__":
 
         # Per-iteration accumulators for the acting policy's distribution shape
         # (the policy/* metrics): summed over rollout steps, meaned at log time.
-        _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc", "eot"]}
-        _eot_prob_sum = 0.0
+        _head_ent_sum = {h: 0.0 for h in ["tile", "entity", "direction", "item", "misc"]}
         rollout_start = time.time()
 
         for step in range(0, args.num_steps):
@@ -2147,7 +2107,7 @@ if __name__ == "__main__":
                 with amp_ctx():
                     action_ED, logprobs_E, _entropy_E, value_E = rollout_act(next_obs_ECWH)
                 values_SE[step] = value_E
-                # Accumulate the acting policy's per-head entropy + eot prob
+                # Accumulate the acting policy's per-head entropy + pred_thput prob
                 # (stashed by get_action_and_value) for the policy/* metrics.
                 # Keep the running sums on-device (each `e` is a GPU scalar) so we
                 # do NOT force a CUDA sync per step — float()-ing them every step
@@ -2155,32 +2115,30 @@ if __name__ == "__main__":
                 # GPU and convert once at log time (these never feed the loss).
                 for h, e in agent._last_head_entropy.items():
                     _head_ent_sum[h] = _head_ent_sum[h] + e
-                _eot_prob_sum = _eot_prob_sum + agent._last_eot_prob
 
                 x_B, y_B = action_ED["xy"].unbind(dim=1)
                 ent_B = action_ED["entity"]
                 dir_B = action_ED["direction"]
                 item_B = action_ED["item"]
                 misc_B = action_ED["misc"]
-                eot_B = action_ED["eot"].long()  # Bernoulli 0/1, stored as int
 
                 # Combine the actions together such that the environments are
                 # grouped first and then each component of the action
-                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1)
+                action_EA = torch.stack([x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1)
 
             actions_SEA[step] = action_EA
             logprobs_SE[step] = logprobs_E
 
-            # eot ("declare done") is part of the env action now: the env
-            # terminates on it, so RecordEpisodeStatistics counts eot-ended
+            # pred_thput ("declare done") is part of the env action now: the env
+            # terminates on it, so RecordEpisodeStatistics counts pred_thput-ended
             # episodes and next_done picks them up via `terminations`.
             #
             # Move the whole action to host in ONE device->host copy via the
             # already-stacked action_EA (B, 7) instead of six separate
             # `.cpu().numpy()` calls (each forces its own CUDA sync). Then slice
             # the columns on the host. Values are identical to the per-head dict;
-            # eot becomes int64 here (it was a Bernoulli float) but the env reads
-            # it as `int(action["eot"])`, so the env sees the same value.
+            # pred_thput becomes int64 here (it was a Bernoulli float) but the env reads
+            # it as `int(action["pred_thput"])`, so the env sees the same value.
             action_EA_np = action_EA.cpu().numpy()  # (B, 7), single transfer
             action_ED_numpy = {
                 "xy": action_EA_np[:, 0:2],
@@ -2188,7 +2146,6 @@ if __name__ == "__main__":
                 "direction": action_EA_np[:, 3],
                 "item": action_EA_np[:, 4],
                 "misc": action_EA_np[:, 5],
-                "eot": action_EA_np[:, 6],
             }
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs_ECWH, reward, terminations, truncations, infos = envs.step(action_ED_numpy)
@@ -2222,9 +2179,8 @@ if __name__ == "__main__":
                     episode_len = infos["episode"]["l"][i]
                     end_of_episode_thput = infos["thput_normed"][i]
                     end_of_episode_thput_raw = infos["thput_raw"][i]
-                    # eot_rate: ended by the EOT action (termination) vs hitting
+                    # pred_thput_rate: ended by the throughput action (termination) vs hitting
                     # max_steps (truncation).
-                    ended_by_eot = 1.0 if bool(terminations[i]) else 0.0
                     kind = LessonKind(int(infos["kind"][i]))
                     lesson = kind.name
                     is_trial = LESSON_IS_TRIAL[kind]
@@ -2240,7 +2196,6 @@ if __name__ == "__main__":
                         episode_len=episode_len,
                         thput_normed=end_of_episode_thput,
                         thput_raw=end_of_episode_thput_raw,
-                        ended_by_eot=ended_by_eot,
                         invalid_frac=infos['frac_invalid_actions'][i],
                         num_entities=infos['num_entities'][i],
                         min_entities_required=infos['min_entities_required'][i],
@@ -2303,7 +2258,7 @@ if __name__ == "__main__":
                         o = ref_agent.sample_action(
                             obs_B[sl], action=actions_B[sl], compute_value=False
                         )
-                    chunks.append({**o["logp_heads"], "eot_logit": o["eot_logit"]})
+                    chunks.append(o["logp_heads"])
                 ref_heads = {k: torch.cat([c[k] for c in chunks]) for k in chunks[0]}
 
         idxs_B = np.arange(args.batch_size)
@@ -2382,9 +2337,6 @@ if __name__ == "__main__":
                             h: _categorical_kl(out_mB["logp_heads"][h], ref_heads[h][idxs])
                             for h in _KL_REF_PENALIZED_HEADS
                         }
-                        kl_head_B["eot"] = _bernoulli_kl(
-                            out_mB["eot_logit"], ref_heads["eot_logit"][idxs]
-                        )
                         kl_ref_means = {
                             h: _masked_mean(kl_B, valid_mB) for h, kl_B in kl_head_B.items()
                         }
@@ -2458,7 +2410,6 @@ if __name__ == "__main__":
             # policy/* describe the ACTING policy's distribution (meaned over the
             # rollout steps), the RL analog of SFT's per-head metrics.
             "policy/entropy": float(sum(_head_ent_sum.values())) / n_steps,
-            "policy/eot_prob": float(_eot_prob_sum) / n_steps,
             "optim/lr": optimizer.param_groups[0]["lr"],
             "optim/critic_lr": optimizer.param_groups[1]["lr"],
             "optim/ent_coef": ent_coef,
@@ -2473,7 +2424,7 @@ if __name__ == "__main__":
             iter_metrics[f"policy/entropy_{h}"] = float(s) / n_steps
         if ref_agent is not None:
             # Last-minibatch values, like losses/approx_kl. kl_to_ref is the
-            # penalized (placement-head) sum; eot drift stays on its own key.
+            # penalized (placement-head) sum; pred_thput drift stays on its own key.
             iter_metrics["policy/kl_to_ref"] = kl_ref.item()
             for h, kl in kl_ref_means.items():
                 iter_metrics[f"policy/kl_to_ref_{h}"] = kl.item()

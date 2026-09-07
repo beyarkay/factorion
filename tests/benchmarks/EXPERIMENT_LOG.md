@@ -343,7 +343,7 @@ Newest first. One entry per branch.
   the policy improves — invisible to the short-episode benchmark.
 
 ### speedup/defer-entropy-syncs — accumulate policy/* entropy on-GPU
-- **Hypothesis**: the rollout accumulated the per-head entropy + eot-prob for the
+- **Hypothesis**: the rollout accumulated the per-head entropy + pred_thput-prob for the
   `policy/*` logs via `float(e)` every step — 7 device→host CUDA syncs/step ×
   256 steps, purely for logging (these never feed the loss). Sum the GPU scalars
   on-device and convert to float once at log time → 8 syncs/iter, not 1792.
@@ -367,8 +367,8 @@ Newest first. One entry per branch.
   separate `.cpu()` calls, each forcing its own CUDA sync (~6 syncs/step × 256
   steps). The rollout already builds the stacked `action_EA` (B, 7) on GPU; copy
   *that* once and slice the columns on the host → 1 sync/step instead of 6.
-  Action values handed to the env are identical (eot goes float→int64 but the env
-  reads `int(action["eot"])`), so the signature must MATCH.
+  Action values handed to the env are identical (pred_thput goes float→int64 but the env
+  reads `int(action["pred_thput"])`), so the signature must MATCH.
 - **Change**: replace the six-way dict-comprehension transfer with a single
   `action_EA.cpu().numpy()` + column slicing into the same 6-key dict.
 - **Result**: **29.107 s ± 0.079 s** vs 29.09 → **flat**. Signature **MATCHED ✓**.
