@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ppo import (  # noqa: E402
     AgentCNN, PpoArgs, FactorioEnv, make_env, layer_init, _WARMUP_KL_TOL,
-    _KL_REF_PENALIZED_HEADS, _bernoulli_kl, _categorical_kl,
+    _KL_REF_PENALIZED_HEADS, _categorical_kl,
 )
 from helpers import Channel  # noqa: E402
 from factorion import LessonKind  # noqa: E402
@@ -87,63 +87,32 @@ class TestFullBlankDefault:
         assert env.unwrapped.max_steps == 49
 
 
-class TestEotAction:
-    def test_eot_is_part_of_the_action(self, agent):
+class TestThroughputHead:
+    def test_prediction_is_not_an_action(self, agent):
+        """The throughput head is a regression read off the same forward, not a
+        sampled action: it never enters the action dict or the log-prob."""
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
-        action, logp, entropy, value = agent.get_action_and_value(obs)
-        assert "eot" in action
-        assert action["eot"].shape == (4,)
-        assert set(action["eot"].unique().tolist()) <= {0.0, 1.0}
-        # eot's log-prob/entropy fold into the joint action distribution.
-        assert logp.shape == (4,)
-        assert entropy.shape == (4,)
+        out = agent.sample_action(obs)
+        assert set(out["action"]) == {"xy", "entity", "direction", "item", "misc"}
+        assert out["predicted_thput"].shape == (4,)
+        assert ((out["predicted_thput"] >= 0) & (out["predicted_thput"] <= 1)).all()
+        torch.testing.assert_close(out["predicted_thput"], agent.predicted_thput(obs))
 
-    def test_eot_logprob_roundtrips(self, agent):
-        """Recomputing log-prob from a stored 7-dim action (incl. eot at
-        index 6) must match the sampled log-prob, so PPO's importance ratio
-        is well-defined and the eot head actually gets trained."""
-        torch.manual_seed(0)
-        obs = torch.randn(3, NUM_CHANNELS, 5, 5)
-        action, logp, _, _ = agent.get_action_and_value(obs)
-        x_B, y_B = action["xy"].unbind(dim=1)
-        action_BA = torch.stack(
-            [
-                x_B, y_B,
-                action["entity"], action["direction"],
-                action["item"], action["misc"],
-                action["eot"].long(),
-            ],
-            dim=1,
-        )
-        assert action_BA.shape == (3, 7)
-        _, logp_recomputed, _, _ = agent.get_action_and_value(obs, action_BA)
-        torch.testing.assert_close(logp, logp_recomputed)
+    def test_untrained_head_predicts_low(self, agent):
+        """The bias init keeps a fresh head well under any sane target, so an
+        untrained policy never stops a rollout on its first state."""
+        obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
+        assert (agent.predicted_thput(obs) < 0.5).all()
 
 
-class TestEotTerminationAndMetrics:
-    def _action(self, eot):
-        return {
-            "xy": np.array([0, 0]),
-            "entity": 0, "direction": 0, "item": 0, "misc": 0,
-            "eot": int(eot),
-        }
-
-    def test_eot_terminates_and_records_episode(self, registered_env):
-        """eot=1 must terminate via the env so the RecordEpisodeStatistics
-        wrapper (added by make_env) emits "episode" — i.e. eot-ended episodes
-        are NOT missing from the metric averages."""
-        env = make_env(ENV_ID, 0, False, 5, "t")()
-        env.reset(seed=1, options={"num_missing_entities": 99})
-        _, _, terminated, truncated, info = env.step(self._action(eot=1))
-        assert terminated and not truncated
-        assert "episode" in info, "eot-terminated episode must emit RecordEpisodeStatistics info"
-
-    def test_no_eot_keeps_running(self, registered_env):
-        """Without eot (and far from solved), the episode keeps going — no
+class TestEpisodeEnd:
+    def test_only_truncation_ends_an_episode(self, registered_env):
+        """Far from solved, the episode keeps going until max_steps — no
         spurious termination, no episode stats yet."""
         env = make_env(ENV_ID, 0, False, 5, "t")()
         env.reset(seed=1, options={"num_missing_entities": 99})
-        _, _, terminated, truncated, info = env.step(self._action(eot=0))
+        action = {"xy": np.array([0, 0]), "entity": 0, "direction": 0, "item": 0, "misc": 0}
+        _, _, terminated, truncated, info = env.step(action)
         assert not terminated and not truncated
         assert "episode" not in info
 
@@ -165,12 +134,12 @@ class TestCriticWarmupParamSplit:
         assert len(critic_params) > 0 and len(actor_params) > 0
 
     def test_encoder_and_policy_heads_are_actor(self, agent):
-        """The shared encoder and every policy/eot head count as the actor;
+        """The shared encoder and every policy/throughput head count as the actor;
         only the value head is the critic. Freezing the encoder too is what
         keeps the policy genuinely fixed during warm-up."""
         actor_params, _ = self._split(agent)
         actor_ids = {id(p) for p in actor_params}
-        for module in (agent.encoder, agent.eot_head, agent.tile_logits,
+        for module in (agent.encoder, agent.thput_head, agent.tile_logits,
                        agent.ent_head, agent.dir_head):
             assert all(id(p) in actor_ids for p in module.parameters())
 
@@ -248,11 +217,10 @@ def _finetune_agent(envs):
 
 
 def _pack_action(action):
-    """The rollout's storage layout: [x, y, entity, direction, item, misc, eot]."""
+    """The rollout's storage layout: [x, y, entity, direction, item, misc]."""
     x_B, y_B = action["xy"].unbind(dim=1)
     return torch.stack([x_B, y_B, action["entity"], action["direction"],
-                        action["item"], action["misc"],
-                        action["eot"].long()], dim=1)
+                        action["item"], action["misc"]], dim=1)
 
 
 def _test_envs(registered_env, num_envs=2, size=5):
@@ -276,10 +244,10 @@ def forward_probe(registered_env):
     agent.train()
     _, logp_1, _, value_1 = agent.get_action_and_value(obs, stored)
     _, logp_2, _, value_2 = agent.get_action_and_value(obs, stored)
-    eot_train = agent.eot_prob(obs)
+    thput_train = agent.predicted_thput(obs)
     agent.eval()
     _, logp_eval, _, value_eval = agent.get_action_and_value(obs, stored)
-    eot_eval = agent.eot_prob(obs)
+    thput_eval = agent.predicted_thput(obs)
     agent.train()
 
     envs.close()
@@ -288,7 +256,7 @@ def forward_probe(registered_env):
         "logp_sampled": logp_sampled, "logp_1": logp_1, "logp_2": logp_2,
         "value_1": value_1, "value_2": value_2,
         "logp_eval": logp_eval, "value_eval": value_eval,
-        "eot_train": eot_train, "eot_eval": eot_eval,
+        "thput_train": thput_train, "thput_eval": thput_eval,
     }
 
 
@@ -336,7 +304,7 @@ class TestDeterministicPolicyForward:
         """
         torch.testing.assert_close(forward_probe["logp_1"], forward_probe["logp_eval"])
         torch.testing.assert_close(forward_probe["value_1"], forward_probe["value_eval"])
-        torch.testing.assert_close(forward_probe["eot_train"], forward_probe["eot_eval"])
+        torch.testing.assert_close(forward_probe["thput_train"], forward_probe["thput_eval"])
 
 
 @pytest.fixture(scope="module")
@@ -360,7 +328,7 @@ def warmup_iteration(registered_env):
     optimizer = torch.optim.Adam(agent.critic_head.parameters(), lr=1e-3)
 
     obs_buf = torch.zeros((num_steps, num_envs, NUM_CHANNELS, size, size))
-    act_buf = torch.zeros((num_steps, num_envs, 7), dtype=torch.int64)
+    act_buf = torch.zeros((num_steps, num_envs, 6), dtype=torch.int64)
     logp_buf = torch.zeros((num_steps, num_envs))
     returns_buf = torch.zeros((num_steps, num_envs))
 
@@ -378,13 +346,13 @@ def warmup_iteration(registered_env):
         next_obs, reward, _term, _trunc, _info = envs.step({
             "xy": act_np[:, 0:2], "entity": act_np[:, 2],
             "direction": act_np[:, 3], "item": act_np[:, 4],
-            "misc": act_np[:, 5], "eot": act_np[:, 6],
+            "misc": act_np[:, 5],
         })
         next_obs = torch.as_tensor(next_obs, dtype=torch.float32)
         returns_buf[step] = torch.as_tensor(reward, dtype=torch.float32)
 
     obs_B = obs_buf.reshape(-1, NUM_CHANNELS, size, size)
-    act_B = act_buf.reshape(-1, 7)
+    act_B = act_buf.reshape(-1, 6)
     logp_B = logp_buf.reshape(-1)
     returns_B = returns_buf.reshape(-1)
 
@@ -480,15 +448,12 @@ class TestTrainingLegalMask:
 def _flat_heads(agent, obs, stored):
     """The per-head distributions the KL block consumes, replayed at the
     stored actions — the exact tensors the PPO loop hands it."""
-    out = agent.sample_action(obs, action=stored, compute_value=False)
-    return {**out["logp_heads"], "eot_logit": out["eot_logit"]}
+    return agent.sample_action(obs, action=stored, compute_value=False)["logp_heads"]
 
 
 def _kl_heads(cur, ref):
     """The PPO loop's per-head KL block, replicated for the tests."""
-    kls = {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
-    kls["eot"] = _bernoulli_kl(cur["eot_logit"], ref["eot_logit"])
-    return kls
+    return {h: _categorical_kl(cur[h], ref[h]) for h in _KL_REF_PENALIZED_HEADS}
 
 
 class TestKlToRef:
@@ -512,16 +477,6 @@ class TestKlToRef:
         torch.testing.assert_close(_categorical_kl(logp, logq), expected)
         assert (_categorical_kl(logp, logp) == 0).all()
 
-    def test_bernoulli_kl_matches_torch_distributions(self):
-        torch.manual_seed(0)
-        z, zq = torch.randn(2, 32, dtype=torch.float64) * 4
-        expected = torch.distributions.kl_divergence(
-            torch.distributions.Bernoulli(logits=z),
-            torch.distributions.Bernoulli(logits=zq),
-        )
-        torch.testing.assert_close(_bernoulli_kl(z, zq), expected)
-        assert (_bernoulli_kl(z, z) == 0).all()
-
     @pytest.fixture()
     def replay(self, agent):
         """A real partially-occupied obs (so the tile head carries -inf mask
@@ -539,7 +494,7 @@ class TestKlToRef:
         metric must report at the start of a --start-from run."""
         agent, ref, obs, stored = replay
         kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
-        assert set(kls) == set(_KL_REF_PENALIZED_HEADS) | {"eot"}
+        assert set(kls) == set(_KL_REF_PENALIZED_HEADS)
         for h, kl_B in kls.items():
             assert torch.isfinite(kl_B).all(), f"{h} KL not finite"
             torch.testing.assert_close(kl_B, torch.zeros_like(kl_B))
@@ -552,7 +507,7 @@ class TestKlToRef:
             ref.ent_head.weight.add_(torch.randn_like(ref.ent_head.weight) * 0.1)
         kls = _kl_heads(_flat_heads(agent, obs, stored), _flat_heads(ref, obs, stored))
         assert kls["entity"].sum() > 0
-        for h in ("tile", "direction", "item", "misc", "eot"):
+        for h in ("tile", "direction", "item", "misc"):
             torch.testing.assert_close(kls[h], torch.zeros_like(kls[h]))
 
     def test_penalty_gradient_reaches_the_policy(self, replay):

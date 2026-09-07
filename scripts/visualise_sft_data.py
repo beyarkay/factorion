@@ -107,7 +107,7 @@ def main(args: VizArgs) -> None:
             samples_so_far += 1
             continue
 
-        pairs = extract_expert_actions(solved, task)
+        pairs = extract_expert_actions(solved, task, factory.max_throughput)
         n_pairs = len(pairs)
         for pair_idx, (obs, tile_idx, entity_id, direction_id, _) in enumerate(pairs):
             x, y = tile_idx // args.size, tile_idx % args.size
@@ -125,7 +125,7 @@ def main(args: VizArgs) -> None:
             # pair index within that lesson. Reproduce in a REPL with
             #   solved, _ = generate_lesson(size=N, kind=KIND, num_missing_entities=0, seed=SEED)
             #   task,   _ = generate_lesson(size=N, kind=KIND, num_missing_entities=L, seed=SEED)
-            #   pair = extract_expert_actions(solved, task)[PAIR_IDX]
+            #   pair = extract_expert_actions(solved, task, factory.max_throughput)[PAIR_IDX]
             sections.append(
                 f"""
                 <div class="card">

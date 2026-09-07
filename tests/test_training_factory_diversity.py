@@ -64,7 +64,7 @@ class TestPPOFactoryDiversity:
 
     def test_sync_vector_env_does_not_replay_factories(self):
         # The real training path: SyncVectorEnv + NEXT_STEP autoreset. Drive
-        # several eot-terminated episodes and assert every env, every episode,
+        # several episodes to truncation and assert every env, every episode,
         # builds a never-before-seen factory.
         gym.register(id=ENV_ID, entry_point="ppo:FactorioEnv")
         n = 4
@@ -75,22 +75,24 @@ class TestPPOFactoryDiversity:
             fe = cast(FactorioEnv, sub.unwrapped)
             fe._train_seed = 5000 + i
             fe._num_envs = n
+            fe.max_steps = 1  # truncates on the third step
         envs.reset(seed=5000, options={"num_missing_entities": float("inf")})
 
-        def eot_action():
+        def noop_action():
             return {
                 "xy": np.zeros((n, 2), dtype=np.int64),
                 "entity": np.zeros(n, dtype=np.int64),
                 "direction": np.zeros(n, dtype=np.int64),
                 "item": np.zeros(n, dtype=np.int64),
                 "misc": np.zeros(n, dtype=np.int64),
-                "eot": np.ones(n, dtype=np.int64),
             }
 
         seen = [cast(FactorioEnv, e.unwrapped)._seed for e in envs.envs]
         for _ in range(6):
-            envs.step(eot_action())  # eot -> terminate
-            envs.step(eot_action())  # next step -> NEXT_STEP autoreset fires
+            envs.step(noop_action())
+            envs.step(noop_action())
+            envs.step(noop_action())  # max_steps -> truncate
+            envs.step(noop_action())  # next step -> NEXT_STEP autoreset fires
             seen.extend(cast(FactorioEnv, e.unwrapped)._seed for e in envs.envs)
 
         # 4 envs x (1 + 6) episodes = 28 factory draws, all distinct seeds.

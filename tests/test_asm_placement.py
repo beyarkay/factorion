@@ -78,7 +78,6 @@ def _place_asm(env, x, y, direction=Direction.NONE.value, item=RECIPE):
         "direction": direction,
         "item": item,
         "misc": 0,
-        "eot": 0,
     }
     return env.step(action)
 
@@ -228,7 +227,6 @@ class TestAsmPlacementValidity:
             "direction": Direction.NONE.value,
             "item": EMPTY,
             "misc": 0,
-            "eot": 0,
         }
         _, _, _, _, info = env.step(action)
         assert not any(info["invalid_reason"].values())

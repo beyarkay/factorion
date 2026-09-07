@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from factorion import Channel, Misc, entities, items, str2ent  # noqa: E402
 from ppo import AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
+from training_config import SharedArgs  # noqa: E402
 
 import factorion_rs  # noqa: E402
 
@@ -309,10 +310,11 @@ def run_inference(
     req: dict,
     max_steps: int,
     device,
-    eot_threshold: float = 0.5,
+    target_thput: float = SharedArgs.rollout_target_thput,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until eot_head signals "done", the model
+    """Iteratively place entities until the model predicts the factory has
+    reached `target_thput` (a fraction of its reference throughput), the model
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
 
@@ -322,13 +324,13 @@ def run_inference(
     }
 
     for step in range(max_steps):
-        # Ask the model first: do you think we're done?
+        # Ask the model first: how good is the factory already?
         with torch.no_grad():
             x = torch.from_numpy(obs).unsqueeze(0).to(device)
-            eot_p = float(agent.eot_prob(x).item())
-        if eot_p > eot_threshold:
-            log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
-            stats["stop_reason"] = "eot"
+            thput_p = float(agent.predicted_thput(x).item())
+        if thput_p >= target_thput:
+            log.info("  step %d: predicted thput=%.3f >= %.2f → STOP", step, thput_p, target_thput)
+            stats["stop_reason"] = "target"
             stats["steps_taken"] = step
             break
         action = _argmax_action(agent, obs, device)
@@ -337,8 +339,8 @@ def run_inference(
         item_id = action["item"]
         item_name = items[item_id].name if item_id in items else "?"
         log.info(
-            "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
-            step, eot_p, ent_name, ent_id,
+            "  step %d: thput=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
+            step, thput_p, ent_name, ent_id,
             action["xy"][0], action["xy"][1],
             action["direction"], item_name, item_id, action["misc"],
         )
@@ -353,7 +355,7 @@ def run_inference(
             stats["stop_reason"] = "placement_error"
             break
     else:
-        log.info("Reached max_steps=%d without eot/empty.", max_steps)
+        log.info("Reached max_steps=%d without reaching the target/empty.", max_steps)
 
     return obs, stats
 

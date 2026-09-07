@@ -1,4 +1,4 @@
-"""Tests for early termination when the agent solves the puzzle."""
+"""Tests for how episodes end and what the last step pays."""
 
 import os
 import sys
@@ -12,7 +12,7 @@ os.environ["WANDB_DISABLED"] = "true"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from factorion import Channel, Direction, LessonKind, str2ent  # noqa: E402
+from factorion import Channel, Direction, Footprint, LessonKind, str2ent  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
@@ -32,10 +32,16 @@ def _expected_total(env, info):
     )
 
 
-def _noop_action():
-    """Return a no-op action (place empty entity at 0,0)."""
+def _noop_action(env):
+    """A no-op action: place `empty` on a buildable tile that is already empty."""
+    world = env._world_CWH.numpy()
+    x, y = next(
+        (int(x), int(y))
+        for x, y in np.argwhere(world[Channel.ENTITIES.value] == 0)
+        if world[Channel.FOOTPRINT.value, x, y] == Footprint.AVAILABLE.value
+    )
     return {
-        "xy": np.array([0, 0]),
+        "xy": np.array([x, y]),
         "entity": 0,      # empty
         "direction": 0,    # NONE
         "item": 0,         # empty
@@ -43,23 +49,22 @@ def _noop_action():
     }
 
 
-class TestEarlyTermination:
-    """Episodes terminate only when the agent declares eot, and truncate at
-    max_steps. A full-throughput solve does NOT auto-terminate — otherwise the
-    eot head would never learn to fire on a finished factory."""
+class TestEpisodeEnd:
+    """Episodes only truncate at max_steps: the agent has no "done" action, and
+    a full-throughput solve does NOT auto-terminate — where a greedy rollout
+    stops is the throughput head's call, not the env's."""
 
     def test_solve_does_not_auto_terminate(self):
-        """With num_missing_entities=0 the factory is already solved, but
-        without an eot the episode keeps running — the agent must declare done.
-        """
+        """With num_missing_entities=0 the factory is already solved, but the
+        episode keeps running."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        _, _, terminated, truncated, info = env.step(_noop_action())
+        _, _, terminated, truncated, info = env.step(_noop_action(env))
 
         # A fully-solved factory reaches its per-factory max → normed == 1.0
-        # (regardless of absolute belt speed), but with no eot declared the
-        # episode must NOT auto-terminate.
+        # (regardless of absolute belt speed), but the episode must NOT
+        # auto-terminate.
         assert info["thput_normed"] >= 1.0
         assert terminated is False, "a solve must NOT auto-terminate"
         assert truncated is False
@@ -78,31 +83,22 @@ class TestEarlyTermination:
         truncated = False
         step_count = 0
         while not terminated and not truncated:
-            _, _, terminated, truncated, info = env.step(_noop_action())
+            _, _, terminated, truncated, info = env.step(_noop_action(env))
             step_count += 1
 
         assert truncated is True, f"Expected truncated=True, got {truncated}"
         assert terminated is False, f"Expected terminated=False, got {terminated}"
         assert info["thput_normed"] < 1.0
 
-    def test_terminated_and_truncated_are_mutually_exclusive(self):
-        """terminated and truncated should never both be True."""
+    def test_never_terminates_only_truncates(self):
         env = _make_env(size=5, max_steps=10)
-
-        # Case 1: agent declares eot (terminated=True)
-        env.reset(seed=42, options={"num_missing_entities": 0})
-        action = _noop_action()
-        action["eot"] = 1
-        _, _, terminated, truncated, _ = env.step(action)
-        assert terminated and not truncated
-
-        # Case 2: unsolved factory (truncated=True)
         env.reset(seed=42, options={"num_missing_entities": 99})
         for _ in range(20):  # more than max_steps
-            _, _, terminated, truncated, _ = env.step(_noop_action())
-            assert not (terminated and truncated), "terminated and truncated are both True"
-            if terminated or truncated:
+            _, _, terminated, truncated, _ = env.step(_noop_action(env))
+            assert not terminated
+            if truncated:
                 break
+        assert truncated
 
 
 class TestReward:
@@ -110,17 +106,14 @@ class TestReward:
     max_throughput: the agent is paid only for improving on the world it was
     handed, in units of the factory's reference rate."""
 
-    def test_eot_without_improvement_pays_zero(self):
+    def test_no_improvement_pays_zero(self):
         """A factory already solved at reset earns nothing: the baseline
-        absorbs its whole score, so eot-without-acting pays exactly zero."""
+        absorbs its whole score, so a no-op pays exactly zero."""
         env = _make_env(size=5, max_steps=10)
         env.reset(seed=42, options={"num_missing_entities": 0})
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
+        _, reward, _, _, info = env.step(_noop_action(env))
 
-        assert terminated is True
         assert info["thput_normed"] >= 1.0
         assert reward == 0.0
 
@@ -128,7 +121,7 @@ class TestReward:
         env = _make_env(size=5, max_steps=20)
         env.reset(seed=42, options={"num_missing_entities": 99})
 
-        _, reward, terminated, truncated, _ = env.step(_noop_action())
+        _, reward, terminated, truncated, _ = env.step(_noop_action(env))
 
         assert not terminated and not truncated
         assert reward == 0
@@ -140,29 +133,12 @@ class TestReward:
         env.reset(seed=42, options={"num_missing_entities": 99})
 
         for _ in range(max_steps + 2):
-            _, reward, terminated, truncated, info = env.step(_noop_action())
+            _, reward, terminated, truncated, info = env.step(_noop_action(env))
             if truncated:
                 break
 
         assert truncated is True
         assert terminated is False
-        assert reward == pytest.approx(_expected_total(env, info))
-
-    def test_eot_action_terminates_episode(self):
-        """A non-solved factory ends immediately when the agent declares eot=1,
-        and pays the terminal throughput reward."""
-        env = _make_env(size=5, max_steps=50)
-        env.reset(seed=42, options={"num_missing_entities": 99})
-
-        action = _noop_action()
-        action["entity"] = env._source_id  # ignored because EOT is not a placement
-        action["eot"] = 1
-        _, reward, terminated, truncated, info = env.step(action)
-
-        assert terminated is True, "eot=1 should terminate the episode"
-        assert truncated is False
-        assert info["frac_invalid_actions"] == 0
-        assert info["thput_normed"] < 1.0  # ended early, not a full solve
         assert reward == pytest.approx(_expected_total(env, info))
 
     def test_junk_placement_on_unimproved_factory_pays_negative(self):
@@ -192,11 +168,8 @@ class TestReward:
         entity_grid[x, y] = str2ent("transport_belt").value
         env._world_CWH[Channel.DIRECTION.value, x, y] = Direction.NORTH.value
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
+        _, reward, _, _, info = env.step(_noop_action(env))
 
-        assert terminated is True
         assert info["thput_normed"] >= 1.0
         assert reward == pytest.approx(_expected_total(env, info))
         assert reward < 0
@@ -230,11 +203,8 @@ class TestReward:
         entity_grid[x, y] = str2ent("transport_belt").value
         env._world_CWH[Channel.DIRECTION.value, x, y] = Direction.NORTH.value
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
+        _, reward, _, _, info = env.step(_noop_action(env))
 
-        assert terminated is True
         assert info["thput_raw"] == 0
         assert info["entity_cost"] == pytest.approx(2.0)
         assert reward == 0
@@ -255,9 +225,7 @@ class TestRewardScaleNormalization:
             except RuntimeError:
                 continue
         env._world_CWH.copy_(env._solved_world_CWH)
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, _, _, info = env.step(action)
+        _, reward, _, _, info = env.step(_noop_action(env))
         return reward, info["thput_raw"]
 
     def test_belt_and_assembler_solves_pay_the_same(self):
@@ -275,8 +243,8 @@ class TestRewardScaleNormalization:
 
 class TestMarginalRewardBaseline:
     """CROSS_UNDER_BELT's protected obstruction line delivers before the agent
-    acts. The reward must not pay for that pre-existing flow (instant EOT would
-    bank it) and must charge for destroying it."""
+    acts. The reward must not pay for that pre-existing flow (a no-op step
+    would bank it) and must charge for destroying it."""
 
     def _reset_cross(self, env):
         for seed in range(20):
@@ -292,11 +260,8 @@ class TestMarginalRewardBaseline:
         env = _make_env(size=11, max_steps=10)
         self._reset_cross(env)
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, reward, terminated, _, info = env.step(action)
+        _, reward, _, _, info = env.step(_noop_action(env))
 
-        assert terminated is True
         assert info["thput_raw"] > 0, "the protected line should deliver"
         assert reward == 0.0
 
@@ -306,37 +271,21 @@ class TestMarginalRewardBaseline:
 
         ent = env._world_CWH[Channel.ENTITIES.value].numpy()
         xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
-        action = _noop_action()
+        action = _noop_action(env)
         action["xy"] = np.array([int(xs[0]), int(ys[0])])
         _, destroy_reward, terminated, truncated, _ = env.step(action)
         assert not terminated and not truncated
         assert destroy_reward < 0, "destroying flow must pay negative on that step"
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, eot_reward, terminated, _, info = env.step(action)
+        _, noop_reward, _, _, info = env.step(_noop_action(env))
 
-        assert terminated is True
         assert info["thput_raw"] < env._reward_baseline
-        assert eot_reward == pytest.approx(0.0), "the EOT step changed nothing"
-        assert destroy_reward + eot_reward == pytest.approx(_expected_total(env, info))
+        assert noop_reward == pytest.approx(0.0), "the no-op step changed nothing"
+        assert destroy_reward + noop_reward == pytest.approx(_expected_total(env, info))
 
 
 class TestStepsTaken:
     """Test that steps_taken is correct in the info dict."""
-
-    def test_steps_taken_on_termination(self):
-        """steps_taken should be 0 when the agent declares eot on the first step."""
-        env = _make_env(size=5, max_steps=10)
-        env.reset(seed=42, options={"num_missing_entities": 0})
-
-        action = _noop_action()
-        action["eot"] = 1
-        _, _, terminated, _, info = env.step(action)
-
-        assert terminated is True
-        assert "steps_taken" in info, "steps_taken missing from info on termination"
-        assert info["steps_taken"] == 0, f"Expected steps_taken=0, got {info['steps_taken']}"
 
     def test_steps_taken_on_truncation(self):
         """steps_taken should equal the step count at truncation."""
@@ -345,7 +294,7 @@ class TestStepsTaken:
         env.reset(seed=42, options={"num_missing_entities": 99})
 
         for _ in range(max_steps + 2):
-            _, _, terminated, truncated, info = env.step(_noop_action())
+            _, _, terminated, truncated, info = env.step(_noop_action(env))
             if truncated:
                 break
 
@@ -361,7 +310,7 @@ class TestStepsTaken:
         env = _make_env(size=5, max_steps=20)
         env.reset(seed=42, options={"num_missing_entities": 99})
 
-        _, _, terminated, truncated, info = env.step(_noop_action())
+        _, _, terminated, truncated, info = env.step(_noop_action(env))
 
         # Episode isn't over yet
         assert not terminated and not truncated

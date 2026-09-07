@@ -1,6 +1,6 @@
 """Tests for the PPO wandb-logging support: run-name signature, the held-out
 greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
-+ eot prob stashed by get_action_and_value (the policy/* metrics)."""
+stashed by get_action_and_value (the policy/* metrics)."""
 
 import os
 import sys
@@ -104,16 +104,16 @@ class TestEnvExposesKind:
         _, info = env.reset(seed=2, options={"kind": LessonKind.SPLITTER_SPLIT})
         assert info["kind"] == LessonKind.SPLITTER_SPLIT.value
         action = {"xy": [0, 0], "entity": 0, "direction": 0, "item": 0,
-                  "misc": 0, "eot": 0}
+                  "misc": 0}
         _, _, _, _, info2 = env.step(action)
         assert info2["kind"] == LessonKind.SPLITTER_SPLIT.value
 
 
-# ── per-head entropy + eot prob (policy/* metrics) ──────────────────────────
+# ── per-head entropy (policy/* metrics) ───────────────────────────────────────────────────────────────
 
 
 class TestPerHeadEntropyStash:
-    def test_get_action_and_value_stashes_head_entropy_and_eot_prob(self, registered_env):
+    def test_get_action_and_value_stashes_head_entropy(self, registered_env):
         envs = gym.vector.SyncVectorEnv(
             [make_env(ENV_ID, i, False, 5, "t") for i in range(2)]
         )
@@ -122,12 +122,10 @@ class TestPerHeadEntropyStash:
         agent.get_action_and_value(obs)
 
         assert set(agent._last_head_entropy) == {
-            "tile", "entity", "direction", "item", "misc", "eot"
+            "tile", "entity", "direction", "item", "misc"
         }
         for v in agent._last_head_entropy.values():
             assert float(v) >= 0.0  # entropy is non-negative
-        # eot prob is a Bernoulli probability in [0, 1].
-        assert 0.0 <= float(agent._last_eot_prob) <= 1.0
 
     def test_total_entropy_equals_sum_of_heads(self, registered_env):
         envs = gym.vector.SyncVectorEnv(
@@ -153,7 +151,6 @@ class TestRolloutEpisodeMetrics:
             episode_len=42.0,
             thput_normed=0.6,
             thput_raw=9.0,
-            ended_by_eot=1.0,
             invalid_frac=0.1,
             num_entities=4.0,
             min_entities_required=3.0,
@@ -181,7 +178,6 @@ class TestRolloutEpisodeMetrics:
                 episode_len=1.0,
                 thput_normed=0.0,
                 thput_raw=1.23,
-                ended_by_eot=0.0,
                 invalid_frac=0.0,
                 num_entities=1.0,
                 min_entities_required=1.0,
@@ -214,7 +210,6 @@ class TestTrialRolloutMetricsAreSeparate:
             episode_len=42.0,
             thput_normed=0.6,
             thput_raw=9.0,
-            ended_by_eot=1.0,
             invalid_frac=0.1,
             num_entities=4.0,
             min_entities_required=3.0,
