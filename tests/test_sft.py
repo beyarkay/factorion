@@ -726,6 +726,20 @@ class TestTrainSFTEndToEnd:
         run("load")  # second run loads the cache instead of generating
         assert os.path.exists(str(tmp_path / "ckpt_load.pt"))
 
+    def test_train_sft_rejects_cache_holding_a_held_out_kind(self, tmp_path):
+        """A cache written before a kind joined TRAIN_EXCLUDED_KINDS still
+        carries its pairs; loading it must fail, not train on them."""
+        cache = str(tmp_path / "stale.pt")
+        torch.save(_materialise(8, 64, 1, target=200), cache)  # no exclusion
+        args = SftArgs(
+            seed=1, size=8, num_samples=200, epochs=1, batch_size=64,
+            **TINY_ARCH_ARGS, eval_rollouts_max_seeds=8, dataset_cache=cache,
+            checkpoint_path=str(tmp_path / "ckpt.pt"),
+            summary_path=str(tmp_path / "summary.json"),
+        )
+        with pytest.raises(RuntimeError, match="TRAIN_EXCLUDED_KINDS"):
+            train_sft(args)
+
 
 class TestSFTDropout:
     """The SFT dropout knob, when set, must reach the encoder via AgentCNN —

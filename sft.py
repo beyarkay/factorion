@@ -782,15 +782,24 @@ def train_sft(args: SftArgs):
         if os.path.exists(args.dataset_cache):
             print(f"Loading cached dataset from {args.dataset_cache} ...")
             # weights_only=False: our own locally-produced, trusted cache.
-            cached_train = torch.load(args.dataset_cache, weights_only=False)
+            cached = torch.load(args.dataset_cache, weights_only=False)
+            # The per-pair kind column is kept in the cache so a file written
+            # before a kind was held out is refused instead of silently
+            # training on it.
+            held_out = {k.value for k in TRAIN_EXCLUDED_KINDS}
+            if len(cached) < 10 or held_out & set(cached[9].tolist()):
+                raise RuntimeError(
+                    f"{args.dataset_cache} predates TRAIN_EXCLUDED_KINDS; delete it"
+                )
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
-            cached_train = _materialise(
+            cached = _materialise(
                 args.size, max_level, train_base, target=args.num_samples,
                 exclude=TRAIN_EXCLUDED_KINDS,
-            )[:8]
-            torch.save(cached_train, args.dataset_cache)
+            )
+            torch.save(cached, args.dataset_cache)
             print(f"Cached dataset to {args.dataset_cache}")
+        cached_train = cached[:8]
 
     # Re-seed so training RNG is identical whether the cache was just created
     # (which consumes the generator RNG) or loaded.
