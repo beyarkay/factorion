@@ -237,8 +237,18 @@ def _artifact_name(args: "SftArgs") -> str:
 # forever (it stays at 0 samples, always the minimum) and hang.
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
+# Held out of the training stream only. Their one-assembler, one-inserter-
+# per-arm motif is the build every FACTORY rollout collapses to (#408), so
+# the policy never learns to pack a row. They stay in val, which keeps
+# val/thput comparable across runs and makes them a pure transfer readout.
+TRAIN_EXCLUDED_KINDS = frozenset(
+    k for k in LessonKind if k.name.startswith("MEMORISE_")
+)
 
-def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
+
+def _iter_demo_pairs(
+    size, max_level, base_seed, worker_id, num_workers, target=None, exclude=frozenset()
+):
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
@@ -252,7 +262,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     # pair — left in the pool they'd stay at 0 samples forever and the
     # fewest-pairs draw below would redraw them every time. Trials are
     # RL-only; PPO samples them directly.
-    kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
+    kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k] and k not in exclude]
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
@@ -296,14 +306,16 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
                 break
 
 
-def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
+def _materialise(
+    size, max_level, base_seed, target=None, n_lessons=None, exclude=frozenset()
+):
     """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
     item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
     `n_lessons` distinct factories when that is given instead."""
     random.seed(base_seed)
     rows = []
     seeds = set()
-    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target):
+    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target, exclude):
         if n_lessons is not None and row[8] not in seeds:
             if len(seeds) >= n_lessons:
                 break
@@ -347,7 +359,8 @@ class StreamingDemoDataset(IterableDataset):
         base, rem = divmod(self.target, num_workers)
         my_target = base + (1 if worker_id < rem else 0)
         for row in _iter_demo_pairs(
-            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
+            self.size, self.max_level, self.base_seed, worker_id, num_workers,
+            my_target, TRAIN_EXCLUDED_KINDS,
         ):
             # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
             # training only needs the first 8 — seed/kind are val-only metadata.
@@ -769,14 +782,24 @@ def train_sft(args: SftArgs):
         if os.path.exists(args.dataset_cache):
             print(f"Loading cached dataset from {args.dataset_cache} ...")
             # weights_only=False: our own locally-produced, trusted cache.
-            cached_train = torch.load(args.dataset_cache, weights_only=False)
+            cached = torch.load(args.dataset_cache, weights_only=False)
+            # The per-pair kind column is kept in the cache so a file written
+            # before a kind was held out is refused instead of silently
+            # training on it.
+            held_out = {k.value for k in TRAIN_EXCLUDED_KINDS}
+            if len(cached) < 10 or held_out & set(cached[9].tolist()):
+                raise RuntimeError(
+                    f"{args.dataset_cache} predates TRAIN_EXCLUDED_KINDS; delete it"
+                )
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
-            cached_train = _materialise(
-                args.size, max_level, train_base, target=args.num_samples
-            )[:8]
-            torch.save(cached_train, args.dataset_cache)
+            cached = _materialise(
+                args.size, max_level, train_base, target=args.num_samples,
+                exclude=TRAIN_EXCLUDED_KINDS,
+            )
+            torch.save(cached, args.dataset_cache)
             print(f"Cached dataset to {args.dataset_cache}")
+        cached_train = cached[:8]
 
     # Re-seed so training RNG is identical whether the cache was just created
     # (which consumes the generator RNG) or loaded.

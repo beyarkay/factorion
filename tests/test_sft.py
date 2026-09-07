@@ -432,6 +432,21 @@ class TestGenerateDataset:
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
 
 
+class TestMemoriseHeldOutOfTraining:
+    """MEMORISE lessons feed val (the transfer readout) but never the
+    training stream, which is what StreamingDemoDataset and the dataset
+    cache draw from."""
+
+    def test_train_stream_skips_memorise_but_val_keeps_it(self):
+        memorise = {k.value for k in sft.TRAIN_EXCLUDED_KINDS}
+        assert memorise == {k.value for k in LessonKind if k.name.startswith("MEMORISE_")}
+        train = list(_iter_demo_pairs(8, 64, base_seed=1, worker_id=0, num_workers=1,
+                                      target=400, exclude=sft.TRAIN_EXCLUDED_KINDS))
+        assert train and not {row[9] for row in train} & memorise
+        *_, val_kinds = _materialise(8, 64, 1, target=400)
+        assert set(val_kinds.tolist()) & memorise
+
+
 class TestStreamingDemoDataset:
     """StreamingDemoDataset generates the same pairs as the materialised path,
     but lazily and sharded across DataLoader workers."""
@@ -710,6 +725,20 @@ class TestTrainSFTEndToEnd:
         assert os.path.exists(cache), "Cache should be written on first run"
         run("load")  # second run loads the cache instead of generating
         assert os.path.exists(str(tmp_path / "ckpt_load.pt"))
+
+    def test_train_sft_rejects_cache_holding_a_held_out_kind(self, tmp_path):
+        """A cache written before a kind joined TRAIN_EXCLUDED_KINDS still
+        carries its pairs; loading it must fail, not train on them."""
+        cache = str(tmp_path / "stale.pt")
+        torch.save(_materialise(8, 64, 1, target=200), cache)  # no exclusion
+        args = SftArgs(
+            seed=1, size=8, num_samples=200, epochs=1, batch_size=64,
+            **TINY_ARCH_ARGS, eval_rollouts_max_seeds=8, dataset_cache=cache,
+            checkpoint_path=str(tmp_path / "ckpt.pt"),
+            summary_path=str(tmp_path / "summary.json"),
+        )
+        with pytest.raises(RuntimeError, match="TRAIN_EXCLUDED_KINDS"):
+            train_sft(args)
 
 
 class TestSFTDropout:
