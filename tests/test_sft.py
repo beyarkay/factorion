@@ -60,7 +60,7 @@ class TestExtractExpertActions:
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
         assert factory is not None
         task, _ = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task, factory.max_throughput)
+        pairs = extract_expert_actions(solved, task)
         assert len(pairs) > 0, "Should have at least one action"
 
         # Replay placement actions onto task world. The action carries all
@@ -101,7 +101,7 @@ class TestExtractExpertActions:
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
         assert factory is not None
         solved, _ = blank_entities(factory, num_missing_entities=0)
-        pairs = extract_expert_actions(solved, solved.clone(), factory.max_throughput)
+        pairs = extract_expert_actions(solved, solved.clone())
         assert len(pairs) == 0
 
     def test_action_count_matches_missing(self):
@@ -116,7 +116,7 @@ class TestExtractExpertActions:
             factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
             assert factory is not None
             task, min_ent = blank_entities(factory, num_missing_entities=2)
-            pairs = extract_expert_actions(solved, task, factory.max_throughput)
+            pairs = extract_expert_actions(solved, task)
             assert len(pairs) == min_ent + 1, (
                 f"seed={seed}: expected {min_ent} placement pairs + 1 "
                 f"terminal pair, got {len(pairs)}"
@@ -134,7 +134,7 @@ class TestExtractExpertActions:
         factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=99)
         assert factory is not None
         task, _ = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task, factory.max_throughput)
+        pairs = extract_expert_actions(solved, task)
 
         if len(pairs) < 2:
             pytest.skip("Need at least 2 actions for this test")
@@ -157,7 +157,7 @@ class TestExtractExpertActions:
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
         assert factory is not None
         task, _ = blank_entities(factory, num_missing_entities=2)
-        pairs = extract_expert_actions(solved, task, factory.max_throughput)
+        pairs = extract_expert_actions(solved, task)
         for _, _, entity_id, direction_id, _, _, mask, _ in pairs:
             if not mask.any():
                 continue
@@ -192,7 +192,7 @@ class TestExtractExpertActions:
             except Exception:
                 continue
             for _, _, ent_id, _, _, misc_id, mask, _ in extract_expert_actions(
-                solved, task, factory.max_throughput
+                solved, task
             ):
                 if not mask.any():
                     continue
@@ -309,7 +309,7 @@ class TestGenerateDataset:
         if solved_splitter != 2 or task_splitter != 0:
             pytest.skip("splitter not present + blanked in this case")
 
-        pairs = extract_expert_actions(solved, task, factory.max_throughput)
+        pairs = extract_expert_actions(solved, task)
         splitter_pairs = [p for p in pairs if p[2] == splitter_id]
         assert len(splitter_pairs) == 1, (
             f"{kind_name} seed={seed}: expected 1 splitter placement pair, "
@@ -337,7 +337,7 @@ class TestGenerateDataset:
             solved = factory.world_CWH
             task, _ = blank_entities(factory, num_missing_entities=20)
             for _, _, ent_id, _, item_id, _, mask, _ in extract_expert_actions(
-                solved, task, factory.max_throughput
+                solved, task
             ):
                 if not mask.any():
                     continue
@@ -1205,15 +1205,13 @@ class TestRunRolloutEval:
             "an unreachable target must keep placing past the first step"
         )
 
-        # Calibration is scored on every visited state: a stop on the blank
-        # reset factory (throughput 0) leaves exactly the prediction as error.
+        # Calibration is scored on every visited state.
         for roll in (never, always):
-            assert 0.0 <= roll["rollout_thput_mae"] <= 1.0
+            assert roll["rollout_thput_mae"] >= 0.0
             for kn, mae in roll["per_kind_rollout_thput_mae"].items():
-                assert 0.0 <= mae <= 1.0
+                assert mae >= 0.0
                 if roll["per_kind_rollout_step_n"][kn] == 0:
                     assert mae == 0.0, f"{kn}: no steps but mae {mae}"
-        assert always["rollout_thput_mae"] > 0.0
 
     def _run_with_recorded_proposals(self, monkeypatch):
         """Run a greedy rollout eval with a FactorioEnv that records, for every
@@ -1335,17 +1333,19 @@ class TestThputHead:
     def test_thput_label_per_lesson(self):
         """A MOVE_ONE_ITEM lesson with N missing belts emits N placement pairs
         labelled 0 (a belt chain with a gap carries nothing) followed by one
-        terminal pair labelled 1.0 whose obs equals the fully-solved factory."""
+        terminal pair labelled with the solved factory's items/s — its
+        `max_throughput` — whose obs equals the fully-solved factory."""
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
         assert factory is not None
         solved, _ = blank_entities(factory, num_missing_entities=0)
         factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
         assert factory is not None
         task, min_ent = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task, factory.max_throughput)
+        pairs = extract_expert_actions(solved, task)
         thputs = [p[7] for p in pairs]
         assert thputs[:-1] == [0.0] * min_ent
-        assert thputs[-1] == pytest.approx(1.0), "the solved factory is the reference"
+        assert thputs[-1] == pytest.approx(factory.max_throughput)
+        assert thputs[-1] > 0.0
         # Terminal observation equals solved (entities + directions). obs is
         # uint8, so cast to compare against the int64 solved world.
         terminal_obs = pairs[-1][0]
@@ -1359,28 +1359,29 @@ class TestThputHead:
         )
 
     def test_thput_tensor_in_dataset(self):
-        """_materialise must return a per-pair float thput tensor in [0, 1]
-        that reaches 1.0 (every lesson ends on its solved factory)."""
+        """_materialise must return a per-pair float items/s tensor that is
+        non-negative and not all zero (every lesson ends on its solved factory)."""
         args = SftArgs(seed=1, size=5, num_samples=200, max_level=4)
         *_, thputs, _seeds, _kinds = _materialise_args(args)
         assert thputs.dtype == torch.float
-        assert (thputs >= 0).all() and (thputs <= 1).all()
-        assert thputs.max().item() == pytest.approx(1.0)
+        assert (thputs >= 0).all()
+        assert thputs.max().item() > 0.0
 
     def test_thput_head_exists_and_forwards(self, registered_env):
-        """AgentCNN must expose a thput_head producing one logit per
-        observation, and `predicted_thput` its sigmoid in [0, 1]."""
+        """AgentCNN must expose a thput_head producing one log1p(items/s) per
+        observation, and `predicted_thput` its non-negative items/s."""
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
         agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
 
         B, C, W, H = 4, agent.channels, agent.width, agent.height
         x = torch.zeros((B, C, W, H), dtype=torch.float32)
-        logits = agent.thput_logit(agent.encode(x))
-        assert logits.shape == (B,)
+        log1p = agent.thput_log1p(agent.encode(x))
+        assert log1p.shape == (B,)
         pred = agent.predicted_thput(x)
         assert pred.shape == (B,)
-        torch.testing.assert_close(pred, torch.sigmoid(logits))
+        assert (pred >= 0).all()
+        torch.testing.assert_close(pred, torch.expm1(log1p).clamp(min=0.0))
 
 
 class TestPerKindThputMetrics:
@@ -1389,7 +1390,7 @@ class TestPerKindThputMetrics:
 
     def test_per_kind_thput_metrics_logged(self, monkeypatch, tmp_path):
         """train_sft must log val/<LESSON>/thput_mae for every LessonKind
-        present in the val split, each in [0, 1] and paired 1:1 with the
+        present in the val split, each non-negative and paired 1:1 with the
         existing per-kind placement /acc. The per-kind metrics go only to
         wandb (not summary.json), so capture the logged dict via a mock run."""
         import wandb
@@ -1425,8 +1426,8 @@ class TestPerKindThputMetrics:
         ]
         assert mae_keys, "expected per-kind val/<LESSON>/thput_mae to be logged"
         for k in mae_keys:
-            assert 0.0 <= logged[k] <= 1.0, f"{k}={logged[k]} out of [0, 1]"
-        assert 0.0 <= logged["val/thput_mae"] <= 1.0
+            assert logged[k] >= 0.0, f"{k}={logged[k]} negative"
+        assert logged["val/thput_mae"] >= 0.0
 
         # The per-kind keys must cover exactly the kinds that already get a
         # placement /acc — same val split, same buckets, emitted together.

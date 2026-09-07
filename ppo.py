@@ -1487,9 +1487,9 @@ class AgentCNN(nn.Module):
         # the map mean-pooled over space: every cell shares one weight vector.
         self.critic_head = layer_init(nn.Linear(last_chan, 1), std=critic_head_std)
 
-        # Bias init at -2 so an untrained model predicts a near-idle factory
-        # (sigmoid(-2) ≈ 0.12 of the reference rate) and never stops a rollout.
-        self.thput_head = layer_init(nn.Linear(last_chan, 1), std=1.0, bias_const=-2.0)
+        # Near-zero init so an untrained model predicts an idle factory
+        # (expm1(≈0) ≈ 0 items/s) and never stops a rollout.
+        self.thput_head = layer_init(nn.Linear(last_chan, 1), std=0.01)
 
         # Tile selection: 1x1 conv producing one logit per spatial position
         self.tile_logits = layer_init(nn.Conv2d(last_chan, 1, kernel_size=1), std=tile_head_std)
@@ -1556,17 +1556,18 @@ class AgentCNN(nn.Module):
     def critic_value(self, encoded_BCWH):
         return self.critic_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
 
-    def thput_logit(self, encoded_BCWH):
+    def thput_log1p(self, encoded_BCWH):
+        """The throughput head's output, log1p(items/s): a 15 i/s belt line
+        and a 0.3 i/s assembler line sit an O(1) distance apart in the loss."""
         return self.thput_head(encoded_BCWH.mean(dim=(2, 3))).squeeze(-1)
 
     def get_value(self, x_BCWH):
         return self.critic_value(self.encode(x_BCWH))
 
     def predicted_thput(self, x_BCWH):
-        """Predicted normalized throughput of the observed factory, in [0, 1]
-        (items/s over the factory's reference rate). A greedy rollout stops
+        """Predicted items/s of the observed factory. A greedy rollout stops
         once this reaches the caller's target."""
-        return torch.sigmoid(self.thput_logit(self.encode(x_BCWH)))
+        return torch.expm1(self.thput_log1p(self.encode(x_BCWH))).clamp(min=0.0)
 
     def semantic_head_log_probs(self, logits_d_BD, logits_i_BI, logits_m_BM, ent_B):
         """Apply the action grammar implied by the selected entity.
@@ -1720,7 +1721,7 @@ class AgentCNN(nn.Module):
             "logp": logp_B,
             "entropy": entropy_B,
             "value": value_B,
-            "predicted_thput": torch.sigmoid(self.thput_logit(encoded_BCWH)),
+            "predicted_thput": torch.expm1(self.thput_log1p(encoded_BCWH)).clamp(min=0.0),
             "logp_heads": {
                 "tile": tile_logp_all_BN,
                 "entity": e_logp_all_BE,

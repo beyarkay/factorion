@@ -314,7 +314,7 @@ def run_inference(
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
     """Iteratively place entities until the model predicts the factory has
-    reached `target_thput` (a fraction of its reference throughput), the model
+    reached `target_thput` items/s, the model
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
 

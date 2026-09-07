@@ -58,7 +58,7 @@ from ppo import (  # noqa: E402
 from training_config import SftArgs, wsd_multiplier  # noqa: E402
 
 
-def extract_expert_actions(solved_CWH, task_CWH, max_throughput):
+def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
     Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
@@ -80,12 +80,11 @@ def extract_expert_actions(solved_CWH, task_CWH, max_throughput):
     Actions are applied sequentially in random order, so intermediate states
     reflect realistic observations the agent would see.
 
-    `thput` is the state's normalized throughput (simulated items/s over
-    `max_throughput`, clipped to [0, 1], the same quantity the env reports as
-    `thput_normed`) — the throughput head's regression target. A single
-    terminal pair is appended at the end (state is the fully-solved factory,
-    so thput is 1.0) with sentinel-zero placement targets and an all-zero
-    valid mask, which is how the SFT loop tells it apart from placement pairs.
+    `thput` is the state's simulated throughput in items/s — the throughput
+    head's regression target. A single terminal pair is appended at the end
+    (state is the fully-solved factory) with sentinel-zero placement targets
+    and an all-zero valid mask, which is how the SFT loop tells it apart from
+    placement pairs.
     """
     C, W, H = solved_CWH.shape
     solved_ent = solved_CWH[Channel.ENTITIES.value]
@@ -128,11 +127,11 @@ def extract_expert_actions(solved_CWH, task_CWH, max_throughput):
     state = task_CWH.clone()
     pairs = []
 
-    def thput_normed() -> float:
+    def thput_raw() -> float:
         raw, _ = factorion_rs.simulate_throughput(
             state.permute(1, 2, 0).to(torch.int64).numpy()
         )
-        return min(1.0, raw / max_throughput) if max_throughput > 0 else 0.0
+        return float(raw)
 
     # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
     remaining_locs = [tuple(loc) for loc in diff_locs]
@@ -151,7 +150,7 @@ def extract_expert_actions(solved_CWH, task_CWH, max_throughput):
         misc_id = int(solved_CWH[Channel.MISC.value, x, y])
 
         pairs.append(
-            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, thput_normed())
+            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, thput_raw())
         )
 
         # Apply action: copy the entity's full footprint from solved, not
@@ -177,7 +176,7 @@ def extract_expert_actions(solved_CWH, task_CWH, max_throughput):
     # valid_mask=all-zero matches the invariant "no remaining tiles to place".
     terminal_obs = state.to(torch.uint8)
     terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
-    pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, thput_normed()))
+    pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, thput_raw()))
 
     return pairs
 
@@ -294,7 +293,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
         consecutive_fails[kind.name] = 0
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
-        for pair in extract_expert_actions(factory.world_CWH, task, factory.max_throughput):
+        for pair in extract_expert_actions(factory.world_CWH, task):
             yield (*pair, seed, kind.value)
             kind_samples[kind.name] += 1
             produced += 1
@@ -405,9 +404,9 @@ class RolloutEval(TypedDict):
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
-    # Throughput-head calibration: mean |predicted - actual| normalized
-    # throughput over every state the rollout visited (the head decides where
-    # the rollout stops, so this is its on-policy error).
+    # Throughput-head calibration: mean |predicted - actual| items/s over every
+    # state the rollout visited (the head decides where the rollout stops, so
+    # this is its on-policy error).
     rollout_thput_mae: float
     per_kind_rollout_thput_mae: dict[str, float]  # keyed by LessonKind.name
     per_kind_rollout_step_n: dict[str, int]  # states scored per LessonKind.name
@@ -446,9 +445,9 @@ def run_rollout_eval(
     stay busy until the queue drains.
 
     For each held-out (seed, kind) we greedy-argmax every head and step
-    until the throughput head predicts at least `target_thput` — which ends
-    the rollout, as it does in the builder UI and the mod server — or the env
-    runs out of steps without it ever getting there.
+    until the throughput head predicts at least `target_thput` items/s — which
+    ends the rollout, as it does in the builder UI and the mod server — or the
+    env runs out of steps without it ever getting there.
     Throughput is the last `info['thput_normed']` the env reported for the
     state the model stopped at: raw items/sec divided by the per-factory
     max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
@@ -542,8 +541,9 @@ def run_rollout_eval(
     # Correct recipes for the factory each slot is replaying (from its solved
     # world). Empty when that factory has no assembler, which skips the check.
     asm_recipes: list[set[int]] = [set() for _ in range(K)]
-    current: list[tuple[int, LessonKind, float]] = [
-        (0, LessonKind.MOVE_ONE_ITEM, 0.0)
+    # (seed, kind, thput_normed, thput_raw) of the state each slot is at.
+    current: list[tuple[int, LessonKind, float, float]] = [
+        (0, LessonKind.MOVE_ONE_ITEM, 0.0, 0.0)
     ] * K
     obs_stack = []
 
@@ -557,7 +557,7 @@ def run_rollout_eval(
                 "kind": k,
             },
         )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
@@ -566,7 +566,7 @@ def run_rollout_eval(
     def finish_slot(i: int, thput: float) -> None:
         """Record slot `i`'s finished rollout at `thput` and refill it from the
         seed queue, deactivating the slot once the queue is empty."""
-        s, k, _ = current[i]
+        s, k, _, _ = current[i]
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
@@ -598,7 +598,7 @@ def run_rollout_eval(
                 "kind": k,
             },
         )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32, device=device)
 
@@ -626,18 +626,18 @@ def run_rollout_eval(
                 if not active[i]:
                     continue
 
-                s, k, cur_thp = current[i]
-                pred_thp = float(predicted_thput_K[i])
+                s, k, cur_thp, cur_raw = current[i]
+                pred_raw = float(predicted_thput_K[i])
 
-                # `cur_thp` and `pred_thp` describe this same pre-action state,
+                # `cur_raw` and `pred_raw` describe this same pre-action state,
                 # so the head's calibration is scored on every state visited.
                 per_kind_step_total[k.name] += 1
-                per_kind_thput_err[k.name] += abs(pred_thp - cur_thp)
+                per_kind_thput_err[k.name] += abs(pred_raw - cur_raw)
 
                 # The prediction ends the rollout: we score the factory the
                 # model thinks has reached the target, never one it was forced
                 # past.
-                if pred_thp >= target_thput:
+                if pred_raw >= target_thput:
                     finish_slot(i, cur_thp)
                     continue
 
@@ -649,7 +649,7 @@ def run_rollout_eval(
                     "misc": int(misc_K[i]),
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
 
                 # Recipe-pick check: the agent tried to place an assembler in a
                 # factory that has one. Count it iff the assembler actually
@@ -870,10 +870,7 @@ def train_sft(args: SftArgs):
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
     bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
-    # Soft-label BCE for the throughput head: the target is a fraction in
-    # [0, 1], and BCE's gradient through the sigmoid stays (p - target) where
-    # MSE's would vanish near 0 and 1.
-    bce_thput = nn.BCEWithLogitsLoss()
+    mse_thput = nn.MSELoss()
 
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
@@ -994,9 +991,9 @@ def train_sft(args: SftArgs):
             placement_mask = batch_mask.any(dim=1).float()
             n_place = placement_mask.sum().clamp(min=1.0)
 
-            # Throughput head — regressed on every sample.
-            thput_logits = agent.thput_logit(encoded)
-            loss_thput = bce_thput(thput_logits, batch_thput)
+            # Throughput head — regressed on every sample, in log1p(items/s).
+            thput_log1p = agent.thput_log1p(encoded)
+            loss_thput = mse_thput(thput_log1p, torch.log1p(batch_thput))
 
             # Tile logits — use BCE with multi-label mask so ALL valid
             # tiles are rewarded, not just the randomly-chosen one. Reduce
@@ -1070,7 +1067,7 @@ def train_sft(args: SftArgs):
             acc_correct += (place_heads_correct & is_place).sum()
             acc_place += placement_mask.sum()
             train_total += B
-            acc_thput_err += (torch.sigmoid(thput_logits) - batch_thput).abs().sum()
+            acc_thput_err += (torch.expm1(thput_log1p).clamp(min=0.0) - batch_thput).abs().sum()
             # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
 
@@ -1163,9 +1160,9 @@ def train_sft(args: SftArgs):
                 placement_mask = batch_mask.any(dim=1).float()
                 is_place = placement_mask.bool()
 
-                thput_logits = agent.thput_logit(encoded)
-                loss_thput_per = bce_loss_none(thput_logits, batch_thput)
-                thput_err_per = (torch.sigmoid(thput_logits) - batch_thput).abs()
+                thput_log1p = agent.thput_log1p(encoded)
+                loss_thput_per = (thput_log1p - torch.log1p(batch_thput)).square()
+                thput_err_per = (torch.expm1(thput_log1p).clamp(min=0.0) - batch_thput).abs()
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
                 # Per-sample losses: needed so we can sum them within each

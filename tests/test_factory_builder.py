@@ -580,15 +580,15 @@ class TestPredictSchema:
             path.unlink(missing_ok=True)
 
     def test_predict_returns_predicted_thput(self):
-        """_predict must surface `predicted_thput` in [0, 1] so the UI can show
-        how good the model thinks the factory already is."""
+        """_predict must surface a non-negative `predicted_thput` (items/s) so
+        the UI can show how good the model thinks the factory already is."""
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             result = fb._predict(_empty_grid(4))
             assert "predicted_thput" in result
             assert isinstance(result["predicted_thput"], float)
-            assert 0.0 <= result["predicted_thput"] <= 1.0
+            assert result["predicted_thput"] >= 0.0
         finally:
             path.unlink(missing_ok=True)
 
@@ -700,14 +700,14 @@ const stops = ${JSON.stringify(mode)} !== 'never_stops';
 requestFastPrediction = async () => ({
   x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
   item: 'empty', misc: 'NONE',
-  predicted_thput: (stops && applied >= STOP_AFTER) ? 0.99 : 0.01,
+  predicted_thput: (stops && applied >= STOP_AFTER) ? 5.0 : 0.0,
 });
 applyCandidate = async () => { applied += 1; return applied < CAP; };
 modelLoaded = true;
 (async () => {
   if (${JSON.stringify(mode)} === 'tap') {
     prediction = { x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
-                   item: 'empty', misc: 'NONE', predicted_thput: 0.99 };
+                   item: 'empty', misc: 'NONE', predicted_thput: 5.0 };
     beginApplyKey();
     await new Promise((r) => setTimeout(r, 250));
     endApplyKey();

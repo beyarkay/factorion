@@ -712,8 +712,7 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
 
 
 THPUT_STOP_TARGET = SharedArgs.rollout_target_thput
-"""Predicted normalized throughput at which the UI treats the model as
-finished: the hold-to-apply loop stops and no further placement is applied.
+"""Predicted items/s at which the UI treats the model as finished: the hold-to-apply loop stops and no further placement is applied.
 The training default, so holding `a` reproduces what a greedy rollout would
 build; scans take their own target from the form."""
 
@@ -1480,8 +1479,8 @@ def render_index(default_size: int) -> str:
     <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
       entities to clear <input id="scan-clear" type="number" min="0" placeholder="all" style="width:4.5em">
     </label>
-    <label title="Stop each rollout once the model's predicted throughput (fraction of the reference rate) reaches this — what sft.run_rollout_eval does with rollout_target_thput.">
-      target thput <input id="scan-target" type="number" min="0" max="1" step="0.01" value="{THPUT_STOP_TARGET}" style="width:4.5em">
+    <label title="Stop each rollout once the model's predicted throughput (items/s) reaches this — what sft.run_rollout_eval does with rollout_target_thput.">
+      target thput <input id="scan-target" type="number" min="0" step="0.1" value="{THPUT_STOP_TARGET}" style="width:4.5em">
     </label>
     <label title="Restrict the tile head's argmax to empty, buildable cells — what sft.run_rollout_eval does. Off shows the raw head, including illegal proposals.">
       <input id="scan-mask" type="checkbox" checked> legal-tile mask
@@ -1588,7 +1587,7 @@ function thputStop(pred) {{
 }}
 
 function thputStopMessage(pred) {{
-  return 'model predicts thput ' + fmtPct(pred.predicted_thput) + ' ≥ target';
+  return 'model predicts ' + pred.predicted_thput.toFixed(2) + ' items/s ≥ target';
 }}
 
 function renderGrid() {{
@@ -1942,13 +1941,11 @@ async function computePrediction() {{
       // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
       // The <pre> uses white-space:pre + overflow-x:auto so long top-p
       // lines scroll horizontally instead of wrapping.
-      // thput line: the model's predicted normalized throughput. The
-      // [stop] / [continue] marker is a quick read for whether a rollout
-      // would end right now.
-      const thputPct = fmtPct(data.predicted_thput);
+      // thput line: the model's predicted items/s. The [stop] / [continue]
+      // marker is a quick read for whether a rollout would end right now.
       const thputMark = thputStop(data) ? '[stop]' : '[continue]';
       const lines = [
-        '  thput:     ' + thputPct + ' ' + thputMark,
+        '  thput:     ' + data.predicted_thput.toFixed(2) + ' items/s ' + thputMark,
         '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
         '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
         '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),

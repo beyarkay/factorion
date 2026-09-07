@@ -69,10 +69,9 @@ class SharedArgs:
     """seed of the experiment"""
     size: int = 11
     """the width and height of the factory grid"""
-    rollout_target_thput: float = 0.95
-    """normalized throughput the throughput head must predict for a greedy
-    rollout to stop (val/eval thput, the builder UI, the mod server). A sigmoid
-    head never reaches 1.0 exactly, so keep this below 1."""
+    rollout_target_thput: float = 1.0
+    """items/s the throughput head must predict for a greedy rollout to stop
+    (val/eval thput, the builder UI, the mod server)"""
 
     # CNN encoder width per layer slot. The encoder uses every slot with
     # positive width, in order; a slot of 0 drops that layer. Exposing depth +
@@ -292,7 +291,7 @@ class SftArgs(SharedArgs):
     lw_misc: float = 0.6236
     """loss weight for the misc (CE) head"""
     lw_thput: float = 1.302
-    """loss weight for the throughput-prediction (soft-label BCE) head"""
+    """loss weight for the throughput-prediction (MSE on log1p items/s) head"""
     eval_every_n_samples: int = 100_000
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,

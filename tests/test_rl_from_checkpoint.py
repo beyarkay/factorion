@@ -95,14 +95,14 @@ class TestThroughputHead:
         out = agent.sample_action(obs)
         assert set(out["action"]) == {"xy", "entity", "direction", "item", "misc"}
         assert out["predicted_thput"].shape == (4,)
-        assert ((out["predicted_thput"] >= 0) & (out["predicted_thput"] <= 1)).all()
+        assert (out["predicted_thput"] >= 0).all()
         torch.testing.assert_close(out["predicted_thput"], agent.predicted_thput(obs))
 
     def test_untrained_head_predicts_low(self, agent):
-        """The bias init keeps a fresh head well under any sane target, so an
-        untrained policy never stops a rollout on its first state."""
+        """The near-zero init keeps a fresh head under any sane items/s
+        target, so an untrained policy never stops a rollout on its first state."""
         obs = torch.zeros(2, NUM_CHANNELS, 5, 5)
-        assert (agent.predicted_thput(obs) < 0.5).all()
+        assert (agent.predicted_thput(obs) < 1.0).all()
 
 
 class TestEpisodeEnd:

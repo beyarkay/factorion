@@ -395,7 +395,7 @@ class TestArchVariants:
         enc = torch.randn(2, 16, 5, 5)
         perm = enc.flatten(2)[:, :, torch.randperm(25)].reshape(2, 16, 5, 5)
         torch.testing.assert_close(agent.critic_value(enc), agent.critic_value(perm))
-        torch.testing.assert_close(agent.thput_logit(enc), agent.thput_logit(perm))
+        torch.testing.assert_close(agent.thput_log1p(enc), agent.thput_log1p(perm))
         _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert value_B.shape == (2,)
 
