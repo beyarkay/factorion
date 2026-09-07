@@ -120,9 +120,8 @@ of the Factorio game world.
   - `direction`: The orientation of the entity.
   - `item`: The recipe an assembler is set to.
   - `misc`: Whether an underground belt is an entrance or an exit.
-  - `eot`: "This factory is finished" — a real action that ends the episode.
 
-- **Reward Signal**: After the agent ends the episode (or it times out), the
+- **Reward Signal**: After the episode times out, the
   resulting factory is evaluated. A custom graph-based algorithm simulates the
   flow of items through the constructed belts and machines to calculate the
   factory's final **throughput** (items produced per second). The reward is
