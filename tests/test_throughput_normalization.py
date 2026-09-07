@@ -19,6 +19,7 @@ solution) is fine now but must change for arbitrary RL rollouts.
 
 import os
 import sys
+from collections import defaultdict
 
 import numpy as np
 import pytest
@@ -30,7 +31,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import factorion_rs  # noqa: E402
-from factorion import LessonKind, build_factory  # noqa: E402
+from factorion import Channel, LessonKind, build_factory, str2ent  # noqa: E402
 from ppo import FactorioEnv  # noqa: E402
 
 
@@ -158,3 +159,34 @@ def test_normed_stays_in_unit_interval(kind):
         _, _, _, _, info = env.step(_noop_action())
         assert 0.0 <= info["thput_normed"] <= 1.0
         assert info["thput_raw"] >= 0.0
+
+
+def test_factory_lesson_ceiling_does_not_track_the_sampled_build():
+    """FACTORY_* normalizes by the analytic ceiling for the machines the grid
+    fits, not the sampled build's own rate (#426). The reference row is packed
+    to capacity (#453) but still draws its inserter counts — and, for two
+    ingredients, its feed pattern — at random, so its rate varies within a
+    single recipe. One ceiling covers every draw, and none of them reaches it.
+    """
+    size = 11
+    asm = str2ent("assembling_machine_1").value
+    for kind in (LessonKind.FACTORY_1_INGREDIENT, LessonKind.FACTORY_2_INGREDIENTS):
+        by_recipe = defaultdict(list)
+        for seed in range(60):
+            factory = build_factory(size=size, kind=kind, seed=seed)
+            if factory is None:
+                continue
+            rate = _solved_max(size, kind, seed)
+            assert rate <= factory.max_throughput, (
+                f"{kind} seed={seed}: reference beats its own ceiling"
+            )
+            ents = factory.world_CWH[Channel.ENTITIES.value].numpy()
+            x, y = np.argwhere(ents == asm)[0]
+            recipe = int(factory.world_CWH[Channel.ITEMS.value][x, y])
+            by_recipe[recipe].append((rate, factory.max_throughput))
+        varied = [v for v in by_recipe.values() if len({round(r, 9) for r, _ in v}) > 1]
+        assert varied, f"{kind}: no recipe's reference rate varied across seeds"
+        for draws in varied:
+            assert len({round(c, 9) for _, c in draws}) == 1, (
+                f"{kind}: the ceiling moved with the sampled build"
+            )
