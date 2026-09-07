@@ -432,6 +432,21 @@ class TestGenerateDataset:
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
 
 
+class TestMemoriseHeldOutOfTraining:
+    """MEMORISE lessons feed val (the transfer readout) but never the
+    training stream, which is what StreamingDemoDataset and the dataset
+    cache draw from."""
+
+    def test_train_stream_skips_memorise_but_val_keeps_it(self):
+        memorise = {k.value for k in sft.TRAIN_EXCLUDED_KINDS}
+        assert memorise == {k.value for k in LessonKind if k.name.startswith("MEMORISE_")}
+        train = list(_iter_demo_pairs(8, 64, base_seed=1, worker_id=0, num_workers=1,
+                                      target=400, exclude=sft.TRAIN_EXCLUDED_KINDS))
+        assert train and not {row[9] for row in train} & memorise
+        *_, val_kinds = _materialise(8, 64, 1, target=400)
+        assert set(val_kinds.tolist()) & memorise
+
+
 class TestStreamingDemoDataset:
     """StreamingDemoDataset generates the same pairs as the materialised path,
     but lazily and sharded across DataLoader workers."""
