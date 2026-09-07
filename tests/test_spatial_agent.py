@@ -118,9 +118,8 @@ class TestLogProbConsistency:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
-        eot_B = action_out["eot"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1
         )
 
         # Replay: pass the same obs and action tensor
@@ -156,10 +155,10 @@ class TestGradientFlow:
             and "assembling_machine_1" in recipes[item.name].produced_by
         )
         action = torch.tensor([
-            [0, 0, str2ent("transport_belt").value, Direction.EAST.value, 0, Misc.NONE.value, 0],
-            [1, 1, str2ent("assembling_machine_1").value, Direction.NONE.value, recipe_id, Misc.NONE.value, 0],
-            [2, 2, str2ent("underground_belt").value, Direction.NORTH.value, 0, Misc.UNDERGROUND_DOWN.value, 0],
-            [3, 3, str2ent("inserter").value, Direction.SOUTH.value, 0, Misc.NONE.value, 0],
+            [0, 0, str2ent("transport_belt").value, Direction.EAST.value, 0, Misc.NONE.value],
+            [1, 1, str2ent("assembling_machine_1").value, Direction.NONE.value, recipe_id, Misc.NONE.value],
+            [2, 2, str2ent("underground_belt").value, Direction.NORTH.value, 0, Misc.UNDERGROUND_DOWN.value],
+            [3, 3, str2ent("inserter").value, Direction.SOUTH.value, 0, Misc.NONE.value],
         ])
         _, logp_B, _, value_B = agent.get_action_and_value(obs, action)
         loss = -(logp_B.mean()) + value_B.mean()
@@ -192,9 +191,8 @@ class TestGradientFlow:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
-        eot_B = action_out["eot"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1,
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1,
         )
 
         _, logp_B, entropy_B, value_B = agent.get_action_and_value(
@@ -203,9 +201,7 @@ class TestGradientFlow:
         loss = -(logp_B.mean()) + value_B.mean()
         loss.backward()
 
-        # eot_head is part of the joint action distribution, so its grad must
-        # flow too (this is what lets PPO train the stop decision).
-        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head", "eot_head"):
+        for head_name in ("tile_logits", "ent_head", "dir_head", "item_head", "misc_head"):
             head = getattr(agent, head_name)
             weight = head.weight if hasattr(head, "weight") else head[-1].weight
             assert weight.grad is not None, f"No grad for {head_name}"
@@ -216,12 +212,12 @@ class TestBatchConsistency:
         """Processing items one-at-a-time gives same results as batched."""
         obs = torch.randn(3, NUM_CHANNELS, 5, 5)
         # Create a fixed action to replay (within bounds for 5x5 grid)
-        # 7 columns: xy(2), entity, direction, item, misc, eot
+        # 6 columns: xy(2), entity, direction, item, misc
         action_tensor = torch.tensor(
             [
-                [2, 3, 1, 2, 0, 0, 0],
-                [0, 0, 0, 0, 0, 0, 1],
-                [4, 4, 1, 4, 0, 0, 0],
+                [2, 3, 1, 2, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+                [4, 4, 1, 4, 0, 0],
             ],
             dtype=torch.long,
         )
@@ -371,7 +367,6 @@ class TestArchVariants:
                 action_out["direction"][:, None],
                 action_out["item"][:, None],
                 action_out["misc"][:, None],
-                action_out["eot"][:, None].long(),
             ],
             dim=1,
         )
@@ -391,16 +386,16 @@ class TestArchVariants:
         torch.testing.assert_close(logp_a, logp_b)
         torch.testing.assert_close(val_a, val_b)
 
-    def test_critic_and_eot_heads_pool_the_map(self, envs):
-        """Value/eot read the spatially mean-pooled map, so they are
+    def test_critic_and_thput_heads_pool_the_map(self, envs):
+        """Value/throughput read the spatially mean-pooled map, so they are
         invariant to a permutation of the cells."""
         agent = AgentCNN(envs, layers=(16, 16, 16), attn_dim=0)
         assert agent.critic_head.in_features == 16
-        assert agent.eot_head.in_features == 16
+        assert agent.thput_head.in_features == 16
         enc = torch.randn(2, 16, 5, 5)
         perm = enc.flatten(2)[:, :, torch.randperm(25)].reshape(2, 16, 5, 5)
         torch.testing.assert_close(agent.critic_value(enc), agent.critic_value(perm))
-        torch.testing.assert_close(agent.eot_logit(enc), agent.eot_logit(perm))
+        torch.testing.assert_close(agent.thput_log1p(enc), agent.thput_log1p(perm))
         _, _, _, value_B = agent.get_action_and_value(torch.zeros(2, NUM_CHANNELS, 5, 5))
         assert value_B.shape == (2,)
 
@@ -459,7 +454,7 @@ class TestSampleAction:
         torch.testing.assert_close(logp_a, out["logp"])
         torch.testing.assert_close(entropy_a, out["entropy"])
         torch.testing.assert_close(value_a, out["value"])
-        for k in ("xy", "entity", "direction", "item", "misc", "eot"):
+        for k in ("xy", "entity", "direction", "item", "misc"):
             torch.testing.assert_close(action_a[k], out["action"][k])
 
     def test_greedy_is_deterministic(self, agent):
@@ -468,7 +463,7 @@ class TestSampleAction:
         obs = torch.randn(4, NUM_CHANNELS, 5, 5)
         a = agent.sample_action(obs, temperature=0.0)["action"]
         b = agent.sample_action(obs, temperature=0.0)["action"]
-        for k in ("xy", "entity", "direction", "item", "misc", "eot"):
+        for k in ("xy", "entity", "direction", "item", "misc"):
             torch.testing.assert_close(a[k], b[k])
 
     def test_greedy_matches_manual_argmax(self, agent):
@@ -519,7 +514,6 @@ class TestSampleAction:
                 act["direction"][:, None],
                 act["item"][:, None],
                 act["misc"][:, None],
-                act["eot"][:, None].long(),
             ],
             dim=1,
         )

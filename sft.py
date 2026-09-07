@@ -62,7 +62,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
     Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
-    misc_id, valid_tile_mask, eot) tuples. The agent's action covers all
+    misc_id, valid_tile_mask, thput) tuples. The agent's action covers all
     four placement channels because the env (ppo.py FactorioEnv.step)
     rejects placements with mismatched channels — e.g. an underground belt
     without misc=DOWN/UP, or an assembling_machine_1 without an item
@@ -80,11 +80,11 @@ def extract_expert_actions(solved_CWH, task_CWH):
     Actions are applied sequentially in random order, so intermediate states
     reflect realistic observations the agent would see.
 
-    `eot` (end-of-turn) is 0 for every placement step (the factory still
-    has entities to place) and 1 for a single terminal pair appended at
-    the end (state is the fully-solved factory). Placement targets on the
-    terminal pair are sentinel zeros — the SFT loop masks placement losses
-    on eot=1 samples.
+    `thput` is the state's simulated throughput in items/s — the throughput
+    head's regression target. A single terminal pair is appended at the end
+    (state is the fully-solved factory) with sentinel-zero placement targets
+    and an all-zero valid mask, which is how the SFT loop tells it apart from
+    placement pairs.
     """
     C, W, H = solved_CWH.shape
     solved_ent = solved_CWH[Channel.ENTITIES.value]
@@ -127,6 +127,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
     state = task_CWH.clone()
     pairs = []
 
+    def thput_raw() -> float:
+        raw, _ = factorion_rs.simulate_throughput(
+            state.permute(1, 2, 0).to(torch.int64).numpy()
+        )
+        return float(raw)
+
     # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
     remaining_locs = [tuple(loc) for loc in diff_locs]
 
@@ -144,7 +150,7 @@ def extract_expert_actions(solved_CWH, task_CWH):
         misc_id = int(solved_CWH[Channel.MISC.value, x, y])
 
         pairs.append(
-            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, 0)
+            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, thput_raw())
         )
 
         # Apply action: copy the entity's full footprint from solved, not
@@ -165,13 +171,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
                 state[ch, tx, ty] = solved_CWH[ch, tx, ty]
 
     # Terminal pair: every placement has been applied, so `state` now equals
-    # `solved_CWH`. Emit a sample with eot=1 and sentinel zeros for
-    # placement targets; the SFT loop's placement_mask zeroes out the
-    # placement losses for this sample. valid_mask=all-zero matches the
-    # invariant "no remaining tiles to place".
+    # `solved_CWH`. Sentinel zeros for placement targets; the SFT loop's
+    # placement_mask zeroes out the placement losses for this sample.
+    # valid_mask=all-zero matches the invariant "no remaining tiles to place".
     terminal_obs = state.to(torch.uint8)
     terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
-    pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, 1))
+    pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, thput_raw()))
 
     return pairs
 
@@ -239,7 +244,7 @@ _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
 def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
-    """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
+    """Yield (obs, tile, ent, dir, item, misc, mask, thput, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
     concurrent workers never share a factory. Draws the fewest-pairs kind each
@@ -298,7 +303,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
 
 def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
     """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
-    item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
+    item, misc, mask, thput, seed, kind). Stops after `target` pairs, or after
     `n_lessons` distinct factories when that is given instead."""
     random.seed(base_seed)
     rows = []
@@ -328,7 +333,7 @@ class StreamingDemoDataset(IterableDataset):
     """Generates SFT demonstrations on the fly, sharded across DataLoader workers.
 
     Yields the model-input 8-tuple (obs uint8, tile, ent, dir, item, misc,
-    mask bool, eot) for `target` pairs per pass; worker w of W walks the disjoint
+    mask bool, thput) for `target` pairs per pass; worker w of W walks the disjoint
     seed range base_seed+w mod W so no factory is produced twice. CPU generation
     overlaps GPU training via DataLoader prefetch.
     """
@@ -349,7 +354,7 @@ class StreamingDemoDataset(IterableDataset):
         for row in _iter_demo_pairs(
             self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
         ):
-            # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
+            # row is (obs, tile, ent, dir, item, misc, mask, thput, seed, kind);
             # training only needs the first 8 — seed/kind are val-only metadata.
             yield row[:8]
 
@@ -399,12 +404,12 @@ class RolloutEval(TypedDict):
     asm_item_acc: float  # frac of placed assemblers given the correct recipe
     per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
     per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
-    eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
-    eot_pos_recall: float  # frac of done states where the EOT head actually fired
-    per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
-    per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
-    per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
-    per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+    # Throughput-head calibration: mean |predicted - actual| items/s over every
+    # state the rollout visited (the head decides where the rollout stops, so
+    # this is its on-policy error).
+    rollout_thput_mae: float
+    per_kind_rollout_thput_mae: dict[str, float]  # keyed by LessonKind.name
+    per_kind_rollout_step_n: dict[str, int]  # states scored per LessonKind.name
     # `count_dangling_inserters` totals (no-input, no-output) over the scored
     # factories — should be zero — lessons/trials pooled apart like `overall`.
     dangling_inserters: tuple[int, int]
@@ -427,7 +432,7 @@ def run_rollout_eval(
     val_seeds_to_kind: dict[int, int],
     device,
     max_seeds: int = 100,
-    eot_threshold: float = 0.5,
+    target_thput: float = SftArgs.rollout_target_thput,
     num_envs: int = 8,
     records: Optional[list[dict]] = None,
 ) -> RolloutEval:
@@ -440,9 +445,9 @@ def run_rollout_eval(
     stay busy until the queue drains.
 
     For each held-out (seed, kind) we greedy-argmax every head and step
-    until the EOT head crosses `eot_threshold` — which ends the rollout,
-    exactly as the sampled EOT action terminates a PPO episode — or the env
-    finishes (throughput==1.0 or max_steps) without it ever firing.
+    until the throughput head predicts at least `target_thput` items/s — which
+    ends the rollout, as it does in the builder UI and the mod server — or the
+    env runs out of steps without it ever getting there.
     Throughput is the last `info['thput_normed']` the env reported for the
     state the model stopped at: raw items/sec divided by the per-factory
     max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
@@ -466,8 +471,8 @@ def run_rollout_eval(
         overall — mean throughput at the state the model stopped at;
         per_kind — the same, keyed by LessonKind.name;
         per_kind_n — sample count per kind in the eval;
-        eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
-        per_kind_eot_acc, per_kind_eot_pos_recall — same, keyed by kind.
+        rollout_thput_mae — throughput-head mean absolute error over the
+        visited states; per_kind_rollout_thput_mae — same, keyed by kind.
     """
     was_training = agent.training
     agent.eval()
@@ -493,12 +498,8 @@ def run_rollout_eval(
     trial_throughputs: list[float] = []
     per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
-    # EOT-head scoring: every scored step counts toward *_step; done states
-    # (should-stop positives) also count toward *_pos.
-    per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
-    per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_thput_err: dict[str, float] = {k.name: 0.0 for k in LessonKind}
+    per_kind_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
     per_kind_dangling: dict[str, tuple[int, int]] = {k.name: (0, 0) for k in LessonKind}
 
     if not seeds_sorted:
@@ -515,12 +516,9 @@ def run_rollout_eval(
             "asm_item_acc": 0.0,
             "per_kind_asm_item_acc": dict(zero),
             "per_kind_asm_n": dict(per_kind_n),
-            "eot_acc": 0.0,
-            "eot_pos_recall": 0.0,
-            "per_kind_eot_acc": dict(zero),
-            "per_kind_eot_pos_recall": dict(zero),
-            "per_kind_eot_step_n": dict(per_kind_n),
-            "per_kind_eot_pos_n": dict(per_kind_n),
+            "rollout_thput_mae": 0.0,
+            "per_kind_rollout_thput_mae": dict(zero),
+            "per_kind_rollout_step_n": dict(per_kind_n),
             "dangling_inserters": (0, 0),
             "trial_dangling_inserters": (0, 0),
             "per_kind_dangling_inserters": per_kind_dangling,
@@ -543,8 +541,9 @@ def run_rollout_eval(
     # Correct recipes for the factory each slot is replaying (from its solved
     # world). Empty when that factory has no assembler, which skips the check.
     asm_recipes: list[set[int]] = [set() for _ in range(K)]
-    current: list[tuple[int, LessonKind, float]] = [
-        (0, LessonKind.MOVE_ONE_ITEM, 0.0)
+    # (seed, kind, thput_normed, thput_raw) of the state each slot is at.
+    current: list[tuple[int, LessonKind, float, float]] = [
+        (0, LessonKind.MOVE_ONE_ITEM, 0.0, 0.0)
     ] * K
     obs_stack = []
 
@@ -558,7 +557,7 @@ def run_rollout_eval(
                 "kind": k,
             },
         )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
@@ -567,7 +566,7 @@ def run_rollout_eval(
     def finish_slot(i: int, thput: float) -> None:
         """Record slot `i`'s finished rollout at `thput` and refill it from the
         seed queue, deactivating the slot once the queue is empty."""
-        s, k, _ = current[i]
+        s, k, _, _ = current[i]
         per_kind_throughputs[k.name].append(thput)
         pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
         pool.append(thput)
@@ -599,7 +598,7 @@ def run_rollout_eval(
                 "kind": k,
             },
         )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+        current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32, device=device)
 
@@ -615,7 +614,7 @@ def run_rollout_eval(
                 obs_batch, temperature=0.0, legal_mask=True, compute_value=False
             )
             act = out["action"]
-            eot_probs = out["eot_prob"]
+            predicted_thput_K = out["predicted_thput"]
             x_K = act["xy"][:, 0]
             y_K = act["xy"][:, 1]
             ent_K = act["entity"]
@@ -627,23 +626,18 @@ def run_rollout_eval(
                 if not active[i]:
                     continue
 
-                s, k, cur_thp = current[i]
-                pred_stop = float(eot_probs[i]) > eot_threshold
+                s, k, cur_thp, cur_raw = current[i]
+                pred_raw = float(predicted_thput_K[i])
 
-                # Score the head against ground truth on this pre-action state:
-                # it should fire iff the factory is already complete. `cur_thp`
-                # and `eot_probs[i]` are both this same state, so they align.
-                is_done = cur_thp >= 1.0
-                per_kind_eot_step_total[k.name] += 1
-                per_kind_eot_correct[k.name] += int(pred_stop == is_done)
-                if is_done:
-                    per_kind_eot_pos_total[k.name] += 1
-                    per_kind_eot_pos_correct[k.name] += int(pred_stop)
+                # `cur_raw` and `pred_raw` describe this same pre-action state,
+                # so the head's calibration is scored on every state visited.
+                per_kind_step_total[k.name] += 1
+                per_kind_thput_err[k.name] += abs(pred_raw - cur_raw)
 
-                # The stop head ends the rollout, the same way the sampled EOT
-                # action terminates a PPO episode: we score the factory the
-                # model declared finished, never one it was forced past.
-                if pred_stop:
+                # The prediction ends the rollout: we score the factory the
+                # model thinks has reached the target, never one it was forced
+                # past.
+                if pred_raw >= target_thput:
                     finish_slot(i, cur_thp)
                     continue
 
@@ -655,7 +649,7 @@ def run_rollout_eval(
                     "misc": int(misc_K[i]),
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                current[i] = (s, k, float(info.get("thput_normed", 0.0)), float(info.get("thput_raw", 0.0)))
 
                 # Recipe-pick check: the agent tried to place an assembler in a
                 # factory that has one. Count it iff the assembler actually
@@ -676,7 +670,7 @@ def run_rollout_eval(
                     )
                     continue
 
-                # The env ran out of room or steps before the head ever fired.
+                # The env ran out of steps before the head predicted the target.
                 finish_slot(i, current[i][2])
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
@@ -696,19 +690,11 @@ def run_rollout_eval(
         for kn, n in per_kind_asm_total.items()
     }
 
-    eot_step_all = sum(per_kind_eot_step_total.values())
-    eot_pos_all = sum(per_kind_eot_pos_total.values())
-    eot_acc = sum(per_kind_eot_correct.values()) / eot_step_all if eot_step_all else 0.0
-    eot_pos_recall = (
-        sum(per_kind_eot_pos_correct.values()) / eot_pos_all if eot_pos_all else 0.0
-    )
-    per_kind_eot_acc = {
-        kn: (per_kind_eot_correct[kn] / n if n else 0.0)
-        for kn, n in per_kind_eot_step_total.items()
-    }
-    per_kind_eot_pos_recall = {
-        kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
-        for kn, n in per_kind_eot_pos_total.items()
+    step_all = sum(per_kind_step_total.values())
+    rollout_thput_mae = sum(per_kind_thput_err.values()) / step_all if step_all else 0.0
+    per_kind_rollout_thput_mae = {
+        kn: (per_kind_thput_err[kn] / n if n else 0.0)
+        for kn, n in per_kind_step_total.items()
     }
 
     def pooled_dangling(trial: bool) -> tuple[int, int]:
@@ -726,12 +712,9 @@ def run_rollout_eval(
         "asm_item_acc": asm_item_acc,
         "per_kind_asm_item_acc": per_kind_asm_item_acc,
         "per_kind_asm_n": dict(per_kind_asm_total),
-        "eot_acc": eot_acc,
-        "eot_pos_recall": eot_pos_recall,
-        "per_kind_eot_acc": per_kind_eot_acc,
-        "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
-        "per_kind_eot_step_n": dict(per_kind_eot_step_total),
-        "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
+        "rollout_thput_mae": rollout_thput_mae,
+        "per_kind_rollout_thput_mae": per_kind_rollout_thput_mae,
+        "per_kind_rollout_step_n": dict(per_kind_step_total),
         "dangling_inserters": pooled_dangling(trial=False),
         "trial_dangling_inserters": pooled_dangling(trial=True),
         "per_kind_dangling_inserters": per_kind_dangling,
@@ -755,7 +738,7 @@ def train_sft(args: SftArgs):
     val = _materialise(
         args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
     )
-    val_tensors_cpu = (*val[:8], val[9])  # obs..eot, kind (per-pair seed dropped)
+    val_tensors_cpu = (*val[:8], val[9])  # obs..thput, kind (per-pair seed dropped)
     val_seeds_to_kind: dict[int, int] = dict(zip(val[8].tolist(), val[9].tolist()))
 
     # Training draws every seed above the ones validation consumed, so the two
@@ -829,7 +812,7 @@ def train_sft(args: SftArgs):
         # cast to float per-batch), shuffled via a DataLoader over indices so no
         # data is copied per batch.
         (
-            tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
+            tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_thput,
         ) = (
             cached_train[0].to(device),
             *(t.to(device) for t in cached_train[1:]),
@@ -861,7 +844,7 @@ def train_sft(args: SftArgs):
         )
     # Val goes GPU-resident too, iterated via an index DataLoader.
     (
-        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
+        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_thput, va_kind,
     ) = (
         val_tensors_cpu[0].to(device),
         *(t.to(device) for t in val_tensors_cpu[1:]),
@@ -883,11 +866,11 @@ def train_sft(args: SftArgs):
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
     # All losses use reduction="none" so we can (a) mask placement losses
-    # off on terminal (eot=1) samples and (b) aggregate per-LessonKind in
+    # off on terminal samples and (b) aggregate per-LessonKind in
     # the val loop without re-running the forward pass.
     ce_loss_none = nn.CrossEntropyLoss(reduction="none")
     bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
-    bce_eot = nn.BCEWithLogitsLoss()
+    mse_thput = nn.MSELoss()
 
     # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
     # instead of "0" both in print() lines and in wandb panel titles.
@@ -920,10 +903,9 @@ def train_sft(args: SftArgs):
     val_dir_acc = 0.0
     val_item_acc = 0.0
     val_misc_acc = 0.0
-    val_eot_acc = 0.0
-    val_eot_pos_recall = 0.0
+    val_thput_mae = 0.0
     nn_heads = ("ent", "dir", "item", "misc")
-    val_not_none_acc = {h: 0.0 for h in (*nn_heads, "eot")}
+    val_not_none_acc = {h: 0.0 for h in nn_heads}
     # Cumulative optimisation pressure, used as the wandb x-axis (see the
     # define_metric calls above). global_step counts optimiser updates;
     # samples_seen counts training pairs the model has been updated on.
@@ -933,7 +915,7 @@ def train_sft(args: SftArgs):
     print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
 
     # Train batch source yielding the 8 model-input tensors per batch (obs, tile,
-    # ent, dir, item, misc, mask, eot; obs/eot already float). Cached: gather
+    # ent, dir, item, misc, mask, thput; obs/thput already float). Cached: gather
     # GPU-resident tensors by shuffled index (no host->device copy). Stream: pull
     # CPU batches from the generating workers and copy them to device
     # (non_blocking, overlapping the GPU step).
@@ -943,10 +925,10 @@ def train_sft(args: SftArgs):
                 idx = idx_cpu.to(device)
                 yield (
                     tr_obs[idx].float(), tr_tile[idx], tr_ent[idx], tr_dir[idx],
-                    tr_item[idx], tr_misc[idx], tr_mask[idx], tr_eot[idx],
+                    tr_item[idx], tr_misc[idx], tr_mask[idx], tr_thput[idx],
                 )
         else:
-            for b_obs, b_tile, b_ent, b_dir, b_item, b_misc, b_mask, b_eot in (
+            for b_obs, b_tile, b_ent, b_dir, b_item, b_misc, b_mask, b_thput in (
                 train_stream_loader
             ):
                 yield (
@@ -957,7 +939,7 @@ def train_sft(args: SftArgs):
                     b_item.to(device, non_blocking=True),
                     b_misc.to(device, non_blocking=True),
                     b_mask.to(device, non_blocking=True),
-                    b_eot.to(device, non_blocking=True).float(),
+                    b_thput.to(device, non_blocking=True).float(),
                 )
 
     def _batch_stream():
@@ -979,9 +961,10 @@ def train_sft(args: SftArgs):
         agent.train()
         # On-GPU accumulators converted ONCE per eval window (logging-only),
         # instead of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
-        acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
+        acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,thput
         acc_correct = torch.zeros((), device=device)
-        acc_eot_correct = torch.zeros((), device=device)
+        acc_place = torch.zeros((), device=device)
+        acc_thput_err = torch.zeros((), device=device)
         acc_grad_norm = torch.zeros((), device=device)
         train_total = 0
         grad_norm_count = 0
@@ -995,21 +978,22 @@ def train_sft(args: SftArgs):
             train_data_s += t_ready - t_batch
             (
                 batch_obs, batch_tile, batch_ent, batch_dir,
-                batch_item, batch_misc, batch_mask, batch_eot,
+                batch_item, batch_misc, batch_mask, batch_thput,
             ) = batch
 
             encoded = agent.encode(batch_obs)
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
-            # eot=1 samples carry sentinel placement targets. Normalise by
-            # the placement-sample count so the loss scale is independent
-            # of the per-batch mix of terminal / placement samples.
-            placement_mask = (batch_eot < 0.5).float()
+            # terminal samples (no tile left to place) carry sentinel placement
+            # targets. Normalise by the placement-sample count so the loss
+            # scale is independent of the per-batch mix of terminal /
+            # placement samples.
+            placement_mask = batch_mask.any(dim=1).float()
             n_place = placement_mask.sum().clamp(min=1.0)
 
-            # EOT head — BCE on every sample.
-            eot_logits = agent.eot_logit(encoded)
-            loss_eot = bce_eot(eot_logits, batch_eot)
+            # Throughput head — regressed on every sample, in log1p(items/s).
+            thput_log1p = agent.thput_log1p(encoded)
+            loss_thput = mse_thput(thput_log1p, torch.log1p(batch_thput))
 
             # Tile logits — use BCE with multi-label mask so ALL valid
             # tiles are rewarded, not just the randomly-chosen one. Reduce
@@ -1043,7 +1027,7 @@ def train_sft(args: SftArgs):
                 + args.lw_dir * loss_dir
                 + args.lw_item * loss_item
                 + args.lw_misc * loss_misc
-                + args.lw_eot * loss_eot
+                + args.lw_thput * loss_thput
             )
 
             optimizer.zero_grad()
@@ -1061,14 +1045,11 @@ def train_sft(args: SftArgs):
             pbar.update(B)
 
             acc_loss += torch.stack([
-                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
+                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_thput
             ]).detach() * B
-            # Whole-action accuracy: the model agrees with the demo on
-            # every output for this sample. For placement samples (eot=0)
-            # that means all 5 placement heads correct AND EOT predicted
-            # "not done". For terminal samples (eot=1) that means EOT
-            # predicted "done"; placement targets are sentinels so they
-            # don't enter the check.
+            # Whole-action accuracy over placement samples: all 5 placement
+            # heads agree with the demo. Terminal samples carry sentinel
+            # placement targets, so they only score the throughput head.
             pred_tile = tile_logits.argmax(dim=1)
             tile_hit = batch_mask[batch_idx, pred_tile] > 0
             pred_ent = ent_logits.argmax(dim=1)
@@ -1083,16 +1064,10 @@ def train_sft(args: SftArgs):
                 & (pred_misc == batch_misc)
             )
             is_place = placement_mask.bool()
-            eot_pred_bool = eot_logits > 0
-            eot_correct_t = eot_pred_bool == (batch_eot > 0.5)
-            correct = torch.where(
-                is_place,
-                place_heads_correct & eot_correct_t,
-                eot_correct_t,
-            )
-            acc_correct += correct.sum()
+            acc_correct += (place_heads_correct & is_place).sum()
+            acc_place += placement_mask.sum()
             train_total += B
-            acc_eot_correct += eot_correct_t.sum()
+            acc_thput_err += (torch.expm1(thput_log1p).clamp(min=0.0) - batch_thput).abs().sum()
             # No per-batch sync: t_batch just bounds the next DataLoader wait.
             t_batch = time.time()
 
@@ -1119,10 +1094,10 @@ def train_sft(args: SftArgs):
             train_loss_dir,
             train_loss_item,
             train_loss_misc,
-            train_loss_eot,
+            train_loss_thput,
         ) = (acc_loss / train_total).tolist()
-        train_acc = (acc_correct / train_total).item()
-        train_eot_acc = (acc_eot_correct / train_total).item()
+        train_acc = (acc_correct / acc_place.clamp(min=1.0)).item()
+        train_thput_mae = (acc_thput_err / train_total).item()
         grad_norm_sum = acc_grad_norm.item()
         train_seconds = time.time() - t_train
         train_compute_s = max(0.0, train_seconds - train_data_s)
@@ -1136,16 +1111,14 @@ def train_sft(args: SftArgs):
         val_loss_dir = 0.0
         val_loss_item = 0.0
         val_loss_misc = 0.0
-        val_loss_eot = 0.0
+        val_loss_thput = 0.0
         val_correct = 0
         val_tile_correct = 0
         val_ent_correct = 0
         val_dir_correct = 0
         val_item_correct = 0
         val_misc_correct = 0
-        val_eot_correct = 0
-        val_eot_pos_correct = 0
-        val_eot_pos_total = 0
+        val_thput_err = 0.0
         val_nn_correct = {h: 0 for h in nn_heads}
         val_nn_total = {h: 0 for h in nn_heads}
         val_total = 0
@@ -1161,14 +1134,11 @@ def train_sft(args: SftArgs):
         per_kind_item_correct = {k.name: 0 for k in LessonKind}
         per_kind_misc_correct = {k.name: 0 for k in LessonKind}
         per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
-        # EOT is scored over EVERY sample of a kind (the placement eot=0 steps
-        # plus the one terminal eot=1), so it needs full-sample counts, not the
-        # placement-only per_kind_n. The pos_* counters track recall on the rare
-        # terminal (eot=1) samples — the ones that actually trigger "stop".
-        per_kind_eot_correct = {k.name: 0 for k in LessonKind}
-        per_kind_eot_total = {k.name: 0 for k in LessonKind}
-        per_kind_eot_pos_correct = {k.name: 0 for k in LessonKind}
-        per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
+        # The throughput head is scored over EVERY sample of a kind (placement
+        # steps plus the terminal one), so it needs full-sample counts, not the
+        # placement-only per_kind_n.
+        per_kind_thput_err = {k.name: 0.0 for k in LessonKind}
+        per_kind_thput_total = {k.name: 0 for k in LessonKind}
         per_kind_nn_correct = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
         per_kind_nn_total = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
 
@@ -1182,16 +1152,17 @@ def train_sft(args: SftArgs):
                 batch_item = va_item[idx]
                 batch_misc = va_misc[idx]
                 batch_mask = va_mask[idx]
-                batch_eot = va_eot[idx]
+                batch_thput = va_thput[idx]
                 batch_kind = va_kind[idx]
 
                 encoded = agent.encode(batch_obs)
                 B = encoded.shape[0]
-                placement_mask = (batch_eot < 0.5).float()
+                placement_mask = batch_mask.any(dim=1).float()
                 is_place = placement_mask.bool()
 
-                eot_logits = agent.eot_logit(encoded)
-                loss_eot_per = bce_loss_none(eot_logits, batch_eot)
+                thput_log1p = agent.thput_log1p(encoded)
+                loss_thput_per = (thput_log1p - torch.log1p(batch_thput)).square()
+                thput_err_per = (torch.expm1(thput_log1p).clamp(min=0.0) - batch_thput).abs()
 
                 tile_logits = agent.tile_logits(encoded).reshape(B, -1)
                 # Per-sample losses: needed so we can sum them within each
@@ -1224,7 +1195,7 @@ def train_sft(args: SftArgs):
                     + args.lw_dir * loss_dir_per
                     + args.lw_item * loss_item_per
                     + args.lw_misc * loss_misc_per
-                    + args.lw_eot * loss_eot_per
+                    + args.lw_thput * loss_thput_per
                 )
                 val_loss += loss_per_sample.sum().item()
                 val_loss_tile += loss_tile_per.sum().item()
@@ -1232,7 +1203,7 @@ def train_sft(args: SftArgs):
                 val_loss_dir += loss_dir_per.sum().item()
                 val_loss_item += loss_item_per.sum().item()
                 val_loss_misc += loss_misc_per.sum().item()
-                val_loss_eot += loss_eot_per.sum().item()
+                val_loss_thput += loss_thput_per.sum().item()
 
                 pred_tile = tile_logits.argmax(dim=1)
                 tile_hit = batch_mask[batch_idx, pred_tile] > 0
@@ -1244,28 +1215,17 @@ def train_sft(args: SftArgs):
                 dir_correct_per = pred_dir == batch_dir
                 item_correct_per = pred_item == batch_item
                 misc_correct_per = pred_misc == batch_misc
-                # EOT-head accuracy + recall on positives separately.
-                # Recall on positives matters because the positives are
-                # rare; "always predict 0" would give high accuracy but
-                # never trigger episode termination.
-                eot_pred_bool = eot_logits > 0
-                eot_correct_per = eot_pred_bool == (batch_eot > 0.5)
 
-                # Whole-sample accuracy. Placement sample (eot=0): all 5
-                # placement heads correct AND EOT predicted "not done".
-                # Terminal sample (eot=1): EOT predicted "done"; placement
-                # targets are sentinels so they don't enter the check.
-                place_heads_correct = (
+                # Whole-action accuracy over placement samples: all 5 placement
+                # heads correct. Terminal samples carry sentinel placement
+                # targets, so they don't enter the check.
+                correct_per = (
                     tile_hit
                     & ent_correct_per
                     & dir_correct_per
                     & item_correct_per
                     & misc_correct_per
-                )
-                correct_per = torch.where(
-                    is_place,
-                    place_heads_correct & eot_correct_per,
-                    eot_correct_per,
+                    & is_place
                 )
                 val_correct += int(correct_per.sum().item())
                 val_tile_correct += tile_hit[is_place].sum().item()
@@ -1287,14 +1247,11 @@ def train_sft(args: SftArgs):
                     val_nn_correct[h] += int((correct & m).sum().item())
                     val_nn_total[h] += int(m.sum().item())
 
-                val_eot_correct += int(eot_correct_per.sum().item())
-                is_pos = batch_eot > 0.5
-                val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
-                val_eot_pos_total += int(is_pos.sum().item())
+                val_thput_err += thput_err_per.sum().item()
 
                 # Per-kind aggregation: bucket placement metrics by kind on
                 # placement samples only (terminal samples carry no kind-
-                # specific placement signal; their eot loss is folded in
+                # specific placement signal; their throughput loss is folded in
                 # via loss_per_sample). unique() keeps this
                 # O(num_kinds_in_batch) so adding new LessonKind enum
                 # values has no cost here.
@@ -1321,23 +1278,16 @@ def train_sft(args: SftArgs):
                         per_kind_nn_correct[h][k_name] += int((correct & mk).sum().item())
                         per_kind_nn_total[h][k_name] += int(mk.sum().item())
                     per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
-                    # EOT spans the whole kind (placement + terminal), so use
-                    # the full kind mask here, not the placement-only mask_k.
+                    # The throughput head spans the whole kind (placement +
+                    # terminal), so use the full kind mask here, not mask_k.
                     kind_k = batch_kind == k_val
-                    kind_k_pos = kind_k & is_pos
-                    per_kind_eot_correct[k_name] += int(
-                        eot_correct_per[kind_k].sum().item()
-                    )
-                    per_kind_eot_total[k_name] += int(kind_k.sum().item())
-                    per_kind_eot_pos_correct[k_name] += int(
-                        eot_correct_per[kind_k_pos].sum().item()
-                    )
-                    per_kind_eot_pos_total[k_name] += int(kind_k_pos.sum().item())
+                    per_kind_thput_err[k_name] += thput_err_per[kind_k].sum().item()
+                    per_kind_thput_total[k_name] += int(kind_k.sum().item())
 
         # Placement losses were already masked off on terminal samples (their
         # per-sample contribution is zero), so dividing by val_place_total
-        # gives the average over the placement subset. The eot loss spans
-        # every sample, so it's divided by val_total.
+        # gives the average over the placement subset. The throughput loss
+        # spans every sample, so it's divided by val_total.
         place_norm = max(1, val_place_total)
         val_loss /= val_total
         val_loss_tile /= place_norm
@@ -1345,24 +1295,20 @@ def train_sft(args: SftArgs):
         val_loss_dir /= place_norm
         val_loss_item /= place_norm
         val_loss_misc /= place_norm
-        val_loss_eot /= val_total
-        val_acc = val_correct / val_total
+        val_loss_thput /= val_total
+        val_acc = val_correct / place_norm
         val_tile_acc = val_tile_correct / place_norm
         val_ent_acc = val_ent_correct / place_norm
         val_dir_acc = val_dir_correct / place_norm
         val_item_acc = val_item_correct / place_norm
         val_misc_acc = val_misc_correct / place_norm
-        val_eot_acc = val_eot_correct / val_total
-        val_eot_pos_recall = (
-            val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
-        )
+        val_thput_mae = val_thput_err / val_total
         # 0.0 when a head saw no non-NONE target this window (e.g. no recipe
-        # placements → no item targets); EOT reuses its positive-class recall.
+        # placements → no item targets).
         val_not_none_acc = {
             h: (val_nn_correct[h] / val_nn_total[h] if val_nn_total[h] > 0 else 0.0)
             for h in nn_heads
         }
-        val_not_none_acc["eot"] = val_eot_pos_recall
 
         # Build per-kind metric dict for both stdout and wandb. Skip kinds
         # absent from the val split (e.g. small datasets where some kinds
@@ -1385,17 +1331,11 @@ def train_sft(args: SftArgs):
             per_kind_metrics[f"val/{k.name}/misc_acc"] = (
                 per_kind_misc_correct[k.name] / n
             )
-            # EOT acc/recall use full-sample / positive-only denominators (NOT
-            # n, which counts placement samples only). Mirrors the global
-            # val/eot_acc + val/eot_pos_recall, but per LessonKind so we can see
-            # which lessons the stop-signal misfires on.
-            eot_n = per_kind_eot_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_acc"] = (
-                per_kind_eot_correct[k.name] / eot_n if eot_n > 0 else 0.0
-            )
-            eot_pos_n = per_kind_eot_pos_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
-                per_kind_eot_pos_correct[k.name] / eot_pos_n if eot_pos_n > 0 else 0.0
+            # Full-sample denominator (NOT n, which counts placement samples
+            # only): per-lesson view of val/thput_mae, so we can see which
+            # lessons the stop signal is miscalibrated on.
+            per_kind_metrics[f"val/{k.name}/thput_mae"] = (
+                per_kind_thput_err[k.name] / per_kind_thput_total[k.name]
             )
 
             # Guarded per head so a metric only surfaces for kinds that actually
@@ -1406,10 +1346,6 @@ def train_sft(args: SftArgs):
                     per_kind_metrics[f"val/{k.name}/not_none_{h}_acc"] = (
                         per_kind_nn_correct[h][k.name] / nn_n
                     )
-            if eot_pos_n > 0:
-                per_kind_metrics[f"val/{k.name}/not_none_eot_acc"] = (
-                    per_kind_eot_pos_correct[k.name] / eot_pos_n
-                )
 
         val_seconds = time.time() - t_val
 
@@ -1426,7 +1362,7 @@ def train_sft(args: SftArgs):
                 val_seeds_to_kind,
                 device,
                 max_seeds=args.eval_rollouts_max_seeds,
-                eot_threshold=args.rollout_eot_threshold,
+                target_thput=args.rollout_target_thput,
                 num_envs=args.eval_rollouts_num_envs,
             )
             rollout_seconds = time.time() - t_rollout
@@ -1434,6 +1370,12 @@ def train_sft(args: SftArgs):
             per_kind_thp_n = roll["per_kind_n"]
             per_kind_metrics["val/thput"] = overall_thp
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
+            # The head's error on the states its own rollouts visit, as
+            # opposed to val/thput_mae's expert-demo states.
+            per_kind_metrics["val/rollout_thput_mae"] = roll["rollout_thput_mae"]
+            for kn, mae in roll["per_kind_rollout_thput_mae"].items():
+                if roll["per_kind_rollout_step_n"][kn] > 0:
+                    per_kind_metrics[f"val/{kn}/rollout_thput_mae"] = mae
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput"] = thp
@@ -1463,11 +1405,11 @@ def train_sft(args: SftArgs):
             f"{samples_seen:>{len(str(total_samples))}}/{total_samples} samples "
             f"(epoch {epoch}/{args.epochs}) | "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
-            f"train_eot_acc={train_eot_acc:.3f} | "
+            f"train_thput_mae={train_thput_mae:.3f} | "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.3f} "
             f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f} "
             f"item={val_item_acc:.3f} misc={val_misc_acc:.3f} "
-            f"eot={val_eot_acc:.3f} eot+={val_eot_pos_recall:.3f})"
+            f"thput_mae={val_thput_mae:.3f})"
             + (
                 f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
                 if overall_thp is not None
@@ -1510,24 +1452,23 @@ def train_sft(args: SftArgs):
                     "train/loss_dir": train_loss_dir,
                     "train/loss_item": train_loss_item,
                     "train/loss_misc": train_loss_misc,
-                    "train/loss_eot": train_loss_eot,
+                    "train/loss_thput": train_loss_thput,
                     "train/acc": train_acc,
-                    "train/eot_acc": train_eot_acc,
+                    "train/thput_mae": train_thput_mae,
                     "val/loss": val_loss,
                     "val/loss_tile": val_loss_tile,
                     "val/loss_ent": val_loss_ent,
                     "val/loss_dir": val_loss_dir,
                     "val/loss_item": val_loss_item,
                     "val/loss_misc": val_loss_misc,
-                    "val/loss_eot": val_loss_eot,
+                    "val/loss_thput": val_loss_thput,
                     "val/acc": val_acc,
                     "val/tile_acc": val_tile_acc,
                     "val/ent_acc": val_ent_acc,
                     "val/dir_acc": val_dir_acc,
                     "val/item_acc": val_item_acc,
                     "val/misc_acc": val_misc_acc,
-                    "val/eot_acc": val_eot_acc,
-                    "val/eot_pos_recall": val_eot_pos_recall,
+                    "val/thput_mae": val_thput_mae,
                     **{
                         f"val/not_none_{h}_acc": acc
                         for h, acc in val_not_none_acc.items()
@@ -1584,8 +1525,7 @@ def train_sft(args: SftArgs):
         "val_dir_acc": round(val_dir_acc, 4),
         "val_item_acc": round(val_item_acc, 4),
         "val_misc_acc": round(val_misc_acc, 4),
-        "val_eot_acc": round(val_eot_acc, 4),
-        "val_eot_pos_recall": round(val_eot_pos_recall, 4),
+        "val_thput_mae": round(val_thput_mae, 4),
         **{
             f"val_not_none_{h}_acc": round(acc, 4)
             for h, acc in val_not_none_acc.items()
@@ -1612,8 +1552,8 @@ def train_sft(args: SftArgs):
     print(f"Summary written to {summary_path}")
 
     if args.track and run is not None:
-        # Headline metric in the W&B run table: greedy throughput (EOT
-        # ignored), the same number that selected the checkpoint.
+        # Headline metric in the W&B run table: greedy throughput, the same
+        # number that selected the checkpoint.
         run.summary["best_val_throughput"] = best_val_throughput
         run.summary["best_val_acc"] = best_val_acc
 

@@ -31,15 +31,14 @@ NUM_ENVS = 2
 MAX_STEPS = 3
 
 
-def _eot_action(num_envs, eot):
-    """A batched no-op placement; ``eot`` declares end-of-turn per sub-env."""
+def _noop_action(num_envs):
+    """A batched no-op placement."""
     return {
         "xy": np.zeros((num_envs, 2), dtype=np.int64),
         "entity": np.zeros(num_envs, dtype=np.int64),
         "direction": np.zeros(num_envs, dtype=np.int64),
         "item": np.zeros(num_envs, dtype=np.int64),
         "misc": np.zeros(num_envs, dtype=np.int64),
-        "eot": np.asarray(eot, dtype=np.int64),
     }
 
 
@@ -51,16 +50,17 @@ def _make_vec_env():
 
 
 def test_autoreset_step_ignores_the_action_and_pays_zero():
-    """The step after a termination is junk: action dropped, reward forced 0."""
+    """The step after an episode ends is junk: action dropped, reward forced 0."""
     envs = _make_vec_env()
     envs.reset(seed=0)
 
-    # End both episodes via the eot action.
-    _, _, terminations, _, _ = envs.step(_eot_action(NUM_ENVS, [1, 1]))
-    assert terminations.all(), "eot should terminate every sub-env"
+    # Run both episodes out to their max_steps truncation.
+    truncations = np.zeros(NUM_ENVS, dtype=bool)
+    while not truncations.all():
+        _, _, _, truncations, _ = envs.step(_noop_action(NUM_ENVS))
 
     # Next call: place a belt somewhere. Autoreset must swallow it.
-    action = _eot_action(NUM_ENVS, [0, 0])
+    action = _noop_action(NUM_ENVS)
     action["entity"][:] = 1  # a real, placeable entity
     action["direction"][:] = 1
     obs, reward, terminations, truncations, _ = envs.step(action)
@@ -83,11 +83,9 @@ def test_dones_flag_marks_exactly_the_junk_rows():
     dones = np.zeros((num_steps, NUM_ENVS), dtype=bool)
     rewards = np.zeros((num_steps, NUM_ENVS), dtype=np.float64)
 
-    rng = np.random.default_rng(0)
     for step in range(num_steps):
         dones[step] = next_done  # exactly what the PPO rollout stores
-        action = _eot_action(NUM_ENVS, rng.integers(0, 2, size=NUM_ENVS))
-        next_obs, reward, terminations, truncations, _ = envs.step(action)
+        next_obs, reward, terminations, truncations, _ = envs.step(_noop_action(NUM_ENVS))
         rewards[step] = reward
         next_done = np.logical_or(terminations, truncations)
 

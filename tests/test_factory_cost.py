@@ -58,17 +58,16 @@ def test_entity_cost_charges_multitile_entity_once_and_sums_types():
     entity_grid[remaining[0]] = belt.value
     entity_grid[remaining[1]] = inserter.value
 
+    # A no-op placement (empty onto an empty tile) just runs the cost sim.
     action = {
-        "xy": np.array([0, 0]),
+        "xy": np.array(remaining[2]),
         "entity": 0,
         "direction": 0,
         "item": 0,
         "misc": 0,
-        "eot": 1,
     }
-    _, _, terminated, _, info = env.step(action)
+    _, _, _, _, info = env.step(action)
 
-    assert terminated
     assert _ENTITY_FOOTPRINT_AREAS[assembler.value] == 9
     assert info["entity_cost"] == pytest.approx(33.25 + 2.0 + 7.75)
 

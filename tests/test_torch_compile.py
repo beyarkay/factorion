@@ -94,9 +94,8 @@ class TestCompiledLogProbConsistency:
         dir_B = action_out["direction"]
         item_B = action_out["item"]
         misc_B = action_out["misc"]
-        eot_B = action_out["eot"]
         action_tensor = torch.stack(
-            [x_B, y_B, ent_B, dir_B, item_B, misc_B, eot_B], dim=1
+            [x_B, y_B, ent_B, dir_B, item_B, misc_B], dim=1
         )
 
         _, logp_replay, _, _ = compiled_agent.get_action_and_value(
@@ -128,13 +127,13 @@ class TestCompiledParity:
     def test_deterministic_parity(self, agent, envs, n_channels):
         """Compiled and uncompiled agents with same weights produce same values."""
         obs = torch.randn(4, n_channels, 5, 5)
-        # 7 columns: xy(2), entity, direction, item, misc, eot
+        # 6 columns: xy(2), entity, direction, item, misc
         action_tensor = torch.tensor(
             [
-                [2, 3, 1, 2, 0, 0, 0],
-                [0, 0, 0, 0, 0, 0, 1],
-                [4, 4, 1, 4, 0, 0, 0],
-                [1, 1, 0, 0, 0, 0, 1],
+                [2, 3, 1, 2, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+                [4, 4, 1, 4, 0, 0],
+                [1, 1, 0, 0, 0, 0],
             ],
             dtype=torch.long,
         )
