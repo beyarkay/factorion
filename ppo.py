@@ -822,7 +822,12 @@ class FactorioEnv(gym.Env):
         self._terminated = False
         self._truncated = False
         self.max_entities = 2
-        self._num_missing_entities = self._reset_options.get('num_missing_entities', float('inf'))
+        nme = self._reset_options.get('num_missing_entities', float('inf'))
+        if nme == 'uniform':
+            # Fresh draw per episode (np_random was just reseeded above, so
+            # the draw is deterministic per episode seed).
+            nme = int(self.np_random.integers(1, self.size * self.size + 1))
+        self._num_missing_entities = nme
 
         self.actions = []
         # Running count of valid non-empty placements, kept incrementally instead
@@ -2047,7 +2052,8 @@ if __name__ == "__main__":
     next_obs_ECWH, reset_infos = envs.reset(
         seed=args.seed,
         options={
-            'num_missing_entities': float('inf'),
+            'num_missing_entities':
+                'uniform' if args.partial_blanking else float('inf'),
         }
     )
     next_obs_ECWH = torch.as_tensor(np.array(next_obs_ECWH), dtype=torch.float32, device=device)
