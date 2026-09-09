@@ -1,0 +1,39 @@
+# FAILING FIXTURE — documents an engine bug (issue #261 parity harness).
+#
+# The engine's assembler model ignores the recipe's crafting TIME. It caps
+# assembler output at the inserter INPUT rate only (entities.rs
+# `AssemblingMachine::transform_flow` = min(input_ratio) * recipe_output,
+# with no crafting-speed term), so a slow recipe is over-counted.
+#
+# This factory crafts `accumulator` (5 battery + 2 iron_plate, crafting_time
+# 10s) in an assembling-machine-1 (crafting speed 0.5). The machine can finish
+# at most  0.5 / 10 = 0.05 accumulator/s  no matter how fast the belts feed it.
+# Real Factorio measures EXACTLY 0.05/s here (parity harness, 6000-tick window,
+# converged). The engine instead reports 0.172/s (= 0.86 battery/s ÷ 5 per
+# craft — the input-inserter limit).
+#
+# This fixture asserts the correct 0.05, so `test_all_yamls_in_factories_dir`
+# FAILS until the assembler emits  min(input-limited, crafting-limited).
+# Crafting-limited = crafting_speed / crafting_time * output_per_craft.
+description: |
+  accumulator assembler, crafting-speed-limited to 0.05/s. The engine wrongly
+  reports the inserter-input-limited 0.172/s because it ignores crafting_time.
+items:
+- { x: 1, y: 5, item: battery }         # source feeds battery (5 per craft)
+- { x: 7, y: 4, item: iron_plate }      # source feeds iron_plate (2 per craft)
+- { x: 3, y: 5, item: accumulator }     # assembler recipe (anchor = top-left)
+- { x: 4, y: 9, item: accumulator }     # sink counts accumulators
+throughput:
+- { item: accumulator, per_second: 0.05 }
+factory: |
+  .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. ..
+  .. .. .. .. .. .. .. Sv .. .. ..
+  .. Sv .. aaaaaaaa i< b< .. .. ..
+  .. b> i> aa    aa .. .. .. .. ..
+  .. .. .. aaaaaaaa .. .. .. .. ..
+  .. .. .. .. .. iv .. .. .. .. ..
+  .. .. .. .. K< b< .. .. .. .. ..
+  .. .. .. .. .. .. .. .. .. .. ..
