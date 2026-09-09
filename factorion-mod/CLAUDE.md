@@ -52,11 +52,18 @@ against the engine's prediction. Full sequence, from nothing to a report:
    Y/s (err Z%)`; the run ends with a ranked list of every sink with >0
    error and a pass/fail count (non-zero exit if any factory mismatches
    beyond `--rel-tol`/`--abs-tol`). Known-expected divergences (so a real
-   regression stands out): assembler crafting-time over-count, long-handed
-   inserter (0.86 vs ~1.23), the flat-inserter ~8% under, uncraftable
-   smelting recipes → 0, and impossible >15/s rates from degenerate
-   sink-loop factories. Transport (belts/splitters/undergrounds) should be
-   exact.
+   regression stands out): long-handed inserter (0.86 vs ~1.23), the
+   flat-inserter ~8% under, uncraftable smelting recipes → 0, and
+   impossible >15/s rates from degenerate sink-loop factories. Transport
+   (belts/splitters/undergrounds) should be exact.
+
+   The assembler crafting-time over-count is **fixed** (#355) — an
+   assembler now runs at `crafting_speed / crafting_time` crafts per
+   second, so a machine-speed-limited factory should agree with the game
+   too. The `assembler_input_limited` / `assembler_machine_speed_limited`
+   fixtures cover both branches; a divergence there is a real regression.
+   Slow recipes need many game-seconds to resolve a fractional items/s
+   rate — crank `--game-speed`.
 
 6. **After editing the mod Lua**, re-host to reload it (see *Reloading the
    mod after editing*) before the next run.

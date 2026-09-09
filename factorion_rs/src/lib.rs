@@ -173,7 +173,11 @@ fn py_entity_tiles(
 /// per-item properties.
 ///
 /// Shape: `{int_value: {"name": str, "is_placeable": bool,
-///                      "width": int, "height": int, "flow": float}}`.
+///                      "width": int, "height": int, "flow": float,
+///                      "crafting_speed": float | None}}`.
+///
+/// `flow` is items/second; `crafting_speed` is the dimensionless recipe
+/// multiplier and is `None` for everything that is not a crafting machine.
 ///
 /// Single source of truth for item identity and entity properties —
 /// Python's `items` dict (and the older `entities` dict) are built from
@@ -190,6 +194,7 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
         entry.set_item("width", w)?;
         entry.set_item("height", h)?;
         entry.set_item("flow", item.flow_rate())?;
+        entry.set_item("crafting_speed", item.crafting_speed())?;
         outer.set_item(item as i64, entry)?;
     }
     Ok(outer.into())
@@ -197,8 +202,8 @@ fn py_items(py: Python<'_>) -> PyResult<Py<PyDict>> {
 
 /// Return all crafting recipes as a Python dict.
 ///
-/// Shape: `{item_name: {"consumes": {item_name: rate, ...},
-///                      "produces": {item_name: rate, ...},
+/// Shape: `{item_name: {"consumes": {item_name: qty_per_craft, ...},
+///                      "produces": {item_name: qty_per_craft, ...},
 ///                      "crafting_time": seconds_per_craft,
 ///                      "produced_by": [machine_name, ...],
 ///                      "total_raw": {item_name: amount, ...},
@@ -220,12 +225,14 @@ fn py_recipes(py: Python<'_>) -> PyResult<Py<PyDict>> {
     for (item, recipe) in &recipes {
         let entry = PyDict::new(py);
         let consumes = PyDict::new(py);
-        for &(i, rate) in recipe.consumes.iter() {
-            consumes.set_item(i.name(), rate)?;
+        // Quantities per craft, not rates — Python divides by crafting_time
+        // itself where it wants items/second.
+        for &(i, qty) in recipe.consumes.iter() {
+            consumes.set_item(i.name(), qty)?;
         }
         let produces = PyDict::new(py);
-        for &(i, rate) in recipe.produces.iter() {
-            produces.set_item(i.name(), rate)?;
+        for &(i, qty) in recipe.produces.iter() {
+            produces.set_item(i.name(), qty)?;
         }
         let total = recipe.total_raw(&index);
         let total_raw = PyDict::new(py);

@@ -13,6 +13,7 @@ class ItemProps(TypedDict):
     width: int
     height: int
     flow: float
+    crafting_speed: float | None
 
 class RecipeData(TypedDict):
     consumes: dict[str, float]
