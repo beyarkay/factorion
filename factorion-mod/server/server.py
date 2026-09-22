@@ -309,10 +309,10 @@ def run_inference(
     req: dict,
     max_steps: int,
     device,
-    eot_threshold: float = 0.5,
+    target_thput: float = 1.0,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until eot_head signals "done", the model
+    """Iteratively place entities until pred_thput_head signals "done", the model
     emits a no-op, or we hit the safety budget."""
     obs = request_to_obs(req)
 
@@ -325,10 +325,10 @@ def run_inference(
         # Ask the model first: do you think we're done?
         with torch.no_grad():
             x = torch.from_numpy(obs).unsqueeze(0).to(device)
-            eot_p = float(agent.eot_prob(x).item())
-        if eot_p > eot_threshold:
-            log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
-            stats["stop_reason"] = "eot"
+            pred_thput_p = float(agent.get_predicted_throughput(x).item())
+        if pred_thput_p >= target_thput:
+            log.info("  step %d: predicted raw thput=%.3f items/s >= %.2f → STOP", step, pred_thput_p, target_thput)
+            stats["stop_reason"] = "target_thput"
             stats["steps_taken"] = step
             break
         action = _argmax_action(agent, obs, device)
@@ -337,8 +337,8 @@ def run_inference(
         item_id = action["item"]
         item_name = items[item_id].name if item_id in items else "?"
         log.info(
-            "  step %d: eot=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
-            step, eot_p, ent_name, ent_id,
+            "  step %d: pred_thput=%.3f place=%s(id=%d) at (%d,%d) dir=%d item=%s(id=%d) misc=%d",
+            step, pred_thput_p, ent_name, ent_id,
             action["xy"][0], action["xy"][1],
             action["direction"], item_name, item_id, action["misc"],
         )
@@ -353,7 +353,7 @@ def run_inference(
             stats["stop_reason"] = "placement_error"
             break
     else:
-        log.info("Reached max_steps=%d without eot/empty.", max_steps)
+        log.info("Reached max_steps=%d without pred_thput/empty.", max_steps)
 
     return obs, stats
 

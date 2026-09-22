@@ -250,7 +250,7 @@ def _apply_prediction(grid: list[list[dict]], prediction: dict) -> dict:
         "direction": Direction[prediction["direction"]].value,
         "item": name_to_value[prediction["item"]],
         "misc": Misc[prediction["misc"]].value,
-        "eot": 0,
+        "pred_thput": 0,
     }
     is_invalid, invalid_reason, _placed_action = apply_placement_action(
         world_CWH,
@@ -571,7 +571,7 @@ def _load_checkpoint(path: str) -> None:
     # "_orig_mod." to every parameter name; SFT checkpoints are saved
     # uncompiled (clean names). Strip the prefix so both load identically
     # — otherwise _encoder_arch finds zero conv keys and crashes, and the
-    # critic/eot-head filtering below silently misses every key.
+    # critic/pred_thput-head filtering below silently misses every key.
     state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
     _CHECKPOINT_STATE = state
     _CHECKPOINT_PATH = path
@@ -650,7 +650,7 @@ def _get_agent(size: int) -> AgentCNN:
     # so loading it is wasted work even on a size match).
     #
     # attn.pos_embed ((1, W*H, attn_dim)): dropped on size mismatch, kept on
-    # a size match. Pre-#103 checkpoints have no eot_head keys at all →
+    # a size match. Pre-#103 checkpoints have no pred_thput_head keys at all →
     # load_state_dict (strict=False) leaves the freshly-initialised head in
     # place.
     saved_pos = _CHECKPOINT_STATE.get("attn.pos_embed")
@@ -665,7 +665,7 @@ def _get_agent(size: int) -> AgentCNN:
     missing, unexpected = agent.load_state_dict(filtered, strict=False)
     ignorable = {
         "critic_head.weight", "critic_head.bias",
-        "eot_head.weight", "eot_head.bias",
+        "pred_thput_head.weight", "pred_thput_head.bias",
         "attn.pos_embed",
     }
     real_missing = [k for k in missing if k not in ignorable]
@@ -712,11 +712,8 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
     return top, max(0.0, 1.0 - cum)
 
 
-EOT_STOP_THRESHOLD = 0.5
-"""EOT-head probability above which the UI treats the model as finished: the
-hold-to-apply loop stops and no further placement is applied. Matches
-`AgentCNN.eot_should_stop`'s default and SFT's `rollout_eot_threshold`, so
-holding `a` reproduces what a greedy rollout would build."""
+throughput_STOP_THRESHOLD = 1.0
+"""Raw items/second prediction at which the UI's hold-to-apply loop stops."""
 
 
 CANDIDATE_TILE_THRESHOLD = 0.01
@@ -751,7 +748,7 @@ def _predict(grid: list[list[dict]]) -> dict:
         # "Apply" target, and logp_heads drives the side-panel top-p lists.
         out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
         heads = out["logp_heads"]
-        eot_prob = float(out["eot_prob"][0].item())
+        predicted_thput = float(out["predicted_thput"][0].item())
 
         tile_probs = heads["tile"].exp()[0]
         tile_top, tile_rest = _tile_top_p(tile_probs, H)
@@ -803,13 +800,13 @@ def _predict(grid: list[list[dict]]) -> dict:
         "misc_top": misc_top,
         "misc_rest": misc_rest,
         "candidates": candidates,
-        "eot_prob": eot_prob,
+        "predicted_thput": predicted_thput,
         **_throughput(world_WHC),
     }
 
 
 def _predict_action(grid: list[list[dict]]) -> dict:
-    """Return only the greedy next placement, plus the EOT probability.
+    """Return only the greedy next placement, plus predicted raw throughput.
 
     This is the latency-sensitive path used while the user holds ``a``. The
     detailed predictor above additionally builds probability tables and ghost
@@ -818,7 +815,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
     exactly what the panel showed. Reading the heads directly instead skips the
     entity-conditional masks `sample_action` applies to direction / item / misc
     (which is how a belt ends up tagged with a recipe, or an assembler with
-    none), and skips `eot_prob`, without which the loop cannot stop where a
+    none), and skips `predicted_thput`, without which the loop cannot stop where a
     rollout would.
     """
     world_WHC = build_world(grid)
@@ -834,7 +831,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
         direction = int(act["direction"][0].item())
         item = int(act["item"][0].item())
         misc = int(act["misc"][0].item())
-        eot_prob = float(out["eot_prob"][0].item())
+        predicted_thput = float(out["predicted_thput"][0].item())
 
     return {
         "x": x,
@@ -843,7 +840,7 @@ def _predict_action(grid: list[list[dict]]) -> dict:
         "direction": _DIR_NAMES.get(direction, str(direction)),
         "item": _ITEM_NAMES.get(item, str(item)),
         "misc": _MISC_NAMES.get(misc, str(misc)),
-        "eot_prob": eot_prob,
+        "predicted_thput": predicted_thput,
         # Rides along so the readout tracks a held-`a` build as it happens,
         # one placement behind, instead of going blank until the key is let go.
         **_throughput(world_WHC),
@@ -887,7 +884,7 @@ def _reset_rollout_env(
 
 
 def _rollout_result(
-    index: int, env: FactorioEnv, seed: int, info: dict, terminated: bool
+    index: int, env: FactorioEnv, seed: int, info: dict, reached_target: bool
 ) -> dict:
     return {
         "type": "result",
@@ -896,7 +893,7 @@ def _rollout_result(
         "seed": seed,
         "size": env.size,
         "steps": int(env.steps),
-        "stopped_by": "eot" if terminated else "max_steps",
+        "stopped_by": "target_thput" if reached_target else "max_steps",
         "thput_normed": float(info.get("thput_normed", 0.0)),
         "thput_raw": float(info.get("thput_raw", 0.0)),
         "max_throughput": float(env._max_throughput),
@@ -914,6 +911,7 @@ def _batch_rollout(
     size: int,
     num_missing_entities: Optional[int],
     legal_mask: bool,
+    target_thput: float = 1.0,
 ) -> Iterator[dict]:
     """Greedily rebuild one blanked factory per (kind, seed), yielding an
     event per finished rollout.
@@ -929,9 +927,9 @@ def _batch_rollout(
     same choice.
 
     Greedy argmax + the legal-tile mask mirror ``sft.run_rollout_eval``, so a
-    scan's throughput numbers are the same quantity as ``eval/thput`` — except
-    that here the EOT head really does end the episode, since the whole point
-    is to see the factory the model considers finished.
+    scan's throughput numbers are the same quantity as ``eval/thput``. The
+    caller's throughput target ends the rollout when the model's prediction for
+    the current factory reaches that target.
     """
     agent = _get_agent(size)
     yield {"type": "start", "n": len(seeds)}
@@ -944,9 +942,8 @@ def _batch_rollout(
         obs_list: list[np.ndarray] = []
         for kind, seed in zip(kinds[group], seeds[group]):
             env = FactorioEnv(size=size, idx=0)
-            # Only the terminal throughput is ever shown, and the per-step
-            # simulate_throughput otherwise dominates the rollout.
-            env._full_diagnostics = False
+            # The sampling policy needs current throughput after every action.
+            env._full_diagnostics = True
             obs, used = _reset_rollout_env(env, kind, seed, num_missing_entities)
             envs.append(env)
             used_seeds.append(used)
@@ -961,7 +958,7 @@ def _batch_rollout(
                 )
                 out = agent.sample_action(
                     batch, temperature=0.0, legal_mask=legal_mask,
-                    eot_threshold=EOT_STOP_THRESHOLD, compute_value=False,
+                    compute_value=False,
                 )
                 act = out["action"]
                 xy = act["xy"].cpu().numpy()
@@ -969,7 +966,7 @@ def _batch_rollout(
                 dirs = act["direction"].reshape(-1).cpu().numpy()
                 item = act["item"].reshape(-1).cpu().numpy()
                 misc = act["misc"].reshape(-1).cpu().numpy()
-                eot = act["eot"].reshape(-1).cpu().numpy()
+                predicted = out["predicted_thput"].reshape(-1).cpu().numpy()
                 step += 1
                 for i, env in enumerate(envs):
                     if not active[i]:
@@ -980,14 +977,14 @@ def _batch_rollout(
                         "direction": int(dirs[i]),
                         "item": int(item[i]),
                         "misc": int(misc[i]),
-                        "eot": int(eot[i]),
                     }
                     next_obs, _reward, terminated, truncated, info = env.step(action)
                     obs_NCWH[i] = next_obs
-                    if terminated or truncated:
+                    reached_target = float(predicted[i]) >= target_thput
+                    if reached_target or terminated or truncated:
                         active[i] = False
                         yield _rollout_result(
-                            base + i, env, used_seeds[i], info, terminated
+                            base + i, env, used_seeds[i], info, reached_target
                         )
                 yield {"type": "progress", "step": step}
     yield {"type": "done"}
@@ -1016,12 +1013,16 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
             seeds = [start_seed + i for i in range(count)]
         clear = payload.get("num_missing_entities")
         num_missing = None if clear in (None, "") else max(0, int(clear))
+        target_thput = float(payload.get("target_thput", 1.0))
+        if target_thput < 0:
+            raise ValueError("target_thput must be non-negative")
         yield from _batch_rollout(
             kinds=kinds,
             seeds=seeds,
             size=size,
             num_missing_entities=num_missing,
             legal_mask=bool(payload.get("legal_mask", True)),
+            target_thput=target_thput,
         )
     except Exception as e:
         traceback.print_exc()
@@ -1479,6 +1480,9 @@ def render_index(default_size: int) -> str:
     <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
       entities to clear <input id="scan-clear" type="number" min="0" placeholder="all" style="width:4.5em">
     </label>
+    <label title="Stop sampling once predicted raw throughput (items/second) reaches this developer-selected target.">
+      target thput <input id="scan-target" type="number" min="0" step="0.01" value="1" style="width:4.5em">
+    </label>
     <label title="Restrict the tile head's argmax to empty, buildable cells — what sft.run_rollout_eval does. Off shows the raw head, including illegal proposals.">
       <input id="scan-mask" type="checkbox" checked> legal-tile mask
     </label>
@@ -1492,7 +1496,7 @@ def render_index(default_size: int) -> str:
         <option value="seed">run order</option>
       </select>
     </label>
-    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its EOT head fires, and add every final factory to the gallery">
+    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its throughput head fires, and add every final factory to the gallery">
       Run scan
     </button>
     <button id="scan-stop" disabled>Stop</button>
@@ -1510,7 +1514,7 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
-const EOT_STOP_THRESHOLD = {EOT_STOP_THRESHOLD};
+const throughput_STOP_THRESHOLD = {throughput_STOP_THRESHOLD};
 const OK_ICON = '{OK_ICON}';
 const BAD_ICON = '{BAD_ICON}';
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
@@ -1579,23 +1583,23 @@ function cellGlyphs(c) {{
 // The stop head is authoritative for every apply path in the UI, not just
 // the visualisation: once it fires, a rollout is over, so the page must not
 // place anything more either.
-function eotStop(pred) {{
-  return !!pred && pred.eot_prob > EOT_STOP_THRESHOLD;
+function pred_thputStop(pred) {{
+  return !!pred && pred.predicted_thput >= throughput_STOP_THRESHOLD;
 }}
 
-function eotStopMessage(pred) {{
-  return 'model says done (eot ' + fmtPct(pred.eot_prob) + ')';
+function pred_thputStopMessage(pred) {{
+  return 'target reached (predicted raw thput ' + fmtNum(pred.predicted_thput) + ' items/s)';
 }}
 
 function renderGrid() {{
   const host = document.getElementById('grid-host');
   // Build (x,y) -> candidate map once per render so the per-cell
   // ghost lookup is O(1).
-  // When the model's EOT probability crosses 0.5 it's saying "I'm done
-  // placing things" — the candidate ghosts would just be misleading
+  // Once predicted raw throughput reaches the configured target, candidate
+  // ghosts would just be misleading
   // hallucinations of a forced placement, so suppress them.
   const candByXY = {{}};
-  if (prediction && prediction.candidates && !eotStop(prediction)) {{
+  if (prediction && prediction.candidates && !pred_thputStop(prediction)) {{
     for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
   }}
   const tbl = document.createElement('table');
@@ -1609,11 +1613,11 @@ function renderGrid() {{
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
       // The blue argmax border tracks the same suppression rule as the
-      // ghost overlays: if the model says it's done (eot > 0.5), don't
+      // ghost overlays: if the model says it's done (pred_thput > 0.5), don't
       // visually nominate a "next placement" tile.
       if (
         prediction && prediction.x === x && prediction.y === y
-        && !eotStop(prediction)
+        && !pred_thputStop(prediction)
       ) td.classList.add('predicted');
 
       const inner = document.createElement('div');
@@ -1886,6 +1890,10 @@ function fmtPct(p) {{
   return v.toFixed(1).replace(/^0/, '') + '%';
 }}
 
+function fmtNum(n) {{
+  return Number(n).toFixed(3).replace(/\\.?0+$/, '');
+}}
+
 function fmtTopNamed(top, rest) {{
   const parts = top.map(t => t.name + ' (' + fmtPct(t.p) + ')');
   parts.push('rest (' + fmtPct(rest) + ')');
@@ -1930,22 +1938,21 @@ async function computePrediction() {{
     prediction = data;
     showThput(data);
     if (info) {{
-      info.textContent = eotStop(data)
-        ? eotStopMessage(data) + ' — no placement offered'
+      info.textContent = pred_thputStop(data)
+        ? pred_thputStopMessage(data) + ' — no placement offered'
         : 'predicted next placement at (' + data.x + ', ' + data.y + ')';
     }}
     if (out) {{
       // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
       // The <pre> uses white-space:pre + overflow-x:auto so long top-p
       // lines scroll horizontally instead of wrapping.
-      // EOT line: model's "I'm done" probability. The {{stop}} /
-      // {{continue}} marker matches the threshold in
-      // agent.eot_should_stop — a quick read for whether the model
-      // would terminate an inference rollout right now.
-      const eotPct = fmtPct(data.eot_prob);
-      const eotMark = eotStop(data) ? '[stop]' : '[continue]';
+      // throughput line: model's "I'm done" probability. The {{stop}} /
+      // A quick read for whether the raw-throughput target would terminate
+      // an inference rollout right now.
+      const pred_thputValue = fmtNum(data.predicted_thput) + ' items/s';
+      const pred_thputMark = pred_thputStop(data) ? '[stop]' : '[continue]';
       const lines = [
-        '  eot:       ' + eotPct + ' ' + eotMark,
+        '  predicted thput:  ' + pred_thputValue + ' ' + pred_thputMark,
         '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
         '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
         '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),
@@ -2013,9 +2020,9 @@ async function applyCandidate(cand, interactive = true) {{
 
 function applyPrediction() {{
   if (!prediction) return;
-  if (eotStop(prediction)) {{
+  if (pred_thputStop(prediction)) {{
     const info = document.getElementById('model-info');
-    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
+    if (info) info.textContent = pred_thputStopMessage(prediction) + ' — nothing applied';
     return;
   }}
   applyCandidate(prediction);
@@ -2039,12 +2046,12 @@ async function runAutoApply(generation) {{
       const action = await requestFastPrediction();
       if (!autoApplying || generation !== autoApplyGeneration) break;
       showThput(action);
-      if (eotStop(action)) {{
+      if (pred_thputStop(action)) {{
         autoApplying = false;
         if (info) {{
           info.textContent =
             'fast apply: stopped after ' + count + ' placements · ' +
-            eotStopMessage(action);
+            pred_thputStopMessage(action);
         }}
         break;
       }}
@@ -2098,11 +2105,11 @@ function beginApplyKey() {{
   // Preserve tap-to-apply: consume the visible prediction once, then only
   // enter the continuous request pump if the key remains down.
   let firstApply = Promise.resolve(true);
-  if (eotStop(prediction)) {{
+  if (pred_thputStop(prediction)) {{
     // Resolving false also keeps the hold from entering the request pump.
     firstApply = Promise.resolve(false);
     const info = document.getElementById('model-info');
-    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
+    if (info) info.textContent = pred_thputStopMessage(prediction) + ' — nothing applied';
   }} else if (prediction) {{
     firstApply = applyCandidate(prediction, false);
     firstApply.then((applied) => {{
@@ -2428,7 +2435,7 @@ function bindHelp() {{
 }}
 
 // ── Scan tab ────────────────────────────────────────────────────────────
-// A scan blanks N factories, lets the model rebuild each one until its EOT
+// A scan blanks N factories, lets the model rebuild each one until its throughput
 // head fires, and lays the finished factories out side by side.
 let scanResults = [];
 let scanAbort = null;
@@ -2465,9 +2472,9 @@ function scanCard(r, showRef) {{
   const card = document.createElement('div');
   card.className = 'scan-card';
   card.style.borderLeftColor = thputColor(r.thput_normed);
-  const stop = r.stopped_by === 'eot'
-    ? 'stopped at ' + r.steps
-    : 'no stop, ' + r.steps + ' steps';
+  const stop = r.stopped_by === 'target_thput'
+    ? 'target reached at ' + r.steps
+    : 'target not reached, ' + r.steps + ' steps';
   const head =
     `<div class="hd">${{escHtml(r.kind)}}<button class="copy-yaml"` +
     ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button></div>` +
@@ -2515,7 +2522,7 @@ function renderScan() {{
 }}
 
 // A factory counts as complete at thput 1.0 — the same "already done"
-// test sft.run_rollout_eval scores the EOT head against.
+// test sft.run_rollout_eval scores the throughput head against.
 const COMPLETE_THPUT = 0.999;
 
 function scanSummary(status) {{
@@ -2526,10 +2533,10 @@ function scanSummary(status) {{
   const mean = t.reduce((a, b) => a + b, 0) / n;
   const zeros = t.filter(v => v <= 0).length;
   const perfect = t.filter(v => v >= COMPLETE_THPUT).length;
-  const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
+  const target = scanResults.filter(r => r.stopped_by === 'target_thput').length;
   el.textContent =
     `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{zeros}} at zero · ` +
-    `${{perfect}} perfect · eot fired ${{eot}}/${{n}}` +
+    `${{perfect}} perfect · target reached ${{target}}/${{n}}` +
     (status ? '  ·  ' + status : '');
 }}
 
@@ -2554,18 +2561,18 @@ function renderScanStats() {{
       mean: rs.reduce((a, r) => a + r.thput_normed, 0) / n,
       nonzero: rs.filter(r => r.thput_normed > 0).length,
       complete: rs.filter(r => r.thput_normed >= COMPLETE_THPUT).length,
-      eot: rs.filter(r => r.stopped_by === 'eot').length,
+      target: rs.filter(r => r.stopped_by === 'target_thput').length,
     }};
   }});
   rows.sort((a, b) => a.mean - b.mean || a.kind.localeCompare(b.kind));
   const head =
     '<tr><th>lesson</th><th>runs</th><th>mean thput</th>' +
-    '<th>thput &gt; 0</th><th>complete</th><th>eot fired</th></tr>';
+    '<th>thput &gt; 0</th><th>complete</th><th>target reached</th></tr>';
   const body = rows.map(row =>
     `<tr><td class="kind">${{escHtml(row.kind)}}</td><td>${{row.n}}</td>` +
     `<td style="color:${{thputColor(row.mean)}}">${{row.mean.toFixed(3)}}</td>` +
     `<td>${{frac(row.nonzero, row.n)}}</td><td>${{frac(row.complete, row.n)}}</td>` +
-    `<td>${{frac(row.eot, row.n)}}</td></tr>`
+    `<td>${{frac(row.target, row.n)}}</td></tr>`
   ).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
 }}
@@ -2585,6 +2592,7 @@ async function runScan() {{
     seed: parseInt(document.getElementById('scan-seed').value, 10) || 0,
     size: SIZE,
     legal_mask: document.getElementById('scan-mask').checked,
+    target_thput: parseFloat(document.getElementById('scan-target').value) || 0,
     num_missing_entities:
       Number.isFinite(clearRaw) && clearRaw >= 0 ? clearRaw : null,
   }};

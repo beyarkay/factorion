@@ -212,7 +212,7 @@ def diff_markdown(
         f"## Greedy factory diff: {main_label} vs {pr_label}",
         "",
         f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
-        f"a blank grid, stopping where its own EOT head fired. "
+        f"a blank grid, stopping where its own throughput head fired. "
         f"{len(differing)} came out consistently different. {len(pr_runs)} run(s) "
         "per side; a factory counts as different only when every run on one side "
         "beat every run on the other, so a single seed wandering is not reported.",

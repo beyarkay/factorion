@@ -69,6 +69,9 @@ class SharedArgs:
     """seed of the experiment"""
     size: int = 11
     """the width and height of the factory grid"""
+    rollout_target_thput: float = 1.0
+    """Predicted raw items/second throughput at which developer-controlled
+    greedy sampling stops."""
 
     # CNN encoder width per layer slot. The encoder uses every slot with
     # positive width, in order; a slot of 0 drops that layer. Exposing depth +
@@ -188,7 +191,7 @@ class PpoArgs(SharedArgs):
     divergence_penalty: float = 0.008
     """Weight β on the KL(π_θ ‖ π_ref) loss penalty anchoring the policy to the
     frozen --start-from SFT reference. Covers the five placement heads;
-    the EOT head's KL is logged but never penalized (it sets the episode
+    the throughput head's KL is logged but never penalized (it sets the episode
     horizon). Inert without --start-from (there is no reference to anchor to);
     at 0 the penalty is off but the policy/kl_to_ref* drift metrics still log
     whenever --start-from is set."""
@@ -288,8 +291,8 @@ class SftArgs(SharedArgs):
     """loss weight for the item / recipe (CE) head"""
     lw_misc: float = 0.6236
     """loss weight for the misc (CE) head"""
-    lw_eot: float = 1.302
-    """loss weight for the EOT (end-of-trajectory) BCE head"""
+    lw_pred_thput: float = 1.302
+    """loss weight for normalized-throughput regression (MSE)"""
     eval_every_n_samples: int = 100_000
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
@@ -303,8 +306,6 @@ class SftArgs(SharedArgs):
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
-    rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208

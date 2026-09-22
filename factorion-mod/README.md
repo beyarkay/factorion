@@ -74,7 +74,7 @@ factorion-mod/
 │   ├── locale/en/factorion.cfg
 │   └── prototypes/           ← endpoint belts, footprint tool, hotkey definitions
 ├── server/                   ← local inference daemon + parity harness
-│   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
+│   ├── server.py             ← RCON poll loop → model (with pred_thput_head stop) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
 │   ├── rcon.py               ← shared minimal Source-RCON client
 │   ├── blueprint.py          ← tensor → blueprint utility used by tests/tooling
@@ -261,7 +261,7 @@ Server-callable remote methods exposed by the mod:
   mining, rotation, copy/paste, blueprint, and Alt-mode behavior.
 - Model actions stream over RCON and create real entities in the player's
   world; rerun/reset cleanup is limited to entities created by the mod.
-- `eot_head` is wired as the iterative stop signal (PPO PR #103 landed
+- `pred_thput_head` is wired as the iterative stop signal (PPO PR #103 landed
   via the main-merge).
 
 ### What doesn't work / wasn't possible
