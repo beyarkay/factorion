@@ -11,7 +11,7 @@ the factorion mod enabled and RCON reachable (see factorion-mod/README.md):
 
     uv run python factorion-mod/server/parity.py \
         --rcon-port 64502 --rcon-password <pw> \
-        --lessons all --seeds 5 --size 11
+        --lessons all --seeds 5 --size 15
 
 `--dry-run` prints the specs and engine expectations without needing
 Factorio at all — useful for checking the tensor→spec conversion.
@@ -461,7 +461,7 @@ def main():
     ap.add_argument("--fixtures", type=Path, default=None,
                     help="Also replay the textual test fixtures dumped to this "
                          "JSON by factorion_rs' dump_fixtures_for_parity test.")
-    ap.add_argument("--size", type=int, default=11)
+    ap.add_argument("--size", type=int, default=15)
     ap.add_argument("--batch-size", type=int, default=40,
                     help="Factories built + measured together on one surface "
                          "per batch (they run in parallel, so wall-time is "

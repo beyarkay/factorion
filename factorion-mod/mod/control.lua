@@ -20,7 +20,7 @@
 
 local parity = require("parity")
 
-local GRID_SIZE = 11
+local GRID_SIZE = 15
 
 local function get_default_item()
   return settings.global["factorion-default-item"].value

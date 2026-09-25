@@ -102,7 +102,7 @@ factorion-mod/
    run as the first argument, or set `FACTORION_CHECKPOINT`.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
-   region brush and run `hcozpmwt` both use a fixed 11×11 grid; checkpoints
+   region brush uses a fixed 15×15 grid; checkpoints
    trained at another size are rejected with a clear error.
 
 For a manual or headless setup, start the server directly. `--checkpoint`
@@ -115,14 +115,14 @@ uv run python factorion-mod/server/server.py \
 ```
 
 For local files, an `agent.hp.json` sidecar with
-`{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}` is read
+`{"grid_size": 15, "layers": [93, 69, 96], "kernel_size": 3}` is read
 automatically.
 
 3. In Factorio:
 
    - Press `Ctrl+T` to receive the blue region tool plus ten source belts and
      ten sink belts.
-   - Click once with the blue **region tool**. It stamps an 11×11 region
+   - Click once with the blue **region tool**. It stamps a 15×15 region
      centered on that tile—there is no size-sensitive drag.
    - Place the green **source belt** and orange **sink belt** inside it as
      ordinary belts. Click each endpoint to choose its item, and hover it and
@@ -138,7 +138,7 @@ automatically.
    - `Ctrl+R` — clear the region and model-placed entities
    - `Ctrl+T` — re-grant the region tool and endpoint belts
 
-   Models not trained on an 11×11 grid are rejected because the in-game brush
+   Models not trained on a 15×15 grid are rejected because the in-game brush
    is intentionally fixed. Restart `./start-mod.sh` with another checkpoint to
    change models.
 
@@ -169,7 +169,7 @@ curves, inserter drop lanes — come from the real game.
 One command (headless, tears itself down when done):
 
 ```bash
-bash factorion-mod/scripts/parity_launch.sh --lessons all --seeds 3 --size 11
+bash factorion-mod/scripts/parity_launch.sh --lessons all --seeds 3 --size 15
 ```
 
 Or against an already-running instance (headless or GUI host, same RCON
@@ -178,7 +178,7 @@ setup as above):
 ```bash
 uv run python factorion-mod/server/parity.py \
   --rcon-port 64502 --rcon-password <pw> \
-  --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 11
+  --lessons MOVE_ONE_ITEM,SPLITTER_SPLIT --seeds 5 --size 15
 ```
 
 Useful flags: `--dry-run` (print specs + engine expectations, no Factorio
