@@ -4098,7 +4098,9 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
 /// two-ingredient recipe whose ingredient X is itself crafted from one
 /// ingredient is built as a row of as many (X machine, product machine)
 /// pairs as the grid fits: each X machine hands X straight to the product
-/// machine beside it through 1-3 inserters across the one-column gap. X's
+/// machine beside it through 1-3 inserters across the one-column gap. Each
+/// pair faces either way, so neighbouring pairs may put like machines side
+/// by side (X P P X, P X X P) or alternate (X P X P). X's
 /// ingredient arrives on a lane along the north face of the X machines
 /// (2-3 plain inserters each); the product's other ingredient on a lane
 /// along the south face of the product machines, whose three slots split
@@ -4141,7 +4143,12 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
         let (mut raw_xs, mut other_xs, mut out_xs): (Vec<i64>, Vec<i64>, Vec<i64>) =
             (Vec::new(), Vec::new(), Vec::new());
         for i in 0..n_pairs {
-            let (xx, px) = (ax0 + 7 * i, ax0 + 7 * i + 4);
+            let base = ax0 + 7 * i;
+            let (xx, px, handoff) = if rng.choice_index(2) == 0 {
+                (base, base + 4, Direction::East)
+            } else {
+                (base + 4, base, Direction::West)
+            };
             asm.push((xx, *x_key));
             asm.push((px, *p_key));
             let k_raw = rng.randint(2, 3) as usize;
@@ -4151,7 +4158,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
             }
             let k_direct = rng.randint(1, 3) as usize;
             for &y in &rng.sample(&[ay, ay + 1, ay + 2], k_direct) {
-                inserters.push(((xx + 3, y), Direction::East, Item::Inserter));
+                inserters.push(((base + 3, y), handoff, Item::Inserter));
             }
             let k_other = rng.randint(1, 2);
             let k_out = rng.randint(1, 3 - k_other);
