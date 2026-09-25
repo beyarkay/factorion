@@ -4100,28 +4100,34 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
 /// pairs as the grid fits: each X machine hands X straight to the product
 /// machine beside it through 1-3 inserters across the one-column gap. Each
 /// pair faces either way, so neighbouring pairs may put like machines side
-/// by side (X P P X, P X X P) or alternate (X P X P). X's
-/// ingredient arrives on a lane along the north face of the X machines
-/// (2-3 plain inserters each); the product's other ingredient on a lane
-/// along the south face of the product machines, whose three slots split
-/// between 1-2 plain inserters taking it and 1-2 long-handed inserters
+/// by side (X P P X, P X X P) or alternate (X P X P). Where the grid is at
+/// least 12 tall, half the seeds stack instead: a packed row of X machines
+/// directly above a row of product machines, each handing down through 1-3
+/// inserters. X's ingredient arrives on a lane along the north face of the
+/// X machines (2-3 plain inserters each); the product's other ingredient on
+/// a lane along the south face of the product machines, whose three slots
+/// split between 1-2 plain inserters taking it and 1-2 long-handed inserters
 /// reaching over that lane onto an output lane beyond.
 ///
 /// Lane directions are drawn per seed, the sources and sink sit at any free
 /// cells wired up by [`wire_markers`], and the world is then randomly
 /// flipped/rotated. `max_throughput` is the [`assembler_row_ceiling`] of the
-/// product machines the grid fits.
+/// most product machines either arrangement fits.
 fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows (raw lane, its inserters, 3 machine
     // rows, the product machines' south face, other-ingredient lane, output
-    // lane) by 7 columns per pair.
+    // lane) by 7 columns per pair; stacking adds the handoff row and the
+    // product machines' 3 rows.
     if s < 8 {
         return None;
     }
     let pool = two_stage_recipes()?;
     let n_pairs = s / 7;
     let mut count = (500).max(size * size * 16);
+    // Drawn once, outside the rejection loop, so the realised mix is the
+    // lesson spec rather than whichever arrangement rejects least.
+    let stacked = s >= 12 && rng.choice_index(2) == 1;
 
     while count > 0 {
         count -= 1;
@@ -4134,41 +4140,75 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
             other,
         } = &pool[rng.choice_index(pool.len())];
         let raw = x_recipe.consumes.first().0;
-        let ax0 = rng.randint(0, s - 7 * n_pairs);
-        let ay = rng.randint(2, s - 6);
-        let (raw_y, other_y, out_y) = (ay - 2, ay + 4, ay + 5);
 
-        let mut asm: Vec<(i64, Item)> = Vec::new();
+        // (anchor x, anchor y, recipe) per machine.
+        let mut asm: Vec<(i64, i64, Item)> = Vec::new();
         let mut inserters: Vec<(Cell, Direction, Item)> = Vec::new();
         let (mut raw_xs, mut other_xs, mut out_xs): (Vec<i64>, Vec<i64>, Vec<i64>) =
             (Vec::new(), Vec::new(), Vec::new());
-        for i in 0..n_pairs {
-            let base = ax0 + 7 * i;
-            let (xx, px, handoff) = if rng.choice_index(2) == 0 {
-                (base, base + 4, Direction::East)
-            } else {
-                (base + 4, base, Direction::West)
-            };
-            asm.push((xx, *x_key));
-            asm.push((px, *p_key));
-            let k_raw = rng.randint(2, 3) as usize;
-            for &x in &rng.sample(&[xx, xx + 1, xx + 2], k_raw) {
-                inserters.push(((x, ay - 1), Direction::South, Item::Inserter));
-                raw_xs.push(x);
+        // The raw lane's row and the row of the product machines' south face.
+        let (raw_y, face_y);
+        if stacked {
+            let gap = rng.randint(0, 1);
+            let n = (s + gap) / (3 + gap);
+            let ax0 = rng.randint(0, s - 3 * n - gap * (n - 1));
+            let y0 = rng.randint(0, s - 12);
+            for i in 0..n {
+                let ax = ax0 + i * (3 + gap);
+                let cols = [ax, ax + 1, ax + 2];
+                asm.push((ax, y0 + 2, *x_key));
+                asm.push((ax, y0 + 6, *p_key));
+                let k_raw = rng.randint(2, 3) as usize;
+                for &x in &rng.sample(&cols, k_raw) {
+                    inserters.push(((x, y0 + 1), Direction::South, Item::Inserter));
+                    raw_xs.push(x);
+                }
+                let k_direct = rng.randint(1, 3) as usize;
+                for &x in &rng.sample(&cols, k_direct) {
+                    inserters.push(((x, y0 + 5), Direction::South, Item::Inserter));
+                }
             }
-            let k_direct = rng.randint(1, 3) as usize;
-            for &y in &rng.sample(&[ay, ay + 1, ay + 2], k_direct) {
-                inserters.push(((base + 3, y), handoff, Item::Inserter));
+            (raw_y, face_y) = (y0, y0 + 9);
+        } else {
+            let ax0 = rng.randint(0, s - 7 * n_pairs);
+            let ay = rng.randint(2, s - 6);
+            for i in 0..n_pairs {
+                let base = ax0 + 7 * i;
+                let (xx, px, handoff) = if rng.choice_index(2) == 0 {
+                    (base, base + 4, Direction::East)
+                } else {
+                    (base + 4, base, Direction::West)
+                };
+                asm.push((xx, ay, *x_key));
+                asm.push((px, ay, *p_key));
+                let k_raw = rng.randint(2, 3) as usize;
+                for &x in &rng.sample(&[xx, xx + 1, xx + 2], k_raw) {
+                    inserters.push(((x, ay - 1), Direction::South, Item::Inserter));
+                    raw_xs.push(x);
+                }
+                let k_direct = rng.randint(1, 3) as usize;
+                for &y in &rng.sample(&[ay, ay + 1, ay + 2], k_direct) {
+                    inserters.push(((base + 3, y), handoff, Item::Inserter));
+                }
             }
+            (raw_y, face_y) = (ay - 2, ay + 3);
+        }
+        let (other_y, out_y) = (face_y + 1, face_y + 2);
+        let products: Vec<i64> = asm
+            .iter()
+            .filter(|&&(.., key)| key == *p_key)
+            .map(|&(ax, ..)| ax)
+            .collect();
+        for &px in &products {
             let k_other = rng.randint(1, 2);
             let k_out = rng.randint(1, 3 - k_other);
             let picked = rng.sample(&[px, px + 1, px + 2], (k_other + k_out) as usize);
             for (idx, &x) in picked.iter().enumerate() {
                 if (idx as i64) < k_other {
-                    inserters.push(((x, ay + 3), Direction::North, Item::Inserter));
+                    inserters.push(((x, face_y), Direction::North, Item::Inserter));
                     other_xs.push(x);
                 } else {
-                    inserters.push(((x, ay + 3), Direction::South, Item::LongHandedInserter));
+                    inserters.push(((x, face_y), Direction::South, Item::LongHandedInserter));
                     out_xs.push(x);
                 }
             }
@@ -4209,7 +4249,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
 
         let mut structure: HashSet<Cell> = asm
             .iter()
-            .flat_map(|&(ax, _)| {
+            .flat_map(|&(ax, ay, _)| {
                 (0..3).flat_map(move |dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
             })
             .collect();
@@ -4218,7 +4258,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
         let mut reserved = structure.clone();
         reserved.extend(keepout);
         reserved.extend([raw_head, other_head, exit]);
-        for &(ax, _) in &asm {
+        for &(ax, ay, _) in &asm {
             reserved.extend(all_perim_set(ax, ay, s));
         }
         let free = available_cells(s, &reserved);
@@ -4254,7 +4294,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
         }
 
         let mut world = World::empty(size, size);
-        for &(ax, recipe_key) in &asm {
+        for &(ax, ay, recipe_key) in &asm {
             place_assembler(&mut world, ax, ay, recipe_key as i64);
         }
         for &(pos, dir, kind) in &inserters {
@@ -4288,11 +4328,12 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
         }
 
         // A product machine takes up to three direct and two plain inserters
-        // and drains through up to two long-handed ones.
+        // and drains through up to two long-handed ones; stacking fits one
+        // per three columns.
         return Some(BuiltFactory {
             max_throughput: assembler_row_ceiling(
                 p_recipe,
-                n_pairs,
+                if s >= 12 { s / 3 } else { n_pairs },
                 5.0 * Item::Inserter.flow_rate(),
                 2.0 * Item::LongHandedInserter.flow_rate(),
             ),
@@ -5828,10 +5869,10 @@ mod tests {
 
     #[test]
     fn test_direct_insert_2in_smoke() {
-        // Every build flows with no orphans through (intermediate, product)
-        // machine pairs, one pair per 7 columns; the reference never beats
-        // the ceiling; and erasing the intermediate machines zeroes
-        // throughput — the product really is crafted in two stages.
+        // Every build flows with no orphans through as many intermediate as
+        // product machines; the reference never beats the ceiling; and
+        // erasing the intermediate machines zeroes throughput — the product
+        // really is crafted in two stages.
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(size, LessonKind::DirectInsert2In, seed, true, f64::INFINITY)
@@ -5840,11 +5881,6 @@ mod tests {
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
                 assert!(tp <= f.max_throughput, "size={size} seed={seed}");
-                assert_eq!(
-                    count_entity(&f.world, Item::AssemblingMachine1),
-                    18 * (size / 7),
-                    "size={size} seed={seed}"
-                );
 
                 let mut sink_item = None;
                 let mut asm_tiles: Vec<(usize, usize, Item)> = Vec::new();
@@ -5867,7 +5903,10 @@ mod tests {
                         erased += 1;
                     }
                 }
-                assert_eq!(erased, 9 * (size / 7), "size={size} seed={seed}");
+                assert!(
+                    erased > 0 && 2 * erased == asm_tiles.len(),
+                    "size={size} seed={seed}"
+                );
                 assert_eq!(tp_unreachable(&stage_one).0, 0.0, "size={size} seed={seed}");
             }
         }
