@@ -44,7 +44,9 @@ NOOP = {
 class TestDeltaRewardShaping:
     def test_perfect_factory_match_is_1(self, env):
         """When num_missing_entities=0, all three match values should be 1.0."""
-        obs, info = env.reset(seed=42, options={"num_missing_entities": 0})
+        obs, info = env.reset(
+            seed=42, options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM}
+        )
         obs, reward, term, trunc, info = env.step(NOOP)
         assert info["shaping_location_match"] == 1.0
         assert info["shaping_entity_match"] == 1.0
@@ -61,7 +63,9 @@ class TestDeltaRewardShaping:
 
     def test_noop_gives_zero_deltas(self, env):
         """Placing empty entity should give all deltas = 0 (no free reward)."""
-        obs, info = env.reset(seed=42, options={"num_missing_entities": 1})
+        obs, info = env.reset(
+            seed=42, options={"num_missing_entities": 1, "kind": LessonKind.MOVE_ONE_ITEM}
+        )
         obs, reward, term, trunc, info = env.step(NOOP)
         assert info["shaping_location_delta"] == 0.0, (
             f"Expected 0 delta for noop, got {info['shaping_location_delta']}"

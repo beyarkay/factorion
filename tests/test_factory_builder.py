@@ -875,7 +875,7 @@ class TestBatchRollout:
                 "kind": fb.ALL_KINDS_SENTINEL,
                 "count": len(list(LessonKind)),
                 "seed": 4,
-                "size": 11,
+                "size": 15,
             })
         finally:
             path.unlink(missing_ok=True)
@@ -1179,7 +1179,7 @@ class TestFactoryYaml:
         — a fixture declaring neither `throughput:` nor `graph:` is rejected
         by the sweep in `textual.rs`."""
         for kind in LessonKind:
-            factory, _seed = fb._build_with_retry(kind, 11, 0)
+            factory, _seed = fb._build_with_retry(kind, 15, 0)
             doc = yaml.safe_load(
                 fb.factory_yaml(fb.world_CWH_to_grid(factory.world_CWH))
             )

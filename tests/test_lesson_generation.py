@@ -3262,8 +3262,9 @@ def test_full_factory_kinds_rebuild_from_expert_actions():
     from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL
     from ppo import FactorioEnv
     from sft import extract_expert_actions
+    from training_config import SharedArgs
 
-    env = FactorioEnv(size=11)
+    env = FactorioEnv(size=SharedArgs.size)
     for kind in (k for k in FULL_FACTORY_KINDS if not LESSON_IS_TRIAL[k]):
         for seed in range(3):
             env.reset(seed=seed, options={"kind": kind})
