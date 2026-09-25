@@ -642,7 +642,7 @@ def get_pretty_format(tensor, entity_dir_map):
 class FactorioEnv(gym.Env):
     def __init__(
         self,
-        size: int = 11,
+        size: int = 15,
         max_steps: Optional[int] = None,
         render_mode: Optional[str] = None,
         idx: Optional[int] = None,
@@ -1867,7 +1867,7 @@ if __name__ == "__main__":
         # metal doesn't like anything but f32
         torch.set_default_dtype(torch.float32)
     if device.type == "cpu":
-        # The net is tiny (batch 16, 11x11 grid), so torch's default intra-op
+        # The net is tiny (batch 16, 15x15 grid), so torch's default intra-op
         # thread count (~cores/2) heavily over-subscribes: per-conv thread
         # launch/sync overhead swamps the actual compute. Capping at a small
         # count is a ~3-4x speedup for both rollout and optimiser steps on CPU.
