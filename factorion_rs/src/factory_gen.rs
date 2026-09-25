@@ -58,6 +58,8 @@ pub enum LessonKind {
     OppositeFeeds2In = 27,
     DirectInsert2In = 28,
     IntermediateBelt2In = 29,
+    Mirrored1In = 30,
+    Mirrored2In = 31,
 }
 
 impl LessonKind {
@@ -91,6 +93,8 @@ impl LessonKind {
             27 => Some(LessonKind::OppositeFeeds2In),
             28 => Some(LessonKind::DirectInsert2In),
             29 => Some(LessonKind::IntermediateBelt2In),
+            30 => Some(LessonKind::Mirrored1In),
+            31 => Some(LessonKind::Mirrored2In),
             _ => None,
         }
     }
@@ -139,6 +143,8 @@ impl LessonKind {
             LessonKind::OppositeFeeds2In => "OPPOSITE_FEEDS_2IN",
             LessonKind::DirectInsert2In => "DIRECT_INSERT_2IN",
             LessonKind::IntermediateBelt2In => "INTERMEDIATE_BELT_2IN",
+            LessonKind::Mirrored1In => "MIRRORED_1IN",
+            LessonKind::Mirrored2In => "MIRRORED_2IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -174,12 +180,14 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::OppositeSides1In,
         LessonKind::SameSide1In,
         LessonKind::Splitter1In,
+        LessonKind::Mirrored1In,
         LessonKind::ReachOver2In,
         LessonKind::SharedBelt2In,
         LessonKind::UgWeave2In,
         LessonKind::OppositeFeeds2In,
         LessonKind::DirectInsert2In,
         LessonKind::IntermediateBelt2In,
+        LessonKind::Mirrored2In,
         LessonKind::ReachOver3In,
         LessonKind::ReachOver4In,
         LessonKind::TrialRecipeTreeDepth1,
@@ -667,6 +675,8 @@ pub fn build_factory(
         LessonKind::IntermediateBelt2In => {
             build_intermediate_belt_2in(size, &mut rng, max_entities)
         }
+        LessonKind::Mirrored1In => build_mirrored(size, &mut rng, max_entities, false),
+        LessonKind::Mirrored2In => build_mirrored(size, &mut rng, max_entities, true),
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -4631,6 +4641,228 @@ fn build_intermediate_belt_2in(
     None
 }
 
+// ── MIRRORED_1IN / MIRRORED_2IN: two rows facing a shared input belt ────────
+
+/// Build a MIRRORED_1IN (`two_in` false) or MIRRORED_2IN factory: two packed
+/// rows of assemblers crafting one recipe, facing each other across a shared
+/// input belt that each machine taps with 2-3 plain inserters. For two
+/// ingredients the belt carries one per lane, its head tile side-loaded from
+/// both flanks. Each row drains through 2-3 inserters per machine onto an
+/// output lane along its outer face; both output lanes run on into a
+/// collector column beside the rows, which merges them into one belt that
+/// leaves for the sink.
+///
+/// The input belt's direction is drawn per seed, the sources and sink sit at
+/// any free cells wired up by [`wire_markers`], and the world is then
+/// randomly flipped/rotated. `max_throughput` is the
+/// [`assembler_row_ceiling`] of both rows packed beside the collector.
+fn build_mirrored(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    two_in: bool,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Canonical footprint is 13 rows: output lane, output inserters, 3
+    // machine rows, input inserters, the shared input belt, and the same
+    // mirrored below it.
+    if s < 13 {
+        return None;
+    }
+    let recipes = am1_recipes(if two_in { 2 } else { 1 })?;
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = &recipes[rng.choice_index(recipes.len())];
+        let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut ingredients);
+
+        // Rows are packed short of the grid's east edge, leaving the
+        // collector column.
+        let gap = rng.randint(0, 1);
+        let n = (s - 1 + gap) / (3 + gap);
+        let row_w = 3 * n + gap * (n - 1);
+        let ax0 = rng.randint(0, s - 1 - row_w);
+        let col = ax0 + row_w;
+        let y0 = rng.randint(0, s - 13);
+        let (in_y, out_a, out_b) = (y0 + 6, y0, y0 + 12);
+
+        let mut asm: Vec<(i64, i64)> = Vec::new();
+        let mut inserters: Vec<(Cell, Direction)> = Vec::new();
+        let mut in_xs: Vec<i64> = Vec::new();
+        let mut out_xs: [Vec<i64>; 2] = [Vec::new(), Vec::new()];
+        for i in 0..n {
+            let ax = ax0 + i * (3 + gap);
+            let cols = [ax, ax + 1, ax + 2];
+            // (anchor row, input-inserter row, output-inserter row, the
+            // direction pointing away from the input belt)
+            for (r, (ay, in_row, out_row, away)) in [
+                (y0 + 2, y0 + 5, y0 + 1, Direction::North),
+                (y0 + 8, y0 + 7, y0 + 11, Direction::South),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                asm.push((ax, ay));
+                let k_in = rng.randint(2, 3) as usize;
+                for &x in &rng.sample(&cols, k_in) {
+                    inserters.push(((x, in_row), away));
+                    in_xs.push(x);
+                }
+                let k_out = rng.randint(2, 3) as usize;
+                for &x in &rng.sample(&cols, k_out) {
+                    inserters.push(((x, out_row), away));
+                    out_xs[r].push(x);
+                }
+            }
+        }
+        let (Some(&in_lo), Some(&in_hi)) = (in_xs.iter().min(), in_xs.iter().max()) else {
+            continue;
+        };
+        let in_dir = [Direction::East, Direction::West][rng.choice_index(2)];
+        // For two ingredients the input belt gains a head tile before its
+        // first tap, fed from both flanks; for one, its first tile is the
+        // head, the last tile of the source route.
+        let (lo, hi) = match (two_in, in_dir) {
+            (true, Direction::East) => (in_lo - 1, in_hi),
+            (true, _) => (in_lo, in_hi + 1),
+            _ => (in_lo, in_hi),
+        };
+        let (first, over) = if in_dir == Direction::East {
+            (lo, hi + 1)
+        } else {
+            (hi, lo - 1)
+        };
+        let head = (first, in_y);
+        let over = (over, in_y);
+        let heads: Vec<(Cell, Direction)> = if two_in {
+            vec![
+                ((first, in_y - 1), Direction::South),
+                ((first, in_y + 1), Direction::North),
+            ]
+        } else {
+            vec![(head, in_dir)]
+        };
+        let exit = (col, out_b);
+
+        let mut belts: Vec<UgPlacement> = (lo..=hi)
+            .filter(|&x| two_in || (x, in_y) != head)
+            .map(|x| (x, in_y, in_dir, Misc::None))
+            .collect();
+        // Both output lanes run east from their first tap into the
+        // collector, which carries the north lane's items south to the exit.
+        for (y, xs) in [(out_a, &out_xs[0]), (out_b, &out_xs[1])] {
+            let first_drop = xs.iter().copied().min().unwrap_or(col);
+            belts.extend((first_drop..col).map(|x| (x, y, Direction::East, Misc::None)));
+        }
+        belts.extend((out_a..out_b).map(|y| (col, y, Direction::South, Misc::None)));
+
+        let mut structure: HashSet<Cell> = asm
+            .iter()
+            .flat_map(|&(ax, ay)| {
+                (0..3).flat_map(move |dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+            })
+            .collect();
+        structure.extend(inserters.iter().map(|&(c, _)| c));
+        structure.extend(belt_cells(&belts));
+        let head_cells: Vec<Cell> = heads.iter().map(|&(c, _)| c).collect();
+        // The input belt must stay clear of the collector and its overshoot
+        // cell empty.
+        if lo < 0
+            || hi >= col
+            || structure.contains(&over)
+            || head_cells
+                .iter()
+                .any(|c| !in_grid(*c, s) || structure.contains(c))
+        {
+            continue;
+        }
+        let mut reserved = structure.clone();
+        reserved.insert(over);
+        reserved.extend(head_cells.iter().copied());
+        reserved.insert(exit);
+        for &(ax, ay) in &asm {
+            reserved.extend(all_perim_set(ax, ay, s));
+        }
+        let n_sources = ingredients.len();
+        let free = available_cells(s, &reserved);
+        if free.len() <= n_sources {
+            continue;
+        }
+        let markers = rng.sample(&free, n_sources + 1);
+        let (sources, sink_pos) = (&markers[..n_sources], markers[n_sources]);
+
+        let mut taken = structure;
+        taken.insert(over);
+        taken.extend(markers.iter().copied());
+        let Some((source_dirs, paths, sink_dir)) = wire_markers(
+            rng,
+            s,
+            taken,
+            sources,
+            &heads,
+            sink_pos,
+            exit,
+            Direction::South,
+            &[],
+        ) else {
+            continue;
+        };
+
+        // Every assembler counts as ONE removable unit (matching
+        // blank_entities); markers are never blanked and don't count.
+        let total_entities =
+            belts.len() + paths.iter().map(Vec::len).sum::<usize>() + inserters.len() + asm.len();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &(ax, ay) in &asm {
+            place_assembler(&mut world, ax, ay, *recipe_key as i64);
+        }
+        for &(pos, dir) in &inserters {
+            place_inserter(&mut world, pos, dir, Item::Inserter);
+        }
+        place_belts(&mut world, &belts);
+        for path in &paths {
+            place_belts(&mut world, path);
+        }
+        for ((&item, &pos), &dir) in ingredients.iter().zip(sources).zip(&source_dirs) {
+            place_marker(&mut world, pos, Item::Source, dir, item as i64);
+        }
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            recipe.produces.first().0 as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        // Gapless rows pack the most machines beside the collector.
+        let plain3 = 3.0 * Item::Inserter.flow_rate();
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(recipe, 2 * ((s - 1) / 3), plain3, plain3),
+            ..finish(world, total_entities, vec![], count)?
+        });
+    }
+    None
+}
+
 // ── REACH_OVER_3IN / REACH_OVER_4IN: a packed column fed by
 // two stacked belts ──────────────────────────────────────────────────────────
 
@@ -5564,13 +5796,15 @@ mod tests {
             LessonKind::OppositeFeeds2In,
             LessonKind::DirectInsert2In,
             LessonKind::IntermediateBelt2In,
+            LessonKind::Mirrored1In,
+            LessonKind::Mirrored2In,
             LessonKind::ReachOver3In,
             LessonKind::ReachOver4In,
         ]);
         for kind in kinds {
             let mut checked = 0;
             for seed in 0..60u64 {
-                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
                     continue;
                 };
                 for x in 0..f.world.width() {
@@ -6023,6 +6257,50 @@ mod tests {
             }
         }
         assert!(shared > 0 && split > 0, "shared={shared} split={split}");
+    }
+
+    #[test]
+    fn test_mirrored_smoke() {
+        // Every build flows with no orphans through two equal rows of
+        // machines, one source per ingredient; the reference never beats the
+        // ceiling; and erasing any source zeroes throughput.
+        for (kind, n_in) in [(LessonKind::Mirrored1In, 1), (LessonKind::Mirrored2In, 2)] {
+            for size in [15usize] {
+                let mut built = 0;
+                for seed in 0..20u64 {
+                    let Some(f) = build_factory(size, kind, seed, true, f64::INFINITY) else {
+                        continue;
+                    };
+                    built += 1;
+                    let (tp, unreachable) = tp_unreachable(&f.world);
+                    assert!(tp > 0.0, "{kind:?} size={size} seed={seed}");
+                    assert_eq!(unreachable, 0, "{kind:?} size={size} seed={seed}");
+                    assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
+                    let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
+                    assert!(
+                        machines >= 2 && machines.is_multiple_of(2),
+                        "{kind:?} size={size} seed={seed}"
+                    );
+                    let mut sources = 0;
+                    for x in 0..f.world.width() {
+                        for y in 0..f.world.height() {
+                            if f.world.entity_at(x, y) == Some(Item::Source) {
+                                sources += 1;
+                                let mut crippled = f.world.clone();
+                                crippled.set(x, y, Channel::Entities, 0);
+                                assert_eq!(
+                                    tp_unreachable(&crippled).0,
+                                    0.0,
+                                    "{kind:?} seed={seed}"
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(sources, n_in, "{kind:?} size={size} seed={seed}");
+                }
+                assert!(built >= 18, "{kind:?} size={size}: only {built}/20 built");
+            }
+        }
     }
 
     #[test]
@@ -7006,7 +7284,7 @@ mod tests {
             }
             let mut checked = 0;
             for seed in 0..20u64 {
-                let Some(f) = build_factory(12, kind, seed, true, f64::INFINITY) else {
+                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
                     continue;
                 };
                 checked += 1;

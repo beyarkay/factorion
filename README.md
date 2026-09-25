@@ -157,8 +157,9 @@ a stream of _(partial-factory, correct-completion)_ training pairs. Each
   two side-load-limited (7.5 i/s) arms into one full belt via 2×1 splitters
 - `MOVE_VIA_UG_BELT`, `CROSS_UNDER_BELT` — underground belts and crossings
 - `MEMORISE_1..4_INGREDIENT_RECIPES`, `OPPOSITE_SIDES_1IN`, `SAME_SIDE_1IN`,
-  `SPLITTER_1IN`, `REACH_OVER_2IN..4IN`, `SHARED_BELT_2IN`, `UG_WEAVE_2IN`,
-  `OPPOSITE_FEEDS_2IN`, `DIRECT_INSERT_2IN`, `INTERMEDIATE_BELT_2IN` —
+  `SPLITTER_1IN`, `MIRRORED_1IN`, `MIRRORED_2IN`, `REACH_OVER_2IN..4IN`,
+  `SHARED_BELT_2IN`, `UG_WEAVE_2IN`, `OPPOSITE_FEEDS_2IN`, `DIRECT_INSERT_2IN`,
+  `INTERMEDIATE_BELT_2IN` —
   assembling machines, recipe selection, multi-assembler lanes, and
   two-stage (intermediate) crafting
 - `TRIAL_RECIPE_TREE_DEPTH_1..3` — **trials**: only the source and sink markers
