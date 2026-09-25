@@ -48,9 +48,11 @@ pub enum LessonKind {
     TrialRecipeTreeDepth1 = 16,
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
-    Factory2Ingredients = 19,
     Factory3Ingredients = 20,
     Factory4Ingredients = 21,
+    ReachOver2In = 22,
+    SharedBelt2In = 23,
+    UgWeave2In = 24,
 }
 
 impl LessonKind {
@@ -74,9 +76,11 @@ impl LessonKind {
             16 => Some(LessonKind::TrialRecipeTreeDepth1),
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
-            19 => Some(LessonKind::Factory2Ingredients),
             20 => Some(LessonKind::Factory3Ingredients),
             21 => Some(LessonKind::Factory4Ingredients),
+            22 => Some(LessonKind::ReachOver2In),
+            23 => Some(LessonKind::SharedBelt2In),
+            24 => Some(LessonKind::UgWeave2In),
             _ => None,
         }
     }
@@ -115,9 +119,11 @@ impl LessonKind {
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
-            LessonKind::Factory2Ingredients => "FACTORY_2_INGREDIENTS",
             LessonKind::Factory3Ingredients => "FACTORY_3_INGREDIENTS",
             LessonKind::Factory4Ingredients => "FACTORY_4_INGREDIENTS",
+            LessonKind::ReachOver2In => "REACH_OVER_2IN",
+            LessonKind::SharedBelt2In => "SHARED_BELT_2IN",
+            LessonKind::UgWeave2In => "UG_WEAVE_2IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -151,7 +157,9 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
-        LessonKind::Factory2Ingredients,
+        LessonKind::ReachOver2In,
+        LessonKind::SharedBelt2In,
+        LessonKind::UgWeave2In,
         LessonKind::Factory3Ingredients,
         LessonKind::Factory4Ingredients,
         LessonKind::TrialRecipeTreeDepth1,
@@ -630,8 +638,14 @@ pub fn build_factory(
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
-        LessonKind::Factory2Ingredients => {
-            build_factory_2_ingredients(size, &mut rng, max_entities)
+        LessonKind::ReachOver2In => {
+            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
+        }
+        LessonKind::SharedBelt2In => {
+            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::Shared)
+        }
+        LessonKind::UgWeave2In => {
+            build_factory_2_ingredients(size, &mut rng, max_entities, Feed::Weave)
         }
         LessonKind::Factory3Ingredients => {
             build_factory_n_ingredients(size, &mut rng, max_entities, 3)
@@ -2899,7 +2913,7 @@ fn build_factory_1_ingredient(
     None
 }
 
-// ── FACTORY_2_INGREDIENTS: a column of tightly-stacked assemblers fed two
+// ── REACH_OVER_2IN / SHARED_BELT_2IN / UG_WEAVE_2IN: a column of tightly-stacked assemblers fed two
 // ingredients along one flank ────────────────────────────────────────────────
 
 /// One tile of the weave's shared column (indexed bottom-up): a `d`/`u`
@@ -2912,7 +2926,7 @@ enum WeaveTile {
     Run,
 }
 
-/// How a FACTORY_2_INGREDIENTS build delivers its two ingredients.
+/// How a two-ingredient column delivers its ingredients — one lesson each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Feed {
     ReachOver,
@@ -2953,22 +2967,22 @@ fn route_source_to_head(
     best
 }
 
-/// Build a FACTORY_2_INGREDIENTS factory: a column of as many tightly-stacked
+/// Build a two-ingredient column factory: a column of as many tightly-stacked
 /// 3×3 assemblers as the grid fits, all crafting one random two-ingredient
 /// recipe, both ingredients
 /// delivered up the west flank and the product drained to an east output lane
 /// ending in the sink (the whole world is then randomly flipped/rotated, so
-/// every orientation appears). Three feed patterns, chosen per attempt:
+/// every orientation appears), delivered by `feed`:
 ///
-/// * **Reach-over**: two side-by-side belts. Each assembler taps the near
+/// * **Reach-over** (REACH_OVER_2IN): two side-by-side belts. Each assembler taps the near
 ///   belt with 1-2 plain inserters and reaches OVER it to the far belt with
 ///   1-2 long-handed inserters (reach is exactly 2, skipping the near belt).
-/// * **Weave**: ONE shared column carries both ingredients. B dives
+/// * **Weave** (UG_WEAVE_2IN): ONE shared column carries both ingredients. B dives
 ///   underground exactly where A occupies the surface — runs of belt fed and
 ///   drained sideways by a helper column of curves — and is back at surface
 ///   level at every `d`/`u` mouth between runs. The topmost mouth may be an
 ///   unpaired entrance: a stopper that just parks B for its inserter.
-/// * **Shared**: ONE dual-lane belt carries both ingredients — each source
+/// * **Shared** (SHARED_BELT_2IN): ONE dual-lane belt carries both ingredients — each source
 ///   route ends beside the lane head and side-loads its item onto its own
 ///   lane — and every assembler pulls its mix with 2-3 plain inserters (an
 ///   inserter's pickup splits fairly across lanes, so each one feeds both
@@ -2987,6 +3001,7 @@ fn build_factory_2_ingredients(
     size: usize,
     rng: &mut Rng,
     max_entities: f64,
+    feed: Feed,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 columns: ingredient-A lane (far belt / weave
@@ -3016,8 +3031,6 @@ fn build_factory_2_ingredients(
         rng.shuffle(&mut ingredients);
         let (item_a, item_b) = (ingredients[0], ingredients[1]);
         let output_item = recipe.produces.first().0;
-
-        let feed = [Feed::ReachOver, Feed::Weave, Feed::Shared][rng.choice_index(3)];
 
         // Vertical extent: 3n assembler rows, one row below for the source
         // band, and (for a north sink) one row above for the exit. The weave
@@ -3468,7 +3481,7 @@ fn build_factory_2_ingredients(
 /// them throughput — vary per seed.
 ///
 /// The sources sit at any free cells and the sink beyond the output exit,
-/// wired up by the UG-aware router as in FACTORY_2_INGREDIENTS.
+/// wired up by the UG-aware router as in REACH_OVER_2IN.
 /// `max_throughput` is the analytic [`assembler_row_ceiling`] of the machines
 /// the grid fits, not this sample's own rate.
 fn build_factory_n_ingredients(
@@ -4191,7 +4204,7 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 /// Normalizing by the sampled build's own rate instead makes `max_throughput`
 /// a floor: packing the row (#453) fixed the machine count, but the inserter
 /// counts and the feed pattern are still drawn per seed, so the reference
-/// rate varies within one recipe (up to 2.5× on FACTORY_2_INGREDIENTS) and
+/// rate varies within one recipe (up to 2.5× on the two-ingredient columns) and
 /// the uncapped PPO score pays a policy for out-building the unlucky draw
 /// (#426). The terms are the engine's own limits — an assembler scales
 /// `produces` by input sufficiency and never past 1×, the input inserters
@@ -4420,7 +4433,9 @@ mod tests {
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
             LessonKind::Factory1Ingredient,
-            LessonKind::Factory2Ingredients,
+            LessonKind::ReachOver2In,
+            LessonKind::SharedBelt2In,
+            LessonKind::UgWeave2In,
             LessonKind::Factory3Ingredients,
             LessonKind::Factory4Ingredients,
         ]);
@@ -4559,109 +4574,105 @@ mod tests {
         // Positive throughput, no orphans, two sources carrying the recipe's
         // two ingredients, one sink carrying its product, the column packed
         // with the three 3×3 assemblers an 11-tall grid fits, each with 4-6
-        // inserters. All three feed patterns appear across seeds, and the
+        // inserters. Each lesson's feed pattern shows in its build, and the
         // markers sit at varying distances from the assembler block (the
         // routes vary).
-        let mut built = 0;
-        let (mut reach_over, mut weave, mut shared) = (0, 0, 0);
         let (mut source_dists, mut sink_dists): (HashSet<i64>, HashSet<i64>) =
             (HashSet::new(), HashSet::new());
-        for seed in 0..50u64 {
-            let Some(f) = build_factory(
-                11,
-                LessonKind::Factory2Ingredients,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
-                continue;
-            };
-            built += 1;
-            let (tp, unreachable) = tp_unreachable(&f.world);
-            assert!(tp > 0.0, "seed={seed}");
-            assert_eq!(unreachable, 0, "seed={seed} has orphan tiles");
-            assert_eq!(count_entity(&f.world, Item::Source), 2, "seed={seed}");
-            assert_eq!(count_entity(&f.world, Item::Sink), 1, "seed={seed}");
-            let asm_tiles = count_entity(&f.world, Item::AssemblingMachine1);
-            assert!(
-                asm_tiles > 0 && asm_tiles.is_multiple_of(9),
-                "seed={seed}: assembler tiles {asm_tiles} not whole 3x3 machines"
-            );
-            let n_asm = asm_tiles / 9;
-            assert_eq!(n_asm, 3, "seed={seed}: column not packed to capacity");
-            let long = count_entity(&f.world, Item::LongHandedInserter);
-            let n_inserter = count_entity(&f.world, Item::Inserter) + long;
-            assert!(
-                (4 * n_asm..=6 * n_asm).contains(&n_inserter),
-                "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
-            );
-            // Feed-pattern signatures: only reach-over places long-handed
-            // inserters; the weave gadget always tunnels. A shared build
-            // whose ROUTES happen to tunnel is miscounted as a weave — rare
-            // enough that both buckets still fill over these fixed seeds.
-            if long > 0 {
-                reach_over += 1;
-            } else if count_entity(&f.world, Item::UndergroundBelt) > 0 {
-                weave += 1;
-            } else {
-                shared += 1;
-            }
-            // The sources carry exactly the recipe's two ingredients, the
-            // sink its product.
-            let mut source_items: Vec<Item> = Vec::new();
-            let (mut sink_item, mut recipe_item) = (None, None);
-            let (mut markers, mut asm_tile_pos): (Vec<(Item, Cell)>, Vec<Cell>) =
-                (Vec::new(), Vec::new());
-            for x in 0..f.world.width() {
-                for y in 0..f.world.height() {
-                    let c = (x as i64, y as i64);
-                    match f.world.entity_at(x, y) {
-                        Some(Item::Source) => {
-                            source_items.push(f.world.item_at(x, y).unwrap());
-                            markers.push((Item::Source, c));
+        for kind in [
+            LessonKind::ReachOver2In,
+            LessonKind::SharedBelt2In,
+            LessonKind::UgWeave2In,
+        ] {
+            let mut built = 0;
+            for seed in 0..50u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                built += 1;
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "seed={seed}");
+                assert_eq!(unreachable, 0, "seed={seed} has orphan tiles");
+                assert_eq!(count_entity(&f.world, Item::Source), 2, "seed={seed}");
+                assert_eq!(count_entity(&f.world, Item::Sink), 1, "seed={seed}");
+                let asm_tiles = count_entity(&f.world, Item::AssemblingMachine1);
+                assert!(
+                    asm_tiles > 0 && asm_tiles.is_multiple_of(9),
+                    "seed={seed}: assembler tiles {asm_tiles} not whole 3x3 machines"
+                );
+                let n_asm = asm_tiles / 9;
+                assert_eq!(n_asm, 3, "seed={seed}: column not packed to capacity");
+                let long = count_entity(&f.world, Item::LongHandedInserter);
+                let n_inserter = count_entity(&f.world, Item::Inserter) + long;
+                assert!(
+                    (4 * n_asm..=6 * n_asm).contains(&n_inserter),
+                    "seed={seed}: {n_inserter} inserters for {n_asm} assemblers"
+                );
+                // Feed-pattern signatures: only reach-over places long-handed
+                // inserters, and the weave gadget always tunnels.
+                assert_eq!(
+                    long > 0,
+                    kind == LessonKind::ReachOver2In,
+                    "{kind:?} seed={seed}"
+                );
+                if kind == LessonKind::UgWeave2In {
+                    assert!(
+                        count_entity(&f.world, Item::UndergroundBelt) > 0,
+                        "seed={seed}"
+                    );
+                }
+                // The sources carry exactly the recipe's two ingredients, the
+                // sink its product.
+                let mut source_items: Vec<Item> = Vec::new();
+                let (mut sink_item, mut recipe_item) = (None, None);
+                let (mut markers, mut asm_tile_pos): (Vec<(Item, Cell)>, Vec<Cell>) =
+                    (Vec::new(), Vec::new());
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        let c = (x as i64, y as i64);
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Source) => {
+                                source_items.push(f.world.item_at(x, y).unwrap());
+                                markers.push((Item::Source, c));
+                            }
+                            Some(Item::Sink) => {
+                                sink_item = f.world.item_at(x, y);
+                                markers.push((Item::Sink, c));
+                            }
+                            Some(Item::AssemblingMachine1) => {
+                                recipe_item = f.world.item_at(x, y);
+                                asm_tile_pos.push(c);
+                            }
+                            _ => {}
                         }
-                        Some(Item::Sink) => {
-                            sink_item = f.world.item_at(x, y);
-                            markers.push((Item::Sink, c));
-                        }
-                        Some(Item::AssemblingMachine1) => {
-                            recipe_item = f.world.item_at(x, y);
-                            asm_tile_pos.push(c);
-                        }
-                        _ => {}
                     }
                 }
+                for (kind, (mx, my)) in markers {
+                    let dist = asm_tile_pos
+                        .iter()
+                        .map(|&(x, y)| (mx - x).abs() + (my - y).abs())
+                        .min()
+                        .unwrap();
+                    match kind {
+                        Item::Source => source_dists.insert(dist),
+                        _ => sink_dists.insert(dist),
+                    };
+                }
+                let recipe = crate::types::get_recipe(recipe_item.unwrap()).unwrap();
+                let consumed: HashSet<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+                assert_eq!(
+                    source_items.iter().copied().collect::<HashSet<Item>>(),
+                    consumed,
+                    "seed={seed}: sources don't match the recipe's ingredients"
+                );
+                assert_eq!(
+                    sink_item,
+                    Some(recipe.produces.first().0),
+                    "seed={seed}: sink doesn't carry the recipe's product"
+                );
             }
-            for (kind, (mx, my)) in markers {
-                let dist = asm_tile_pos
-                    .iter()
-                    .map(|&(x, y)| (mx - x).abs() + (my - y).abs())
-                    .min()
-                    .unwrap();
-                match kind {
-                    Item::Source => source_dists.insert(dist),
-                    _ => sink_dists.insert(dist),
-                };
-            }
-            let recipe = crate::types::get_recipe(recipe_item.unwrap()).unwrap();
-            let consumed: HashSet<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
-            assert_eq!(
-                source_items.iter().copied().collect::<HashSet<Item>>(),
-                consumed,
-                "seed={seed}: sources don't match the recipe's ingredients"
-            );
-            assert_eq!(
-                sink_item,
-                Some(recipe.produces.first().0),
-                "seed={seed}: sink doesn't carry the recipe's product"
-            );
+            assert!(built > 40, "{kind:?}: most seeds should build, got {built}");
         }
-        assert!(built > 40, "most seeds should build, got {built}");
-        assert!(
-            reach_over > 0 && weave > 0 && shared > 0,
-            "all feed patterns should appear: \
-             reach_over={reach_over} weave={weave} shared={shared}"
-        );
         assert!(
             source_dists.len() > 1 && sink_dists.len() > 1,
             "markers should sit at varying distances from the block: \
@@ -4748,29 +4759,29 @@ mod tests {
         // recipe the assemblers cannot craft from one ingredient alone, so
         // both delivery lines are throughput-necessary.
         let mut checked = 0;
-        for seed in 0..20u64 {
-            let Some(f) = build_factory(
-                11,
-                LessonKind::Factory2Ingredients,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
-                continue;
-            };
-            for x in 0..f.world.width() {
-                for y in 0..f.world.height() {
-                    if f.world.entity_at(x, y) != Some(Item::Source) {
-                        continue;
+        for kind in [
+            LessonKind::ReachOver2In,
+            LessonKind::SharedBelt2In,
+            LessonKind::UgWeave2In,
+        ] {
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(11, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) != Some(Item::Source) {
+                            continue;
+                        }
+                        let mut crippled = f.world.clone();
+                        crippled.set(x, y, Channel::Entities, 0);
+                        let (tp, _) = tp_unreachable(&crippled);
+                        assert_eq!(
+                            tp, 0.0,
+                            "seed={seed}: factory still flows without the source at ({x},{y})"
+                        );
+                        checked += 1;
                     }
-                    let mut crippled = f.world.clone();
-                    crippled.set(x, y, Channel::Entities, 0);
-                    let (tp, _) = tp_unreachable(&crippled);
-                    assert_eq!(
-                        tp, 0.0,
-                        "seed={seed}: factory still flows without the source at ({x},{y})"
-                    );
-                    checked += 1;
                 }
             }
         }
