@@ -4045,6 +4045,45 @@ fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Op
     None
 }
 
+/// A two-ingredient product (tier-1 craftable) with an ingredient `x` that is
+/// itself crafted from one ingredient.
+struct TwoStage {
+    product_key: Item,
+    product: Recipe,
+    x_key: Item,
+    x: Recipe,
+    /// The product's ingredient other than `x`.
+    other: Item,
+}
+
+/// Every [`TwoStage`] recipe pair, one per eligible `x`; `None` when there
+/// are none.
+fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
+    let intermediates: HashMap<Item, (Item, Recipe)> = am1_recipes(1)?
+        .into_iter()
+        .map(|(key, r)| (r.produces.first().0, (key, r)))
+        .collect();
+    NonEmpty::from_vec(
+        am1_recipes(2)?
+            .into_iter()
+            .flat_map(|(key, r)| {
+                let ings: Vec<Item> = r.consumes.iter().map(|&(i, _)| i).collect();
+                let intermediates = &intermediates;
+                (0..2).filter_map(move |k| {
+                    let (x_key, x_recipe) = intermediates.get(&ings[k])?.clone();
+                    Some(TwoStage {
+                        product_key: key,
+                        product: r.clone(),
+                        x_key,
+                        x: x_recipe,
+                        other: ings[1 - k],
+                    })
+                })
+            })
+            .collect(),
+    )
+}
+
 // ── DIRECT_INSERT_2IN: an intermediate machine inserting straight into its
 // product machine ─────────────────────────────────────────────────────────
 
@@ -4071,32 +4110,20 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
     if s < 8 {
         return None;
     }
-    let intermediates: HashMap<Item, (Item, Recipe)> = am1_recipes(1)?
-        .into_iter()
-        .map(|(key, r)| (r.produces.first().0, (key, r)))
-        .collect();
-    // (product recipe, intermediate X, X's recipe, the product's other ingredient)
-    let pool: Vec<(Item, Recipe, Item, Item, Recipe, Item)> = am1_recipes(2)?
-        .into_iter()
-        .flat_map(|(key, r)| {
-            let ings: Vec<Item> = r.consumes.iter().map(|&(i, _)| i).collect();
-            let intermediates = &intermediates;
-            (0..2).filter_map(move |k| {
-                let (x_key, x_recipe) = intermediates.get(&ings[k])?.clone();
-                Some((key, r.clone(), ings[k], x_key, x_recipe, ings[1 - k]))
-            })
-        })
-        .collect();
-    if pool.is_empty() {
-        return None;
-    }
+    let pool = two_stage_recipes()?;
     let n_pairs = s / 7;
     let mut count = (500).max(size * size * 16);
 
     while count > 0 {
         count -= 1;
 
-        let (p_key, p_recipe, _, x_key, x_recipe, other) = &pool[rng.choice_index(pool.len())];
+        let TwoStage {
+            product_key: p_key,
+            product: p_recipe,
+            x_key,
+            x: x_recipe,
+            other,
+        } = &pool[rng.choice_index(pool.len())];
         let raw = x_recipe.consumes.first().0;
         let ax0 = rng.randint(0, s - 7 * n_pairs);
         let ay = rng.randint(2, s - 6);
