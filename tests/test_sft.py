@@ -398,7 +398,7 @@ class TestGenerateDataset:
         within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
         from collections import Counter
 
-        args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
+        args = SftArgs(seed=1, size=9, num_samples=3000, max_level=8)
         *_, kinds = _materialise_args(args)
         vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
         n_teachable = sum(1 for k in LessonKind if not LESSON_IS_TRIAL[k])

@@ -49,6 +49,8 @@ pub enum LessonKind {
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
     Factory2Ingredients = 19,
+    Factory3Ingredients = 20,
+    Factory4Ingredients = 21,
 }
 
 impl LessonKind {
@@ -73,6 +75,8 @@ impl LessonKind {
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
             19 => Some(LessonKind::Factory2Ingredients),
+            20 => Some(LessonKind::Factory3Ingredients),
+            21 => Some(LessonKind::Factory4Ingredients),
             _ => None,
         }
     }
@@ -112,6 +116,8 @@ impl LessonKind {
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
             LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
             LessonKind::Factory2Ingredients => "FACTORY_2_INGREDIENTS",
+            LessonKind::Factory3Ingredients => "FACTORY_3_INGREDIENTS",
+            LessonKind::Factory4Ingredients => "FACTORY_4_INGREDIENTS",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -146,6 +152,8 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::CrossUnderBelt,
         LessonKind::Factory1Ingredient,
         LessonKind::Factory2Ingredients,
+        LessonKind::Factory3Ingredients,
+        LessonKind::Factory4Ingredients,
         LessonKind::TrialRecipeTreeDepth1,
         LessonKind::TrialRecipeTreeDepth2,
         LessonKind::TrialRecipeTreeDepth3,
@@ -624,6 +632,12 @@ pub fn build_factory(
         LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
         LessonKind::Factory2Ingredients => {
             build_factory_2_ingredients(size, &mut rng, max_entities)
+        }
+        LessonKind::Factory3Ingredients => {
+            build_factory_n_ingredients(size, &mut rng, max_entities, 3)
+        }
+        LessonKind::Factory4Ingredients => {
+            build_factory_n_ingredients(size, &mut rng, max_entities, 4)
         }
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
@@ -3434,6 +3448,311 @@ fn build_factory_2_ingredients(
     None
 }
 
+// ── FACTORY_3_INGREDIENTS / FACTORY_4_INGREDIENTS: a packed column fed by
+// two stacked belts ──────────────────────────────────────────────────────────
+
+/// Build a FACTORY_`n`_INGREDIENTS factory (`n` is 3 or 4): a column of as
+/// many 3×3 assemblers as the grid fits, all crafting one random
+/// `n`-ingredient recipe, fed from two belts stacked along the west flank and
+/// drained through 2-3 east inserters per machine onto an output lane ending
+/// in the sink (the whole world is then randomly flipped/rotated).
+///
+/// The near belt carries two ingredients, one per lane — its head tile is
+/// side-loaded from both flanks — and every assembler taps it with plain
+/// inserters, which pick up from both lanes. The far belt carries the rest
+/// (one ingredient, or two side-loaded one per lane) and is reached OVER the
+/// near belt by long-handed inserters. The near belt flows north and the far
+/// belt south, so their heads sit at opposite ends of the column and neither
+/// head's flank feed has to cross the other belt. Each assembler taps each
+/// belt 1-2 times on distinct rows of its span, so tap counts — and with
+/// them throughput — vary per seed.
+///
+/// The sources sit at any free cells and the sink beyond the output exit,
+/// wired up by the UG-aware router as in FACTORY_2_INGREDIENTS.
+/// `max_throughput` is the analytic [`assembler_row_ceiling`] of the machines
+/// the grid fits, not this sample's own rate.
+fn build_factory_n_ingredients(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    n: usize,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let recipes = am1_recipes(n)?;
+    // A side-loaded far head needs a column west of the far belt for its
+    // west feed, and two rows above the column so its east feed clears the
+    // near belt's overshoot cell; the near head always needs one row below.
+    let far_shared = n == 4;
+    let (west, above) = if far_shared { (1, 2) } else { (0, 1) };
+    let n_asm = (s - above - 1) / 3;
+    if n_asm < 1 || s < west + 8 {
+        return None;
+    }
+    let mut count = (500).max(size * size * 16);
+
+    // Drawn once, outside the rejection loop, so the realised mix is the
+    // lesson spec rather than whichever direction rejects least.
+    let north_sink = rng.choice_index(2) == 1;
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = &recipes[rng.choice_index(recipes.len())];
+        let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut ingredients);
+        let output_item = recipe.produces.first().0;
+
+        let y0 = rng.randint(above, s - 1 - 3 * n_asm);
+        let x0 = rng.randint(west, s - 8);
+        let (col_f, col_n, col_in, ax) = (x0, x0 + 1, x0 + 2, x0 + 3);
+        let (col_out_i, col_out) = (x0 + 6, x0 + 7);
+
+        let mut inserters: Vec<(Cell, Item)> = Vec::new();
+        let (mut far_taps, mut near_taps): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
+        for i in 0..n_asm {
+            let ry = y0 + 3 * i;
+            let rows = [ry, ry + 1, ry + 2];
+            let k_far = rng.randint(1, 2);
+            let k_near = rng.randint(1, 3 - k_far);
+            let picked = rng.sample(&rows, (k_far + k_near) as usize);
+            for (idx, &r) in picked.iter().enumerate() {
+                if (idx as i64) < k_far {
+                    inserters.push(((col_in, r), Item::LongHandedInserter));
+                    far_taps.push(r);
+                } else {
+                    inserters.push(((col_in, r), Item::Inserter));
+                    near_taps.push(r);
+                }
+            }
+        }
+        let (Some(&far_top), Some(&far_bot)) = (far_taps.iter().min(), far_taps.iter().max())
+        else {
+            continue;
+        };
+        let (Some(&near_top), Some(&near_bot)) = (near_taps.iter().min(), near_taps.iter().max())
+        else {
+            continue;
+        };
+
+        // The near head sits below both belts' last taps, clear of the far
+        // belt's overshoot cell, so its west feed never touches the far belt.
+        let near_head = near_bot.max(far_bot + 1) + 1;
+        let far_head = if far_shared {
+            (far_top - 1).min(near_top - 2)
+        } else {
+            far_top - 1
+        };
+
+        let mut belts: Vec<UgPlacement> = Vec::new();
+        for r in near_top..=near_head {
+            belts.push((col_n, r, Direction::North, Misc::None));
+        }
+        // A plain far belt's head is its feed route's last tile; a
+        // side-loaded one is a lane tile fed from both flanks.
+        let far_lane_top = if far_shared { far_head } else { far_top };
+        for r in far_lane_top..=far_bot {
+            belts.push((col_f, r, Direction::South, Misc::None));
+        }
+        // An entity one past either belt's tail would siphon its items.
+        let keepout: HashSet<Cell> = [(col_n, near_top - 1), (col_f, far_bot + 1)].into();
+
+        // (ingredient, head cell, direction the route arrives in)
+        let mut heads: Vec<(Item, Cell, Direction)> = vec![
+            (ingredients[0], (col_f, near_head), Direction::East),
+            (ingredients[1], (col_in, near_head), Direction::West),
+        ];
+        if far_shared {
+            heads.push((ingredients[2], (col_f - 1, far_head), Direction::East));
+            heads.push((ingredients[3], (col_n, far_head), Direction::West));
+        } else {
+            heads.push((ingredients[2], (col_f, far_head), Direction::South));
+        }
+
+        let mut drop_rows: Vec<i64> = Vec::new();
+        for i in 0..n_asm {
+            let ry = y0 + 3 * i;
+            let rows = [ry, ry + 1, ry + 2];
+            let k_out = rng.randint(2, 3) as usize;
+            for &r in &rng.sample(&rows, k_out) {
+                inserters.push(((col_out_i, r), Item::Inserter));
+                drop_rows.push(r);
+            }
+        }
+        let (Some(&drop_lo), Some(&drop_hi)) = (drop_rows.iter().min(), drop_rows.iter().max())
+        else {
+            continue;
+        };
+        let (out_dir, exit) = if north_sink {
+            (Direction::North, (col_out, drop_lo - 1))
+        } else {
+            (Direction::South, (col_out, drop_hi + 1))
+        };
+        for r in drop_lo..=drop_hi {
+            belts.push((col_out, r, out_dir, Misc::None));
+        }
+
+        // Markers keep off the structure, the heads/exit, the keepout cells
+        // and every assembler's perimeter ring (a marker there would couple
+        // to the machine like an inserter).
+        let mut structure: HashSet<Cell> = belt_cell_set(&belts);
+        structure.extend(inserters.iter().map(|&(c, _)| c));
+        structure.extend((0..n_asm).flat_map(|i| {
+            (0..3).flat_map(move |dx| (0..3).map(move |dy| (ax + dx, y0 + 3 * i + dy)))
+        }));
+        let mut reserved = structure.clone();
+        reserved.extend(keepout.iter().copied());
+        reserved.extend(heads.iter().map(|&(_, c, _)| c));
+        reserved.insert(exit);
+        for i in 0..n_asm {
+            reserved.extend(all_perim_set(ax, y0 + 3 * i, s));
+        }
+        let free = available_cells(s, &reserved);
+        if free.len() < n {
+            continue;
+        }
+        let sources = rng.sample(&free, n);
+        let snk_band: Vec<Cell> = free
+            .iter()
+            .copied()
+            .filter(|&c| {
+                !sources.contains(&c)
+                    && if north_sink {
+                        c.1 <= exit.1
+                    } else {
+                        c.1 >= exit.1
+                    }
+            })
+            .collect();
+        if snk_band.is_empty() {
+            continue;
+        }
+        let sink_pos = snk_band[rng.choice_index(snk_band.len())];
+
+        // Route each source to its head, earlier routes blocking later ones.
+        // An unrouted marker's whole neighbourhood stays clear — any
+        // neighbour may yet become its feed or faced cell.
+        let nbhd = |c: Cell| BFS_DELTAS.iter().map(move |&(dx, dy)| (c.0 + dx, c.1 + dy));
+        let mut fixed = structure;
+        fixed.extend(keepout.iter().copied());
+        fixed.extend(sources.iter().copied());
+        fixed.insert(sink_pos);
+        let mut taken = fixed.clone();
+        let mut paths: Vec<Vec<UgPlacement>> = Vec::new();
+        let mut source_dirs: Vec<Direction> = Vec::new();
+        for (k, &(_, head, arrive)) in heads.iter().enumerate() {
+            let mut blocked = taken.clone();
+            blocked.insert(exit);
+            blocked.extend(nbhd(sink_pos));
+            blocked.extend(heads[k + 1..].iter().map(|&(_, c, _)| c));
+            blocked.extend(sources[k + 1..].iter().flat_map(|&c| nbhd(c)));
+            let Some((dir, path)) =
+                route_source_to_head(rng, sources[k], head, arrive, s, &blocked)
+            else {
+                break;
+            };
+            taken.extend(belt_cells(&path));
+            paths.push(path);
+            source_dirs.push(dir);
+        }
+        if paths.len() < n {
+            continue;
+        }
+
+        // Sink route: exit → the cell behind the sink, all four sink facings
+        // tried, shortest kept. The faced cell must stay empty (a sink
+        // pointing into a belt would FEED it and close a cycle).
+        let mut facings = DIRS;
+        rng.shuffle(&mut facings);
+        let mut best: Option<(Direction, Vec<UgPlacement>)> = None;
+        for &f in &facings {
+            let df = f.delta();
+            let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
+            let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
+            if !in_grid(sink_in, s) || (sink_in != exit && taken.contains(&sink_in)) {
+                continue;
+            }
+            if in_grid(sink_face, s) && (taken.contains(&sink_face) || sink_face == exit) {
+                continue;
+            }
+            let mut blocked = taken.clone();
+            blocked.insert(sink_face);
+            if let Some(p) = find_belt_path(
+                exit,
+                sink_in,
+                f,
+                s,
+                &blocked,
+                Underground::On(Some(out_dir)),
+            ) {
+                if best.as_ref().is_none_or(|(_, bp)| p.len() < bp.len()) {
+                    best = Some((f, p));
+                }
+            }
+        }
+        let Some((sink_dir, path_k)) = best else {
+            continue;
+        };
+        paths.push(path_k);
+
+        let routes: Vec<&[UgPlacement]> = paths.iter().map(Vec::as_slice).collect();
+        if tunnels_crossed(&routes, &belts) {
+            continue;
+        }
+
+        // Every assembler counts as ONE removable unit (matching
+        // blank_entities); markers are never blanked and don't count.
+        let total_entities = belts.len()
+            + paths.iter().map(Vec::len).sum::<usize>()
+            + inserters.len()
+            + n_asm as usize;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for i in 0..n_asm {
+            place_assembler(&mut world, ax, y0 + 3 * i, *recipe_key as i64);
+        }
+        for &(pos, kind) in &inserters {
+            place_inserter(&mut world, pos, Direction::East, kind);
+        }
+        place_belts(&mut world, &belts);
+        for path in &paths {
+            place_belts(&mut world, path);
+        }
+        for ((&(item, _, _), &pos), &dir) in heads.iter().zip(&sources).zip(&source_dirs) {
+            place_marker(&mut world, pos, Item::Source, dir, item as i64);
+        }
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            output_item as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        // Reject dead builds and orphan tiles; anything slower-but-flowing is
+        // kept on purpose (the lesson wants a throughput spread).
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(recipe, n_asm),
+            ..finish(world, total_entities, vec![], count)?
+        });
+    }
+    None
+}
+
 // ── CROSS_UNDER_BELT: an obstruction belt-line cut + a crossing that tunnels
 // under it ──────────────────────────────────────────────────────────────────
 
@@ -3863,6 +4182,29 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
     None
 }
 
+/// The throughput ceiling of an assembler lesson: `machines` saturated
+/// assemblers crafting `recipe`, each fed and drained through the three
+/// inserter slots one face of a 3×3 machine offers in these layouts. Being
+/// `machines` single-machine ceilings, it scores a one-machine build at
+/// `1 / machines`.
+///
+/// Normalizing by the sampled build's own rate instead makes `max_throughput`
+/// a floor: packing the row (#453) fixed the machine count, but the inserter
+/// counts and the feed pattern are still drawn per seed, so the reference
+/// rate varies within one recipe (up to 2.5× on FACTORY_2_INGREDIENTS) and
+/// the uncapped PPO score pays a policy for out-building the unlucky draw
+/// (#426). The terms are the engine's own limits — an assembler scales
+/// `produces` by input sufficiency and never past 1×, the input inserters
+/// share their capacity across every ingredient a craft needs (the best split
+/// caps the ratio at `feed / Σ consumes`), and the output inserters drain at
+/// most `feed`.
+fn assembler_row_ceiling(recipe: &Recipe, machines: i64) -> f64 {
+    let feed = 3.0 * Item::Inserter.flow_rate();
+    let per_craft: f64 = recipe.consumes.iter().map(|&(_, qty)| qty).sum();
+    let produces = recipe.produces.first().1;
+    machines as f64 * (produces * (feed / per_craft).min(1.0)).min(feed)
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -4079,6 +4421,8 @@ mod tests {
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
             LessonKind::Factory1Ingredient,
             LessonKind::Factory2Ingredients,
+            LessonKind::Factory3Ingredients,
+            LessonKind::Factory4Ingredients,
         ]);
         for kind in kinds {
             let mut checked = 0;
@@ -4323,6 +4667,79 @@ mod tests {
             "markers should sit at varying distances from the block: \
              sources {source_dists:?}, sinks {sink_dists:?}"
         );
+    }
+
+    #[test]
+    fn test_factory_n_ingredients_smoke() {
+        // Every build flows with no orphans; its n sources carry exactly the
+        // recipe's ingredients and its sink the product; the column is packed
+        // to capacity with each machine tapping both belts (plain inserters on
+        // the near belt, long-handed over it to the far one); the reference
+        // never beats the ceiling; and erasing any source zeroes throughput.
+        for (kind, n, size, machines) in [
+            (LessonKind::Factory3Ingredients, 3, 11usize, 3usize),
+            (LessonKind::Factory3Ingredients, 3, 15, 4),
+            (LessonKind::Factory4Ingredients, 4, 11, 2),
+            (LessonKind::Factory4Ingredients, 4, 15, 4),
+        ] {
+            let mut built = 0;
+            for seed in 0..20u64 {
+                let Some(f) = build_factory(size, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                built += 1;
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "{kind:?} size={size} seed={seed}");
+                assert_eq!(unreachable, 0, "{kind:?} size={size} seed={seed}");
+                assert_eq!(
+                    count_entity(&f.world, Item::AssemblingMachine1),
+                    9 * machines,
+                    "{kind:?} size={size} seed={seed}: column not packed"
+                );
+                assert!(count_entity(&f.world, Item::LongHandedInserter) >= machines);
+                assert!(count_entity(&f.world, Item::Inserter) >= 3 * machines);
+
+                let mut sources: Vec<(usize, usize, Item)> = Vec::new();
+                let (mut sink_item, mut recipe_item) = (None, None);
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Source) => {
+                                sources.push((x, y, f.world.item_at(x, y).unwrap()))
+                            }
+                            Some(Item::Sink) => sink_item = f.world.item_at(x, y),
+                            Some(Item::AssemblingMachine1) => recipe_item = f.world.item_at(x, y),
+                            _ => {}
+                        }
+                    }
+                }
+                let recipe = crate::types::get_recipe(recipe_item.unwrap()).unwrap();
+                let mut want: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+                let mut got: Vec<Item> = sources.iter().map(|&(.., i)| i).collect();
+                want.sort_by_key(|&i| i as i64);
+                got.sort_by_key(|&i| i as i64);
+                assert_eq!(got, want, "{kind:?} size={size} seed={seed}");
+                assert_eq!(want.len(), n);
+                assert_eq!(sink_item, Some(recipe.produces.first().0));
+
+                assert_eq!(
+                    f.max_throughput,
+                    machines as f64 * assembler_row_ceiling(&recipe, 1)
+                );
+                assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
+
+                for &(x, y, _) in &sources {
+                    let mut crippled = f.world.clone();
+                    crippled.set(x, y, Channel::Entities, 0);
+                    assert_eq!(
+                        tp_unreachable(&crippled).0,
+                        0.0,
+                        "{kind:?} size={size} seed={seed}: flows without the source at ({x},{y})"
+                    );
+                }
+            }
+            assert!(built >= 18, "{kind:?} size={size}: only {built}/20 built");
+        }
     }
 
     #[test]
