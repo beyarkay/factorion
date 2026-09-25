@@ -3754,6 +3754,82 @@ fn build_factory_2_ingredients(
     None
 }
 
+/// Wire a fixed layout's markers: route each source to its head (arriving in
+/// the paired direction), earlier routes blocking later ones, then the output
+/// `exit` to the cell behind the sink, all four sink facings tried and the
+/// shortest kept. `taken` holds every occupied or keep-clear cell, markers
+/// included; no route's tunnel may span another route's or `ug`'s
+/// underground tiles. Returns each source's facing, the routes (the sink's
+/// last) and the sink's facing, or `None` when any route fails.
+#[allow(clippy::too_many_arguments)]
+fn wire_markers(
+    rng: &mut Rng,
+    s: i64,
+    mut taken: HashSet<Cell>,
+    sources: &[Cell],
+    heads: &[(Cell, Direction)],
+    sink_pos: Cell,
+    exit: Cell,
+    out_dir: Direction,
+    ug: &[UgPlacement],
+) -> Option<(Vec<Direction>, Vec<Vec<UgPlacement>>, Direction)> {
+    // An unrouted marker's whole neighbourhood stays clear — any neighbour
+    // may yet become its feed or faced cell.
+    let nbhd = |c: Cell| BFS_DELTAS.iter().map(move |&(dx, dy)| (c.0 + dx, c.1 + dy));
+    let mut paths: Vec<Vec<UgPlacement>> = Vec::new();
+    let mut source_dirs: Vec<Direction> = Vec::new();
+    for (k, &(head, arrive)) in heads.iter().enumerate() {
+        let mut blocked = taken.clone();
+        blocked.insert(exit);
+        blocked.extend(nbhd(sink_pos));
+        blocked.extend(heads[k + 1..].iter().map(|&(c, _)| c));
+        blocked.extend(sources[k + 1..].iter().flat_map(|&c| nbhd(c)));
+        let (dir, path) = route_source_to_head(rng, sources[k], head, arrive, s, &blocked)?;
+        taken.extend(belt_cells(&path));
+        paths.push(path);
+        source_dirs.push(dir);
+    }
+
+    // The faced cell must stay empty (a sink pointing into a belt would FEED
+    // it and close a cycle).
+    let mut facings = DIRS;
+    rng.shuffle(&mut facings);
+    let mut best: Option<(Direction, Vec<UgPlacement>)> = None;
+    for &f in &facings {
+        let df = f.delta();
+        let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
+        let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
+        if !in_grid(sink_in, s) || (sink_in != exit && taken.contains(&sink_in)) {
+            continue;
+        }
+        if in_grid(sink_face, s) && (taken.contains(&sink_face) || sink_face == exit) {
+            continue;
+        }
+        let mut blocked = taken.clone();
+        blocked.insert(sink_face);
+        if let Some(p) = find_belt_path(
+            exit,
+            sink_in,
+            f,
+            s,
+            &blocked,
+            Underground::On(Some(out_dir)),
+        ) {
+            if best.as_ref().is_none_or(|(_, bp)| p.len() < bp.len()) {
+                best = Some((f, p));
+            }
+        }
+    }
+    let (sink_dir, path_k) = best?;
+    paths.push(path_k);
+
+    let routes: Vec<&[UgPlacement]> = paths.iter().map(Vec::as_slice).collect();
+    if tunnels_crossed(&routes, ug) {
+        return None;
+    }
+    Some((source_dirs, paths, sink_dir))
+}
+
 // ── REACH_OVER_3IN / REACH_OVER_4IN: a packed column fed by
 // two stacked belts ──────────────────────────────────────────────────────────
 
@@ -3934,76 +4010,24 @@ fn build_factory_n_ingredients(
         }
         let sink_pos = snk_band[rng.choice_index(snk_band.len())];
 
-        // Route each source to its head, earlier routes blocking later ones.
-        // An unrouted marker's whole neighbourhood stays clear — any
-        // neighbour may yet become its feed or faced cell.
-        let nbhd = |c: Cell| BFS_DELTAS.iter().map(move |&(dx, dy)| (c.0 + dx, c.1 + dy));
-        let mut fixed = structure;
-        fixed.extend(keepout.iter().copied());
-        fixed.extend(sources.iter().copied());
-        fixed.insert(sink_pos);
-        let mut taken = fixed.clone();
-        let mut paths: Vec<Vec<UgPlacement>> = Vec::new();
-        let mut source_dirs: Vec<Direction> = Vec::new();
-        for (k, &(_, head, arrive)) in heads.iter().enumerate() {
-            let mut blocked = taken.clone();
-            blocked.insert(exit);
-            blocked.extend(nbhd(sink_pos));
-            blocked.extend(heads[k + 1..].iter().map(|&(_, c, _)| c));
-            blocked.extend(sources[k + 1..].iter().flat_map(|&c| nbhd(c)));
-            let Some((dir, path)) =
-                route_source_to_head(rng, sources[k], head, arrive, s, &blocked)
-            else {
-                break;
-            };
-            taken.extend(belt_cells(&path));
-            paths.push(path);
-            source_dirs.push(dir);
-        }
-        if paths.len() < n {
-            continue;
-        }
-
-        // Sink route: exit → the cell behind the sink, all four sink facings
-        // tried, shortest kept. The faced cell must stay empty (a sink
-        // pointing into a belt would FEED it and close a cycle).
-        let mut facings = DIRS;
-        rng.shuffle(&mut facings);
-        let mut best: Option<(Direction, Vec<UgPlacement>)> = None;
-        for &f in &facings {
-            let df = f.delta();
-            let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
-            let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
-            if !in_grid(sink_in, s) || (sink_in != exit && taken.contains(&sink_in)) {
-                continue;
-            }
-            if in_grid(sink_face, s) && (taken.contains(&sink_face) || sink_face == exit) {
-                continue;
-            }
-            let mut blocked = taken.clone();
-            blocked.insert(sink_face);
-            if let Some(p) = find_belt_path(
-                exit,
-                sink_in,
-                f,
-                s,
-                &blocked,
-                Underground::On(Some(out_dir)),
-            ) {
-                if best.as_ref().is_none_or(|(_, bp)| p.len() < bp.len()) {
-                    best = Some((f, p));
-                }
-            }
-        }
-        let Some((sink_dir, path_k)) = best else {
+        let mut taken = structure;
+        taken.extend(keepout.iter().copied());
+        taken.extend(sources.iter().copied());
+        taken.insert(sink_pos);
+        let head_cells: Vec<(Cell, Direction)> = heads.iter().map(|&(_, c, d)| (c, d)).collect();
+        let Some((source_dirs, paths, sink_dir)) = wire_markers(
+            rng,
+            s,
+            taken,
+            &sources,
+            &head_cells,
+            sink_pos,
+            exit,
+            out_dir,
+            &belts,
+        ) else {
             continue;
         };
-        paths.push(path_k);
-
-        let routes: Vec<&[UgPlacement]> = paths.iter().map(Vec::as_slice).collect();
-        if tunnels_crossed(&routes, &belts) {
-            continue;
-        }
 
         // Every assembler counts as ONE removable unit (matching
         // blank_entities); markers are never blanked and don't count.
