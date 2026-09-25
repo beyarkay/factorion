@@ -53,7 +53,7 @@ Required flags for the server:
   launched with.
 
 If you put a sidecar JSON next to the checkpoint named `agent.hp.json`
-with `{"grid_size": 11, "layers": [93, 69, 96], "kernel_size": 3}`, the
+with `{"grid_size": 15, "layers": [93, 69, 96], "kernel_size": 3}`, the
 server reads it automatically.
 
 ## Protocol
@@ -70,7 +70,7 @@ or the next pending request JSON:
 ```json
 {
   "request_id": "1234-5-7",
-  "grid_size": 11,
+  "grid_size": 15,
   "entities": [
     { "name": "transport-belt", "x": 2, "y": 3, "direction": 2 },
     {

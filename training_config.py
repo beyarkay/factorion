@@ -67,7 +67,7 @@ class SharedArgs:
 
     seed: int = 1
     """seed of the experiment"""
-    size: int = 11
+    size: int = 15
     """the width and height of the factory grid"""
 
     # CNN encoder width per layer slot. The encoder uses every slot with

@@ -35,7 +35,7 @@ import factorion_rs  # noqa: E402
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
-MOD_GRID_SIZE = 11
+MOD_GRID_SIZE = 15
 MOD_PROTOCOL_VERSION = "4"
 
 
@@ -58,7 +58,7 @@ def _duck_envs(size: int):
 
 @dataclass
 class Hyperparams:
-    grid_size: int = 11
+    grid_size: int = 15
     layers: tuple[int, ...] = (93, 69, 96)
     kernel_size: int = 3
     attn_dim: int = 0

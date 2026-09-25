@@ -161,7 +161,7 @@ HELP_LINES = [
 class Args:
     port: int = 8765
     """port for the local HTTP server"""
-    size: int = 11
+    size: int = 15
     """default grid size"""
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
@@ -1001,7 +1001,7 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
     told about a failure in-band.
     """
     try:
-        size = int(payload.get("size", 11))
+        size = int(payload.get("size", 15))
         count = max(1, int(payload.get("count", 10)))
         start_seed = int(payload.get("seed", 0))
         kind_name = payload.get("kind") or ALL_KINDS_SENTINEL

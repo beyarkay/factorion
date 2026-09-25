@@ -4,7 +4,7 @@ Uses expert demonstrations from generate_lesson() to teach basic belt
 placement patterns before RL training via PPO.
 
 Usage:
-    python sft.py --size 11 --num-samples 5000000 --epochs 1
+    python sft.py --size 15 --num-samples 5000000 --epochs 1
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 

@@ -216,8 +216,7 @@ has to be routed with respect to a sink in the other.
 ## Current Status and Future Goals
 
 The project is progressing by gradually increasing the complexity of the tasks
-the agent must solve. Training now runs at 11x11 — the smallest grid that fits
-a basic green-circuits factory — and belt routing is largely solved: the agent
+the agent must solve. Training now runs at 15x15, and belt routing is largely solved: the agent
 scores 0.9–1.0 of reference throughput on the belt, splitter and underground
 lessons, and picks the right recipe for a named output most of the time.
 

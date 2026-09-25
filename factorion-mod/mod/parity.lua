@@ -13,7 +13,7 @@
 -- Spec JSON (built by server/parity.py):
 --   {
 --     run_id = "...",
---     grid_size = 11,
+--     grid_size = 15,
 --     game_speed = 32,            -- game.speed while the run is active
 --     sample_every = 15,          -- per-entity sampling period (ticks)
 --     -- Adaptive measurement (all optional; defaults in M.start). Warmup
@@ -47,7 +47,7 @@
 -- (normalise_factories wraps it, and place_power falls back to a ring).
 --   { ..timing.., extent_x=90, extent_y=72,
 --     substations = { {0,0}, {18,0}, ... },
---     factories = { { run_id="MOVE_ONE_ITEM-s0", grid_size=11,
+--     factories = { { run_id="MOVE_ONE_ITEM-s0", grid_size=15,
 --                     offset_x=3, offset_y=3, entities={..}, sources={..},
 --                     sinks={..} }, ... } }
 --
@@ -718,7 +718,7 @@ end
 local function draw_factory_overlay(surface, fac, single)
   local ox = fac.offset_x or 0
   local oy = fac.offset_y or 0
-  local gs = fac.grid_size or 11
+  local gs = fac.grid_size or 15
   rendering.draw_rectangle({
     surface = surface,
     left_top = { ORIGIN_X + ox, ORIGIN_Y + oy },
