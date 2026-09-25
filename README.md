@@ -156,9 +156,9 @@ a stream of _(partial-factory, correct-completion)_ training pairs. Each
 - `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED` — flow splitting, and merging
   two side-load-limited (7.5 i/s) arms into one full belt via 2×1 splitters
 - `MOVE_VIA_UG_BELT`, `CROSS_UNDER_BELT` — underground belts and crossings
-- `MEMORISE_1..4_INGREDIENT_RECIPES`, `OPPOSITE_SIDES_1IN`, `SAME_SIDE_1IN`, `REACH_OVER_2IN..4IN`,
-  `SHARED_BELT_2IN`, `UG_WEAVE_2IN` — assembling machines, recipe selection,
-  and multi-assembler lanes
+- `MEMORISE_1..4_INGREDIENT_RECIPES`, `OPPOSITE_SIDES_1IN`, `SAME_SIDE_1IN`,
+  `SPLITTER_1IN`, `REACH_OVER_2IN..4IN`, `SHARED_BELT_2IN`, `UG_WEAVE_2IN` —
+  assembling machines, recipe selection, and multi-assembler lanes
 - `TRIAL_RECIPE_TREE_DEPTH_1..3` — **trials**: only the source and sink markers
   are placed, there is no reference solution, and they are trained by RL alone
 
