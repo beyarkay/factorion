@@ -55,6 +55,7 @@ pub enum LessonKind {
     UgWeave2In = 24,
     SameSide1In = 25,
     Splitter1In = 26,
+    OppositeFeeds2In = 27,
 }
 
 impl LessonKind {
@@ -85,6 +86,7 @@ impl LessonKind {
             24 => Some(LessonKind::UgWeave2In),
             25 => Some(LessonKind::SameSide1In),
             26 => Some(LessonKind::Splitter1In),
+            27 => Some(LessonKind::OppositeFeeds2In),
             _ => None,
         }
     }
@@ -130,6 +132,7 @@ impl LessonKind {
             LessonKind::UgWeave2In => "UG_WEAVE_2IN",
             LessonKind::SameSide1In => "SAME_SIDE_1IN",
             LessonKind::Splitter1In => "SPLITTER_1IN",
+            LessonKind::OppositeFeeds2In => "OPPOSITE_FEEDS_2IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -168,6 +171,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::ReachOver2In,
         LessonKind::SharedBelt2In,
         LessonKind::UgWeave2In,
+        LessonKind::OppositeFeeds2In,
         LessonKind::ReachOver3In,
         LessonKind::ReachOver4In,
         LessonKind::TrialRecipeTreeDepth1,
@@ -650,6 +654,7 @@ pub fn build_factory(
         }
         LessonKind::SameSide1In => build_factory_1_ingredient(size, &mut rng, max_entities, true),
         LessonKind::Splitter1In => build_splitter_1in(size, &mut rng, max_entities),
+        LessonKind::OppositeFeeds2In => build_opposite_feeds_2in(size, &mut rng, max_entities),
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -2957,9 +2962,15 @@ fn build_factory_1_ingredient(
 
         let built = finish(world, total_entities, vec![], count)?;
         if same_side {
-            // A gapless row packs the most machines the width allows.
+            // A gapless row packs the most machines the width allows; its
+            // shared face holds at most two inserters each way.
             return Some(BuiltFactory {
-                max_throughput: assembler_row_ceiling(&recipe, s / 3),
+                max_throughput: assembler_row_ceiling(
+                    &recipe,
+                    s / 3,
+                    2.0 * Item::Inserter.flow_rate(),
+                    2.0 * Item::LongHandedInserter.flow_rate(),
+                ),
                 ..built
             });
         }
@@ -3199,7 +3210,12 @@ fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<B
 
         // A gapless row packs the most machines the width allows.
         return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(&recipe, s / 3),
+            max_throughput: assembler_row_ceiling(
+                &recipe,
+                s / 3,
+                3.0 * Item::Inserter.flow_rate(),
+                3.0 * Item::Inserter.flow_rate(),
+            ),
             ..finish(world, total_entities, vec![], count)?
         });
     }
@@ -3830,6 +3846,200 @@ fn wire_markers(
     Some((source_dirs, paths, sink_dir))
 }
 
+// ── OPPOSITE_FEEDS_2IN: a packed row fed one ingredient from each side ──────
+
+/// Build an OPPOSITE_FEEDS_2IN factory: a row of as many assemblers as the
+/// grid fits, all crafting one random two-ingredient recipe, with ingredient
+/// A on a lane along the north face and B on a lane along the south face.
+/// The south face also drains the machines: its three slots split between
+/// 1-2 plain inserters taking B and 1-2 long-handed inserters reaching from
+/// the machine over B's lane onto an output lane beyond it. Each machine
+/// takes A through 2-3 plain inserters.
+///
+/// Each lane's flow direction is drawn per seed and every lane spans exactly
+/// its taps, its upstream tile fed by a source route (the output lane's
+/// downstream tile starts the sink route). The
+/// sources and sink sit at any free cells, wired up by [`wire_markers`]; the
+/// world is then randomly flipped/rotated. `max_throughput` is the row's
+/// [`assembler_row_ceiling`].
+fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Canonical footprint is 8 rows: A lane, A inserters, 3 assembler rows,
+    // the south-face inserters, B lane, output lane.
+    if s < 8 {
+        return None;
+    }
+    let recipes = am1_recipes(2)?;
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = &recipes[rng.choice_index(recipes.len())];
+        let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut ingredients);
+
+        let gap = rng.randint(0, 1);
+        let n_asm = (s + gap) / (3 + gap);
+        let row_w = 3 * n_asm + gap * (n_asm - 1);
+        let ax0 = rng.randint(0, s - row_w);
+        let ay = rng.randint(2, s - 6);
+        let (a_y, b_y, out_y) = (ay - 2, ay + 4, ay + 5);
+
+        let mut asm_tiles: HashSet<Cell> = HashSet::new();
+        let mut inserters: Vec<(Cell, Direction, Item)> = Vec::new();
+        let (mut a_xs, mut b_xs, mut out_xs): (Vec<i64>, Vec<i64>, Vec<i64>) =
+            (Vec::new(), Vec::new(), Vec::new());
+        let mut anchors: Vec<i64> = Vec::new();
+        for i in 0..n_asm {
+            let ax = ax0 + i * (3 + gap);
+            anchors.push(ax);
+            asm_tiles.extend((0..3).flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy))));
+            let cols = [ax, ax + 1, ax + 2];
+            let k_a = rng.randint(2, 3) as usize;
+            for &x in &rng.sample(&cols, k_a) {
+                inserters.push(((x, ay - 1), Direction::South, Item::Inserter));
+                a_xs.push(x);
+            }
+            let k_b = rng.randint(1, 2);
+            let k_out = rng.randint(1, 3 - k_b);
+            let picked = rng.sample(&cols, (k_b + k_out) as usize);
+            for (idx, &x) in picked.iter().enumerate() {
+                if (idx as i64) < k_b {
+                    inserters.push(((x, ay + 3), Direction::North, Item::Inserter));
+                    b_xs.push(x);
+                } else {
+                    inserters.push(((x, ay + 3), Direction::South, Item::LongHandedInserter));
+                    out_xs.push(x);
+                }
+            }
+        }
+
+        // (lane row, flow direction, lo, hi) for A, B and the output lane.
+        let mut lanes: Vec<(i64, Direction, i64, i64)> = Vec::new();
+        for (y, xs) in [(a_y, &a_xs), (b_y, &b_xs), (out_y, &out_xs)] {
+            let (Some(&lo), Some(&hi)) = (xs.iter().min(), xs.iter().max()) else {
+                break;
+            };
+            let dir = [Direction::East, Direction::West][rng.choice_index(2)];
+            lanes.push((y, dir, lo, hi));
+        }
+        if lanes.len() < 3 {
+            continue;
+        }
+        // A lane's first tile is its head (the last tile of a source route)
+        // and its last tile the output exit (the first of the sink route); the
+        // cell past an input lane's last tile is its overshoot.
+        let ends = |&(y, dir, lo, hi): &(i64, Direction, i64, i64)| {
+            if dir == Direction::East {
+                ((lo, y), (hi, y), (hi + 1, y))
+            } else {
+                ((hi, y), (lo, y), (lo - 1, y))
+            }
+        };
+        let (a_head, _, a_over) = ends(&lanes[0]);
+        let (b_head, _, b_over) = ends(&lanes[1]);
+        let (_, exit, _) = ends(&lanes[2]);
+        let belts: Vec<UgPlacement> = lanes
+            .iter()
+            .flat_map(|&(y, dir, lo, hi)| (lo..=hi).map(move |x| (x, y, dir, Misc::None)))
+            .filter(|&(x, y, ..)| ![a_head, b_head, exit].contains(&(x, y)))
+            .collect();
+        // An entity one past an input lane's tail would siphon its items.
+        let keepout = [a_over, b_over];
+
+        let mut structure: HashSet<Cell> = asm_tiles;
+        structure.extend(inserters.iter().map(|&(c, ..)| c));
+        structure.extend(belt_cells(&belts));
+        let mut reserved = structure.clone();
+        reserved.extend(keepout);
+        reserved.extend([a_head, b_head, exit]);
+        for &ax in &anchors {
+            reserved.extend(all_perim_set(ax, ay, s));
+        }
+        let free = available_cells(s, &reserved);
+        if free.len() < 3 {
+            continue;
+        }
+        let markers = rng.sample(&free, 3);
+        let (sources, sink_pos) = (&markers[..2], markers[2]);
+
+        let mut taken = structure;
+        taken.extend(keepout);
+        taken.extend(markers.iter().copied());
+        let Some((source_dirs, paths, sink_dir)) = wire_markers(
+            rng,
+            s,
+            taken,
+            sources,
+            &[(a_head, lanes[0].1), (b_head, lanes[1].1)],
+            sink_pos,
+            exit,
+            lanes[2].1,
+            &[],
+        ) else {
+            continue;
+        };
+
+        // Every assembler counts as ONE removable unit (matching
+        // blank_entities); markers are never blanked and don't count.
+        let total_entities = belts.len()
+            + paths.iter().map(Vec::len).sum::<usize>()
+            + inserters.len()
+            + n_asm as usize;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &ax in &anchors {
+            place_assembler(&mut world, ax, ay, *recipe_key as i64);
+        }
+        for &(pos, dir, kind) in &inserters {
+            place_inserter(&mut world, pos, dir, kind);
+        }
+        place_belts(&mut world, &belts);
+        for path in &paths {
+            place_belts(&mut world, path);
+        }
+        for ((&item, &pos), &dir) in ingredients.iter().zip(sources).zip(&source_dirs) {
+            place_marker(&mut world, pos, Item::Source, dir, item as i64);
+        }
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            recipe.produces.first().0 as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        // A gapless row packs the most machines the width allows; a machine
+        // takes up to three A and two B inserters and two long-handed out.
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(
+                recipe,
+                s / 3,
+                5.0 * Item::Inserter.flow_rate(),
+                2.0 * Item::LongHandedInserter.flow_rate(),
+            ),
+            ..finish(world, total_entities, vec![], count)?
+        });
+    }
+    None
+}
+
 // ── REACH_OVER_3IN / REACH_OVER_4IN: a packed column fed by
 // two stacked belts ──────────────────────────────────────────────────────────
 
@@ -4076,7 +4286,13 @@ fn build_factory_n_ingredients(
         }
 
         return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(recipe, n_asm),
+            // Up to two long-handed and one plain inserter in, three out.
+            max_throughput: assembler_row_ceiling(
+                recipe,
+                n_asm,
+                2.0 * Item::LongHandedInserter.flow_rate() + Item::Inserter.flow_rate(),
+                3.0 * Item::Inserter.flow_rate(),
+            ),
             ..finish(world, total_entities, vec![], count)?
         });
     }
@@ -4513,10 +4729,10 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 }
 
 /// The throughput ceiling of an assembler lesson: `machines` saturated
-/// assemblers crafting `recipe`, each fed and drained through the three
-/// inserter slots one face of a 3×3 machine offers in these layouts. Being
-/// `machines` single-machine ceilings, it scores a one-machine build at
-/// `1 / machines`.
+/// assemblers crafting `recipe`, each fed by at most `feed_in` and drained by
+/// at most `feed_out` items/s of inserters — the most the lesson's layout
+/// gives one machine. Being `machines` single-machine ceilings, it scores a
+/// one-machine build at `1 / machines`.
 ///
 /// Normalizing by the sampled build's own rate instead makes `max_throughput`
 /// a floor: packing the row (#453) fixed the machine count, but the inserter
@@ -4526,13 +4742,12 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
 /// (#426). The terms are the engine's own limits — an assembler scales
 /// `produces` by input sufficiency and never past 1×, the input inserters
 /// share their capacity across every ingredient a craft needs (the best split
-/// caps the ratio at `feed / Σ consumes`), and the output inserters drain at
-/// most `feed`.
-fn assembler_row_ceiling(recipe: &Recipe, machines: i64) -> f64 {
-    let feed = 3.0 * Item::Inserter.flow_rate();
+/// caps the ratio at `feed_in / Σ consumes`), and the output inserters drain
+/// at most `feed_out`.
+fn assembler_row_ceiling(recipe: &Recipe, machines: i64, feed_in: f64, feed_out: f64) -> f64 {
     let per_craft: f64 = recipe.consumes.iter().map(|&(_, qty)| qty).sum();
     let produces = recipe.produces.first().1;
-    machines as f64 * (produces * (feed / per_craft).min(1.0)).min(feed)
+    machines as f64 * (produces * (feed_in / per_craft).min(1.0)).min(feed_out)
 }
 
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
@@ -4755,6 +4970,7 @@ mod tests {
             LessonKind::ReachOver2In,
             LessonKind::SharedBelt2In,
             LessonKind::UgWeave2In,
+            LessonKind::OppositeFeeds2In,
             LessonKind::ReachOver3In,
             LessonKind::ReachOver4In,
         ]);
@@ -5021,7 +5237,12 @@ mod tests {
                 let recipe = crate::types::get_recipe(recipe_item).unwrap();
                 assert_eq!(
                     f.max_throughput,
-                    (size / 3) as f64 * assembler_row_ceiling(&recipe, 1)
+                    assembler_row_ceiling(
+                        &recipe,
+                        (size / 3) as i64,
+                        2.0 * Item::Inserter.flow_rate(),
+                        2.0 * Item::LongHandedInserter.flow_rate()
+                    )
                 );
                 assert!(tp <= f.max_throughput, "size={size} seed={seed}");
             }
@@ -5060,6 +5281,43 @@ mod tests {
                     0.0,
                     "size={size} seed={seed}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_opposite_feeds_2in_smoke() {
+        // Every build flows with no orphans; each machine drains through at
+        // least one long-handed inserter; the reference never beats the
+        // ceiling; and erasing either source zeroes throughput.
+        for size in [9usize, 11, 15] {
+            for seed in 0..20u64 {
+                let f = build_factory(
+                    size,
+                    LessonKind::OppositeFeeds2In,
+                    seed,
+                    true,
+                    f64::INFINITY,
+                )
+                .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "size={size} seed={seed}");
+                assert_eq!(unreachable, 0, "size={size} seed={seed}");
+                let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
+                assert!(count_entity(&f.world, Item::LongHandedInserter) >= machines);
+                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+                let mut sources = 0;
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) == Some(Item::Source) {
+                            sources += 1;
+                            let mut crippled = f.world.clone();
+                            crippled.set(x, y, Channel::Entities, 0);
+                            assert_eq!(tp_unreachable(&crippled).0, 0.0, "size={size} seed={seed}");
+                        }
+                    }
+                }
+                assert_eq!(sources, 2, "size={size} seed={seed}");
             }
         }
     }
@@ -5119,7 +5377,12 @@ mod tests {
 
                 assert_eq!(
                     f.max_throughput,
-                    machines as f64 * assembler_row_ceiling(&recipe, 1)
+                    assembler_row_ceiling(
+                        &recipe,
+                        machines as i64,
+                        2.0 * Item::LongHandedInserter.flow_rate() + Item::Inserter.flow_rate(),
+                        3.0 * Item::Inserter.flow_rate()
+                    )
                 );
                 assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
 

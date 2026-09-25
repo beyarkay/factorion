@@ -205,6 +205,7 @@ FULL_FACTORY_KINDS: tuple["LessonKind", ...] = (
     LessonKind.REACH_OVER_2IN,
     LessonKind.SHARED_BELT_2IN,
     LessonKind.UG_WEAVE_2IN,
+    LessonKind.OPPOSITE_FEEDS_2IN,
     LessonKind.REACH_OVER_3IN,
     LessonKind.REACH_OVER_4IN,
     *(k for k in LessonKind if LESSON_IS_TRIAL[k]),
