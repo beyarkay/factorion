@@ -426,7 +426,7 @@ class TestGenerateDataset:
         produced = set(kinds.tolist())
         # Neither of these ever builds at size 5.
         assert LessonKind.SPLITTER_MERGE_SIDELOADED.value not in produced
-        assert LessonKind.FACTORY_1_INGREDIENT.value not in produced
+        assert LessonKind.OPPOSITE_SIDES_1IN.value not in produced
         # ...but the memorise lessons (which fit) do appear.
         assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced

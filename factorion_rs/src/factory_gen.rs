@@ -44,12 +44,12 @@ pub enum LessonKind {
     Memorise2IngredientRecipes = 11,
     Memorise3IngredientRecipes = 12,
     Memorise4IngredientRecipes = 13,
-    Factory1Ingredient = 15,
+    OppositeSides1In = 15,
     TrialRecipeTreeDepth1 = 16,
     TrialRecipeTreeDepth2 = 17,
     TrialRecipeTreeDepth3 = 18,
-    Factory3Ingredients = 20,
-    Factory4Ingredients = 21,
+    ReachOver3In = 20,
+    ReachOver4In = 21,
     ReachOver2In = 22,
     SharedBelt2In = 23,
     UgWeave2In = 24,
@@ -72,12 +72,12 @@ impl LessonKind {
             11 => Some(LessonKind::Memorise2IngredientRecipes),
             12 => Some(LessonKind::Memorise3IngredientRecipes),
             13 => Some(LessonKind::Memorise4IngredientRecipes),
-            15 => Some(LessonKind::Factory1Ingredient),
+            15 => Some(LessonKind::OppositeSides1In),
             16 => Some(LessonKind::TrialRecipeTreeDepth1),
             17 => Some(LessonKind::TrialRecipeTreeDepth2),
             18 => Some(LessonKind::TrialRecipeTreeDepth3),
-            20 => Some(LessonKind::Factory3Ingredients),
-            21 => Some(LessonKind::Factory4Ingredients),
+            20 => Some(LessonKind::ReachOver3In),
+            21 => Some(LessonKind::ReachOver4In),
             22 => Some(LessonKind::ReachOver2In),
             23 => Some(LessonKind::SharedBelt2In),
             24 => Some(LessonKind::UgWeave2In),
@@ -118,9 +118,9 @@ impl LessonKind {
             LessonKind::Memorise4IngredientRecipes => "MEMORISE_4_INGREDIENT_RECIPES",
             LessonKind::MoveOneItemChaos => "MOVE_ONE_ITEM_CHAOS",
             LessonKind::CrossUnderBelt => "CROSS_UNDER_BELT",
-            LessonKind::Factory1Ingredient => "FACTORY_1_INGREDIENT",
-            LessonKind::Factory3Ingredients => "FACTORY_3_INGREDIENTS",
-            LessonKind::Factory4Ingredients => "FACTORY_4_INGREDIENTS",
+            LessonKind::OppositeSides1In => "OPPOSITE_SIDES_1IN",
+            LessonKind::ReachOver3In => "REACH_OVER_3IN",
+            LessonKind::ReachOver4In => "REACH_OVER_4IN",
             LessonKind::ReachOver2In => "REACH_OVER_2IN",
             LessonKind::SharedBelt2In => "SHARED_BELT_2IN",
             LessonKind::UgWeave2In => "UG_WEAVE_2IN",
@@ -156,12 +156,12 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::Memorise4IngredientRecipes,
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
-        LessonKind::Factory1Ingredient,
+        LessonKind::OppositeSides1In,
         LessonKind::ReachOver2In,
         LessonKind::SharedBelt2In,
         LessonKind::UgWeave2In,
-        LessonKind::Factory3Ingredients,
-        LessonKind::Factory4Ingredients,
+        LessonKind::ReachOver3In,
+        LessonKind::ReachOver4In,
         LessonKind::TrialRecipeTreeDepth1,
         LessonKind::TrialRecipeTreeDepth2,
         LessonKind::TrialRecipeTreeDepth3,
@@ -637,7 +637,7 @@ pub fn build_factory(
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::Factory1Ingredient => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::OppositeSides1In => build_factory_1_ingredient(size, &mut rng, max_entities),
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -647,12 +647,8 @@ pub fn build_factory(
         LessonKind::UgWeave2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::Weave)
         }
-        LessonKind::Factory3Ingredients => {
-            build_factory_n_ingredients(size, &mut rng, max_entities, 3)
-        }
-        LessonKind::Factory4Ingredients => {
-            build_factory_n_ingredients(size, &mut rng, max_entities, 4)
-        }
+        LessonKind::ReachOver3In => build_factory_n_ingredients(size, &mut rng, max_entities, 3),
+        LessonKind::ReachOver4In => build_factory_n_ingredients(size, &mut rng, max_entities, 4),
         LessonKind::TrialRecipeTreeDepth1 => build_recipe_tree_trial(size, &mut rng, 1),
         LessonKind::TrialRecipeTreeDepth2 => build_recipe_tree_trial(size, &mut rng, 2),
         LessonKind::TrialRecipeTreeDepth3 => build_recipe_tree_trial(size, &mut rng, 3),
@@ -2566,7 +2562,7 @@ fn tunnels_crossed(routes: &[&[UgPlacement]], fixed: &[UgPlacement]) -> bool {
 
 /// The recipes an assembling machine 1 can actually craft (its `produced_by`
 /// lists tier 1) with exactly `n_ingredients` inputs and a single product —
-/// the pool the FACTORY_* lessons draw from. `None` when no recipe has that
+/// the pool the assembler-column/row lessons draw from. `None` when no recipe has that
 /// ingredient count, so a non-empty pool is guaranteed by the type.
 fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
     NonEmpty::from_vec(
@@ -2581,7 +2577,7 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
     )
 }
 
-/// Build a FACTORY_1_INGREDIENT factory: a row of as many assemblers as the
+/// Build an OPPOSITE_SIDES_1IN factory: a row of as many assemblers as the
 /// grid fits, all crafting the same 1-in-1-out recipe, fed from a shared
 /// input belt lane along one side and drained onto a shared output lane
 /// along the other — the classic lined-up production-row layout. Unlike the
@@ -2937,7 +2933,7 @@ enum Feed {
 /// Shortest belt route from a `source` marker to a lane `head` (arriving
 /// along `end_dir` — the lane's flow direction, or pointing into a shared
 /// lane's head from its flank), trying all four source facings in shuffled
-/// order and keeping the shortest — FACTORY_1_INGREDIENT's route-1 logic for
+/// order and keeping the shortest — OPPOSITE_SIDES_1IN's route-1 logic for
 /// a fixed arrival. The source may drop straight onto the head (a zero-belt
 /// feed) but onto no other blocked cell; the route may open with a tunnel
 /// entrance on the drop cell itself. Returns the winning facing and route.
@@ -2990,7 +2986,7 @@ fn route_source_to_head(
 ///
 /// Each assembler taps both ingredient lines on distinct rows of its own
 /// 3-row span and drains through 2-3 output inserters; every dead-end belt
-/// tile is tapped (no orphans). Like FACTORY_1_INGREDIENT, the markers sit at
+/// tile is tapped (no orphans). Like OPPOSITE_SIDES_1IN, the markers sit at
 /// semi-arbitrary free cells — the two sources anywhere below the block, the
 /// sink beyond the output exit — wired to the lane heads / drained from the
 /// exit by the UG-aware belt router, all four facings tried per marker and
@@ -3461,10 +3457,10 @@ fn build_factory_2_ingredients(
     None
 }
 
-// ── FACTORY_3_INGREDIENTS / FACTORY_4_INGREDIENTS: a packed column fed by
+// ── REACH_OVER_3IN / REACH_OVER_4IN: a packed column fed by
 // two stacked belts ──────────────────────────────────────────────────────────
 
-/// Build a FACTORY_`n`_INGREDIENTS factory (`n` is 3 or 4): a column of as
+/// Build a REACH_OVER_`n`IN factory (`n` is 3 or 4): a column of as
 /// many 3×3 assemblers as the grid fits, all crafting one random
 /// `n`-ingredient recipe, fed from two belts stacked along the west flank and
 /// drained through 2-3 east inserters per machine onto an output lane ending
@@ -4432,12 +4428,12 @@ mod tests {
         // recipe tier 1 can craft — the `produced_by` filter must exclude
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
-            LessonKind::Factory1Ingredient,
+            LessonKind::OppositeSides1In,
             LessonKind::ReachOver2In,
             LessonKind::SharedBelt2In,
             LessonKind::UgWeave2In,
-            LessonKind::Factory3Ingredients,
-            LessonKind::Factory4Ingredients,
+            LessonKind::ReachOver3In,
+            LessonKind::ReachOver4In,
         ]);
         for kind in kinds {
             let mut checked = 0;
@@ -4476,13 +4472,9 @@ mod tests {
         // per side (4-6 total per machine).
         let mut built = 0;
         for seed in 0..50u64 {
-            let Some(f) = build_factory(
-                11,
-                LessonKind::Factory1Ingredient,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
+            let Some(f) =
+                build_factory(11, LessonKind::OppositeSides1In, seed, true, f64::INFINITY)
+            else {
                 continue;
             };
             built += 1;
@@ -4541,13 +4533,9 @@ mod tests {
         let per_side = 3.0 * Item::Inserter.flow_rate();
         let mut checked = 0;
         for seed in 0..50u64 {
-            let Some(f) = build_factory(
-                11,
-                LessonKind::Factory1Ingredient,
-                seed,
-                true,
-                f64::INFINITY,
-            ) else {
+            let Some(f) =
+                build_factory(11, LessonKind::OppositeSides1In, seed, true, f64::INFINITY)
+            else {
                 continue;
             };
             let recipe_item = (0..f.world.width())
@@ -4688,10 +4676,10 @@ mod tests {
         // the near belt, long-handed over it to the far one); the reference
         // never beats the ceiling; and erasing any source zeroes throughput.
         for (kind, n, size, machines) in [
-            (LessonKind::Factory3Ingredients, 3, 11usize, 3usize),
-            (LessonKind::Factory3Ingredients, 3, 15, 4),
-            (LessonKind::Factory4Ingredients, 4, 11, 2),
-            (LessonKind::Factory4Ingredients, 4, 15, 4),
+            (LessonKind::ReachOver3In, 3, 11usize, 3usize),
+            (LessonKind::ReachOver3In, 3, 15, 4),
+            (LessonKind::ReachOver4In, 4, 11, 2),
+            (LessonKind::ReachOver4In, 4, 15, 4),
         ] {
             let mut built = 0;
             for seed in 0..20u64 {
