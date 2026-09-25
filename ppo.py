@@ -26,6 +26,7 @@ import tyro
 import factorion_rs
 from factorion import (
     LESSON_IS_TRIAL,
+    TRAINING_KINDS,
     Channel,
     Direction,
     Footprint,
@@ -260,6 +261,8 @@ def _build_eval_set(args) -> dict:
     succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
     out: dict = {}
     for ki, kind in enumerate(LessonKind):
+        if kind not in TRAINING_KINDS:
+            continue
         base = 9_000_000 + args.seed + ki * 100_000
         found, s = 0, base
         while found < args.eval_seeds_per_kind and s < base + 5000:
@@ -844,7 +847,7 @@ class FactorioEnv(gym.Env):
         kind_opt = self._reset_options.get('kind', None)
         factory = None
         if kind_opt is None:
-            kinds_list = list(LessonKind)
+            kinds_list = list(TRAINING_KINDS)
             for _ in range(16):
                 kind = kinds_list[int(self.np_random.integers(0, len(kinds_list)))]
                 factory = build_factory(

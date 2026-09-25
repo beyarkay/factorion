@@ -3240,3 +3240,16 @@ class TestMemoriseRecipesMissingEntities:
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("source").value).sum().item() == n_src_full
         assert (ent == str2ent("sink").value).sum().item() == 1
+
+
+def test_full_factory_kinds_build_at_default_size():
+    """Every kind a training run samples builds at the default grid size, so
+    no run silently drops one."""
+    from factorion import FULL_FACTORY_KINDS
+    from training_config import SharedArgs
+
+    for kind in FULL_FACTORY_KINDS:
+        assert any(
+            build_factory(size=SharedArgs.size, kind=kind, seed=s) is not None
+            for s in range(5)
+        ), kind

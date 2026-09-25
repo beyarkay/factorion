@@ -31,6 +31,7 @@ import factorion_rs  # noqa: E402
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
+    TRAINING_KINDS,
     LessonKind,
     blank_entities,
     build_factory,
@@ -252,7 +253,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
     # pair — left in the pool they'd stay at 0 samples forever and the
     # fewest-pairs draw below would redraw them every time. Trials are
     # RL-only; PPO samples them directly.
-    kinds = [k for k in LessonKind if not LESSON_IS_TRIAL[k]]
+    kinds = [k for k in TRAINING_KINDS if not LESSON_IS_TRIAL[k]]
     kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
