@@ -57,6 +57,7 @@ pub enum LessonKind {
     Splitter1In = 26,
     OppositeFeeds2In = 27,
     DirectInsert2In = 28,
+    IntermediateBelt2In = 29,
 }
 
 impl LessonKind {
@@ -89,6 +90,7 @@ impl LessonKind {
             26 => Some(LessonKind::Splitter1In),
             27 => Some(LessonKind::OppositeFeeds2In),
             28 => Some(LessonKind::DirectInsert2In),
+            29 => Some(LessonKind::IntermediateBelt2In),
             _ => None,
         }
     }
@@ -136,6 +138,7 @@ impl LessonKind {
             LessonKind::Splitter1In => "SPLITTER_1IN",
             LessonKind::OppositeFeeds2In => "OPPOSITE_FEEDS_2IN",
             LessonKind::DirectInsert2In => "DIRECT_INSERT_2IN",
+            LessonKind::IntermediateBelt2In => "INTERMEDIATE_BELT_2IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -176,6 +179,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::UgWeave2In,
         LessonKind::OppositeFeeds2In,
         LessonKind::DirectInsert2In,
+        LessonKind::IntermediateBelt2In,
         LessonKind::ReachOver3In,
         LessonKind::ReachOver4In,
         LessonKind::TrialRecipeTreeDepth1,
@@ -660,6 +664,9 @@ pub fn build_factory(
         LessonKind::Splitter1In => build_splitter_1in(size, &mut rng, max_entities),
         LessonKind::OppositeFeeds2In => build_opposite_feeds_2in(size, &mut rng, max_entities),
         LessonKind::DirectInsert2In => build_direct_insert_2in(size, &mut rng, max_entities),
+        LessonKind::IntermediateBelt2In => {
+            build_intermediate_belt_2in(size, &mut rng, max_entities)
+        }
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -4288,6 +4295,246 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
     None
 }
 
+// ── INTERMEDIATE_BELT_2IN: an intermediate carried by belt to its product
+// machines ─────────────────────────────────────────────────────────────────
+
+/// Build an INTERMEDIATE_BELT_2IN factory — two crafting stages joined by a
+/// belt. A [`TwoStage`] recipe is built as one packed row: 1..n-1 machines
+/// crafting the intermediate X, then the product machines. Along the north
+/// face, a lane carries X's raw ingredient to the X machines and a second
+/// lane the product's other ingredient to the product machines (2-3 plain
+/// inserters each). Along the south face, the X machines drop X through 1-3
+/// inserters onto a belt running on under the product machines, whose three
+/// south slots split between 1-2 plain inserters taking X and 1-2
+/// long-handed inserters reaching over the belt onto an output lane beyond.
+///
+/// The north and output lanes' directions are drawn per seed, the sources
+/// and sink sit at any free cells wired up by [`wire_markers`], and the world
+/// is then randomly flipped/rotated. `max_throughput` is the
+/// [`assembler_row_ceiling`] of all but one of the machines the grid fits
+/// (at least one crafts X).
+fn build_intermediate_belt_2in(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Canonical footprint is 8 rows: north lanes, their inserters, 3 machine
+    // rows, the south-face inserters, the intermediate belt, output lane.
+    if s < 8 {
+        return None;
+    }
+    let pool = two_stage_recipes()?;
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let TwoStage {
+            product_key,
+            product,
+            x_key,
+            x,
+            other,
+        } = &pool[rng.choice_index(pool.len())];
+        let raw = x.consumes.first().0;
+        let gap = rng.randint(0, 1);
+        let n_asm = (s + gap) / (3 + gap);
+        if n_asm < 2 {
+            continue;
+        }
+        let n_x = rng.randint(1, n_asm - 1);
+        let row_w = 3 * n_asm + gap * (n_asm - 1);
+        let ax0 = rng.randint(0, s - row_w);
+        let ay = rng.randint(2, s - 6);
+        let (top_y, mid_y, out_y) = (ay - 2, ay + 4, ay + 5);
+
+        let mut asm: Vec<(i64, Item)> = Vec::new();
+        let mut inserters: Vec<(Cell, Direction, Item)> = Vec::new();
+        let (mut raw_xs, mut other_xs, mut mid_xs, mut out_xs): (
+            Vec<i64>,
+            Vec<i64>,
+            Vec<i64>,
+            Vec<i64>,
+        ) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for i in 0..n_asm {
+            let ax = ax0 + i * (3 + gap);
+            let cols = [ax, ax + 1, ax + 2];
+            let is_x = i < n_x;
+            asm.push((ax, if is_x { *x_key } else { *product_key }));
+            let k_top = rng.randint(2, 3) as usize;
+            for &c in &rng.sample(&cols, k_top) {
+                inserters.push(((c, ay - 1), Direction::South, Item::Inserter));
+                if is_x {
+                    raw_xs.push(c);
+                } else {
+                    other_xs.push(c);
+                }
+            }
+            if is_x {
+                let k_drop = rng.randint(1, 3) as usize;
+                for &c in &rng.sample(&cols, k_drop) {
+                    inserters.push(((c, ay + 3), Direction::South, Item::Inserter));
+                    mid_xs.push(c);
+                }
+                continue;
+            }
+            let k_take = rng.randint(1, 2);
+            let k_out = rng.randint(1, 3 - k_take);
+            let picked = rng.sample(&cols, (k_take + k_out) as usize);
+            for (idx, &c) in picked.iter().enumerate() {
+                if (idx as i64) < k_take {
+                    inserters.push(((c, ay + 3), Direction::North, Item::Inserter));
+                    mid_xs.push(c);
+                } else {
+                    inserters.push(((c, ay + 3), Direction::South, Item::LongHandedInserter));
+                    out_xs.push(c);
+                }
+            }
+        }
+
+        // (lane row, flow direction, lo, hi) for the raw, other and output
+        // lanes; each spans exactly its taps.
+        let mut lanes: Vec<(i64, Direction, i64, i64)> = Vec::new();
+        for (y, xs) in [(top_y, &raw_xs), (top_y, &other_xs), (out_y, &out_xs)] {
+            let (Some(&lo), Some(&hi)) = (xs.iter().min(), xs.iter().max()) else {
+                break;
+            };
+            let dir = [Direction::East, Direction::West][rng.choice_index(2)];
+            lanes.push((y, dir, lo, hi));
+        }
+        let (Some(&mid_lo), Some(&mid_hi)) = (mid_xs.iter().min(), mid_xs.iter().max()) else {
+            continue;
+        };
+        if lanes.len() < 3 {
+            continue;
+        }
+        // A lane's first tile is its head (the last tile of a source route)
+        // and its last tile the output exit (the first of the sink route); the
+        // cell past an input lane's last tile is its overshoot.
+        let ends = |&(y, dir, lo, hi): &(i64, Direction, i64, i64)| {
+            if dir == Direction::East {
+                ((lo, y), (hi, y), (hi + 1, y))
+            } else {
+                ((hi, y), (lo, y), (lo - 1, y))
+            }
+        };
+        let (raw_head, _, raw_over) = ends(&lanes[0]);
+        let (other_head, _, other_over) = ends(&lanes[1]);
+        let (_, exit, _) = ends(&lanes[2]);
+        // The intermediate belt flows from the X machines on to the product
+        // machines, which all sit east of them.
+        lanes.push((mid_y, Direction::East, mid_lo, mid_hi));
+        let belts: Vec<UgPlacement> = lanes
+            .iter()
+            .flat_map(|&(y, dir, lo, hi)| (lo..=hi).map(move |c| (c, y, dir, Misc::None)))
+            .filter(|&(c, y, ..)| ![raw_head, other_head, exit].contains(&(c, y)))
+            .collect();
+        let keepout = [raw_over, other_over, (mid_hi + 1, mid_y)];
+
+        let mut structure: HashSet<Cell> = asm
+            .iter()
+            .flat_map(|&(ax, _)| {
+                (0..3).flat_map(move |dx| (0..3).map(move |dy| (ax + dx, ay + dy)))
+            })
+            .collect();
+        structure.extend(inserters.iter().map(|&(c, ..)| c));
+        structure.extend(belt_cells(&belts));
+        // The two north lanes share a row, so one's overshoot may land on the
+        // other's tiles.
+        if keepout
+            .iter()
+            .any(|c| structure.contains(c) || [raw_head, other_head].contains(c))
+        {
+            continue;
+        }
+        let mut reserved = structure.clone();
+        reserved.extend(keepout);
+        reserved.extend([raw_head, other_head, exit]);
+        for &(ax, _) in &asm {
+            reserved.extend(all_perim_set(ax, ay, s));
+        }
+        let free = available_cells(s, &reserved);
+        if free.len() < 3 {
+            continue;
+        }
+        let markers = rng.sample(&free, 3);
+        let (sources, sink_pos) = (&markers[..2], markers[2]);
+
+        let mut taken = structure;
+        taken.extend(keepout);
+        taken.extend(markers.iter().copied());
+        let Some((source_dirs, paths, sink_dir)) = wire_markers(
+            rng,
+            s,
+            taken,
+            sources,
+            &[(raw_head, lanes[0].1), (other_head, lanes[1].1)],
+            sink_pos,
+            exit,
+            lanes[2].1,
+            &[],
+        ) else {
+            continue;
+        };
+
+        // Every assembler counts as ONE removable unit (matching
+        // blank_entities); markers are never blanked and don't count.
+        let total_entities =
+            belts.len() + paths.iter().map(Vec::len).sum::<usize>() + inserters.len() + asm.len();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &(ax, recipe_key) in &asm {
+            place_assembler(&mut world, ax, ay, recipe_key as i64);
+        }
+        for &(pos, dir, kind) in &inserters {
+            place_inserter(&mut world, pos, dir, kind);
+        }
+        place_belts(&mut world, &belts);
+        for path in &paths {
+            place_belts(&mut world, path);
+        }
+        for ((&item, &pos), &dir) in [raw, *other].iter().zip(sources).zip(&source_dirs) {
+            place_marker(&mut world, pos, Item::Source, dir, item as i64);
+        }
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            product.produces.first().0 as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        // A product machine takes up to three north and two south inserters
+        // and drains through up to two long-handed ones.
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(
+                product,
+                s / 3 - 1,
+                5.0 * Item::Inserter.flow_rate(),
+                2.0 * Item::LongHandedInserter.flow_rate(),
+            ),
+            ..finish(world, total_entities, vec![], count)?
+        });
+    }
+    None
+}
+
 // ── REACH_OVER_3IN / REACH_OVER_4IN: a packed column fed by
 // two stacked belts ──────────────────────────────────────────────────────────
 
@@ -5220,6 +5467,7 @@ mod tests {
             LessonKind::UgWeave2In,
             LessonKind::OppositeFeeds2In,
             LessonKind::DirectInsert2In,
+            LessonKind::IntermediateBelt2In,
             LessonKind::ReachOver3In,
             LessonKind::ReachOver4In,
         ]);
@@ -5613,6 +5861,57 @@ mod tests {
                     }
                 }
                 assert_eq!(erased, 9 * (size / 7), "size={size} seed={seed}");
+                assert_eq!(tp_unreachable(&stage_one).0, 0.0, "size={size} seed={seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_intermediate_belt_2in_smoke() {
+        // Every build flows with no orphans through at least one machine of
+        // each stage; the reference never beats the ceiling; and erasing the
+        // intermediate machines zeroes throughput — the product really is
+        // crafted in two stages.
+        for size in [9usize, 11, 15] {
+            for seed in 0..20u64 {
+                let f = build_factory(
+                    size,
+                    LessonKind::IntermediateBelt2In,
+                    seed,
+                    true,
+                    f64::INFINITY,
+                )
+                .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "size={size} seed={seed}");
+                assert_eq!(unreachable, 0, "size={size} seed={seed}");
+                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+
+                let mut sink_item = None;
+                let mut asm_tiles: Vec<(usize, usize, Item)> = Vec::new();
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        match f.world.entity_at(x, y) {
+                            Some(Item::Sink) => sink_item = f.world.item_at(x, y),
+                            Some(Item::AssemblingMachine1) => {
+                                asm_tiles.push((x, y, f.world.item_at(x, y).unwrap()));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let mut stage_one = f.world.clone();
+                let mut erased = 0;
+                for &(x, y, recipe) in &asm_tiles {
+                    if Some(recipe) != sink_item {
+                        stage_one.set(x, y, Channel::Entities, 0);
+                        erased += 1;
+                    }
+                }
+                assert!(
+                    erased >= 9 && erased < asm_tiles.len(),
+                    "size={size} seed={seed}"
+                );
                 assert_eq!(tp_unreachable(&stage_one).0, 0.0, "size={size} seed={seed}");
             }
         }
