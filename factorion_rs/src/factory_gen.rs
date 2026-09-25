@@ -53,6 +53,7 @@ pub enum LessonKind {
     ReachOver2In = 22,
     SharedBelt2In = 23,
     UgWeave2In = 24,
+    SameSide1In = 25,
 }
 
 impl LessonKind {
@@ -81,6 +82,7 @@ impl LessonKind {
             22 => Some(LessonKind::ReachOver2In),
             23 => Some(LessonKind::SharedBelt2In),
             24 => Some(LessonKind::UgWeave2In),
+            25 => Some(LessonKind::SameSide1In),
             _ => None,
         }
     }
@@ -124,6 +126,7 @@ impl LessonKind {
             LessonKind::ReachOver2In => "REACH_OVER_2IN",
             LessonKind::SharedBelt2In => "SHARED_BELT_2IN",
             LessonKind::UgWeave2In => "UG_WEAVE_2IN",
+            LessonKind::SameSide1In => "SAME_SIDE_1IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -157,6 +160,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::MoveOneItemChaos,
         LessonKind::CrossUnderBelt,
         LessonKind::OppositeSides1In,
+        LessonKind::SameSide1In,
         LessonKind::ReachOver2In,
         LessonKind::SharedBelt2In,
         LessonKind::UgWeave2In,
@@ -637,7 +641,10 @@ pub fn build_factory(
         LessonKind::CrossUnderBelt => {
             build_cross_under_belt(size, &mut rng, random_item, max_entities)
         }
-        LessonKind::OppositeSides1In => build_factory_1_ingredient(size, &mut rng, max_entities),
+        LessonKind::OppositeSides1In => {
+            build_factory_1_ingredient(size, &mut rng, max_entities, false)
+        }
+        LessonKind::SameSide1In => build_factory_1_ingredient(size, &mut rng, max_entities, true),
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -2605,10 +2612,20 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
 /// directions of its lane are tried, keeping the combination with the
 /// shortest route (ties random): a player rotates the source/sink and feeds
 /// the lane from whichever end gives the shortest belt line.
+///
+/// With `same_side` it builds SAME_SIDE_1IN instead: both lanes run along the
+/// north side, the output lane beyond the input lane. Each machine's three
+/// north-face slots split between 1-2 plain inserters taking from the input
+/// lane and 1-2 long-handed inserters reaching from the machine over the
+/// input lane onto the output lane; the sink sits beyond the output lane.
+/// With one face shared by both directions a machine gets at most three
+/// inserters, so `max_throughput` is the row's [`assembler_row_ceiling`]
+/// rather than this sample's rate.
 fn build_factory_1_ingredient(
     size: usize,
     rng: &mut Rng,
     max_entities: f64,
+    same_side: bool,
 ) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 7 rows: input lane, input inserters, 3 assembler
@@ -2633,15 +2650,19 @@ fn build_factory_1_ingredient(
         let n_asm = (s + gap) / (3 + gap);
         let row_w = 3 * n_asm + gap * (n_asm - 1);
         let ax0 = rng.randint(0, s - row_w);
-        let ay = rng.randint(2, s - 5);
+        let ay = if same_side {
+            rng.randint(3, s - 3)
+        } else {
+            rng.randint(2, s - 5)
+        };
         let in_lane_y = ay - 2;
-        let out_lane_y = ay + 4;
+        let out_lane_y = if same_side { ay - 3 } else { ay + 4 };
 
         // Per assembler: 2-3 input inserters on the north side (facing south,
         // into the machine) and 2-3 output inserters on the south side (facing
         // south, away from it). Their pickup/drop cells fix the lane extents.
         let mut asm_tiles: HashSet<Cell> = HashSet::new();
-        let mut inserters: Vec<(Cell, Direction)> = Vec::new();
+        let mut inserters: Vec<(Cell, Direction, Item)> = Vec::new();
         let mut pickup_xs: Vec<i64> = Vec::new();
         let mut drop_xs: Vec<i64> = Vec::new();
         let mut anchors: Vec<i64> = Vec::new();
@@ -2650,14 +2671,29 @@ fn build_factory_1_ingredient(
             anchors.push(ax);
             asm_tiles.extend((0..3).flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy))));
             let cols = [ax, ax + 1, ax + 2];
+            if same_side {
+                let k_in = rng.randint(1, 2);
+                let k_out = rng.randint(1, 3 - k_in);
+                let picked = rng.sample(&cols, (k_in + k_out) as usize);
+                for (idx, &x) in picked.iter().enumerate() {
+                    if (idx as i64) < k_in {
+                        inserters.push(((x, ay - 1), Direction::South, Item::Inserter));
+                        pickup_xs.push(x);
+                    } else {
+                        inserters.push(((x, ay - 1), Direction::North, Item::LongHandedInserter));
+                        drop_xs.push(x);
+                    }
+                }
+                continue;
+            }
             let k_in = rng.randint(2, 3) as usize;
             for &x in &rng.sample(&cols, k_in) {
-                inserters.push(((x, ay - 1), Direction::South));
+                inserters.push(((x, ay - 1), Direction::South, Item::Inserter));
                 pickup_xs.push(x);
             }
             let k_out = rng.randint(2, 3) as usize;
             for &x in &rng.sample(&cols, k_out) {
-                inserters.push(((x, ay + 3), Direction::South));
+                inserters.push(((x, ay + 3), Direction::South, Item::Inserter));
                 drop_xs.push(x);
             }
         }
@@ -2677,7 +2713,7 @@ fn build_factory_1_ingredient(
 
         // Cells no route or marker may take: machines, inserters, both lanes.
         let mut reserved: HashSet<Cell> = asm_tiles.clone();
-        reserved.extend(inserters.iter().map(|&(c, _)| c));
+        reserved.extend(inserters.iter().map(|&(c, ..)| c));
         reserved.extend((in_lo..=in_hi).map(|x| (x, in_lane_y)));
         reserved.extend((out_lo..=out_hi).map(|x| (x, out_lane_y)));
 
@@ -2686,7 +2722,8 @@ fn build_factory_1_ingredient(
         // half (at or beyond the input lane row), the sink from the output-lane
         // half. The random rotation below spreads the split over left/right as
         // well as top/bottom. (No assembler-perimeter exclusion is needed:
-        // every perimeter cell lies strictly between the two bands.)
+        // every perimeter cell lies strictly between the two bands.) Same-side
+        // puts the sink beyond the output lane instead, so the bands overlap.
         let free = available_cells(s, &reserved);
         let src_band: Vec<Cell> = free
             .iter()
@@ -2696,18 +2733,27 @@ fn build_factory_1_ingredient(
         let snk_band: Vec<Cell> = free
             .iter()
             .copied()
-            .filter(|&(_, y)| y >= out_lane_y)
+            .filter(|&(_, y)| {
+                if same_side {
+                    y <= out_lane_y
+                } else {
+                    y >= out_lane_y
+                }
+            })
             .collect();
         if src_band.is_empty() || snk_band.is_empty() {
             continue;
         }
         let source_pos = src_band[rng.choice_index(src_band.len())];
         let sink_pos = snk_band[rng.choice_index(snk_band.len())];
+        if sink_pos == source_pos {
+            continue;
+        }
 
         // Fixed obstacles common to every route search; lane cells are added
         // per direction below (a route-owned head/exit cell must stay open).
         let mut fixed: HashSet<Cell> = asm_tiles.clone();
-        fixed.extend(inserters.iter().map(|&(c, _)| c));
+        fixed.extend(inserters.iter().map(|&(c, ..)| c));
         fixed.extend([source_pos, sink_pos]);
 
         // Route 1: source drop → input lane head, arriving in the lane's flow
@@ -2872,8 +2918,8 @@ fn build_factory_1_ingredient(
         for &ax in &anchors {
             place_assembler(&mut world, ax, ay, recipe_item_value);
         }
-        for &(pos, dir) in &inserters {
-            place_inserter(&mut world, pos, dir, Item::Inserter);
+        for &(pos, dir, kind) in &inserters {
+            place_inserter(&mut world, pos, dir, kind);
         }
         place_belts(&mut world, &lane_belts);
         place_belts(&mut world, &path1);
@@ -2904,7 +2950,15 @@ fn build_factory_1_ingredient(
             continue;
         }
 
-        return finish(world, total_entities, vec![], count);
+        let built = finish(world, total_entities, vec![], count)?;
+        if same_side {
+            // A gapless row packs the most machines the width allows.
+            return Some(BuiltFactory {
+                max_throughput: assembler_row_ceiling(&recipe, s / 3),
+                ..built
+            });
+        }
+        return Some(built);
     }
     None
 }
@@ -4429,6 +4483,7 @@ mod tests {
         // engine_unit (the sole advanced-crafting recipe, tiers 2/3 only).
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
             LessonKind::OppositeSides1In,
+            LessonKind::SameSide1In,
             LessonKind::ReachOver2In,
             LessonKind::SharedBelt2In,
             LessonKind::UgWeave2In,
@@ -4666,6 +4721,43 @@ mod tests {
             "markers should sit at varying distances from the block: \
              sources {source_dists:?}, sinks {sink_dists:?}"
         );
+    }
+
+    #[test]
+    fn test_same_side_1in_smoke() {
+        // Every build flows with no orphans; each machine has at least one
+        // plain inserter taking from the input lane and one long-handed
+        // inserter reaching over it to the output lane, three at most on the
+        // shared face; the reference never beats the row's ceiling.
+        for size in [11usize, 15] {
+            for seed in 0..20u64 {
+                let f = build_factory(size, LessonKind::SameSide1In, seed, true, f64::INFINITY)
+                    .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "size={size} seed={seed}");
+                assert_eq!(unreachable, 0, "size={size} seed={seed}");
+                let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
+                let long = count_entity(&f.world, Item::LongHandedInserter);
+                let plain = count_entity(&f.world, Item::Inserter);
+                assert!(
+                    long >= machines && plain >= machines,
+                    "size={size} seed={seed}"
+                );
+                assert!(long + plain <= 3 * machines, "size={size} seed={seed}");
+
+                let recipe_item = (0..f.world.width())
+                    .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
+                    .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::AssemblingMachine1))
+                    .and_then(|(x, y)| f.world.item_at(x, y))
+                    .unwrap();
+                let recipe = crate::types::get_recipe(recipe_item).unwrap();
+                assert_eq!(
+                    f.max_throughput,
+                    (size / 3) as f64 * assembler_row_ceiling(&recipe, 1)
+                );
+                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+            }
+        }
     }
 
     #[test]
