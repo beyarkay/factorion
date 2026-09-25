@@ -4356,6 +4356,11 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
 /// south slots split between 1-2 plain inserters taking X and 1-2
 /// long-handed inserters reaching over the belt onto an output lane beyond.
 ///
+/// When X's raw ingredient is also the product's other ingredient, one source
+/// feeds both north lanes instead: a splitter set over the boundary between
+/// the stages, its two outputs curving into lanes that run away from each
+/// other over the X and the product machines.
+///
 /// The north and output lanes' directions are drawn per seed, the sources
 /// and sink sit at any free cells wired up by [`wire_markers`], and the world
 /// is then randomly flipped/rotated. `max_throughput` is the
@@ -4386,6 +4391,7 @@ fn build_intermediate_belt_2in(
             other,
         } = &pool[rng.choice_index(pool.len())];
         let raw = x.consumes.first().0;
+        let shared = raw == *other;
         let gap = rng.randint(0, 1);
         let n_asm = (s + gap) / (3 + gap);
         if n_asm < 2 {
@@ -4394,7 +4400,8 @@ fn build_intermediate_belt_2in(
         let n_x = rng.randint(1, n_asm - 1);
         let row_w = 3 * n_asm + gap * (n_asm - 1);
         let ax0 = rng.randint(0, s - row_w);
-        let ay = rng.randint(2, s - 6);
+        // A shared source's splitter and its feed tiles need two more rows.
+        let ay = rng.randint(if shared { 4 } else { 2 }, s - 6);
         let (top_y, mid_y, out_y) = (ay - 2, ay + 4, ay + 5);
 
         let mut asm: Vec<(i64, Item)> = Vec::new();
@@ -4457,6 +4464,17 @@ fn build_intermediate_belt_2in(
         if lanes.len() < 3 {
             continue;
         }
+        // Every X machine sits west of every product machine, so any column
+        // boundary between the two north lanes' taps can take the splitter.
+        let splitter = shared.then(|| {
+            let sx = rng.randint(lanes[0].3, lanes[1].2 - 1);
+            lanes[0] = (top_y, Direction::West, lanes[0].2, sx);
+            lanes[1] = (top_y, Direction::East, sx + 1, lanes[1].3);
+            (
+                [(sx, top_y - 1), (sx + 1, top_y - 1)],
+                [(sx, top_y - 2), (sx + 1, top_y - 2)],
+            )
+        });
         // A lane's first tile is its head (the last tile of a source route)
         // and its last tile the output exit (the first of the sink route); the
         // cell past an input lane's last tile is its overshoot.
@@ -4473,10 +4491,17 @@ fn build_intermediate_belt_2in(
         // The intermediate belt flows from the X machines on to the product
         // machines, which all sit east of them.
         lanes.push((mid_y, Direction::East, mid_lo, mid_hi));
+        // Tiles a marker route owns; a shared source's lane heads are the
+        // splitter's outputs instead.
+        let route_ends = if shared {
+            vec![exit]
+        } else {
+            vec![raw_head, other_head, exit]
+        };
         let belts: Vec<UgPlacement> = lanes
             .iter()
             .flat_map(|&(y, dir, lo, hi)| (lo..=hi).map(move |c| (c, y, dir, Misc::None)))
-            .filter(|&(c, y, ..)| ![raw_head, other_head, exit].contains(&(c, y)))
+            .filter(|&(c, y, ..)| !route_ends.contains(&(c, y)))
             .collect();
         let keepout = [raw_over, other_over, (mid_hi + 1, mid_y)];
 
@@ -4488,6 +4513,9 @@ fn build_intermediate_belt_2in(
             .collect();
         structure.extend(inserters.iter().map(|&(c, ..)| c));
         structure.extend(belt_cells(&belts));
+        if let Some((tiles, _)) = splitter {
+            structure.extend(tiles);
+        }
         // The two north lanes share a row, so one's overshoot may land on the
         // other's tiles.
         if keepout
@@ -4499,25 +4527,39 @@ fn build_intermediate_belt_2in(
         let mut reserved = structure.clone();
         reserved.extend(keepout);
         reserved.extend([raw_head, other_head, exit]);
+        if let Some((_, feeds)) = splitter {
+            reserved.extend(feeds);
+        }
         for &(ax, _) in &asm {
             reserved.extend(all_perim_set(ax, ay, s));
         }
+        let n_sources = if shared { 1 } else { 2 };
         let free = available_cells(s, &reserved);
-        if free.len() < 3 {
+        if free.len() <= n_sources {
             continue;
         }
-        let markers = rng.sample(&free, 3);
-        let (sources, sink_pos) = (&markers[..2], markers[2]);
+        let markers = rng.sample(&free, n_sources + 1);
+        let (sources, sink_pos) = (&markers[..n_sources], markers[n_sources]);
 
         let mut taken = structure;
         taken.extend(keepout);
         taken.extend(markers.iter().copied());
+        let heads = match splitter {
+            // The source feeds either splitter tile head-on; the other feed
+            // tile stays clear.
+            Some((_, feeds)) => {
+                let k = rng.choice_index(2);
+                taken.insert(feeds[1 - k]);
+                vec![(feeds[k], Direction::South)]
+            }
+            None => vec![(raw_head, lanes[0].1), (other_head, lanes[1].1)],
+        };
         let Some((source_dirs, paths, sink_dir)) = wire_markers(
             rng,
             s,
             taken,
             sources,
-            &[(raw_head, lanes[0].1), (other_head, lanes[1].1)],
+            &heads,
             sink_pos,
             exit,
             lanes[2].1,
@@ -4528,8 +4570,11 @@ fn build_intermediate_belt_2in(
 
         // Every assembler counts as ONE removable unit (matching
         // blank_entities); markers are never blanked and don't count.
-        let total_entities =
-            belts.len() + paths.iter().map(Vec::len).sum::<usize>() + inserters.len() + asm.len();
+        let total_entities = belts.len()
+            + paths.iter().map(Vec::len).sum::<usize>()
+            + inserters.len()
+            + asm.len()
+            + usize::from(shared);
         if (total_entities as f64) > max_entities {
             continue;
         }
@@ -4542,6 +4587,9 @@ fn build_intermediate_belt_2in(
             place_inserter(&mut world, pos, dir, kind);
         }
         place_belts(&mut world, &belts);
+        if let Some((tiles, _)) = splitter {
+            place_splitter(&mut world, &tiles, Direction::South);
+        }
         for path in &paths {
             place_belts(&mut world, path);
         }
@@ -5917,7 +5965,9 @@ mod tests {
         // Every build flows with no orphans through at least one machine of
         // each stage; the reference never beats the ceiling; and erasing the
         // intermediate machines zeroes throughput — the product really is
-        // crafted in two stages.
+        // crafted in two stages. A build fed by one shared source does it
+        // through a splitter, and both kinds of build occur.
+        let (mut shared, mut split) = (0, 0);
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(
@@ -5933,6 +5983,17 @@ mod tests {
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
                 assert!(tp <= f.max_throughput, "size={size} seed={seed}");
 
+                let splitters = count_entity(&f.world, Item::Splitter);
+                assert_eq!(
+                    count_entity(&f.world, Item::Source) + splitters / 2,
+                    2,
+                    "size={size} seed={seed}"
+                );
+                if splitters > 0 {
+                    shared += 1;
+                } else {
+                    split += 1;
+                }
                 let mut sink_item = None;
                 let mut asm_tiles: Vec<(usize, usize, Item)> = Vec::new();
                 for x in 0..f.world.width() {
@@ -5961,6 +6022,7 @@ mod tests {
                 assert_eq!(tp_unreachable(&stage_one).0, 0.0, "size={size} seed={seed}");
             }
         }
+        assert!(shared > 0 && split > 0, "shared={shared} split={split}");
     }
 
     #[test]
