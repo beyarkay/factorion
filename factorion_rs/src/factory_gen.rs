@@ -54,6 +54,7 @@ pub enum LessonKind {
     SharedBelt2In = 23,
     UgWeave2In = 24,
     SameSide1In = 25,
+    Splitter1In = 26,
 }
 
 impl LessonKind {
@@ -83,6 +84,7 @@ impl LessonKind {
             23 => Some(LessonKind::SharedBelt2In),
             24 => Some(LessonKind::UgWeave2In),
             25 => Some(LessonKind::SameSide1In),
+            26 => Some(LessonKind::Splitter1In),
             _ => None,
         }
     }
@@ -127,6 +129,7 @@ impl LessonKind {
             LessonKind::SharedBelt2In => "SHARED_BELT_2IN",
             LessonKind::UgWeave2In => "UG_WEAVE_2IN",
             LessonKind::SameSide1In => "SAME_SIDE_1IN",
+            LessonKind::Splitter1In => "SPLITTER_1IN",
             LessonKind::TrialRecipeTreeDepth1 => "TRIAL_RECIPE_TREE_DEPTH_1",
             LessonKind::TrialRecipeTreeDepth2 => "TRIAL_RECIPE_TREE_DEPTH_2",
             LessonKind::TrialRecipeTreeDepth3 => "TRIAL_RECIPE_TREE_DEPTH_3",
@@ -161,6 +164,7 @@ pub fn all_lesson_kinds() -> &'static [LessonKind] {
         LessonKind::CrossUnderBelt,
         LessonKind::OppositeSides1In,
         LessonKind::SameSide1In,
+        LessonKind::Splitter1In,
         LessonKind::ReachOver2In,
         LessonKind::SharedBelt2In,
         LessonKind::UgWeave2In,
@@ -645,6 +649,7 @@ pub fn build_factory(
             build_factory_1_ingredient(size, &mut rng, max_entities, false)
         }
         LessonKind::SameSide1In => build_factory_1_ingredient(size, &mut rng, max_entities, true),
+        LessonKind::Splitter1In => build_splitter_1in(size, &mut rng, max_entities),
         LessonKind::ReachOver2In => {
             build_factory_2_ingredients(size, &mut rng, max_entities, Feed::ReachOver)
         }
@@ -2963,6 +2968,244 @@ fn build_factory_1_ingredient(
     None
 }
 
+// ── SPLITTER_1IN: one input split both ways along a packed row ──────────────
+
+/// Build a SPLITTER_1IN factory: OPPOSITE_SIDES_1IN's packed row, but the
+/// source feeds a splitter set over the input lane and the lane runs away
+/// from it both ways — the splitter's two outputs curve into a west half and
+/// an east half, so the row is fed from its middle rather than one end. The
+/// splitter sits over any column boundary with a tap on either side, so
+/// neither half dead-ends. Each machine takes 2-3 input and 2-3 output
+/// inserters, and the output lane runs under the whole row to the sink.
+///
+/// The source sits anywhere above the splitter and the sink anywhere below
+/// the output lane, wired up by the UG-aware router (the sink route tries
+/// both output-lane directions); the world is then randomly rotated.
+/// `max_throughput` is the row's [`assembler_row_ceiling`].
+fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
+    let s = size as i64;
+    // Canonical footprint is 9 rows: the splitter's feed tile, the splitter,
+    // input lane, input inserters, 3 assembler rows, output inserters, output
+    // lane.
+    if s < 9 {
+        return None;
+    }
+    let recipes = am1_recipes(1)?;
+    let mut count = (500).max(size * size * 16);
+
+    while count > 0 {
+        count -= 1;
+
+        let (recipe_key, recipe) = recipes[rng.choice_index(recipes.len())].clone();
+        let gap = rng.randint(0, 1);
+        let n_asm = (s + gap) / (3 + gap);
+        let row_w = 3 * n_asm + gap * (n_asm - 1);
+        let ax0 = rng.randint(0, s - row_w);
+        let in_y = rng.randint(2, s - 7);
+        let ay = in_y + 2;
+        let out_y = in_y + 6;
+
+        let mut asm_tiles: HashSet<Cell> = HashSet::new();
+        let mut inserters: Vec<Cell> = Vec::new();
+        let (mut pickup_xs, mut drop_xs): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
+        let mut anchors: Vec<i64> = Vec::new();
+        for i in 0..n_asm {
+            let ax = ax0 + i * (3 + gap);
+            anchors.push(ax);
+            asm_tiles.extend((0..3).flat_map(|dx| (0..3).map(move |dy| (ax + dx, ay + dy))));
+            let cols = [ax, ax + 1, ax + 2];
+            let k_in = rng.randint(2, 3) as usize;
+            for &x in &rng.sample(&cols, k_in) {
+                inserters.push((x, in_y + 1));
+                pickup_xs.push(x);
+            }
+            let k_out = rng.randint(2, 3) as usize;
+            for &x in &rng.sample(&cols, k_out) {
+                inserters.push((x, ay + 3));
+                drop_xs.push(x);
+            }
+        }
+        let (Some(&in_lo), Some(&in_hi)) = (pickup_xs.iter().min(), pickup_xs.iter().max()) else {
+            continue;
+        };
+        let (Some(&out_lo), Some(&out_hi)) = (drop_xs.iter().min(), drop_xs.iter().max()) else {
+            continue;
+        };
+        if in_lo == in_hi {
+            continue;
+        }
+        let sx = rng.randint(in_lo, in_hi - 1);
+        let splitter = [(sx, in_y - 1), (sx + 1, in_y - 1)];
+        let feeds = [(sx, in_y - 2), (sx + 1, in_y - 2)];
+
+        let mut in_lane: Vec<UgPlacement> = Vec::new();
+        for x in in_lo..=in_hi {
+            let dir = if x <= sx {
+                Direction::West
+            } else {
+                Direction::East
+            };
+            in_lane.push((x, in_y, dir, Misc::None));
+        }
+        // An entity one past either half's tail would siphon its items.
+        let keepout = [(in_lo - 1, in_y), (in_hi + 1, in_y)];
+
+        let mut structure: HashSet<Cell> = asm_tiles;
+        structure.extend(inserters.iter().copied());
+        structure.extend(belt_cells(&in_lane));
+        structure.extend(splitter);
+        structure.extend((out_lo..=out_hi).map(|x| (x, out_y)));
+        let mut reserved = structure.clone();
+        reserved.extend(keepout);
+        reserved.extend(feeds);
+
+        // Every assembler-perimeter cell lies strictly between the bands.
+        let free = available_cells(s, &reserved);
+        let src_band: Vec<Cell> = free
+            .iter()
+            .copied()
+            .filter(|&(_, y)| y <= in_y - 2)
+            .collect();
+        let snk_band: Vec<Cell> = free.iter().copied().filter(|&(_, y)| y >= out_y).collect();
+        if src_band.is_empty() || snk_band.is_empty() {
+            continue;
+        }
+        let source_pos = src_band[rng.choice_index(src_band.len())];
+        let sink_pos = snk_band[rng.choice_index(snk_band.len())];
+
+        let nbhd = |c: Cell| BFS_DELTAS.iter().map(move |&(dx, dy)| (c.0 + dx, c.1 + dy));
+        let mut fixed = structure;
+        fixed.extend(keepout);
+        fixed.extend([source_pos, sink_pos]);
+
+        // Source → either of the splitter's feed tiles, arriving head-on.
+        let mut heads = feeds;
+        rng.shuffle(&mut heads);
+        let mut best1: Option<(Direction, Vec<UgPlacement>)> = None;
+        for (k, &head) in heads.iter().enumerate() {
+            let mut blocked = fixed.clone();
+            blocked.insert(heads[1 - k]);
+            blocked.extend(nbhd(sink_pos));
+            if let Some((f, p)) =
+                route_source_to_head(rng, source_pos, head, Direction::South, s, &blocked)
+            {
+                if best1.as_ref().is_none_or(|(_, bp)| p.len() < bp.len()) {
+                    best1 = Some((f, p));
+                }
+            }
+        }
+        let Some((source_dir, path1)) = best1 else {
+            continue;
+        };
+
+        // Output lane exit → the cell behind the sink, both lane directions
+        // and all four sink facings tried, shortest kept. The faced cell must
+        // stay empty (a sink pointing into a belt would FEED it).
+        let mut taken = fixed;
+        taken.extend(feeds);
+        taken.extend(belt_cells(&path1));
+        let mut dir_choices = [Direction::East, Direction::West];
+        rng.shuffle(&mut dir_choices);
+        let mut facings = DIRS;
+        rng.shuffle(&mut facings);
+        let mut best2: Option<(Direction, Direction, Cell, Vec<UgPlacement>)> = None;
+        for &d in &dir_choices {
+            let exit = if d == Direction::East {
+                (out_hi, out_y)
+            } else {
+                (out_lo, out_y)
+            };
+            for &f in &facings {
+                let df = f.delta();
+                let sink_in = (sink_pos.0 - df.0, sink_pos.1 - df.1);
+                let sink_face = (sink_pos.0 + df.0, sink_pos.1 + df.1);
+                if !in_grid(sink_in, s) || (sink_in != exit && taken.contains(&sink_in)) {
+                    continue;
+                }
+                if in_grid(sink_face, s) && taken.contains(&sink_face) {
+                    continue;
+                }
+                let mut blocked = taken.clone();
+                blocked.remove(&exit);
+                blocked.insert(sink_face);
+                if let Some(p) =
+                    find_belt_path(exit, sink_in, f, s, &blocked, Underground::On(Some(d)))
+                {
+                    if best2.as_ref().is_none_or(|(.., bp)| p.len() < bp.len()) {
+                        best2 = Some((f, d, exit, p));
+                    }
+                }
+            }
+        }
+        let Some((sink_dir, out_dir, exit, path2)) = best2 else {
+            continue;
+        };
+        if tunnels_crossed(&[&path1, &path2], &[]) {
+            continue;
+        }
+        let out_lane: Vec<UgPlacement> = (out_lo..=out_hi)
+            .filter(|&x| (x, out_y) != exit)
+            .map(|x| (x, out_y, out_dir, Misc::None))
+            .collect();
+
+        // The splitter and every assembler each count as ONE removable unit
+        // (matching blank_entities).
+        let total_entities = in_lane.len()
+            + 1
+            + out_lane.len()
+            + path1.len()
+            + path2.len()
+            + inserters.len()
+            + n_asm as usize;
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &ax in &anchors {
+            place_assembler(&mut world, ax, ay, recipe_key as i64);
+        }
+        for &pos in &inserters {
+            place_inserter(&mut world, pos, Direction::South, Item::Inserter);
+        }
+        place_splitter(&mut world, &splitter, Direction::South);
+        place_belts(&mut world, &in_lane);
+        place_belts(&mut world, &out_lane);
+        place_belts(&mut world, &path1);
+        place_belts(&mut world, &path2);
+        place_marker(
+            &mut world,
+            source_pos,
+            Item::Source,
+            source_dir,
+            recipe.consumes.first().0 as i64,
+        );
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            recipe.produces.first().0 as i64,
+        );
+
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+
+        // A gapless row packs the most machines the width allows.
+        return Some(BuiltFactory {
+            max_throughput: assembler_row_ceiling(&recipe, s / 3),
+            ..finish(world, total_entities, vec![], count)?
+        });
+    }
+    None
+}
+
 // ── REACH_OVER_2IN / SHARED_BELT_2IN / UG_WEAVE_2IN: a column of tightly-stacked assemblers fed two
 // ingredients along one flank ────────────────────────────────────────────────
 
@@ -4484,6 +4727,7 @@ mod tests {
         let kinds = MEMORISE_KINDS.iter().map(|&(kind, _)| kind).chain([
             LessonKind::OppositeSides1In,
             LessonKind::SameSide1In,
+            LessonKind::Splitter1In,
             LessonKind::ReachOver2In,
             LessonKind::SharedBelt2In,
             LessonKind::UgWeave2In,
@@ -4756,6 +5000,42 @@ mod tests {
                     (size / 3) as f64 * assembler_row_ceiling(&recipe, 1)
                 );
                 assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_splitter_1in_smoke() {
+        // Every build flows with no orphans through exactly one splitter, and
+        // erasing the splitter zeroes throughput (the source feeds only it);
+        // the reference never beats the row's ceiling.
+        for size in [9usize, 11, 15] {
+            for seed in 0..20u64 {
+                let f = build_factory(size, LessonKind::Splitter1In, seed, true, f64::INFINITY)
+                    .unwrap_or_else(|| panic!("size={size} seed={seed}: no build"));
+                let (tp, unreachable) = tp_unreachable(&f.world);
+                assert!(tp > 0.0, "size={size} seed={seed}");
+                assert_eq!(unreachable, 0, "size={size} seed={seed}");
+                assert_eq!(
+                    count_entity(&f.world, Item::Splitter),
+                    2,
+                    "size={size} seed={seed}"
+                );
+                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+
+                let mut no_splitter = f.world.clone();
+                for x in 0..f.world.width() {
+                    for y in 0..f.world.height() {
+                        if f.world.entity_at(x, y) == Some(Item::Splitter) {
+                            no_splitter.set(x, y, Channel::Entities, 0);
+                        }
+                    }
+                }
+                assert_eq!(
+                    tp_unreachable(&no_splitter).0,
+                    0.0,
+                    "size={size} seed={seed}"
+                );
             }
         }
     }

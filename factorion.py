@@ -201,6 +201,7 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
 FULL_FACTORY_KINDS: tuple["LessonKind", ...] = (
     LessonKind.OPPOSITE_SIDES_1IN,
     LessonKind.SAME_SIDE_1IN,
+    LessonKind.SPLITTER_1IN,
     LessonKind.REACH_OVER_2IN,
     LessonKind.SHARED_BELT_2IN,
     LessonKind.UG_WEAVE_2IN,
