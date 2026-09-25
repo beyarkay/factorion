@@ -53,7 +53,10 @@ class TestEarlyTermination:
         without an eot the episode keeps running — the agent must declare done.
         """
         env = _make_env(size=5, max_steps=10)
-        env.reset(seed=42, options={"num_missing_entities": 0})
+        env.reset(
+            seed=42,
+            options={"num_missing_entities": 0, "kind": LessonKind.MOVE_ONE_ITEM},
+        )
 
         _, _, terminated, truncated, info = env.step(_noop_action())
 
@@ -213,7 +216,10 @@ class TestReward:
             idx=0,
             entity_cost_scale=1_000_000.0,
         )
-        env.reset(seed=42, options={"num_missing_entities": 99})
+        env.reset(
+            seed=42,
+            options={"num_missing_entities": 99, "kind": LessonKind.MOVE_ONE_ITEM},
+        )
 
         # Add one belt far from every source/sink so cost is non-zero while
         # throughput remains zero.

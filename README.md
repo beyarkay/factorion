@@ -28,7 +28,7 @@ Headline numbers, all from W&B project `beyarkay/factorion`:
 - **SFT base `hcozpmwt`** (100M samples).
 - **PPO lifts that to ≈0.78** (`eval/thput`, 3 seeds × 2.5M timesteps,
   2026-07-30). Belt and "memorise this recipe" lessons are essentially solved
-  (0.9–1.0); `FACTORY_1_INGREDIENT` is the weak one at ~0.3.
+  (0.9–1.0); `OPPOSITE_SIDES_1IN` is the weak one at ~0.3.
 - **Building from markers alone is still unsolved.** The `TRIAL_*` kinds hand
   the agent nothing but source and sink markers — no reference solution to
   imitate, and one source per ingredient of the target recipe. Depth-1 trials
@@ -156,8 +156,12 @@ a stream of _(partial-factory, correct-completion)_ training pairs. Each
 - `SPLITTER_SPLIT`, `SPLITTER_MERGE_SIDELOADED` — flow splitting, and merging
   two side-load-limited (7.5 i/s) arms into one full belt via 2×1 splitters
 - `MOVE_VIA_UG_BELT`, `CROSS_UNDER_BELT` — underground belts and crossings
-- `MEMORISE_1..4_INGREDIENT_RECIPES`, `FACTORY_1_INGREDIENT` — assembling
-  machines, recipe selection, and multi-assembler lanes
+- `MEMORISE_1..4_INGREDIENT_RECIPES`, `OPPOSITE_SIDES_1IN`, `SAME_SIDE_1IN`,
+  `SPLITTER_1IN`, `MIRRORED_1IN`, `MIRRORED_2IN`, `REACH_OVER_2IN..4IN`,
+  `SHARED_BELT_2IN`, `UG_WEAVE_2IN`, `OPPOSITE_FEEDS_2IN`, `DIRECT_INSERT_2IN`,
+  `INTERMEDIATE_BELT_2IN` —
+  assembling machines, recipe selection, multi-assembler lanes, and
+  two-stage (intermediate) crafting
 - `TRIAL_RECIPE_TREE_DEPTH_1..3` — **trials**: only the source and sink markers
   are placed, there is no reference solution, and they are trained by RL alone
 
