@@ -20,7 +20,7 @@ case "$KIND" in
     # batch_size = num_envs(16) * num_steps(256) = 4096; default = 8 iterations.
     TOTAL_TIMESTEPS="${TOTAL_TIMESTEPS:-32768}"
     WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
-      --seed 1 --size 11 \
+      --seed 1 --size 15 \
       --num-envs 16 --num-steps 256 --num-minibatches 32 --update-epochs 8 \
       --learning-rate 1.619489860053545e-4 \
       --ent-coef-start 7.05347e-4 --ent-coef-end 7.92625e-4 \
@@ -40,7 +40,7 @@ case "$KIND" in
       exit 1
     fi
     WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
-      --seed 1 --size 11 --start-from "$CKPT" \
+      --seed 1 --size 15 --start-from "$CKPT" \
       --num-envs 16 --num-steps 256 --num-minibatches 32 --update-epochs 8 \
       --learning-rate 7e-4 \
       --ent-coef-start 7.05347e-4 --ent-coef-end 7.92625e-4 \
@@ -60,7 +60,7 @@ case "$KIND" in
     # off (it's a noisy diagnostic, not a loss).
     CACHE="${CACHE:-checkpoints/sft_bench_ds_60k.pt}"
     WANDB_MODE=disabled WANDB_DISABLED=true uv run python sft.py \
-      --seed 1 --size 11 --num-samples 60000 --epochs 10 --batch-size 512 \
+      --seed 1 --size 15 --num-samples 60000 --epochs 10 --batch-size 512 \
       --layer1 93 --layer2 69 --layer3 96 \
       --no-eval-rollouts \
       --dataset-cache "$CACHE" \
