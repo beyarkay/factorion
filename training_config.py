@@ -215,7 +215,7 @@ class PpoArgs(SharedArgs):
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
-    amp: bool = True
+    amp: bool = False
     """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
     async_envs: bool = False
     """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
