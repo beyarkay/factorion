@@ -215,7 +215,7 @@ class PpoArgs(SharedArgs):
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
     """Parallel envs for the greedy eval rollout."""
-    amp: bool = False
+    amp: bool = True
     """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
     async_envs: bool = False
     """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
@@ -276,7 +276,7 @@ class SftArgs(SharedArgs):
     """AdamW weight decay"""
     dropout: float = 0.1827
     """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
-    amp: bool = False
+    amp: bool = True
     """run the encoder forward under bf16 autocast on CUDA; the heads and losses
     stay fp32. bf16 is what unlocks the flash-attention kernel."""
     compile: bool = True
