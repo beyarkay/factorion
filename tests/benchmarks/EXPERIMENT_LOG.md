@@ -648,14 +648,16 @@ in the N² attention term. In fp32 PyTorch can't use FlashAttention.
 
 - **bf16 autocast on the encoder forward** (`SftArgs.amp`; heads and losses stay
   fp32): A4000 93.7 → 29.2 (**3.2×**), same card type on both sides. Quality is
-  neutral over 2M samples: val/thput +0.012 (diff std 0.028), val/loss −0.006.
+  neutral over 2M samples: val/thput +0.010 (diff std 0.021), val/loss −0.006.
   This reverses the "AMP ≈ 0" finding in the SFT section above, which was
   measured on the 11×11 conv-only model before the attention stage existed.
 - **`torch.compile` of the encoder forward** (`SftArgs.compile`, `dynamic=False`):
-  1.13× alone (fp32, A4000), and **~1.25× on top of bf16** (A6000: 17.1 → 13.4,
-  mean of 3 pods). The one-off compile cost is ~40 s (train, val, and the
-  ragged last batch). Compiled forward+backward gradients match eager to 4e-5
-  and compiled dropout keeps 1−p. The "compile 42 s vs 22 s" finding above was
+  1.13× alone (fp32, A4000), and **1.22× on top of bf16** (A6000: 17.1 → 14.0,
+  identical on all 3 seeds). Quality is neutral over 3 seeds at 2M: val/thput
+  +0.003 (all three seeds positive), val/loss +0.007 ± 0.010, val/acc −0.001
+  ± 0.003. The one-off compile cost is ~40 s (train, val, and the ragged last
+  batch). Compiled forward+backward gradients match eager to 4e-5, and
+  compiled dropout keeps 1−p. The "compile 42 s vs 22 s" finding above was
   a 22 s benchmark dominated by warmup.
 - **Rollout eval: one host↔device copy per step, 64 envs** (was 7 scalar syncs
   plus one obs copy per env per step, at 8 envs): `val/rollout_seconds` **~2×**
@@ -672,7 +674,7 @@ in the N² attention term. In fp32 PyTorch can't use FlashAttention.
 |---|---|---|---|
 | RTX A4000 | 0.17 | 21.2 | 0.010 |
 | A40 | 0.49 | 14.7 | 0.020 |
-| RTX A6000 | – | 12.0–14.2 | – |
+| RTX A6000 | 0.53 | 12.0–14.2 | 0.020 |
 | L40S | 1.09 | 10.1 | 0.031 |
 | RTX 6000 Ada | 0.74 | 7.9 | 0.016 |
 | A100 80GB PCIe | 1.59 | 7.4 | 0.033 |
@@ -690,5 +692,6 @@ loader keeps up on every card (wait ≤ 0.17 s per window).
 - **A single-seed difference curve can be one-signed for a no-op.** Two runs
   with identical training code on the same card type gave val/loss differing
   in the same direction at 100% of points (GPU atomics make trajectories
-  diverge and keep their offsets). The "≥90% one-sign" reading needs ≥2 seeds
-  for small effects.
+  diverge and keep their offsets). In the 3-seed compile check, seed 1 alone
+  showed val/loss +0.028 at 100% of points and the other two seeds reversed
+  it. The "≥90% one-sign" reading needs ≥2 seeds for small effects.
