@@ -513,7 +513,13 @@ def _resolve_wandb_checkpoint(
         dest = Path("/tmp/factorion-checkpoints") / run.id
         dest.mkdir(parents=True, exist_ok=True)
 
-        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        # A run replaces its checkpoint as its best improves, so skip a
+        # version whose upload hasn't finished.
+        model_arts = [
+            a
+            for a in run.logged_artifacts()
+            if a.type == "model" and a.state == "COMMITTED"
+        ]
         if not model_arts:
             raise RuntimeError(
                 f"run {run.id} has no artifacts of type=model — "
