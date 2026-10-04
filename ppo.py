@@ -513,7 +513,13 @@ def _resolve_wandb_checkpoint(
         dest = Path("/tmp/factorion-checkpoints") / run.id
         dest.mkdir(parents=True, exist_ok=True)
 
-        model_arts = [a for a in run.logged_artifacts() if a.type == "model"]
+        # A run replaces its checkpoint as its best improves, so skip a
+        # version whose upload hasn't finished.
+        model_arts = [
+            a
+            for a in run.logged_artifacts()
+            if a.type == "model" and a.state == "COMMITTED"
+        ]
         if not model_arts:
             raise RuntimeError(
                 f"run {run.id} has no artifacts of type=model — "
@@ -545,6 +551,23 @@ def _resolve_wandb_checkpoint(
             os.environ["WANDB_MODE"] = prev_mode
         if prev_disabled is not None:
             os.environ["WANDB_DISABLED"] = prev_disabled
+
+
+def _upload_replacing(run, name, files, metadata, aliases, previous):
+    """Log `files` as a new version of model artifact `name` and delete
+    `previous`, this run's last upload, so a run holds one checkpoint in W&B
+    however often its best improves, and a run killed mid-training still
+    leaves its best behind. Returns the new version, to pass as `previous`."""
+    import wandb
+
+    artifact = wandb.Artifact(name=name, type="model", metadata=metadata)
+    for f in files:
+        artifact.add_file(f)
+    logged = run.log_artifact(artifact, aliases=aliases)
+    logged.wait()
+    if previous is not None:
+        previous.delete(delete_aliases=True)
+    return logged
 
 
 def _resolve_start_from(
@@ -2080,6 +2103,9 @@ if __name__ == "__main__":
     # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
     # eval/* — directly comparable to the SFT baseline's val/thput.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
+    agent_name = f"agent-{run_name.replace('/', '-').replace(':', '-').replace(' ', '_')}"
+    ckpt_path = f"artifacts/{agent_name}.pt"
+    best_eval_thput, uploaded = -1.0, None
     if eval_seeds_to_kind:
         print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
@@ -2443,6 +2469,19 @@ if __name__ == "__main__":
             eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
             eval_seconds = time.time() - t_eval
             eval_metrics["eval/seconds"] = eval_seconds
+            if eval_metrics["eval/thput"] > best_eval_thput:
+                best_eval_thput = eval_metrics["eval/thput"]
+                os.makedirs("artifacts", exist_ok=True)
+                torch.save(agent.state_dict(), ckpt_path)
+                if run is not None:
+                    uploaded = _upload_replacing(
+                        run,
+                        agent_name,
+                        [ckpt_path],
+                        {"best_eval_thput": best_eval_thput, "global_step": global_step},
+                        ["latest", f"thp{best_eval_thput:.3f}"],
+                        uploaded,
+                    )
 
         # ── Per-iteration logging ──────────────────────────────────────
         n_steps = max(1, args.num_steps)
@@ -2617,16 +2656,15 @@ if __name__ == "__main__":
     if args.track:
         _append_run_tags(run, f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
-    if runtime > 60 * 5: # 5 minutes
-        run_name_dir_safe = run_name.replace('/', '-').replace(':', '-').replace(' ', '_')
-        agent_name = f"agent-{run_name_dir_safe}"
-        print(f"Saving model to artifacts/{agent_name}.pt")
+    if best_eval_thput >= 0:
+        print(f"Best checkpoint (eval/thput {best_eval_thput:.3f}) at {ckpt_path}")
+    elif runtime > 60 * 5: # 5 minutes
+        # No eval ran, so there is no best to keep: save the final weights.
+        print(f"Saving model to {ckpt_path}")
         os.makedirs("artifacts", exist_ok=True)
-        torch.save(agent.state_dict(), f"artifacts/{agent_name}.pt")
-        if args.track:
-            artifact = wandb.Artifact(name=agent_name, type="model")
-            artifact.add_file(f"artifacts/{agent_name}.pt")
-            wandb.log_artifact(artifact)
+        torch.save(agent.state_dict(), ckpt_path)
+        if run is not None:
+            _upload_replacing(run, agent_name, [ckpt_path], {}, ["latest"], None)
     else:
         print(f'Not saving because: {time.time() - start_time:.2f} <= {60 * 5}')
 

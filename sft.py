@@ -47,6 +47,7 @@ from ppo import (  # noqa: E402
     assert_device_ok,
     cuda_env_info,
     _resolve_start_from,
+    _upload_replacing,
     _CH_ENT,
     _CH_ITEMS,
     _EMPTY_ENT_ID,
@@ -738,6 +739,29 @@ def run_rollout_eval(
     }
 
 
+def _upload_checkpoint(run, args, best_val_throughput, best_val_acc, files, previous):
+    """Upload the run's best checkpoint via `_upload_replacing`."""
+    return _upload_replacing(
+        run,
+        _artifact_name(args),
+        files,
+        {
+            "best_val_throughput": best_val_throughput,
+            "best_val_acc": best_val_acc,
+            "size": args.size,
+            "layers": layers_from_args(args),
+            "kernel_size": args.kernel_size,
+            "num_samples": args.num_samples,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "seed": args.seed,
+        },
+        ["latest", f"thp{best_val_throughput:.3f}", f"val{best_val_acc:.3f}"],
+        previous,
+    )
+
+
 def train_sft(args: SftArgs):
     """Main SFT training loop."""
     if isinstance(sys.stdout, io.TextIOWrapper):
@@ -913,6 +937,7 @@ def train_sft(args: SftArgs):
 
     best_val_acc = 0.0
     best_val_throughput = 0.0
+    uploaded, uploaded_thp = None, -1.0
     ever_saved = False
     val_loss = 0.0
     val_tile_acc = 0.0
@@ -1563,6 +1588,11 @@ def train_sft(args: SftArgs):
             torch.save(agent.state_dict(), args.checkpoint_path)
             ever_saved = True
             pbar.write(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
+            if args.track and run is not None and overall_thp > uploaded_thp:
+                uploaded = _upload_checkpoint(
+                    run, args, overall_thp, best_val_acc, [args.checkpoint_path], uploaded
+                )
+                uploaded_thp = overall_thp
 
     pbar.close()
     if not ever_saved:
@@ -1625,33 +1655,15 @@ def train_sft(args: SftArgs):
         # separate artifacts — easier to navigate than a wall of
         # `sft-checkpoint-vN`. val_acc varies per run, so it stays as an
         # alias instead of being baked into the name.
-        artifact = wandb.Artifact(
-            name=_artifact_name(args),
-            type="model",
-            metadata={
-                "best_val_throughput": best_val_throughput,
-                "best_val_acc": best_val_acc,
-                "size": args.size,
-                "layers": layers_from_args(args),
-                "kernel_size": args.kernel_size,
-                "num_samples": args.num_samples,
-                "epochs": args.epochs,
-                "batch_size": args.batch_size,
-                "lr": args.lr,
-                "seed": args.seed,
-            },
+        _upload_checkpoint(
+            run,
+            args,
+            best_val_throughput,
+            best_val_acc,
+            [args.checkpoint_path, summary_path],
+            uploaded,
         )
-        artifact.add_file(args.checkpoint_path)
-        artifact.add_file(summary_path)
-        run.log_artifact(
-            artifact,
-            aliases=[
-                "latest",
-                f"thp{best_val_throughput:.3f}",
-                f"val{best_val_acc:.3f}",
-            ],
-        )
-        print(f"Logged W&B artifact: {artifact.name}")
+        print(f"Logged W&B artifact: {_artifact_name(args)}")
         run.finish()
 
     return agent

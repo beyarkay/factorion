@@ -826,6 +826,66 @@ class TestTrackedArtifact:
         assert captured["name"] == _artifact_name(args)
 
 
+    def test_each_new_best_replaces_the_runs_previous_upload(self, monkeypatch, tmp_path):
+        """A run uploads each strictly better val/thput checkpoint as it trains,
+        so one killed mid-run still leaves its best in W&B, and deletes its own
+        previous upload each time, so it holds one version at the end."""
+        import itertools
+        import wandb
+        from unittest.mock import MagicMock
+
+        import sft
+
+        thputs = itertools.chain([0.1, 0.1, 0.3], itertools.repeat(0.2))
+        real_rollout = sft.run_rollout_eval
+
+        def fake_rollout(*a, **k):
+            roll = real_rollout(*a, **k)
+            roll["overall"] = next(thputs)
+            return roll
+
+        artifacts, uploads = [], []
+
+        def fake_artifact(*a, **k):
+            artifacts.append(MagicMock())
+            return artifacts[-1]
+
+        def fake_log_artifact(artifact, aliases):
+            uploads.append(MagicMock())
+            return uploads[-1]
+
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log_artifact.side_effect = fake_log_artifact
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", fake_artifact)
+        monkeypatch.setattr(sft, "run_rollout_eval", fake_rollout)
+
+        args = SftArgs(
+            seed=1,
+            size=5,
+            num_samples=400,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            **TINY_ARCH_ARGS,
+            track=True,
+            eval_every_n_samples=64,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+
+        # 0.1 and 0.3 upload mid-run (the 0.1 tie and the later 0.2s don't),
+        # then the final checkpoint + summary.
+        assert len(uploads) == 3
+        assert all(u.delete.call_count == 1 for u in uploads[:-1])
+        uploads[-1].delete.assert_not_called()
+        final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
+        assert final_files == [args.checkpoint_path, args.summary_path]
+
+
 class TestSolvedAssemblerRecipes:
     """_solved_assembler_recipes — the ground truth the rollout scores against."""
 

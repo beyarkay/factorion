@@ -138,7 +138,9 @@ AGENTS_PER_POD_DEFAULT = 1
 
 
 def sft_budget_seconds(num_samples: int, epochs: int) -> int:
-    return int(num_samples * epochs / 1000 * 1.5) + SETUP_SLACK_SECONDS
+    # 15x15 SFT trains at ~1.9 s per 1000 samples (eyrcyuq9); a pod that
+    # outlives its run costs nothing, one killed short loses the run.
+    return int(num_samples * epochs / 1000 * 3.0) + SETUP_SLACK_SECONDS
 
 
 def ppo_budget_seconds(total_timesteps: int) -> int:

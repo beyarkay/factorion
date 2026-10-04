@@ -57,10 +57,13 @@ def test_run_id_delegates_to_wandb_resolver(monkeypatch, tmp_path):
 
 
 class _FakeArtifact:
-    def __init__(self, atype, files_dir, name="sft-art:v0", created_at="2026-01-01"):
+    def __init__(
+        self, atype, files_dir, name="sft-art:v0", created_at="2026-01-01", state="COMMITTED"
+    ):
         self.type = atype
         self.name = name
         self.created_at = created_at
+        self.state = state
         self._files_dir = files_dir
 
     def download(self, root=None):  # real wandb downloads into `root`
@@ -111,6 +114,24 @@ def test_run_id_downloads_model_artifact_pt(tmp_path, monkeypatch):
     assert source["artifact"] == "sft-art:v0"
 
 
+def test_newest_committed_version_wins_over_an_unfinished_upload(tmp_path, monkeypatch):
+    """A run replaces its checkpoint as its best improves; a resolver racing an
+    upload takes the newest version that finished, never the one in flight."""
+    done, pending = tmp_path / "done", tmp_path / "pending"
+    for d in (done, pending):
+        d.mkdir()
+        torch.save({"x": 1}, d / "ckpt.pt")
+    run = _FakeRun([
+        _FakeArtifact("model", str(done), name="art:v3", created_at="2026-01-02"),
+        _FakeArtifact("model", str(pending), name="art:v4", created_at="2026-01-03", state="PENDING"),
+    ])
+    _patch_api(monkeypatch, run)
+
+    path, source = _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
+    assert path == str(done / "ckpt.pt")
+    assert source["artifact"] == "art:v3"
+
+
 def test_full_path_bypasses_default_entity(tmp_path, monkeypatch):
     torch.save({"x": 1}, tmp_path / "ckpt.pt")
     run = _FakeRun([_FakeArtifact("model", str(tmp_path))])
@@ -142,3 +163,28 @@ def test_model_artifact_without_pt_raises(tmp_path, monkeypatch):
     _patch_api(monkeypatch, run)
     with pytest.raises(RuntimeError, match="no .pt file"):
         _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
+
+
+def test_ppo_saves_its_best_eval_checkpoint(tmp_path):
+    """An untracked PPO run with greedy evals keeps its best-eval/thput weights
+    in artifacts/ — the file `--start-from` consumers load."""
+    import subprocess
+    from pathlib import Path
+
+    from helpers import TINY_ARCH_ARGS
+
+    arch = [f"--{k.replace('_', '-')}={v}" for k, v in TINY_ARCH_ARGS.items()]
+    out = subprocess.run(
+        [sys.executable, str(Path(ppo.__file__)), "--size", "5", "--num-envs", "2",
+         "--num-steps", "16", "--total-timesteps", "96", "--num-minibatches", "1",
+         "--update-epochs", "1", "--eval-every", "1", "--eval-seeds-per-kind", "1",
+         "--summary-path", str(tmp_path / "summary.json"), *arch],
+        cwd=tmp_path,
+        env={**os.environ, "WANDB_MODE": "disabled", "WANDB_DISABLED": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Best checkpoint (eval/thput" in out.stdout
+    (ckpt,) = (tmp_path / "artifacts").glob("agent-*.pt")
+    assert "critic_head.weight" in torch.load(ckpt, weights_only=True)
