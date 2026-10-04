@@ -309,7 +309,7 @@ class SftArgs(SharedArgs):
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
-    eval_rollouts_num_envs: int = 64
+    eval_rollouts_num_envs: int = 8
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
     """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
