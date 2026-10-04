@@ -84,21 +84,14 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     let mut node_index: HashMap<NodeId, usize> = HashMap::new();
     let mut edge_list: Vec<(NodeId, NodeId)> = Vec::new();
 
-    // For lane-less multi-tile entities (assembler): maps secondary tile
-    // (x,y) → anchor (x,y). Used to (a) skip secondary tiles during node
-    // creation, and (b) remap edge endpoints so all edges point to the
-    // anchor node.
-    let mut anchor_of: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    // Lane-less secondary tiles (assembler) get no node of their own and
+    // their edge endpoints are remapped onto the anchor. Lane-aware secondary
+    // tiles (splitter) DO get their own lane nodes (a splitter is two belts
+    // side by side); membership only suppresses a second `connections()` call
+    // — the anchor visit emits edges for both tiles.
+    let anchor_of = unit_anchors(world);
 
-    // For lane-aware multi-tile entities (splitter): secondary tile → anchor.
-    // These tiles DO get their own lane nodes (a splitter is two belts side
-    // by side); the map only records unit membership and suppresses a second
-    // `connections()` call — the anchor visit emits edges for both tiles.
-    let mut lane_tile_anchor: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
-
-    // First pass: create nodes and collect edges. The scan order (x, then y,
-    // ascending) visits every multi-tile anchor before its secondary tiles,
-    // so the anchor registers them ahead of their own visit.
+    // First pass: create nodes and collect edges.
     for x in 0..world.width() {
         for y in 0..world.height() {
             // Empty cell, or a stray non-placeable item in the entities
@@ -108,35 +101,17 @@ pub fn build_graph(world: &World) -> FactoryGraph {
                 _ => continue,
             };
 
-            if anchor_of.contains_key(&(x, y)) {
+            let secondary_of = anchor_of.get(&(x, y)).copied();
+            if secondary_of.is_some() && !entity_kind.is_lane_aware() {
                 continue;
             }
-            let secondary_lane_tile = lane_tile_anchor.contains_key(&(x, y));
+            let secondary_lane_tile = secondary_of.is_some();
 
             let item = world.item_at(x, y);
             let direction = world.direction_at(x, y);
             let misc = world.misc_at(x, y);
 
-            // For multi-tile entities, register secondary tiles → anchor.
-            // Square entities (e.g. 3x3 assembler) use East as default
-            // direction for tile computation since their footprint is
-            // rotation-independent.
-            let (ew, eh) = entity_kind.size();
-            if !secondary_lane_tile && (ew > 1 || eh > 1) {
-                if let Some(tiles) = entity_tiles(x, y, direction, ew, eh) {
-                    for tile in &tiles[1..] {
-                        if let Some((tx, ty)) = tile.to_usize() {
-                            if entity_kind.is_lane_aware() {
-                                lane_tile_anchor.insert((tx, ty), (x, y));
-                            } else {
-                                anchor_of.insert((tx, ty), (x, y));
-                            }
-                        }
-                    }
-                }
-            }
-
-            let anchor = lane_tile_anchor.get(&(x, y)).copied().unwrap_or((x, y));
+            let anchor = secondary_of.unwrap_or((x, y));
 
             let node_ids: Vec<NodeId> = if entity_kind.is_lane_aware() {
                 Lane::iter()
@@ -214,12 +189,42 @@ pub fn build_graph(world: &World) -> FactoryGraph {
     }
 }
 
+/// Map every secondary tile of a multi-tile entity to its unit's anchor tile.
+/// The scan order (x, then y, ascending) visits every anchor before its
+/// secondary tiles, so the first unclaimed tile of a multi-tile entity is its
+/// anchor — the one rule that groups tiles into entity units, shared by the
+/// graph builder and the env's whole-entity overwrite (`py_unit_tiles`).
+pub fn unit_anchors(world: &World) -> HashMap<(usize, usize), (usize, usize)> {
+    let mut anchor_of = HashMap::new();
+    for x in 0..world.width() {
+        for y in 0..world.height() {
+            let Some(kind) = world.entity_at(x, y).filter(|k| k.is_placeable()) else {
+                continue;
+            };
+            if anchor_of.contains_key(&(x, y)) {
+                continue;
+            }
+            let (w, h) = kind.size();
+            if w == 1 && h == 1 {
+                continue;
+            }
+            if let Some(tiles) = entity_tiles(x, y, world.direction_at(x, y), w, h) {
+                for tile in &tiles[1..] {
+                    if let Some(t) = tile.to_usize() {
+                        anchor_of.insert(t, (x, y));
+                    }
+                }
+            }
+        }
+    }
+    anchor_of
+}
+
 /// If (id.x, id.y) is a secondary tile of a lane-less multi-tile entity
 /// (assembler), return a new NodeId pointing to the anchor. Otherwise return
-/// the original. Splitter tiles are NOT in this map — each keeps its own
-/// per-tile lane nodes.
+/// the original. Splitter tiles keep their own per-tile lane nodes.
 fn remap_to_anchor(id: &NodeId, anchor_of: &HashMap<(usize, usize), (usize, usize)>) -> NodeId {
-    if let Some(&(ax, ay)) = anchor_of.get(&(id.x, id.y)) {
+    if let (None, Some(&(ax, ay))) = (id.lane, anchor_of.get(&(id.x, id.y))) {
         NodeId {
             entity_kind: id.entity_kind,
             x: ax,
