@@ -31,7 +31,6 @@ from ci.config import (
     CLAUDE_MAX_TOTAL_TIMESTEPS,
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
-    GPU_FALLBACKS,
     SETUP_SLACK_SECONDS,
     WANDB_PROJECT,
     PpoJob,
@@ -614,7 +613,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     def common(sp):
-        sp.add_argument("--gpu-type", default=GPU_FALLBACKS[0])
+        sp.add_argument("--gpu-type", default=None)
 
     sp = sub.add_parser("sft", add_help=False)
     sp.add_argument("--num-samples", type=si_int, default=None)

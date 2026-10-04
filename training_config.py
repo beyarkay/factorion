@@ -276,6 +276,12 @@ class SftArgs(SharedArgs):
     """AdamW weight decay"""
     dropout: float = 0.1827
     """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
+    amp: bool = True
+    """run the encoder forward under bf16 autocast on CUDA; the heads and losses
+    stay fp32. bf16 is what unlocks the flash-attention kernel."""
+    compile: bool = True
+    """torch.compile the encoder forward (CUDA only), fusing the transformer's
+    elementwise ops (about a third of the step's GPU time)."""
     max_grad_norm: float = 2.104
     """grad L2-norm clip (0 disables clipping)"""
     lw_tile: float = 1.162
@@ -290,18 +296,20 @@ class SftArgs(SharedArgs):
     """loss weight for the misc (CE) head"""
     lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
-    eval_every_n_samples: int = 100_000
+    eval_every_n_samples: Optional[int] = None
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
-    huge dataset still yields a real training curve instead of one point."""
+    huge dataset still yields a real training curve instead of one point.
+    None = 100k for runs of at most 2M samples, else 500k: an eval costs
+    about as much as training on 100k samples."""
     eval_rollouts: bool = True
     """run the greedy rollout eval (the default checkpoint-selection metric) on
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
-    eval_rollouts_num_envs: int = 8
+    eval_rollouts_num_envs: int = 64
     """parallel envs for rollout eval; batches the CNN forward across them"""
     rollout_eot_threshold: float = 0.5
     """EOT-head prob above which we mark the model "would stop" (for val/thput)"""

@@ -24,6 +24,7 @@ from ci.config import (
     WANDB_PROJECT,
     Job,
     compare_fanout,
+    default_gpu,
     job_to_dict,
     pod_name,
     pod_url,
@@ -194,23 +195,24 @@ def resolve_ref(ref: str) -> str:
 
 def launch(
     jobs: Sequence[Job],
-    gpu_type: str,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
     wait: bool = False,
     repo_url: str = DEFAULT_REPO_URL,
 ) -> list[dict]:
     """Create one pod per job, back-to-back, and (optionally) wait for them to
     boot. All pods run on ONE GPU type so their results are comparable: the
-    first walks the fallback lineup from `gpu_type`, the rest are pinned to
-    whatever it landed on. RunPod can't reserve capacity, so when a later pod
-    can't get that GPU, every pod already created is terminated and the
-    launch fails.
+    first walks the fallback lineup from `gpu_type` (default: the first job's
+    `default_gpu`), the rest are pinned to whatever it landed on. RunPod can't
+    reserve capacity, so when a later pod can't get that GPU, every pod
+    already created is terminated and the launch fails.
 
     Returns per pod {"pod_id", "pod_name", "deadline", "job", "gpu_type"}
     (pod_id None on dry-run).
     """
     from ci import runpod_api
 
+    gpu_type = gpu_type or default_gpu(getattr(jobs[0], "algo", jobs[0].KIND))
     gpus = (
         GPU_FALLBACKS[GPU_FALLBACKS.index(gpu_type) :]
         if gpu_type in GPU_FALLBACKS
@@ -336,7 +338,7 @@ def launch_compare(
     num_samples: int,
     start_from: Optional[str],
     total_timesteps: Optional[int],
-    gpu_type: str,
+    gpu_type: Optional[str],
     dry_run: bool = False,
     extra_tags: Optional[list[str]] = None,
 ) -> list[dict]:

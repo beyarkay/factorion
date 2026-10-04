@@ -29,9 +29,9 @@ REPO_URL = "https://github.com/beyarkay/factorion"
 WANDB_PROJECT = SftArgs().wandb_project_name
 
 # Preferred first, then availability fallbacks (each pricier/bigger). The
-# default is the RTX 2000 Ada — the GPU the speed benchmarks were tuned on;
-# these models are tiny and the workload is single-core-CPU-bound, so a bigger
-# GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md). GeForce cards
+# head is the default for PPO, whose rollout is single-core-CPU-bound, so a
+# bigger GPU is overkill (see tests/benchmarks/EXPERIMENT_LOG.md). A requested
+# card falls back only to the entries after it. GeForce cards
 # (3090/4090) omitted: their community hosts hand out busy GPUs → the job
 # crashes at its first .to(device) with cudaErrorDevicesUnavailable (PR #290).
 GPU_FALLBACKS = [
@@ -42,6 +42,14 @@ GPU_FALLBACKS = [
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA RTX A6000",
 ]
+
+# SFT's transformer is GPU-bound, unlike PPO: the 6000 Ada trains it ~2.7x
+# faster than the A4000 for ~1.6x the cost per sample (ci/HELP.md has the table).
+SFT_DEFAULT_GPU = "NVIDIA RTX 6000 Ada Generation"
+
+
+def default_gpu(algo: str) -> str:
+    return SFT_DEFAULT_GPU if algo == "sft" else GPU_FALLBACKS[0]
 
 # Only schedule on hosts whose driver supports a CUDA version new enough for
 # our torch build. uv.lock pins torch 2.12.x+cu126, which CUDA minor-version

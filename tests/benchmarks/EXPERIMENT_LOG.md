@@ -627,3 +627,99 @@ encoder forward). It can't be sped bit-identically, and tensor cores barely help
   per-step-`cuda.synchronize()` artifact — trust end-to-end, which says ~0.
   This is the OPPOSITE of PPO, where the launch-bound B=16 forward loved CUDA
   graphs. Don't re-try these here.
+
+---
+
+# SFT at 15×15 on the CI pods (#463: 144 → 12 s per 100k samples)
+
+Measured with `/ci compare sft` and `/ci sft` runs on RunPod rather than
+`bench_* sft`. The question was the real production loop at 15×15 (transformer
+encoder, attention over 225 tokens, B=512), and the cached-dataset bench is
+an 11×11 conv model. Numbers are training seconds per 100k samples
+(`perf/train_seconds`, median over steady windows) unless stated.
+
+**Baseline**: RTX 2000 Ada, fp32: 144 s per 100k (11×11 was 60). The card sat
+at 100% utilisation and 64 of its 70 W, with DataLoader wait 0.2 s per 152 s:
+GPU-bound, not CPU-bound. A forward+backward costs 2.16 GFLOP per sample
+(1.05 at 11×11), and fitting the 11 vs 15 timings puts more than half the step
+in the N² attention term. In fp32 PyTorch can't use FlashAttention.
+
+## WON
+
+- **bf16 autocast on the encoder forward** (`SftArgs.amp`; heads and losses stay
+  fp32): A4000 93.7 → 29.2 (**3.2×**), same card type on both sides. Quality is
+  neutral over 2M samples: val/thput +0.010 (diff std 0.021), val/loss −0.006.
+  This reverses the "AMP ≈ 0" finding in the SFT section above, which was
+  measured on the 11×11 conv-only model before the attention stage existed.
+- **`torch.compile` of the encoder forward** (`SftArgs.compile`, `dynamic=False`):
+  1.13× alone (fp32, A4000), and **1.22× on top of bf16** (A6000: 17.1 → 14.0,
+  identical on all 3 seeds). Quality is neutral over 3 seeds at 2M: val/thput
+  +0.003 (all three seeds positive), val/loss +0.007 ± 0.010, val/acc −0.001
+  ± 0.003. The one-off compile cost is ~40 s (train, val, and the ragged last
+  batch). Compiled forward+backward gradients match eager to 4e-5, and
+  compiled dropout keeps 1−p. The "compile 42 s vs 22 s" finding above was
+  a 22 s benchmark dominated by warmup.
+- **Rollout eval: one host↔device copy per step, 64 envs** (was 7 scalar syncs
+  plus one obs copy per env per step, at 8 envs): `val/rollout_seconds` **~2×**
+  (A6000, same training code: 75.7/14.1/20.5/17.0/23.0 → 37/6.1/12.1/9.0/11.5 s
+  per eval). Greedy results are identical (checked per-factory on CPU at K=8 vs 64).
+  What remains is env CPU work: ~0.23 ms per `step`, ~2.9 ms per `reset`.
+- **Eval every 500k samples on runs > 2M** (`eval_every_n_samples=None`): an
+  eval cost ~a third of a 100k training window, so evals were ~26% of wall
+  time on #461's lessons.
+
+## GPU shootout (bf16 + compile, 500k samples, `/ci sft --gpu-type`)
+
+| GPU | $/hr | s per 100k | $ per 1M samples |
+|---|---|---|---|
+| RTX A4000 | 0.17 | 21.2 | 0.010 |
+| A40 | 0.49 | 14.7 | 0.020 |
+| RTX A6000 | 0.53 | 12.0–14.2 | 0.020 |
+| L40S | 1.09 | 10.1 | 0.031 |
+| RTX 6000 Ada | 0.74 | 7.9 | 0.016 |
+| A100 80GB PCIe | 1.59 | 7.4 | 0.033 |
+
+For reference, the RTX 2000 Ada in fp32 cost ~$0.096 per 1M samples. The data
+loader keeps up on every card (wait ≤ 0.17 s per window).
+
+## Where the step goes now (RTX 6000 Ada, bf16 + compile, `torch.profiler`)
+
+The step is **GPU-bound**: the GPU timeline is 40.5 ms per step, equal to the
+synced wall time, and the CPU blocks in "Command Buffer Full". Kernel time
+breaks down as:
+
+- flash attention fwd+bwd: 32.5%
+- fused layer-norm / dropout / residual (triton): ~35%
+- GEMMs: 20%
+- compiled embedding backward: 6%
+- eager heads, loss and optimizer: 5% (228 kernels per step)
+
+## LOST / dead ends (measured on the pod, don't re-test)
+
+- **CUDA graphs / compiling the whole step**: the step isn't CPU-bound, so
+  there's no launch overhead to remove.
+- **Other SDPA backends** (bf16, B=512, 12 heads, 225 tokens, head dim 16, fwd+bwd
+  per layer): flash 5.20 ms with dropout, memory-efficient 7.61 ms, cuDNN has
+  no kernel with dropout. Flash is already the best, and dropout costs it ~2%.
+- **One-hot matmul instead of `nn.Embedding`**: 0.58 ms vs 0.43 ms compiled
+  (eager 0.27 ms), so it's slower.
+- **`torch.compile(mode="max-autotune-no-cudagraphs")`**: encoder fwd+bwd 57.2
+  vs 60.5 ms for default compile (eager 84.6), a 5.5% gain, but compiling took
+  250 s vs 15 s. Not adopted; it's only worth it for runs of several hours.
+
+What's left is the architecture: head dim 16 underuses the tensor cores, and
+dropout + layer norm make a third of the step memory-bound elementwise work.
+
+## Measurement gotchas
+
+- **Pin the card.** `--gpu-type` with a lineup card falls back down the lineup,
+  so a compare's two pods can land on different GPUs (an A4000 vs an A5000 in
+  this campaign). Only the last lineup entry or a non-lineup type is exact.
+- **Pod-to-pod noise is ~18%** on the same card type with identical code (A6000:
+  12.0 vs 14.2), so speed deltas under ~20% across pods aren't signal.
+- **A single-seed difference curve can be one-signed for a no-op.** Two runs
+  with identical training code on the same card type gave val/loss differing
+  in the same direction at 100% of points (GPU atomics make trajectories
+  diverge and keep their offsets). In the 3-seed compile check, seed 1 alone
+  showed val/loss +0.028 at 100% of points and the other two seeds reversed
+  it. The "≥90% one-sign" reading needs ≥2 seeds for small effects.
