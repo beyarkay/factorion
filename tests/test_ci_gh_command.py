@@ -512,6 +512,8 @@ class TestBadInput:
             "/ci pods",
             "/ci kill",
             "/ci watchdog",
+            "--gpu-type",
+            SFT_DEFAULT_GPU,
         ):
             assert snippet in body, f"help is missing {snippet!r}"
         assert gh_ctx["pods"] == []

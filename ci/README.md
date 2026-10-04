@@ -26,6 +26,9 @@ assert pr:sps == main:sps +- 100           # ~equal within a tolerance
 /ci help                                   # usage + examples
 ```
 
+`sft`, `ppo`, `compare` and `sweep` also take `--gpu-type "<RunPod GPU id>"`.
+`HELP.md` lists each job's default card and the per-card speed and cost table.
+
 What comes back as PR comments:
 
 - reactions on your comment: **&#x1F440; instantly** (no eyes within ~30s
