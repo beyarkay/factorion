@@ -24,7 +24,7 @@ from ci.config import (
     pod_emoji,
     pod_url,
 )
-from ci.launch import create_sweep, launch, launch_compare, resolve_ref
+from ci.launch import create_sweep, launch, launch_compare, launch_homogeneous, resolve_ref
 from factory_diff import PER_KIND_DEFAULT
 
 DEFAULT_GPU = GPU_FALLBACKS[0]
@@ -92,7 +92,8 @@ def sweep(
         pods: Number of RunPod pods to launch.
         agents_per_pod: Parallel `wandb agent` processes per pod (GPU
             time-slicing). Total runs are capped by run_cap in the sweep yaml.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (falls back through the standard lineup;
+            every pod gets the GPU the first one landed on).
         dry_run: Print what would launch without creating pods or the sweep.
     """
     if algo not in ("sft", "ppo"):
@@ -102,10 +103,8 @@ def sweep(
         sweep_path = f"<entity>/<project>/<sweep-id-for-ci/sweep_{algo}.yaml@{sha[:7]}>"
     else:
         sweep_path = create_sweep(algo, sha)
-    for _ in range(pods):
-        job = SweepJob(sha=sha, algo=algo, sweep_path=sweep_path, agents_per_pod=agents_per_pod)
-        # Never block on boot: with several pods, waiting serially is useless.
-        launch(job, gpu_type, dry_run=dry_run, wait=False)
+    job = SweepJob(sha=sha, algo=algo, sweep_path=sweep_path, agents_per_pod=agents_per_pod)
+    launch_homogeneous([job] * pods, gpu_type, dry_run=dry_run)
     print(f"\nWhen done: uv run python -m ci sweep-report --sweep {sweep_path}")
 
 
@@ -141,7 +140,8 @@ def compare(
             compare finishes in hours, not days). Ignored for ppo.
         start_from: W&B SFT run id; required for ppo.
         total_timesteps: PPO override; default = PpoArgs().total_timesteps.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (falls back through the standard lineup;
+            both sides get the GPU the first one landed on).
         dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)

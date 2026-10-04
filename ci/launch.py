@@ -17,7 +17,7 @@ import secrets
 import string
 import subprocess
 import time
-from typing import Optional
+from typing import Optional, Sequence
 
 from ci.config import (
     WANDB_PROJECT,
@@ -197,10 +197,12 @@ def launch(
     dry_run: bool = False,
     wait: bool = True,
     repo_url: str = DEFAULT_REPO_URL,
+    fallback: bool = True,
 ) -> dict:
     """Create the pod for `job` and (optionally) wait for it to boot.
 
-    Returns {"pod_id", "pod_name", "deadline", "job"} (pod_id None on dry-run).
+    Returns {"pod_id", "pod_name", "deadline", "job", "gpu_type"} (pod_id None
+    on dry-run).
     """
     now = int(time.time())
     deadline = now + job.budget_seconds()
@@ -220,6 +222,7 @@ def launch(
         "deadline": deadline,
         "job": spec,
         "wandb_run_id": wandb_run_id,
+        "gpu_type": gpu_type,
     }
 
     env = {
@@ -255,7 +258,7 @@ def launch(
     print(f"Pod name: {name}")
     if wandb_run_id:
         print(f"W&B run:  {wandb_run_id} (URL live once the pod starts logging)")
-    print(f"GPU:      {gpu_type} (with fallbacks)")
+    print(f"GPU:      {gpu_type}{' (with fallbacks)' if fallback else ''}")
     print(f"Deadline: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(deadline))} "
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")
 
@@ -269,9 +272,12 @@ def launch(
 
     from ci import runpod_api
 
-    pod = runpod_api.create_pod(name=name, gpu_type=gpu_type, docker_args=DOCKER_ARGS, env=env)
+    pod = runpod_api.create_pod(
+        name=name, gpu_type=gpu_type, docker_args=DOCKER_ARGS, env=env, fallback=fallback
+    )
     pod_id = pod["id"]
     info["pod_id"] = pod_id
+    info["gpu_type"] = pod["gpu_type"]
 
     print(f"\nPod {pod_id} created. The job runs unattended and the pod")
     print("terminates itself when done. Track progress:")
@@ -294,6 +300,26 @@ def launch(
     return info
 
 
+def launch_homogeneous(jobs: Sequence[Job], gpu_type: str, dry_run: bool = False) -> list[dict]:
+    """Launch `jobs` back-to-back (never blocking on boot) all on ONE GPU type,
+    so their results are comparable: the first pod walks the fallback lineup,
+    the rest are pinned to whatever it landed on. RunPod can't reserve
+    capacity, so when a later pod can't get that GPU, every pod already
+    created is terminated and the launch fails."""
+    infos: list[dict] = []
+    try:
+        for job in jobs:
+            pinned = infos[0]["gpu_type"] if infos else gpu_type
+            infos.append(launch(job, pinned, dry_run=dry_run, wait=False, fallback=not infos))
+    except Exception:
+        from ci import runpod_api
+
+        for info in infos:
+            runpod_api.terminate_with_retry(info["pod_id"])
+        raise
+    return infos
+
+
 def launch_compare(
     algo: str,
     sha: str,
@@ -307,8 +333,8 @@ def launch_compare(
     dry_run: bool = False,
     extra_tags: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Fan a compare out into 2 pods (one per side), each running its seeds
-    sequentially. Returns the launch info of both pods."""
+    """Fan a compare out into 2 pods (one per side) on the same GPU type, each
+    running its seeds sequentially. Returns the launch info of both pods."""
     jobs = compare_fanout(
         algo=algo,
         sha=sha,
@@ -320,11 +346,7 @@ def launch_compare(
         total_timesteps=total_timesteps,
         extra_tags=extra_tags,
     )
-    infos = []
-    for job in jobs:
-        # Never block on boot: both side pods launch back-to-back.
-        infos.append(launch(job, gpu_type, dry_run=dry_run, wait=False))
-    return infos
+    return launch_homogeneous(jobs, gpu_type, dry_run=dry_run)
 
 
 def read_sweep_config(algo: str, sha: str) -> dict:

@@ -47,6 +47,7 @@ from ci.launch import (
     create_sweep,
     launch,
     launch_compare,
+    launch_homogeneous,
     read_sweep_config,
     resolve_ref,
     sweep_summary_line,
@@ -498,20 +499,14 @@ def cmd_sweep(args, ctx) -> None:
     sweep_path = create_sweep(algo, ctx["sha"])
     from ci.config import SweepJob
 
-    infos = [
-        launch(
-            SweepJob(
-                sha=ctx["sha"],
-                algo=algo,
-                sweep_path=sweep_path,
-                agents_per_pod=args.agents_per_pod,
-                extra_tags=[f"pr:{ctx['pr']}"],
-            ),
-            args.gpu_type,
-            wait=False,
-        )
-        for _ in range(args.pods)
-    ]
+    job = SweepJob(
+        sha=ctx["sha"],
+        algo=algo,
+        sweep_path=sweep_path,
+        agents_per_pod=args.agents_per_pod,
+        extra_tags=[f"pr:{ctx['pr']}"],
+    )
+    infos = launch_homogeneous([job] * args.pods, args.gpu_type)
     entity, project, sweep_id = sweep_path.split("/")
     sweep_url = f"https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}"
     sweep_line = sweep_summary_line(sweep_config)

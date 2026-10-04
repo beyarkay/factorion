@@ -34,11 +34,20 @@ def gh_ctx(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "gh-test")
     monkeypatch.setenv("GITHUB_REPOSITORY", "beyarkay/factorion")
 
-    def fake_create_pod(name, gpu_type, docker_args, env):
+    def fake_create_pod(name, gpu_type, docker_args, env, fallback=True):
+        if not fallback and gpu_type in captured.get("sold_out", ()):
+            raise RuntimeError(f"no {gpu_type} available")
         captured["pods"].append(
-            {"name": name, "gpu_type": gpu_type, "docker_args": docker_args, "env": env}
+            {
+                "name": name,
+                "gpu_type": gpu_type,
+                "docker_args": docker_args,
+                "env": env,
+                "fallback": fallback,
+            }
         )
-        return {"id": f"pod-{len(captured['pods'])}"}
+        landed = captured.get("lands_on", gpu_type) if fallback else gpu_type
+        return {"id": f"pod-{len(captured['pods'])}", "gpu_type": landed}
 
     monkeypatch.setattr("ci.runpod_api.create_pod", fake_create_pod)
     monkeypatch.setattr(gh_command, "_wandb_entity", lambda: "testent")
@@ -454,6 +463,51 @@ class TestClaudeAuthoredLimits:
             assert "sweep refused" in gh_ctx["comments"][0][1]
         # Refusal lands before the sweep is created, so nothing was launched.
         assert len(gh_ctx["pods"]) == int(launches)
+
+
+class TestHomogeneousGpus:
+    """Compare sides and sweep pods must all run on one GPU type, or their
+    numbers aren't comparable."""
+
+    A4000 = "NVIDIA RTX A4000"
+
+    def _stub_compare(self, monkeypatch):
+        monkeypatch.setattr(gh_command, "resolve_ref", lambda ref: "b" * 40)
+        monkeypatch.setattr("ci.report.wait_for_groups", lambda **kw: None)
+        monkeypatch.setattr(
+            "ci.report.compare_report",
+            lambda main_group, pr_group, assertions=None: ("MD", True),
+        )
+
+    @pytest.mark.parametrize(
+        "command,n_pods", [("/ci compare --seeds 1", 2), ("/ci sweep sft --pods 3", 3)]
+    )
+    def test_later_pods_pinned_to_first_pods_gpu(self, gh_ctx, monkeypatch, command, n_pods):
+        monkeypatch.setenv("COMMENT_BODY", command)
+        self._stub_compare(monkeypatch)
+        _stub_sweep(monkeypatch, {"run_cap": 10, "metric": {}, "parameters": {}})
+        gh_ctx["lands_on"] = self.A4000  # the preferred GPU is sold out
+        gh_command.main()
+
+        first, *rest = gh_ctx["pods"]
+        assert len(rest) == n_pods - 1
+        assert first["fallback"] and first["gpu_type"] == gh_command.GPU_FALLBACKS[0]
+        assert all(not p["fallback"] and p["gpu_type"] == self.A4000 for p in rest)
+
+    def test_compare_dies_and_kills_first_side_when_gpu_runs_out(self, gh_ctx, monkeypatch):
+        monkeypatch.setenv("COMMENT_BODY", "/ci compare --seeds 1")
+        self._stub_compare(monkeypatch)
+        gh_ctx["lands_on"] = self.A4000
+        gh_ctx["sold_out"] = {self.A4000}  # ...and the first pod took the last one
+        terminated = []
+        monkeypatch.setattr("ci.runpod_api.terminate_with_retry", terminated.append)
+
+        with pytest.raises(RuntimeError, match="no NVIDIA RTX A4000 available"):
+            gh_command.main()
+
+        assert terminated == ["pod-1"]
+        assert "`/ci` command failed" in gh_ctx["comments"][-1][1]
+        assert gh_ctx["statuses"] == []
 
 
 class TestBadInput:

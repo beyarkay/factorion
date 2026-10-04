@@ -34,15 +34,18 @@ def _init() -> None:
     runpod.api_key = os.environ["RUNPOD_API_KEY"]
 
 
-def create_pod(name: str, gpu_type: str, docker_args: str, env: dict) -> dict:
-    """Create a pod, walking the GPU fallback chain. Returns the pod dict.
+def create_pod(
+    name: str, gpu_type: str, docker_args: str, env: dict, fallback: bool = True
+) -> dict:
+    """Create a pod, walking the GPU fallback chain unless `fallback` is off.
+    Returns the pod dict, with the GPU it landed on under "gpu_type".
 
     Raises RuntimeError when no GPU in the lineup could be provisioned.
     """
     _init()
     gpus = (
         [gpu_type]
-        if gpu_type not in GPU_FALLBACKS
+        if not fallback or gpu_type not in GPU_FALLBACKS
         else GPU_FALLBACKS[GPU_FALLBACKS.index(gpu_type) :]
     )
 
@@ -68,7 +71,7 @@ def create_pod(name: str, gpu_type: str, docker_args: str, env: dict) -> dict:
                 pod = None
             if pod and pod.get("id"):
                 print(f"Pod created: {pod['id']} ({gpu})", flush=True)
-                return pod
+                return {**pod, "gpu_type": gpu}
             if attempt < MAX_RETRIES_PER_GPU:
                 time.sleep(RETRY_DELAY_SECONDS)
 

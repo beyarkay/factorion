@@ -81,6 +81,12 @@ fails). Each seed is still its own W&B run, grouped by side
 rerun or a second compare at the same commit from polluting the groups);
 the report is assembled from W&B afterwards.
 
+Compare and sweep pods all run on **one GPU type**, so their numbers are
+comparable: the first pod walks the `GPU_FALLBACKS` lineup and every later
+pod is pinned to whatever it landed on. RunPod can't reserve capacity, so if
+a later pod can't get that GPU the pods already created are terminated and
+the command fails — just repost it.
+
 W&B runs are tagged `ci`, `kind:<sft|ppo>`, `sha:<sha7>`, `pr:<num>` (and
 `cmp:<sha7>` + `cmp-side:<pr|main>` for compare runs). Raw logs are in the
 RunPod console (the pod's container logs; the job also tees to
