@@ -739,6 +739,55 @@ def run_rollout_eval(
     }
 
 
+def _kernel_bench(run, device):
+    """TEMP (#463): time attention backends and embedding variants at the
+    production shapes (bf16, fwd+bwd, CUDA events over 30 iters)."""
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    def timeit(fn, n=30):
+        for _ in range(5):
+            fn()
+        torch.cuda.synchronize()
+        s, e = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        s.record()
+        for _ in range(n):
+            fn()
+        e.record()
+        torch.cuda.synchronize()
+        return s.elapsed_time(e) / n
+
+    res = {}
+    B, H, N, D = 512, 12, 225, 16
+    # MHA hands SDPA (B, H, N, D) views of a (B, N, 3*H*D) projection.
+    qkv = torch.randn(B, N, 3, H, D, device=device, dtype=torch.bfloat16, requires_grad=True)
+    q, k, v = (qkv[:, :, i].transpose(1, 2) for i in range(3))
+    for p in (0.1827, 0.0):
+        for name, be in [
+            ("flash", SDPBackend.FLASH_ATTENTION),
+            ("efficient", SDPBackend.EFFICIENT_ATTENTION),
+            ("cudnn", SDPBackend.CUDNN_ATTENTION),
+        ]:
+            def fn():
+                with sdpa_kernel(be):
+                    F.scaled_dot_product_attention(q, k, v, dropout_p=p).sum().backward(retain_graph=True)
+            try:
+                res[f"bench/sdpa_{name}_p{p}_ms"] = timeit(fn)
+            except Exception as ex:
+                res[f"bench/sdpa_{name}_p{p}_err"] = repr(ex)[:300]
+
+    idx = torch.randint(0, 68, (512, 15, 15), device=device)
+    emb = nn.Embedding(68, 8).to(device)
+    w = emb.weight
+    comp_emb = torch.compile(lambda: emb(idx).float().sum(), dynamic=False)
+    onehot = torch.compile(lambda: (F.one_hot(idx, 68).float() @ w).sum(), dynamic=False)
+    res["bench/emb_eager_ms"] = timeit(lambda: emb(idx).sum().backward())
+    res["bench/emb_compiled_ms"] = timeit(lambda: comp_emb().backward())
+    res["bench/emb_onehot_compiled_ms"] = timeit(lambda: onehot().backward())
+    print(res)
+    run.summary.update(res)
+
+
 def train_sft(args: SftArgs):
     """Main SFT training loop."""
     if isinstance(sys.stdout, io.TextIOWrapper):
@@ -923,6 +972,11 @@ def train_sft(args: SftArgs):
             id=args.wandb_run_id,
             resume="allow" if args.wandb_run_id else None,
         )
+        if device.type == "cuda":
+            try:
+                _kernel_bench(run, device)
+            except Exception as ex:
+                run.summary["bench/error"] = repr(ex)[:500]
 
     best_val_acc = 0.0
     best_val_throughput = 0.0
