@@ -739,68 +739,6 @@ def run_rollout_eval(
     }
 
 
-_PROF = {}
-
-
-def _profile_hook(step, run, device):
-    """TEMP (#463): time 20 synced steps, then profile 15 steady steps and
-    upload the kernel tables + trace as a W&B artifact."""
-    if run is None or device.type != "cuda":
-        return
-    from torch.profiler import ProfilerActivity, profile, schedule
-
-    if step == 280:
-        torch.cuda.synchronize()
-        _PROF["t0"] = time.perf_counter()
-    elif step == 300:
-        torch.cuda.synchronize()
-        _PROF["synced_ms_per_step"] = (time.perf_counter() - _PROF["t0"]) / 20 * 1e3
-
-        def dump(p):
-            import gzip
-            import wandb
-
-            from torch.autograd import DeviceType
-
-            ev = p.key_averages()
-            gpu_us = sum(
-                e.time_range.elapsed_us() for e in p.events() if e.device_type == DeviceType.CUDA
-            )
-            cpu_us = sum(e.self_cpu_time_total for e in ev)
-            n_launch = sum(e.count for e in ev if e.key in ("cudaLaunchKernel", "cuLaunchKernel", "cudaLaunchKernelExC"))
-            head = (
-                f"synced wall ms/step (unprofiled, steps 280-300): {_PROF['synced_ms_per_step']:.2f}\n"
-                f"profiled active steps: 15\n"
-                f"GPU self time ms/step: {gpu_us / 15 / 1e3:.2f}\n"
-                f"CPU self time ms/step: {cpu_us / 15 / 1e3:.2f}\n"
-                f"kernel launches/step: {n_launch / 15:.0f}\n\n"
-            )
-            with open("profile_tables.txt", "w") as f:
-                f.write(head)
-                f.write(ev.table(sort_by="self_cuda_time_total", row_limit=60))
-                f.write("\n\n")
-                f.write(ev.table(sort_by="self_cpu_time_total", row_limit=60))
-            p.export_chrome_trace("trace.json")
-            with open("trace.json", "rb") as fi, gzip.open("trace.json.gz", "wb") as fo:
-                fo.write(fi.read())
-            art = wandb.Artifact(f"profile-{run.id}", type="profile")
-            art.add_file("profile_tables.txt")
-            art.add_file("trace.json.gz")
-            run.log_artifact(art)
-            print(head)
-
-        _PROF["p"] = profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            schedule=schedule(wait=0, warmup=3, active=15, repeat=1),
-            on_trace_ready=dump,
-        )
-        _PROF["p"].start()
-    elif "p" in _PROF:
-        _PROF["p"].step()
-        if step == 300 + 18:
-            _PROF.pop("p").stop()
-
-
 def train_sft(args: SftArgs):
     """Main SFT training loop."""
     if isinstance(sys.stdout, io.TextIOWrapper):
@@ -1137,7 +1075,6 @@ def train_sft(args: SftArgs):
             global_step += 1
             samples_seen += B
             pbar.update(B)
-            _profile_hook(global_step, run, device)
 
             acc_loss += torch.stack([
                 loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
