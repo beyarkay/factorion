@@ -563,7 +563,8 @@ def run_rollout_eval(
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
         obs_stack.append(obs)
 
-    obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32, device=device)
+    # Staged on the host so each step is one host->device copy, not one per env.
+    obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32)
 
     def finish_slot(i: int, thput: float) -> None:
         """Record slot `i`'s finished rollout at `thput` and refill it from the
@@ -602,7 +603,7 @@ def run_rollout_eval(
         )
         current[i] = (s, k, float(info.get("thput_normed", 0.0)))
         asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
-        obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32, device=device)
+        obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32)
 
     with torch.no_grad():
         while any(active):
@@ -613,16 +614,17 @@ def run_rollout_eval(
             # Greedy pick via the shared sampler; legal_mask keeps argmax off
             # occupied/walled tiles, and the critic is unused here.
             out = agent.sample_action(
-                obs_batch, temperature=0.0, legal_mask=True, compute_value=False
+                obs_batch.to(device), temperature=0.0, legal_mask=True, compute_value=False
             )
+            # One device->host copy per head per step, not one per env per head.
             act = out["action"]
-            eot_probs = out["eot_prob"]
-            x_K = act["xy"][:, 0]
-            y_K = act["xy"][:, 1]
-            ent_K = act["entity"]
-            dir_K = act["direction"]
-            item_K = act["item"]
-            misc_K = act["misc"]
+            eot_probs = out["eot_prob"].tolist()
+            x_K = act["xy"][:, 0].tolist()
+            y_K = act["xy"][:, 1].tolist()
+            ent_K = act["entity"].tolist()
+            dir_K = act["direction"].tolist()
+            item_K = act["item"].tolist()
+            misc_K = act["misc"].tolist()
 
             for i in range(K):
                 if not active[i]:
@@ -673,7 +675,6 @@ def run_rollout_eval(
                     obs_batch[i] = torch.as_tensor(
                         next_obs,
                         dtype=torch.float32,
-                        device=device,
                     )
                     continue
 
@@ -835,6 +836,7 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
+    amp = args.amp and device.type == "cuda"
 
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
@@ -847,6 +849,17 @@ def train_sft(args: SftArgs):
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
 
     agent.to(device)
+
+    def _encode(obs):
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
+            return agent.encode(obs).float()
+
+    # Static shapes: only the epoch's and val's ragged last batches differ.
+    encode = (
+        torch.compile(_encode, dynamic=False)
+        if args.compile and device.type == "cuda"
+        else _encode
+    )
 
     if cached_train is not None:
         # Cached: the whole training set goes GPU-resident once (obs stay uint8,
@@ -996,7 +1009,10 @@ def train_sft(args: SftArgs):
 
     stream = _batch_stream()
     epoch = 0
-    next_eval_at = args.eval_every_n_samples
+    eval_every = args.eval_every_n_samples
+    if eval_every is None:
+        eval_every = 100_000 if total_samples <= 2_000_000 else 500_000
+    next_eval_at = eval_every
     stream_done = False
     pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
     while not stream_done:
@@ -1023,7 +1039,7 @@ def train_sft(args: SftArgs):
                 batch_item, batch_misc, batch_mask, batch_eot,
             ) = batch
 
-            encoded = agent.encode(batch_obs)
+            encoded = encode(batch_obs)
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
             # eot=1 samples carry sentinel placement targets. Normalise by
@@ -1122,10 +1138,10 @@ def train_sft(args: SftArgs):
             t_batch = time.time()
 
             hit_sample_cadence = (
-                args.eval_every_n_samples > 0 and samples_seen >= next_eval_at
+                eval_every > 0 and samples_seen >= next_eval_at
             )
             if hit_sample_cadence:
-                next_eval_at += args.eval_every_n_samples
+                next_eval_at += eval_every
             if hit_sample_cadence or is_epoch_end:
                 break
         else:
@@ -1210,7 +1226,7 @@ def train_sft(args: SftArgs):
                 batch_eot = va_eot[idx]
                 batch_kind = va_kind[idx]
 
-                encoded = agent.encode(batch_obs)
+                encoded = encode(batch_obs)
                 B = encoded.shape[0]
                 placement_mask = (batch_eot < 0.5).float()
                 is_place = placement_mask.bool()
