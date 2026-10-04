@@ -293,11 +293,13 @@ class SftArgs(SharedArgs):
     """loss weight for the misc (CE) head"""
     lw_eot: float = 1.302
     """loss weight for the EOT (end-of-trajectory) BCE head"""
-    eval_every_n_samples: int = 100_000
+    eval_every_n_samples: Optional[int] = None
     """run validation + rollout eval + logging + checkpoint selection every N
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
-    huge dataset still yields a real training curve instead of one point."""
+    huge dataset still yields a real training curve instead of one point.
+    None = 100k for runs of at most 2M samples, else 500k: at 15x15 an eval
+    costs ~a third of a 100k-sample training window."""
     eval_rollouts: bool = True
     """run the greedy rollout eval (the default checkpoint-selection metric) on
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""

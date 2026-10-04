@@ -973,7 +973,10 @@ def train_sft(args: SftArgs):
 
     stream = _batch_stream()
     epoch = 0
-    next_eval_at = args.eval_every_n_samples
+    eval_every = args.eval_every_n_samples
+    if eval_every is None:
+        eval_every = 100_000 if total_samples <= 2_000_000 else 500_000
+    next_eval_at = eval_every
     stream_done = False
     pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
     while not stream_done:
@@ -1100,10 +1103,10 @@ def train_sft(args: SftArgs):
             t_batch = time.time()
 
             hit_sample_cadence = (
-                args.eval_every_n_samples > 0 and samples_seen >= next_eval_at
+                eval_every > 0 and samples_seen >= next_eval_at
             )
             if hit_sample_cadence:
-                next_eval_at += args.eval_every_n_samples
+                next_eval_at += eval_every
             if hit_sample_cadence or is_epoch_end:
                 break
         else:
