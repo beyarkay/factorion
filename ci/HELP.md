@@ -44,7 +44,8 @@ SFT work (`sft`, `compare sft`, `sweep sft`) defaults to the RTX 6000 Ada;
 PPO defaults to the RTX 2000 Ada, because its rollout is CPU-bound and a bigger
 card buys nothing. A card in the lineup (`GPU_FALLBACKS` in `ci/config.py`)
 falls back to the lineup entries after it when it's unavailable. Any other id
-is used exactly and fails if it can't be scheduled. Check the actual card in
+is used exactly and fails if it can't be scheduled. A `compare`'s or `sweep`'s
+pods all run on the card the first one landed on. Check the actual card in
 W&B (`env/gpu_name`).
 
 ```text
