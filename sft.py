@@ -812,6 +812,7 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
+    amp = args.amp and device.type == "cuda"
 
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
@@ -999,7 +1000,8 @@ def train_sft(args: SftArgs):
                 batch_item, batch_misc, batch_mask, batch_eot,
             ) = batch
 
-            encoded = agent.encode(batch_obs)
+            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
+                encoded = agent.encode(batch_obs).float()
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
             # eot=1 samples carry sentinel placement targets. Normalise by
@@ -1186,7 +1188,8 @@ def train_sft(args: SftArgs):
                 batch_eot = va_eot[idx]
                 batch_kind = va_kind[idx]
 
-                encoded = agent.encode(batch_obs)
+                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
+                    encoded = agent.encode(batch_obs).float()
                 B = encoded.shape[0]
                 placement_mask = (batch_eot < 0.5).float()
                 is_place = placement_mask.bool()
