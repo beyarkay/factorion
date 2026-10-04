@@ -33,6 +33,8 @@ from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
     TRAINING_KINDS,
+    Direction,
+    Misc,
     LessonKind,
     blank_entities,
     build_factory,
@@ -51,17 +53,61 @@ from ppo import (  # noqa: E402
     _resolve_start_from,
     _upload_replacing,
     _CH_ENT,
+    _CH_DIR,
     _CH_ITEMS,
+    _CH_MISC,
     _EMPTY_ENT_ID,
     _EMPTY_ITEM_VAL,
     _DIR_NONE_VAL,
     _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
+    _ASM_RECIPE_ITEM_IDS,
+    _UG_BELT_ENT_ID,
+    _VALID_ENTITY_ACTION_IDS,
 )
 from training_config import SftArgs, wsd_multiplier  # noqa: E402
 
 
-def extract_expert_actions(solved_CWH, task_CWH):
+_SMALL_ENTITY_IDS = tuple(
+    e for e in _VALID_ENTITY_ACTION_IDS
+    if e != _EMPTY_ENT_ID and entities[e].width == entities[e].height == 1
+)
+_CARDINAL_DIRS = tuple(d.value for d in Direction if d != Direction.NONE)
+_UG_MISCS = (Misc.UNDERGROUND_DOWN.value, Misc.UNDERGROUND_UP.value)
+
+
+def _mutate_entity(state_CWH, x, y):
+    """Corrupt the entity anchored at (x, y) in place: pick one of its entity
+    type, direction, recipe or underground state and change it to another
+    value a placement action could have put there, keeping the footprint.
+    Nearly every such edit breaks the factory, which is what makes it an
+    error to train a fix for."""
+    ent, d, item, misc = (int(state_CWH[c, x, y]) for c in (_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC))
+    proto = entities[ent]
+
+    def tiles(direction):
+        t = factorion_rs.py_entity_tiles(x, y, direction, proto.width, proto.height)
+        return {tuple(p) for p in t} if t is not None else {(x, y)}
+
+    by_channel = [
+        [
+            (e, d, _EMPTY_ITEM_VAL, random.choice(_UG_MISCS) if e == _UG_BELT_ENT_ID else _MISC_NONE_VAL)
+            for e in _SMALL_ENTITY_IDS if e != ent and ent in _SMALL_ENTITY_IDS
+        ],
+        [
+            (ent, nd, item, misc) for nd in _CARDINAL_DIRS
+            if ent != _ASM_MACHINE_ENT_ID and nd != d and tiles(nd) == tiles(d)
+        ],
+        [(ent, d, r, misc) for r in _ASM_RECIPE_ITEM_IDS if ent == _ASM_MACHINE_ENT_ID and r != item],
+        [(ent, d, item, m) for m in _UG_MISCS if ent == _UG_BELT_ENT_ID and m != misc],
+    ]
+    mutated = random.choice(random.choice([opts for opts in by_channel if opts]))
+    for tx, ty in tiles(d):
+        for c, v in zip((_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC), mutated):
+            state_CWH[c, tx, ty] = v
+
+
+def extract_expert_actions(solved_CWH, task_CWH, error_prob=0.0):
     """Extract (state, action) pairs by diffing solved vs task worlds.
 
     Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
@@ -88,6 +134,13 @@ def extract_expert_actions(solved_CWH, task_CWH):
     the end (state is the fully-solved factory). Placement targets on the
     terminal pair are sentinel zeros — the SFT loop masks placement losses
     on eot=1 samples.
+
+    With probability `error_prob` after each placement, a corrupted copy of
+    the state is also emitted (one already-placed entity mutated by
+    :func:`_mutate_entity`), labelled with the overwrite that restores the
+    solved entity at its anchor — the only valid tile, so the fix comes
+    first. The trajectory then continues from the clean state, so the model
+    is never trained to make the error, only to repair it.
     """
     C, W, H = solved_CWH.shape
     solved_ent = solved_CWH[Channel.ENTITIES.value]
@@ -167,6 +220,20 @@ def extract_expert_actions(solved_CWH, task_CWH):
             for ch in range(C):
                 state[ch, tx, ty] = solved_CWH[ch, tx, ty]
 
+        # The guard keeps error_prob=0 from consuming RNG, so clean data
+        # streams stay bit-identical.
+        if error_prob and random.random() < error_prob:
+            ex, ey = random.choice(diff_locs[: step + 1])
+            corrupted = state.clone()
+            _mutate_entity(corrupted, ex, ey)
+            fix_mask = torch.zeros(W * H, dtype=torch.bool)
+            fix_mask[ex * H + ey] = True
+            pairs.append((
+                corrupted.to(torch.uint8), ex * H + ey,
+                *(int(solved_CWH[c, ex, ey]) for c in (_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC)),
+                fix_mask, 0,
+            ))
+
     # Terminal pair: every placement has been applied, so `state` now equals
     # `solved_CWH`. Emit a sample with eot=1 and sentinel zeros for
     # placement targets; the SFT loop's placement_mask zeroes out the
@@ -241,7 +308,9 @@ def _artifact_name(args: "SftArgs") -> str:
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=None):
+def _iter_demo_pairs(
+    size, max_level, base_seed, worker_id, num_workers, target=None, error_prob=0.0
+):
     """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
@@ -291,7 +360,7 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
         consecutive_fails[kind.name] = 0
         task, _ = blank_entities(factory, num_missing_entities=max_level)
 
-        for pair in extract_expert_actions(factory.world_CWH, task):
+        for pair in extract_expert_actions(factory.world_CWH, task, error_prob):
             yield (*pair, seed, kind.value)
             kind_samples[kind.name] += 1
             produced += 1
@@ -299,14 +368,14 @@ def _iter_demo_pairs(size, max_level, base_seed, worker_id, num_workers, target=
                 break
 
 
-def _materialise(size, max_level, base_seed, target=None, n_lessons=None):
+def _materialise(size, max_level, base_seed, target=None, n_lessons=None, error_prob=0.0):
     """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
     item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
     `n_lessons` distinct factories when that is given instead."""
     random.seed(base_seed)
     rows = []
     seeds = set()
-    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target):
+    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target, error_prob):
         if n_lessons is not None and row[8] not in seeds:
             if len(seeds) >= n_lessons:
                 break
@@ -336,11 +405,12 @@ class StreamingDemoDataset(IterableDataset):
     overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, max_level, base_seed, target):
+    def __init__(self, size, max_level, base_seed, target, error_prob=0.0):
         self.size = size
         self.max_level = max_level
         self.base_seed = base_seed
         self.target = target
+        self.error_prob = error_prob
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
@@ -350,7 +420,8 @@ class StreamingDemoDataset(IterableDataset):
         base, rem = divmod(self.target, num_workers)
         my_target = base + (1 if worker_id < rem else 0)
         for row in _iter_demo_pairs(
-            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target
+            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target,
+            self.error_prob,
         ):
             # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
             # training only needs the first 8 — seed/kind are val-only metadata.
@@ -832,7 +903,8 @@ def train_sft(args: SftArgs):
         else:
             print(f"Materialising {args.num_samples} demonstrations to cache ...")
             cached_train = _materialise(
-                args.size, max_level, train_base, target=args.num_samples
+                args.size, max_level, train_base, target=args.num_samples,
+                error_prob=args.error_inject_prob,
             )[:8]
             torch.save(cached_train, args.dataset_cache)
             print(f"Cached dataset to {args.dataset_cache}")
@@ -919,7 +991,9 @@ def train_sft(args: SftArgs):
         # GPU step.
         stream_workers = min(16, os.cpu_count() or 1)
         train_stream_loader = DataLoader(
-            StreamingDemoDataset(args.size, max_level, train_base, args.num_samples),
+            StreamingDemoDataset(
+                args.size, max_level, train_base, args.num_samples, args.error_inject_prob
+            ),
             batch_size=args.batch_size,
             num_workers=stream_workers,
             pin_memory=(device.type == "cuda"),

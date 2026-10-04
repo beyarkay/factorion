@@ -262,6 +262,11 @@ class SftArgs(SharedArgs):
     DataLoader workers, so this is never held in memory all at once."""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
+    error_inject_prob: float = 0.03
+    """chance, after each expert placement, of also training on a copy of the
+    state with one placed entity randomly mutated, labelled with the
+    overwrite that fixes it. Assumes a random edit is nearly always an error.
+    Validation stays clean."""
     epochs: int = 1
     """number of training epochs"""
     batch_size: int = 512

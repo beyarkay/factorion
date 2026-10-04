@@ -41,7 +41,9 @@ from sft import (
     run_rollout_eval,
     train_sft,
 )
-from ppo import FactorioEnv, AgentCNN, make_env, layers_from_args, _legal_tile_mask
+from ppo import (
+    FactorioEnv, AgentCNN, make_env, layers_from_args, _legal_tile_mask, apply_placement_action,
+)
 
 
 def _materialise_args(args):
@@ -49,6 +51,44 @@ def _materialise_args(args):
     matching how train_sft draws its data from `_materialise`."""
     max_level = args.max_level if args.max_level > 0 else args.size * args.size
     return _materialise(args.size, max_level, args.seed, target=args.num_samples)
+
+
+class TestErrorInjection:
+    @pytest.mark.parametrize("kind", [
+        LessonKind.MOVE_ONE_ITEM,
+        LessonKind.MOVE_VIA_UG_BELT,
+        LessonKind.SPLITTER_SPLIT,
+        LessonKind.MEMORISE_2_INGREDIENT_RECIPES,
+    ])
+    def test_each_injected_error_is_fixed_by_its_label(self, kind):
+        """At error_prob=1 every placement is followed by a corrupted copy of
+        its resulting state; replaying that copy's label through the env's
+        placement path restores the clean state the trajectory continues
+        from."""
+        factory = next(
+            f for s in range(50)
+            if (f := build_factory(size=11, kind=kind, seed=s)) is not None
+        )
+        task, _ = blank_entities(factory)
+        random.seed(0)
+        pairs = extract_expert_actions(factory.world_CWH, task, error_prob=1.0)
+        clean, fixes = pairs[0:-1:2], pairs[1:-1:2]
+        assert len(clean) == len(fixes) > 0
+        restored_states = [p[0] for p in clean[1:]] + [pairs[-1][0]]
+        source, sink = str2ent("source").value, str2ent("sink").value
+        for (obs, tile, ent, d, item, misc, mask, eot), want in zip(fixes, restored_states):
+            assert eot == 0
+            assert mask.nonzero().flatten().tolist() == [tile]
+            assert not torch.equal(obs, want), "the mutation must change the state"
+            world = obs.to(torch.float32)
+            H = world.shape[2]
+            is_invalid, _, _ = apply_placement_action(
+                world,
+                {"xy": (tile // H, tile % H), "entity": ent, "direction": d, "item": item, "misc": misc},
+                source_id=source, sink_id=sink,
+            )
+            assert not is_invalid
+            assert torch.equal(world.to(torch.uint8), want)
 
 
 class TestExtractExpertActions:
