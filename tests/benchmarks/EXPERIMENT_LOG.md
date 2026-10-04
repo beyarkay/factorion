@@ -682,6 +682,34 @@ in the N² attention term. In fp32 PyTorch can't use FlashAttention.
 For reference, the RTX 2000 Ada in fp32 cost ~$0.096 per 1M samples. The data
 loader keeps up on every card (wait ≤ 0.17 s per window).
 
+## Where the step goes now (RTX 6000 Ada, bf16 + compile, `torch.profiler`)
+
+The step is **GPU-bound**: the GPU timeline is 40.5 ms per step, equal to the
+synced wall time, and the CPU blocks in "Command Buffer Full". Kernel time
+breaks down as:
+
+- flash attention fwd+bwd: 32.5%
+- fused layer-norm / dropout / residual (triton): ~35%
+- GEMMs: 20%
+- compiled embedding backward: 6%
+- eager heads, loss and optimizer: 5% (228 kernels per step)
+
+## LOST / dead ends (measured on the pod, don't re-test)
+
+- **CUDA graphs / compiling the whole step**: the step isn't CPU-bound, so
+  there's no launch overhead to remove.
+- **Other SDPA backends** (bf16, B=512, 12 heads, 225 tokens, head dim 16, fwd+bwd
+  per layer): flash 5.20 ms with dropout, memory-efficient 7.61 ms, cuDNN has
+  no kernel with dropout. Flash is already the best, and dropout costs it ~2%.
+- **One-hot matmul instead of `nn.Embedding`**: 0.58 ms vs 0.43 ms compiled
+  (eager 0.27 ms), so it's slower.
+- **`torch.compile(mode="max-autotune-no-cudagraphs")`**: encoder fwd+bwd 57.2
+  vs 60.5 ms for default compile (eager 84.6), a 5.5% gain, but compiling took
+  250 s vs 15 s. Not adopted; it's only worth it for runs of several hours.
+
+What's left is the architecture: head dim 16 underuses the tensor cores, and
+dropout + layer norm make a third of the step memory-bound elementwise work.
+
 ## Measurement gotchas
 
 - **Pin the card.** `--gpu-type` with a lineup card falls back down the lineup,
