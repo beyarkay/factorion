@@ -826,6 +826,17 @@ def train_sft(args: SftArgs):
 
     agent.to(device)
 
+    def _encode(obs):
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
+            return agent.encode(obs).float()
+
+    # Static shapes: only the epoch's and val's ragged last batches differ.
+    encode = (
+        torch.compile(_encode, dynamic=False)
+        if args.compile and device.type == "cuda"
+        else _encode
+    )
+
     if cached_train is not None:
         # Cached: the whole training set goes GPU-resident once (obs stay uint8,
         # cast to float per-batch), shuffled via a DataLoader over indices so no
@@ -1003,8 +1014,7 @@ def train_sft(args: SftArgs):
                 batch_item, batch_misc, batch_mask, batch_eot,
             ) = batch
 
-            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
-                encoded = agent.encode(batch_obs).float()
+            encoded = encode(batch_obs)
             B = encoded.shape[0]
             # Placement loss is only meaningful for non-terminal samples;
             # eot=1 samples carry sentinel placement targets. Normalise by
@@ -1191,8 +1201,7 @@ def train_sft(args: SftArgs):
                 batch_eot = va_eot[idx]
                 batch_kind = va_kind[idx]
 
-                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
-                    encoded = agent.encode(batch_obs).float()
+                encoded = encode(batch_obs)
                 B = encoded.shape[0]
                 placement_mask = (batch_eot < 0.5).float()
                 is_place = placement_mask.bool()
