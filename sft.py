@@ -47,6 +47,7 @@ from ppo import (  # noqa: E402
     assert_device_ok,
     cuda_env_info,
     _resolve_start_from,
+    _upload_replacing,
     _CH_ENT,
     _CH_ITEMS,
     _EMPTY_ENT_ID,
@@ -739,16 +740,12 @@ def run_rollout_eval(
 
 
 def _upload_checkpoint(run, args, best_val_throughput, best_val_acc, files, previous):
-    """Log `files` as a new version of the run's model artifact and delete
-    `previous`, this run's last upload, so a run holds one checkpoint in W&B
-    however often its best improves — and a run killed mid-training still
-    leaves its best behind. Returns the new version, to pass as `previous`."""
-    import wandb
-
-    artifact = wandb.Artifact(
-        name=_artifact_name(args),
-        type="model",
-        metadata={
+    """Upload the run's best checkpoint via `_upload_replacing`."""
+    return _upload_replacing(
+        run,
+        _artifact_name(args),
+        files,
+        {
             "best_val_throughput": best_val_throughput,
             "best_val_acc": best_val_acc,
             "size": args.size,
@@ -760,17 +757,9 @@ def _upload_checkpoint(run, args, best_val_throughput, best_val_acc, files, prev
             "lr": args.lr,
             "seed": args.seed,
         },
+        ["latest", f"thp{best_val_throughput:.3f}", f"val{best_val_acc:.3f}"],
+        previous,
     )
-    for f in files:
-        artifact.add_file(f)
-    logged = run.log_artifact(
-        artifact,
-        aliases=["latest", f"thp{best_val_throughput:.3f}", f"val{best_val_acc:.3f}"],
-    )
-    logged.wait()
-    if previous is not None:
-        previous.delete(delete_aliases=True)
-    return logged
 
 
 def train_sft(args: SftArgs):

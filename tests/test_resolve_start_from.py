@@ -164,3 +164,27 @@ def test_model_artifact_without_pt_raises(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="no .pt file"):
         _resolve_wandb_checkpoint("j0s5y2mc", "factorion", None)
 
+
+def test_ppo_saves_its_best_eval_checkpoint(tmp_path):
+    """An untracked PPO run with greedy evals keeps its best-eval/thput weights
+    in artifacts/ — the file `--start-from` consumers load."""
+    import subprocess
+    from pathlib import Path
+
+    from helpers import TINY_ARCH_ARGS
+
+    arch = [f"--{k.replace('_', '-')}={v}" for k, v in TINY_ARCH_ARGS.items()]
+    out = subprocess.run(
+        [sys.executable, str(Path(ppo.__file__)), "--size", "5", "--num-envs", "2",
+         "--num-steps", "16", "--total-timesteps", "96", "--num-minibatches", "1",
+         "--update-epochs", "1", "--eval-every", "1", "--eval-seeds-per-kind", "1",
+         "--summary-path", str(tmp_path / "summary.json"), *arch],
+        cwd=tmp_path,
+        env={**os.environ, "WANDB_MODE": "disabled", "WANDB_DISABLED": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Best checkpoint (eval/thput" in out.stdout
+    (ckpt,) = (tmp_path / "artifacts").glob("agent-*.pt")
+    assert "critic_head.weight" in torch.load(ckpt, weights_only=True)
