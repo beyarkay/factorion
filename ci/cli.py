@@ -24,7 +24,7 @@ from ci.config import (
     pod_emoji,
     pod_url,
 )
-from ci.launch import create_sweep, launch, launch_compare, launch_homogeneous, resolve_ref
+from ci.launch import create_sweep, launch, launch_compare, resolve_ref
 from factory_diff import PER_KIND_DEFAULT
 
 DEFAULT_GPU = GPU_FALLBACKS[0]
@@ -47,7 +47,7 @@ def sft(
         no_wait: Return right after pod creation instead of waiting for boot.
     """
     job = SftJob(sha=resolve_ref(ref), num_samples=num_samples)
-    launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
+    launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
 def ppo(
@@ -69,7 +69,7 @@ def ppo(
         no_wait: Return right after pod creation instead of waiting for boot.
     """
     job = PpoJob(sha=resolve_ref(ref), start_from=start_from, total_timesteps=total_timesteps)
-    launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
+    launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
 def sweep(
@@ -104,7 +104,7 @@ def sweep(
     else:
         sweep_path = create_sweep(algo, sha)
     job = SweepJob(sha=sha, algo=algo, sweep_path=sweep_path, agents_per_pod=agents_per_pod)
-    launch_homogeneous([job] * pods, gpu_type, dry_run=dry_run)
+    launch([job] * pods, gpu_type, dry_run=dry_run)
     print(f"\nWhen done: uv run python -m ci sweep-report --sweep {sweep_path}")
 
 

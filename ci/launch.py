@@ -20,6 +20,7 @@ import time
 from typing import Optional, Sequence
 
 from ci.config import (
+    GPU_FALLBACKS,
     WANDB_PROJECT,
     Job,
     compare_fanout,
@@ -192,18 +193,59 @@ def resolve_ref(ref: str) -> str:
 
 
 def launch(
-    job: Job,
+    jobs: Sequence[Job],
     gpu_type: str,
     dry_run: bool = False,
-    wait: bool = True,
+    wait: bool = False,
     repo_url: str = DEFAULT_REPO_URL,
-    fallback: bool = True,
-) -> dict:
-    """Create the pod for `job` and (optionally) wait for it to boot.
+) -> list[dict]:
+    """Create one pod per job, back-to-back, and (optionally) wait for them to
+    boot. All pods run on ONE GPU type so their results are comparable: the
+    first walks the fallback lineup from `gpu_type`, the rest are pinned to
+    whatever it landed on. RunPod can't reserve capacity, so when a later pod
+    can't get that GPU, every pod already created is terminated and the
+    launch fails.
 
-    Returns {"pod_id", "pod_name", "deadline", "job", "gpu_type"} (pod_id None
-    on dry-run).
+    Returns per pod {"pod_id", "pod_name", "deadline", "job", "gpu_type"}
+    (pod_id None on dry-run).
     """
+    from ci import runpod_api
+
+    gpus = (
+        GPU_FALLBACKS[GPU_FALLBACKS.index(gpu_type) :]
+        if gpu_type in GPU_FALLBACKS
+        else [gpu_type]
+    )
+    infos: list[dict] = []
+    try:
+        for job in jobs:
+            infos.append(_launch_pod(job, gpus, dry_run, repo_url))
+            gpus = [infos[0]["gpu_type"]]
+    except BaseException:
+        for info in infos:
+            try:
+                runpod_api.terminate_with_retry(info["pod_id"])
+            except Exception as e:
+                print(f"could not terminate {info['pod_id']}: {e}")
+        raise
+    if not wait or dry_run:
+        return infos
+    for info in infos:
+        try:
+            status = runpod_api.wait_until_running(info["pod_id"])
+            gpu = status.get("machine", {}).get("gpuDisplayName", "unknown")
+            print(f"Pod is running on {gpu}.")
+        except KeyboardInterrupt:
+            print("\nStopped waiting — the pod keeps running (check `python -m ci pods`).")
+        except TimeoutError:
+            print("Pod failed to boot in time; terminating it.")
+            runpod_api.terminate_with_retry(info["pod_id"])
+            raise SystemExit(1)
+    return infos
+
+
+def _launch_pod(job: Job, gpus: list[str], dry_run: bool, repo_url: str) -> dict:
+    """Create the pod for `job` on the first of `gpus` RunPod can provision."""
     now = int(time.time())
     deadline = now + job.budget_seconds()
     name = pod_name(job.KIND, now, deadline, job.sha)
@@ -222,7 +264,7 @@ def launch(
         "deadline": deadline,
         "job": spec,
         "wandb_run_id": wandb_run_id,
-        "gpu_type": gpu_type,
+        "gpu_type": gpus[0],
     }
 
     env = {
@@ -258,7 +300,7 @@ def launch(
     print(f"Pod name: {name}")
     if wandb_run_id:
         print(f"W&B run:  {wandb_run_id} (URL live once the pod starts logging)")
-    print(f"GPU:      {gpu_type}{' (with fallbacks)' if fallback else ''}")
+    print(f"GPU:      {gpus[0]}{' (with fallbacks)' if len(gpus) > 1 else ''}")
     print(f"Deadline: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(deadline))} "
           f"({job.budget_seconds() // 60} min budget; watchdogs kill the pod after this)")
 
@@ -272,9 +314,7 @@ def launch(
 
     from ci import runpod_api
 
-    pod = runpod_api.create_pod(
-        name=name, gpu_type=gpu_type, docker_args=DOCKER_ARGS, env=env, fallback=fallback
-    )
+    pod = runpod_api.create_pod(name=name, gpus=gpus, docker_args=DOCKER_ARGS, env=env)
     pod_id = pod["id"]
     info["pod_id"] = pod_id
     info["gpu_type"] = pod["gpu_type"]
@@ -284,40 +324,7 @@ def launch(
     print(f"  W&B:    https://wandb.ai/ (project {WANDB_PROJECT}, tag sha:{job.sha[:7]})")
     print(f"  RunPod: {pod_url(pod_id)} (container logs)")
     print(f"  CLI:    uv run python -m ci pods   |   uv run python -m ci kill {pod_id}")
-
-    if not wait:
-        return info
-    try:
-        status = runpod_api.wait_until_running(pod_id)
-        gpu = status.get("machine", {}).get("gpuDisplayName", "unknown")
-        print(f"Pod is running on {gpu}.")
-    except KeyboardInterrupt:
-        print("\nStopped waiting — the pod keeps running (check `python -m ci pods`).")
-    except TimeoutError:
-        print("Pod failed to boot in time; terminating it.")
-        runpod_api.terminate_with_retry(pod_id)
-        raise SystemExit(1)
     return info
-
-
-def launch_homogeneous(jobs: Sequence[Job], gpu_type: str, dry_run: bool = False) -> list[dict]:
-    """Launch `jobs` back-to-back (never blocking on boot) all on ONE GPU type,
-    so their results are comparable: the first pod walks the fallback lineup,
-    the rest are pinned to whatever it landed on. RunPod can't reserve
-    capacity, so when a later pod can't get that GPU, every pod already
-    created is terminated and the launch fails."""
-    infos: list[dict] = []
-    try:
-        for job in jobs:
-            pinned = infos[0]["gpu_type"] if infos else gpu_type
-            infos.append(launch(job, pinned, dry_run=dry_run, wait=False, fallback=not infos))
-    except Exception:
-        from ci import runpod_api
-
-        for info in infos:
-            runpod_api.terminate_with_retry(info["pod_id"])
-        raise
-    return infos
 
 
 def launch_compare(
@@ -346,7 +353,7 @@ def launch_compare(
         total_timesteps=total_timesteps,
         extra_tags=extra_tags,
     )
-    return launch_homogeneous(jobs, gpu_type, dry_run=dry_run)
+    return launch(jobs, gpu_type, dry_run=dry_run)
 
 
 def read_sweep_config(algo: str, sha: str) -> dict:

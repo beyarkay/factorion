@@ -47,7 +47,6 @@ from ci.launch import (
     create_sweep,
     launch,
     launch_compare,
-    launch_homogeneous,
     read_sweep_config,
     resolve_ref,
     sweep_summary_line,
@@ -251,12 +250,12 @@ def cmd_sft(args, ctx) -> None:
     job = SftJob(
         sha=ctx["sha"], num_samples=args.num_samples, extra_tags=[f"pr:{ctx['pr']}"]
     )
-    info = launch(job, args.gpu_type, wait=False)
+    infos = launch([job], args.gpu_type)
     _post(
         ctx,
         _launched_comment(
             f"SFT run launched at {_commit_link(ctx['sha'])}",
-            [info],
+            infos,
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
     )
@@ -270,12 +269,12 @@ def cmd_ppo(args, ctx) -> None:
         total_timesteps=args.total_timesteps,
         extra_tags=[f"pr:{ctx['pr']}"],
     )
-    info = launch(job, args.gpu_type, wait=False)
+    infos = launch([job], args.gpu_type)
     _post(
         ctx,
         _launched_comment(
             f"PPO run launched at {_commit_link(ctx['sha'])} (from `{args.start_from}`)",
-            [info],
+            infos,
             footer=f"Results land here as a comment when the run finishes. {_project_link(ctx['sha'][:7])}",
         ),
     )
@@ -506,7 +505,7 @@ def cmd_sweep(args, ctx) -> None:
         agents_per_pod=args.agents_per_pod,
         extra_tags=[f"pr:{ctx['pr']}"],
     )
-    infos = launch_homogeneous([job] * args.pods, args.gpu_type)
+    infos = launch([job] * args.pods, args.gpu_type)
     entity, project, sweep_id = sweep_path.split("/")
     sweep_url = f"https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}"
     sweep_line = sweep_summary_line(sweep_config)
