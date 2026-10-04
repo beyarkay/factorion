@@ -14,7 +14,6 @@ from ci.config import (
     AGENTS_PER_POD_DEFAULT,
     COMPARE_NUM_SAMPLES_DEFAULT,
     COMPARE_SEEDS_DEFAULT,
-    GPU_FALLBACKS,
     PpoJob,
     SftJob,
     SweepJob,
@@ -27,13 +26,11 @@ from ci.config import (
 from ci.launch import create_sweep, launch, launch_compare, resolve_ref
 from factory_diff import PER_KIND_DEFAULT
 
-DEFAULT_GPU = GPU_FALLBACKS[0]
-
 
 def sft(
     ref: str,
     num_samples: Optional[int] = None,
-    gpu_type: str = DEFAULT_GPU,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
     no_wait: bool = False,
 ) -> None:
@@ -42,7 +39,7 @@ def sft(
     Args:
         ref: Commitish to train (branch / tag / SHA); must be pushed to origin.
         num_samples: Samples per epoch; default = SftArgs().num_samples.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating a pod.
         no_wait: Return right after pod creation instead of waiting for boot.
     """
@@ -54,7 +51,7 @@ def ppo(
     ref: str,
     start_from: str,
     total_timesteps: Optional[int] = None,
-    gpu_type: str = DEFAULT_GPU,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
     no_wait: bool = False,
 ) -> None:
@@ -64,7 +61,7 @@ def ppo(
         ref: Commitish to train (branch / tag / SHA); must be pushed to origin.
         start_from: W&B run id of the SFT checkpoint (e.g. j0s5y2mc).
         total_timesteps: Override; default = PpoArgs().total_timesteps.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating a pod.
         no_wait: Return right after pod creation instead of waiting for boot.
     """
@@ -78,7 +75,7 @@ def sweep(
     ref: str = "main",
     pods: int = 1,
     agents_per_pod: int = AGENTS_PER_POD_DEFAULT,
-    gpu_type: str = DEFAULT_GPU,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
 ) -> None:
     """Run a W&B hyperparameter sweep, e.g. `sweep sft` or `sweep ppo`.
@@ -92,7 +89,7 @@ def sweep(
         pods: Number of RunPod pods to launch.
         agents_per_pod: Parallel `wandb agent` processes per pod (GPU
             time-slicing). Total runs are capped by run_cap in the sweep yaml.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating pods or the sweep.
     """
     if algo not in ("sft", "ppo"):
@@ -119,7 +116,7 @@ def compare(
     num_samples: int = COMPARE_NUM_SAMPLES_DEFAULT,
     start_from: Optional[str] = None,
     total_timesteps: Optional[int] = None,
-    gpu_type: str = DEFAULT_GPU,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
 ) -> None:
     """Compare a commitish against a base (default origin/main), multi-seed.
@@ -141,7 +138,7 @@ def compare(
             compare finishes in hours, not days). Ignored for ppo.
         start_from: W&B SFT run id; required for ppo.
         total_timesteps: PPO override; default = PpoArgs().total_timesteps.
-        gpu_type: RunPod GPU type (falls back through the standard lineup).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
         dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)

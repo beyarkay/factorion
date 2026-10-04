@@ -23,6 +23,7 @@ from ci.config import (
     WANDB_PROJECT,
     Job,
     compare_fanout,
+    default_gpu,
     job_to_dict,
     pod_name,
     pod_url,
@@ -193,7 +194,7 @@ def resolve_ref(ref: str) -> str:
 
 def launch(
     job: Job,
-    gpu_type: str,
+    gpu_type: Optional[str] = None,
     dry_run: bool = False,
     wait: bool = True,
     repo_url: str = DEFAULT_REPO_URL,
@@ -202,6 +203,7 @@ def launch(
 
     Returns {"pod_id", "pod_name", "deadline", "job"} (pod_id None on dry-run).
     """
+    gpu_type = gpu_type or default_gpu(getattr(job, "algo", job.KIND))
     now = int(time.time())
     deadline = now + job.budget_seconds()
     name = pod_name(job.KIND, now, deadline, job.sha)
@@ -303,7 +305,7 @@ def launch_compare(
     num_samples: int,
     start_from: Optional[str],
     total_timesteps: Optional[int],
-    gpu_type: str,
+    gpu_type: Optional[str],
     dry_run: bool = False,
     extra_tags: Optional[list[str]] = None,
 ) -> list[dict]:
