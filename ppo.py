@@ -52,6 +52,8 @@ _EMPTY_ENT_ID = str2ent("empty").value
 _ASM_MACHINE_ENT_ID = str2ent("assembling_machine_1").value
 _UG_BELT_ENT_ID = str2ent("underground_belt").value
 _TRANSPORT_BELT_ENT_ID = str2ent("transport_belt").value
+_SOURCE_ENT_ID = str2ent("source").value
+_SINK_ENT_ID = str2ent("sink").value
 _EMPTY_ITEM_VAL = str2item("empty").value
 # Counts / sentinels read in FactorioEnv.step's per-step validity chain; hoisted
 # so the chain doesn't re-evaluate len()/enum .value every step.
@@ -99,7 +101,7 @@ _INVALID_REASON_KEYS = (
     'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
     'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
     'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
-    'placed_on_existing_entity',
+    'edited_protected_tile',
 )
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
@@ -128,6 +130,7 @@ def apply_placement_action(
     *,
     source_id: int,
     sink_id: int,
+    protected: frozenset = frozenset(),
 ) -> tuple[bool, Optional[str], Optional[dict]]:
     """Validate and apply one placement action to ``world_CWH``.
 
@@ -135,6 +138,11 @@ def apply_placement_action(
     world mutation. ``FactorioEnv.step`` and the factory-builder UI both call
     it, so multi-tile footprints, rejection rules, and mirrored channels cannot
     drift between rollout/training and interactive inference.
+
+    Placements overwrite: every entity the footprint touches is removed whole
+    first, so ``empty`` deletes the entity under ``xy`` and any other entity
+    replaces what it lands on. ``protected`` tiles (a lesson's fixed
+    obstruction) and sources/sinks can't be edited.
 
     Returns ``(is_invalid, invalid_reason_key, placed_action)``. The final item
     is the human-readable action record used by the environment, or ``None``
@@ -200,17 +208,31 @@ def apply_placement_action(
         for tx, ty in tiles_list
     ):
         return True, "replaced_source_or_sink", None
-    if entity_id != _EMPTY_ENT_ID and any(
-        int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
-        for tx, ty in tiles_list
-    ):
-        return True, "placed_on_existing_entity", None
+    occupied = [
+        (tx, ty) for tx, ty in tiles_list
+        if int(world_np[_CH_ENT, tx, ty]) != _EMPTY_ENT_ID
+    ]
+    cleared = (
+        factorion_rs.py_unit_tiles(
+            np.ascontiguousarray(world_np.transpose(1, 2, 0), dtype=np.int64),
+            occupied,
+        )
+        if occupied else []
+    )
+    if any(t in protected for t in cleared):
+        return True, "edited_protected_tile", None
 
-    for tx, ty in tiles_list:
-        world_np[_CH_ENT, tx, ty] = entity_id
-        world_np[_CH_DIR, tx, ty] = direc
-        world_np[_CH_ITEMS, tx, ty] = item_id
-        world_np[_CH_MISC, tx, ty] = misc
+    for tx, ty in cleared:
+        world_np[_CH_ENT, tx, ty] = _EMPTY_ENT_ID
+        world_np[_CH_DIR, tx, ty] = _DIR_NONE_VAL
+        world_np[_CH_ITEMS, tx, ty] = _EMPTY_ITEM_VAL
+        world_np[_CH_MISC, tx, ty] = _MISC_NONE_VAL
+    if entity_id != _EMPTY_ENT_ID:
+        for tx, ty in tiles_list:
+            world_np[_CH_ENT, tx, ty] = entity_id
+            world_np[_CH_DIR, tx, ty] = direc
+            world_np[_CH_ITEMS, tx, ty] = item_id
+            world_np[_CH_MISC, tx, ty] = misc
 
     placed_action = {
         "entity": entities[entity_id].name,
@@ -894,6 +916,7 @@ class FactorioEnv(gym.Env):
                     f"seed={self._seed}"
                 )
         self._kind = kind
+        self._protected = factory.protected_positions
         self._solved_world_CWH = factory.world_CWH
         # Cache the episode-constant pieces of the per-step solution-match
         # diagnostic now that the solved world is known.
@@ -948,6 +971,7 @@ class FactorioEnv(gym.Env):
                 action,
                 source_id=self._source_id,
                 sink_id=self._sink_id,
+                protected=self._protected,
             )
             if placed_action is not None:
                 self.actions[-1] = placed_action
@@ -1357,12 +1381,16 @@ def _select_action(logp_all_BN, temperature, u_BN=None):
 
 
 def _legal_tile_mask(x_BCWH):
-    """Boolean (B, W*H), True where a tile is empty AND buildable — the
-    legal-placement mask the greedy eval's argmax needs so it can't re-propose
-    an occupied or walled cell."""
+    """Boolean (B, W*H), True where a tile is buildable and not a source/sink.
+    Occupied tiles stay legal: a placement there edits (replaces or, with
+    ``empty``, removes) the entity already on it."""
     ent_BWH = x_BCWH[:, _CH_ENT]
     foot_BWH = x_BCWH[:, _CH_FOOTPRINT]
-    legal_BWH = (ent_BWH == _EMPTY_ENT_ID) & (foot_BWH != _FOOTPRINT_UNAVAILABLE)
+    legal_BWH = (
+        (ent_BWH != _SOURCE_ENT_ID)
+        & (ent_BWH != _SINK_ENT_ID)
+        & (foot_BWH != _FOOTPRINT_UNAVAILABLE)
+    )
     return legal_BWH.reshape(x_BCWH.shape[0], -1)
 
 
@@ -1670,7 +1698,7 @@ class AgentCNN(nn.Module):
         """The one sampler every consumer routes through. temperature=1 is the
         stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
         (eot fires at p>eot_threshold) for eval / mod server / builder UI.
-        The tile pick is restricted to empty+buildable cells — training,
+        The tile pick is restricted to buildable, non-marker cells — training,
         eval and inference all act on this masked distribution;
         legal_mask=False exposes the raw tile head (builder diagnostics only).
         `action` replays a stored action to recompute its log-prob. `noise`

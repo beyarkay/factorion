@@ -491,16 +491,16 @@ class TestSampleAction:
                 out["action"][act_key], heads[head_name].argmax(dim=-1)
             )
 
-    def test_legal_mask_avoids_occupied_and_walled_tiles(self, agent):
-        """With legal_mask=True the greedy tile pick lands only on empty,
-        buildable cells — the guard the eval rollout needs so argmax can't
+    def test_legal_mask_avoids_marker_and_walled_tiles(self, agent):
+        """With legal_mask=True the greedy tile pick lands only on buildable,
+        non-marker cells — the guard the eval rollout needs so argmax can't
         livelock re-proposing a rejected tile."""
         obs = torch.zeros(1, NUM_CHANNELS, 5, 5)
-        # Buildable everywhere (footprint AVAILABLE), then occupy every tile
-        # except (2, 3) and wall one of the occupied ones too.
+        # Fill every tile with sources except (2, 3), which holds a belt the
+        # agent may edit, and wall one of the sources too.
         obs[0, _CH_FOOTPRINT] = _FOOTPRINT_AVAILABLE
-        obs[0, _CH_ENT] = _EMPTY_ENT_ID + 1
-        obs[0, _CH_ENT, 2, 3] = _EMPTY_ENT_ID
+        obs[0, _CH_ENT] = str2ent("source").value
+        obs[0, _CH_ENT, 2, 3] = str2ent("transport_belt").value
         obs[0, _CH_FOOTPRINT, 0, 0] = _FOOTPRINT_UNAVAILABLE
         out = agent.sample_action(obs, temperature=0.0, legal_mask=True)
         assert int(out["action"]["xy"][0, 0]) == 2

@@ -294,7 +294,7 @@ class TestApplyPrediction:
 
     def test_invalid_multitile_prediction_is_rejected_atomically(self):
         grid = _empty_grid(5)
-        grid[3][2]["entity"] = "transport_belt"
+        grid[3][2]["entity"] = "stack_inserter"
         grid[3][2]["direction"] = "EAST"
 
         out = fb._apply_prediction(
@@ -305,7 +305,7 @@ class TestApplyPrediction:
         )
 
         assert out["applied"] is False
-        assert out["invalid_reason"] == "placed_on_existing_entity"
+        assert out["invalid_reason"] == "replaced_source_or_sink"
         assert out["grid"] == grid
 
 

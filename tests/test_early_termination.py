@@ -306,26 +306,20 @@ class TestMarginalRewardBaseline:
         assert info["thput_raw"] > 0, "the protected line should deliver"
         assert reward == 0.0
 
-    def test_destroying_the_protected_line_pays_negative(self):
+    def test_deleting_the_protected_line_is_rejected(self):
         env = _make_env(size=11, max_steps=10)
         self._reset_cross(env)
+        before = env._world_CWH.clone()
 
         ent = env._world_CWH[Channel.ENTITIES.value].numpy()
         xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
         action = _noop_action()
         action["xy"] = np.array([int(xs[0]), int(ys[0])])
-        _, destroy_reward, terminated, truncated, _ = env.step(action)
-        assert not terminated and not truncated
-        assert destroy_reward < 0, "destroying flow must pay negative on that step"
+        _, reward, _, _, info = env.step(action)
 
-        action = _noop_action()
-        action["eot"] = 1
-        _, eot_reward, terminated, _, info = env.step(action)
-
-        assert terminated is True
-        assert info["thput_raw"] < env._reward_baseline
-        assert eot_reward == pytest.approx(0.0), "the EOT step changed nothing"
-        assert destroy_reward + eot_reward == pytest.approx(_expected_total(env, info))
+        assert info["invalid_reason"]["edited_protected_tile"]
+        assert (env._world_CWH == before).all()
+        assert reward == 0.0
 
 
 class TestStepsTaken:

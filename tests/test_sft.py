@@ -1377,22 +1377,22 @@ class TestRunRolloutEval:
 
     def test_masking_only_proposes_legal_tiles(self, registered_env, monkeypatch):
         """The sampled tile pick must only ever propose legal placement
-        targets: the anchor tile is empty (ENTITIES == empty) and buildable
+        targets: the anchor tile is not a source/sink and is buildable
         (FOOTPRINT == AVAILABLE) at the moment of every step."""
-        empty_id = str2ent("empty").value
+        markers = (str2ent("source").value, str2ent("sink").value)
         recorded = self._run_with_recorded_proposals(monkeypatch)
         assert recorded, "rollout should have proposed at least one tile"
         illegal = [
             (ent, foot)
             for ent, foot in recorded
-            if ent != empty_id or foot != Footprint.AVAILABLE.value
+            if ent in markers or foot != Footprint.AVAILABLE.value
         ]
         assert not illegal, (
-            f"masking must never propose an occupied/unbuildable tile; got {illegal}"
+            f"masking must never propose a marker/unbuildable tile; got {illegal}"
         )
 
     def _random_belt_layer(self, size, n_seeds=8):
-        """An agent that lays belts on uniformly random empty tiles facing random
+        """An agent that lays belts on uniformly random tiles facing random
         ways and never stops, so its samples differ and a few connect; it
         ignores the weights' init, so the expected outcomes are fixed. Returns
         (agent, args, MOVE_ONE_ITEM seeds -> kind)."""
@@ -1433,13 +1433,13 @@ class TestRunRolloutEval:
         assert a == self._records(agent, args, seeds, best_of=4, num_envs=3)
 
     def test_best_of_n_scores_the_best_sample(self, registered_env):
-        """Sample j draws the same noise whatever N is, so N=8's samples include
+        """Sample j draws the same noise whatever N is, so N=16's samples include
         N=1's: each factory's score can only rise with N, and here it does."""
         agent, args, seeds = self._random_belt_layer(size=5)
         one = self._records(agent, args, seeds, best_of=1)
-        eight = self._records(agent, args, seeds, best_of=8)
-        assert all(eight[s]["thput"] >= one[s]["thput"] for s in seeds)
-        assert any(eight[s]["thput"] > one[s]["thput"] for s in seeds)
+        many = self._records(agent, args, seeds, best_of=16)
+        assert all(many[s]["thput"] >= one[s]["thput"] for s in seeds)
+        assert any(many[s]["thput"] > one[s]["thput"] for s in seeds)
 
 
 class TestLegalTileMask:
@@ -1453,26 +1453,26 @@ class TestLegalTileMask:
         obs[0, Channel.FOOTPRINT.value] = Footprint.AVAILABLE.value
         return obs
 
-    def test_argmax_skips_occupied_tile(self):
-        """When the top-logit tile is occupied, the masked argmax must fall to
-        the next-best *legal* tile instead of livelocking on the occupied one."""
+    def test_argmax_skips_marker_tile(self):
+        """When the top-logit tile holds a source, the masked argmax must fall
+        to the next-best *legal* tile instead of livelocking on the marker."""
         size = 3
         obs = self._obs(size)
-        # Occupy tile (0, 0) -> flat index 0, x-major (idx = x * size + y).
-        obs[0, Channel.ENTITIES.value, 0, 0] = str2ent("transport_belt").value
-        # Logits favour the occupied tile 0, then tile 5 as runner-up.
+        # Source on tile (0, 0) -> flat index 0, x-major (idx = x * size + y).
+        obs[0, Channel.ENTITIES.value, 0, 0] = str2ent("source").value
+        # Logits favour the marker tile 0, then tile 5 as runner-up.
         logits = torch.full((1, size * size), -1.0)
         logits[0, 0] = 10.0
         logits[0, 5] = 5.0
 
-        assert logits.argmax(dim=1).item() == 0, "sanity: unmasked picks occupied"
+        assert logits.argmax(dim=1).item() == 0, "sanity: unmasked picks the marker"
         masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
         assert masked.argmax(dim=1).item() == 5, "masked must skip to legal runner-up"
-        assert masked[0, 0] == float("-inf"), "occupied tile must be -inf"
+        assert masked[0, 0] == float("-inf"), "marker tile must be -inf"
 
     def test_argmax_skips_unbuildable_tile(self):
-        """UNAVAILABLE (unbuildable) tiles are masked out just like occupied
-        ones, even when the tile is otherwise empty."""
+        """UNAVAILABLE (unbuildable) tiles are masked out just like markers,
+        even when the tile is otherwise empty."""
         size = 3
         obs = self._obs(size)
         # Tile (1, 1) -> flat index 4 is empty but not buildable.
@@ -1486,11 +1486,11 @@ class TestLegalTileMask:
         assert masked[0, 4] == float("-inf")
 
     def test_all_illegal_row_is_nan_free(self):
-        """A fully occupied grid leaves every tile illegal; the masked argmax
+        """A grid of markers leaves every tile illegal; the masked argmax
         must still return a finite index (tile 0) rather than NaN-ing out."""
         size = 3
         obs = self._obs(size)
-        obs[0, Channel.ENTITIES.value] = str2ent("transport_belt").value  # occupy everything
+        obs[0, Channel.ENTITIES.value] = str2ent("sink").value
         logits = torch.randn(1, size * size)
 
         masked = logits.masked_fill(~_legal_tile_mask(obs), float("-inf"))
