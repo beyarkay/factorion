@@ -4069,6 +4069,8 @@ struct TwoStage {
     product: Recipe,
     x_key: Item,
     x: Recipe,
+    /// How many X one product craft consumes.
+    x_qty: f64,
     /// The product's ingredient other than `x`.
     other: Item,
 }
@@ -4084,16 +4086,17 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
         am1_recipes(2)?
             .into_iter()
             .flat_map(|(key, r)| {
-                let ings: Vec<Item> = r.consumes.iter().map(|&(i, _)| i).collect();
+                let ings: Vec<(Item, f64)> = r.consumes.iter().copied().collect();
                 let intermediates = &intermediates;
                 (0..2).filter_map(move |k| {
-                    let (x_key, x_recipe) = intermediates.get(&ings[k])?.clone();
+                    let (x_key, x_recipe) = intermediates.get(&ings[k].0)?.clone();
                     Some(TwoStage {
                         product_key: key,
                         product: r.clone(),
                         x_key,
                         x: x_recipe,
-                        other: ings[1 - k],
+                        x_qty: ings[k].1,
+                        other: ings[1 - k].0,
                     })
                 })
             })
@@ -4121,8 +4124,8 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
 ///
 /// Lane directions are drawn per seed, the sources and sink sit at any free
 /// cells wired up by [`wire_markers`], and the world is then randomly
-/// flipped/rotated. `max_throughput` is the [`assembler_row_ceiling`] of the
-/// most product machines either arrangement fits.
+/// flipped/rotated. `max_throughput` is the [`two_stage_ceiling`] of the
+/// most pairs either arrangement fits.
 fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows (raw lane, its inserters, 3 machine
@@ -4142,13 +4145,15 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
     while count > 0 {
         count -= 1;
 
+        let stages = &pool[rng.choice_index(pool.len())];
         let TwoStage {
             product_key: p_key,
             product: p_recipe,
             x_key,
             x: x_recipe,
             other,
-        } = &pool[rng.choice_index(pool.len())];
+            ..
+        } = stages;
         let raw = x_recipe.consumes.first().0;
 
         // (anchor x, anchor y, recipe) per machine.
@@ -4337,16 +4342,11 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
             continue;
         }
 
-        // A product machine takes up to three direct and two plain inserters
-        // and drains through up to two long-handed ones; stacking fits one
+        // Each product machine has its own X machine; stacking fits one pair
         // per three columns.
+        let pairs = if s >= 12 { s / 3 } else { n_pairs };
         return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(
-                p_recipe,
-                if s >= 12 { s / 3 } else { n_pairs },
-                5.0 * Item::Inserter.flow_rate(),
-                2.0 * Item::LongHandedInserter.flow_rate(),
-            ),
+            max_throughput: two_stage_ceiling(stages, pairs, pairs, f64::INFINITY),
             ..finish(world, total_entities, vec![], count)?
         });
     }
@@ -4373,9 +4373,9 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
 ///
 /// The north and output lanes' directions are drawn per seed, the sources
 /// and sink sit at any free cells wired up by [`wire_markers`], and the world
-/// is then randomly flipped/rotated. `max_throughput` is the
-/// [`assembler_row_ceiling`] of all but one of the machines the grid fits
-/// (at least one crafts X).
+/// is then randomly flipped/rotated. `max_throughput` is the best
+/// [`two_stage_ceiling`] over splits of the machines the grid fits between
+/// the stages.
 fn build_intermediate_belt_2in(
     size: usize,
     rng: &mut Rng,
@@ -4393,13 +4393,15 @@ fn build_intermediate_belt_2in(
     while count > 0 {
         count -= 1;
 
+        let stages = &pool[rng.choice_index(pool.len())];
         let TwoStage {
             product_key,
             product,
             x_key,
             x,
             other,
-        } = &pool[rng.choice_index(pool.len())];
+            ..
+        } = stages;
         let raw = x.consumes.first().0;
         let shared = raw == *other;
         let gap = rng.randint(0, 1);
@@ -4626,15 +4628,14 @@ fn build_intermediate_belt_2in(
             continue;
         }
 
-        // A product machine takes up to three north and two south inserters
-        // and drains through up to two long-handed ones.
+        // The row's machines split between the stages, and X reaches the
+        // product machines on the one lane its inserters drop onto.
+        let machines = s / 3;
+        let lane = Item::TransportBelt.flow_rate() / 2.0;
         return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(
-                product,
-                s / 3 - 1,
-                5.0 * Item::Inserter.flow_rate(),
-                2.0 * Item::LongHandedInserter.flow_rate(),
-            ),
+            max_throughput: (1..machines)
+                .map(|n_x| two_stage_ceiling(stages, n_x, machines - n_x, lane))
+                .fold(0.0, f64::max),
             ..finish(world, total_entities, vec![], count)?
         });
     }
@@ -5573,6 +5574,22 @@ fn assembler_row_ceiling(recipe: &Recipe, machines: i64, feed_in: f64, feed_out:
     machines as f64 * (produces * (feed_in / per_craft).min(1.0)).min(feed_out)
 }
 
+/// The [`assembler_row_ceiling`] of `n_p` product machines that get X only
+/// from `n_x` X machines, delivering at most `x_cap` X/s. An X machine takes
+/// and hands on through three plain inserters; a product machine takes
+/// through five and drains through two long-handed ones.
+fn two_stage_ceiling(ts: &TwoStage, n_x: i64, n_p: i64, x_cap: f64) -> f64 {
+    let plain = Item::Inserter.flow_rate();
+    let x_rate = assembler_row_ceiling(&ts.x, n_x, 3.0 * plain, 3.0 * plain).min(x_cap);
+    assembler_row_ceiling(
+        &ts.product,
+        n_p,
+        5.0 * plain,
+        2.0 * Item::LongHandedInserter.flow_rate(),
+    )
+    .min(x_rate / ts.x_qty * ts.product.produces.first().1)
+}
+
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
@@ -6162,7 +6179,7 @@ mod tests {
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
-                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let mut sink_item = None;
                 let mut asm_tiles: Vec<(usize, usize, Item)> = Vec::new();
@@ -6215,7 +6232,7 @@ mod tests {
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
-                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let splitters = count_entity(&f.world, Item::Splitter);
                 assert_eq!(
@@ -6257,6 +6274,33 @@ mod tests {
             }
         }
         assert!(shared > 0 && split > 0, "shared={shared} split={split}");
+    }
+
+    #[test]
+    fn test_intermediate_belt_2in_ceiling_splits_stages() {
+        // Five machines making transport belts (1 gear + 1 plate -> 2) from
+        // gears, each at most one craft a second: two gear machines feed 4
+        // belts/s to three product machines, three feed two that make 4.
+        let mut checked = 0;
+        for seed in 0..200u64 {
+            let f = build_factory(
+                15,
+                LessonKind::IntermediateBelt2In,
+                seed,
+                true,
+                f64::INFINITY,
+            )
+            .unwrap();
+            let sink = (0..15)
+                .flat_map(|x| (0..15).map(move |y| (x, y)))
+                .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::Sink))
+                .unwrap();
+            if f.world.item_at(sink.0, sink.1) == Some(Item::TransportBelt) {
+                checked += 1;
+                assert!((f.max_throughput - 4.0).abs() < 1e-9, "seed={seed}");
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]
