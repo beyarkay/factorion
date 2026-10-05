@@ -44,7 +44,7 @@ def sft(
         no_wait: Return right after pod creation instead of waiting for boot.
     """
     job = SftJob(sha=resolve_ref(ref), num_samples=num_samples)
-    launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
+    launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
 def ppo(
@@ -66,7 +66,7 @@ def ppo(
         no_wait: Return right after pod creation instead of waiting for boot.
     """
     job = PpoJob(sha=resolve_ref(ref), start_from=start_from, total_timesteps=total_timesteps)
-    launch(job, gpu_type, dry_run=dry_run, wait=not no_wait)
+    launch([job], gpu_type, dry_run=dry_run, wait=not no_wait)
 
 
 def sweep(
@@ -89,7 +89,8 @@ def sweep(
         pods: Number of RunPod pods to launch.
         agents_per_pod: Parallel `wandb agent` processes per pod (GPU
             time-slicing). Total runs are capped by run_cap in the sweep yaml.
-        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md);
+            every pod gets the GPU the first one landed on.
         dry_run: Print what would launch without creating pods or the sweep.
     """
     if algo not in ("sft", "ppo"):
@@ -99,10 +100,8 @@ def sweep(
         sweep_path = f"<entity>/<project>/<sweep-id-for-ci/sweep_{algo}.yaml@{sha[:7]}>"
     else:
         sweep_path = create_sweep(algo, sha)
-    for _ in range(pods):
-        job = SweepJob(sha=sha, algo=algo, sweep_path=sweep_path, agents_per_pod=agents_per_pod)
-        # Never block on boot: with several pods, waiting serially is useless.
-        launch(job, gpu_type, dry_run=dry_run, wait=False)
+    job = SweepJob(sha=sha, algo=algo, sweep_path=sweep_path, agents_per_pod=agents_per_pod)
+    launch([job] * pods, gpu_type, dry_run=dry_run)
     print(f"\nWhen done: uv run python -m ci sweep-report --sweep {sweep_path}")
 
 
@@ -138,7 +137,8 @@ def compare(
             compare finishes in hours, not days). Ignored for ppo.
         start_from: W&B SFT run id; required for ppo.
         total_timesteps: PPO override; default = PpoArgs().total_timesteps.
-        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md).
+        gpu_type: RunPod GPU type (default: ci.config.default_gpu; see ci/HELP.md);
+            both sides get the GPU the first one landed on.
         dry_run: Print what would launch without creating pods.
     """
     sha = resolve_ref(ref)

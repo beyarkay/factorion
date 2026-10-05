@@ -34,6 +34,7 @@ The training pipeline is a **LLM-style two-stage split**:
 - `ci/` — **All CI/training automation** (read `ci/README.md`). GPU jobs run on fire-and-forget, self-terminating RunPod pods, triggered by `/ci ...` PR comments (`ci/gh_command.py`) or `uv run python -m ci ...`; results are posted back as PR comments. Job specs in `ci/config.py` are the complete CI override surface (commitish, SFT `num_samples`, PPO `start_from`/`total_timesteps`, compare seeds) — every other hyperparameter flows from `training_config.py`. Includes the every-metric compare report + `assert pr:metric > main:metric` gating (`ci/report.py`), the leaked-pod watchdog (`ci/watchdog.py`), and the sweep configs `ci/sweep_ppo.yaml`/`ci/sweep_sft.yaml` (metric `eval/thput` / `val/thput`; results are reported, not auto-applied — defaults in `training_config.py` are edited by hand).
 - `.github/workflows/` — thin pointers into `ci/`: `ci.yml` (lint + tests, no GPU), `ci-command.yml` (`/ci` comments), `ci-reporter.yml` (posts run results to PRs), `pod-watchdog.yml` (6-hourly pod reaper), `launch.yml` (manual dispatch), `claude.yml`.
 - `factorio-icons/` — Entity icon PNGs.
+- `docs/EXPERIMENTS.md` — one line per PR (idea → result, linked) across every experiment tried. **Search it before proposing an experiment**; most obvious ideas have already been run.
 
 ### Codebase map (grep these symbols)
 
