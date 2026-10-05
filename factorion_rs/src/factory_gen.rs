@@ -4656,7 +4656,8 @@ fn build_intermediate_belt_2in(
 /// The input belt's direction is drawn per seed, the sources and sink sit at
 /// any free cells wired up by [`wire_markers`], and the world is then
 /// randomly flipped/rotated. `max_throughput` is the
-/// [`assembler_row_ceiling`] of both rows packed beside the collector.
+/// [`assembler_row_ceiling`] of both rows packed beside the collector, capped
+/// by what the shared input belt and the collector carry.
 fn build_mirrored(
     size: usize,
     rng: &mut Rng,
@@ -4854,10 +4855,22 @@ fn build_mirrored(
             continue;
         }
 
-        // Gapless rows pack the most machines beside the collector.
+        // Gapless rows pack the most machines beside the collector, whose one
+        // belt carries everything to the sink; the shared input belt carries
+        // each ingredient on both lanes, or on one lane apiece for two.
         let plain3 = 3.0 * Item::Inserter.flow_rate();
+        let belt = Item::TransportBelt.flow_rate();
+        let supply = if two_in { belt / 2.0 } else { belt };
+        let fed = recipe
+            .consumes
+            .iter()
+            .map(|&(_, qty)| supply / qty)
+            .fold(f64::INFINITY, f64::min)
+            * recipe.produces.first().1;
         return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(recipe, 2 * ((s - 1) / 3), plain3, plain3),
+            max_throughput: assembler_row_ceiling(recipe, 2 * ((s - 1) / 3), plain3, plain3)
+                .min(belt)
+                .min(fed),
             ..finish(world, total_entities, vec![], count)?
         });
     }
@@ -6320,6 +6333,10 @@ mod tests {
                     assert!(tp > 0.0, "{kind:?} size={size} seed={seed}");
                     assert_eq!(unreachable, 0, "{kind:?} size={size} seed={seed}");
                     assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
+                    assert!(
+                        f.max_throughput <= Item::TransportBelt.flow_rate(),
+                        "{kind:?} size={size} seed={seed}"
+                    );
                     let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
                     assert!(
                         machines >= 2 && machines.is_multiple_of(2),
