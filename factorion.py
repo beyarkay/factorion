@@ -195,6 +195,32 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
     for name, is_trial in factorion_rs.py_lesson_is_trial().items()
 }
 
+# The kinds SFT and PPO sample and evaluate on (SFT skips the trials, which
+# have no demonstrations). Every other kind stays buildable and testable, but
+# is left out of training while the full-factory lessons are trialled alone.
+FULL_FACTORY_KINDS: tuple["LessonKind", ...] = (
+    LessonKind.OPPOSITE_SIDES_1IN,
+    LessonKind.SAME_SIDE_1IN,
+    LessonKind.SPLITTER_1IN,
+    LessonKind.MIRRORED_1IN,
+    LessonKind.REACH_OVER_2IN,
+    LessonKind.SHARED_BELT_2IN,
+    LessonKind.UG_WEAVE_2IN,
+    LessonKind.OPPOSITE_FEEDS_2IN,
+    LessonKind.DIRECT_INSERT_2IN,
+    LessonKind.INTERMEDIATE_BELT_2IN,
+    LessonKind.MIRRORED_2IN,
+    LessonKind.REACH_OVER_3IN,
+    LessonKind.REACH_OVER_4IN,
+    *(k for k in LessonKind if LESSON_IS_TRIAL[k]),
+)
+# FACTORION_TRAIN_ALL_KINDS restores every kind: the test suite trains at grid
+# sizes the full-factory kinds don't fit, and an env var reaches the SFT
+# loader's forkserver workers where a monkeypatch would not.
+TRAINING_KINDS: tuple["LessonKind", ...] = (
+    tuple(LessonKind) if os.environ.get("FACTORION_TRAIN_ALL_KINDS") else FULL_FACTORY_KINDS
+)
+
 
 @dataclass(frozen=True)
 class Factory:

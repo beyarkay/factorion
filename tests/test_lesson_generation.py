@@ -3240,3 +3240,41 @@ class TestMemoriseRecipesMissingEntities:
         ent = world[Channel.ENTITIES.value]
         assert (ent == str2ent("source").value).sum().item() == n_src_full
         assert (ent == str2ent("sink").value).sum().item() == 1
+
+
+def test_full_factory_kinds_build_at_default_size():
+    """Every kind a training run samples builds at the default grid size, so
+    no run silently drops one."""
+    from factorion import FULL_FACTORY_KINDS
+    from training_config import SharedArgs
+
+    for kind in FULL_FACTORY_KINDS:
+        assert any(
+            build_factory(size=SharedArgs.size, kind=kind, seed=s) is not None
+            for s in range(5)
+        ), kind
+
+
+def test_full_factory_kinds_rebuild_from_expert_actions():
+    """Replaying a factory's expert actions through the env from a blank grid
+    rebuilds it exactly (multi-tile splitters and assemblers included) and it
+    flows — so every SFT demonstration is a working build."""
+    from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL
+    from ppo import FactorioEnv
+    from sft import extract_expert_actions
+    from training_config import SharedArgs
+
+    env = FactorioEnv(size=SharedArgs.size)
+    for kind in (k for k in FULL_FACTORY_KINDS if not LESSON_IS_TRIAL[k]):
+        for seed in range(3):
+            env.reset(seed=seed, options={"kind": kind})
+            solved, task = env._solved_world_CWH.clone(), env._world_CWH.clone()
+            H = solved.shape[2]
+            info = {}
+            for _, tile, e, d, i, m, _, eot in extract_expert_actions(solved, task):
+                if not eot:
+                    action = {"xy": (tile // H, tile % H), "entity": e, "direction": d,
+                              "item": i, "misc": m, "eot": 0}
+                    *_, info = env.step(action)
+            assert torch.equal(env._world_CWH[:4], solved[:4]), (kind, seed)
+            assert info["thput_raw"] > 0, (kind, seed)

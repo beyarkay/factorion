@@ -398,12 +398,17 @@ class TestGenerateDataset:
         within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
         from collections import Counter
 
-        args = SftArgs(seed=1, size=8, num_samples=3000, max_level=8)
+        args = SftArgs(seed=1, size=9, num_samples=3000, max_level=8)
         *_, kinds = _materialise_args(args)
         vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
-        n_teachable = sum(1 for k in LessonKind if not LESSON_IS_TRIAL[k])
+        n_teachable = sum(
+            1
+            for k in LessonKind
+            if not LESSON_IS_TRIAL[k]
+            and any(build_factory(size=args.size, kind=k, seed=s) for s in range(5))
+        )
         assert len(vals) == n_teachable, (
-            "every non-trial kind should contribute pairs"
+            "every non-trial kind that fits the grid should contribute pairs"
         )
         assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
 
@@ -426,7 +431,7 @@ class TestGenerateDataset:
         produced = set(kinds.tolist())
         # Neither of these ever builds at size 5.
         assert LessonKind.SPLITTER_MERGE_SIDELOADED.value not in produced
-        assert LessonKind.FACTORY_1_INGREDIENT.value not in produced
+        assert LessonKind.OPPOSITE_SIDES_1IN.value not in produced
         # ...but the memorise lessons (which fit) do appear.
         assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
         assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced

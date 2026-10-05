@@ -10,3 +10,5 @@ sys.path.insert(0, os.path.dirname(__file__))
 # CI and under pytest. The test suite trains on CPU (sft/ppo end-to-end tests);
 # the guard recognises the pytest-set PYTEST_CURRENT_TEST env var, so local
 # `uv run pytest` runs CPU-only smoke tests without any CI=true env hack.
+
+os.environ["FACTORION_TRAIN_ALL_KINDS"] = "1"
