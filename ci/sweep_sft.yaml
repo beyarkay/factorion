@@ -1,30 +1,34 @@
-# ci/sweep_sft.yaml — broad SFT sweep at 15x15 on the full-factory lessons.
+# ci/sweep_sft.yaml — SFT sweep at 15x15 on the full-factory lessons.
 #
 # Launched with: uv run python -m ci sweep sft --ref <commitish>  (or comment /ci sweep sft on a PR)
 # Sweep results are reported (ci sweep-report), not auto-applied —
 # hyperparameter defaults live in training_config.py and are edited by hand.
 #
-# Every earlier SFT sweep ran at 11x11 on the old lesson mix; the regularisers,
-# loss weights, grad clip and batch size date from the conv-only arch. What the
-# 100M/300M runs (oegcww3u, unfs3r0w) say:
-#   - Every sample is freshly generated, so there is nothing to overfit:
-#     dropout is pinned off. weight_decay stays swept — under AdamW it sets
-#     the weight norm (and so the effective step size), not just overfitting.
-#   - The cooldown is where most of the gain lands (300M: val/loss 0.229 ->
-#     0.196, val/thput ~0.13 -> 0.24) while the stable phase crawls: gradient
-#     noise bound, hence lr, batch_size and cooldown_frac.
-#   - ent/dir are the error budget (val loss 0.058/0.063 vs item 0.004), so
-#     their loss weights move; tile is the fixed reference (Adam makes the
-#     overall scale redundant) and item is already solved.
-#   - 91w8vyea's best runs sat at the top of its attn_layers and conv-width
-#     ranges, so both are extended past them. Bigger models cost wall-clock at
-#     fixed samples (the run is GPU-bound) — weigh _runtime when narrowing.
-#   - ndc8tvvy found no signal in warmup_steps or min_lr_ratio: left at defaults.
+# Ranges set from sweep eyhka9jz (15 finished runs at this budget; rank
+# corr with val/thput in brackets), cut to where its good runs were and
+# extended only where they pressed on an edge:
+#   - attention depth (+0.73) and width (+0.75): every run under 5 layers or
+#     224 dim scored <= 0.077, the top five were 5-6 layers at 224-256. The
+#     floor moves up to there; the ceiling extends past the old edge. Bigger
+#     models cost wall-clock at fixed samples (the run is GPU-bound) — weigh
+#     _runtime when narrowing.
+#   - conv width (-0.70): top five all 64-80, every run at >= 112 poor.
+#   - ent/misc/eot loss weights (-0.42/-0.72/-0.65): top five all below 1,
+#     every run above ~1.4 poor. Relative to the fixed lw_tile, tile selection
+#     wants more of the gradient.
+#   - max_grad_norm (-0.39): top five 0.28-0.66 against a train grad norm of
+#     ~0.8, i.e. clipping every step.
+#   - lr (+0.57): nothing below 5e-4 made the top five.
+#   - cooldown_frac (+0.32): the best two ran 0.73-0.77, at the old ceiling.
+# Pinned at their training_config defaults, which sit inside the good runs'
+# spread: batch_size, weight_decay and lw_dir (rank corr -0.04/+0.09/-0.10).
+# Also pinned: dropout off (every sample is freshly generated), and
+# warmup_steps, min_lr_ratio and head count (no signal in earlier sweeps).
 #
 # Stage 2: copy the promising region into narrower ranges, num_samples 45M.
 
 method: bayes
-run_cap: 60
+run_cap: 40
 metric:
   name: "val/thput"
   goal: maximize
@@ -50,62 +54,47 @@ parameters:
   # ── Optimisation ─────────────────────────────────────────────────
   lr:
     distribution: log_uniform_values
-    min: 1.0e-4
+    min: 4.0e-4
     max: 3.0e-3
-  batch_size:
-    distribution: q_log_uniform_values
-    min: 256
-    max: 2048
-    q: 128
   cooldown_frac:
     distribution: uniform
-    min: 0.1
-    max: 0.8
-  max_grad_norm:  # train grad norm sits ~0.8, so the low end clips every step
+    min: 0.3
+    max: 0.95
+  max_grad_norm:
     distribution: log_uniform_values
-    min: 0.25
-    max: 4.0
-
-  # ── Regularisation ───────────────────────────────────────────────
-  weight_decay:
-    distribution: log_uniform_values
-    min: 1.0e-4
-    max: 0.3
+    min: 0.05
+    max: 1.0
 
   # ── Loss weights (lw_tile = 1.162 is the reference) ──────────────
   lw_ent:
     distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
-  lw_dir:
-    distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
+    min: 0.1
+    max: 1.0
   lw_misc:
     distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
+    min: 0.1
+    max: 1.0
   lw_eot:
     distribution: log_uniform_values
-    min: 0.3
-    max: 3.0
+    min: 0.1
+    max: 1.0
 
   # ── Architecture ─────────────────────────────────────────────────
   layer1:
     distribution: q_log_uniform_values
-    min: 64
-    max: 256
+    min: 32
+    max: 96
     q: 16
   attn_layers:
     distribution: int_uniform
-    min: 2
-    max: 6
+    min: 5
+    max: 8
   attn_dim:
     distribution: q_uniform
-    min: 128
-    max: 256
+    min: 224
+    max: 320
     q: 32
-  # No signal in 91w8vyea; 8 divides every attn_dim above, so heads never snap.
+  # 8 divides every attn_dim above, so heads never snap.
   attn_heads:
     value: 8
 
