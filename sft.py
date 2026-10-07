@@ -180,12 +180,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 
 def _humanize_count(n: int) -> str:
-    """50_000 -> '50k', 2_500_000 -> '2.5m'. Used in artifact names so
+    """50_000 -> '50k', 2_500_000 -> '2.5M'. Used in artifact names so
     `n50k` reads better than `n50000`."""
     if n >= 1_000_000:
         v = n / 1_000_000
         s = f"{v:.1f}".rstrip("0").rstrip(".")
-        return f"{s}m"
+        return f"{s}M"
     if n >= 1_000:
         v = n / 1_000
         s = f"{v:.1f}".rstrip("0").rstrip(".")
