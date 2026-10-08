@@ -1341,13 +1341,16 @@ def _bernoulli_kl(z_B, zq_B):
 _KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
 
 
-def _select_action(logp_all_BN, temperature):
+def _select_action(logp_all_BN, temperature, u_BN=None):
     """Pick one category per row: argmax at temperature==0 (greedy), else
     sample the temperature-scaled distribution (==1 is the on-policy sample).
     log_softmax is shift-invariant, so scaling log-probs by 1/T == softmax(
-    logits/T)."""
+    logits/T). Given uniforms `u_BN`, the sample is their Gumbel-max, so the
+    caller owns each row's randomness."""
     if temperature == 0.0:
         return logp_all_BN.argmax(dim=-1)
+    if u_BN is not None:
+        return (logp_all_BN / temperature - (-u_BN.log()).log()).argmax(dim=-1)
     if temperature == 1.0:
         return _categorical_sample(logp_all_BN)
     return _categorical_sample(F.log_softmax(logp_all_BN / temperature, dim=-1))
@@ -1662,6 +1665,7 @@ class AgentCNN(nn.Module):
         eot_threshold: float = 0.5,
         action=None,
         compute_value: bool = True,
+        noise=None,
     ):
         """The one sampler every consumer routes through. temperature=1 is the
         stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
@@ -1669,7 +1673,9 @@ class AgentCNN(nn.Module):
         The tile pick is restricted to empty+buildable cells — training,
         eval and inference all act on this masked distribution;
         legal_mask=False exposes the raw tile head (builder diagnostics only).
-        `action` replays a stored action to recompute its log-prob. Returns a dict of
+        `action` replays a stored action to recompute its log-prob. `noise`
+        ({head: (B, n) uniforms in [0, 1)}, eot (B,)) fixes a stochastic sample
+        per row, independent of the rest of the batch. Returns a dict of
         action / logp / entropy / value (None if not compute_value) / eot_prob
         / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
@@ -1690,8 +1696,9 @@ class AgentCNN(nn.Module):
             tile_logits_BN = tile_logits_BN.masked_fill(~mask_BN, float("-inf"))
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
+        u = noise or {}
         if action is None:
-            tile_idx_B = _select_action(tile_logp_all_BN, temperature)  # (B,)
+            tile_idx_B = _select_action(tile_logp_all_BN, temperature, u.get("tile"))  # (B,)
         else:
             # Reconstruct tile index from stored (x, y)
             tile_idx_B = action[:, 0] * self.height + action[:, 1]
@@ -1722,7 +1729,7 @@ class AgentCNN(nn.Module):
         p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
-            ent_B = _select_action(e_logp_all_BE, temperature)
+            ent_B = _select_action(e_logp_all_BE, temperature, u.get("entity"))
         else:
             ent_B = action[:, 2]
 
@@ -1731,14 +1738,15 @@ class AgentCNN(nn.Module):
         )
 
         if action is None:
-            dir_B = _select_action(d_logp_all_BD, temperature)
-            item_B = _select_action(i_logp_all_BI, temperature)
-            misc_B = _select_action(m_logp_all_BM, temperature)
-            eot_B = (
-                (p_eot_B > eot_threshold).float()
-                if temperature == 0.0
-                else torch.bernoulli(p_eot_B)
-            )
+            dir_B = _select_action(d_logp_all_BD, temperature, u.get("direction"))
+            item_B = _select_action(i_logp_all_BI, temperature, u.get("item"))
+            misc_B = _select_action(m_logp_all_BM, temperature, u.get("misc"))
+            if temperature == 0.0:
+                eot_B = (p_eot_B > eot_threshold).float()
+            elif noise is not None:
+                eot_B = (u["eot"] < p_eot_B).float()
+            else:
+                eot_B = torch.bernoulli(p_eot_B)
         else:
             dir_B = action[:, 3]
             item_B = action[:, 4]
