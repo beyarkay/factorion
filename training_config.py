@@ -217,7 +217,7 @@ class PpoArgs(SharedArgs):
     eval_seeds_per_kind: int = 12
     """Held-out factories per LessonKind in the greedy eval set."""
     eval_num_envs: int = 8
-    """Parallel envs for the greedy eval rollout."""
+    """Held-out factories rolled out in parallel, each over eval_best_of envs."""
     amp: bool = False
     """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
     async_envs: bool = False
@@ -313,7 +313,8 @@ class SftArgs(SharedArgs):
     """cap on val seeds per rollout eval — the sample size of the selection
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 64
-    """parallel envs for rollout eval; batches the CNN forward across them"""
+    """val factories rolled out in parallel, each over eval_best_of envs;
+    batches the CNN forward across them"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208

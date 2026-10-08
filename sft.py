@@ -447,12 +447,13 @@ def run_rollout_eval(
     its absolute belt speed (the env already calls the Rust solver every
     step, so we don't re-run it).
 
-    Every (factory, sample) pair is a work item for K=num_envs FactorioEnvs
-    run in parallel with the CNN forward batched across them; slots refill
-    from the queue as they finish, so all K stay busy until it drains. Each
-    sample draws from its own noise stream seeded by (args.seed, factory seed,
-    sample index), so the result is reproducible, independent of K and of
-    batching order, and every checkpoint faces the same random numbers.
+    Every (factory, sample) pair is a work item for K=num_envs*best_of
+    FactorioEnvs run in parallel with the CNN forward batched across them;
+    slots refill from the queue as they finish, so all K stay busy until it
+    drains. Each sample draws from its own noise stream seeded by (args.seed,
+    factory seed, sample index), so the result is reproducible, independent
+    of K and of batching order, and every checkpoint faces the same random
+    numbers.
 
     The (seed, kind) pairs are exactly the val_accuracy set. The result is
     logged as `val/thput`, directly comparable to the existing per-kind val
@@ -530,13 +531,14 @@ def run_rollout_eval(
         }
 
     # One work item per (factory, sample), a factory's samples adjacent so they
-    # share batched forwards. Cap K at the number of work items — spinning up
-    # more envs than that wastes memory. All envs use idx=0 so the seed we pass
-    # to reset() is the seed generate_lesson sees: FactorioEnv.reset adds
-    # self.idx to the seed for env-diversity in PPO, but here we need exact
-    # seed pass-through to replay the held-out val factories.
+    # share batched forwards: K slots hold num_envs factories' samples at once.
+    # Cap K at the number of work items — spinning up more envs than that
+    # wastes memory. All envs use idx=0 so the seed we pass to reset() is the
+    # seed generate_lesson sees: FactorioEnv.reset adds self.idx to the seed
+    # for env-diversity in PPO, but here we need exact seed pass-through to
+    # replay the held-out val factories.
     queue = [(s, j) for s in seeds_sorted for j in range(best_of)]
-    K = max(1, min(num_envs, len(queue)))
+    K = max(1, min(num_envs * best_of, len(queue)))
     # A factory's samples all start from the same blank grid, so it is reset
     # once into `template` and each sample deep-copies that (~40x cheaper).
     template = FactorioEnv(size=args.size, idx=0)
