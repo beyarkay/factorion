@@ -1044,7 +1044,7 @@ def train_sft(args: SftArgs):
     epoch = 0
     eval_every = args.eval_every_n_samples
     if eval_every is None:
-        eval_every = 100_000 if total_samples <= 2_000_000 else 500_000
+        eval_every = 100_000 if total_samples <= 2_000_000 else 1_000_000
     next_eval_at = eval_every
     stream_done = False
     pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)

@@ -304,8 +304,8 @@ class SftArgs(SharedArgs):
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
     huge dataset still yields a real training curve instead of one point.
-    None = 100k for runs of at most 2M samples, else 500k: an eval costs
-    about as much as training on 100k samples."""
+    None = 100k for runs of at most 2M samples, else 1M: a best-of-8 eval
+    costs about as much as training on 1M samples."""
     eval_rollouts: bool = True
     """run the rollout eval (the default checkpoint-selection metric) on
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
