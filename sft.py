@@ -376,7 +376,8 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     share their LR curve until their cooldowns diverge — and a cooldown can be
     branched off a stable-phase checkpoint
     (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
-    repeating the shared prefix. Defaults from sweep ndc8tvvy (run c0kwcui1).
+    repeating the shared prefix. Warmup and floor from sweep ndc8tvvy (run
+    c0kwcui1), peak and cooldown from sweep mf3ugnfn (run 7bfvox6n).
     """
     return torch.optim.lr_scheduler.LambdaLR(
         optimizer,
