@@ -8,6 +8,7 @@ Usage:
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 
+import copy
 import io
 import json
 import os
@@ -536,7 +537,11 @@ def run_rollout_eval(
     # seed pass-through to replay the held-out val factories.
     queue = [(s, j) for s in seeds_sorted for j in range(best_of)]
     K = max(1, min(num_envs, len(queue)))
-    envs = [FactorioEnv(size=args.size, idx=0) for _ in range(K)]
+    # A factory's samples all start from the same blank grid, so it is reset
+    # once into `template` and each sample deep-copies that (~40x cheaper).
+    template = FactorioEnv(size=args.size, idx=0)
+    template_reset: dict[int, tuple] = {}
+    envs = [template] * K
     head_sizes = {"tile": args.size * args.size, "entity": agent.num_entities,
                   "direction": agent.num_directions, "item": agent.num_items,
                   "misc": agent.num_misc, "eot": 1}
@@ -558,13 +563,17 @@ def run_rollout_eval(
             return
         s, j = queue.pop(0)
         k = LessonKind(val_seeds_to_kind[s])
-        obs, info = envs[i].reset(
-            seed=s,
-            options={
-                "num_missing_entities": max_level,
-                "kind": k,
-            },
-        )
+        if s not in template_reset:
+            template_reset.clear()
+            template_reset[s] = template.reset(
+                seed=s,
+                options={
+                    "num_missing_entities": max_level,
+                    "kind": k,
+                },
+            )
+        obs, info = template_reset[s]
+        envs[i] = copy.deepcopy(template)
         cur[i] = {
             "seed": s,
             "sample": j,
