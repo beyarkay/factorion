@@ -213,9 +213,9 @@ class PpoArgs(SharedArgs):
     critic_head_std: float = 0.1169
     """Initialization std for the value head."""
     eval_every: int = 7
-    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
+    """Run the held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
     eval_seeds_per_kind: int = 12
-    """Held-out factories per LessonKind in the greedy eval set."""
+    """Held-out factories per LessonKind in the eval set."""
     eval_num_envs: int = 8
     """Held-out factories rolled out in parallel, each over eval_best_of envs."""
     amp: bool = False
@@ -307,7 +307,7 @@ class SftArgs(SharedArgs):
     None = 100k for runs of at most 2M samples, else 500k: an eval costs
     about as much as training on 100k samples."""
     eval_rollouts: bool = True
-    """run the greedy rollout eval (the default checkpoint-selection metric) on
+    """run the rollout eval (the default checkpoint-selection metric) on
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection

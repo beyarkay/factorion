@@ -255,7 +255,7 @@ def _run_signature(args) -> str:
 
 
 def _build_eval_set(args) -> dict:
-    """Fixed held-out (seed -> LessonKind.value) factories for the greedy eval,
+    """Fixed held-out (seed -> LessonKind.value) factories for the eval,
     disjoint from the training seeds. Each LessonKind gets its own high seed
     range so seeds never collide across kinds; only seeds where build_factory
     succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
@@ -273,8 +273,8 @@ def _build_eval_set(args) -> dict:
     return out
 
 
-def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/thput so
+def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
+    """Best-of-N held-out throughput eval, mirroring SFT's val/thput so
     the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
@@ -2111,14 +2111,14 @@ if __name__ == "__main__":
         _episode_metrics.clear()
         return means
 
-    # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
+    # Fixed held-out eval set (disjoint from training seeds), used to log
     # eval/* — directly comparable to the SFT baseline's val/thput.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     agent_name = f"agent-{run_name.replace('/', '-').replace(':', '-').replace(' ', '_')}"
     ckpt_path = f"artifacts/{agent_name}.pt"
     best_eval_thput, uploaded = -1.0, None
     if eval_seeds_to_kind:
-        print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
+        print(f"Held-out eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
 
     # Per-iteration rollout/optimise wall-times, accumulated so the final
@@ -2470,14 +2470,14 @@ if __name__ == "__main__":
         rollout_seconds_hist.append(rollout_seconds)
         update_seconds_hist.append(update_seconds)
 
-        # ── Greedy held-out eval (every eval_every iters + the final one) ──
+        # ── Held-out eval (every eval_every iters + the final one) ──
         eval_metrics: dict = {}
         eval_seconds = 0.0
         if eval_seeds_to_kind and (
             iteration % args.eval_every == 0 or iteration == args.num_iterations
         ):
             t_eval = time.time()
-            eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
+            eval_metrics = _run_heldout_eval(agent, args, eval_seeds_to_kind, device)
             eval_seconds = time.time() - t_eval
             eval_metrics["eval/seconds"] = eval_seconds
             if eval_metrics["eval/thput"] > best_eval_thput:
