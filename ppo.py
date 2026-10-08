@@ -290,8 +290,8 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         eval_seeds_to_kind,
         device,
         max_seeds=len(eval_seeds_to_kind),
-        eot_threshold=0.5,
         num_envs=args.eval_num_envs,
+        best_of=args.eval_best_of,
     )
     metrics = {"eval/thput": roll["overall"]}
     # The trials are the actual target — building a factory from nothing but

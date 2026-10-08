@@ -715,8 +715,8 @@ def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[
 EOT_STOP_THRESHOLD = 0.5
 """EOT-head probability above which the UI treats the model as finished: the
 hold-to-apply loop stops and no further placement is applied. Matches
-`AgentCNN.eot_should_stop`'s default and SFT's `rollout_eot_threshold`, so
-holding `a` reproduces what a greedy rollout would build."""
+`AgentCNN.eot_should_stop`'s default, so holding `a` reproduces what a greedy
+rollout would build."""
 
 
 CANDIDATE_TILE_THRESHOLD = 0.01
@@ -928,10 +928,10 @@ def _batch_rollout(
     (N=64: 5.6s fixed vs 29.8s compacted). ``sft.run_rollout_eval`` makes the
     same choice.
 
-    Greedy argmax + the legal-tile mask mirror ``sft.run_rollout_eval``, so a
-    scan's throughput numbers are the same quantity as ``eval/thput`` — except
-    that here the EOT head really does end the episode, since the whole point
-    is to see the factory the model considers finished.
+    One greedy (argmax, legal-tile-masked) rollout per factory, where
+    ``eval/thput`` scores the best of several sampled ones: the scan shows the
+    single factory the model considers most likely, finished where its EOT head
+    says.
     """
     agent = _get_agent(size)
     yield {"type": "start", "n": len(seeds)}

@@ -109,6 +109,9 @@ class SharedArgs:
     (and linkable from the PR) before the pod even boots. None = W&B mints one."""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    eval_best_of: int = 8
+    """sampled rollouts per held-out factory in the rollout eval (SFT val/,
+    PPO eval/); each factory scores the best of them."""
 
 
 @dataclass
@@ -311,8 +314,6 @@ class SftArgs(SharedArgs):
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 64
     """parallel envs for rollout eval; batches the CNN forward across them"""
-    rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208

@@ -94,6 +94,7 @@ def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[d
         seeds_to_kind,
         device,
         max_seeds=len(seeds_to_kind),
+        best_of=PpoArgs.eval_best_of,
         records=records,
     )
     return records
