@@ -13,7 +13,7 @@ os.environ["WANDB_DISABLED"] = "true"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from factorion import Channel, Direction, LessonKind, str2ent  # noqa: E402
-from ppo import FactorioEnv  # noqa: E402
+from ppo import FactorioEnv, _legal_tile_mask  # noqa: E402
 
 
 def _make_env(size=5, max_steps=10, **kwargs):
@@ -313,11 +313,13 @@ class TestMarginalRewardBaseline:
 
         ent = env._world_CWH[Channel.ENTITIES.value].numpy()
         xs, ys = np.nonzero(ent == str2ent("transport_belt").value)
+        legal = _legal_tile_mask(env._world_CWH[None]).reshape(ent.shape)
+        assert not legal[xs, ys].any(), "the greedy sampler must never pick it"
         action = _noop_action()
         action["xy"] = np.array([int(xs[0]), int(ys[0])])
         _, reward, _, _, info = env.step(action)
 
-        assert info["invalid_reason"]["edited_protected_tile"]
+        assert info["invalid_reason"]["placed_on_masked_tile"]
         assert (env._world_CWH == before).all()
         assert reward == 0.0
 

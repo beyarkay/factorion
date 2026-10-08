@@ -101,7 +101,6 @@ _INVALID_REASON_KEYS = (
     'placed_on_masked_tile', 'replaced_source_or_sink', 'placed_source_or_sink',
     'place_asm_mach_wo_recipe', 'placement_wo_direction', 'direction_wo_entity',
     'ug_belt_wo_up_or_down', 'placement_with_unneeded_misc', 'too_wide', 'too_tall',
-    'edited_protected_tile',
 )
 
 # Channel indices, hoisted out of the per-step hot path. The per-step diagnostic
@@ -130,7 +129,6 @@ def apply_placement_action(
     *,
     source_id: int,
     sink_id: int,
-    protected: frozenset = frozenset(),
 ) -> tuple[bool, Optional[str], Optional[dict]]:
     """Validate and apply one placement action to ``world_CWH``.
 
@@ -141,8 +139,8 @@ def apply_placement_action(
 
     Placements overwrite: every entity the footprint touches is removed whole
     first, so ``empty`` deletes the entity under ``xy`` and any other entity
-    replaces what it lands on. ``protected`` tiles (a lesson's fixed
-    obstruction) and sources/sinks can't be edited.
+    replaces what it lands on. Walls (which include a lesson's protected
+    entities) and sources/sinks can't be edited.
 
     Returns ``(is_invalid, invalid_reason_key, placed_action)``. The final item
     is the human-readable action record used by the environment, or ``None``
@@ -219,9 +217,6 @@ def apply_placement_action(
         )
         if occupied else []
     )
-    if any(t in protected for t in cleared):
-        return True, "edited_protected_tile", None
-
     for tx, ty in cleared:
         world_np[_CH_ENT, tx, ty] = _EMPTY_ENT_ID
         world_np[_CH_DIR, tx, ty] = _DIR_NONE_VAL
@@ -916,7 +911,6 @@ class FactorioEnv(gym.Env):
                     f"seed={self._seed}"
                 )
         self._kind = kind
-        self._protected = factory.protected_positions
         self._solved_world_CWH = factory.world_CWH
         # Cache the episode-constant pieces of the per-step solution-match
         # diagnostic now that the solved world is known.
@@ -971,7 +965,6 @@ class FactorioEnv(gym.Env):
                 action,
                 source_id=self._source_id,
                 sink_id=self._sink_id,
-                protected=self._protected,
             )
             if placed_action is not None:
                 self.actions[-1] = placed_action
