@@ -291,12 +291,15 @@ class TestTrialEvalIsScoredApart:
         seeds = self._seeds(
             [LessonKind.MOVE_ONE_ITEM, LessonKind.TRIAL_RECIPE_TREE_DEPTH_1]
         )
+        args = PpoArgs(seed=1, size=SIZE, eval_num_envs=2)
         metrics = _run_heldout_eval(
             self._agent(),
-            PpoArgs(seed=1, size=SIZE, eval_num_envs=2),
+            args,
             seeds,
             torch.device("cpu"),
         )
         assert "eval/thput" in metrics
         assert "eval/trial_thput" in metrics
         assert "eval/TRIAL_RECIPE_TREE_DEPTH_1/thput" in metrics
+        for k in ("eval/thput", "eval/trial_thput", "eval/MOVE_ONE_ITEM/thput"):
+            assert metrics[f"{k}@{args.eval_best_of}"] == metrics[k]
