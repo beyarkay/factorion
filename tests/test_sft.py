@@ -890,6 +890,40 @@ class TestTrackedArtifact:
         final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
         assert final_files == [args.checkpoint_path, args.summary_path]
 
+    def test_thput_is_also_logged_as_best_of_n(self, monkeypatch, tmp_path):
+        """Every val thput is logged under its plain key and as thput@N."""
+        import wandb
+        from unittest.mock import MagicMock
+
+        logged: dict = {}
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+        args = SftArgs(
+            seed=1,
+            size=5,
+            num_samples=400,
+            max_level=2,
+            epochs=1,
+            batch_size=32,
+            **TINY_ARCH_ARGS,
+            track=True,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+
+        plain = [k for k in logged if k.endswith("/thput")]
+        assert "val/thput" in plain and len(plain) > 1
+        suffixed = [k for k in logged if "@" in k]
+        assert sorted(suffixed) == sorted(f"{k}@{args.eval_best_of}" for k in plain)
+        for k in plain:
+            assert logged[f"{k}@{args.eval_best_of}"] == logged[k]
+
 
 class TestSolvedAssemblerRecipes:
     """_solved_assembler_recipes — the ground truth the rollout scores against."""

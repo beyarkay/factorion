@@ -1512,6 +1512,12 @@ def train_sft(args: SftArgs):
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
                     per_kind_metrics[f"val/{kn}/thput"] = thp
+            # thput@N names the best-of-N; see ppo._run_heldout_eval.
+            per_kind_metrics |= {
+                f"{k}@{args.eval_best_of}": v
+                for k, v in per_kind_metrics.items()
+                if k.endswith("/thput")
+            }
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once
