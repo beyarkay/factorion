@@ -1710,8 +1710,8 @@ class TestArtifactNameHelpers:
             (1_000, "1k"),
             (50_000, "50k"),
             (200_000, "200k"),
-            (1_000_000, "1m"),
-            (2_500_000, "2.5m"),
+            (1_000_000, "1M"),
+            (2_500_000, "2.5M"),
         ],
     )
     def test_humanize_count(self, n, expected):
