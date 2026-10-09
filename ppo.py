@@ -319,6 +319,9 @@ def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, thp in roll["per_kind"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
+    # Each thput is the best of N samples, so it's also logged as thput@N; the
+    # unsuffixed keys stay so existing dashboards, sweeps and compares resolve.
+    metrics |= {f"{k}@{args.eval_best_of}": v for k, v in metrics.items()}
 
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
