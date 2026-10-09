@@ -75,7 +75,7 @@ class SharedArgs:
     # per-layer width as independent numeric slots (rather than one categorical
     # "64,64,64" string) lets a W&B Bayesian sweep optimise the architecture
     # ordinally. RF = 1 + n_layers * (kernel_size - 1).
-    layer1: int = 128
+    layer1: int = 96
     layer2: int = 0
     layer3: int = 0
     layer4: int = 0
@@ -85,11 +85,11 @@ class SharedArgs:
     layer8: int = 0
     kernel_size: int = 3
     """CNN conv kernel size (odd); padding pinned to kernel_size // 2 ("same")"""
-    attn_dim: int = 192
+    attn_dim: int = 288
     """model dim of the self-attention stage over the encoded map."""
-    attn_heads: int = 12
+    attn_heads: int = 8
     """self-attention head count (snapped down to a divisor of attn_dim)."""
-    attn_layers: int = 4
+    attn_layers: int = 8
     """number of stacked transformer-encoder blocks in the attention stage."""
     attn_pos_embed: int = 1
     """1 = add a learned per-cell positional embedding to the attention tokens
@@ -255,7 +255,8 @@ class SftArgs(SharedArgs):
     """Checkpoint to resume training from instead of a fresh model: either a
     local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74')."""
 
-    # One epoch over fresh data; architecture matches checkpoint kkcv6xe3.
+    # One epoch over fresh data; architecture, lr, cooldown, clip and loss
+    # weights from sweep mf3ugnfn (run 7bfvox6n).
     num_samples: int = 45_000_000
     """(state, action) pairs streamed per epoch. Generated on the fly by
     DataLoader workers, so this is never held in memory all at once."""
@@ -265,19 +266,19 @@ class SftArgs(SharedArgs):
     """number of training epochs"""
     batch_size: int = 512
     """training batch size"""
-    lr: float = 0.001152
+    lr: float = 4.273e-4
     """peak learning rate, held flat for the whole stable phase"""
     warmup_steps: int = 300
     """optimizer steps of linear warmup up to lr — absolute, not a fraction, so
     runs of different lengths warm up identically"""
-    cooldown_frac: float = 0.295459
+    cooldown_frac: float = 0.5401
     """fraction of total steps for the final (1-sqrt) cooldown — the only phase
     that depends on run length"""
     min_lr_ratio: float = 0.053792
     """LR at the final step, as a fraction of lr"""
     weight_decay: float = 1.661e-3
     """AdamW weight decay"""
-    dropout: float = 0.1827
+    dropout: float = 0.0
     """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
     amp: bool = True
     """run the encoder forward under bf16 autocast on CUDA; the heads and losses
@@ -285,19 +286,19 @@ class SftArgs(SharedArgs):
     compile: bool = True
     """torch.compile the encoder forward (CUDA only), fusing the transformer's
     elementwise ops (about a third of the step's GPU time)."""
-    max_grad_norm: float = 2.104
+    max_grad_norm: float = 0.3338
     """grad L2-norm clip (0 disables clipping)"""
     lw_tile: float = 1.162
     """loss weight for the tile-selection (BCE) head"""
-    lw_ent: float = 0.6673
+    lw_ent: float = 0.4294
     """loss weight for the entity (CE) head"""
     lw_dir: float = 0.948
     """loss weight for the direction (CE) head"""
     lw_item: float = 0.6349
     """loss weight for the item / recipe (CE) head"""
-    lw_misc: float = 0.6236
+    lw_misc: float = 0.7356
     """loss weight for the misc (CE) head"""
-    lw_eot: float = 1.302
+    lw_eot: float = 0.9817
     """loss weight for the EOT (end-of-trajectory) BCE head"""
     eval_every_n_samples: Optional[int] = None
     """run validation + rollout eval + logging + checkpoint selection every N

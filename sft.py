@@ -181,12 +181,12 @@ def extract_expert_actions(solved_CWH, task_CWH):
 
 
 def _humanize_count(n: int) -> str:
-    """50_000 -> '50k', 2_500_000 -> '2.5m'. Used in artifact names so
+    """50_000 -> '50k', 2_500_000 -> '2.5M'. Used in artifact names so
     `n50k` reads better than `n50000`."""
     if n >= 1_000_000:
         v = n / 1_000_000
         s = f"{v:.1f}".rstrip("0").rstrip(".")
-        return f"{s}m"
+        return f"{s}M"
     if n >= 1_000:
         v = n / 1_000
         s = f"{v:.1f}".rstrip("0").rstrip(".")
@@ -377,7 +377,8 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     share their LR curve until their cooldowns diverge — and a cooldown can be
     branched off a stable-phase checkpoint
     (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
-    repeating the shared prefix. Defaults from sweep ndc8tvvy (run c0kwcui1).
+    repeating the shared prefix. Warmup and floor from sweep ndc8tvvy (run
+    c0kwcui1), peak and cooldown from sweep mf3ugnfn (run 7bfvox6n).
     """
     return torch.optim.lr_scheduler.LambdaLR(
         optimizer,
