@@ -38,8 +38,8 @@ from factorion import (  # noqa: E402
 
 
 # ── Test model size ──────────────────────────────────────────────────────────
-# A CPU forward through the production attention stack (attn_dim 192, 12 heads,
-# 4 layers) costs more than everything else a model test does, and these tests
+# A CPU forward through the production attention stack (attn_dim 288, 8 heads,
+# 8 layers) costs more than everything else a model test does, and these tests
 # exercise the code path rather than the capacity. The two spellings must stay
 # in sync: tests save a checkpoint through the AgentCNN kwargs and load it back
 # through a SharedArgs-configured model.

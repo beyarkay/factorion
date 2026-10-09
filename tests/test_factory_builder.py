@@ -46,6 +46,17 @@ from factorion import (  # noqa: E402
     render_factory,
 )
 from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
+from helpers import _TINY_ATTN  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _tiny_attention(monkeypatch):
+    """The builder sizes its attention stack from the training defaults, and a
+    CPU rollout through the production stack is what these tests would spend
+    their time on; they exercise the pipeline, not the model."""
+    monkeypatch.setattr(
+        fb, "AgentCNN", lambda *a, **kw: AgentCNN(*a, **kw, **_TINY_ATTN)
+    )
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -60,7 +71,7 @@ def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
         gym.register(id=env_id, entry_point="ppo:FactorioEnv")
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
     try:
-        agent = AgentCNN(envs, layers=(chan, chan, chan))
+        agent = AgentCNN(envs, layers=(chan, chan, chan), **_TINY_ATTN)
     finally:
         envs.close()
     fd, path = tempfile.mkstemp(suffix=".pt")
