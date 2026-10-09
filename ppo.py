@@ -255,7 +255,7 @@ def _run_signature(args) -> str:
 
 
 def _build_eval_set(args) -> dict:
-    """Fixed held-out (seed -> LessonKind.value) factories for the greedy eval,
+    """Fixed held-out (seed -> LessonKind.value) factories for the eval,
     disjoint from the training seeds. Each LessonKind gets its own high seed
     range so seeds never collide across kinds; only seeds where build_factory
     succeeds are kept (rejection sampling fails on some seed/kind/grid combos)."""
@@ -273,8 +273,8 @@ def _build_eval_set(args) -> dict:
     return out
 
 
-def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Greedy held-out throughput eval, mirroring SFT's val/thput so
+def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
+    """Best-of-N held-out throughput eval, mirroring SFT's val/thput so
     the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
@@ -290,8 +290,8 @@ def _run_greedy_eval(agent, args, eval_seeds_to_kind, device) -> dict:
         eval_seeds_to_kind,
         device,
         max_seeds=len(eval_seeds_to_kind),
-        eot_threshold=0.5,
         num_envs=args.eval_num_envs,
+        best_of=args.eval_best_of,
     )
     metrics = {"eval/thput": roll["overall"]}
     # The trials are the actual target — building a factory from nothing but
@@ -1341,13 +1341,16 @@ def _bernoulli_kl(z_B, zq_B):
 _KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
 
 
-def _select_action(logp_all_BN, temperature):
+def _select_action(logp_all_BN, temperature, u_BN=None):
     """Pick one category per row: argmax at temperature==0 (greedy), else
     sample the temperature-scaled distribution (==1 is the on-policy sample).
     log_softmax is shift-invariant, so scaling log-probs by 1/T == softmax(
-    logits/T)."""
+    logits/T). Given uniforms `u_BN`, the sample is their Gumbel-max, so the
+    caller owns each row's randomness."""
     if temperature == 0.0:
         return logp_all_BN.argmax(dim=-1)
+    if u_BN is not None:
+        return (logp_all_BN / temperature - (-u_BN.log()).log()).argmax(dim=-1)
     if temperature == 1.0:
         return _categorical_sample(logp_all_BN)
     return _categorical_sample(F.log_softmax(logp_all_BN / temperature, dim=-1))
@@ -1662,6 +1665,7 @@ class AgentCNN(nn.Module):
         eot_threshold: float = 0.5,
         action=None,
         compute_value: bool = True,
+        noise=None,
     ):
         """The one sampler every consumer routes through. temperature=1 is the
         stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
@@ -1669,7 +1673,9 @@ class AgentCNN(nn.Module):
         The tile pick is restricted to empty+buildable cells — training,
         eval and inference all act on this masked distribution;
         legal_mask=False exposes the raw tile head (builder diagnostics only).
-        `action` replays a stored action to recompute its log-prob. Returns a dict of
+        `action` replays a stored action to recompute its log-prob. `noise`
+        ({head: (B, n) uniforms in [0, 1)}, eot (B,)) fixes a stochastic sample
+        per row, independent of the rest of the batch. Returns a dict of
         action / logp / entropy / value (None if not compute_value) / eot_prob
         / eot_logit / logp_heads (per-head log-probs, so the UI needn't re-derive them)."""
         # Encode input once and reuse for both action and value heads
@@ -1690,8 +1696,9 @@ class AgentCNN(nn.Module):
             tile_logits_BN = tile_logits_BN.masked_fill(~mask_BN, float("-inf"))
         tile_logp_all_BN = F.log_softmax(tile_logits_BN, dim=-1)
 
+        u = noise or {}
         if action is None:
-            tile_idx_B = _select_action(tile_logp_all_BN, temperature)  # (B,)
+            tile_idx_B = _select_action(tile_logp_all_BN, temperature, u.get("tile"))  # (B,)
         else:
             # Reconstruct tile index from stored (x, y)
             tile_idx_B = action[:, 0] * self.height + action[:, 1]
@@ -1722,7 +1729,7 @@ class AgentCNN(nn.Module):
         p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
-            ent_B = _select_action(e_logp_all_BE, temperature)
+            ent_B = _select_action(e_logp_all_BE, temperature, u.get("entity"))
         else:
             ent_B = action[:, 2]
 
@@ -1731,14 +1738,15 @@ class AgentCNN(nn.Module):
         )
 
         if action is None:
-            dir_B = _select_action(d_logp_all_BD, temperature)
-            item_B = _select_action(i_logp_all_BI, temperature)
-            misc_B = _select_action(m_logp_all_BM, temperature)
-            eot_B = (
-                (p_eot_B > eot_threshold).float()
-                if temperature == 0.0
-                else torch.bernoulli(p_eot_B)
-            )
+            dir_B = _select_action(d_logp_all_BD, temperature, u.get("direction"))
+            item_B = _select_action(i_logp_all_BI, temperature, u.get("item"))
+            misc_B = _select_action(m_logp_all_BM, temperature, u.get("misc"))
+            if temperature == 0.0:
+                eot_B = (p_eot_B > eot_threshold).float()
+            elif noise is not None:
+                eot_B = (u["eot"] < p_eot_B).float()
+            else:
+                eot_B = torch.bernoulli(p_eot_B)
         else:
             dir_B = action[:, 3]
             item_B = action[:, 4]
@@ -2103,14 +2111,14 @@ if __name__ == "__main__":
         _episode_metrics.clear()
         return means
 
-    # Fixed held-out greedy-eval set (disjoint from training seeds), used to log
+    # Fixed held-out eval set (disjoint from training seeds), used to log
     # eval/* — directly comparable to the SFT baseline's val/thput.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     agent_name = f"agent-{run_name.replace('/', '-').replace(':', '-').replace(' ', '_')}"
     ckpt_path = f"artifacts/{agent_name}.pt"
     best_eval_thput, uploaded = -1.0, None
     if eval_seeds_to_kind:
-        print(f"Greedy eval: {len(eval_seeds_to_kind)} held-out factories, "
+        print(f"Held-out eval: {len(eval_seeds_to_kind)} held-out factories, "
               f"every {args.eval_every} iters")
 
     # Per-iteration rollout/optimise wall-times, accumulated so the final
@@ -2462,14 +2470,14 @@ if __name__ == "__main__":
         rollout_seconds_hist.append(rollout_seconds)
         update_seconds_hist.append(update_seconds)
 
-        # ── Greedy held-out eval (every eval_every iters + the final one) ──
+        # ── Held-out eval (every eval_every iters + the final one) ──
         eval_metrics: dict = {}
         eval_seconds = 0.0
         if eval_seeds_to_kind and (
             iteration % args.eval_every == 0 or iteration == args.num_iterations
         ):
             t_eval = time.time()
-            eval_metrics = _run_greedy_eval(agent, args, eval_seeds_to_kind, device)
+            eval_metrics = _run_heldout_eval(agent, args, eval_seeds_to_kind, device)
             eval_seconds = time.time() - t_eval
             eval_metrics["eval/seconds"] = eval_seconds
             if eval_metrics["eval/thput"] > best_eval_thput:

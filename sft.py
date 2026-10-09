@@ -8,6 +8,7 @@ Usage:
     python ppo.py --start_from sft_checkpoint.pt ...
 """
 
+import copy
 import io
 import json
 import os
@@ -430,43 +431,44 @@ def run_rollout_eval(
     val_seeds_to_kind: dict[int, int],
     device,
     max_seeds: int = 100,
-    eot_threshold: float = 0.5,
     num_envs: int = 8,
+    best_of: int = 1,
     records: Optional[list[dict]] = None,
 ) -> RolloutEval:
-    """Greedy rollout eval on the held-out val factories.
+    """Best-of-N sampled rollout eval on the held-out val factories.
 
-    Runs K=num_envs FactorioEnvs in parallel and batches the CNN forward
-    across them, so the cost per eval is ~K× cheaper than the serial
-    version (the big win on GPU/MPS where the batch=1 forward dominates).
-    Envs are refilled from the seed queue as they finish, so all K slots
-    stay busy until the queue drains.
-
-    For each held-out (seed, kind) we greedy-argmax every head and step
-    until the EOT head crosses `eot_threshold` — which ends the rollout,
-    exactly as the sampled EOT action terminates a PPO episode — or the env
-    finishes (throughput==1.0 or max_steps) without it ever firing.
+    Each held-out (seed, kind) gets `best_of` rollouts sampled from the policy
+    (temperature 1, tile pick restricted to legal tiles, as a PPO rollout
+    samples) and scores the best of them. A rollout steps until the sampled EOT
+    action fires — which ends it, exactly as it terminates a PPO episode — or
+    the env finishes (throughput==1.0 or max_steps) without it ever firing.
     Throughput is the last `info['thput_normed']` the env reported for the
     state the model stopped at: raw items/sec divided by the per-factory
     max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
     its absolute belt speed (the env already calls the Rust solver every
     step, so we don't re-run it).
 
+    Every (factory, sample) pair is a work item for K=num_envs*best_of
+    FactorioEnvs run in parallel with the CNN forward batched across them;
+    slots refill from the queue as they finish, so all K stay busy until it
+    drains. Each sample draws from its own noise stream seeded by (args.seed,
+    factory seed, sample index), so the result is reproducible, independent
+    of K and of batching order, and every checkpoint faces the same random
+    numbers.
+
     The (seed, kind) pairs are exactly the val_accuracy set. The result is
     logged as `val/thput`, directly comparable to the existing per-kind val
-    accuracy curves.
+    accuracy curves. Eval-only; training is untouched.
 
-    The greedy tile argmax is restricted to legal (empty + buildable)
-    tiles, so it can't livelock re-proposing an occupied tile the env
-    keeps rejecting. Eval-only; training is untouched.
-
-    `records`, when given, also collects one dict per scored factory (seed,
-    kind, thput, entity_cost and the ASCII render of the world the model
-    stopped at) — the raw material for a qualitative diff of two policies
-    (`factory_diff.py`), which the aggregates alone cannot show.
+    Every other output (EOT and recipe-pick scoring, dangling inserters,
+    `records`) comes from each factory's selected sample. `records`, when
+    given, collects one dict per scored factory (seed, kind, thput,
+    entity_cost and the ASCII render of the world the model stopped at) — the
+    raw material for a qualitative diff of two policies (`factory_diff.py`),
+    which the aggregates alone cannot show.
 
     Returns a dict with:
-        overall — mean throughput at the state the model stopped at;
+        overall — mean best-of-N throughput at the state the model stopped at;
         per_kind — the same, keyed by LessonKind.name;
         per_kind_n — sample count per kind in the eval;
         eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
@@ -475,7 +477,7 @@ def run_rollout_eval(
     was_training = agent.training
     agent.eval()
 
-    # Blank the WHOLE factory (size*size) so the greedy eval builds from an
+    # Blank the WHOLE factory (size*size) so the eval builds from an
     # empty grid — the honest "can it build from scratch" test, not a partial
     # 2*size blank that leaves most of the factory pre-placed. Matches the
     # data-generation path (which already auto-blanks size*size) and the
@@ -529,98 +531,100 @@ def run_rollout_eval(
             "per_kind_dangling_inserters": per_kind_dangling,
         }
 
-    # Cap K at the number of seeds — spinning up more envs than work
-    # items wastes memory. All envs use idx=0 so the seed we pass to
-    # reset() is the seed generate_lesson sees: FactorioEnv.reset adds
-    # self.idx to the seed for env-diversity in PPO, but here we need
-    # exact seed pass-through to replay the held-out val factories.
-    K = max(1, min(num_envs, len(seeds_sorted)))
-    envs = [FactorioEnv(size=args.size, idx=0) for _ in range(K)]
-
-    # Pop seeds off the front; each slot harvests its result then pulls
-    # the next one. `current` holds the (seed, kind, last_throughput)
-    # owned by each slot; `active[i]=False` means the slot has no more
-    # work and should be skipped.
-    queue = list(seeds_sorted)
+    # One work item per (factory, sample), a factory's samples adjacent so they
+    # share batched forwards: K slots hold num_envs factories' samples at once.
+    # Cap K at the number of work items — spinning up more envs than that
+    # wastes memory. All envs use idx=0 so the seed we pass to reset() is the
+    # seed generate_lesson sees: FactorioEnv.reset adds self.idx to the seed
+    # for env-diversity in PPO, but here we need exact seed pass-through to
+    # replay the held-out val factories.
+    queue = [(s, j) for s in seeds_sorted for j in range(best_of)]
+    K = max(1, min(num_envs * best_of, len(queue)))
+    # A factory's samples all start from the same blank grid, so it is reset
+    # once into `template` and each sample deep-copies that (~40x cheaper).
+    template = FactorioEnv(size=args.size, idx=0)
+    template_reset: dict[int, tuple] = {}
+    envs = [template] * K
+    head_sizes = {"tile": args.size * args.size, "entity": agent.num_entities,
+                  "direction": agent.num_directions, "item": agent.num_items,
+                  "misc": agent.num_misc, "eot": 1}
     active = [True] * K
-    # Correct recipes for the factory each slot is replaying (from its solved
-    # world). Empty when that factory has no assembler, which skips the check.
-    asm_recipes: list[set[int]] = [set() for _ in range(K)]
-    current: list[tuple[int, LessonKind, float]] = [
-        (0, LessonKind.MOVE_ONE_ITEM, 0.0)
-    ] * K
-    obs_stack = []
-
-    for i in range(K):
-        s = queue.pop(0)
-        k = LessonKind(val_seeds_to_kind[s])
-        obs, info = envs[i].reset(
-            seed=s,
-            options={
-                "num_missing_entities": max_level,
-                "kind": k,
-            },
-        )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
-        obs_stack.append(obs)
-
+    # Each slot's in-flight sample: its stats so far and its own noise stream,
+    # seeded by (run seed, factory, sample) so neither the batch it rides in nor
+    # the checkpoint being scored changes which random numbers it draws.
+    cur: list[dict] = [{} for _ in range(K)]
+    rngs = [np.random.default_rng() for _ in range(K)]
+    finished: dict[int, list[dict]] = {s: [] for s in seeds_sorted}
     # Staged on the host so each step is one host->device copy, not one per env.
-    obs_batch = torch.as_tensor(np.stack(obs_stack), dtype=torch.float32)
+    obs_batch = torch.zeros((K, len(Channel), args.size, args.size))
 
-    def finish_slot(i: int, thput: float) -> None:
-        """Record slot `i`'s finished rollout at `thput` and refill it from the
-        seed queue, deactivating the slot once the queue is empty."""
-        s, k, _ = current[i]
-        per_kind_throughputs[k.name].append(thput)
-        pool = trial_throughputs if LESSON_IS_TRIAL[k] else all_throughputs
-        pool.append(thput)
-        no_input, no_output = count_dangling_inserters(envs[i]._world_CWH)
-        acc_in, acc_out = per_kind_dangling[k.name]
-        per_kind_dangling[k.name] = (acc_in + no_input, acc_out + no_output)
-        if records is not None:
-            records.append(
-                {
-                    "seed": s,
-                    "kind": k.name,
-                    "thput": thput,
-                    "entity_cost": float(envs[i]._entity_cost),
-                    "inserters_no_input": no_input,
-                    "inserters_no_output": no_output,
-                    "render": render_factory(envs[i]._world_CWH),
-                }
-            )
-
+    def load_slot(i: int) -> None:
+        """Reset slot `i` onto the next work item, deactivating it once the
+        queue is empty."""
         if not queue:
             active[i] = False
             return
-        s = queue.pop(0)
+        s, j = queue.pop(0)
         k = LessonKind(val_seeds_to_kind[s])
-        obs, info = envs[i].reset(
-            seed=s,
-            options={
-                "num_missing_entities": max_level,
-                "kind": k,
-            },
-        )
-        current[i] = (s, k, float(info.get("thput_normed", 0.0)))
-        asm_recipes[i] = _solved_assembler_recipes(envs[i]._solved_world_CWH)
+        if s not in template_reset:
+            template_reset.clear()
+            template_reset[s] = template.reset(
+                seed=s,
+                options={
+                    "num_missing_entities": max_level,
+                    "kind": k,
+                },
+            )
+        obs, info = template_reset[s]
+        envs[i] = copy.deepcopy(template)
+        cur[i] = {
+            "seed": s,
+            "sample": j,
+            "kind": k,
+            "thput": float(info.get("thput_normed", 0.0)),
+            # Correct recipes from the solved world; empty when that factory has
+            # no assembler, which skips the recipe check.
+            "asm_recipes": _solved_assembler_recipes(envs[i]._solved_world_CWH),
+            **dict.fromkeys(
+                ("asm_n", "asm_correct", "eot_steps", "eot_correct", "eot_pos", "eot_pos_correct"), 0
+            ),
+        }
+        rngs[i] = np.random.default_rng((args.seed, s, j))
         obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32)
+
+    def finish_slot(i: int) -> None:
+        """Record slot `i`'s finished sample, then refill the slot."""
+        c = cur[i]
+        c["entity_cost"] = float(envs[i]._entity_cost)
+        c["dangling"] = count_dangling_inserters(envs[i]._world_CWH)
+        if records is not None:
+            c["render"] = render_factory(envs[i]._world_CWH)
+        finished[c["seed"]].append(c)
+        load_slot(i)
+
+    for i in range(K):
+        load_slot(i)
 
     with torch.no_grad():
         while any(active):
             # Single CNN forward across all K slots. Inactive slots'
             # outputs are discarded; the per-eval cost of K-1 stale
             # forwards at the tail is negligible compared to the
-            # batching win earlier in the queue.
-            # Greedy pick via the shared sampler; legal_mask keeps argmax off
-            # occupied/walled tiles, and the critic is unused here.
+            # batching win earlier in the queue. An inactive slot draws from
+            # its finished sample's stream, which nothing reads again.
+            u_KL = torch.as_tensor(
+                np.stack([r.random(sum(head_sizes.values()), dtype=np.float32) for r in rngs])
+            ).to(device)
+            noise = dict(zip(head_sizes, u_KL.split(list(head_sizes.values()), dim=1)))
+            noise["eot"] = noise["eot"].squeeze(1)
+            # The policy's own sample, as a PPO rollout draws it (legal_mask
+            # keeps it off occupied/walled tiles); the critic is unused here.
             out = agent.sample_action(
-                obs_batch.to(device), temperature=0.0, legal_mask=True, compute_value=False
+                obs_batch.to(device), noise=noise, legal_mask=True, compute_value=False
             )
             # One device->host copy per head per step, not one per env per head.
             act = out["action"]
-            eot_probs = out["eot_prob"].tolist()
+            eot_K = act["eot"].tolist()
             x_K = act["xy"][:, 0].tolist()
             y_K = act["xy"][:, 1].tolist()
             ent_K = act["entity"].tolist()
@@ -632,24 +636,23 @@ def run_rollout_eval(
                 if not active[i]:
                     continue
 
-                s, k, cur_thp = current[i]
-                pred_stop = float(eot_probs[i]) > eot_threshold
+                c = cur[i]
+                pred_stop = bool(eot_K[i])
 
                 # Score the head against ground truth on this pre-action state:
-                # it should fire iff the factory is already complete. `cur_thp`
-                # and `eot_probs[i]` are both this same state, so they align.
-                is_done = cur_thp >= 1.0
-                per_kind_eot_step_total[k.name] += 1
-                per_kind_eot_correct[k.name] += int(pred_stop == is_done)
+                # it should fire iff the factory is already complete.
+                is_done = c["thput"] >= 1.0
+                c["eot_steps"] += 1
+                c["eot_correct"] += int(pred_stop == is_done)
                 if is_done:
-                    per_kind_eot_pos_total[k.name] += 1
-                    per_kind_eot_pos_correct[k.name] += int(pred_stop)
+                    c["eot_pos"] += 1
+                    c["eot_pos_correct"] += int(pred_stop)
 
-                # The stop head ends the rollout, the same way the sampled EOT
-                # action terminates a PPO episode: we score the factory the
-                # model declared finished, never one it was forced past.
+                # The sampled EOT action ends the rollout, exactly as it
+                # terminates a PPO episode: we score the factory the model
+                # declared finished, never one it was forced past.
                 if pred_stop:
-                    finish_slot(i, cur_thp)
+                    finish_slot(i)
                     continue
 
                 action = {
@@ -660,18 +663,17 @@ def run_rollout_eval(
                     "misc": int(misc_K[i]),
                 }
                 next_obs, _r, terminated, truncated, info = envs[i].step(action)
-                current[i] = (s, k, float(info.get("thput_normed", 0.0)))
+                c["thput"] = float(info.get("thput_normed", 0.0))
 
                 # Recipe-pick check: the agent tried to place an assembler in a
                 # factory that has one. Count it iff the assembler actually
                 # landed at the anchor (invalid placements are env no-ops), then
                 # score its recipe against the solved factory's recipes.
-                if asm_recipes[i] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                if c["asm_recipes"] and action["entity"] == _ASM_MACHINE_ENT_ID:
                     ax, ay = int(action["xy"][0]), int(action["xy"][1])
                     if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
-                        per_kind_asm_total[k.name] += 1
-                        if action["item"] in asm_recipes[i]:
-                            per_kind_asm_correct[k.name] += 1
+                        c["asm_n"] += 1
+                        c["asm_correct"] += int(action["item"] in c["asm_recipes"])
 
                 if not (terminated or truncated):
                     obs_batch[i] = torch.as_tensor(
@@ -681,7 +683,37 @@ def run_rollout_eval(
                     continue
 
                 # The env ran out of room or steps before the head ever fired.
-                finish_slot(i, current[i][2])
+                finish_slot(i)
+
+    # Each factory scores its best sample; ties go to the cheaper build, then
+    # the lower sample index, so the pick doesn't depend on finish order. Every
+    # other output comes from that same sample.
+    for s in seeds_sorted:
+        c = max(finished[s], key=lambda r: (r["thput"], -r["entity_cost"], -r["sample"]))
+        kn = c["kind"].name
+        per_kind_throughputs[kn].append(c["thput"])
+        (trial_throughputs if LESSON_IS_TRIAL[c["kind"]] else all_throughputs).append(c["thput"])
+        per_kind_asm_total[kn] += c["asm_n"]
+        per_kind_asm_correct[kn] += c["asm_correct"]
+        per_kind_eot_step_total[kn] += c["eot_steps"]
+        per_kind_eot_correct[kn] += c["eot_correct"]
+        per_kind_eot_pos_total[kn] += c["eot_pos"]
+        per_kind_eot_pos_correct[kn] += c["eot_pos_correct"]
+        no_input, no_output = c["dangling"]
+        acc_in, acc_out = per_kind_dangling[kn]
+        per_kind_dangling[kn] = (acc_in + no_input, acc_out + no_output)
+        if records is not None:
+            records.append(
+                {
+                    "seed": s,
+                    "kind": kn,
+                    "thput": c["thput"],
+                    "entity_cost": c["entity_cost"],
+                    "inserters_no_input": no_input,
+                    "inserters_no_output": no_output,
+                    "render": c["render"],
+                }
+            )
 
     overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
     trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
@@ -1013,7 +1045,7 @@ def train_sft(args: SftArgs):
     epoch = 0
     eval_every = args.eval_every_n_samples
     if eval_every is None:
-        eval_every = 100_000 if total_samples <= 2_000_000 else 500_000
+        eval_every = 100_000 if total_samples <= 2_000_000 else 1_000_000
     next_eval_at = eval_every
     stream_done = False
     pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
@@ -1456,7 +1488,7 @@ def train_sft(args: SftArgs):
 
         val_seconds = time.time() - t_val
 
-        # Rollout eval: greedy-play the held-out factories and record final
+        # Rollout eval: best-of-N rebuild the held-out factories and record
         # throughput. Same lessons as val accuracy, so val/thput is directly
         # comparable to val/acc curves. Runs on every eval window unless
         # disabled (it's the slow part of an eval).
@@ -1469,8 +1501,8 @@ def train_sft(args: SftArgs):
                 val_seeds_to_kind,
                 device,
                 max_seeds=args.eval_rollouts_max_seeds,
-                eot_threshold=args.rollout_eot_threshold,
                 num_envs=args.eval_rollouts_num_envs,
+                best_of=args.eval_best_of,
             )
             rollout_seconds = time.time() - t_rollout
             overall_thp = roll["overall"]
@@ -1660,8 +1692,8 @@ def train_sft(args: SftArgs):
     print(f"Summary written to {summary_path}")
 
     if args.track and run is not None:
-        # Headline metric in the W&B run table: greedy throughput (EOT
-        # ignored), the same number that selected the checkpoint.
+        # Headline metric in the W&B run table: best-of-N throughput, the same
+        # number that selected the checkpoint.
         run.summary["best_val_throughput"] = best_val_throughput
         run.summary["best_val_acc"] = best_val_acc
 

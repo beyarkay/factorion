@@ -917,7 +917,7 @@ class TestSolvedAssemblerRecipes:
 
 class TestRolloutAsmItemAcc:
     """Recipe-pick accuracy inlined into run_rollout_eval: of the assemblers the
-    greedy agent actually places, how many got the right recipe (#264)."""
+    agent actually places, how many got the right recipe (#264)."""
 
     def _forced_agent(self, size, item_id):
         """An agent whose entity head always places an assembler (with NONE
@@ -1048,7 +1048,7 @@ class TestRolloutAsmItemAcc:
 
 
 class TestRunRolloutEval:
-    """End-to-end coverage of greedy rollout eval on held-out val factories."""
+    """End-to-end coverage of the best-of-N rollout eval on held-out val factories."""
 
     def _build_val_seeds_to_kind(self, size, num_kinds=4, start_seed=10_000):
         """Collect up to `num_kinds` (seed -> kind) pairs, one per distinct
@@ -1221,12 +1221,20 @@ class TestRunRolloutEval:
         assert roll["overall"] == 0.0
         assert sum(roll["per_kind_n"].values()) == 0
 
+    @staticmethod
+    def _force_eot(agent, fire: bool):
+        """Pin the EOT head's probability to ~1 (always fires) or ~0 (never)."""
+        with torch.no_grad():
+            agent.eot_head.weight.zero_()
+            agent.eot_head.bias.fill_(100.0 if fire else -100.0)
+        return agent
+
     def test_eot_head_stops_the_rollout(self, registered_env):
-        """The EOT head ends the rollout, so the threshold decides how far the
-        agent gets to build. A threshold above 1 means the head never fires and
-        the rollout runs to env-done; a threshold below 0 means it fires before
-        the first placement, so every rollout stops after one scored step and
-        scores the untouched reset factory (throughput 0)."""
+        """The sampled EOT action ends the rollout, so the head decides how far
+        the agent gets to build. A head that never fires runs to env-done; one
+        that always fires stops before the first placement, so every rollout
+        stops after one scored step and scores the untouched reset factory
+        (throughput 0)."""
         size = 5
         envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
         agent = AgentCNN(envs, **TINY_ARCH)
@@ -1241,25 +1249,20 @@ class TestRunRolloutEval:
         )
         val_seeds_to_kind = self._build_val_seeds_to_kind(size=size, num_kinds=4)
 
-        # sigmoid(logit) < 1 always, so threshold 10 -> EOT never fires.
         never = run_rollout_eval(
-            agent,
+            self._force_eot(agent, fire=False),
             args,
             val_seeds_to_kind,
             device=torch.device("cpu"),
-            eot_threshold=10.0,
             max_seeds=len(val_seeds_to_kind),
         )
         assert 0.0 <= never["overall"] <= 1.5
 
-        # sigmoid(logit) > 0 always, so threshold -1 -> EOT fires before the
-        # first placement.
         always = run_rollout_eval(
-            agent,
+            self._force_eot(agent, fire=True),
             args,
             val_seeds_to_kind,
             device=torch.device("cpu"),
-            eot_threshold=-1.0,
             max_seeds=len(val_seeds_to_kind),
         )
         assert always["overall"] == 0.0, (
@@ -1280,7 +1283,7 @@ class TestRunRolloutEval:
         """The rollout scores the EOT head on every state it visits, against
         ground truth: a pre-action state is a should-stop positive iff the
         factory is already complete (thput_normed >= 1.0). Forcing the head to
-        never / always fire (via the threshold) pins both ends. A head that
+        never / always fire pins both ends. A head that
         always fires stops on the blank reset factory: one scored step per
         rollout, wrong every time, and it never reaches a completed factory to
         recall. A silent head keeps placing to env-done, so it is right on
@@ -1302,20 +1305,10 @@ class TestRunRolloutEval:
         max_seeds = len(val_seeds_to_kind)
 
         never = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device,
-            max_seeds=max_seeds,
-            eot_threshold=10.0,
+            self._force_eot(agent, fire=False), args, val_seeds_to_kind, device, max_seeds=max_seeds
         )
         always = run_rollout_eval(
-            agent,
-            args,
-            val_seeds_to_kind,
-            device,
-            max_seeds=max_seeds,
-            eot_threshold=-1.0,
+            self._force_eot(agent, fire=True), args, val_seeds_to_kind, device, max_seeds=max_seeds
         )
 
         for roll in (never, always):
@@ -1343,7 +1336,7 @@ class TestRunRolloutEval:
         assert never["eot_pos_recall"] == 0.0, "silent head recalls no positive"
 
     def _run_with_recorded_proposals(self, monkeypatch):
-        """Run a greedy rollout eval with a FactorioEnv that records, for every
+        """Run a rollout eval with a FactorioEnv that records, for every
         step, the (entity, footprint) the *proposed anchor tile* held in the
         world just before the placement was applied. Returns that list."""
         size = 5
@@ -1383,7 +1376,7 @@ class TestRunRolloutEval:
         return recorded
 
     def test_masking_only_proposes_legal_tiles(self, registered_env, monkeypatch):
-        """The greedy tile argmax must only ever propose legal placement
+        """The sampled tile pick must only ever propose legal placement
         targets: the anchor tile is empty (ENTITIES == empty) and buildable
         (FOOTPRINT == AVAILABLE) at the moment of every step."""
         empty_id = str2ent("empty").value
@@ -1397,6 +1390,56 @@ class TestRunRolloutEval:
         assert not illegal, (
             f"masking must never propose an occupied/unbuildable tile; got {illegal}"
         )
+
+    def _random_belt_layer(self, size, n_seeds=8):
+        """An agent that lays belts on uniformly random empty tiles facing random
+        ways and never stops, so its samples differ and a few connect; it
+        ignores the weights' init, so the expected outcomes are fixed. Returns
+        (agent, args, MOVE_ONE_ITEM seeds -> kind)."""
+        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, size, "test")])
+        agent = AgentCNN(envs, **TINY_ARCH)
+        envs.close()
+        with torch.no_grad():
+            for head in (agent.tile_logits, agent.dir_head, agent.eot_head):
+                head.weight.zero_()
+                head.bias.zero_()
+            agent.eot_head.bias.fill_(-100.0)
+            for head, idx in ((agent.ent_head, str2ent("transport_belt").value),
+                              (agent.item_head, 0), (agent.misc_head, 0)):
+                head.weight.zero_()
+                head.bias.fill_(-100.0)
+                head.bias[idx] = 100.0
+        seeds = {}
+        s = 700_000
+        while len(seeds) < n_seeds:
+            if build_factory(size=size, kind=LessonKind.MOVE_ONE_ITEM, seed=s) is not None:
+                seeds[s] = LessonKind.MOVE_ONE_ITEM.value
+            s += 1
+        return agent, SftArgs(seed=1, size=size, **TINY_ARCH_ARGS), seeds
+
+    @staticmethod
+    def _records(agent, args, seeds, **kw):
+        records = []
+        run_rollout_eval(agent, args, seeds, torch.device("cpu"), max_seeds=len(seeds),
+                         records=records, **kw)
+        return {r["seed"]: r for r in records}
+
+    def test_eval_is_deterministic_for_a_fixed_seed(self, registered_env):
+        """Each sample's randomness is seeded by (run seed, factory, sample), so
+        a rerun rebuilds the same factories however the work is batched."""
+        agent, args, seeds = self._random_belt_layer(size=5)
+        a = self._records(agent, args, seeds, best_of=4, num_envs=8)
+        assert a == self._records(agent, args, seeds, best_of=4, num_envs=8)
+        assert a == self._records(agent, args, seeds, best_of=4, num_envs=3)
+
+    def test_best_of_n_scores_the_best_sample(self, registered_env):
+        """Sample j draws the same noise whatever N is, so N=8's samples include
+        N=1's: each factory's score can only rise with N, and here it does."""
+        agent, args, seeds = self._random_belt_layer(size=5)
+        one = self._records(agent, args, seeds, best_of=1)
+        eight = self._records(agent, args, seeds, best_of=8)
+        assert all(eight[s]["thput"] >= one[s]["thput"] for s in seeds)
+        assert any(eight[s]["thput"] > one[s]["thput"] for s in seeds)
 
 
 class TestLegalTileMask:
@@ -1567,7 +1610,7 @@ class TestPerKindEotMetrics:
             batch_size=32,
             **TINY_ARCH_ARGS,
             track=True,
-            eval_rollouts=False,  # skip the slow greedy rollout
+            eval_rollouts=False,  # skip the slow rollout eval
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
@@ -1631,7 +1674,7 @@ class TestNotNoneHeadAccuracy:
             batch_size=32,
             **TINY_ARCH_ARGS,
             track=True,
-            eval_rollouts=False,  # skip the slow greedy rollout
+            eval_rollouts=False,  # skip the slow rollout eval
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )

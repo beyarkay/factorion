@@ -1,5 +1,5 @@
 """Tests for the PPO wandb-logging support: run-name signature, the held-out
-greedy-eval set, the lesson kind exposed in env info, and the per-head entropy
+eval set, the lesson kind exposed in env info, and the per-head entropy
 + eot prob stashed by get_action_and_value (the policy/* metrics)."""
 
 import os
@@ -71,7 +71,7 @@ class TestRunSignature:
         )
 
 
-# ── greedy-eval held-out set ────────────────────────────────────────────────
+# ── held-out eval set ───────────────────────────────────────────────────────
 
 
 class TestBuildEvalSet:

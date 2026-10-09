@@ -109,6 +109,9 @@ class SharedArgs:
     (and linkable from the PR) before the pod even boots. None = W&B mints one."""
     tags: typing.Optional[typing.List[str]] = None
     """Tags to apply to the wandb run."""
+    eval_best_of: int = 8
+    """sampled rollouts per held-out factory in the rollout eval (SFT val/,
+    PPO eval/); each factory scores the best of them."""
 
 
 @dataclass
@@ -210,11 +213,11 @@ class PpoArgs(SharedArgs):
     critic_head_std: float = 0.1169
     """Initialization std for the value head."""
     eval_every: int = 7
-    """Run the greedy held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
+    """Run the held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
     eval_seeds_per_kind: int = 12
-    """Held-out factories per LessonKind in the greedy eval set."""
+    """Held-out factories per LessonKind in the eval set."""
     eval_num_envs: int = 8
-    """Parallel envs for the greedy eval rollout."""
+    """Held-out factories rolled out in parallel, each over eval_best_of envs."""
     amp: bool = False
     """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
     async_envs: bool = False
@@ -302,18 +305,17 @@ class SftArgs(SharedArgs):
     optimiser-seen samples rather than once per epoch (0 = evaluate only once,
     after the final batch). Samples, not epochs, so a single-epoch run over a
     huge dataset still yields a real training curve instead of one point.
-    None = 100k for runs of at most 2M samples, else 500k: an eval costs
-    about as much as training on 100k samples."""
+    None = 100k for runs of at most 2M samples, else 1M: a best-of-8 eval
+    costs about as much as training on 1M samples."""
     eval_rollouts: bool = True
-    """run the greedy rollout eval (the default checkpoint-selection metric) on
+    """run the rollout eval (the default checkpoint-selection metric) on
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
     metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 64
-    """parallel envs for rollout eval; batches the CNN forward across them"""
-    rollout_eot_threshold: float = 0.5
-    """EOT-head prob above which we mark the model "would stop" (for val/thput)"""
+    """val factories rolled out in parallel, each over eval_best_of envs;
+    batches the CNN forward across them"""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
     tile_head_std: float = 0.02208

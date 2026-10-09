@@ -2,7 +2,7 @@
 what does each one actually build?
 
 A compare report says whether a metric moved. This says *where* it moved and
-*what changed on the grid*: every checkpoint greedy-rolls the same held-out
+*what changed on the grid*: every checkpoint best-of-N rolls the same held-out
 factories, and each factory the two sides consistently disagree on is rendered
 side by side, biggest gap first — the view that tells "PPO learned X" apart
 from "PPO forgot Y".
@@ -71,7 +71,7 @@ def load_agent(spec: str, device):
 
 
 def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[dict]:
-    """Greedy-rollout `spec` over `per_kind` held-out factories per LessonKind.
+    """Best-of-N roll out `spec` over `per_kind` held-out factories per LessonKind.
 
     The factory set is PPO's own eval set at this seed, so two checkpoints
     collected at the same seed and grid size see exactly the same factories.
@@ -94,6 +94,7 @@ def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[d
         seeds_to_kind,
         device,
         max_seeds=len(seeds_to_kind),
+        best_of=PpoArgs.eval_best_of,
         records=records,
     )
     return records
@@ -209,7 +210,7 @@ def diff_markdown(
         key=lambda k: -abs(delta(k)),
     )
     lines = [
-        f"## Greedy factory diff: {main_label} vs {pr_label}",
+        f"## Factory diff: {main_label} vs {pr_label}",
         "",
         f"Every checkpoint rebuilt the same {len(keys)} held-out factories from "
         f"a blank grid, stopping where its own EOT head fired. "

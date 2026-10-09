@@ -225,7 +225,7 @@ class TestTrialSftExclusion:
 
 
 class TestTrialEvalIsScoredApart:
-    """The greedy eval pools lessons and trials separately, so `eval/thput`
+    """The held-out eval pools lessons and trials separately, so `eval/thput`
     keeps meaning "how well does it rebuild a factory the generator can also
     build" — the quantity the SFT baseline is quoted in."""
 
@@ -284,14 +284,14 @@ class TestTrialEvalIsScoredApart:
         # silently reporting the trial score as the headline.
         assert roll["overall"] == 0.0
 
-    def test_greedy_eval_surfaces_the_trial_metric(self, registered_env):
+    def test_heldout_eval_surfaces_the_trial_metric(self, registered_env):
         import torch
-        from ppo import PpoArgs, _run_greedy_eval
+        from ppo import PpoArgs, _run_heldout_eval
 
         seeds = self._seeds(
             [LessonKind.MOVE_ONE_ITEM, LessonKind.TRIAL_RECIPE_TREE_DEPTH_1]
         )
-        metrics = _run_greedy_eval(
+        metrics = _run_heldout_eval(
             self._agent(),
             PpoArgs(seed=1, size=SIZE, eval_num_envs=2),
             seeds,

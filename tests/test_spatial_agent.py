@@ -526,6 +526,25 @@ class TestSampleAction:
         replay = agent.sample_action(obs, action=stored)
         torch.testing.assert_close(out["logp"], replay["logp"])
 
+    def test_noise_fixes_each_row_independently_of_the_batch(self, agent):
+        """With caller-supplied noise a row's sample depends only on its own obs
+        and noise — what lets the eval batch rollouts in any order — and the
+        Gumbel-max draw follows the policy's distribution."""
+        sizes = {"tile": 25, "entity": agent.num_entities, "direction": agent.num_directions,
+                 "item": agent.num_items, "misc": agent.num_misc}
+        g = torch.Generator().manual_seed(0)
+        obs = torch.randn(1, NUM_CHANNELS, 5, 5).expand(4000, -1, -1, -1)
+        noise = {h: torch.rand(4000, n, generator=g) for h, n in sizes.items()}
+        noise["eot"] = torch.rand(4000, generator=g)
+        out = agent.sample_action(obs, noise=noise)
+        alone = agent.sample_action(obs[:1], noise={h: u[:1] for h, u in noise.items()})
+        for k in ("xy", "entity", "direction", "item", "misc", "eot"):
+            torch.testing.assert_close(out["action"][k][:1], alone["action"][k])
+        tile_idx = out["action"]["xy"][:, 0] * 5 + out["action"]["xy"][:, 1]
+        tile_freq = torch.bincount(tile_idx, minlength=25) / 4000
+        torch.testing.assert_close(tile_freq, out["logp_heads"]["tile"][0].exp(), atol=0.03, rtol=0)
+        assert abs(out["action"]["eot"].mean() - out["eot_prob"][0]) < 0.03
+
     def test_compute_value_false_skips_critic(self, agent):
         """Greedy consumers pass compute_value=False (the builder UI even
         drops the critic head), so value must be None rather than computed."""

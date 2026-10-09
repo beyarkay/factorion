@@ -47,7 +47,7 @@ What comes back as PR comments:
   lesson, overall + per-head accuracies for SFT; eval/rollout/critic
   headliners for PPO) — edit freely;
 - for `compare`: a second **factory-diff comment** (`factory_diff.py`): both
-  sides' checkpoints greedy-rebuild the same 50 held-out factories per lesson,
+  sides' checkpoints best-of-N rebuild the same 50 held-out factories per lesson,
   and every factory whose throughput disagrees is rendered side by side,
   largest gap first — the qualitative read on what the PR's policy learned and
   what it lost. Rendering runs on the GitHub runner, which installs torch + the

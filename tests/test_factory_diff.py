@@ -70,9 +70,9 @@ class TestRolloutRecords:
             assert r["kind"] == "MOVE_ONE_ITEM"
             assert 0.0 <= r["thput"] <= 1.0
             assert r["entity_cost"] >= 0.0
-            # The render is the real grid: `size` rows of space-separated tiles.
+            # The render is the real grid: `size` rows of 2-char tiles, 1-char gaps.
             rows = r["render"].splitlines()
-            assert len(rows) == size and all(len(row.split()) == size for row in rows)
+            assert len(rows) == size and all(len(row) == 3 * size - 1 for row in rows)
         assert roll["per_kind"]["MOVE_ONE_ITEM"] == pytest.approx(
             sum(r["thput"] for r in records) / len(records)
         )

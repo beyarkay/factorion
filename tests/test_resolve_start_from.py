@@ -166,7 +166,7 @@ def test_model_artifact_without_pt_raises(tmp_path, monkeypatch):
 
 
 def test_ppo_saves_its_best_eval_checkpoint(tmp_path):
-    """An untracked PPO run with greedy evals keeps its best-eval/thput weights
+    """An untracked PPO run with held-out evals keeps its best-eval/thput weights
     in artifacts/ — the file `--start-from` consumers load."""
     import subprocess
     from pathlib import Path
