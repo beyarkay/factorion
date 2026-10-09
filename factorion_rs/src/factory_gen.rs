@@ -5607,13 +5607,19 @@ fn two_stage_ceiling(ts: &TwoStage, n_x: i64, n_p: i64, x_cap: f64) -> f64 {
 /// factory found on the very attempt that drove `count` to 0 is discarded
 /// (returns `None`), so an exhausted budget always means "no factory".
 fn finish(
-    world: World,
+    mut world: World,
     total_entities: usize,
     protected_positions: Vec<(usize, usize)>,
     count: usize,
 ) -> Option<BuiltFactory> {
     if count == 0 {
         return None;
+    }
+    // Protected entities are never blanked, so walling them off leaks nothing
+    // about the solution, and the policy's tile mask (which sees only the
+    // world) then can't propose an edit the env would reject forever.
+    for &(x, y) in &protected_positions {
+        world.set(x, y, Channel::Footprint, 0);
     }
     let max_throughput = world_throughput(&world);
     Some(BuiltFactory {

@@ -618,7 +618,7 @@ def run_rollout_eval(
             noise = dict(zip(head_sizes, u_KL.split(list(head_sizes.values()), dim=1)))
             noise["eot"] = noise["eot"].squeeze(1)
             # The policy's own sample, as a PPO rollout draws it (legal_mask
-            # keeps it off occupied/walled tiles); the critic is unused here.
+            # keeps it off walled and source/sink tiles); the critic is unused here.
             out = agent.sample_action(
                 obs_batch.to(device), noise=noise, legal_mask=True, compute_value=False
             )

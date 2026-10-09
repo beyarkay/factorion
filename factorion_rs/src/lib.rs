@@ -43,7 +43,7 @@ use entities::entity_tiles;
 #[cfg(feature = "pyo3-bindings")]
 use factory_gen::{all_lesson_kinds, build_factory as rs_build_factory, LessonKind};
 #[cfg(feature = "pyo3-bindings")]
-use graph::build_graph;
+use graph::{build_graph, unit_anchors};
 #[cfg(feature = "pyo3-bindings")]
 use render::render as render_world;
 #[cfg(feature = "pyo3-bindings")]
@@ -167,6 +167,40 @@ fn py_entity_tiles(
     let dir = Direction::from_i64(direction);
     Ok(entity_tiles(x, y, dir, width, height)
         .map(|tiles| tiles.into_iter().map(|p| (p.x, p.y)).collect()))
+}
+
+/// Every tile of every entity unit that covers one of `tiles`, in no
+/// particular order: what an overwrite of `tiles` must clear so no stray tile
+/// of a multi-tile entity is left behind. Empty tiles contribute nothing.
+#[cfg(feature = "pyo3-bindings")]
+#[pyfunction]
+fn py_unit_tiles(
+    world: PyReadonlyArray3<i64>,
+    tiles: Vec<(usize, usize)>,
+) -> PyResult<Vec<(usize, usize)>> {
+    let world = World::from_numpy(&world);
+    let anchor_of = unit_anchors(&world);
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for t in tiles {
+        let (ax, ay) = anchor_of.get(&t).copied().unwrap_or(t);
+        let Some(kind) = world.entity_at(ax, ay).filter(|k| k.is_placeable()) else {
+            continue;
+        };
+        let (w, h) = kind.size();
+        let unit = entity_tiles(ax, ay, world.direction_at(ax, ay), w, h)
+            .map(|ts| ts.into_iter().filter_map(|p| p.to_usize()).collect())
+            .unwrap_or_else(|| vec![(ax, ay)]);
+        for u in unit {
+            // A lone tile of a damaged multi-tile entity can claim a footprint
+            // over other entities; only clear tiles that really are this unit.
+            let is_unit =
+                world.in_bounds(u.0 as i64, u.1 as i64) && world.entity_at(u.0, u.1) == Some(kind);
+            if is_unit && !out.contains(&u) {
+                out.push(u);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Return every Item as a dict keyed by integer value, with full
@@ -353,6 +387,7 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_sink_deliveries, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_graph, m)?)?;
     m.add_function(wrap_pyfunction!(py_entity_tiles, m)?)?;
+    m.add_function(wrap_pyfunction!(py_unit_tiles, m)?)?;
     m.add_function(wrap_pyfunction!(py_items, m)?)?;
     m.add_function(wrap_pyfunction!(py_recipes, m)?)?;
     m.add_function(wrap_pyfunction!(py_lesson_kinds, m)?)?;

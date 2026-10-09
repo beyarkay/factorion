@@ -185,17 +185,14 @@ class TestAsmPlacementValidity:
             env._world_CWH[ENT].numpy().astype(int), before
         )
 
-    def test_asm_over_plain_entity_is_rejected(self, env):
-        """A placement whose footprint covers an existing (non-empty) entity is
-        rejected — the world is left untouched. Anchor (0,1) would cover the
-        belt at (0,1) and the inserter at (0,2)."""
-        before = env._world_CWH[ENT].numpy().astype(int).copy()
+    def test_asm_over_plain_entities_replaces_them(self, env):
+        """A footprint that covers existing entities overwrites them. Anchor
+        (0,1) covers the belt at (0,1) and the inserter at (0,2)."""
         _, _, _, _, info = _place_asm(env, 0, 1)
-        assert info["invalid_reason"]["placed_on_existing_entity"]
-        np.testing.assert_array_equal(
-            env._world_CWH[ENT].numpy().astype(int), before
-        )
-        assert ASM not in env._world_CWH[ENT].numpy().astype(int)
+        assert not any(info["invalid_reason"].values())
+        ent = env._world_CWH[ENT].numpy().astype(int)
+        assert (ent[0:3, 1:4] == ASM).all()
+        assert BELT not in ent and INSERTER not in ent
 
     def test_asm_over_source_tile_is_rejected(self, env):
         """A footprint that would replace the source (or sink) is rejected and
@@ -219,17 +216,59 @@ class TestAsmPlacementValidity:
             env._world_CWH[ENT].numpy().astype(int), before
         )
 
-    def test_placing_empty_over_entity_is_still_allowed(self, env):
-        """The no-clobber rule exempts `empty`: placing it is the delete
-        operation, so it may land on an occupied tile and clear it."""
-        action = {
-            "xy": np.array([0, 1]),  # the belt tile
-            "entity": EMPTY,
-            "direction": Direction.NONE.value,
-            "item": EMPTY,
-            "misc": 0,
-            "eot": 0,
-        }
-        _, _, _, _, info = env.step(action)
+    def test_placing_empty_over_entity_deletes_it(self, env):
+        _, _, _, _, info = _place(env, 0, 1, EMPTY, Direction.NONE.value)
         assert not any(info["invalid_reason"].values())
         assert env._world_CWH[ENT].numpy().astype(int)[0, 1] == EMPTY
+
+
+def _place(env, x, y, entity, direction, item=EMPTY):
+    return env.step({
+        "xy": np.array([x, y]),
+        "entity": entity,
+        "direction": direction,
+        "item": item,
+        "misc": 0,
+        "eot": 0,
+    })
+
+
+class TestEdits:
+    """Placements on occupied tiles edit the factory, one whole entity at a
+    time, so no stray tile of a multi-tile entity is ever left behind."""
+
+    def test_belt_over_belt_rotates_it(self, env):
+        _, _, _, _, info = _place(env, 0, 1, BELT, Direction.SOUTH.value)
+        assert not any(info["invalid_reason"].values())
+        assert int(env._world_CWH[ENT, 0, 1]) == BELT
+        assert int(env._world_CWH[DIR, 0, 1]) == Direction.SOUTH.value
+
+    @pytest.mark.parametrize("tile", ASM_FOOTPRINT)
+    def test_empty_on_any_asm_tile_removes_the_whole_asm(self, env, tile):
+        _place_asm(env, 0, 3)
+        _place(env, tile[0], tile[1], EMPTY, Direction.NONE.value)
+        w = env._world_CWH.numpy().astype(int)
+        for x, y in ASM_FOOTPRINT:
+            assert w[ENT, x, y] == EMPTY
+            assert w[ITEMS, x, y] == EMPTY
+            assert w[DIR, x, y] == Direction.NONE.value
+
+    def test_belt_on_asm_tile_replaces_the_whole_asm(self, env):
+        _place_asm(env, 0, 3)
+        _place(env, 1, 4, BELT, Direction.EAST.value)
+        ent = env._world_CWH[ENT].numpy().astype(int)
+        assert ASM not in ent
+        assert ent[1, 4] == BELT
+
+    def test_edit_removes_only_the_touched_one_of_two_adjacent_asms(self):
+        env = FactorioEnv(size=6, max_steps=30, idx=0)
+        env.reset(seed=0)
+        env._world_CWH.zero_()
+        env._world_CWH[FOOT] = 1
+        _place_asm(env, 0, 0)
+        _place_asm(env, 3, 0)
+        _place(env, 3, 2, EMPTY, Direction.NONE.value)
+        ent = env._world_CWH[ENT].numpy().astype(int)
+        assert (ent[0:3, 0:3] == ASM).all()
+        assert (ent[3:6, 0:3] == EMPTY).all()
+        env.close()
