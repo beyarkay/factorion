@@ -1039,12 +1039,12 @@ const result = (kind, seed, thput) => ({
 });
 scanResults = [result('A', 0, 0), result('A', 1, 0.5), result('B', 0, 0)];
 const shown = () => scanResults.filter(inScanFilter).map(r => r.kind + r.seed);
-location.hash = '#scan?lesson=A&only=zero'; applyHash();
+location.hash = '#scan?lesson=A&thput<=0'; applyHash();
 const lessonZeros = shown();
 const summary = els['scan-summary'].innerHTML;
-const filterBar = els['scan-filter'].innerHTML;
+const filterBar = els['scan-filter-status'].innerHTML;
 const stats = els['scan-stats'].innerHTML;
-location.hash = '#scan?only=zero'; applyHash();
+location.hash = '#scan?thput<=0'; applyHash();
 const allZeros = shown();
 location.hash = '#build?lesson=SPLITTER_1IN&seed=9&size=11&clear=2'; applyHash();
 (async () => {
@@ -1069,12 +1069,13 @@ class TestDeepLinks:
         assert "showing 1 of 3" in links["filterBar"]
 
     def test_lesson_table_cells_link_to_their_subset(self, links):
-        for only in ("nonzero", "ref", "eot"):
-            assert f'href="#scan?lesson=A&only={only}"' in links["stats"]
+        for query in ("thput>0", "thput>=0.999", "eot=true"):
+            assert f'href="#scan?lesson=A&{query}"' in links["stats"]
         # The filter being shown links back to the unfiltered gallery.
-        assert 'href="#scan?lesson=A&only=zero"' not in links["stats"]
+        assert 'href="#scan?lesson=A&thput<=0"' not in links["stats"]
         assert '<a href="#scan">1/2 (50%)</a>' in links["stats"]
         assert 'href="#scan?lesson=B"' in links["stats"]
+        assert 'href="#scan?lesson=A"' in links["stats"]
 
     def test_build_hash_regenerates_the_lesson(self, links):
         assert links["load"] == {
@@ -1137,6 +1138,45 @@ def test_lesson_previews_load_once_and_show_and_hide_instantly(tmp_path):
     html = fb.render_index(default_size=11)
     for kind in LessonKind:
         assert f'<label data-lesson="{kind.name}">' in html
+
+
+_FILTER_DRIVER = """
+const r = (kind, thput, steps, eot) => ({
+  kind, thput_normed: thput, thput_raw: thput, steps, seed: 0,
+  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
+  stopped_by: eot ? 'eot' : 'max_steps',
+});
+const rows = [r('MOVE_ONE_ITEM', 0, 10, true), r('SPLITTER_SPLIT', 0.6, 200, false),
+              r('CROSS_UNDER_BELT', 1, 50, true)];
+const run = (text) => {
+  const f = parseFilter(text);
+  if (f.error) return 'error: ' + f.error;
+  return rows.filter(row => f.clauses.every(c => clauseHolds(row, c))).map(x => x.kind);
+};
+({
+  thput: run('thput>=0.5'),
+  eotFalse: run('eot=false'),
+  steps: run('steps<=50'),
+  lessons: run('lesson=move_one_item,cross_under_belt'),
+  notLesson: run('lesson!=MOVE_ONE_ITEM eot=TRUE'),
+  combined: run('thput>0 steps<100'),
+  badField: run('colour=red'),
+  badClause: run('thput'),
+});
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_scan_filter_language(tmp_path):
+    out = _run_page(tmp_path, _FILTER_DRIVER)
+    assert out["thput"] == ["SPLITTER_SPLIT", "CROSS_UNDER_BELT"]
+    assert out["eotFalse"] == ["SPLITTER_SPLIT"]
+    assert out["steps"] == ["MOVE_ONE_ITEM", "CROSS_UNDER_BELT"]
+    assert out["lessons"] == ["MOVE_ONE_ITEM", "CROSS_UNDER_BELT"]
+    assert out["notLesson"] == ["CROSS_UNDER_BELT"]
+    assert out["combined"] == ["CROSS_UNDER_BELT"]
+    assert out["badField"].startswith('error: no field "colour"')
+    assert out["badClause"].startswith('error: can\'t read "thput"')
 
 
 class TestRenderIndexHelpPopover:

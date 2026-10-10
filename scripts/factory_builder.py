@@ -157,6 +157,7 @@ HELP_LINES = [
     "Resize / clear grid: c",
     "Undo / redo: Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y)",
     "Scan seeds tab: rebuild N blanked seeds at once, click a result to open it",
+    "Scan filter: / focuses it, e.g. lesson=A,B thput>=0.5 eot=false steps<=123; Esc clears",
 ]
 
 
@@ -1448,9 +1449,12 @@ def render_index(default_size: int) -> str:
   .scan-stats tr.active {{ background: #e8f0ff; }}
   .scan-filter {{
     margin: 0.4em 0; padding: 0.35em 0.6em; font-size: 0.85em;
-    background: #fff4d6; border: 1px solid #e0b84a; border-radius: 4px;
+    border: 1px solid transparent; border-radius: 4px;
   }}
+  .scan-filter.active {{ background: #fff4d6; border-color: #e0b84a; }}
+  .scan-filter input {{ font-family: monospace; }}
   .scan-filter a {{ font-weight: bold; margin-left: 0.6em; }}
+  .scan-filter .err {{ color: #b00020; }}
   .popup {{
     position: absolute; z-index: 20; background: #fff; padding: 0.4em;
     border: 1px solid #999; border-radius: 5px; font-size: 0.8em;
@@ -1611,7 +1615,13 @@ def render_index(default_size: int) -> str:
   <div class="scan-kinds" id="scan-kinds">{scan_kind_checkboxes}</div>
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
-  <div class="scan-filter" id="scan-filter" hidden></div>
+  <div class="scan-filter" id="scan-filter">
+    <label title="Space-separated clauses that must all hold. Operators: = != &lt; &lt;= &gt; &gt;=. Fields: lesson, thput, raw, steps, seed, placed, invalid, reach, eot. A comma list after = means any of.">
+      filter <input id="scan-q" size="60" spellcheck="false"
+        placeholder="lesson=A,B thput>=0.5 eot=false steps<=123">
+    </label>
+    <span id="scan-filter-status"></span>
+  </div>
   <div class="scan-results" id="scan-results"></div>
 </div>
 
@@ -2588,6 +2598,11 @@ document.addEventListener('keydown', (ev) => {{
     return;
   }}
   if (ev.key === 'z') {{ pickHovered(); ev.preventDefault(); return; }}
+  if (ev.key === '/' && !document.getElementById('tab-scan').hidden) {{
+    document.getElementById('scan-q').focus();
+    ev.preventDefault();
+    return;
+  }}
   if (ev.key === 'Delete' || ev.key === 'Backspace') {{
     clearSelected(); ev.preventDefault(); return;
   }}
@@ -2608,7 +2623,7 @@ document.addEventListener('keydown', (ev) => {{
       if (tgl) tgl.setAttribute('aria-expanded', 'false');
       return;
     }}
-    const filtering = scanFilter.lessons || scanFilter.only;
+    const filtering = scanFilter.clauses.length || scanFilter.error;
     if (!document.getElementById('tab-scan').hidden && filtering) location.hash = '#scan';
     else if (cursor) setCursor(null);
     else if (activeHotbar !== null) setActiveHotbar(activeHotbar);
@@ -2678,50 +2693,92 @@ function switchTab(name) {{
 
 // The URL hash holds the navigable state, so views can be linked, bookmarked
 // and walked back through: #build?lesson=K&seed=N&size=S&clear=C regenerates a
-// lesson, #scan?lesson=A,B&only=SUBSET filters the gallery.
+// lesson, and #scan?CLAUSE&CLAUSE filters the gallery.
 const tabHash = {{ build: '#build', scan: '#scan' }};
 let loadedBuildHash = null;
-let scanFilter = {{ lessons: null, only: null }};
-const SUBSETS = {{
-  zero: r => r.thput_normed <= 0,
-  nonzero: r => r.thput_normed > 0,
-  ref: r => r.thput_normed >= REFERENCE_THPUT,
+
+// Gallery filter: space-separated clauses that must all hold, e.g.
+// `lesson=A,B thput>=0.5 eot=false steps<=123`. A comma list after = or !=
+// means any of; in the URL the clauses are joined with & instead of spaces.
+const FILTER_FIELDS = {{
+  lesson: r => r.kind, thput: r => r.thput_normed, raw: r => r.thput_raw,
+  steps: r => r.steps, seed: r => r.seed, placed: r => r.num_placed_entities,
+  invalid: r => r.invalid_actions, reach: r => r.frac_reachable,
   eot: r => r.stopped_by === 'eot',
 }};
+const CLAUSE = /^([a-z]+)(<=|>=|!=|=|<|>)(.+)$/;
+let scanFilter = {{ text: '', clauses: [], error: null }};
 
-function scanHref(lessons, only) {{
-  const q = new URLSearchParams();
-  if (lessons) q.set('lesson', lessons.join(','));
-  if (only) q.set('only', only);
-  const s = q.toString();
-  const href = '#scan' + (s ? '?' + s : '');
-  // Following a link to the view already shown clears the filter instead.
-  return href === location.hash ? '#scan' : href;
+function parseFilter(text) {{
+  const clauses = [];
+  for (const tok of text.split(/\\s+/).filter(Boolean)) {{
+    const m = CLAUSE.exec(tok);
+    if (!m) {{
+      return {{ text, clauses: [], error: `can't read "${{tok}}"; want field, operator, value, like thput>=0.5` }};
+    }}
+    if (!(m[1] in FILTER_FIELDS)) {{
+      return {{
+        text, clauses: [],
+        error: `no field "${{m[1]}}"; fields are ${{Object.keys(FILTER_FIELDS).join(', ')}}`,
+      }};
+    }}
+    const values = m[3].split(',').map(v =>
+      /^true$/i.test(v) ? true : /^false$/i.test(v) ? false
+        : v !== '' && !isNaN(v) ? Number(v) : v.toUpperCase());
+    clauses.push({{ field: m[1], op: m[2], values }});
+  }}
+  return {{ text, clauses, error: null }};
 }}
 
-const SUBSET_LABELS = {{
-  zero: 'thput = 0', nonzero: 'thput > 0', ref: '≥ reference thput', eot: 'eot fired',
-}};
+function clauseHolds(r, {{ field, op, values }}) {{
+  let v = FILTER_FIELDS[field](r);
+  if (typeof v === 'string') v = v.toUpperCase();
+  if (op === '=') return values.includes(v);
+  if (op === '!=') return !values.includes(v);
+  const x = values[0];
+  return op === '<' ? v < x : op === '<=' ? v <= x : op === '>' ? v > x : v >= x;
+}}
+
+function inScanFilter(r) {{
+  return scanFilter.clauses.every(c => clauseHolds(r, c));
+}}
+
+function scanHash(query) {{
+  const clauses = query.split(/\\s+/).filter(Boolean);
+  return '#scan' + (clauses.length ? '?' + clauses.join('&') : '');
+}}
+
+function scanHref(query) {{
+  const href = scanHash(query);
+  // Following a link to the view already shown clears the filter instead.
+  return href === decodeURIComponent(location.hash) ? '#scan' : href;
+}}
+
+function setScanFilter(text) {{
+  scanFilter = parseFilter(text);
+  const input = document.getElementById('scan-q');
+  if (document.activeElement !== input) input.value = text;
+  renderScan();
+  scanSummary();
+}}
 
 function renderScanFilter() {{
-  const el = document.getElementById('scan-filter');
-  el.hidden = !(scanFilter.lessons || scanFilter.only);
-  if (el.hidden) return;
-  const shown = scanResults.filter(inScanFilter).length;
-  el.innerHTML =
-    `showing ${{shown}} of ${{scanResults.length}}: ` +
-    `<b>${{escHtml((scanFilter.lessons || ['every lesson']).join(', '))}}</b>` +
-    (scanFilter.only ? ' · ' + SUBSET_LABELS[scanFilter.only] : '') +
-    ` <a href="#scan">✕ show all</a> <span class="help">(or Esc)</span>`;
+  const bar = document.getElementById('scan-filter');
+  const status = document.getElementById('scan-filter-status');
+  bar.classList.toggle('active', scanFilter.clauses.length > 0);
+  if (scanFilter.error) {{
+    status.innerHTML = `<span class="err">${{escHtml(scanFilter.error)}}</span>`;
+  }} else if (scanFilter.clauses.length) {{
+    const shown = scanResults.filter(inScanFilter).length;
+    status.innerHTML = `showing ${{shown}} of ${{scanResults.length}}` +
+      ` <a href="#scan">✕ show all</a> <span class="help">(or Esc)</span>`;
+  }} else {{
+    status.innerHTML = '';
+  }}
 }}
 
 function buildHref(kind, seed, size, clear) {{
   return '#build?' + new URLSearchParams({{ lesson: kind, seed, size, clear }});
-}}
-
-function inScanFilter(r) {{
-  return (!scanFilter.lessons || scanFilter.lessons.includes(r.kind)) &&
-    (!scanFilter.only || SUBSETS[scanFilter.only](r));
 }}
 
 function applyHash() {{
@@ -2729,15 +2786,8 @@ function applyHash() {{
   const params = new URLSearchParams(query || '');
   if (tab === 'scan') {{
     tabHash.scan = location.hash;
-    const lessons = params.get('lesson');
-    const only = params.get('only');
-    scanFilter = {{
-      lessons: lessons ? lessons.split(',') : null,
-      only: only in SUBSETS ? only : null,
-    }};
     switchTab('scan');
-    renderScan();
-    scanSummary();
+    setScanFilter(decodeURIComponent(query || '').split('&').join(' '));
     return;
   }}
   switchTab('build');
@@ -2783,7 +2833,7 @@ function scanCard(r, showRef) {{
     ? 'stopped at ' + r.steps
     : 'no stop, ' + r.steps + ' steps';
   const head =
-    `<div class="hd"><a href="${{scanHref([r.kind], null)}}" data-lesson="${{r.kind}}">` +
+    `<div class="hd"><a href="${{scanHref('lesson=' + r.kind)}}" data-lesson="${{r.kind}}">` +
     `${{escHtml(r.kind)}}</a><button class="copy-yaml"` +
     ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>` +
     `<button class="copy-yaml copy-ascii" title="Copy this factory as a two-character text render (render_factory)">txt</button></div>` +
@@ -2855,11 +2905,11 @@ function scanSummary(status) {{
   const zeros = t.filter(v => v <= 0).length;
   const atRef = t.filter(v => v >= REFERENCE_THPUT).length;
   const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
-  const link = (only, text) => `<a href="${{scanHref(null, only)}}">${{text}}</a>`;
+  const link = (query, text) => `<a href="${{scanHref(query)}}">${{text}}</a>`;
   el.innerHTML =
-    `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{link('zero', zeros + ' at zero')}} · ` +
-    `${{link('ref', atRef + ' ≥ reference thput')}} · ` +
-    `${{link('eot', 'eot fired ' + eot + '/' + n)}}` +
+    `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{link('thput<=0', zeros + ' at zero')}} · ` +
+    `${{link('thput>=' + REFERENCE_THPUT, atRef + ' ≥ reference thput')}} · ` +
+    `${{link('eot=true', 'eot fired ' + eot + '/' + n)}}` +
     (status ? '  ·  ' + escHtml(status) : '');
 }}
 
@@ -2894,18 +2944,19 @@ function renderScanStats() {{
     '<tr><th>lesson</th><th>runs</th><th>mean thput</th><th>thput = 0</th>' +
     '<th>thput &gt; 0</th><th>≥ reference thput</th><th>eot fired</th></tr>';
   const body = rows.map(row => {{
-    const link = (only, text) =>
-      `<a href="${{scanHref([row.kind], only)}}">${{text}}</a>`;
-    const active = scanFilter.lessons && scanFilter.lessons.includes(row.kind);
+    const link = (query, text) =>
+      `<a href="${{scanHref(('lesson=' + row.kind + ' ' + query).trim())}}">${{text}}</a>`;
+    const active = scanFilter.clauses.some(c =>
+      c.field === 'lesson' && c.op === '=' && c.values.includes(row.kind));
     return `<tr${{active ? ' class="active"' : ''}}>` +
-      `<td class="kind" data-lesson="${{row.kind}}">${{link(null, escHtml(row.kind))}}</td>` +
+      `<td class="kind" data-lesson="${{row.kind}}">${{link('', escHtml(row.kind))}}</td>` +
       `<td>${{row.n}}</td>` +
       `<td>${{row.mean.toFixed(3)}}</td>` +
-      `<td>${{link('zero', frac(row.n - row.nonzero, row.n))}}</td>` +
+      `<td>${{link('thput<=0', frac(row.n - row.nonzero, row.n))}}</td>` +
       `<td style="color:${{fracColor(row.nonzero / row.n)}}">` +
-      `${{link('nonzero', frac(row.nonzero, row.n))}}</td>` +
-      `<td>${{link('ref', frac(row.atRef, row.n))}}</td>` +
-      `<td>${{link('eot', frac(row.eot, row.n))}}</td></tr>`;
+      `${{link('thput>0', frac(row.nonzero, row.n))}}</td>` +
+      `<td>${{link('thput>=' + REFERENCE_THPUT, frac(row.atRef, row.n))}}</td>` +
+      `<td>${{link('eot=true', frac(row.eot, row.n))}}</td></tr>`;
   }}).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
 }}
@@ -3148,6 +3199,23 @@ function bindScan() {{
   document.getElementById('scan-clear-results').addEventListener('click', clearScan);
   document.getElementById('scan-sort').addEventListener('change', renderScan);
   document.getElementById('scan-ref').addEventListener('change', renderScan);
+  const q = document.getElementById('scan-q');
+  q.addEventListener('input', () => {{
+    const parsed = parseFilter(q.value);
+    if (parsed.error) {{
+      scanFilter = {{ ...scanFilter, error: parsed.error }};
+      renderScanFilter();
+      return;
+    }}
+    const hash = scanHash(q.value);
+    history.replaceState(null, '', hash);
+    tabHash.scan = hash;
+    setScanFilter(q.value);
+  }});
+  q.addEventListener('keydown', (ev) => {{
+    if (ev.key === 'Escape') {{ location.hash = '#scan'; q.value = ''; q.blur(); }}
+    if (ev.key === 'Enter') q.blur();
+  }});
   document.addEventListener('change', savePrefs);
   window.addEventListener('pagehide', savePrefs);
   syncScanRunLabel();
