@@ -779,3 +779,45 @@ cache, so their iter 1 is ~3× shorter and their wall time is lower.
 - **Compile and CUDA graphs are fine.** No graph breaks. Warmup builds 3
   graphs, and the unfreeze recompiles once (to 6). Nothing re-records after
   that.
+
+---
+
+# PPO held-out eval cadence (#473: eval ~84% → ~18% of wall time)
+
+Best-of-8 (#471) made each `eval/` rollout 8× the work, but PPO kept its
+greedy-era knobs (12 seeds per kind, every 7 iterations). All runs below are
+`ppo --start-from 8gqpfppb --total-timesteps 100000` on RTX A4000s. An
+"iteration" here is a joint (post-critic-warmup) PPO iteration: rollout plus
+update, about 4.1–4.8 s in bf16 and 8.5 s in fp32.
+
+| precision | seeds per kind | `eval_num_envs` | `perf/eval_seconds` | ≈ iterations | run |
+|---|---|---|---|---|---|
+| bf16 | 12 | 8 | 166–184 | 36 | [j02e5huk](https://wandb.ai/beyarkay/factorion/runs/j02e5huk) |
+| bf16 | 4 | 8 | 43–46 | 11 | [fa87zms1](https://wandb.ai/beyarkay/factorion/runs/fa87zms1) |
+| fp32 | 12 | 8 | 198–214 | 24 | [llgf4m12](https://wandb.ai/beyarkay/factorion/runs/llgf4m12) |
+| fp32 | 12 | 64 | 232–248 | 28 | [xbtjacpt](https://wandb.ai/beyarkay/factorion/runs/xbtjacpt) |
+| fp32 | 6 | 8 | 104–106 | 12 | [x3oj14l6](https://wandb.ai/beyarkay/factorion/runs/x3oj14l6) |
+| fp32 | 4 | 8 | 70–79 | 9 | [gldhe1px](https://wandb.ai/beyarkay/factorion/runs/gldhe1px) |
+
+- **An eval's cost is linear in seeds per kind** (fp32: ~16 s per seed plus
+  ~8 s).
+- **bf16 speeds training far more than the eval.** One eval goes from 24 to
+  36 iterations, so at every 7 iterations the eval took ~84% of wall time.
+- **`eval_num_envs` stays 8.** 64 (512 envs) was 15% slower, because every
+  step forwards all K slots. The wide batch keeps paying for idle slots
+  until its last rollout ends. Scores are identical at both widths, as the
+  per-sample seeding promises. SFT's "64 is 2× faster" was 8 → 64 envs at
+  best-of-1, and PPO already runs 64.
+- **Chosen: 4 seeds, every 50 iterations.**
+  - Eval share ≈ 18% on the A4000 (bf16). On the 6000 Ada (bf16, #476's
+    ~84 s 12-seed eval at ~2.0 s per iteration) it is ~20%.
+  - A 1M-timestep run gets 5 evals (with the final one), a 5M run 25.
+  - A 1M A4000 run drops from ~2 h to ~25 min.
+- **Noise cost.** Bounding each factory's variance by m(1−m) from the
+  per-lesson means, `eval/thput@8`'s standard error rises from ≤ 0.031
+  (12 seeds) to ≤ 0.054 (4). Comparing checkpoints is less noisy than
+  that, because every eval scores the same factories. The first eval
+  (actor still frozen, so this is the SFT policy) scored 0.425 / 0.439 /
+  0.434 at 12 / 6 / 4 seeds; the smaller sets are subsets of the larger.
+  `eval/trial_thput@8` now rests on 12 factories, so expect it to jump
+  around.
