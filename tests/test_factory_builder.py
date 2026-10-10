@@ -871,6 +871,12 @@ let posted = null;
 const posts = [];
 globalThis.fetch = async (url, opts) => {
   if (opts && opts.body) posts.push({ url, body: JSON.parse(opts.body) });
+  if (url === '/lesson_previews') {
+    const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
+                   footprint: 'AVAILABLE' };
+    return { json: async () => ({ SPLITTER_1IN: { grid: [[cell]], used_seed: 0,
+                                                   total_entities: 0 } }) };
+  }
   if (url === '/load_lesson') {
     const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
                    footprint: 'AVAILABLE' };
@@ -1104,23 +1110,25 @@ const el = { dataset: { lesson: 'SPLITTER_1IN' },
              getBoundingClientRect: () => ({ left: 10, bottom: 20 }) };
 globalThis.scrollX = 0; globalThis.scrollY = 0;
 (async () => {
+  await loadLessonPreviews(SIZE);
   popupOwner = el;
-  await showLessonPopup(el);
-  await showLessonPopup(el);
+  showLessonPopup(el);
   const pop = document.getElementById('popup');
-  return { hidden: pop.hidden, html: pop.innerHTML, top: pop.style.top,
-           loads: posts.filter(p => p.url === '/load_lesson').map(p => p.body) };
+  const shown = { hidden: pop.hidden, html: pop.innerHTML, top: pop.style.top };
+  hideLessonPopup();
+  return { ...shown, hiddenAfter: pop.hidden,
+           loads: posts.filter(p => p.url === '/lesson_previews').map(p => p.body) };
 })();
 """
 
 
 @pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
-def test_hovering_a_lesson_previews_its_reference_once(tmp_path):
+def test_lesson_previews_load_once_and_show_and_hide_instantly(tmp_path):
     out = _run_page(tmp_path, _POPUP_DRIVER)
     assert out["hidden"] is False and "SPLITTER_1IN" in out["html"]
     assert out["top"] == "24px"
-    assert out["loads"] == [{"kind": "SPLITTER_1IN", "seed": 0, "size": 11,
-                             "num_missing_entities": 0}]
+    assert out["hiddenAfter"] is True
+    assert out["loads"] == [{"size": 11}]
     html = fb.render_index(default_size=11)
     for kind in LessonKind:
         assert f'<label data-lesson="{kind.name}">' in html

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import json
 import os
@@ -407,6 +408,18 @@ def _load_lesson(
         "total_entities": int(factory.total_entities),
         "num_removed": int(num_removed),
     }
+
+
+@functools.lru_cache(maxsize=4)
+def _lesson_previews(size: int) -> dict:
+    """Every lesson's seed-0 reference at `size`, for the page's hover previews."""
+    previews = {}
+    for kind in LessonKind:
+        try:
+            previews[kind.name] = _load_lesson(kind.name, 0, size)
+        except Exception as e:
+            previews[kind.name] = {"error": f"{type(e).__name__}: {e}"}
+    return previews
 
 
 def render_graph_png(grid: list[list[dict]]) -> dict:
@@ -1436,7 +1449,7 @@ def render_index(default_size: int) -> str:
   .popup {{
     position: absolute; z-index: 20; background: #fff; padding: 0.4em;
     border: 1px solid #999; border-radius: 5px; font-size: 0.8em;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); pointer-events: none;
   }}
   .popup .hd {{ font-weight: bold; }}
   .popup .sub {{ color: #666; margin-bottom: 0.3em; }}
@@ -3042,48 +3055,60 @@ function loadPrefs() {{
 }}
 
 // Gwern-style previews: hovering any lesson name shows that lesson's reference
-// factory, so a name in a list is never just a name.
-const lessonPreviews = new Map();
-let popupTimer = null;
+// factory. Every preview is fetched once up front, since the single-threaded
+// server can be busy with a scan for minutes at a time.
+const lessonPreviews = new Map();  // size -> {{kind: preview}}, once loaded
 let popupOwner = null;
 
-function lessonPreview(kind) {{
-  const key = kind + '@' + SIZE;
-  if (!lessonPreviews.has(key)) {{
-    lessonPreviews.set(key, fetch('/load_lesson', {{
+async function loadLessonPreviews(size) {{
+  if (lessonPreviews.has(size)) return;
+  lessonPreviews.set(size, null);
+  try {{
+    const resp = await fetch('/lesson_previews', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ kind, seed: 0, size: SIZE, num_missing_entities: 0 }}),
-    }}).then(resp => resp.json()));
+      body: JSON.stringify({{ size }}),
+    }});
+    lessonPreviews.set(size, await resp.json());
+  }} catch (_) {{
+    lessonPreviews.delete(size);
   }}
-  return lessonPreviews.get(key);
+  if (popupOwner) showLessonPopup(popupOwner);
 }}
 
-async function showLessonPopup(el) {{
+function showLessonPopup(el) {{
   const kind = el.dataset.lesson;
-  const data = await lessonPreview(kind);
-  if (popupOwner !== el) return;
+  const previews = lessonPreviews.get(SIZE);
+  if (!previews) loadLessonPreviews(SIZE);
+  const data = previews && previews[kind];
   const pop = document.getElementById('popup');
-  pop.innerHTML = data.error
-    ? escHtml(data.error)
-    : `<div class="hd">${{escHtml(kind)}}</div>` +
-      `<div class="sub">seed ${{data.used_seed}} reference · ` +
-      `${{data.total_entities}} entities</div>${{miniGrid(data.grid)}}`;
+  pop.innerHTML = !data
+    ? escHtml(kind) + ': loading preview…'
+    : data.error
+      ? escHtml(data.error)
+      : `<div class="hd">${{escHtml(kind)}}</div>` +
+        `<div class="sub">seed ${{data.used_seed}} reference · ` +
+        `${{data.total_entities}} entities</div>${{miniGrid(data.grid)}}`;
   const rect = el.getBoundingClientRect();
   pop.style.left = (window.scrollX + rect.left) + 'px';
   pop.style.top = (window.scrollY + rect.bottom + 4) + 'px';
   pop.hidden = false;
 }}
 
+function hideLessonPopup() {{
+  popupOwner = null;
+  document.getElementById('popup').hidden = true;
+}}
+
 document.addEventListener('mouseover', (ev) => {{
-  if (ev.target.closest('#popup')) {{ clearTimeout(popupTimer); return; }}
   const el = ev.target.closest('[data-lesson]');
-  if (el === popupOwner) {{ clearTimeout(popupTimer); return; }}
-  clearTimeout(popupTimer);
+  if (el === popupOwner) return;
+  if (!el) {{ hideLessonPopup(); return; }}
   popupOwner = el;
-  popupTimer = el
-    ? setTimeout(() => showLessonPopup(el), 300)
-    : setTimeout(() => {{ document.getElementById('popup').hidden = true; }}, 200);
+  showLessonPopup(el);
+}});
+document.addEventListener('mouseout', (ev) => {{
+  if (!ev.relatedTarget) hideLessonPopup();
 }});
 
 function bindScan() {{
@@ -3116,6 +3141,7 @@ bindScan();
 refreshModelInfo();
 computeThroughput();
 applyHash();
+loadLessonPreviews(SIZE);
 </script>
 <div class="popup" id="popup" hidden></div>
 </body></html>"""
@@ -3217,6 +3243,7 @@ class Handler(BaseHTTPRequestHandler):
             "/hand_edit",
             "/load_model",
             "/load_lesson",
+            "/lesson_previews",
             "/batch_rollout",
             "/factory_yaml",
             "/render",
@@ -3253,6 +3280,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/hand_edit":
                 result = _hand_edit(payload["grid"], payload["ops"])
+            elif self.path == "/lesson_previews":
+                result = _lesson_previews(int(payload["size"]))
             elif self.path == "/load_lesson":
                 result = _load_lesson(
                     kind_name=payload["kind"],
