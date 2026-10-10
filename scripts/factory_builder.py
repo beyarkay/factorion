@@ -852,7 +852,6 @@ def _predict_action(grid: list[list[dict]]) -> dict:
 
 # ── Batched seed scan ────────────────────────────────────────────────────────
 
-ALL_KINDS_SENTINEL = "__ALL__"
 ROLLOUT_BATCH_SIZE = 64
 """Rollouts advanced in lockstep per batched forward. Every slot stays in the
 batch until the last of its group finishes, so a wider batch mostly buys stale
@@ -1004,16 +1003,12 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
         size = int(payload.get("size", 15))
         count = max(1, int(payload.get("count", 10)))
         start_seed = int(payload.get("seed", 0))
-        kind_name = payload.get("kind") or ALL_KINDS_SENTINEL
-        if kind_name == ALL_KINDS_SENTINEL:
-            # Cycle kinds before seeds so a scan of N < len(LessonKind) is a
-            # breadth-first sweep of setups, which is what "one of each" means.
-            every = list(LessonKind)
-            kinds = [every[i % len(every)] for i in range(count)]
-            seeds = [start_seed + i // len(every) for i in range(count)]
-        else:
-            kinds = [LessonKind[kind_name]] * count
-            seeds = [start_seed + i for i in range(count)]
+        chosen = [LessonKind[name] for name in payload.get("kinds", [])]
+        if not chosen:
+            raise ValueError("no lessons selected")
+        # Kinds cycle before seeds so a stopped scan still covers every lesson.
+        kinds = [kind for _ in range(count) for kind in chosen]
+        seeds = [start_seed + i for i in range(count) for _ in chosen]
         clear = payload.get("num_missing_entities")
         num_missing = None if clear in (None, "") else max(0, int(clear))
         yield from _batch_rollout(
@@ -1105,9 +1100,9 @@ def render_index(default_size: int) -> str:
     lesson_options = "".join(
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
-    scan_lesson_options = (
-        f'<option value="{ALL_KINDS_SENTINEL}">(every kind)</option>'
-        + lesson_options
+    scan_kind_checkboxes = "".join(
+        f'<label><input type="checkbox" value="{k.name}" checked> {k.name}</label>'
+        for k in LessonKind
     )
 
     # Model loader is collapsed by default — switching models is rare
@@ -1341,6 +1336,10 @@ def render_index(default_size: int) -> str:
   .tabs button.active {{
     background: #fff; color: #111; font-weight: bold; border-bottom-color: #fff;
   }}
+  .scan-kinds {{
+    display: flex; flex-wrap: wrap; gap: 0.15em 0.9em; font-size: 0.78em;
+    margin: 0.4em 0;
+  }}
   .scan-summary {{
     font-family: monospace; font-size: 0.85em; margin: 0.5em 0;
     padding: 0.4em 0.6em; background: #f4f4f4; border-radius: 4px;
@@ -1467,13 +1466,10 @@ def render_index(default_size: int) -> str:
 
 <div id="tab-scan" hidden>
   <div class="controls action-row">
-    <label>lesson
-      <select id="scan-kind">{scan_lesson_options}</select>
+    <label title="How many seeds of each ticked lesson to add per click">
+      seeds per lesson <input id="scan-count" type="number" min="1" value="50">
     </label>
-    <label title="How many rollouts to add per click. With '(every kind)' the kinds cycle first, so N = the number of kinds gives one seed of each.">
-      rollouts <input id="scan-count" type="number" min="1" value="50">
-    </label>
-    <label title="Seed the next batch starts from. Advances by the rollout count after each run, so repeated clicks keep drawing fresh factories.">
+    <label title="Seed the next batch starts from. Advances by the seed count after each run, so repeated clicks keep drawing fresh factories.">
       start seed <input id="scan-seed" type="number" value="0" step="1">
     </label>
     <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
@@ -1498,14 +1494,17 @@ def render_index(default_size: int) -> str:
     <button id="scan-stop" disabled>Stop</button>
     <button id="scan-clear-results" title="Throw away everything scanned so far">clear</button>
   </div>
+  <div class="scan-kinds" id="scan-kinds">
+    <button type="button" id="scan-kinds-all">all</button>
+    <button type="button" id="scan-kinds-none">none</button>
+    {scan_kind_checkboxes}
+  </div>
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
   <div class="scan-results" id="scan-results"></div>
 </div>
 
 <script>
-const ALL_KINDS = '{ALL_KINDS_SENTINEL}';
-const NUM_LESSON_KINDS = {len(list(LessonKind))};
 const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
@@ -2585,9 +2584,14 @@ async function runScan() {{
       'no model loaded — load one from the Build tab first';
     return;
   }}
+  const kinds = checkedScanKinds();
+  if (!kinds.length) {{
+    document.getElementById('scan-summary').textContent = 'tick at least one lesson';
+    return;
+  }}
   const clearRaw = parseInt(document.getElementById('scan-clear').value, 10);
   const body = {{
-    kind: document.getElementById('scan-kind').value,
+    kinds,
     count: parseInt(document.getElementById('scan-count').value, 10) || 1,
     seed: parseInt(document.getElementById('scan-seed').value, 10) || 0,
     size: SIZE,
@@ -2599,14 +2603,14 @@ async function runScan() {{
   // unique across runs and keep the server's within-run ordering, which is
   // what the "run order" sort reads.
   const indexBase = scanIndexBase;
-  scanIndexBase += body.count;
+  scanIndexBase += body.count * kinds.length;
   const before = scanResults.length;
   scanAbort = new AbortController();
   runBtn.disabled = true;
   stopBtn.disabled = false;
   const started = performance.now();
   const showRef = document.getElementById('scan-ref').checked;
-  let total = body.count;
+  let total = body.count * kinds.length;
   scanSummary('generating ' + total + ' factories at size ' + SIZE + '…');
   try {{
     const resp = await fetch('/batch_rollout', {{
@@ -2655,12 +2659,8 @@ async function runScan() {{
     }}
     renderScan();
     // Advance the seed so the next click draws fresh factories rather than
-    // rebuilding the same ones. "(every kind)" cycles kinds before seeds, so
-    // its run only consumes count/kinds seeds.
-    const seedInput = document.getElementById('scan-seed');
-    seedInput.value = body.seed + (body.kind === ALL_KINDS
-      ? Math.ceil(body.count / NUM_LESSON_KINDS)
-      : body.count);
+    // rebuilding the same ones.
+    document.getElementById('scan-seed').value = body.seed + body.count;
     const secs = (performance.now() - started) / 1000;
     scanSummary(
       'added ' + (scanResults.length - before) + ' in ' + secs.toFixed(1) + 's'
@@ -2687,9 +2687,22 @@ function clearScan() {{
   scanSummary('');
 }}
 
+function checkedScanKinds() {{
+  return [...document.querySelectorAll('#scan-kinds input:checked')]
+    .map(el => el.value);
+}}
+
 function syncScanRunLabel() {{
   const c = parseInt(document.getElementById('scan-count').value, 10) || 1;
-  document.getElementById('scan-run').textContent = 'Run +' + c;
+  document.getElementById('scan-run').textContent =
+    'Run +' + c + ' × ' + checkedScanKinds().length;
+}}
+
+function setScanKinds(checked) {{
+  document.querySelectorAll('#scan-kinds input').forEach(el => {{
+    el.checked = checked;
+  }});
+  syncScanRunLabel();
 }}
 
 function bindScan() {{
@@ -2700,6 +2713,9 @@ function bindScan() {{
     if (scanAbort) scanAbort.abort();
   }});
   document.getElementById('scan-count').addEventListener('input', syncScanRunLabel);
+  document.getElementById('scan-kinds').addEventListener('change', syncScanRunLabel);
+  document.getElementById('scan-kinds-all').addEventListener('click', () => setScanKinds(true));
+  document.getElementById('scan-kinds-none').addEventListener('click', () => setScanKinds(false));
   document.getElementById('scan-clear-results').addEventListener('click', clearScan);
   document.getElementById('scan-sort').addEventListener('change', renderScan);
   document.getElementById('scan-ref').addEventListener('change', renderScan);

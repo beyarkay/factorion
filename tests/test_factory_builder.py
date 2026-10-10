@@ -795,7 +795,9 @@ const stub = () => {
 };
 globalThis.document = {
   getElementById: (id) => (els[id] ??= stub()), createElement: () => stub(),
-  addEventListener: () => {}, querySelectorAll: () => [], body: stub(),
+  addEventListener: () => {}, body: stub(),
+  querySelectorAll: (sel) => sel.startsWith('#scan-kinds')
+    ? [{ value: 'MIRRORED_1IN' }, { value: 'SPLITTER_1IN' }] : [],
 };
 globalThis.addEventListener = () => {};
 globalThis.window = globalThis;
@@ -803,7 +805,12 @@ globalThis.performance = { now: () => 0 };
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.setTimeout = () => 0;
-globalThis.fetch = async () => ({ json: async () => ({}) });
+let posted = null;
+globalThis.fetch = async (url, opts) => {
+  if (url !== '/batch_rollout') return { json: async () => ({}) };
+  posted = JSON.parse(opts.body);
+  return { ok: false, status: 500 };
+};
 
 const driver = `
 const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
@@ -821,14 +828,20 @@ scanResults = [
   result('HALF_ZERO', 0, 0), result('HALF_ZERO', 1, 1.0),
 ];
 renderScanStats();
-({
+modelLoaded = true;
+document.getElementById('scan-count').value = '32';
+document.getElementById('scan-seed').value = '5';
+syncScanRunLabel();
+(async () => (await runScan(), {
+  posted,
+  runLabel: document.getElementById('scan-run').textContent,
   kind: document.getElementById('lesson-kind').value,
   seed: document.getElementById('lesson-seed').value,
   zeroBorder: zero.style.borderLeftColor, lowBorder: low.style.borderLeftColor,
   stats: els['scan-stats'].innerHTML,
-});
+}))();
 `;
-console.log(JSON.stringify(eval(src + driver)));
+console.log(JSON.stringify(await eval(src + driver)));
 """
 
 
@@ -863,6 +876,11 @@ class TestScanGallery:
 
     def test_lessons_rank_by_fraction_above_zero(self, out):
         assert out["stats"].index("HALF_ZERO") < out["stats"].index("ALWAYS_LOW")
+
+    def test_run_requests_the_seed_count_for_every_ticked_lesson(self, out):
+        assert out["posted"]["kinds"] == ["MIRRORED_1IN", "SPLITTER_1IN"]
+        assert (out["posted"]["count"], out["posted"]["seed"]) == (32, 5)
+        assert out["runLabel"] == "Run +32 × 2"
 
 
 class TestRenderIndexHelpPopover:
@@ -934,7 +952,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 3, "seed": 0, "size": 5}
+                {"kinds": ["MOVE_ONE_ITEM"], "count": 3, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -953,7 +971,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 1, "seed": 7, "size": 11}
+                {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 7, "size": 11}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -965,23 +983,30 @@ class TestBatchRollout:
             c["entity"] != "empty" for row in result["solved_grid"] for c in row
         )
 
-    def test_every_kind_cycles_kinds_before_seeds(self):
-        """One rollout per LessonKind at the same seed, so a scan sized to
-        the kind count is a breadth-first sweep of setups."""
+    def test_count_seeds_of_each_lesson_kinds_first(self):
         path = _make_tiny_checkpoint(size=4, chan=8)
         try:
             fb._load_checkpoint(str(path))
             events = self._scan({
-                "kind": fb.ALL_KINDS_SENTINEL,
-                "count": len(list(LessonKind)),
+                "kinds": ["MOVE_ONE_ITEM", "SPLITTER_SPLIT"],
+                "count": 2,
                 "seed": 4,
-                "size": 15,
+                "size": 11,
             })
         finally:
             path.unlink(missing_ok=True)
-        results = [e for e in events if e["type"] == "result"]
-        assert {r["kind"] for r in results} == {k.name for k in LessonKind}
-        assert all(r["seed"] == 4 for r in results)
+        assert events[0] == {"type": "start", "n": 4}
+        results = sorted(
+            (e for e in events if e["type"] == "result"), key=lambda r: r["index"]
+        )
+        assert [(r["kind"], r["seed"]) for r in results] == [
+            ("MOVE_ONE_ITEM", 4), ("SPLITTER_SPLIT", 4),
+            ("MOVE_ONE_ITEM", 5), ("SPLITTER_SPLIT", 5),
+        ]
+
+    def test_no_lessons_yields_an_error_event(self):
+        events = self._scan({"kinds": [], "count": 1, "size": 11})
+        assert events[-1]["type"] == "error"
 
     def test_runs_more_rollouts_than_one_batch(self, monkeypatch):
         """A count above the lockstep batch width runs as back-to-back
@@ -991,7 +1016,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 5, "seed": 0, "size": 5}
+                {"kinds": ["MOVE_ONE_ITEM"], "count": 5, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -1008,7 +1033,7 @@ class TestBatchRollout:
         try:
             fb._load_checkpoint(str(path))
             events = self._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 7, "seed": 0, "size": 5}
+                {"kinds": ["MOVE_ONE_ITEM"], "count": 7, "seed": 0, "size": 5}
             )
         finally:
             path.unlink(missing_ok=True)
@@ -1019,12 +1044,12 @@ class TestBatchRollout:
         """The response headers are already sent by the time the scan
         runs, so failures have to travel in-band rather than as an
         exception."""
-        events = self._scan({"kind": "NOT_A_LESSON", "count": 1, "size": 11})
+        events = self._scan({"kinds": ["NOT_A_LESSON"], "count": 1, "size": 11})
         assert events[-1]["type"] == "error"
         assert "NOT_A_LESSON" in events[-1]["error"]
 
     def test_missing_checkpoint_yields_an_error_event(self):
-        events = self._scan({"kind": "MOVE_ONE_ITEM", "count": 1, "size": 11})
+        events = self._scan({"kinds": ["MOVE_ONE_ITEM"], "count": 1, "size": 11})
         assert events[-1]["type"] == "error"
         assert "checkpoint" in events[-1]["error"]
 
@@ -1037,12 +1062,13 @@ class TestRenderIndexScanTab:
         html = fb.render_index(default_size=11)
         assert 'data-tab="scan"' in html and 'data-tab="build"' in html
         for element_id in (
-            "scan-kind", "scan-count", "scan-seed", "scan-clear", "scan-mask",
+            "scan-kinds", "scan-count", "scan-seed", "scan-clear", "scan-mask",
             "scan-ref", "scan-sort", "scan-run", "scan-stop", "scan-results",
             "scan-summary", "scan-stats", "scan-clear-results",
         ):
             assert f'id="{element_id}"' in html, element_id
-        assert f'<option value="{fb.ALL_KINDS_SENTINEL}">' in html
+        for kind in LessonKind:
+            assert f'<input type="checkbox" value="{kind.name}" checked>' in html
         # Worst-first by default: a scan is run to find the failures.
         assert '<option value="worst" selected>' in html
 
@@ -1067,7 +1093,7 @@ class TestRenderIndexScanTab:
         try:
             fb._load_checkpoint(str(path))
             events = TestBatchRollout._scan(
-                {"kind": "MOVE_ONE_ITEM", "count": 1, "seed": 1, "size": 11}
+                {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 1, "size": 11}
             )
         finally:
             path.unlink(missing_ok=True)
