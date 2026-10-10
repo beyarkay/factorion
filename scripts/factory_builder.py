@@ -1336,10 +1336,8 @@ def render_index(default_size: int) -> str:
   .tabs button.active {{
     background: #fff; color: #111; font-weight: bold; border-bottom-color: #fff;
   }}
-  .scan-kinds {{
-    display: flex; flex-wrap: wrap; gap: 0.15em 0.9em; font-size: 0.78em;
-    margin: 0.4em 0;
-  }}
+  .scan-kinds {{ columns: 20em; column-gap: 1.5em; font-size: 0.78em; margin: 0.4em 0; }}
+  .scan-kinds label {{ display: block; white-space: nowrap; }}
   .scan-summary {{
     font-family: monospace; font-size: 0.85em; margin: 0.5em 0;
     padding: 0.4em 0.6em; background: #f4f4f4; border-radius: 4px;
@@ -1494,11 +1492,12 @@ def render_index(default_size: int) -> str:
     <button id="scan-stop" disabled>Stop</button>
     <button id="scan-clear-results" title="Throw away everything scanned so far">clear</button>
   </div>
-  <div class="scan-kinds" id="scan-kinds">
+  <div class="controls">
+    lessons
     <button type="button" id="scan-kinds-all">all</button>
     <button type="button" id="scan-kinds-none">none</button>
-    {scan_kind_checkboxes}
   </div>
+  <div class="scan-kinds" id="scan-kinds">{scan_kind_checkboxes}</div>
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
   <div class="scan-results" id="scan-results"></div>
