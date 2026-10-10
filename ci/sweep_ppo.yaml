@@ -1,4 +1,4 @@
-# ci/sweep_ppo.yaml — peaks + shape of the independent actor/critic WSD LR envelopes
+# ci/sweep_ppo.yaml — wide, short screen for PPO settings that don't collapse the SFT base.
 #
 # Launched with: /ci sweep ppo
 # Sweep results are reported (ci sweep-report), not auto-applied —
@@ -9,70 +9,62 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# Everything but the two LR envelopes stays at the training_config.py defaults;
-# the sweep picks the peaks and the shape knobs the envelopes added:
-#   - learning_rate: the peak the actor's stable phase holds for most of the
-#     run, so the single most consequential number here. The previous default
-#     was tuned under the linear whole-run anneal, which spends most of its
-#     steps well below peak — the best WSD peak may well sit lower, so the
-#     range reaches further down than up.
-#   - critic_lr: the critic's peak. Only the value head rides it, so the
-#     range is wide — it reaches both below the actor's band and above it.
-#   - lr_warmup_iters: an absolute iteration count, so what wins transfers
-#     unchanged to runs of any length; 0 is in range so the sweep can say the
-#     ramp is worthless. Only the actor has one — the critic-warmup freeze is
-#     the critic's warmup.
-#   - *_cooldown_frac: Hägele et al. report the benefit plateauing near 20%
-#     and as little as 5% sufficing on long runs; swept past both ends.
-#   - *_min_ratio: 0 (decay to zero) is in range, so the sweep can tell us
-#     whether a nonzero floor is worth anything. The critic's range reaches
-#     higher — keeping the value head learning while the actor cools is the
-#     point of scheduling the two independently.
+# At the training_config defaults PPO destroys the base (run 6etby4zk:
+# eval/thput 0.43 -> 0.03 over 1M steps, almost all of it tile-head drift).
+# Rollout and update log-probs agree exactly (approx_kl == 0 while the actor
+# is frozen), so this screens step size and batch noise, not a bug:
+#   - learning_rate: lr 1e-5 already hits target_kl 0.02 on the second joint
+#     iteration, so the range reaches far below the default.
+#   - update_epochs, target_kl: the rest of how far one batch moves the policy.
+#   - divergence_penalty: up to 1, where the KL anchor dominates the PG loss.
+#   - ent_coef_start: the bonus spans ~225 tile choices; annealed to 0.
+#   - num_steps: episodes run ~150 steps, so 256 x 16 envs holds only ~25
+#     episodes per update; 1024 holds ~100.
+# Warmups are pinned short in iterations so every batch size gets the same
+# steps of joint training. The metric is one final eval at 12 factories per
+# lesson (standard error ~0.03); a run that holds the base's val/thput@8
+# (0.53 for mvbipbr0) didn't collapse.
 #
-# 1M timesteps ≈ 244 iterations (~1 h/run): long enough that the stable phase
-# and the cooldown both register in eval/thput@8, short enough that 25 bayes
-# runs drain in about a pod-day.
+# Stage 2: narrow to the non-collapsing region, longer runs, bayes.
 
-method: bayes
-run_cap: 25
+method: random
+run_cap: 40
 metric:
   name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:
-  # ── Peaks ────────────────────────────────────────────────────────
+  lr_warmup_iters:
+    value: 5
+  critic_warmup:
+    value: 5
+  ent_coef_end:
+    value: 0.0
+  eval_every:
+    value: 1000
+  eval_seeds_per_kind:
+    value: 12
+
   learning_rate:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 1e-4
-  critic_lr:
+    min: 3.0e-7
+    max: 1.0e-4
+  update_epochs:
+    values: [1, 2, 4, 8]
+  target_kl:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 3e-4
-
-  # ── Warmup ───────────────────────────────────────────────────────
-  lr_warmup_iters:
-    distribution: int_uniform
-    min: 0
-    max: 40
-
-  # ── Cooldown ─────────────────────────────────────────────────────
-  lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  critic_lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.1
-  critic_lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.3
+    min: 0.001
+    max: 0.05
+  divergence_penalty:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 1.0
+  ent_coef_start:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 3.0e-2
+  num_steps:
+    values: [256, 1024]
 
 program: ppo.py
 
@@ -81,8 +73,8 @@ command:
   - python
   - ${program}
   - --start-from
-  - hcozpmwt
+  - mvbipbr0
   - --total-timesteps
-  - 1_000_000
+  - 500_000
   - --track
   - ${args}
