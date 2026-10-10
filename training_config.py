@@ -218,8 +218,9 @@ class PpoArgs(SharedArgs):
     """Held-out factories per LessonKind in the eval set."""
     eval_num_envs: int = 8
     """Held-out factories rolled out in parallel, each over eval_best_of envs."""
-    amp: bool = False
-    """Run the policy/value forward passes under bf16 autocast (mixed precision)."""
+    amp: bool = True
+    """run the encoder forward under bf16 autocast on CUDA; the heads, log-probs
+    and losses stay fp32. bf16 is what unlocks the flash-attention kernel."""
     async_envs: bool = False
     """Run the training envs in worker processes (gym AsyncVectorEnv) instead of
     serially (SyncVectorEnv)."""
