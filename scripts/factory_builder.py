@@ -1020,7 +1020,7 @@ def _batch_rollout(
     same choice.
 
     One greedy (argmax, legal-tile-masked) rollout per factory, where
-    ``eval/thput`` scores the best of several sampled ones: the scan shows the
+    ``eval/thput@N`` scores the best of several sampled ones: the scan shows the
     single factory the model considers most likely, finished where its EOT head
     says.
     """

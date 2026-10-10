@@ -111,7 +111,8 @@ class SharedArgs:
     """Tags to apply to the wandb run."""
     eval_best_of: int = 8
     """sampled rollouts per held-out factory in the rollout eval (SFT val/,
-    PPO eval/); each factory scores the best of them."""
+    PPO eval/); each factory scores the best of them. Every metric that rollout
+    produces is logged as `<key>@N`; an unsuffixed metric is best-of-1."""
 
 
 @dataclass
@@ -317,7 +318,7 @@ class SftArgs(SharedArgs):
     each eval. Disable to skip the slow rollout (val accuracy still logged)."""
     eval_rollouts_max_seeds: int = 400
     """cap on val seeds per rollout eval — the sample size of the selection
-    metric (val/thput), so it sets its noise floor. Drawn from val lessons."""
+    metric (val/thput@N), so it sets its noise floor. Drawn from val lessons."""
     eval_rollouts_num_envs: int = 64
     """val factories rolled out in parallel, each over eval_best_of envs;
     batches the CNN forward across them"""
