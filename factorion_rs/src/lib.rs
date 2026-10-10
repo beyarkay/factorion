@@ -395,5 +395,6 @@ fn factorion_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_lesson_is_trial, m)?)?;
     m.add_function(wrap_pyfunction!(build_factory, m)?)?;
     m.add_function(wrap_pyfunction!(render_factory, m)?)?;
+    m.add("SOURCE_HASH", env!("FACTORION_RS_SOURCE_HASH"))?;
     Ok(())
 }
