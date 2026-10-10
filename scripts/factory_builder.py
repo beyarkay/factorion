@@ -265,6 +265,82 @@ def _apply_prediction(grid: list[list[dict]], prediction: dict) -> dict:
     }
 
 
+_MARKERS = ("stack_inserter", "bulk_inserter")
+_ASSEMBLER = "assembling_machine_1"
+
+
+def _footprint(x: int, y: int, cell: dict) -> list[tuple[int, int]]:
+    proto = next(it for it in items.values() if it.name == cell["entity"])
+    tiles = factorion_rs.py_entity_tiles(
+        x, y, Direction[cell["direction"]].value, proto.width, proto.height
+    )
+    return [tuple(t) for t in tiles] if tiles else [(x, y)]
+
+
+def _unit_anchor(grid: list[list[dict]], x: int, y: int) -> tuple[int, int]:
+    """The tile the entity covering (x, y) was placed from."""
+    world_WHC = np.ascontiguousarray(build_world(grid).numpy(), dtype=np.int64)
+    unit = {tuple(t) for t in factorion_rs.py_unit_tiles(world_WHC, [(x, y)])}
+    for ux, uy in unit:
+        tiles = _footprint(ux, uy, grid[uy][ux])
+        if tiles[0] == (ux, uy) and set(tiles) == unit:
+            return ux, uy
+    return x, y
+
+
+def _place_by_hand(grid: list[list[dict]], x: int, y: int, cell: dict) -> dict:
+    """Place `cell` at (x, y) through the rollout placement path, so multi-tile
+    entities land and clear whole. Hand edits get two allowances that path
+    refuses: 1x1 source/sink markers are written directly, and an assembler may
+    be placed before its recipe is chosen."""
+    cell = {k: cell[k] for k in ("entity", "direction", "item", "misc")}
+    if cell["entity"] == "empty":
+        cell.update(direction="NONE", item="empty", misc="NONE")
+    else:
+        if cell["direction"] == "NONE" and cell["entity"] != _ASSEMBLER:
+            cell["direction"] = "EAST"
+        if cell["entity"] != "underground_belt":
+            cell["misc"] = "NONE"
+        elif cell["misc"] == "NONE":
+            cell["misc"] = "UNDERGROUND_DOWN"
+    if cell["entity"] in _MARKERS or grid[y][x]["entity"] in _MARKERS:
+        if grid[y][x]["entity"] not in _MARKERS:
+            cleared = _place_by_hand(grid, x, y, {**cell, "entity": "empty"})
+            if not cleared["applied"]:
+                return cleared
+            grid = cleared["grid"]
+        grid = [[dict(c) for c in row] for row in grid]
+        grid[y][x].update(cell)
+        return {"applied": True, "invalid_reason": None, "grid": grid}
+    recipe_later = cell["entity"] == _ASSEMBLER and cell["item"] == "empty"
+    any_recipe = next(iter(factorion_rs.py_recipes()))
+    result = _apply_prediction(
+        grid, {"x": x, "y": y, **cell, "item": any_recipe if recipe_later else cell["item"]}
+    )
+    if recipe_later and result["applied"]:
+        for tx, ty in _footprint(x, y, cell):
+            result["grid"][ty][tx]["item"] = "empty"
+    return result
+
+
+def _hand_edit(grid: list[list[dict]], ops: list[dict]) -> dict:
+    """Apply hand-edit ops in order, all or nothing. An op either places a
+    `cell` at (x, y), or sets one `field` of whichever entity covers (x, y),
+    re-placing it whole from its anchor."""
+    for op in ops:
+        x, y = int(op["x"]), int(op["y"])
+        if "field" in op:
+            x, y = _unit_anchor(grid, x, y)
+            cell = {**grid[y][x], op["field"]: op["value"]}
+        else:
+            cell = op["cell"]
+        result = _place_by_hand(grid, x, y, cell)
+        if not result["applied"]:
+            return {**result, "grid": None}
+        grid = result["grid"]
+    return {"applied": True, "invalid_reason": None, "grid": grid}
+
+
 # Cap retries so a misconfigured (size, kind) pair fails fast with a
 # clear error rather than spinning forever. build_factory's rejection
 # sampler usually succeeds in a handful of tries; 200 is generous.
@@ -1399,6 +1475,7 @@ def render_index(default_size: int) -> str:
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
       <button id="resize" title="Resize the grid and clear all cells">resize / clear <span class="kbd">c</span></button>
       <button id="export" title="Copy {{size, grid}} JSON to clipboard">copy state JSON</button>
+      <span id="edit-status" class="help"></span>
     </div>
     <div class="controls action-row">
       <label>lesson
@@ -1672,10 +1749,7 @@ function renderGrid() {{
       }});
       td.addEventListener('contextmenu', (ev) => {{
         ev.preventDefault();
-        grid[y][x] = emptyCell();
-        renderGrid();
-        if (selected && selected.x === x && selected.y === y) syncEditor();
-        scheduleCompute();
+        handEdit([{{ x, y, cell: EMPTY }}]);
       }});
       // Populated cells are draggable: dragging one onto another tile
       // moves the *entire* cell state (entity, direction, item, misc,
@@ -1703,11 +1777,8 @@ function renderGrid() {{
         }} else if (payload.kind === 'tile') {{
           const fx = payload.from.x, fy = payload.from.y;
           if (fx === x && fy === y) return;
-          grid[y][x] = Object.assign({{}}, grid[fy][fx]);
-          grid[fy][fx] = emptyCell();
           selected = {{ x, y }};
-          renderGrid(); syncEditor();
-          scheduleCompute();
+          handEdit([{{ x: fx, y: fy, cell: EMPTY }}, {{ x, y, cell: grid[fy][fx] }}]);
         }}
       }});
       tr.appendChild(td);
@@ -1737,17 +1808,16 @@ function bindEditor() {{
   for (const [id, field] of Object.entries(map)) {{
     document.getElementById(id).addEventListener('change', (ev) => {{
       if (!selected) return;
-      grid[selected.y][selected.x][field] = ev.target.value;
-      renderGrid();
-      scheduleCompute();
+      if (field === 'footprint') {{
+        grid[selected.y][selected.x].footprint = ev.target.value;
+        renderGrid();
+        scheduleCompute();
+        return;
+      }}
+      handEdit([{{ x: selected.x, y: selected.y, field, value: ev.target.value }}]);
     }});
   }}
-  document.getElementById('clear-cell').addEventListener('click', () => {{
-    if (!selected) return;
-    grid[selected.y][selected.x] = emptyCell();
-    renderGrid(); syncEditor();
-    scheduleCompute();
-  }});
+  document.getElementById('clear-cell').addEventListener('click', clearSelected);
 }}
 
 function renderHotbar() {{
@@ -1777,36 +1847,61 @@ function bindHotbar() {{
   }});
 }}
 
+const EMPTY = {{ entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE' }};
+
+// The server owns entity footprints, so every hand edit goes through it and
+// multi-tile entities are placed and removed whole. Edits queue so each one
+// sees the grid the previous one produced.
+let editQueue = Promise.resolve();
+function handEdit(ops) {{
+  editQueue = editQueue.then(async () => {{
+    const status = document.getElementById('edit-status');
+    try {{
+      const resp = await fetch('/hand_edit', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ grid, ops }}),
+      }});
+      const data = await resp.json();
+      if (data.error || !data.applied) {{
+        status.textContent = 'edit rejected: ' +
+          (data.error || data.invalid_reason || 'invalid placement');
+        syncEditor();
+        return;
+      }}
+      status.textContent = '';
+      grid = data.grid;
+      renderGrid(); syncEditor();
+      scheduleCompute();
+    }} catch (e) {{
+      status.textContent = 'edit failed: ' + e;
+    }}
+  }});
+  return editQueue;
+}}
+
 function placeEntity(x, y, ent) {{
-  if (ent === 'empty') {{
-    grid[y][x] = emptyCell();
-  }} else {{
-    grid[y][x].entity = ent;
-    if (grid[y][x].direction === 'NONE') grid[y][x].direction = 'EAST';
-  }}
+  const old = grid[y][x];
+  const direction = ent === 'assembling_machine_1' ? 'NONE'
+    : (old.direction !== 'NONE' ? old.direction : 'EAST');
   selected = {{x, y}};
-  renderGrid(); syncEditor();
-  scheduleCompute();
+  handEdit([{{ x, y, cell: {{ ...EMPTY, entity: ent, direction }} }}]);
 }}
 
 function rotateSelected(cw) {{
   if (!selected) return;
   const c = grid[selected.y][selected.x];
-  let i = DIR_CYCLE.indexOf(c.direction);
-  if (i < 0) {{
-    c.direction = cw ? 'NORTH' : 'WEST';
-  }} else {{
-    c.direction = DIR_CYCLE[(i + (cw ? 1 : -1) + 4) % 4];
-  }}
-  renderGrid(); syncEditor();
-  scheduleCompute();
+  if (c.entity === 'empty' || c.entity === 'assembling_machine_1') return;
+  const i = DIR_CYCLE.indexOf(c.direction);
+  const direction = i < 0
+    ? (cw ? 'NORTH' : 'WEST')
+    : DIR_CYCLE[(i + (cw ? 1 : -1) + 4) % 4];
+  handEdit([{{ x: selected.x, y: selected.y, field: 'direction', value: direction }}]);
 }}
 
 function clearSelected() {{
   if (!selected) return;
-  grid[selected.y][selected.x] = emptyCell();
-  renderGrid(); syncEditor();
-  scheduleCompute();
+  handEdit([{{ x: selected.x, y: selected.y, cell: EMPTY }}]);
 }}
 
 // The verdict above the grid. The flag is the whole point: it answers "did my
@@ -2825,6 +2920,7 @@ class Handler(BaseHTTPRequestHandler):
             "/graph",
             "/predict",
             "/apply_prediction",
+            "/hand_edit",
             "/load_model",
             "/load_lesson",
             "/batch_rollout",
@@ -2857,6 +2953,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = _apply_prediction(
                     payload["grid"], payload["prediction"]
                 )
+            elif self.path == "/hand_edit":
+                result = _hand_edit(payload["grid"], payload["ops"])
             elif self.path == "/load_lesson":
                 result = _load_lesson(
                     kind_name=payload["kind"],

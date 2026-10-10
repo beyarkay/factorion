@@ -120,6 +120,55 @@ def _empty_grid(size: int) -> list[list[dict]]:
     ]
 
 
+_ASM = {"entity": "assembling_machine_1", "direction": "NONE", "item": "empty",
+        "misc": "NONE"}
+_EMPTY = {"entity": "empty", "direction": "NONE", "item": "empty", "misc": "NONE"}
+
+
+def _tiles_of(grid: list[list[dict]], entity: str) -> set[tuple[int, int]]:
+    return {(x, y) for y, row in enumerate(grid) for x, c in enumerate(row)
+            if c["entity"] == entity}
+
+
+class TestHandEdit:
+    def test_assembler_is_placed_recipe_set_and_removed_whole(self):
+        r = fb._hand_edit(_empty_grid(7), [{"x": 1, "y": 1, "cell": _ASM}])
+        assert r["applied"]
+        assert len(_tiles_of(r["grid"], "assembling_machine_1")) == 9
+        r = fb._hand_edit(
+            r["grid"], [{"x": 3, "y": 3, "field": "item", "value": "iron_gear_wheel"}]
+        )
+        assert {c["item"] for row in r["grid"] for c in row
+                if c["entity"] == "assembling_machine_1"} == {"iron_gear_wheel"}
+        r = fb._hand_edit(r["grid"], [{"x": 2, "y": 3, "cell": _EMPTY}])
+        assert _tiles_of(r["grid"], "assembling_machine_1") == set()
+
+    def test_placing_an_assembler_leaves_other_recipes_alone(self):
+        grid = fb._hand_edit(_empty_grid(7), [{"x": 0, "y": 0, "cell": _ASM}])["grid"]
+        any_recipe = next(iter(factorion_rs.py_recipes()))
+        grid = fb._hand_edit(
+            grid, [{"x": 0, "y": 0, "field": "item", "value": any_recipe}]
+        )["grid"]
+        grid = fb._hand_edit(grid, [{"x": 4, "y": 4, "cell": _ASM}])["grid"]
+        assert grid[0][0]["item"] == any_recipe
+        assert grid[4][4]["item"] == "empty"
+
+    def test_markers_are_written_directly(self):
+        source = {**_EMPTY, "entity": "stack_inserter", "direction": "EAST"}
+        r = fb._hand_edit(_empty_grid(5), [{"x": 0, "y": 0, "cell": source}])
+        assert r["applied"] and r["grid"][0][0]["entity"] == "stack_inserter"
+        r = fb._hand_edit(r["grid"], [{"x": 0, "y": 0, "cell": _EMPTY}])
+        assert r["applied"] and r["grid"][0][0]["entity"] == "empty"
+
+    def test_a_rejected_op_applies_nothing(self):
+        belt = {**_EMPTY, "entity": "transport_belt", "direction": "EAST"}
+        r = fb._hand_edit(_empty_grid(5), [
+            {"x": 0, "y": 0, "cell": belt}, {"x": 4, "y": 4, "cell": _ASM},
+        ])
+        assert not r["applied"] and r["grid"] is None
+        assert r["invalid_reason"] == "too_wide"
+
+
 def test_default_wandb_run():
     assert fb.Args().wandb_run == "8gqpfppb"
 
