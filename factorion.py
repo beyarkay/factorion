@@ -8,14 +8,19 @@ wrappers have been stripped and identifiers are exported directly.
 import base64
 import functools
 import glob
+import hashlib
+import importlib.util
 import json
 import math
 import os
 import random
+import subprocess
+import sys
 import zlib
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -25,41 +30,47 @@ import tqdm
 import wandb
 from torch.distributions import Categorical
 
-import factorion_rs
-
-# The Rust extension is built out-of-band (`maturin develop`) and is NOT
-# rebuilt automatically on import, so a stale wheel silently lacks functions
-# added after it was last built. factorion.py and its callers (ppo, sft, and
-# the web UI's auto-graph) reach into `factorion_rs` by name at call time, so a
-# stale build imports cleanly — `py_items` below still resolves — then crashes
-# much later with a cryptic `AttributeError: module 'factorion_rs' has no
-# attribute '...'` deep inside a request handler (e.g. `py_build_graph` when the
-# web UI builds the flow graph). Fail fast at import with an actionable message.
-_REQUIRED_FACTORION_RS = (
-    "simulate_throughput",
-    "py_build_graph",
-    "py_entity_tiles",
-    "py_items",
-    "py_recipes",
-    "py_lesson_kinds",
-    "render_factory",
-)
+_RS_DIR = Path(__file__).resolve().parent / "factorion_rs"
 
 
-def _assert_factorion_rs_current(module) -> None:
-    """Raise an actionable ImportError if the installed factorion_rs is missing
-    any function this module needs — the tell-tale sign of a stale Rust build."""
-    missing = [name for name in _REQUIRED_FACTORION_RS if not hasattr(module, name)]
-    if missing:
-        raise ImportError(
-            "factorion_rs is out of date (missing: "
-            + ", ".join(missing)
-            + "). Rebuild the Rust extension:\n"
-            "  uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml"
+def _factorion_rs_source_hash(root: Path = _RS_DIR) -> str:
+    """Must match the hash `factorion_rs/build.rs` bakes in as `SOURCE_HASH`."""
+    rs_files = (p.relative_to(root).as_posix() for p in (root / "src").rglob("*.rs"))
+    h = hashlib.sha256()
+    for rel in sorted(["Cargo.toml", "Cargo.lock", "build.rs", *rs_files]):
+        h.update(rel.encode() + b"\0" + (root / rel).read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def _factorion_rs_is_current(expected_hash: str) -> bool:
+    """Looks for the hash in the installed binary instead of importing it, since
+    an extension module can't be reloaded once imported."""
+    spec = importlib.util.find_spec("factorion_rs")
+    pkg_dirs = spec.submodule_search_locations if spec else None
+    return any(
+        expected_hash.encode() in f.read_bytes()
+        for d in pkg_dirs or []
+        for f in Path(d).glob("factorion_rs.*")
+    )
+
+
+# `maturin develop` is out-of-band, so a stale extension would import fine and
+# only crash once a newer binding is called.
+if (_RS_DIR / "src").is_dir():
+    _expected_hash = _factorion_rs_source_hash()
+    if not _factorion_rs_is_current(_expected_hash):
+        print("factorion_rs is stale, rebuilding it...", file=sys.stderr)
+        subprocess.run(
+            [sys.executable, "-m", "maturin", "develop", "--release",
+             "--manifest-path", str(_RS_DIR / "Cargo.toml")],
+            check=True,
+            env={**os.environ, "VIRTUAL_ENV": sys.prefix},
         )
+        importlib.invalidate_caches()
+        if not _factorion_rs_is_current(_expected_hash):
+            raise ImportError(f"Rebuilt factorion_rs did not land in {sys.prefix}")
 
-
-_assert_factorion_rs_current(factorion_rs)
+import factorion_rs  # noqa: E402
 
 wandb.login()
 
