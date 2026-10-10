@@ -1861,7 +1861,7 @@ class TestArtifactNameHelpers:
             layer2=48,
             layer3=48,
         )
-        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48"
+        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48-a8x288"
 
     def test_artifact_name_encodes_depth(self):
         """Depth is part of the suffix: a 4-layer encoder of the same width
@@ -1869,8 +1869,8 @@ class TestArtifactNameHelpers:
         under the shallower run's artifact)."""
         three = SftArgs(layer1=48, layer2=48, layer3=48, layer4=0)
         four = SftArgs(layer1=48, layer2=48, layer3=48, layer4=48)
-        assert _artifact_name(three).endswith("-c48-48-48")
-        assert _artifact_name(four).endswith("-c48-48-48-48")
+        assert _artifact_name(three).endswith("-c48-48-48-a8x288")
+        assert _artifact_name(four).endswith("-c48-48-48-48-a8x288")
         assert _artifact_name(three) != _artifact_name(four)
 
     def test_artifact_name_asymmetric_channels(self):
@@ -1879,7 +1879,7 @@ class TestArtifactNameHelpers:
         args = SftArgs(layer1=32, layer2=64, layer3=64)
         # Assert only the channel suffix (the behaviour under test) so this
         # doesn't break when the default size/samples/epochs/lr change.
-        assert _artifact_name(args).endswith("-c32-64-64")
+        assert _artifact_name(args).endswith("-c32-64-64-a8x288")
 
     def test_artifact_name_kernel_size_suffix(self):
         """A non-default kernel size appends -k{N} so two runs differing only
@@ -1887,9 +1887,19 @@ class TestArtifactNameHelpers:
         token (keeps existing names stable)."""
         # Default kernel (3) adds no suffix; a non-default kernel appends
         # -k{N}. Derive from the default name so this survives default changes.
-        base = _artifact_name(SftArgs())
+        base = _artifact_name(SftArgs(attn_dim=0))
         assert not base.endswith(("-k3", "-k5", "-k7"))
-        assert _artifact_name(SftArgs(kernel_size=5)) == base + "-k5"
+        assert _artifact_name(SftArgs(kernel_size=5, attn_dim=0)) == base + "-k5"
+
+    def test_artifact_name_attention_suffix(self):
+        """Attention stages that can't load into each other get distinct
+        names; heads/pos-embed appear only when non-default."""
+        base = _artifact_name(SftArgs(attn_dim=0))
+        assert "-a" not in base
+        assert _artifact_name(SftArgs()) == base + "-a8x288"
+        assert _artifact_name(SftArgs(attn_layers=4, attn_dim=192)) == base + "-a4x192"
+        assert _artifact_name(SftArgs(attn_heads=4)) == base + "-a8x288-h4"
+        assert _artifact_name(SftArgs(attn_pos_embed=0)) == base + "-a8x288-p0"
 
     def test_artifact_name_stable_across_runs(self):
         """Two SftArgs with the same hyperparams must produce the same

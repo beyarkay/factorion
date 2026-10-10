@@ -254,7 +254,7 @@ def _append_run_tags(run, *tags: str) -> None:
 def _run_signature(args) -> str:
     """Filename-safe W&B run name encoding the key hyperparameters, so runs are
     identifiable at a glance instead of by timestamp (mirrors SFT's naming).
-    e.g. ``ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-seed1``."""
+    e.g. ``ppo-s11-lr5e-05-ent0-cw10-fromj0s5y2mc-c93-69-96-a8x288-seed1``."""
     layers = "-".join(str(c) for c in layers_from_args(args))
     sig = f"ppo-s{args.size}-lr{args.learning_rate:g}-ent{args.ent_coef_start:g}"
     if args.ent_coef_end != args.ent_coef_start:
@@ -267,7 +267,7 @@ def _run_signature(args) -> str:
         sig += f"-cw{args.critic_warmup}"
     if args.start_from:
         sig += f"-from{args.start_from}"
-    sig += f"-c{layers}-seed{args.seed}"
+    sig += f"-c{layers}{attn_tag(args)}-seed{args.seed}"
     return sig
 
 
@@ -1267,6 +1267,20 @@ def layers_from_args(args) -> list[int]:
     if not layers:
         raise ValueError("at least one of layer1..layer8 must have positive width")
     return layers
+
+
+def attn_tag(args) -> str:
+    """Run/artifact-name token for the attention stage, e.g. ``-a8x288``: it
+    holds most of the parameters, so differing stages must not share a name.
+    Heads and pos-embed appear only when non-default; conv-only is ``""``."""
+    if args.attn_dim <= 0:
+        return ""
+    tag = f"-a{args.attn_layers}x{args.attn_dim}"
+    if args.attn_heads != 8:
+        tag += f"-h{args.attn_heads}"
+    if args.attn_pos_embed != 1:
+        tag += f"-p{args.attn_pos_embed}"
+    return tag
 
 
 def assert_device_ok(device) -> None:
