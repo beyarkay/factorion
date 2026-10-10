@@ -723,3 +723,59 @@ dropout + layer norm make a third of the step memory-bound elementwise work.
   diverge and keep their offsets). In the 3-seed compile check, seed 1 alone
   showed val/loss +0.028 at 100% of points and the other two seeds reversed
   it. The "≥90% one-sign" reading needs ≥2 seeds for small effects.
+
+---
+
+# PPO at 15×15 on the CI pods: bf16 encoder (#476)
+
+Seven PPO runs, all on an **RTX 6000 Ada** (sm 8.9, torch 2.12.1+cu126), all
+finetuning SFT base `8gqpfppb` for 65,536 env steps: 16 iterations of 4,096
+steps (16 envs × 256), 9 of them critic warmup. Each config gets 2–3 runs on
+separate pods, launched by `/ci compare ppo` and `/ci ppo`. A run's figure is
+the median over its iterations: warmup iterations 2–9, so the iter-1 compile
+is excluded. "spread" is the min–max of those per-run medians.
+
+| config | runs | rollout s/iter | warmup update s/iter | eval s (×3) | wall s | final `perf/sps` |
+|---|---|---|---|---|---|---|
+| fp32, deterministic (main) | [d7zizcfw](https://wandb.ai/beyarkay/factorion/runs/d7zizcfw) [jtnk1wzv](https://wandb.ai/beyarkay/factorion/runs/jtnk1wzv) [bvcbkyjd](https://wandb.ai/beyarkay/factorion/runs/bvcbkyjd) | 2.20–2.35 | 8.37–8.56 | 87–114 | 464–489 | 133–141 |
+| bf16 encoder, deterministic | [801legmf](https://wandb.ai/beyarkay/factorion/runs/801legmf) [2m1nff5g](https://wandb.ai/beyarkay/factorion/runs/2m1nff5g) | 1.27–1.44 | 2.85–2.94 | 70–88 | 336–385 | 170–195 |
+| bf16 encoder, non-deterministic | [cyy5wd7q](https://wandb.ai/beyarkay/factorion/runs/cyy5wd7q) [k582g9i3](https://wandb.ai/beyarkay/factorion/runs/k582g9i3) | 1.40–1.50 | 2.71–2.72 | 81–89 | 339–381 | 172–193 |
+
+Within a run the iterations are tight: warmup update sd 0.03–0.17 s and
+rollout sd 0.05–0.11 s. Pod-to-pod spread is larger. The two identical
+deterministic bf16 runs differ by 13% on rollout and 20% on eval, so read
+anything under ~15% as noise. Second-seed runs reuse the pod's compile
+cache, so their iter 1 is ~3× shorter and their wall time is lower.
+
+- **bf16 encoder: ~3× on the update, 1.6× on the rollout, ~1.3× on wall
+  time** at this run length. Evals are ~two-thirds of the wall, and they
+  are env-bound. This reverses the "AMP/bf16 no win" finding in the
+  time-to-quality section above, which was measured on the small conv-only
+  model.
+- **The warmup update has no encoder backward.** The actor is frozen, so
+  the update is a forward over 32,768 samples plus the critic head. After
+  unfreeze, `target_kl` stops the epochs after a varying number of
+  minibatches (bf16 0.44–0.97 s vs fp32 1.14–2.71 s), so those times measure
+  different amounts of work. For the full update, the in-pod microbenchmark
+  (eager `sample_action` fwd+bwd, B=128, one 10-rep timing each, no
+  repeats) gives 98.6 ms fp32, 37.0 ms bf16 deterministic, and 32.8 ms bf16
+  non-deterministic. In fp32, SDPA uses the mem-efficient kernel
+  (`fmha_cutlass*_f32`); in bf16 it uses FlashAttention
+  (`pytorch_flash::flash_fwd/bwd`).
+- **`torch_deterministic` is off by default.** Deterministic mode does not
+  block FlashAttention; it switches Flash to its deterministic backward. That
+  costs ~11% of a full fwd+bwd, and ~5% of the warmup update (2.71 vs
+  2.85–2.94 s), which is within pod noise. What it buys is bit-identical
+  reruns: the two deterministic bf16 runs on different pods logged identical
+  `approx_kl`, `kl_to_ref` and `eval/thput` histories. The non-deterministic
+  seed-1 run diverged from them after unfreeze. The `ppo-speed`/`ppo-quality` benchmarks pass
+  `--torch-deterministic`, because their gate needs bit-identical runs.
+- **The ratio is unharmed.** During warmup the actor is frozen, so
+  `losses/approx_kl` measures only the rollout-vs-update numerical mismatch:
+  ~6e-7 in fp32 and ~1e-4 in bf16, 200× below `target_kl`. `clipfrac` is 0
+  on every side, and `policy/kl_to_ref` has a ~3e-4 floor in bf16. After
+  unfreeze, all three configs are alike: `approx_kl` 0.020–0.051, `clipfrac`
+  0.04–0.12. `eval/thput` at iters 7/14/16 is 0.36–0.43 on every run.
+- **Compile and CUDA graphs are fine.** No graph breaks. Warmup builds 3
+  graphs, and the unfreeze recompiles once (to 6). Nothing re-records after
+  that.

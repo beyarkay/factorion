@@ -1531,6 +1531,7 @@ class AgentCNN(nn.Module):
             conv_stack.append(nn.Dropout2d(dropout))
             in_ch = ch
         self.encoder = nn.Sequential(*conv_stack)
+        self.amp = False
         self.layers = tuple(layers)
         self.kernel_size = kernel_size
         last_chan = layers[-1]  # encoder output channels — feeds every head
@@ -1614,11 +1615,14 @@ class AgentCNN(nn.Module):
 
     def encode(self, x_BCWH):
         """Encoder forward, (B, last_chan, W, H). The optional attention stage
-        refines the map in place (shape-preserving)."""
-        encoded = self.encoder(self._encode_input(x_BCWH))
-        if self.attn_dim > 0:
-            encoded = self.attn(encoded)
-        return encoded
+        refines the map in place (shape-preserving). With `amp` it runs under
+        bf16 autocast (FlashAttention needs bf16) and is cast back to fp32, so
+        every head, log-prob and loss downstream stays fp32."""
+        with torch.autocast(x_BCWH.device.type, dtype=torch.bfloat16, enabled=self.amp):
+            encoded = self.encoder(self._encode_input(x_BCWH))
+            if self.attn_dim > 0:
+                encoded = self.attn(encoded)
+        return encoded.float()
 
     def tile_features(self, encoded_BCWH, batch_idx_B, x_B, y_B):
         """Input row for the ent/dir/item/misc heads: the encoded feature
@@ -1934,14 +1938,6 @@ if __name__ == "__main__":
     print(f"running on {device}")
     assert_device_ok(device)
 
-    # bf16 autocast context for the policy/value forward passes when --amp is on
-    # (CUDA only). nullcontext otherwise, so the non-amp path is unchanged.
-    _amp_on = args.amp and device.type == "cuda"
-    def amp_ctx():
-        return torch.autocast("cuda", dtype=torch.bfloat16) if _amp_on else contextlib.nullcontext()
-    if _amp_on:
-        print("AMP: bf16 autocast enabled for forward passes")
-
     print(f"Setting up envs with {args}")
     env_thunks = [
         make_env(
@@ -1990,6 +1986,10 @@ if __name__ == "__main__":
         attn_layers=args.attn_layers,
         attn_pos_embed=args.attn_pos_embed,
     )
+    # Before the ref_agent deepcopy below, so the reference forward inherits it.
+    agent.amp = args.amp and device.type == "cuda"
+    if agent.amp:
+        print("AMP: bf16 autocast enabled for the encoder forward")
 
     ref_agent: Optional[AgentCNN] = None
     if args.start_from is not None:
@@ -2205,8 +2205,7 @@ if __name__ == "__main__":
                 # output buffers (see the compile block above). Every output is
                 # copied into storage below before the next iteration's call.
                 torch.compiler.cudagraph_mark_step_begin()
-                with amp_ctx():
-                    action_ED, logprobs_E, _entropy_E, value_E = rollout_act(next_obs_ECWH)
+                action_ED, logprobs_E, _entropy_E, value_E = rollout_act(next_obs_ECWH)
                 values_SE[step] = value_E
                 # Accumulate the acting policy's per-head entropy + eot prob
                 # (stashed by get_action_and_value) for the policy/* metrics.
@@ -2316,10 +2315,9 @@ if __name__ == "__main__":
         # bootstrap value if not done
         with torch.no_grad():
             torch.compiler.cudagraph_mark_step_begin()
-            with amp_ctx():
-                # .reshape(...) returns a fresh tensor, so the CUDA-graph output
-                # buffer isn't retained past the next step.
-                next_value = rollout_value(next_obs_ECWH).reshape(1, -1)
+            # .reshape(...) returns a fresh tensor, so the CUDA-graph output
+            # buffer isn't retained past the next step.
+            next_value = rollout_value(next_obs_ECWH).reshape(1, -1)
             advantages_SE = torch.zeros_like(rewards_SE).to(device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
@@ -2360,10 +2358,9 @@ if __name__ == "__main__":
                 chunks = []
                 for start in range(0, args.batch_size, args.minibatch_size):
                     sl = slice(start, start + args.minibatch_size)
-                    with amp_ctx():
-                        o = ref_agent.sample_action(
-                            obs_B[sl], action=actions_B[sl], compute_value=False
-                        )
+                    o = ref_agent.sample_action(
+                        obs_B[sl], action=actions_B[sl], compute_value=False
+                    )
                     chunks.append({**o["logp_heads"], "eot_logit": o["eot_logit"]})
                 ref_heads = {k: torch.cat([c[k] for c in chunks]) for k in chunks[0]}
 
@@ -2382,8 +2379,7 @@ if __name__ == "__main__":
                 # before the next mark_step_begin, so the captured activations are
                 # still valid when autograd reads them.
                 torch.compiler.cudagraph_mark_step_begin()
-                with amp_ctx():
-                    out_mB = update_act(obs_B[idxs], action=actions_B.long()[idxs])
+                out_mB = update_act(obs_B[idxs], action=actions_B.long()[idxs])
                 entropy_B, newvalue_B = out_mB["entropy"], out_mB["value"]
                 newlogprobs_B = out_mB["logp"].reshape(-1)
                 logratio_B = newlogprobs_B - logprobs_B[idxs].reshape(-1)

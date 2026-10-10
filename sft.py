@@ -942,7 +942,6 @@ def train_sft(args: SftArgs):
         else "cpu"
     )
     assert_device_ok(device)
-    amp = args.amp and device.type == "cuda"
 
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
@@ -955,16 +954,13 @@ def train_sft(args: SftArgs):
         agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
 
     agent.to(device)
-
-    def _encode(obs):
-        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp):
-            return agent.encode(obs).float()
+    agent.amp = args.amp and device.type == "cuda"
 
     # Static shapes: only the epoch's and val's ragged last batches differ.
     encode = (
-        torch.compile(_encode, dynamic=False)
+        torch.compile(agent.encode, dynamic=False)
         if args.compile and device.type == "cuda"
-        else _encode
+        else agent.encode
     )
 
     if cached_train is not None:

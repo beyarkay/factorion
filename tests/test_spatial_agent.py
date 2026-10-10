@@ -23,7 +23,7 @@ from ppo import (  # noqa: E402
     _FOOTPRINT_UNAVAILABLE,
 )
 from training_config import SharedArgs  # noqa: E402
-from helpers import Channel, Direction, Misc, items, recipes, str2ent, str2item  # noqa: E402
+from helpers import _TINY_ATTN, Channel, Direction, Misc, items, recipes, str2ent, str2item  # noqa: E402
 from factorion import Footprint  # noqa: E402
 
 NUM_CHANNELS = len(Channel)
@@ -651,3 +651,37 @@ class TestSemanticActionMasking:
             torch.zeros(1, NUM_CHANNELS, 5, 5), action=action
         )
         assert torch.isneginf(out["logp"]).all()
+
+
+class TestAmp:
+    """`amp` autocasts the encoder only: every output the PPO loss reads stays
+    fp32 and close to the fp32 forward, and gradients still reach the encoder.
+    CPU bf16 autocast stands in for CUDA here."""
+
+    def test_heads_stay_fp32_and_track_fp32_forward(self, envs):
+        agent = AgentCNN(envs, layers=(16, 16, 16), **_TINY_ATTN)
+        obs = torch.zeros(4, NUM_CHANNELS, 5, 5)
+        obs[:, _CH_FOOTPRINT] = _FOOTPRINT_AVAILABLE
+        ref = agent.sample_action(obs)
+        stored = torch.cat(
+            [
+                ref["action"]["xy"],
+                torch.stack([ref["action"][k] for k in ("entity", "direction", "item", "misc")], dim=1),
+                ref["action"]["eot"][:, None].long(),
+            ],
+            dim=1,
+        )
+
+        agent.amp = True
+        assert agent.encode(obs).dtype == torch.float32
+        out = agent.sample_action(obs, action=stored)
+        for key in ("logp", "entropy", "value", "eot_logit"):
+            assert out[key].dtype == torch.float32, key
+            torch.testing.assert_close(out[key], ref[key], atol=0.05, rtol=0.05)
+        for head, logp in out["logp_heads"].items():
+            assert logp.dtype == torch.float32, head
+
+        (out["logp"].sum() + out["value"].sum()).backward()
+        grad = agent.ent_embed.weight.grad
+        assert grad is not None and grad.dtype == torch.float32
+        assert torch.isfinite(grad).all() and grad.abs().sum() > 0
