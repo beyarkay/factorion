@@ -930,8 +930,9 @@ class TestTrackedArtifact:
         final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
         assert final_files == [args.checkpoint_path, args.summary_path]
 
-    def test_thput_is_also_logged_as_best_of_n(self, monkeypatch, tmp_path):
-        """Every val thput is logged under its plain key and as thput@N."""
+    def test_rollout_metrics_are_logged_only_as_best_of_n(self, monkeypatch, tmp_path):
+        """Every metric from the best-of-N rollout carries @N, and no plain key
+        (which would read as best-of-1) duplicates it."""
         import wandb
         from unittest.mock import MagicMock
 
@@ -957,12 +958,12 @@ class TestTrackedArtifact:
         )
         train_sft(args)
 
-        plain = [k for k in logged if k.endswith("/thput")]
-        assert "val/thput" in plain and len(plain) > 1
-        suffixed = [k for k in logged if "@" in k]
-        assert sorted(suffixed) == sorted(f"{k}@{args.eval_best_of}" for k in plain)
-        for k in plain:
-            assert logged[f"{k}@{args.eval_best_of}"] == logged[k]
+        n = args.eval_best_of
+        assert f"val/thput@{n}" in logged
+        assert f"val/inserters_no_input@{n}" in logged
+        assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)
+        assert all(k.endswith(f"@{n}") for k in logged if "thput" in k or "inserters_no" in k)
+        assert f"best_val_throughput@{n}" in fake_run.summary
 
 
 class TestSolvedAssemblerRecipes:
