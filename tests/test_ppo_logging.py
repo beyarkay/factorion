@@ -70,6 +70,10 @@ class TestRunSignature:
             PpoArgs(start_from="j0s5y2mc", divergence_penalty=0)
         )
 
+    def test_encodes_attention_stage(self):
+        assert _run_signature(PpoArgs(seed=1)).endswith("-a8x288-seed1")
+        assert "-a" not in _run_signature(PpoArgs(attn_dim=0))
+
 
 # ── held-out eval set ───────────────────────────────────────────────────────
 

@@ -47,6 +47,7 @@ from ppo import (  # noqa: E402
     AgentCNN,
     FactorioEnv,
     make_env,
+    attn_tag,
     layers_from_args,
     assert_device_ok,
     cuda_env_info,
@@ -277,7 +278,7 @@ def _artifact_name(args: "SftArgs") -> str:
     """Build a descriptive W&B artifact name from the training config.
 
     Identical-config runs collapse into versions of the same artifact;
-    config-changing runs (different size / sample count / lr / channels)
+    config-changing runs (different size / sample count / lr / encoder shape)
     get their own artifact. `best_val_acc` deliberately goes to the alias
     instead, since baking a varying number into the name would defeat
     versioning."""
@@ -288,6 +289,7 @@ def _artifact_name(args: "SftArgs") -> str:
     chan_str = "c" + "-".join(str(c) for c in layers)
     if args.kernel_size != 3:
         chan_str += f"-k{args.kernel_size}"
+    chan_str += attn_tag(args)
     return (
         f"sft-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
