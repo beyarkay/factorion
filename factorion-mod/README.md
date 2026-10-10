@@ -98,7 +98,7 @@ factorion-mod/
    This installs dependencies and builds the Rust extension when needed,
    installs and enables the mod, downloads the run's latest model artifact,
    reads the exact grid/encoder architecture from W&B, and waits for Factorio.
-   It defaults to checkpoint `hcozpmwt`; pass a local checkpoint or another W&B
+   It defaults to checkpoint `8gqpfppb`; pass a local checkpoint or another W&B
    run as the first argument, or set `FACTORION_CHECKPOINT`.
 
 2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
@@ -110,7 +110,7 @@ accepts a local `.pt`, bare W&B run id, or `entity/project/id`:
 
 ```bash
 uv run python factorion-mod/server/server.py \
-  --checkpoint hcozpmwt \
+  --checkpoint 8gqpfppb \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
