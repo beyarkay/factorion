@@ -166,7 +166,7 @@ class Args:
     checkpoint: Optional[str] = None
     """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
     the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = "hcozpmwt"
+    wandb_run: Optional[str] = "8gqpfppb"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
     and loaded. Mutually exclusive with --checkpoint."""

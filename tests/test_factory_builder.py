@@ -121,7 +121,7 @@ def _empty_grid(size: int) -> list[list[dict]]:
 
 
 def test_default_wandb_run():
-    assert fb.Args().wandb_run == "hcozpmwt"
+    assert fb.Args().wandb_run == "8gqpfppb"
 
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
