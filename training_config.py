@@ -118,8 +118,10 @@ class SharedArgs:
 class PpoArgs(SharedArgs):
     exp_name: str = "ppo"
     """the name of this experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    torch_deterministic: bool = False
+    """deterministic CUDA kernels (cudnn + `torch.use_deterministic_algorithms`).
+    Off because the deterministic FlashAttention backward is slower; the
+    ppo-speed benchmark turns it on for its bit-identical signature gate."""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
     metal: bool = True
