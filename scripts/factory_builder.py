@@ -2998,6 +2998,40 @@ function setScanKinds(checked) {{
   syncScanRunLabel();
 }}
 
+// Per-browser preferences. Storage can be unavailable (private windows, blocked
+// site data), in which case the page starts from its defaults.
+const PREFS_KEY = 'factory-builder-prefs';
+const PREF_INPUTS = [
+  'scan-count', 'scan-seed', 'scan-clear', 'scan-mask', 'scan-ref', 'scan-sort',
+  'lesson-kind', 'lesson-seed', 'lesson-clear',
+];
+function savePrefs() {{
+  const prefs = {{ scanKinds: checkedScanKinds() }};
+  for (const id of PREF_INPUTS) {{
+    const el = document.getElementById(id);
+    prefs[id] = el.type === 'checkbox' ? el.checked : el.value;
+  }}
+  try {{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }} catch (_) {{}}
+}}
+function loadPrefs() {{
+  let prefs = null;
+  try {{ prefs = JSON.parse(localStorage.getItem(PREFS_KEY)); }} catch (_) {{}}
+  if (!prefs) return;
+  for (const id of PREF_INPUTS) {{
+    if (!(id in prefs)) continue;
+    const el = document.getElementById(id);
+    if (el.type === 'checkbox') el.checked = prefs[id];
+    else if (el.tagName !== 'SELECT' || [...el.options].some(o => o.value === prefs[id])) {{
+      el.value = prefs[id];
+    }}
+  }}
+  if (prefs.scanKinds) {{
+    document.querySelectorAll('#scan-kinds input').forEach(el => {{
+      el.checked = prefs.scanKinds.includes(el.value);
+    }});
+  }}
+}}
+
 function bindScan() {{
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {{ location.hash = tabHash[b.dataset.tab]; }}));
@@ -3012,6 +3046,8 @@ function bindScan() {{
   document.getElementById('scan-clear-results').addEventListener('click', clearScan);
   document.getElementById('scan-sort').addEventListener('change', renderScan);
   document.getElementById('scan-ref').addEventListener('change', renderScan);
+  document.addEventListener('change', savePrefs);
+  window.addEventListener('pagehide', savePrefs);
   syncScanRunLabel();
 }}
 
@@ -3021,6 +3057,7 @@ renderGrid();
 bindHotbar();
 bindEditor();
 bindHelp();
+loadPrefs();
 bindScan();
 refreshModelInfo();
 computeThroughput();

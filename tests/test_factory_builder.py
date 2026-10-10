@@ -1065,6 +1065,34 @@ class TestDeepLinks:
         }
 
 
+_PREFS_DRIVER = """
+const store = {};
+globalThis.localStorage = {
+  getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; },
+};
+document.getElementById('scan-count').value = '32';
+document.getElementById('lesson-seed').value = '7';
+savePrefs();
+document.getElementById('scan-count').value = '1';
+document.getElementById('lesson-seed').value = '0';
+loadPrefs();
+({
+  count: document.getElementById('scan-count').value,
+  seed: document.getElementById('lesson-seed').value,
+  kinds: JSON.parse(store['factory-builder-prefs']).scanKinds,
+});
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_preferences_survive_a_reload(tmp_path):
+    """The page loads with no storage at all (the harness has none until the
+    driver adds it), then a saved set of preferences round-trips."""
+    out = _run_page(tmp_path, _PREFS_DRIVER)
+    assert (out["count"], out["seed"]) == ("32", "7")
+    assert out["kinds"] == ["MIRRORED_1IN", "SPLITTER_1IN"]
+
+
 class TestRenderIndexHelpPopover:
     """The [?] help is a real click-to-toggle popover, not the old native
     `title` tooltip (which browsers rendered unreliably / not at all)."""
