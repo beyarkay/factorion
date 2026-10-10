@@ -153,6 +153,7 @@ HELP_LINES = [
     "Generate lesson: g (set 'entities to clear' to blank N first)",
     "Apply prediction: tap a once / hold a for fast autoregressive placement",
     "Resize / clear grid: c",
+    "Undo / redo: Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y)",
     "Scan seeds tab: rebuild N blanked seeds at once, click a result to open it",
 ]
 
@@ -1956,7 +1957,38 @@ function cancelCompute() {{
   clearTimeout(_predictionTimer);
   clearTimeout(_graphTimer);
 }}
+// Every grid change ends in scheduleCompute, so recording history here covers
+// every edit path, and a held-a run (which defers it) becomes one undo step.
+const HISTORY_LIMIT = 500;
+let undoStack = [];
+let redoStack = [];
+let historyState = null;
+function recordHistory() {{
+  const state = JSON.stringify({{ size: SIZE, grid }});
+  if (state === historyState) return;
+  if (historyState !== null) {{
+    undoStack.push(historyState);
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    redoStack = [];
+  }}
+  historyState = state;
+}}
+function stepHistory(from, to) {{
+  if (!from.length || autoApplying) return;
+  to.push(historyState);
+  historyState = from.pop();
+  const state = JSON.parse(historyState);
+  SIZE = state.size;
+  grid = state.grid;
+  prediction = null;
+  if (selected && (selected.x >= SIZE || selected.y >= SIZE)) selected = null;
+  document.getElementById('size').value = SIZE;
+  renderGrid(); syncEditor();
+  scheduleCompute();
+}}
+
 function scheduleCompute() {{
+  recordHistory();
   cancelCompute();
   // Whatever number is on screen belongs to a grid that no longer exists.
   showThputPending();
@@ -2439,7 +2471,15 @@ document.addEventListener('keydown', (ev) => {{
   const t = ev.target;
   const tag = t && t.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if ((ev.metaKey || ev.ctrlKey) && !ev.altKey) {{
+    const k = ev.key.toLowerCase();
+    if (k === 'z' && !ev.shiftKey) stepHistory(undoStack, redoStack);
+    else if ((k === 'z' && ev.shiftKey) || k === 'y') stepHistory(redoStack, undoStack);
+    else return;
+    ev.preventDefault();
+    return;
+  }}
+  if (ev.altKey) return;
   if (/^[0-9]$/.test(ev.key)) {{
     const n = parseInt(ev.key, 10);
     const idx = (n === 0) ? 9 : n - 1;
@@ -2816,6 +2856,7 @@ function bindScan() {{
 }}
 
 grid = newGrid(SIZE);
+recordHistory();
 renderGrid();
 bindHotbar();
 bindEditor();

@@ -825,9 +825,10 @@ class TestHoldToApplyRespectsEot:
         assert out["autoApplying"] is False
 
 
-_SCAN_HARNESS = """
+_PAGE_HARNESS = """
 import fs from 'node:fs';
 const src = fs.readFileSync(process.argv[2], 'utf8');
+const driver = fs.readFileSync(process.argv[3], 'utf8');
 const els = {};
 const stub = () => {
   const t = { listeners: {} };
@@ -860,8 +861,10 @@ globalThis.fetch = async (url, opts) => {
   posted = JSON.parse(opts.body);
   return { ok: false, status: 500 };
 };
+console.log(JSON.stringify(await eval(src + driver)));
+"""
 
-const driver = `
+_SCAN_DRIVER = """
 const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
                footprint: 'AVAILABLE' };
 const result = (kind, seed, thput) => ({
@@ -889,27 +892,32 @@ syncScanRunLabel();
   zeroBorder: zero.style.borderLeftColor, lowBorder: low.style.borderLeftColor,
   stats: els['scan-stats'].innerHTML,
 }))();
-`;
-console.log(JSON.stringify(await eval(src + driver)));
 """
 
 
-@pytest.fixture(scope="module")
-def out(tmp_path_factory) -> dict:
-    tmp_path = tmp_path_factory.mktemp("scan")
+def _run_page(tmp_path: Path, driver: str) -> dict:
+    """Run the served page's script under node with `driver` appended, and
+    return the JSON of the driver's final expression."""
     html = fb.render_index(default_size=11)
     js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
     (tmp_path / "page.js").write_text(js)
-    (tmp_path / "harness.mjs").write_text(_SCAN_HARNESS)
+    (tmp_path / "driver.js").write_text(driver)
+    (tmp_path / "harness.mjs").write_text(_PAGE_HARNESS)
     assert _NODE is not None
     proc = subprocess.run(
-        [_NODE, str(tmp_path / "harness.mjs"), str(tmp_path / "page.js")],
+        [_NODE, str(tmp_path / "harness.mjs"), str(tmp_path / "page.js"),
+         str(tmp_path / "driver.js")],
         capture_output=True,
         text=True,
         timeout=120,
     )
     assert proc.returncode == 0, f"node failed:\n{proc.stderr}"
     return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture(scope="module")
+def out(tmp_path_factory) -> dict:
+    return _run_page(tmp_path_factory.mktemp("scan"), _SCAN_DRIVER)
 
 
 @pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
@@ -930,6 +938,33 @@ class TestScanGallery:
         assert out["posted"]["kinds"] == ["MIRRORED_1IN", "SPLITTER_1IN"]
         assert (out["posted"]["count"], out["posted"]["seed"]) == (32, 5)
         assert out["runLabel"] == "Run +32 × 2"
+
+
+_UNDO_DRIVER = """
+SIZE = 3; grid = newGrid(3); undoStack = []; redoStack = []; historyState = null;
+recordHistory();
+grid[0][0].entity = 'transport_belt'; scheduleCompute();
+grid[1][1].entity = 'inserter'; scheduleCompute();
+const at = () => [grid[0][0].entity, grid[1][1].entity];
+const steps = [at()];
+stepHistory(undoStack, redoStack); steps.push(at());
+stepHistory(undoStack, redoStack); steps.push(at());
+stepHistory(undoStack, redoStack); steps.push(at());
+stepHistory(redoStack, undoStack); steps.push(at());
+grid[2][2].entity = 'splitter'; scheduleCompute();
+stepHistory(redoStack, undoStack); steps.push(at());
+({ steps, redoAfterEdit: redoStack.length });
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_undo_redo_walk_the_grid_history(tmp_path):
+    out = _run_page(tmp_path, _UNDO_DRIVER)
+    belt, ins, e = "transport_belt", "inserter", "empty"
+    assert out["steps"] == [
+        [belt, ins], [belt, e], [e, e], [e, e], [belt, e], [belt, e],
+    ]
+    assert out["redoAfterEdit"] == 0
 
 
 class TestRenderIndexHelpPopover:
