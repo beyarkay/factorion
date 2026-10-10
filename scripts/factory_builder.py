@@ -1430,6 +1430,8 @@ def render_index(default_size: int) -> str:
   .scan-stats th {{ color: #666; border-bottom: 1px solid #ddd; }}
   .scan-stats th:first-child, .scan-stats td:first-child {{ text-align: left; }}
   .scan-stats td.kind {{ font-family: inherit; }}
+  .scan-stats a, .scan-summary a, .scan-card .hd a, .scan-card .sub a {{ color: inherit; }}
+  .scan-stats tr.active {{ background: #e8f0ff; }}
   .scan-results {{ display: flex; flex-wrap: wrap; gap: 0.6em; }}
   .scan-card {{
     border: 1px solid #ccc; border-left-width: 5px; border-radius: 5px;
@@ -2479,7 +2481,7 @@ function adoptGrid(size, cells, source) {{
   scheduleCompute();
 }}
 
-async function generateLesson() {{
+async function generateLesson(fromHash = false) {{
   const kind = document.getElementById('lesson-kind').value;
   const seed = parseInt(document.getElementById('lesson-seed').value, 10);
   // `entities to clear` is optional — a blank / non-numeric / negative
@@ -2500,6 +2502,9 @@ async function generateLesson() {{
     const data = await resp.json();
     if (data.error) {{ status.textContent = 'error: ' + data.error; return; }}
     adoptGrid(data.size, data.grid, kind + ' seed ' + data.used_seed);
+    const href = buildHref(kind, data.used_seed, data.size, numMissing);
+    loadedBuildHash = tabHash.build = href;
+    history[fromHash ? 'replaceState' : 'pushState'](null, '', href);
     document.getElementById('lesson-seed').value = data.next_seed;
     // `num_removed` is what blank_entities actually cleared, which can be
     // less than requested when the lesson protects most of its entities.
@@ -2515,7 +2520,7 @@ async function generateLesson() {{
     btn.disabled = false;
   }}
 }}
-document.getElementById('lesson-generate').addEventListener('click', generateLesson);
+document.getElementById('lesson-generate').addEventListener('click', () => generateLesson());
 
 document.getElementById('resize').addEventListener('click', () => {{
   const n = parseInt(document.getElementById('size').value, 10);
@@ -2642,6 +2647,66 @@ function switchTab(name) {{
   document.getElementById('tab-scan').hidden = (name !== 'scan');
 }}
 
+// The URL hash holds the navigable state, so views can be linked, bookmarked
+// and walked back through: #build?lesson=K&seed=N&size=S&clear=C regenerates a
+// lesson, #scan?lesson=A,B&only=SUBSET filters the gallery.
+const tabHash = {{ build: '#build', scan: '#scan' }};
+let loadedBuildHash = null;
+let scanFilter = {{ lessons: null, only: null }};
+const SUBSETS = {{
+  zero: r => r.thput_normed <= 0,
+  nonzero: r => r.thput_normed > 0,
+  ref: r => r.thput_normed >= REFERENCE_THPUT,
+  eot: r => r.stopped_by === 'eot',
+}};
+
+function scanHref(lessons, only) {{
+  const q = new URLSearchParams();
+  if (lessons) q.set('lesson', lessons.join(','));
+  if (only) q.set('only', only);
+  const s = q.toString();
+  return '#scan' + (s ? '?' + s : '');
+}}
+
+function buildHref(kind, seed, size, clear) {{
+  return '#build?' + new URLSearchParams({{ lesson: kind, seed, size, clear }});
+}}
+
+function inScanFilter(r) {{
+  return (!scanFilter.lessons || scanFilter.lessons.includes(r.kind)) &&
+    (!scanFilter.only || SUBSETS[scanFilter.only](r));
+}}
+
+function applyHash() {{
+  const [tab, query] = location.hash.slice(1).split('?');
+  const params = new URLSearchParams(query || '');
+  if (tab === 'scan') {{
+    tabHash.scan = location.hash;
+    const lessons = params.get('lesson');
+    const only = params.get('only');
+    scanFilter = {{
+      lessons: lessons ? lessons.split(',') : null,
+      only: only in SUBSETS ? only : null,
+    }};
+    switchTab('scan');
+    renderScan();
+    scanSummary();
+    return;
+  }}
+  switchTab('build');
+  if (tab !== 'build') return;
+  tabHash.build = location.hash;
+  if (params.get('lesson') && location.hash !== loadedBuildHash) {{
+    document.getElementById('lesson-kind').value = params.get('lesson');
+    document.getElementById('lesson-seed').value = params.get('seed') || 0;
+    document.getElementById('lesson-clear').value = params.get('clear') || 0;
+    const size = parseInt(params.get('size'), 10);
+    if (size >= 2 && size <= 20) SIZE = size;
+    generateLesson(true);
+  }}
+}}
+window.addEventListener('hashchange', applyHash);
+
 // Red at 0, green at 1.
 function fracColor(t) {{
   const q = Math.max(0, Math.min(t, 1));
@@ -2671,10 +2736,13 @@ function scanCard(r, showRef) {{
     ? 'stopped at ' + r.steps
     : 'no stop, ' + r.steps + ' steps';
   const head =
-    `<div class="hd">${{escHtml(r.kind)}}<button class="copy-yaml"` +
+    `<div class="hd"><a href="${{scanHref([r.kind], null)}}" title="Show only this lesson">` +
+    `${{escHtml(r.kind)}}</a><button class="copy-yaml"` +
     ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>` +
     `<button class="copy-yaml copy-ascii" title="Copy this factory as a two-character text render (render_factory)">txt</button></div>` +
-    `<div class="sub">seed ${{r.seed}} · thput ${{r.thput_normed.toFixed(3)}}` +
+    `<div class="sub">seed <a href="${{buildHref(r.kind, r.seed, r.size, 0)}}"` +
+    ` title="Open this seed's reference factory in the Build tab">${{r.seed}}</a>` +
+    ` · thput ${{r.thput_normed.toFixed(3)}}` +
     ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
     `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +
     `${{r.invalid_actions}} invalid · reach ${{Math.round(r.frac_reachable * 100)}}%</div>`;
@@ -2696,7 +2764,10 @@ function scanCard(r, showRef) {{
     ev.stopPropagation();
     copyRender(r.grid, ev.currentTarget);
   }});
-  card.addEventListener('click', () => {{
+  card.addEventListener('click', (ev) => {{
+    if (ev.target.closest('a')) return;
+    tabHash.build = '#build';
+    history.pushState(null, '', '#build');
     switchTab('build');
     adoptGrid(
       r.size, r.grid.map(row => row.map(c => Object.assign({{}}, c))), source,
@@ -2712,7 +2783,7 @@ function renderScan() {{
   const host = document.getElementById('scan-results');
   const showRef = document.getElementById('scan-ref').checked;
   const mode = document.getElementById('scan-sort').value;
-  const rows = scanResults.slice();
+  const rows = scanResults.filter(inScanFilter);
   if (mode === 'worst') {{
     rows.sort((a, b) => a.thput_normed - b.thput_normed || a.index - b.index);
   }} else if (mode === 'best') {{
@@ -2736,10 +2807,18 @@ function scanSummary(status) {{
   const zeros = t.filter(v => v <= 0).length;
   const atRef = t.filter(v => v >= REFERENCE_THPUT).length;
   const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
-  el.textContent =
-    `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{zeros}} at zero · ` +
-    `${{atRef}} ≥ reference thput · eot fired ${{eot}}/${{n}}` +
-    (status ? '  ·  ' + status : '');
+  const link = (only, text) => `<a href="${{scanHref(null, only)}}">${{text}}</a>`;
+  const filtered = scanFilter.lessons || scanFilter.only;
+  const shown = scanResults.filter(inScanFilter).length;
+  el.innerHTML =
+    `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{link('zero', zeros + ' at zero')}} · ` +
+    `${{link('ref', atRef + ' ≥ reference thput')}} · ` +
+    `${{link('eot', 'eot fired ' + eot + '/' + n)}}` +
+    (filtered
+      ? ` · showing ${{shown}}: ${{escHtml((scanFilter.lessons || ['every lesson']).join(', '))}}` +
+        (scanFilter.only ? ' (' + scanFilter.only + ')' : '') + ` · <a href="#scan">show all</a>`
+      : '') +
+    (status ? '  ·  ' + escHtml(status) : '');
 }}
 
 // Per-lesson breakdown. A mean over the whole scan hides the thing worth
@@ -2770,15 +2849,21 @@ function renderScanStats() {{
     a.nonzero / a.n - b.nonzero / b.n || a.mean - b.mean ||
     a.kind.localeCompare(b.kind));
   const head =
-    '<tr><th>lesson</th><th>runs</th><th>mean thput</th>' +
+    '<tr><th>lesson</th><th>runs</th><th>mean thput</th><th>thput = 0</th>' +
     '<th>thput &gt; 0</th><th>≥ reference thput</th><th>eot fired</th></tr>';
-  const body = rows.map(row =>
-    `<tr><td class="kind">${{escHtml(row.kind)}}</td><td>${{row.n}}</td>` +
-    `<td>${{row.mean.toFixed(3)}}</td>` +
-    `<td style="color:${{fracColor(row.nonzero / row.n)}}">${{frac(row.nonzero, row.n)}}</td>` +
-    `<td>${{frac(row.atRef, row.n)}}</td>` +
-    `<td>${{frac(row.eot, row.n)}}</td></tr>`
-  ).join('');
+  const body = rows.map(row => {{
+    const link = (only, text) =>
+      `<a href="${{scanHref([row.kind], only)}}">${{text}}</a>`;
+    const active = scanFilter.lessons && scanFilter.lessons.includes(row.kind);
+    return `<tr${{active ? ' class="active"' : ''}}>` +
+      `<td class="kind">${{link(null, escHtml(row.kind))}}</td><td>${{row.n}}</td>` +
+      `<td>${{row.mean.toFixed(3)}}</td>` +
+      `<td>${{link('zero', frac(row.n - row.nonzero, row.n))}}</td>` +
+      `<td style="color:${{fracColor(row.nonzero / row.n)}}">` +
+      `${{link('nonzero', frac(row.nonzero, row.n))}}</td>` +
+      `<td>${{link('ref', frac(row.atRef, row.n))}}</td>` +
+      `<td>${{link('eot', frac(row.eot, row.n))}}</td></tr>`;
+  }}).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
 }}
 
@@ -2850,7 +2935,9 @@ async function runScan() {{
           // Append rather than re-render: a full re-sort of N cards on
           // every arrival is O(N^2) table builds. renderScan() applies
           // the chosen sort once the stream ends.
-          document.getElementById('scan-results').appendChild(scanCard(ev, showRef));
+          if (inScanFilter(ev)) {{
+            document.getElementById('scan-results').appendChild(scanCard(ev, showRef));
+          }}
           renderScanStats();
         }} else if (ev.type === 'progress') {{
           const secs = (performance.now() - started) / 1000;
@@ -2913,7 +3000,7 @@ function setScanKinds(checked) {{
 
 function bindScan() {{
   document.querySelectorAll('#tabs button').forEach(b =>
-    b.addEventListener('click', () => switchTab(b.dataset.tab)));
+    b.addEventListener('click', () => {{ location.hash = tabHash[b.dataset.tab]; }}));
   document.getElementById('scan-run').addEventListener('click', runScan);
   document.getElementById('scan-stop').addEventListener('click', () => {{
     if (scanAbort) scanAbort.abort();
@@ -2937,6 +3024,7 @@ bindHelp();
 bindScan();
 refreshModelInfo();
 computeThroughput();
+applyHash();
 </script>
 </body></html>"""
 

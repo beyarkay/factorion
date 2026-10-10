@@ -747,6 +747,11 @@ globalThis.document = {
 };
 globalThis.addEventListener = () => {};
 globalThis.window = globalThis;
+globalThis.location = { hash: '' };
+globalThis.history = {
+  pushState: (_s, _t, h) => { location.hash = h; },
+  replaceState: (_s, _t, h) => { location.hash = h; },
+};
 globalThis.performance = { now: () => 0 };
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
@@ -853,6 +858,11 @@ globalThis.document = {
 };
 globalThis.addEventListener = () => {};
 globalThis.window = globalThis;
+globalThis.location = { hash: '' };
+globalThis.history = {
+  pushState: (_s, _t, h) => { location.hash = h; },
+  replaceState: (_s, _t, h) => { location.hash = h; },
+};
 globalThis.performance = { now: () => 0 };
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
@@ -878,7 +888,7 @@ const result = (kind, seed, thput) => ({
 });
 const zero = scanCard(result('MIRRORED_1IN', 7, 0), false);
 const low = scanCard(result('SPLITTER_1IN', 42, 0.01), false);
-low.listeners.click();
+low.listeners.click({ target: { closest: () => null } });
 scanResults = [
   result('ALWAYS_LOW', 0, 0.1), result('ALWAYS_LOW', 1, 0.1),
   result('HALF_ZERO', 0, 0), result('HALF_ZERO', 1, 1.0),
@@ -1005,6 +1015,54 @@ def test_text_render_copy_uses_a_routed_endpoint():
     assert "copyFromServer('/render'" in html
     assert 'id="copy-ascii"' in html
     assert '"/render"' in inspect.getsource(fb.Handler.do_POST)
+
+
+_DEEP_LINK_DRIVER = """
+const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
+               footprint: 'AVAILABLE' };
+const result = (kind, seed, thput) => ({
+  kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
+  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'eot',
+  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
+});
+scanResults = [result('A', 0, 0), result('A', 1, 0.5), result('B', 0, 0)];
+const shown = () => scanResults.filter(inScanFilter).map(r => r.kind + r.seed);
+location.hash = '#scan?lesson=A&only=zero'; applyHash();
+const lessonZeros = shown();
+const summary = els['scan-summary'].innerHTML;
+const stats = els['scan-stats'].innerHTML;
+location.hash = '#scan?only=zero'; applyHash();
+const allZeros = shown();
+location.hash = '#build?lesson=SPLITTER_1IN&seed=9&size=11&clear=2'; applyHash();
+(async () => {
+  await new Promise(r => r());
+  return { lessonZeros, allZeros, summary, stats,
+           load: posts.filter(p => p.url === '/load_lesson').pop().body };
+})();
+"""
+
+
+@pytest.fixture(scope="module")
+def links(tmp_path_factory) -> dict:
+    return _run_page(tmp_path_factory.mktemp("links"), _DEEP_LINK_DRIVER)
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+class TestDeepLinks:
+    def test_scan_hash_filters_the_gallery(self, links):
+        assert links["lessonZeros"] == ["A0"]
+        assert links["allZeros"] == ["A0", "B0"]
+        assert 'href="#scan">show all' in links["summary"]
+
+    def test_lesson_table_cells_link_to_their_subset(self, links):
+        for only in ("zero", "nonzero", "ref", "eot"):
+            assert f'href="#scan?lesson=A&only={only}"' in links["stats"]
+        assert 'href="#scan?lesson=B"' in links["stats"]
+
+    def test_build_hash_regenerates_the_lesson(self, links):
+        assert links["load"] == {
+            "kind": "SPLITTER_1IN", "seed": 9, "size": 11, "num_missing_entities": 2,
+        }
 
 
 class TestRenderIndexHelpPopover:
