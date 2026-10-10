@@ -2517,9 +2517,8 @@ function renderScan() {{
   renderScanStats();
 }}
 
-// A factory counts as complete at thput 1.0 — the same "already done"
-// test sft.run_rollout_eval scores the EOT head against.
-const COMPLETE_THPUT = 0.999;
+// thput_normed is clipped to 1, so this is "matched the reference" with float slack.
+const REFERENCE_THPUT = 0.999;
 
 function scanSummary(status) {{
   const el = document.getElementById('scan-summary');
@@ -2528,11 +2527,11 @@ function scanSummary(status) {{
   const t = scanResults.map(r => r.thput_normed);
   const mean = t.reduce((a, b) => a + b, 0) / n;
   const zeros = t.filter(v => v <= 0).length;
-  const perfect = t.filter(v => v >= COMPLETE_THPUT).length;
+  const atRef = t.filter(v => v >= REFERENCE_THPUT).length;
   const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
   el.textContent =
     `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{zeros}} at zero · ` +
-    `${{perfect}} perfect · eot fired ${{eot}}/${{n}}` +
+    `${{atRef}} ≥ reference thput · eot fired ${{eot}}/${{n}}` +
     (status ? '  ·  ' + status : '');
 }}
 
@@ -2556,7 +2555,7 @@ function renderScanStats() {{
       n,
       mean: rs.reduce((a, r) => a + r.thput_normed, 0) / n,
       nonzero: rs.filter(r => r.thput_normed > 0).length,
-      complete: rs.filter(r => r.thput_normed >= COMPLETE_THPUT).length,
+      atRef: rs.filter(r => r.thput_normed >= REFERENCE_THPUT).length,
       eot: rs.filter(r => r.stopped_by === 'eot').length,
     }};
   }});
@@ -2565,12 +2564,12 @@ function renderScanStats() {{
     a.kind.localeCompare(b.kind));
   const head =
     '<tr><th>lesson</th><th>runs</th><th>mean thput</th>' +
-    '<th>thput &gt; 0</th><th>complete</th><th>eot fired</th></tr>';
+    '<th>thput &gt; 0</th><th>≥ reference thput</th><th>eot fired</th></tr>';
   const body = rows.map(row =>
     `<tr><td class="kind">${{escHtml(row.kind)}}</td><td>${{row.n}}</td>` +
     `<td>${{row.mean.toFixed(3)}}</td>` +
     `<td style="color:${{fracColor(row.nonzero / row.n)}}">${{frac(row.nonzero, row.n)}}</td>` +
-    `<td>${{frac(row.complete, row.n)}}</td>` +
+    `<td>${{frac(row.atRef, row.n)}}</td>` +
     `<td>${{frac(row.eot, row.n)}}</td></tr>`
   ).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
