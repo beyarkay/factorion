@@ -1179,7 +1179,8 @@ def render_index(default_size: int) -> str:
         f'<option value="{k.name}">{k.name}</option>' for k in LessonKind
     )
     scan_kind_checkboxes = "".join(
-        f'<label><input type="checkbox" value="{k.name}" checked> {k.name}</label>'
+        f'<label data-lesson="{k.name}"><input type="checkbox" value="{k.name}" checked> '
+        f'{k.name}</label>'
         for k in LessonKind
     )
 
@@ -1432,6 +1433,13 @@ def render_index(default_size: int) -> str:
   .scan-stats td.kind {{ font-family: inherit; }}
   .scan-stats a, .scan-summary a, .scan-card .hd a, .scan-card .sub a {{ color: inherit; }}
   .scan-stats tr.active {{ background: #e8f0ff; }}
+  .popup {{
+    position: absolute; z-index: 20; background: #fff; padding: 0.4em;
+    border: 1px solid #999; border-radius: 5px; font-size: 0.8em;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  }}
+  .popup .hd {{ font-weight: bold; }}
+  .popup .sub {{ color: #666; margin-bottom: 0.3em; }}
   .scan-results {{ display: flex; flex-wrap: wrap; gap: 0.6em; }}
   .scan-card {{
     border: 1px solid #ccc; border-left-width: 5px; border-radius: 5px;
@@ -2736,7 +2744,7 @@ function scanCard(r, showRef) {{
     ? 'stopped at ' + r.steps
     : 'no stop, ' + r.steps + ' steps';
   const head =
-    `<div class="hd"><a href="${{scanHref([r.kind], null)}}" title="Show only this lesson">` +
+    `<div class="hd"><a href="${{scanHref([r.kind], null)}}" data-lesson="${{r.kind}}">` +
     `${{escHtml(r.kind)}}</a><button class="copy-yaml"` +
     ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>` +
     `<button class="copy-yaml copy-ascii" title="Copy this factory as a two-character text render (render_factory)">txt</button></div>` +
@@ -2856,7 +2864,8 @@ function renderScanStats() {{
       `<a href="${{scanHref([row.kind], only)}}">${{text}}</a>`;
     const active = scanFilter.lessons && scanFilter.lessons.includes(row.kind);
     return `<tr${{active ? ' class="active"' : ''}}>` +
-      `<td class="kind">${{link(null, escHtml(row.kind))}}</td><td>${{row.n}}</td>` +
+      `<td class="kind" data-lesson="${{row.kind}}">${{link(null, escHtml(row.kind))}}</td>` +
+      `<td>${{row.n}}</td>` +
       `<td>${{row.mean.toFixed(3)}}</td>` +
       `<td>${{link('zero', frac(row.n - row.nonzero, row.n))}}</td>` +
       `<td style="color:${{fracColor(row.nonzero / row.n)}}">` +
@@ -3032,6 +3041,51 @@ function loadPrefs() {{
   }}
 }}
 
+// Gwern-style previews: hovering any lesson name shows that lesson's reference
+// factory, so a name in a list is never just a name.
+const lessonPreviews = new Map();
+let popupTimer = null;
+let popupOwner = null;
+
+function lessonPreview(kind) {{
+  const key = kind + '@' + SIZE;
+  if (!lessonPreviews.has(key)) {{
+    lessonPreviews.set(key, fetch('/load_lesson', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ kind, seed: 0, size: SIZE, num_missing_entities: 0 }}),
+    }}).then(resp => resp.json()));
+  }}
+  return lessonPreviews.get(key);
+}}
+
+async function showLessonPopup(el) {{
+  const kind = el.dataset.lesson;
+  const data = await lessonPreview(kind);
+  if (popupOwner !== el) return;
+  const pop = document.getElementById('popup');
+  pop.innerHTML = data.error
+    ? escHtml(data.error)
+    : `<div class="hd">${{escHtml(kind)}}</div>` +
+      `<div class="sub">seed ${{data.used_seed}} reference · ` +
+      `${{data.total_entities}} entities</div>${{miniGrid(data.grid)}}`;
+  const rect = el.getBoundingClientRect();
+  pop.style.left = (window.scrollX + rect.left) + 'px';
+  pop.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+  pop.hidden = false;
+}}
+
+document.addEventListener('mouseover', (ev) => {{
+  if (ev.target.closest('#popup')) {{ clearTimeout(popupTimer); return; }}
+  const el = ev.target.closest('[data-lesson]');
+  if (el === popupOwner) {{ clearTimeout(popupTimer); return; }}
+  clearTimeout(popupTimer);
+  popupOwner = el;
+  popupTimer = el
+    ? setTimeout(() => showLessonPopup(el), 300)
+    : setTimeout(() => {{ document.getElementById('popup').hidden = true; }}, 200);
+}});
+
 function bindScan() {{
   document.querySelectorAll('#tabs button').forEach(b =>
     b.addEventListener('click', () => {{ location.hash = tabHash[b.dataset.tab]; }}));
@@ -3063,6 +3117,7 @@ refreshModelInfo();
 computeThroughput();
 applyHash();
 </script>
+<div class="popup" id="popup" hidden></div>
 </body></html>"""
 
 

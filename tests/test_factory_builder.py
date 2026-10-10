@@ -871,6 +871,12 @@ let posted = null;
 const posts = [];
 globalThis.fetch = async (url, opts) => {
   if (opts && opts.body) posts.push({ url, body: JSON.parse(opts.body) });
+  if (url === '/load_lesson') {
+    const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
+                   footprint: 'AVAILABLE' };
+    return { json: async () => ({ size: 1, grid: [[cell]], used_seed: 0,
+                                  next_seed: 1, total_entities: 0 }) };
+  }
   if (url !== '/batch_rollout') return { json: async () => ({}) };
   posted = JSON.parse(opts.body);
   return { ok: false, status: 500 };
@@ -1091,6 +1097,33 @@ def test_preferences_survive_a_reload(tmp_path):
     out = _run_page(tmp_path, _PREFS_DRIVER)
     assert (out["count"], out["seed"]) == ("32", "7")
     assert out["kinds"] == ["MIRRORED_1IN", "SPLITTER_1IN"]
+
+
+_POPUP_DRIVER = """
+const el = { dataset: { lesson: 'SPLITTER_1IN' },
+             getBoundingClientRect: () => ({ left: 10, bottom: 20 }) };
+globalThis.scrollX = 0; globalThis.scrollY = 0;
+(async () => {
+  popupOwner = el;
+  await showLessonPopup(el);
+  await showLessonPopup(el);
+  const pop = document.getElementById('popup');
+  return { hidden: pop.hidden, html: pop.innerHTML, top: pop.style.top,
+           loads: posts.filter(p => p.url === '/load_lesson').map(p => p.body) };
+})();
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_hovering_a_lesson_previews_its_reference_once(tmp_path):
+    out = _run_page(tmp_path, _POPUP_DRIVER)
+    assert out["hidden"] is False and "SPLITTER_1IN" in out["html"]
+    assert out["top"] == "24px"
+    assert out["loads"] == [{"kind": "SPLITTER_1IN", "seed": 0, "size": 11,
+                             "num_missing_entities": 0}]
+    html = fb.render_index(default_size=11)
+    for kind in LessonKind:
+        assert f'<label data-lesson="{kind.name}">' in html
 
 
 class TestRenderIndexHelpPopover:
