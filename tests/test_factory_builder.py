@@ -1000,6 +1000,13 @@ def test_eyedropper_picks_rotates_and_places(tmp_path):
     assert out["afterEmptyPick"] is None
 
 
+def test_text_render_copy_uses_a_routed_endpoint():
+    html = fb.render_index(default_size=11)
+    assert "copyFromServer('/render'" in html
+    assert 'id="copy-ascii"' in html
+    assert '"/render"' in inspect.getsource(fb.Handler.do_POST)
+
+
 class TestRenderIndexHelpPopover:
     """The [?] help is a real click-to-toggle popover, not the old native
     `title` tooltip (which browsers rendered unreliably / not at all)."""
@@ -1443,7 +1450,7 @@ class TestRenderIndexCopyYaml:
         assert html.count('class="copy-yaml"') == 2      # + one per scan card
         # The button is an icon, so its tooltip is the only thing naming it.
         assert html.count('title="Copy this factory as a YAML test fixture"') == 2
-        assert "fetch('/factory_yaml'" in html
+        assert "copyFromServer('/factory_yaml'" in html
         # A typo'd path fails silently as a 404, so pin it to the route list.
         assert "/factory_yaml" in inspect.getsource(fb.Handler.do_POST)
 
@@ -1456,7 +1463,7 @@ class TestRenderIndexCopyYaml:
         """The lesson/seed is the page's to know, so a rename on either side
         would otherwise silently start copying fixtures with no `description:`."""
         html = fb.render_index(default_size=11)
-        assert "JSON.stringify({ grid: g, source })" in html
+        assert "{ grid: g, source }" in html
         assert "source" in inspect.signature(fb.factory_yaml).parameters
         assert 'payload.get("source")' in inspect.getsource(fb.Handler.do_POST)
 

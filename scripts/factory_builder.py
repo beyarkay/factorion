@@ -1504,6 +1504,8 @@ def render_index(default_size: int) -> str:
         <h3>Graph
           <button class="copy-yaml" id="copy-yaml"
                   title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>
+          <button class="copy-yaml copy-ascii" id="copy-ascii"
+                  title="Copy this factory as a two-character text render (render_factory)">txt</button>
         </h3>
         <div class="info" id="info"></div>
         <img id="out-img" class="out-img" alt="" style="display:none">
@@ -2347,18 +2349,18 @@ async function computeGraph() {{
 // Serialise `g` server-side (the renderer and the throughput engine both live
 // there) and put the fixture on the clipboard. The icon doubles as the status
 // readout — there is nowhere else on a scan card to put one.
-async function copyYaml(g, btn, source) {{
+async function copyFromServer(path, body, field, btn) {{
   const icon = btn.innerHTML;
   try {{
-    const resp = await fetch('/factory_yaml', {{
+    const resp = await fetch(path, {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ grid: g, source }}),
+      body: JSON.stringify(body),
     }});
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
-    await navigator.clipboard.writeText(data.yaml);
-    console.log(data.yaml);
+    await navigator.clipboard.writeText(data[field]);
+    console.log(data[field]);
     btn.textContent = '✓';
   }} catch (e) {{
     btn.textContent = '✗';
@@ -2366,6 +2368,9 @@ async function copyYaml(g, btn, source) {{
   }}
   setTimeout(() => {{ btn.innerHTML = icon; }}, 1500);
 }}
+const copyYaml = (g, btn, source) =>
+  copyFromServer('/factory_yaml', {{ grid: g, source }}, 'yaml', btn);
+const copyRender = (g, btn) => copyFromServer('/render', {{ grid: g }}, 'text', btn);
 // What produced the grid on screen, for the fixture's provenance note.
 // Diffing against the snapshot taken when the grid was adopted is what keeps
 // a hand-edited factory from claiming to be that seed's own output; every
@@ -2379,6 +2384,8 @@ function buildSource() {{
 }}
 document.getElementById('copy-yaml').addEventListener('click', (ev) =>
   copyYaml(grid, ev.currentTarget, buildSource()));
+document.getElementById('copy-ascii').addEventListener('click', (ev) =>
+  copyRender(grid, ev.currentTarget));
 
 document.getElementById('model-apply').addEventListener('click', applyPrediction);
 document.getElementById('model-load').addEventListener('click', loadModel);
@@ -2665,7 +2672,8 @@ function scanCard(r, showRef) {{
     : 'no stop, ' + r.steps + ' steps';
   const head =
     `<div class="hd">${{escHtml(r.kind)}}<button class="copy-yaml"` +
-    ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button></div>` +
+    ` title="Copy this factory as a YAML test fixture">{COPY_ICON}</button>` +
+    `<button class="copy-yaml copy-ascii" title="Copy this factory as a two-character text render (render_factory)">txt</button></div>` +
     `<div class="sub">seed ${{r.seed}} · thput ${{r.thput_normed.toFixed(3)}}` +
     ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
     `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +
@@ -2683,6 +2691,10 @@ function scanCard(r, showRef) {{
   card.querySelector('.copy-yaml').addEventListener('click', (ev) => {{
     ev.stopPropagation();  // the card's own click adopts the grid instead
     copyYaml(r.grid, ev.currentTarget, source);
+  }});
+  card.querySelector('.copy-ascii').addEventListener('click', (ev) => {{
+    ev.stopPropagation();
+    copyRender(r.grid, ev.currentTarget);
   }});
   card.addEventListener('click', () => {{
     switchTab('build');
@@ -3027,6 +3039,7 @@ class Handler(BaseHTTPRequestHandler):
             "/load_lesson",
             "/batch_rollout",
             "/factory_yaml",
+            "/render",
             "/throughput",
         ):
             self.send_error(404)
@@ -3046,6 +3059,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = {
                     "yaml": factory_yaml(payload["grid"], payload.get("source"))
                 }
+            elif self.path == "/render":
+                world_CWH = build_world(payload["grid"]).permute(2, 0, 1)
+                result = {"text": render_factory(world_CWH)}
             elif self.path == "/predict":
                 if payload.get("detail") == "action":
                     result = _predict_action(payload["grid"])
