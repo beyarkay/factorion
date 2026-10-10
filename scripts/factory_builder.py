@@ -1446,6 +1446,11 @@ def render_index(default_size: int) -> str:
   .scan-stats td.kind {{ font-family: inherit; }}
   .scan-stats a, .scan-summary a, .scan-card .hd a, .scan-card .sub a {{ color: inherit; }}
   .scan-stats tr.active {{ background: #e8f0ff; }}
+  .scan-filter {{
+    margin: 0.4em 0; padding: 0.35em 0.6em; font-size: 0.85em;
+    background: #fff4d6; border: 1px solid #e0b84a; border-radius: 4px;
+  }}
+  .scan-filter a {{ font-weight: bold; margin-left: 0.6em; }}
   .popup {{
     position: absolute; z-index: 20; background: #fff; padding: 0.4em;
     border: 1px solid #999; border-radius: 5px; font-size: 0.8em;
@@ -1606,6 +1611,7 @@ def render_index(default_size: int) -> str:
   <div class="scan-kinds" id="scan-kinds">{scan_kind_checkboxes}</div>
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
+  <div class="scan-filter" id="scan-filter" hidden></div>
   <div class="scan-results" id="scan-results"></div>
 </div>
 
@@ -2602,7 +2608,9 @@ document.addEventListener('keydown', (ev) => {{
       if (tgl) tgl.setAttribute('aria-expanded', 'false');
       return;
     }}
-    if (cursor) setCursor(null);
+    const filtering = scanFilter.lessons || scanFilter.only;
+    if (!document.getElementById('tab-scan').hidden && filtering) location.hash = '#scan';
+    else if (cursor) setCursor(null);
     else if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
   }}
@@ -2686,7 +2694,25 @@ function scanHref(lessons, only) {{
   if (lessons) q.set('lesson', lessons.join(','));
   if (only) q.set('only', only);
   const s = q.toString();
-  return '#scan' + (s ? '?' + s : '');
+  const href = '#scan' + (s ? '?' + s : '');
+  // Following a link to the view already shown clears the filter instead.
+  return href === location.hash ? '#scan' : href;
+}}
+
+const SUBSET_LABELS = {{
+  zero: 'thput = 0', nonzero: 'thput > 0', ref: '≥ reference thput', eot: 'eot fired',
+}};
+
+function renderScanFilter() {{
+  const el = document.getElementById('scan-filter');
+  el.hidden = !(scanFilter.lessons || scanFilter.only);
+  if (el.hidden) return;
+  const shown = scanResults.filter(inScanFilter).length;
+  el.innerHTML =
+    `showing ${{shown}} of ${{scanResults.length}}: ` +
+    `<b>${{escHtml((scanFilter.lessons || ['every lesson']).join(', '))}}</b>` +
+    (scanFilter.only ? ' · ' + SUBSET_LABELS[scanFilter.only] : '') +
+    ` <a href="#scan">✕ show all</a> <span class="help">(or Esc)</span>`;
 }}
 
 function buildHref(kind, seed, size, clear) {{
@@ -2814,6 +2840,7 @@ function renderScan() {{
   }}
   host.replaceChildren(...rows.map(r => scanCard(r, showRef)));
   renderScanStats();
+  renderScanFilter();
 }}
 
 // thput_normed is clipped to 1, so this is "matched the reference" with float slack.
@@ -2829,16 +2856,10 @@ function scanSummary(status) {{
   const atRef = t.filter(v => v >= REFERENCE_THPUT).length;
   const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
   const link = (only, text) => `<a href="${{scanHref(null, only)}}">${{text}}</a>`;
-  const filtered = scanFilter.lessons || scanFilter.only;
-  const shown = scanResults.filter(inScanFilter).length;
   el.innerHTML =
     `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{link('zero', zeros + ' at zero')}} · ` +
     `${{link('ref', atRef + ' ≥ reference thput')}} · ` +
     `${{link('eot', 'eot fired ' + eot + '/' + n)}}` +
-    (filtered
-      ? ` · showing ${{shown}}: ${{escHtml((scanFilter.lessons || ['every lesson']).join(', '))}}` +
-        (scanFilter.only ? ' (' + scanFilter.only + ')' : '') + ` · <a href="#scan">show all</a>`
-      : '') +
     (status ? '  ·  ' + escHtml(status) : '');
 }}
 
@@ -2961,6 +2982,7 @@ async function runScan() {{
             document.getElementById('scan-results').appendChild(scanCard(ev, showRef));
           }}
           renderScanStats();
+          renderScanFilter();
         }} else if (ev.type === 'progress') {{
           const secs = (performance.now() - started) / 1000;
           scanSummary(
@@ -2999,6 +3021,7 @@ function clearScan() {{
   scanIndexBase = 0;
   document.getElementById('scan-results').replaceChildren();
   renderScanStats();
+  renderScanFilter();
   scanSummary('');
 }}
 

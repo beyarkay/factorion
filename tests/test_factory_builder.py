@@ -1042,13 +1042,14 @@ const shown = () => scanResults.filter(inScanFilter).map(r => r.kind + r.seed);
 location.hash = '#scan?lesson=A&only=zero'; applyHash();
 const lessonZeros = shown();
 const summary = els['scan-summary'].innerHTML;
+const filterBar = els['scan-filter'].innerHTML;
 const stats = els['scan-stats'].innerHTML;
 location.hash = '#scan?only=zero'; applyHash();
 const allZeros = shown();
 location.hash = '#build?lesson=SPLITTER_1IN&seed=9&size=11&clear=2'; applyHash();
 (async () => {
   await new Promise(r => r());
-  return { lessonZeros, allZeros, summary, stats,
+  return { lessonZeros, allZeros, summary, filterBar, stats,
            load: posts.filter(p => p.url === '/load_lesson').pop().body };
 })();
 """
@@ -1064,11 +1065,15 @@ class TestDeepLinks:
     def test_scan_hash_filters_the_gallery(self, links):
         assert links["lessonZeros"] == ["A0"]
         assert links["allZeros"] == ["A0", "B0"]
-        assert 'href="#scan">show all' in links["summary"]
+        assert 'href="#scan">✕ show all' in links["filterBar"]
+        assert "showing 1 of 3" in links["filterBar"]
 
     def test_lesson_table_cells_link_to_their_subset(self, links):
-        for only in ("zero", "nonzero", "ref", "eot"):
+        for only in ("nonzero", "ref", "eot"):
             assert f'href="#scan?lesson=A&only={only}"' in links["stats"]
+        # The filter being shown links back to the unfiltered gallery.
+        assert 'href="#scan?lesson=A&only=zero"' not in links["stats"]
+        assert '<a href="#scan">1/2 (50%)</a>' in links["stats"]
         assert 'href="#scan?lesson=B"' in links["stats"]
 
     def test_build_hash_regenerates_the_lesson(self, links):
