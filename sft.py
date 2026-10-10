@@ -528,7 +528,7 @@ def run_rollout_eval(
     numbers.
 
     The (seed, kind) pairs are exactly the val_accuracy set. The result is
-    logged as `val/thput`, directly comparable to the existing per-kind val
+    logged as `val/thput@N`, directly comparable to the existing per-kind val
     accuracy curves. Eval-only; training is untouched.
 
     Every other output (EOT and recipe-pick scoring, dangling inserters,
@@ -881,7 +881,7 @@ def train_sft(args: SftArgs):
 
     # Held-out validation: the first eval_rollouts_max_seeds distinct factories
     # from seed `args.seed` upward. The rollout eval replays these same lessons,
-    # so val/acc and val/thput stay directly comparable.
+    # so val/acc and val/thput@N stay directly comparable.
     val = _materialise(
         args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
     )
@@ -1577,34 +1577,31 @@ def train_sft(args: SftArgs):
             rollout_seconds = time.time() - t_rollout
             overall_thp = roll["overall"]
             per_kind_thp_n = roll["per_kind_n"]
-            per_kind_metrics["val/thput"] = overall_thp
             per_kind_metrics["val/rollout_seconds"] = rollout_seconds
+            roll_metrics = {"val/thput": overall_thp}
             for kn, thp in roll["per_kind"].items():
                 if per_kind_thp_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/thput"] = thp
-            # thput@N names the best-of-N; see ppo._run_heldout_eval.
-            per_kind_metrics |= {
-                f"{k}@{args.eval_best_of}": v
-                for k, v in per_kind_metrics.items()
-                if k.endswith("/thput")
-            }
+                    roll_metrics[f"val/{kn}/thput"] = thp
             # Recipe-pick accuracy from the same rollout: fraction of the
             # assemblers the agent placed that got the right recipe. Only logged
             # for factories that actually have an assembler (so it appears once
             # the agent starts placing them, and never for belt-only lessons).
             per_kind_asm_n = roll["per_kind_asm_n"]
             if sum(per_kind_asm_n.values()) > 0:
-                per_kind_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
+                roll_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
             for kn, acc in roll["per_kind_asm_item_acc"].items():
                 if per_kind_asm_n[kn] > 0:
-                    per_kind_metrics[f"val/{kn}/asm_item_acc"] = acc
+                    roll_metrics[f"val/{kn}/asm_item_acc"] = acc
             for j, name in enumerate(("inserters_no_input", "inserters_no_output")):
-                per_kind_metrics[f"val/{name}"] = roll["dangling_inserters"][j]
+                roll_metrics[f"val/{name}"] = roll["dangling_inserters"][j]
                 if roll["trial_n"] > 0:
-                    per_kind_metrics[f"val/trial_{name}"] = roll["trial_dangling_inserters"][j]
+                    roll_metrics[f"val/trial_{name}"] = roll["trial_dangling_inserters"][j]
                 for kn, counts in roll["per_kind_dangling_inserters"].items():
                     if per_kind_thp_n[kn] > 0:
-                        per_kind_metrics[f"val/{kn}/{name}"] = counts[j]
+                        roll_metrics[f"val/{kn}/{name}"] = counts[j]
+            # Each comes from the factory's best of N samples; an unsuffixed
+            # metric is best-of-1.
+            per_kind_metrics |= {f"{k}@{args.eval_best_of}": v for k, v in roll_metrics.items()}
         else:
             overall_thp = None
             rollout_seconds = None
@@ -1713,7 +1710,7 @@ def train_sft(args: SftArgs):
             best_val_throughput = overall_thp
             torch.save(agent.state_dict(), args.checkpoint_path)
             ever_saved = True
-            pbar.write(f"  -> Saved best checkpoint (val/thput {overall_thp:.3f})")
+            pbar.write(f"  -> Saved best checkpoint (val/thput@{args.eval_best_of} {overall_thp:.3f})")
             if args.track and run is not None and overall_thp > uploaded_thp:
                 uploaded = _upload_checkpoint(
                     run, args, overall_thp, best_val_acc, [args.checkpoint_path], uploaded
@@ -1727,7 +1724,7 @@ def train_sft(args: SftArgs):
         torch.save(agent.state_dict(), args.checkpoint_path)
     total_time = time.time() - t0
     print(
-        f"\nBest val/thput: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
+        f"\nBest val/thput@{args.eval_best_of}: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
     )
     print(f"Checkpoint saved to: {args.checkpoint_path}")
 
@@ -1770,7 +1767,7 @@ def train_sft(args: SftArgs):
     if args.track and run is not None:
         # Headline metric in the W&B run table: best-of-N throughput, the same
         # number that selected the checkpoint.
-        run.summary["best_val_throughput"] = best_val_throughput
+        run.summary[f"best_val_throughput@{args.eval_best_of}"] = best_val_throughput
         run.summary["best_val_acc"] = best_val_acc
 
         # Upload the best checkpoint + summary so a Mac can grab the trained

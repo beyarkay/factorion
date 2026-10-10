@@ -7,7 +7,7 @@
 # Before launching, refresh the --start-from base below: check W&B for the
 # latest + longest-running SFT run that uploaded a model artifact (runs
 # without one can't be loaded as a base, and beware PR-experiment runs such
-# as single-lesson trains — their val/thput is not comparable).
+# as single-lesson trains — their val/thput@8 is not comparable).
 #
 # Everything but the two LR envelopes stays at the training_config.py defaults;
 # the sweep picks the peaks and the shape knobs the envelopes added:
@@ -30,13 +30,13 @@
 #     point of scheduling the two independently.
 #
 # 1M timesteps ≈ 244 iterations (~1 h/run): long enough that the stable phase
-# and the cooldown both register in eval/thput, short enough that 25 bayes
+# and the cooldown both register in eval/thput@8, short enough that 25 bayes
 # runs drain in about a pod-day.
 
 method: bayes
 run_cap: 25
 metric:
-  name: "eval/thput"
+  name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:

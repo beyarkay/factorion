@@ -291,7 +291,7 @@ def _build_eval_set(args) -> dict:
 
 
 def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
-    """Best-of-N held-out throughput eval, mirroring SFT's val/thput so
+    """Best-of-N held-out throughput eval, mirroring SFT's val/thput@N so
     the curves overlay. Returns a flat dict of eval/* metrics. Reuses SFT's
     run_rollout_eval (lazy import: sft imports ppo, so a top-level import would
     be circular); it only reads .size/.seed/.max_level off args, hence the shim."""
@@ -319,9 +319,6 @@ def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, thp in roll["per_kind"].items():
         if roll["per_kind_n"].get(kn, 0) > 0:
             metrics[f"eval/{kn}/thput"] = thp
-    # Each thput is the best of N samples, so it's also logged as thput@N; the
-    # unsuffixed keys stay so existing dashboards, sweeps and compares resolve.
-    metrics |= {f"{k}@{args.eval_best_of}": v for k, v in metrics.items()}
 
     # Recipe-pick accuracy from the same rollout: fraction of assemblers the
     # agent placed that got the right recipe. Mirrors SFT's val/asm_item_acc so
@@ -358,7 +355,9 @@ def _run_heldout_eval(agent, args, eval_seeds_to_kind, device) -> dict:
     for kn, rec in roll["per_kind_eot_pos_recall"].items():
         if eot_pos_n.get(kn, 0) > 0:
             metrics[f"eval/{kn}/eot_pos_recall"] = rec
-    return metrics
+    # Every metric here comes from each factory's best of N samples; @N says so
+    # (an unsuffixed metric is best-of-1).
+    return {f"{k}@{args.eval_best_of}": v for k, v in metrics.items()}
 
 
 def _rollout_episode_metrics(
@@ -2136,7 +2135,7 @@ if __name__ == "__main__":
         return means
 
     # Fixed held-out eval set (disjoint from training seeds), used to log
-    # eval/* — directly comparable to the SFT baseline's val/thput.
+    # eval/* — directly comparable to the SFT baseline's val/thput@N.
     eval_seeds_to_kind = _build_eval_set(args) if args.eval_every > 0 else {}
     agent_name = f"agent-{run_name.replace('/', '-').replace(':', '-').replace(' ', '_')}"
     ckpt_path = f"artifacts/{agent_name}.pt"
@@ -2500,8 +2499,8 @@ if __name__ == "__main__":
             eval_metrics = _run_heldout_eval(agent, args, eval_seeds_to_kind, device)
             eval_seconds = time.time() - t_eval
             eval_metrics["eval/seconds"] = eval_seconds
-            if eval_metrics["eval/thput"] > best_eval_thput:
-                best_eval_thput = eval_metrics["eval/thput"]
+            if eval_metrics[f"eval/thput@{args.eval_best_of}"] > best_eval_thput:
+                best_eval_thput = eval_metrics[f"eval/thput@{args.eval_best_of}"]
                 os.makedirs("artifacts", exist_ok=True)
                 torch.save(agent.state_dict(), ckpt_path)
                 if run is not None:
@@ -2688,7 +2687,7 @@ if __name__ == "__main__":
         _append_run_tags(run, f"thput:{final_thput*100:.0f}", f"duration:{format_duration(runtime)}")
     envs.close()
     if best_eval_thput >= 0:
-        print(f"Best checkpoint (eval/thput {best_eval_thput:.3f}) at {ckpt_path}")
+        print(f"Best checkpoint (eval/thput@{args.eval_best_of} {best_eval_thput:.3f}) at {ckpt_path}")
     elif runtime > 60 * 5: # 5 minutes
         # No eval ran, so there is no best to keep: save the final weights.
         print(f"Saving model to {ckpt_path}")
