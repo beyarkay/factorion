@@ -2494,6 +2494,9 @@ function scanCard(r, showRef) {{
     adoptGrid(
       r.size, r.grid.map(row => row.map(c => Object.assign({{}}, c))), source,
     );
+    document.getElementById('lesson-kind').value = r.kind;
+    document.getElementById('lesson-seed').value = r.seed;
+    document.getElementById('lesson-status').textContent = source;
   }});
   return card;
 }}
