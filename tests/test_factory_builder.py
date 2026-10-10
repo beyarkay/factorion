@@ -776,6 +776,95 @@ class TestHoldToApplyRespectsEot:
         assert out["autoApplying"] is False
 
 
+_SCAN_HARNESS = """
+import fs from 'node:fs';
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const els = {};
+const stub = () => {
+  const t = { listeners: {} };
+  return new Proxy(t, {
+    get(t, k) {
+      if (k === 'style' || k === 'dataset' || k === 'classList') return (t[k] ??= stub());
+      if (k in t) return t[k];
+      if (k === 'addEventListener') return (ev, fn) => { t.listeners[ev] = fn; };
+      if (k === 'querySelector') return () => (t.child ??= stub());
+      return () => stub();
+    },
+    set(t, k, v) { t[k] = v; return true; },
+  });
+};
+globalThis.document = {
+  getElementById: (id) => (els[id] ??= stub()), createElement: () => stub(),
+  addEventListener: () => {}, querySelectorAll: () => [], body: stub(),
+};
+globalThis.addEventListener = () => {};
+globalThis.window = globalThis;
+globalThis.performance = { now: () => 0 };
+globalThis.requestAnimationFrame = () => 0;
+globalThis.cancelAnimationFrame = () => {};
+globalThis.setTimeout = () => 0;
+globalThis.fetch = async () => ({ json: async () => ({}) });
+
+const driver = `
+const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
+               footprint: 'AVAILABLE' };
+const result = (kind, seed, thput) => ({
+  kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
+  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'eot',
+  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
+});
+const zero = scanCard(result('MIRRORED_1IN', 7, 0), false);
+const low = scanCard(result('SPLITTER_1IN', 42, 0.01), false);
+low.listeners.click();
+scanResults = [
+  result('ALWAYS_LOW', 0, 0.1), result('ALWAYS_LOW', 1, 0.1),
+  result('HALF_ZERO', 0, 0), result('HALF_ZERO', 1, 1.0),
+];
+renderScanStats();
+({
+  kind: document.getElementById('lesson-kind').value,
+  seed: document.getElementById('lesson-seed').value,
+  zeroBorder: zero.style.borderLeftColor, lowBorder: low.style.borderLeftColor,
+  stats: els['scan-stats'].innerHTML,
+});
+`;
+console.log(JSON.stringify(eval(src + driver)));
+"""
+
+
+@pytest.fixture(scope="module")
+def out(tmp_path_factory) -> dict:
+    tmp_path = tmp_path_factory.mktemp("scan")
+    html = fb.render_index(default_size=11)
+    js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    (tmp_path / "page.js").write_text(js)
+    (tmp_path / "harness.mjs").write_text(_SCAN_HARNESS)
+    assert _NODE is not None
+    proc = subprocess.run(
+        [_NODE, str(tmp_path / "harness.mjs"), str(tmp_path / "page.js")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"node failed:\n{proc.stderr}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+class TestScanGallery:
+
+    def test_opening_a_card_selects_its_lesson_and_seed(self, out):
+        assert out["kind"] == "SPLITTER_1IN"
+        assert out["seed"] == 42
+
+    def test_any_throughput_colours_the_card_as_working(self, out):
+        assert out["zeroBorder"] == "hsl(0, 70%, 45%)"
+        assert out["lowBorder"] == "hsl(120, 70%, 45%)"
+
+    def test_lessons_rank_by_fraction_above_zero(self, out):
+        assert out["stats"].index("HALF_ZERO") < out["stats"].index("ALWAYS_LOW")
+
+
 class TestRenderIndexHelpPopover:
     """The [?] help is a real click-to-toggle popover, not the old native
     `title` tooltip (which browsers rendered unreliably / not at all)."""

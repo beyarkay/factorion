@@ -2441,9 +2441,8 @@ function switchTab(name) {{
   document.getElementById('tab-scan').hidden = (name !== 'scan');
 }}
 
-// The card's left border is the fastest read in the gallery — a cluster of
-// failures registers before any text resolves.
-function thputColor(t) {{
+// Red at 0, green at 1.
+function fracColor(t) {{
   const q = Math.max(0, Math.min(t, 1));
   return `hsl(${{Math.round(q * 120)}}, 70%, 45%)`;
 }}
@@ -2464,7 +2463,9 @@ function miniGrid(g) {{
 function scanCard(r, showRef) {{
   const card = document.createElement('div');
   card.className = 'scan-card';
-  card.style.borderLeftColor = thputColor(r.thput_normed);
+  // Binary because what counts as a good thput differs by lesson. The border
+  // is the fastest read in the gallery: a cluster of zeros registers first.
+  card.style.borderLeftColor = fracColor(r.thput_normed > 0 ? 1 : 0);
   const stop = r.stopped_by === 'eot'
     ? 'stopped at ' + r.steps
     : 'no stop, ' + r.steps + ' steps';
@@ -2538,7 +2539,7 @@ function scanSummary(status) {{
 
 // Per-lesson breakdown. A mean over the whole scan hides the thing worth
 // finding — that one lesson is at zero while the rest are fine — so every
-// kind gets its own row, worst mean first.
+// kind gets its own row, lowest fraction above zero first.
 function renderScanStats() {{
   const host = document.getElementById('scan-stats');
   if (!scanResults.length) {{ host.replaceChildren(); return; }}
@@ -2560,14 +2561,17 @@ function renderScanStats() {{
       eot: rs.filter(r => r.stopped_by === 'eot').length,
     }};
   }});
-  rows.sort((a, b) => a.mean - b.mean || a.kind.localeCompare(b.kind));
+  rows.sort((a, b) =>
+    a.nonzero / a.n - b.nonzero / b.n || a.mean - b.mean ||
+    a.kind.localeCompare(b.kind));
   const head =
     '<tr><th>lesson</th><th>runs</th><th>mean thput</th>' +
     '<th>thput &gt; 0</th><th>complete</th><th>eot fired</th></tr>';
   const body = rows.map(row =>
     `<tr><td class="kind">${{escHtml(row.kind)}}</td><td>${{row.n}}</td>` +
-    `<td style="color:${{thputColor(row.mean)}}">${{row.mean.toFixed(3)}}</td>` +
-    `<td>${{frac(row.nonzero, row.n)}}</td><td>${{frac(row.complete, row.n)}}</td>` +
+    `<td>${{row.mean.toFixed(3)}}</td>` +
+    `<td style="color:${{fracColor(row.nonzero / row.n)}}">${{frac(row.nonzero, row.n)}}</td>` +
+    `<td>${{frac(row.complete, row.n)}}</td>` +
     `<td>${{frac(row.eot, row.n)}}</td></tr>`
   ).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
