@@ -215,12 +215,17 @@ class PpoArgs(SharedArgs):
     `learning_rate`."""
     critic_head_std: float = 0.1169
     """Initialization std for the value head."""
-    eval_every: int = 7
-    """Run the held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration)."""
-    eval_seeds_per_kind: int = 12
-    """Held-out factories per LessonKind in the eval set."""
+    eval_every: int = 50
+    """Run the held-out eval (eval/thput and per-lesson breakdowns) every N PPO iterations (and on the final iteration).
+    An eval costs ~11 training iterations (A4000, bf16), so 50 keeps it under
+    ~20% of wall time while a 1M-timestep run still gets 5 points."""
+    eval_seeds_per_kind: int = 4
+    """Held-out factories per LessonKind in the eval set. An eval's cost is
+    linear in it; 4 still bounds eval/thput@N's standard error at ~0.05."""
     eval_num_envs: int = 8
-    """Held-out factories rolled out in parallel, each over eval_best_of envs."""
+    """Held-out factories rolled out in parallel, each over eval_best_of envs.
+    Every step forwards all num_envs*eval_best_of slots, finished or not, so 64
+    was slower: the wide batch pays for idle slots until its last rollout ends."""
     amp: bool = True
     """run the encoder forward under bf16 autocast on CUDA; the heads, log-probs
     and losses stay fp32. bf16 is what unlocks the flash-attention kernel."""
