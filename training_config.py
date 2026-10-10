@@ -223,7 +223,9 @@ class PpoArgs(SharedArgs):
     """Held-out factories per LessonKind in the eval set. An eval's cost is
     linear in it; 4 still bounds eval/thput@N's standard error at ~0.05."""
     eval_num_envs: int = 8
-    """Held-out factories rolled out in parallel, each over eval_best_of envs."""
+    """Held-out factories rolled out in parallel, each over eval_best_of envs.
+    Every step forwards all num_envs*eval_best_of slots, finished or not, so 64
+    was slower: the wide batch pays for idle slots until its last rollout ends."""
     amp: bool = True
     """run the encoder forward under bf16 autocast on CUDA; the heads, log-probs
     and losses stay fp32. bf16 is what unlocks the flash-attention kernel."""
