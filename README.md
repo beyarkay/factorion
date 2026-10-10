@@ -183,7 +183,7 @@ lesson-generator's solutions when a better layout exists. Starting from a
 decent pretrained policy means the sparse-reward problem (most factories
 throughput=0) bites much less than in the original RL-from-scratch setup.
 Point `--start-from` at either a local `.pt` file or a W&B run id (e.g.
-`8gqpfppb`, whose model artifact is fetched automatically),
+`mvbipbr0`, whose model artifact is fetched automatically),
 and use `--critic-warmup` to train the fresh value head before unfreezing the
 policy. The aim is for PPO to beat the SFT base's throughput on the same
 lesson mix — currently ≈0.67, which PPO takes to ≈0.78.
@@ -273,7 +273,7 @@ uv run maturin develop --release --manifest-path factorion_rs/Cargo.toml
 uv run python ppo.py \
     --seed 1 \
     --env-id factorion/FactorioEnv-v0 \
-    --start-from 8gqpfppb \
+    --start-from mvbipbr0 \
     --track \
     --wandb-project-name factorion \
     --total-timesteps 500000

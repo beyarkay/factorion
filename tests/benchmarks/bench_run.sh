@@ -33,10 +33,10 @@ case "$KIND" in
       --summary-path "${SUMMARY_PATH:-/tmp/bench_ppo_speed.json}" "$@"
     ;;
   ppo-quality)
-    CKPT="${CKPT:-checkpoints/sft_8gqpfppb.pt}"
+    CKPT="${CKPT:-checkpoints/sft_mvbipbr0.pt}"
     if [ ! -f "$CKPT" ]; then
       echo "ERROR: SFT checkpoint not found at $CKPT" >&2
-      echo "Recreate offline via _resolve_wandb_checkpoint('8gqpfppb')." >&2
+      echo "Recreate offline via _resolve_wandb_checkpoint('mvbipbr0')." >&2
       exit 1
     fi
     WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
