@@ -1,4 +1,4 @@
-# ci/sweep_ppo.yaml — peaks + shape of the independent actor/critic WSD LR envelopes
+# ci/sweep_ppo.yaml — PPO finetune of an SFT base at 15x15 on the full-factory lessons.
 #
 # Launched with: /ci sweep ppo
 # Sweep results are reported (ci sweep-report), not auto-applied —
@@ -9,70 +9,78 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# Everything but the two LR envelopes stays at the training_config.py defaults;
-# the sweep picks the peaks and the shape knobs the envelopes added:
-#   - learning_rate: the peak the actor's stable phase holds for most of the
-#     run, so the single most consequential number here. The previous default
-#     was tuned under the linear whole-run anneal, which spends most of its
-#     steps well below peak — the best WSD peak may well sit lower, so the
-#     range reaches further down than up.
-#   - critic_lr: the critic's peak. Only the value head rides it, so the
-#     range is wide — it reaches both below the actor's band and above it.
-#   - lr_warmup_iters: an absolute iteration count, so what wins transfers
-#     unchanged to runs of any length; 0 is in range so the sweep can say the
-#     ramp is worthless. Only the actor has one — the critic-warmup freeze is
-#     the critic's warmup.
-#   - *_cooldown_frac: Hägele et al. report the benefit plateauing near 20%
-#     and as little as 5% sufficing on long runs; swept past both ends.
-#   - *_min_ratio: 0 (decay to zero) is in range, so the sweep can tell us
-#     whether a nonzero floor is worth anything. The critic's range reaches
-#     higher — keeping the value head learning while the actor cools is the
-#     point of scheduling the two independently.
+# Every PPO default predates the 8x288 attention policy (#469), so the knobs
+# that set how far and how fast the policy moves off its SFT base are
+# re-centred on their defaults, each range a little wider than its plausible
+# good band:
+#   - learning_rate / critic_lr: the actor and critic peaks. Sweep 663awt86
+#     put the critic's 13x below the actor's, near the bottom of its range.
+#   - target_kl: caps each update's policy step, so it trades off against
+#     learning_rate (high lr + low target_kl just early-stops sooner).
+#   - divergence_penalty: the KL anchor to the SFT base (#425's sweep pointed
+#     near 0.002, the default is 0.008).
+#   - ent_coef_start/end: exploration, which the trials depend on (#373, #376).
+#   - max_grad_norm: the same network clipped every step in SFT (0.33); the
+#     PPO default 1.22 was tuned on the old conv-only trunk.
+# Pinned at their training_config defaults: gamma (0.997, fixed with the
+# reward in #400), gae_lambda, clip_coef, num_minibatches, update_epochs,
+# vf_coef (sweep llfgwhki's picks for these gained nothing in #346's
+# compare), the LR envelope shape (663awt86 swept it; shape transfers
+# across models better than peaks), critic_warmup, and entity_cost_scale (it
+# defines the reward, so it isn't tuned against eval/thput@8).
 #
-# 1M timesteps ≈ 244 iterations (~1 h/run): long enough that the stable phase
-# and the cooldown both register in eval/thput@8, short enough that 25 bayes
-# runs drain in about a pod-day.
+# The sweep metric is the final eval alone: 24 held-out factories per lesson
+# instead of 12 cut its noise ~1.4x, paid for by evaluating half as often.
+# 1M timesteps ≈ 244 iterations.
+#
+# Stage 2: copy the promising region into narrower ranges at a longer budget.
 
 method: bayes
-run_cap: 25
+run_cap: 30
 metric:
   name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:
+  eval_seeds_per_kind:
+    value: 24
+  eval_every:
+    value: 14
+
   # ── Peaks ────────────────────────────────────────────────────────
   learning_rate:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 1e-4
+    min: 1.0e-5
+    max: 2.0e-4
   critic_lr:
     distribution: log_uniform_values
-    min: 3e-6
-    max: 3e-4
+    min: 1.0e-6
+    max: 1.0e-4
 
-  # ── Warmup ───────────────────────────────────────────────────────
-  lr_warmup_iters:
-    distribution: int_uniform
-    min: 0
-    max: 40
+  # ── Step size / anchoring ────────────────────────────────────────
+  target_kl:
+    distribution: log_uniform_values
+    min: 0.005
+    max: 0.05
+  divergence_penalty:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 5.0e-2
+  max_grad_norm:
+    distribution: log_uniform_values
+    min: 0.2
+    max: 3.0
 
-  # ── Cooldown ─────────────────────────────────────────────────────
-  lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  critic_lr_cooldown_frac:
-    distribution: uniform
-    min: 0.02
-    max: 0.5
-  lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.1
-  critic_lr_min_ratio:
-    distribution: uniform
-    min: 0.0
-    max: 0.3
+  # ── Exploration ──────────────────────────────────────────────────
+  ent_coef_start:
+    distribution: log_uniform_values
+    min: 1.0e-3
+    max: 3.0e-2
+  # Capped at ent_coef_start's floor so the anneal never rises.
+  ent_coef_end:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 1.0e-3
 
 program: ppo.py
 
