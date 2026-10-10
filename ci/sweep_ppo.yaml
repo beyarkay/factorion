@@ -1,4 +1,4 @@
-# ci/sweep_ppo.yaml — PPO finetune of an SFT base at 15x15 on the full-factory lessons.
+# ci/sweep_ppo.yaml — wide, short screen for PPO settings that don't collapse the SFT base.
 #
 # Launched with: /ci sweep ppo
 # Sweep results are reported (ci sweep-report), not auto-applied —
@@ -9,78 +9,62 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# Every PPO default predates the 8x288 attention policy (#469), so the knobs
-# that set how far and how fast the policy moves off its SFT base are
-# re-centred on their defaults, each range a little wider than its plausible
-# good band:
-#   - learning_rate / critic_lr: the actor and critic peaks. Sweep 663awt86
-#     put the critic's 13x below the actor's, near the bottom of its range.
-#   - target_kl: caps each update's policy step, so it trades off against
-#     learning_rate (high lr + low target_kl just early-stops sooner).
-#   - divergence_penalty: the KL anchor to the SFT base (#425's sweep pointed
-#     near 0.002, the default is 0.008).
-#   - ent_coef_start/end: exploration, which the trials depend on (#373, #376).
-#   - max_grad_norm: the same network clipped every step in SFT (0.33); the
-#     PPO default 1.22 was tuned on the old conv-only trunk.
-# Pinned at their training_config defaults: gamma (0.997, fixed with the
-# reward in #400), gae_lambda, clip_coef, num_minibatches, update_epochs,
-# vf_coef (sweep llfgwhki's picks for these gained nothing in #346's
-# compare), the LR envelope shape (663awt86 swept it; shape transfers
-# across models better than peaks), critic_warmup, and entity_cost_scale (it
-# defines the reward, so it isn't tuned against eval/thput@8).
+# At the training_config defaults PPO destroys the base (run 6etby4zk:
+# eval/thput 0.43 -> 0.03 over 1M steps, almost all of it tile-head drift).
+# Rollout and update log-probs agree exactly (approx_kl == 0 while the actor
+# is frozen), so this screens step size and batch noise, not a bug:
+#   - learning_rate: lr 1e-5 already hits target_kl 0.02 on the second joint
+#     iteration, so the range reaches far below the default.
+#   - update_epochs, target_kl: the rest of how far one batch moves the policy.
+#   - divergence_penalty: up to 1, where the KL anchor dominates the PG loss.
+#   - ent_coef_start: the bonus spans ~225 tile choices; annealed to 0.
+#   - num_steps: episodes run ~150 steps, so 256 x 16 envs holds only ~25
+#     episodes per update; 1024 holds ~100.
+# Warmups are pinned short in iterations so every batch size gets the same
+# steps of joint training. The metric is one final eval at 12 factories per
+# lesson (standard error ~0.03); a run that holds the base's val/thput@8
+# (0.53 for mvbipbr0) didn't collapse.
 #
-# The sweep metric is the final eval alone: 24 held-out factories per lesson
-# instead of 12 cut its noise ~1.4x, paid for by evaluating half as often.
-# 1M timesteps ≈ 244 iterations.
-#
-# Stage 2: copy the promising region into narrower ranges at a longer budget.
+# Stage 2: narrow to the non-collapsing region, longer runs, bayes.
 
-method: bayes
-run_cap: 30
+method: random
+run_cap: 40
 metric:
   name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:
-  eval_seeds_per_kind:
-    value: 24
+  lr_warmup_iters:
+    value: 5
+  critic_warmup:
+    value: 5
+  ent_coef_end:
+    value: 0.0
   eval_every:
-    value: 14
+    value: 1000
+  eval_seeds_per_kind:
+    value: 12
 
-  # ── Peaks ────────────────────────────────────────────────────────
   learning_rate:
     distribution: log_uniform_values
-    min: 1.0e-5
-    max: 2.0e-4
-  critic_lr:
-    distribution: log_uniform_values
-    min: 1.0e-6
+    min: 3.0e-7
     max: 1.0e-4
-
-  # ── Step size / anchoring ────────────────────────────────────────
+  update_epochs:
+    values: [1, 2, 4, 8]
   target_kl:
     distribution: log_uniform_values
-    min: 0.005
+    min: 0.001
     max: 0.05
   divergence_penalty:
     distribution: log_uniform_values
     min: 1.0e-3
-    max: 5.0e-2
-  max_grad_norm:
-    distribution: log_uniform_values
-    min: 0.2
-    max: 3.0
-
-  # ── Exploration ──────────────────────────────────────────────────
+    max: 1.0
   ent_coef_start:
     distribution: log_uniform_values
-    min: 1.0e-3
-    max: 3.0e-2
-  # Capped at ent_coef_start's floor so the anneal never rises.
-  ent_coef_end:
-    distribution: log_uniform_values
     min: 1.0e-4
-    max: 1.0e-3
+    max: 3.0e-2
+  num_steps:
+    values: [256, 1024]
 
 program: ppo.py
 
@@ -89,8 +73,8 @@ command:
   - python
   - ${program}
   - --start-from
-  - 8gqpfppb
+  - mvbipbr0
   - --total-timesteps
-  - 1_000_000
+  - 500_000
   - --track
   - ${args}
