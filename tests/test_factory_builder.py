@@ -843,8 +843,10 @@ const stub = () => {
     set(t, k, v) { t[k] = v; return true; },
   });
 };
+const created = [];
 globalThis.document = {
-  getElementById: (id) => (els[id] ??= stub()), createElement: () => stub(),
+  getElementById: (id) => (els[id] ??= stub()),
+  createElement: () => { const el = stub(); created.push(el); return el; },
   addEventListener: () => {}, body: stub(),
   querySelectorAll: (sel) => sel.startsWith('#scan-kinds')
     ? [{ value: 'MIRRORED_1IN' }, { value: 'SPLITTER_1IN' }] : [],
@@ -856,7 +858,9 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.setTimeout = () => 0;
 let posted = null;
+const posts = [];
 globalThis.fetch = async (url, opts) => {
+  if (opts && opts.body) posts.push({ url, body: JSON.parse(opts.body) });
   if (url !== '/batch_rollout') return { json: async () => ({}) };
   posted = JSON.parse(opts.body);
   return { ok: false, status: 500 };
@@ -965,6 +969,35 @@ def test_undo_redo_walk_the_grid_history(tmp_path):
         [belt, ins], [belt, e], [e, e], [e, e], [belt, e], [belt, e],
     ]
     assert out["redoAfterEdit"] == 0
+
+
+_EYEDROPPER_DRIVER = """
+SIZE = 3; grid = newGrid(3);
+Object.assign(grid[1][1], { entity: 'inserter', direction: 'NORTH' });
+hovered = { x: 1, y: 1 };
+pickHovered();
+rotateCursor(true);
+const held = { ...cursor };
+renderGrid();
+created.find(e => e.dataset.x === 2 && e.dataset.y === 0).listeners.click();
+(async () => {
+  await editQueue;
+  hovered = { x: 0, y: 0 };
+  pickHovered();
+  return { held, edit: posts.filter(p => p.url === '/hand_edit').pop().body.ops,
+           afterEmptyPick: cursor };
+})();
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_eyedropper_picks_rotates_and_places(tmp_path):
+    out = _run_page(tmp_path, _EYEDROPPER_DRIVER)
+    held = {"entity": "inserter", "direction": "EAST", "item": "empty",
+            "misc": "NONE"}
+    assert out["held"] == held
+    assert out["edit"] == [{"x": 2, "y": 0, "cell": held}]
+    assert out["afterEmptyPick"] is None
 
 
 class TestRenderIndexHelpPopover:

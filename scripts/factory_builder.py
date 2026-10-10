@@ -150,6 +150,7 @@ HELP_LINES = [
     "Rotate selected: r (cw), R (ccw)",
     "Clear selected: Delete / Backspace / right-click",
     "Deselect hotbar: Esc",
+    "Eyedropper: z picks up the hovered entity (rotation, recipe); click places it, r rotates it, Esc drops it",
     "Generate lesson: g (set 'entities to clear' to blank N first)",
     "Apply prediction: tap a once / hold a for fast autoregressive placement",
     "Resize / clear grid: c",
@@ -1254,6 +1255,7 @@ def render_index(default_size: int) -> str:
     word-break: break-all; pointer-events: none;
   }}
   .hb-slot.active {{ border-color: #28c850; background: #e8ffe8; }}
+  .cursor-ghost {{ position: absolute; inset: 0; opacity: 0.5; pointer-events: none; }}
   .hb-slot.eraser {{ background: #fee; }}
   .hb-slot.empty-slot {{
     background: #f4f4f4; cursor: default; color: #bbb;
@@ -1472,6 +1474,7 @@ def render_index(default_size: int) -> str:
 
   <div class="grid-wrap">
     <div class="hotbar" id="hotbar">{hotbar_html}</div>
+    <div class="help" id="cursor-info"></div>
     <div class="controls">
       <label>size <input id="size" type="number" min="2" max="20" value="{default_size}"></label>
       <button id="resize" title="Resize the grid and clear all cells">resize / clear <span class="kbd">c</span></button>
@@ -1598,6 +1601,8 @@ let SIZE = {default_size};
 let grid = [];           // grid[y][x] = cell dict
 let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
+let cursor = null;   // an entity picked up with z: {{entity, direction, item, misc}}
+let hovered = null;  // the grid cell under the mouse, {{x, y}}
 let prediction = null;   // last /predict response (or null)
 let gridSource = null;   // what produced `grid`, or null if hand-built
 let gridSnapshot = '';   // `grid` as adopted, to detect later edits
@@ -1724,10 +1729,26 @@ function renderGrid() {{
         html += `<div class="p-badge" style="color:${{pBadgeColor(cand.p_tile)}}">${{pct}}</div>`;
       }}
       inner.innerHTML = html;
+      if (cursor && hovered && hovered.x === x && hovered.y === y) {{
+        inner.appendChild(cursorGhost());
+      }}
       td.appendChild(inner);
 
+      td.addEventListener('mouseenter', () => {{
+        hovered = {{ x, y }};
+        if (cursor) inner.appendChild(cursorGhost());
+      }});
+      td.addEventListener('mouseleave', () => {{
+        if (hovered && hovered.x === x && hovered.y === y) hovered = null;
+        const ghost = inner.querySelector('.cursor-ghost');
+        if (ghost) ghost.remove();
+      }});
       td.addEventListener('click', () => {{
         selected = {{x, y}};
+        if (cursor) {{
+          handEdit([{{ x, y, cell: cursor }}]);
+          return;
+        }}
         if (activeHotbar !== null) {{
           const ent = HOTBAR[activeHotbar];
           if (ent !== null) {{
@@ -1832,6 +1853,40 @@ function setActiveHotbar(idx) {{
   if (idx !== null && HOTBAR[idx] === null) return;
   activeHotbar = (activeHotbar === idx) ? null : idx;
   renderHotbar();
+  if (cursor) setCursor(null);
+}}
+
+function cursorGhost() {{
+  const ghost = document.createElement('div');
+  ghost.className = 'cursor-ghost';
+  ghost.innerHTML = cellGlyphs(cursor);
+  return ghost;
+}}
+
+function setCursor(cell) {{
+  cursor = cell;
+  document.getElementById('cursor-info').textContent = cursor
+    ? 'holding ' + cursor.entity + ' ' + (DIR_ARROW[cursor.direction] || '') +
+      (cursor.item !== 'empty' ? ' · ' + cursor.item : '') +
+      ' — click to place, r rotates, Esc drops'
+    : '';
+  renderGrid();
+}}
+
+// Factorio's pipette: pick up the hovered entity, rotation and recipe included.
+function pickHovered() {{
+  if (!hovered) return;
+  const c = grid[hovered.y][hovered.x];
+  if (activeHotbar !== null) {{ activeHotbar = null; renderHotbar(); }}
+  setCursor(c.entity === 'empty' ? null : {{
+    entity: c.entity, direction: c.direction, item: c.item, misc: c.misc,
+  }});
+}}
+
+function rotateCursor(cw) {{
+  const i = DIR_CYCLE.indexOf(cursor.direction);
+  if (i < 0) return;
+  setCursor({{ ...cursor, direction: DIR_CYCLE[(i + (cw ? 1 : -1) + 4) % 4] }});
 }}
 
 function bindHotbar() {{
@@ -2487,8 +2542,13 @@ document.addEventListener('keydown', (ev) => {{
     ev.preventDefault();
     return;
   }}
-  if (ev.key === 'r') {{ rotateSelected(true); ev.preventDefault(); return; }}
-  if (ev.key === 'R') {{ rotateSelected(false); ev.preventDefault(); return; }}
+  if (ev.key === 'r' || ev.key === 'R') {{
+    const cw = ev.key === 'r';
+    if (cursor) rotateCursor(cw); else rotateSelected(cw);
+    ev.preventDefault();
+    return;
+  }}
+  if (ev.key === 'z') {{ pickHovered(); ev.preventDefault(); return; }}
   if (ev.key === 'Delete' || ev.key === 'Backspace') {{
     clearSelected(); ev.preventDefault(); return;
   }}
@@ -2509,7 +2569,8 @@ document.addEventListener('keydown', (ev) => {{
       if (tgl) tgl.setAttribute('aria-expanded', 'false');
       return;
     }}
-    if (activeHotbar !== null) setActiveHotbar(activeHotbar);
+    if (cursor) setCursor(null);
+    else if (activeHotbar !== null) setActiveHotbar(activeHotbar);
     return;
   }}
 }});
