@@ -30,7 +30,7 @@
 method: bayes
 run_cap: 40
 metric:
-  name: "val/thput"
+  name: "val/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:

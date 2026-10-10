@@ -565,7 +565,7 @@ class TestBadInput:
             "/ci ppo --start-from",
             "/ci compare sft",
             "/ci compare ppo --start-from",
-            "assert pr:val/thput > main:val/thput",
+            "assert pr:val/thput@8 > main:val/thput@8",
             "/ci sweep sft",
             "/ci pods",
             "/ci kill",

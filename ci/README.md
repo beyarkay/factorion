@@ -14,7 +14,7 @@ flags (don't type the brackets); counts (`N`) accept an SI-ish suffix —
 /ci sft [--num-samples N]                  # SFT from scratch at the PR head
 /ci ppo --start-from j0s5y2mc              # PPO from an SFT checkpoint
 /ci compare sft [--seeds 3] [--num-samples N]   # PR head vs main, seed-paired
-assert pr:val/thput > main:val/thput       # optional pass/fail conditions
+assert pr:val/thput@8 > main:val/thput@8   # optional pass/fail conditions
 assert pr:val/acc >= 0.5                   #   → commit status check
 assert pr:sps == main:sps +- 100           # ~equal within a tolerance
 /ci compare ppo --start-from j0s5y2mc      # PPO compare, same flow

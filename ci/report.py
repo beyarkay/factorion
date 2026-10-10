@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional, TypeGuard
 
 from ci.config import WANDB_PROJECT
 from ci.stats import mean, paired_t_test, stdev, welch_t_test
+from training_config import SharedArgs
 
 # define_metric(summary=...) stores its statistic under one of these keys.
 _SUMMARY_STAT_KEYS = ("max", "min", "last", "mean", "value")
@@ -67,7 +68,7 @@ def flatten_summary(summary: dict, prefix: str = "") -> dict[str, float]:
 # ── End-of-run metrics ─────────────────────────────────────────────
 # A run's W&B summary holds ONE logged point per metric — the last, or
 # whatever single statistic define_metric picked. That is noise for a
-# stochastic policy (eval/thput swings between neighbouring evals), so
+# stochastic policy (eval/thput@N swings between neighbouring evals), so
 # reporting it decides comparisons on where a run happened to stop, or on its
 # single luckiest eval. Reports average the tail of the history instead.
 
@@ -218,8 +219,8 @@ HEADLINE_PATTERNS = [
     # SFT: throughput first (overall then per-lesson), then accuracies
     # (overall then per-head; the head names come from the [a-z]+_acc shape,
     # which deliberately excludes per-lesson accs like val/{LESSON}/acc).
-    r"^val/thput$",
-    r"^val/[A-Z0-9_]+/thput$",
+    r"^val/thput@\d+$",
+    r"^val/[A-Z0-9_]+/thput@\d+$",
     r"^val/acc$",
     r"^val/[a-z]+_acc$",
     # PPO: on-policy rollout health (overall then per-lesson), then speed.
@@ -601,7 +602,7 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
     sweep = api.sweep(sweep_path)
 
     metric_cfg = sweep.config.get("metric", {})
-    metric_name = metric_cfg.get("name", "eval/thput")
+    metric_name = metric_cfg.get("name", f"eval/thput@{SharedArgs.eval_best_of}")
     metric_goal = metric_cfg.get("goal", "maximize")
     sweep_params = sweep.config.get("parameters", {})
     reverse = metric_goal == "maximize"
@@ -665,8 +666,10 @@ def sweep_report(sweep_path: str, top_n: int = 5) -> str:
 # Headline columns for the history CSV: one stable, plottable row per CI run.
 HISTORY_METRICS = [
     "val/thput",
+    f"val/thput@{SharedArgs.eval_best_of}",
     "val/acc",
     "eval/thput",
+    f"eval/thput@{SharedArgs.eval_best_of}",
     "rollout/thput",
     "moving_avg_throughput",
 ]
