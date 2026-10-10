@@ -723,3 +723,45 @@ dropout + layer norm make a third of the step memory-bound elementwise work.
   diverge and keep their offsets). In the 3-seed compile check, seed 1 alone
   showed val/loss +0.028 at 100% of points and the other two seeds reversed
   it. The "≥90% one-sign" reading needs ≥2 seeds for small effects.
+
+---
+
+# PPO at 15×15 on the CI pods: bf16 encoder (#476)
+
+Measured with `/ci compare ppo --start-from 8gqpfppb --seeds 1
+--total-timesteps 65536` on an **RTX 6000 Ada** (both sides on the same card).
+The PR side had `PpoArgs.amp=True`, autocasting only the encoder, the same way
+SFT does. The main side ran in fp32. That's 16 iterations: 9 critic-warmup
+iterations, then 7 joint ones. Runs
+[801legmf](https://wandb.ai/beyarkay/factorion/runs/801legmf) (bf16) and
+[d7zizcfw](https://wandb.ai/beyarkay/factorion/runs/d7zizcfw) (fp32). This
+reverses the "AMP/bf16 no win" finding in the time-to-quality section above,
+which was measured on the small conv-only model.
+
+| per iteration (median, warmup iters 2–9) | fp32 | bf16 encoder | speedup |
+|---|---|---|---|
+| `perf/rollout_seconds` | 2.20 | 1.27 | 1.7× |
+| `perf/update_seconds` | 8.56 | 2.94 | 2.9× |
+| `perf/eval_seconds` (3 evals) | 87–90 | 70–73 | 1.25× |
+| run wall / final `perf/sps` | 470 s / 139 | 336 s / 195 | 1.4× |
+
+- **The full fwd+bwd** (eager `sample_action` + backward, B=128, measured
+  in-pod) takes 98.6 ms in fp32 and 37.0 ms in bf16, **2.7×**. In fp32, SDPA
+  picks the mem-efficient kernel (`fmha_cutlass*_f32`). In bf16 it runs
+  FlashAttention (`pytorch_flash::flash_fwd/bwd`).
+- **Post-warmup `update_seconds` isn't comparable across sides.** `target_kl`
+  stops the epochs after a random number of minibatches (0.5–1.0 s bf16 and
+  1.4–1.9 s fp32 for very different amounts of work). The microbenchmark
+  above is the fair full-update number.
+- **`torch_deterministic=True` does not block FlashAttention.** With
+  deterministic algorithms on, flash runs its deterministic backward rather
+  than falling back. That costs ~11% of the fwd+bwd (37.0 vs 32.8 ms), so it
+  stays on, and `ppo-speed`'s signature gate keeps working.
+- **The ratio is unharmed.** During warmup the actor is frozen, so
+  `losses/approx_kl` measures only the rollout-vs-update numerical mismatch:
+  0 in fp32, ~1e-4 in bf16 (`clipfrac` 0 on both), 200× below `target_kl`.
+  `policy/kl_to_ref` has a matching ~3e-4 floor. After unfreeze, `approx_kl`
+  (0.02–0.04 vs 0.02–0.05) and `clipfrac` (0.04–0.10 on both) look alike, and
+  `eval/thput` tracks: 0.429/0.376/0.394 bf16 vs 0.425/0.388/0.394 fp32.
+- **Compile and CUDA graphs are fine.** No graph breaks. Warmup builds 3
+  graphs, and the unfreeze recompiles once (to 6). No re-recording after that.
