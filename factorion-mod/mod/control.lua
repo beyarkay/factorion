@@ -801,7 +801,7 @@ local function try_request_prediction(player_index)
     return false, "No footprint set."
   end
   if state.pending then
-    return false, "A prediction is already in progress."
+    return false, "A prediction is already in progress; CTRL+R cancels it."
   end
   if not storage.model then
     request_model_load()
@@ -908,22 +908,22 @@ local function server_alive()
     and game.tick - storage.server_contact_tick < timeout
 end
 
+-- game.is_multiplayer() is false for a GUI host playing alone, even with
+-- RCON open, so it can't tell a hosted game from single-player.
 local function server_help()
-  if not game.is_multiplayer() then
-    return "This game isn't hosted, so Factorio hasn't opened its RCON port. " ..
-      "Save, then choose Play > Multiplayer > Host saved game."
-  end
   if recently(storage.server_seen_tick) then
     return string.format(
       "A model server is reaching the game, but it speaks protocol %s and " ..
-      "this mod speaks %s. Restart it with ./start-mod.sh from the same " ..
-      "factorion checkout as the mod.",
+      "this mod speaks %s. Whichever side is older needs restarting: quit " ..
+      "and re-host Factorio to load the latest mod, or restart the server " ..
+      "with ./start-mod.sh.",
       tostring(storage.server_protocol or "unknown"), PROTOCOL_VERSION)
   end
-  return "Start it from the factorion repo with ./start-mod.sh. If it's " ..
-    "running but still can't connect, Factorio's config.ini needs " ..
-    "local-rcon-socket=127.0.0.1:64502 and local-rcon-password=<password> " ..
-    "under [other]; restart Factorio after editing it."
+  return "Start it from the factorion repo with ./start-mod.sh. Factorio only " ..
+    "opens RCON while hosting (Play > Multiplayer > Host), and its config.ini " ..
+    "needs local-rcon-socket=127.0.0.1:64502 and " ..
+    "local-rcon-password=<password> under [other]; restart Factorio after " ..
+    "editing it."
 end
 
 local function check_server()
