@@ -185,8 +185,8 @@ local MODEL_ENTITY_NAMES = {
   "underground-belt",
   "splitter",
 }
-local SINK_RATE_SAMPLE_TICKS = 30
-local SINK_RATE_WINDOW_TICKS = 5 * 60
+local SINK_RATE_SAMPLE_TICKS = 10
+local SINK_RATE_WINDOW_TICKS = 60
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
