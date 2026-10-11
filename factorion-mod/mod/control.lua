@@ -91,49 +91,20 @@ end
 -- player onboarding
 -- ----------------------------------------------------------------------------
 
-local function give_tools(player)
-  local inv = player.get_main_inventory()
-  if not inv then return end
-  if inv.get_item_count("factorion-footprint-tool") == 0 then
-    inv.insert({ name = "factorion-footprint-tool", count = 1 })
-  end
-  if inv.get_item_count("factorion-source-belt") == 0 then
-    inv.insert({ name = "factorion-source-belt", count = 10 })
-  end
-  if inv.get_item_count("factorion-sink-belt") == 0 then
-    inv.insert({ name = "factorion-sink-belt", count = 10 })
-  end
-end
-
 local function show_startup_message(player)
-  player.print({ "",
-    "[Factorion] Ready. Press CTRL+T for the [item=factorion-footprint-tool], ",
-    "[item=factorion-source-belt], and [item=factorion-sink-belt]. Stamp a ",
-    "region, place and configure the endpoint belts, then press CTRL+P." })
-  player.print("[Factorion] CTRL+R clears the region and model placements; endpoint belts mine normally.")
+  player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
+    "tile with it to choose what to make, then click a tile for each source " ..
+    "and press CTRL+P. Right-click with it to clear the plan.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
   ensure_player_state(event.player_index)
   ensure_pending_lookup()
-  local player = game.get_player(event.player_index)
-  if player then give_tools(player) end
-end)
-
-script.on_event("factorion-give-tools", function(event)
-  local player = game.get_player(event.player_index)
-  if player then
-    give_tools(player)
-    player.print("[Factorion] Factorion tools and endpoint belts added to your inventory.")
-  end
 end)
 
 script.on_event(defines.events.on_player_joined_game, function(event)
   local player = game.get_player(event.player_index)
-  if player then
-    give_tools(player)
-    show_startup_message(player)
-  end
+  if player then show_startup_message(player) end
   -- Re-announce the server's state (after the grace period) to whoever joined.
   if storage.server_connected == false then
     storage.server_connected = nil
@@ -154,12 +125,6 @@ end
 local function area_center_tile(area)
   return tile_floor((area.left_top.x + area.right_bottom.x) / 2),
     tile_floor((area.left_top.y + area.right_bottom.y) / 2)
-end
-
-local function fixed_footprint(area, size)
-  local cx, cy = area_center_tile(area)
-  local radius = math.floor(size / 2)
-  return { x = cx - radius, y = cy - radius, w = size, h = size }
 end
 
 local function destroy_footprint_render(state)
@@ -341,7 +306,7 @@ local function endpoint_config(entity)
 end
 
 -- The server loads the checkpoint and reports its grid size via model_loaded;
--- until then storage.model is nil and no region can be stamped.
+-- until then storage.model is nil and no region can be planned.
 local function request_model_load()
   local checkpoint = get_checkpoint()
   if storage.model_loading == checkpoint then return end
@@ -429,45 +394,228 @@ local function open_marker_dialog(player, state, role, entity)
   player.opened = frame
 end
 
+-- ----------------------------------------------------------------------------
+-- planner: click a tile and pick the sink item, then click one tile per
+-- ingredient source; the region is the model's grid centred on those belts
+-- ----------------------------------------------------------------------------
+
+local PLANNER = "factorion-planner"
+local PLAN_DIALOG = "factorion-plan-dialog"
+local PLAN_ITEM = "factorion-plan-item"
+
+-- The recipe an assembling machine 1 makes item with, preferring the one named
+-- after it.
+local function recipe_for(item)
+  local categories = prototypes.entity["assembling-machine-1"].crafting_categories
+  local fallback
+  for name, recipe in pairs(prototypes.recipe) do
+    if not recipe.hidden and categories[recipe.category] then
+      for _, product in pairs(recipe.products) do
+        if product.type == "item" and product.name == item then
+          if name == item then return recipe end
+          fallback = fallback or recipe
+        end
+      end
+    end
+  end
+  return fallback
+end
+
+-- One source per ingredient item, in recipe order; nil plus a reason when
+-- belts can't supply it.
+local function source_items(item)
+  local recipe = recipe_for(item)
+  if not recipe then
+    return nil, "no recipe an assembling machine 1 can craft makes [item=" .. item .. "]"
+  end
+  local items = {}
+  for _, ingredient in pairs(recipe.ingredients) do
+    if ingredient.type ~= "item" then
+      return nil, "[recipe=" .. recipe.name .. "] needs a fluid, which belts can't supply"
+    end
+    table.insert(items, ingredient.name)
+  end
+  return items
+end
+
+local function remove_plan_markers(state)
+  for _, unit_number in ipairs(state.plan and state.plan.markers or {}) do
+    local entity = game.get_entity_by_unit_number(unit_number)
+    if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
+  end
+  state.plan = nil
+end
+
+local function clear_region(player, state)
+  cancel_pending(state)
+  destroy_footprint_render(state)
+  clear_predicted_entities(state, player)
+  state.footprint = nil
+end
+
+local function place_plan_marker(player, plan, role, item, tile)
+  local name = ENDPOINT_ENTITY_NAMES[role]
+  local position = { tile.x + 0.5, tile.y + 0.5 }
+  if not player.surface.can_place_entity({
+        name = name, position = position, force = player.force }) then
+    return false
+  end
+  local entity = player.surface.create_entity({
+    name = name, position = position, force = player.force,
+  })
+  if not entity then return false end
+  register_endpoint(entity, item)
+  table.insert(plan.markers, entity.unit_number)
+  table.insert(plan.tiles, { x = tile.x, y = tile.y, role = role, entity = entity })
+  return true
+end
+
+local function close_plan_dialog(player)
+  local frame = player.gui.screen[PLAN_DIALOG]
+  if frame then frame.destroy() end
+end
+
+local function open_plan_dialog(player)
+  close_plan_dialog(player)
+  local frame = player.gui.screen.add({
+    type = "frame", name = PLAN_DIALOG, caption = "Plan a factory",
+    direction = "vertical",
+  })
+  frame.auto_center = true
+  frame.add({ type = "label", caption = "What should the factory make?" })
+  frame.add({
+    type = "choose-elem-button", name = PLAN_ITEM, elem_type = "item",
+    item = setting("factorion-default-sink-item"),
+  })
+  frame.add({
+    type = "button", caption = "Place sink", style = "confirm_button",
+    tags = { factorion_plan = "place_sink" },
+  })
+  player.opened = frame
+end
+
+local function prompt_next_source(player, plan)
+  player.print(string.format(
+    "[Factorion] Click a tile for source %d of %d: [item=%s]",
+    plan.next, #plan.sources, plan.sources[plan.next]))
+end
+
+-- Sources face into the region and the sink faces out of it, as in training.
+local function orient_markers(plan, fp)
+  local cx, cy = fp.x + fp.w / 2, fp.y + fp.h / 2
+  for _, marker in ipairs(plan.tiles) do
+    local dx, dy = marker.x + 0.5 - cx, marker.y + 0.5 - cy
+    local outward
+    if math.abs(dx) >= math.abs(dy) then
+      outward = dx >= 0 and defines.direction.east or defines.direction.west
+    else
+      outward = dy >= 0 and defines.direction.south or defines.direction.north
+    end
+    if marker.entity.valid then
+      marker.entity.direction = marker.role == "sink" and outward
+        or (outward + 8) % 16
+    end
+  end
+end
+
+local function finish_plan(player, state)
+  local plan = state.plan
+  local size = storage.model.grid_size
+  local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
+  for _, marker in ipairs(plan.tiles) do
+    min_x, max_x = math.min(min_x, marker.x), math.max(max_x, marker.x)
+    min_y, max_y = math.min(min_y, marker.y), math.max(max_y, marker.y)
+  end
+  local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
+  plan.done = true
+  if span_x > size or span_y > size then
+    player.print(string.format(
+      "[Factorion] These belts span %dx%d tiles, more than the model's %dx%d " ..
+      "grid. Click with the [item=%s] to start a new plan.",
+      span_x, span_y, size, size, PLANNER))
+    return
+  end
+  state.footprint = {
+    x = min_x - math.floor((size - span_x) / 2),
+    y = min_y - math.floor((size - span_y) / 2),
+    w = size, h = size,
+  }
+  orient_markers(plan, state.footprint)
+  draw_footprint(player, state)
+  player.print("[Factorion] Region ready. Press CTRL+P to build the factory.")
+end
+
+local function place_sink(player, state)
+  local frame = player.gui.screen[PLAN_DIALOG]
+  local item = frame and frame[PLAN_ITEM].elem_value
+  local plan = state.plan
+  if not item or not plan then return end
+  local sources, reason = source_items(item)
+  if not sources then
+    player.print("[Factorion] Can't plan that: " .. reason .. ".")
+    return
+  end
+  close_plan_dialog(player)
+  if not place_plan_marker(player, plan, "sink", item, plan.sink_tile) then
+    player.print("[Factorion] That tile is blocked; click another one.")
+    state.plan = nil
+    return
+  end
+  plan.sources, plan.next = sources, 1
+  prompt_next_source(player, plan)
+end
+
 local function handle_tool_selection(event)
-  if event.item ~= "factorion-footprint-tool" then return end
+  if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   if not player then return end
   if state.pending then
-    player.print("[Factorion] Wait for the current prediction or press CTRL+R to cancel it.")
+    player.print("[Factorion] Wait for the current prediction, or right-click with the planner to cancel it.")
+    return
+  end
+  local x, y = area_center_tile(event.area)
+  local tile = { x = x, y = y }
+  local plan = state.plan
+
+  if plan and plan.sources and not plan.done then
+    local item = plan.sources[plan.next]
+    if not place_plan_marker(player, plan, "source", item, tile) then
+      player.print("[Factorion] That tile is blocked; click another one.")
+      return
+    end
+    plan.next = plan.next + 1
+    if plan.next > #plan.sources then
+      finish_plan(player, state)
+    else
+      prompt_next_source(player, plan)
+    end
     return
   end
 
   if not storage.model then
     request_model_load()
-    player.print("[Factorion] No model loaded yet; stamp again once the server reports in.")
+    player.print("[Factorion] No model loaded yet; try again once the server reports in.")
     return
   end
-
-  clear_predicted_entities(state, player)
-  state.footprint = fixed_footprint(event.area, storage.model.grid_size)
-  draw_footprint(player, state)
-  local fp = state.footprint
-  player.print(string.format(
-    "[Factorion] Stamped %dx%d region at x=%d..%d, y=%d..%d. " ..
-    "Now place a source and sink.",
-    fp.w, fp.h, fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
+  remove_plan_markers(state)
+  clear_region(player, state)
+  state.plan = { sink_tile = tile, markers = {}, tiles = {} }
+  open_plan_dialog(player)
 end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
 
--- Right-clicking the region tool is a quick clear.
+-- Right-clicking with the planner cancels the plan and clears its region.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
-  if event.item ~= "factorion-footprint-tool" then return end
+  if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
-  cancel_pending(state)
-  destroy_footprint_render(state)
-  clear_predicted_entities(state, player)
-  state.footprint = nil
+  remove_plan_markers(state)
+  clear_region(player, state)
   if player then
-    player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
+    close_plan_dialog(player)
+    player.print("[Factorion] Plan cleared.")
   end
 end)
 
@@ -509,6 +657,11 @@ end
 
 script.on_event(defines.events.on_gui_click, function(event)
   if inference.on_gui_click(event) then return end
+  if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
+    local player = game.get_player(event.player_index)
+    if player then place_sink(player, ensure_player_state(event.player_index)) end
+    return
+  end
   local element = event.element
   if not element or not element.valid or element.name ~= SAVE_MARKER then return end
   local player = game.get_player(event.player_index)
@@ -520,6 +673,10 @@ script.on_event("factorion-confirm-dialog", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
   local state = ensure_player_state(event.player_index)
+  if player.gui.screen[PLAN_DIALOG] then
+    place_sink(player, state)
+    return
+  end
   if not state.picker or not player.gui.screen[MARKER_DIALOG] then return end
   save_marker_dialog(player, state)
 end)
@@ -541,6 +698,12 @@ end
 
 script.on_event(defines.events.on_gui_closed, function(event)
   if inference.on_gui_closed(event) then return end
+  if event.element and event.element.valid and event.element.name == PLAN_DIALOG then
+    event.element.destroy()
+    local state = ensure_player_state(event.player_index)
+    if state.plan and not state.plan.sources then state.plan = nil end
+    return
+  end
   if not event.element or not event.element.valid
       or event.element.name ~= MARKER_DIALOG then return end
   ensure_player_state(event.player_index).picker = nil
@@ -693,25 +856,12 @@ local function service_endpoint_belts()
   end
 end
 
-script.on_event("factorion-reset", function(event)
-  local state = ensure_player_state(event.player_index)
-  local player = game.get_player(event.player_index)
-  cancel_pending(state)
-  destroy_footprint_render(state)
-  clear_predicted_entities(state, player)
-  state.footprint = nil
-  if player then
-    close_marker_dialog(player, state)
-    player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
-  end
-end)
-
--- A new checkpoint may have a different grid size, so stamped regions go.
+-- A new checkpoint may have a different grid size, so planned regions go.
 inference.on_load = function()
   for player_index, state in pairs(storage.players or {}) do
     local player = game.get_player(player_index)
     if state.footprint and player and player.connected then
-      player.print("[Factorion] Checkpoint changed; stamp your region again.")
+      player.print("[Factorion] Checkpoint changed; plan your factory again.")
     end
     destroy_footprint_render(state)
     state.footprint = nil
@@ -865,7 +1015,7 @@ local function try_request_prediction(player_index)
     return false, "No footprint set."
   end
   if state.pending then
-    return false, "A prediction is already in progress; CTRL+R cancels it."
+    return false, "A prediction is already in progress; right-click with the planner to cancel it."
   end
   local no_gpu = inference.unavailable_reason()
   if no_gpu then return false, no_gpu end
@@ -874,7 +1024,7 @@ local function try_request_prediction(player_index)
     return false, "No model loaded yet."
   end
   if storage.model.grid_size ~= state.footprint.w then
-    return false, "This region was stamped for another model; stamp it again."
+    return false, "This region was planned for another model; plan it again."
   end
   local request, description = gather_request(state, player_index)
   if #request.sources == 0 then
@@ -1188,8 +1338,8 @@ remote.add_interface("factorion", {
     storage.model_error = nil
     inference.refresh_all()
     game.print(string.format(
-      "[Factorion] Model %s (%s) ready: %dx%d region. Stamp it with the " ..
-      "[item=factorion-footprint-tool].",
+      "[Factorion] Model %s (%s) ready: %dx%d region. Plan a factory with " ..
+      "the [item=factorion-planner].",
       model.checkpoint, tostring(model.name), model.grid_size, model.grid_size))
     return "ok"
   end,
@@ -1308,7 +1458,6 @@ script.on_configuration_changed(function()
   for _, player in pairs(game.players) do
     local state = ensure_player_state(player.index)
     state.predicted_entities = state.predicted_entities or {}
-    give_tools(player)
     if state.footprint then draw_footprint(player, state) end
   end
   for _, surface in pairs(game.surfaces) do
