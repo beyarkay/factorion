@@ -211,7 +211,7 @@ local MODEL_ENTITY_NAMES = {
   "underground-belt",
   "splitter",
 }
-local SINK_LABEL_REFRESH_TICKS = 10
+local SINK_LABEL_REFRESH_TICKS = 30
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
