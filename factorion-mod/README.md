@@ -76,7 +76,7 @@ factorion-mod/
 │   ├── parity.lua            ← engine-parity runner (build spec, measure throughput)
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
-│   └── prototypes/           ← endpoint belts, footprint tool, hotkey definitions
+│   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
 ├── server/                   ← local inference daemon + parity harness
 │   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
