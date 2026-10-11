@@ -34,7 +34,7 @@ from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # n
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "6"
+MOD_PROTOCOL_VERSION = "7"
 ModelLoader = Callable[[str], tuple[AgentCNN, str]]
 """Checkpoint spec (the mod's setting) → (agent, display name)."""
 
@@ -341,7 +341,10 @@ def run_inference(
 # RCON poll loop: single channel both ways.
 # --------------------------------------------------------------------------- #
 
-POLL_CMD = "/silent-command rcon.print(remote.call('factorion','poll_request'))"
+POLL_CMD = (
+    "/silent-command rcon.print(remote.call('factorion','poll_request',"
+    f"'{MOD_PROTOCOL_VERSION}'))"
+)
 PROTOCOL_CMD = (
     "/silent-command rcon.print(remote.call('factorion','protocol_version'))"
 )
@@ -452,6 +455,15 @@ def poll_loop(
             else:
                 log.warning("Non-JSON RCON response (first 200 chars): %r", raw[:200])
                 time.sleep(poll_interval)
+            continue
+
+        if req.get("type") == "protocol_mismatch":
+            log.error(
+                "The mod speaks protocol %s but this server speaks %s; restart "
+                "Factorio or this server from the same checkout.",
+                req.get("mod_protocol"), MOD_PROTOCOL_VERSION,
+            )
+            time.sleep(5.0)
             continue
 
         try:

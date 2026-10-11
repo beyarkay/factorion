@@ -20,6 +20,10 @@
 
 local parity = require("parity")
 
+local PROTOCOL_VERSION = "7"
+-- The server polls every 250 ms, so 5 s of silence means it isn't there.
+local SERVER_TIMEOUT_TICKS = 5 * 60
+
 local function get_default_item()
   return settings.global["factorion-default-item"].value
 end
@@ -96,6 +100,11 @@ script.on_event(defines.events.on_player_joined_game, function(event)
   if player then
     give_tools(player)
     show_startup_message(player)
+  end
+  -- Re-announce the server's state (after the grace period) to whoever joined.
+  if storage.server_connected == false then
+    storage.server_connected = nil
+    storage.server_watch_tick = game.tick
   end
 end)
 
@@ -875,11 +884,60 @@ local function clear_placement_area(player, state, fp, placement)
   end
 end
 
+-- ----------------------------------------------------------------------------
+-- server health: the mod can't connect out, so it watches for the server's
+-- polls and explains in chat why they aren't arriving
+-- ----------------------------------------------------------------------------
+
+local function recently(tick)
+  return tick ~= nil and game.tick - tick < SERVER_TIMEOUT_TICKS
+end
+
+local function server_help()
+  if not game.is_multiplayer() then
+    return "This game isn't hosted, so Factorio hasn't opened its RCON port. " ..
+      "Save, then choose Play > Multiplayer > Host saved game."
+  end
+  if recently(storage.server_seen_tick) then
+    return string.format(
+      "A model server is reaching the game, but it speaks protocol %s and " ..
+      "this mod speaks %s. Restart it with ./start-mod.sh from the same " ..
+      "factorion checkout as the mod.",
+      tostring(storage.server_protocol or "unknown"), PROTOCOL_VERSION)
+  end
+  return "Start it from the factorion repo with ./start-mod.sh. If it's " ..
+    "running but still can't connect, Factorio's config.ini needs " ..
+    "local-rcon-socket=127.0.0.1:64502 and local-rcon-password=<password> " ..
+    "under [other]; restart Factorio after editing it."
+end
+
+local function check_server()
+  local connected = recently(storage.server_poll_tick)
+  if connected == storage.server_connected then return end
+  -- Give a freshly started game time for the server's first poll.
+  if storage.server_connected == nil and not connected
+      and recently(storage.server_watch_tick) then
+    return
+  end
+  storage.server_connected = connected
+  if connected then
+    game.print("[Factorion] Model server connected.")
+  else
+    game.print("[Factorion] Can't reach the model server. " .. server_help())
+  end
+end
+
+script.on_nth_tick(60, check_server)
+
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
   local _, msg = try_request_prediction(event.player_index)
   player.print("[Factorion] " .. msg)
+  if not recently(storage.server_poll_tick) then
+    player.print("[Factorion] No model server is connected, so nothing " ..
+      "will happen yet. " .. server_help())
+  end
 end)
 
 -- ----------------------------------------------------------------------------
@@ -898,7 +956,15 @@ remote.add_interface("factorion", {
   -- "" if the queue is empty. The server wraps the call in
   -- `/silent-command rcon.print(remote.call('factorion','poll_request'))`
   -- so whatever we return here ends up in the RCON response stream.
-  poll_request = function()
+  poll_request = function(server_protocol)
+    storage.server_seen_tick = game.tick
+    storage.server_protocol = server_protocol
+    if server_protocol ~= PROTOCOL_VERSION then
+      return helpers.table_to_json({
+        type = "protocol_mismatch", mod_protocol = PROTOCOL_VERSION,
+      })
+    end
+    storage.server_poll_tick = game.tick
     storage.outbox = storage.outbox or {}
     if #storage.outbox == 0 then return "" end
     return table.remove(storage.outbox, 1)
@@ -1035,7 +1101,8 @@ remote.add_interface("factorion", {
     return "factorion-mod alive at tick " .. tostring(game.tick)
   end,
   protocol_version = function()
-    return "6"
+    storage.server_seen_tick = game.tick
+    return PROTOCOL_VERSION
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
@@ -1119,6 +1186,7 @@ script.on_init(function()
   storage.pending_by_request = {}
   storage.outbox = {}
   storage.endpoints = {}
+  storage.server_watch_tick = game.tick
   request_model_load()
 end)
 
@@ -1141,5 +1209,7 @@ script.on_configuration_changed(function()
     end
   end
   storage.model_loading = nil
+  storage.server_connected = nil
+  storage.server_watch_tick = game.tick
   request_model_load()
 end)
