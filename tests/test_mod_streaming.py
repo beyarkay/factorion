@@ -214,7 +214,7 @@ class _NeverDoneAgent:
         return torch.tensor([0.0])
 
 
-def test_overwrite_removes_whole_entity_and_repeat_stops(monkeypatch):
+def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
     request = _request() | {"entities": [{
         "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
         "item": "electronic-circuit",
@@ -234,5 +234,7 @@ def test_overwrite_removes_whole_entity_and_repeat_stops(monkeypatch):
     ent = obs[Channel.ENTITIES.value]
     assert (ent == _id("assembling_machine_1")).sum() == 0
     assert ent[5, 4] == _id("transport_belt")
-    assert streamed == [action]
-    assert stats == {"steps_taken": 1, "stop_reason": "no_change"}
+    assert streamed == [action] * 4
+    assert stats == {
+        "steps_taken": 4, "invalid_steps": 0, "stop_reason": "max_steps",
+    }

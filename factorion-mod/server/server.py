@@ -283,13 +283,15 @@ def run_inference(
     eot_threshold: float = 0.5,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until eot_head signals "done", a placement
-    leaves the grid unchanged, or we hit the safety budget."""
+    """Iteratively place entities until eot_head signals "done" or we hit the
+    safety budget. Invalid actions can't exist in the world, so they are
+    counted rather than streamed."""
     obs = request_to_obs(req)
     src_id, snk_id = _source_id(), _sink_id()
 
     stats: dict = {
         "steps_taken": 0,
+        "invalid_steps": 0,
         "stop_reason": "max_steps",
     }
 
@@ -314,23 +316,20 @@ def run_inference(
             action["xy"][0], action["xy"][1],
             action["direction"], item_name, item_id, action["misc"],
         )
-        before = obs.copy()
         is_invalid, reason, _ = apply_placement_action(
             torch.from_numpy(obs), action, source_id=src_id, sink_id=snk_id,
         )
-        # Greedy decoding on an unchanged grid repeats the same action forever.
-        if is_invalid or np.array_equal(before, obs):
-            log.info("  → grid unchanged (%s), stopping", reason or "no-op")
-            stats["stop_reason"] = "invalid" if is_invalid else "no_change"
-            stats["steps_taken"] = step
-            break
         stats["steps_taken"] = step + 1
+        if is_invalid:
+            log.info("  → invalid (%s), cannot be placed", reason)
+            stats["invalid_steps"] += 1
+            continue
         if on_placement is not None and not on_placement(action):
             log.info("  → Factorio rejected the placement, stopping")
             stats["stop_reason"] = "placement_error"
             break
     else:
-        log.info("Reached max_steps=%d without eot/empty.", max_steps)
+        log.info("Reached max_steps=%d without eot.", max_steps)
 
     return obs, stats
 
@@ -374,6 +373,7 @@ def _stream_placement(
 def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
     summary = json.dumps({
         "steps_taken": stats["steps_taken"],
+        "invalid_steps": stats["invalid_steps"],
         "stop_reason": stats["stop_reason"],
     }, separators=(",", ":"))
     response = rcon.exec(
@@ -460,7 +460,7 @@ def handle_request(
     device,
 ):
     t0 = time.time()
-    stats = {"steps_taken": 0, "stop_reason": "server_error"}
+    stats = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "server_error"}
     try:
         if req["grid_size"] != agent.width:
             raise ValueError(

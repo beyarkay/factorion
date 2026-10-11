@@ -948,11 +948,13 @@ remote.add_interface("factorion", {
     state.pending = nil
     local ok, summary = pcall(
       function() return helpers.json_to_table(summary_json) end)
-    local reason = ok and summary and summary.stop_reason or "unknown"
+    summary = ok and summary or {}
     if player then
       player.print(string.format(
-        "[Factorion] Prediction complete: placed %d entities (stop: %s).",
-        #(state.predicted_entities or {}), tostring(reason)))
+        "[Factorion] Prediction complete: %s steps, %s invalid (stop: %s).",
+        tostring(summary.steps_taken or "?"),
+        tostring(summary.invalid_steps or "?"),
+        tostring(summary.stop_reason or "unknown")))
     end
     return "ok"
   end,
