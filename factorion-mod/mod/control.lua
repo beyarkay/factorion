@@ -342,8 +342,19 @@ local function clear_predicted_entities(state)
 end
 
 local function cancel_pending(state)
-  if state.pending and storage.pending_by_request then
-    storage.pending_by_request[state.pending.request_id] = nil
+  if not state.pending then return end
+  local request_id = state.pending.request_id
+  if storage.pending_by_request then
+    storage.pending_by_request[request_id] = nil
+  end
+  -- A request the server hasn't picked up yet would otherwise be served later
+  -- against a request_id the mod no longer knows.
+  local outbox = storage.outbox or {}
+  for i = #outbox, 1, -1 do
+    local queued = helpers.json_to_table(outbox[i])
+    if queued and queued.request_id == request_id then
+      table.remove(outbox, i)
+    end
   end
   state.pending = nil
 end
