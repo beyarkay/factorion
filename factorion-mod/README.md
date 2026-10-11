@@ -45,8 +45,11 @@ rotation is sent to the model. Rerunning a prediction removes only the entities
 created by the previous prediction, so endpoint belts stay in place until you
 mine them. Model placements appear as ghosts by default (the placement mode
 setting builds them immediately instead). As in training, a model placement
-replaces every entity or ghost it overlaps
-inside the region; entities you built are mined back into your inventory.
+replaces every entity or ghost it overlaps inside the region. Overlapped ghosts
+vanish at once; in ghost mode a built entity is marked for deconstruction, so
+robots swap it for the new ghost, while build mode removes it immediately
+(mining your own entities back into your inventory). Model ghosts are tagged,
+so entities built from them still count as the model's for reruns and CTRL+R.
 
 ## RCON setup
 

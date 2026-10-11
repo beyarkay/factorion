@@ -353,10 +353,25 @@ local function request_model_load()
   game.print("[Factorion] Asking the model server to load " .. checkpoint .. "…")
 end
 
-local function clear_predicted_entities(state)
+-- Ghosts vanish at once. In ghost mode built entities are marked for
+-- deconstruction so robots swap them for the ghost placed on top; otherwise
+-- they go now, with the player's own mined back into their inventory.
+local function remove_entity(entity, player, is_predicted)
+  if entity.type == "entity-ghost" then
+    entity.destroy({ raise_destroy = true })
+  elseif setting("factorion-placement-mode") == "ghost" then
+    entity.order_deconstruction(entity.force, player)
+  elseif is_predicted then
+    entity.destroy({ raise_destroy = true })
+  else
+    player.mine_entity(entity, true)
+  end
+end
+
+local function clear_predicted_entities(state, player)
   for _, unit_number in ipairs(state.predicted_entities or {}) do
     local entity = game.get_entity_by_unit_number(unit_number)
-    if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
+    if entity and entity.valid then remove_entity(entity, player, true) end
   end
   state.predicted_entities = {}
 end
@@ -429,7 +444,7 @@ local function handle_tool_selection(event)
     return
   end
 
-  clear_predicted_entities(state)
+  clear_predicted_entities(state, player)
   state.footprint = fixed_footprint(event.area, storage.model.grid_size)
   draw_footprint(player, state)
   local fp = state.footprint
@@ -448,7 +463,7 @@ script.on_event(defines.events.on_player_alt_selected_area, function(event)
   local player = game.get_player(event.player_index)
   cancel_pending(state)
   destroy_footprint_render(state)
-  clear_predicted_entities(state)
+  clear_predicted_entities(state, player)
   state.footprint = nil
   if player then
     player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
@@ -524,18 +539,23 @@ script.on_event(defines.events.on_gui_opened, function(event)
   open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
 end)
 
-local function endpoint_built(event)
+local function entity_built(event)
   local entity = event.entity or event.created_entity
+  -- A built model ghost keeps counting as the model's, so rerun/reset finds it.
+  local owner = event.tags and event.tags.factorion_player
+  if owner and entity and entity.valid and entity.unit_number then
+    table.insert(ensure_player_state(owner).predicted_entities, entity.unit_number)
+  end
   local role = endpoint_role(entity)
   if not role then return end
   local item = event.tags and event.tags.factorion_item or nil
   register_endpoint(entity, item)
 end
 
-script.on_event(defines.events.on_built_entity, endpoint_built)
-script.on_event(defines.events.on_robot_built_entity, endpoint_built)
-script.on_event(defines.events.script_raised_built, endpoint_built)
-script.on_event(defines.events.script_raised_revive, endpoint_built)
+script.on_event(defines.events.on_built_entity, entity_built)
+script.on_event(defines.events.on_robot_built_entity, entity_built)
+script.on_event(defines.events.script_raised_built, entity_built)
+script.on_event(defines.events.script_raised_revive, entity_built)
 
 script.on_event(defines.events.on_entity_cloned, function(event)
   local source = endpoint_config(event.source)
@@ -656,11 +676,11 @@ end
 
 script.on_event("factorion-reset", function(event)
   local state = ensure_player_state(event.player_index)
+  local player = game.get_player(event.player_index)
   cancel_pending(state)
   destroy_footprint_render(state)
-  clear_predicted_entities(state)
+  clear_predicted_entities(state, player)
   state.footprint = nil
-  local player = game.get_player(event.player_index)
   if player then
     close_marker_dialog(player, state)
     player.print("[Factorion] Region cleared. Mine placed endpoint belts normally.")
@@ -702,7 +722,7 @@ local function gather_existing_entities(state, surface, fp)
     name = MODEL_ENTITY_NAMES,
   })
   for _, entity in pairs(candidates) do
-    if not predicted[entity.unit_number] then
+    if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
       local direction = entity.type == "assembling-machine"
         and 0 or FACTORIO_TO_DIRECTION[entity.direction]
       if direction then
@@ -841,7 +861,7 @@ local function try_request_prediction(player_index)
   if #request.sinks == 0 then
     return false, "No sink belt inside the region."
   end
-  clear_predicted_entities(state)
+  clear_predicted_entities(state, game.get_player(player_index))
   local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = player_index
@@ -913,11 +933,7 @@ local function clear_placement_area(player, state, fp, placement)
     if box.left_top.x >= fp.x and box.left_top.y >= fp.y
         and box.right_bottom.x <= fp.x + fp.w
         and box.right_bottom.y <= fp.y + fp.h then
-      if predicted[entity.unit_number] then
-        entity.destroy({ raise_destroy = true })
-      else
-        player.mine_entity(entity, true)
-      end
+      remove_entity(entity, player, predicted[entity.unit_number])
     end
   end
 end
@@ -1072,6 +1088,7 @@ remote.add_interface("factorion", {
     if setting("factorion-placement-mode") == "ghost" then
       params.inner_name = params.name
       params.name = "entity-ghost"
+      params.tags = { factorion_player = player_index }
     end
     local created, entity = pcall(
       function() return player.surface.create_entity(params) end)
