@@ -447,11 +447,60 @@ local function remove_plan_markers(state)
   state.plan = nil
 end
 
+local REGION_PANEL = "factorion-region-panel"
+local NUDGES = { left = { -1, 0 }, up = { 0, -1 }, down = { 0, 1 }, right = { 1, 0 } }
+
+local function close_region_panel(player)
+  local frame = player and player.gui.screen[REGION_PANEL]
+  if frame then frame.destroy() end
+end
+
+-- The region must stay the model's grid size, so editing it means moving it.
+local function open_region_panel(player)
+  close_region_panel(player)
+  local frame = player.gui.screen.add({
+    type = "frame", name = REGION_PANEL, caption = "Factorion region",
+    direction = "vertical",
+  })
+  frame.location = { 20, 200 }
+  frame.add({ type = "label", caption = "Press CTRL+P to build. Move the region:" })
+  local pad = frame.add({ type = "table", column_count = 3 })
+  for _, cell in ipairs({ "", "up", "", "left", "", "right", "", "down", "" }) do
+    if cell == "" then
+      pad.add({ type = "empty-widget" })
+    else
+      pad.add({
+        type = "button", caption = cell:sub(1, 1):upper() .. cell:sub(2),
+        tags = { factorion_region = cell },
+      })
+    end
+  end
+end
+
+local function nudge_region(player, state, direction)
+  local fp = state.footprint
+  if not fp then return end
+  local step = NUDGES[direction]
+  local moved = { x = fp.x + step[1], y = fp.y + step[2], w = fp.w, h = fp.h }
+  for _, tile in ipairs(state.region_tiles or {}) do
+    if tile.x < moved.x or tile.y < moved.y
+        or tile.x >= moved.x + moved.w or tile.y >= moved.y + moved.h then
+      player.print("[Factorion] Can't move the region that way: a source or " ..
+        "sink belt would end up outside it.")
+      return
+    end
+  end
+  state.footprint = moved
+  draw_footprint(player, state)
+end
+
 local function clear_region(player, state)
   cancel_pending(state)
   destroy_footprint_render(state)
   clear_predicted_entities(state, player)
+  close_region_panel(player)
   state.footprint = nil
+  state.region_tiles = nil
 end
 
 local function place_plan_marker(player, plan, role, item, tile)
@@ -495,26 +544,36 @@ local function open_plan_dialog(player)
   player.opened = frame
 end
 
+-- Puts one of name in the player's hand, from their inventory if they have it.
+local function hand_item(player, name)
+  local cursor = player.cursor_stack
+  if not cursor then return end
+  if cursor.valid_for_read and cursor.name == name then return end
+  if not player.clear_cursor() then return end
+  local inventory = player.get_main_inventory()
+  local stack = inventory and inventory.find_item_stack(name)
+  if stack then cursor.swap_stack(stack) else cursor.set_stack({ name = name }) end
+end
+
 local function prompt_next_source(player, plan)
+  hand_item(player, ENDPOINT_ENTITY_NAMES.source)
   player.print(string.format(
-    "[Factorion] Click a tile for source %d of %d: [item=%s]",
+    "[Factorion] Place source %d of %d: [item=%s] (rotate it with R first if needed)",
     plan.next, #plan.sources, plan.sources[plan.next]))
 end
 
--- Sources face into the region and the sink faces out of it, as in training.
-local function orient_markers(plan, fp)
+-- The sink is placed for the player, so it is turned to face out of the
+-- region as in training; sources keep the rotation they were placed with.
+local function orient_sink(plan, fp)
   local cx, cy = fp.x + fp.w / 2, fp.y + fp.h / 2
   for _, marker in ipairs(plan.tiles) do
-    local dx, dy = marker.x + 0.5 - cx, marker.y + 0.5 - cy
-    local outward
-    if math.abs(dx) >= math.abs(dy) then
-      outward = dx >= 0 and defines.direction.east or defines.direction.west
-    else
-      outward = dy >= 0 and defines.direction.south or defines.direction.north
-    end
-    if marker.entity.valid then
-      marker.entity.direction = marker.role == "sink" and outward
-        or (outward + 8) % 16
+    if marker.role == "sink" and marker.entity.valid then
+      local dx, dy = marker.x + 0.5 - cx, marker.y + 0.5 - cy
+      if math.abs(dx) >= math.abs(dy) then
+        marker.entity.direction = dx >= 0 and defines.direction.east or defines.direction.west
+      else
+        marker.entity.direction = dy >= 0 and defines.direction.south or defines.direction.north
+      end
     end
   end
 end
@@ -539,7 +598,12 @@ local function set_region(player, state, tiles)
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
   }
+  state.region_tiles = {}
+  for _, tile in ipairs(tiles) do
+    table.insert(state.region_tiles, { x = tile.x, y = tile.y })
+  end
   draw_footprint(player, state)
+  open_region_panel(player)
   return true
 end
 
@@ -552,8 +616,29 @@ local function finish_plan(player, state)
   for _, tile in ipairs(plan.tiles) do table.insert(tiles, tile) end
   for _, tile in ipairs(plan.existing or {}) do table.insert(tiles, tile) end
   if not set_region(player, state, tiles) then return end
-  orient_markers(plan, state.footprint)
+  orient_sink(plan, state.footprint)
   player.print("[Factorion] Region ready. Press CTRL+P to build the factory.")
+end
+
+-- A source belt the player places while a plan is waiting for sources becomes
+-- the next one; their rotation is kept.
+local function plan_source_built(player_index, entity)
+  local state = ensure_player_state(player_index)
+  local plan = state.plan
+  if not (plan and plan.sources and not plan.done) then return end
+  local player = game.get_player(player_index)
+  register_endpoint(entity, plan.sources[plan.next])
+  table.insert(plan.markers, entity.unit_number)
+  table.insert(plan.tiles, {
+    x = math.floor(entity.position.x), y = math.floor(entity.position.y),
+    role = "source", entity = entity,
+  })
+  plan.next = plan.next + 1
+  if plan.next > #plan.sources then
+    finish_plan(player, state)
+  else
+    prompt_next_source(player, plan)
+  end
 end
 
 local function place_sink(player, state)
@@ -583,6 +668,7 @@ local function place_sink(player, state)
   prompt_next_source(player, plan)
 end
 
+
 local function handle_tool_selection(event)
   if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
@@ -599,21 +685,6 @@ local function handle_tool_selection(event)
   if plan and plan.awaiting_sink then
     plan.awaiting_sink, plan.sink_tile = nil, tile
     open_plan_dialog(player)
-    return
-  end
-
-  if plan and plan.sources and not plan.done then
-    local item = plan.sources[plan.next]
-    if not place_plan_marker(player, plan, "source", item, tile) then
-      player.print("[Factorion] That tile is blocked; click another one.")
-      return
-    end
-    plan.next = plan.next + 1
-    if plan.next > #plan.sources then
-      finish_plan(player, state)
-    else
-      prompt_next_source(player, plan)
-    end
     return
   end
 
@@ -681,6 +752,12 @@ end
 
 script.on_event(defines.events.on_gui_click, function(event)
   if inference.on_gui_click(event) then return end
+  local nudge = event.element.valid and event.element.tags.factorion_region
+  if nudge then
+    local player = game.get_player(event.player_index)
+    if player then nudge_region(player, ensure_player_state(event.player_index), nudge) end
+    return
+  end
   if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
     local player = game.get_player(event.player_index)
     if player then place_sink(player, ensure_player_state(event.player_index)) end
@@ -756,6 +833,9 @@ local function entity_built(event)
   if not role then return end
   local item = event.tags and event.tags.factorion_item or nil
   register_endpoint(entity, item)
+  if role == "source" and event.player_index then
+    plan_source_built(event.player_index, entity)
+  end
 end
 
 script.on_event(defines.events.on_built_entity, entity_built)
@@ -1194,17 +1274,6 @@ script.on_nth_tick(60, function()
   inference.refresh_all()
 end)
 
--- Puts the planner in the player's hand, from their inventory if they have one.
-local function hand_planner(player)
-  local cursor = player.cursor_stack
-  if not cursor then return end
-  if cursor.valid_for_read and cursor.name == PLANNER then return end
-  if not player.clear_cursor() then return end
-  local inventory = player.get_main_inventory()
-  local stack = inventory and inventory.find_item_stack(PLANNER)
-  if stack then cursor.swap_stack(stack) else cursor.set_stack({ name = PLANNER }) end
-end
-
 local function endpoints_near(player, position)
   local size = storage.model.grid_size
   local sources, sinks = {}, {}
@@ -1246,11 +1315,11 @@ end
 local function predict_or_guide(player, state, cursor_position)
   local plan = state.plan
   if plan and not plan.done then
-    hand_planner(player)
     if plan.sources then
-      return string.format("Click a tile for source %d of %d: [item=%s]",
-        plan.next, #plan.sources, plan.sources[plan.next])
+      prompt_next_source(player, plan)
+      return nil
     end
+    hand_item(player, PLANNER)
     return "Click a tile with the planner to place the sink."
   end
   if state.footprint then
@@ -1267,7 +1336,7 @@ local function predict_or_guide(player, state, cursor_position)
       awaiting_sink = true, keep_sources = #sources > 0, existing = sources,
       markers = {}, tiles = {},
     }
-    hand_planner(player)
+    hand_item(player, PLANNER)
     return "No sink near the cursor. Click a tile with the planner to place one."
   end
   if #sources == 0 then
@@ -1276,10 +1345,9 @@ local function predict_or_guide(player, state, cursor_position)
     state.plan = {
       existing = sinks, sources = items, next = 1, markers = {}, tiles = {},
     }
-    hand_planner(player)
-    return string.format(
-      "No source near the cursor. Click a tile for source 1 of %d: [item=%s]",
-      #items, items[1])
+    player.print("[Factorion] No source near the cursor.")
+    prompt_next_source(player, state.plan)
+    return nil
   end
   local tiles = {}
   for _, tile in ipairs(sources) do table.insert(tiles, tile) end
