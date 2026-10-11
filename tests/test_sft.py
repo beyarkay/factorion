@@ -37,14 +37,15 @@ class TestNoiseLevels:
 
 
 class TestThroughputLoss:
-    def test_reinforces_sampled_factories(self):
+    @pytest.mark.parametrize("io", ["token", "factored"])
+    def test_reinforces_sampled_factories(self, io):
         from denoise import free_mask
 
         state, max_thput = _batch()
-        model = DenoiserUNet(**TINY)
+        model = DenoiserUNet(**TINY, io=io)
         logits = model(state)
         args = SftArgs(rl_inputs=2, rl_samples=3, rl_max_noise=0.5)
-        loss, score = throughput_pg_loss(logits, state, free_mask(state), max_thput, torch.zeros(4), args)
+        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.zeros(4), args)
         loss.backward()
         assert torch.isfinite(loss) and score >= 0
         assert model.head[-1].weight.grad is not None
@@ -53,18 +54,20 @@ class TestThroughputLoss:
         from denoise import free_mask
 
         state, max_thput = _batch(2)
-        logits = DenoiserUNet(**TINY)(state)
-        loss, score = throughput_pg_loss(logits, state, free_mask(state), max_thput, torch.ones(2), SftArgs())
+        model = DenoiserUNet(**TINY)
+        logits = model(state)
+        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.ones(2), SftArgs())
         assert float(loss) == 0.0 and score == 0.0
 
 
 class TestTrainSFTEndToEnd:
-    def test_trains_evaluates_and_checkpoints(self, tmp_path):
+    @pytest.mark.parametrize("io", ["token", "factored"])
+    def test_trains_evaluates_and_checkpoints(self, tmp_path, io):
         ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
             size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
             eval_best_of=2, gen_steps=2, gen_refine=2, rl_inputs=2, rl_samples=2, rl_max_noise=1.0,
-            checkpoint_path=str(ckpt), summary_path=str(summary), **TINY,
+            checkpoint_path=str(ckpt), summary_path=str(summary), io=io, **TINY,
         )
         model = train_sft(args)
         out = json.loads(summary.read_text())

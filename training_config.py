@@ -292,6 +292,10 @@ class SftArgs(SharedArgs):
     """bottleneck attention heads (head dim must be a multiple of 4)"""
     dropout: float = 0.0
     """dropout in residual and attention blocks. Every example is fresh."""
+    io: str = "token"
+    """tile encoding in and out: 'token' (entity × facing × underground type,
+    recipe, footprint part) or 'factored' (AgentCNN's encoding and its
+    per-channel entity / direction / item / misc heads)"""
 
     # ── Optimisation ─────────────────────────────────────────────────
     lr: float = 3e-4

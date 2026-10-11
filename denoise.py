@@ -95,8 +95,21 @@ for _i, _o in enumerate(_OFFSETS):
     for _k, (_dx, _dy) in enumerate(_o):
         _PART_TABLE_NP[_i, _k] = _dx * 3 + _dy
         _PART_VALID_NP[_i, _dx * 3 + _dy] = True
-# Per-tile share of a type's entity cost, for the differentiable cost loss.
-_TYPE_TILE_COST_NP = _ENTITY_UNIT_COSTS[_TYPES_NP[:, 0]] / _ENTITY_FOOTPRINT_AREAS[_TYPES_NP[:, 0]]
+# Per-tile share of an entity's cost, for the differentiable cost loss.
+_ENT_TILE_COST_NP = _ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS / (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS).max()
+_TYPE_TILE_COST_NP = _ENT_TILE_COST_NP[_TYPES_NP[:, 0]]
+
+# The factored heads (one softmax per world channel, as `AgentCNN` places
+# entities) cover every entity but the env-only source/sink, last in the
+# catalog. Which direction / item / misc each entity may carry, from `TYPES`:
+N_ENT_HEAD = len(entities) - 2
+_ENT_OK_NP = np.zeros(N_ENT_HEAD, dtype=bool)
+_DIR_OK_NP = np.zeros((N_ENT_HEAD, len(Direction)), dtype=bool)
+_MISC_OK_NP = np.zeros((N_ENT_HEAD, len(Misc)), dtype=bool)
+_ITEM_OK_NP = np.zeros((N_ENT_HEAD, len(items)), dtype=bool)
+for _e, _d, _m in TYPES:
+    _ENT_OK_NP[_e] = _DIR_OK_NP[_e, _d] = _MISC_OK_NP[_e, _m] = True
+    _ITEM_OK_NP[_e, list(RECIPES[1:]) if _e == _ASM_MACHINE_ENT_ID else 0] = True
 
 
 @functools.cache
@@ -106,7 +119,9 @@ def _luts(device: torch.device) -> SimpleNamespace:
     return SimpleNamespace(
         types=t(_TYPES_NP), recipes=t(_RECIPES_NP), type_lut=t(_TYPE_LUT_NP), recipe_lut=t(_RECIPE_LUT_NP),
         is_asm=t(_IS_ASM_NP), n_parts=t(_N_PARTS_OF_NP), part_table=t(_PART_TABLE_NP),
-        part_valid=t(_PART_VALID_NP), tile_cost=t(_TYPE_TILE_COST_NP / _TYPE_TILE_COST_NP.max()).float(),
+        part_valid=t(_PART_VALID_NP), tile_cost=t(_TYPE_TILE_COST_NP).float(),
+        ent_tile_cost=t(_ENT_TILE_COST_NP[:N_ENT_HEAD]).float(), ent_ok=t(_ENT_OK_NP), dir_ok=t(_DIR_OK_NP),
+        misc_ok=t(_MISC_OK_NP), item_ok=t(_ITEM_OK_NP),
     )
 
 
@@ -188,22 +203,12 @@ def _pick(logits, temperature, generator, dim=1):
     return (logits / temperature - (-u.log()).log()).argmax(dim)
 
 
-def split_logits(logits):
-    """The (type, recipe, part) head logits."""
-    return logits[:, :N_TYPES], logits[:, N_TYPES : N_TYPES + N_RECIPES], logits[:, N_TYPES + N_RECIPES :]
+def _masked(logits, ok_BWHK):
+    return logits.masked_fill(~ok_BWHK.permute(0, 3, 1, 2), float("-inf"))
 
 
-def pick_tokens(logits, temperature=0.0, generator=None):
-    """Sample (temperature > 0) or argmax tokens from the head logits: the
-    type first, then a recipe and a part consistent with it."""
-    L = _luts(logits.device)
-    tl, rl, pl = split_logits(logits)
-    typ = _pick(tl, temperature, generator)
-    is_asm = L.is_asm[typ]
-    recipe = torch.where(is_asm, 1 + _pick(rl[:, 1:], temperature, generator), 0)
-    pl = pl.masked_fill(~L.part_valid[typ].permute(0, 3, 1, 2), float("-inf"))
-    part = _pick(pl, temperature, generator)
-    return typ, recipe, part
+def _gather(logp, idx):
+    return logp.gather(1, idx.unsqueeze(1)).squeeze(1)
 
 
 class _ResBlock(nn.Module):
@@ -266,18 +271,31 @@ class DenoiserUNet(nn.Module):
     multiple of the total stride and cropped back, so any size runs.
     """
 
-    def __init__(self, width=128, levels=2, blocks=2, attn_layers=4, attn_heads=8, dropout=0.0, embed_dim=16):
+    def __init__(
+        self, width=128, levels=2, blocks=2, attn_layers=4, attn_heads=8, dropout=0.0, embed_dim=None, io="token"
+    ):
         super().__init__()
+        # `factored` defaults to AgentCNN's 8-dim embeddings.
+        embed_dim = embed_dim or (16 if io == "token" else 8)
         self.arch = dict(
             width=width, levels=levels, blocks=blocks, attn_layers=attn_layers, attn_heads=attn_heads,
-            dropout=dropout, embed_dim=embed_dim,
+            dropout=dropout, embed_dim=embed_dim, io=io,
         )
         self.amp = False
         self.stride = 2 ** (levels - 1)
+        self.io = io
+        if io == "token":
+            self.head_sizes = [N_TYPES, N_RECIPES, N_PARTS]
+            self.part_embed = nn.Embedding(N_PARTS, embed_dim)
+            in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 2
+        elif io == "factored":
+            # `AgentCNN._encode_input`'s encoding and its per-channel heads.
+            self.head_sizes = [N_ENT_HEAD, len(Direction), len(items), len(Misc)]
+            in_ch = 2 * embed_dim + len(Direction) + len(Misc) + 1
+        else:
+            raise ValueError(f"io must be 'token' or 'factored', got {io!r}")
         self.ent_embed = nn.Embedding(len(entities), embed_dim)
         self.item_embed = nn.Embedding(len(items), embed_dim)
-        self.part_embed = nn.Embedding(N_PARTS, embed_dim)
-        in_ch = 3 * embed_dim + len(Direction) + len(Misc) + 2
         self.stem = nn.Conv2d(in_ch, width, 3, padding=1)
         chans = [width * 2**i for i in range(levels)]
         self.enc = nn.ModuleList()
@@ -301,7 +319,7 @@ class DenoiserUNet(nn.Module):
             self.dec.append(nn.Sequential(*(_ResBlock(2 * ch if j == 0 else ch, ch, dropout) for j in range(blocks))))
             c = ch
         self.head = nn.Sequential(
-            nn.GroupNorm(math.gcd(32, c), c), nn.SiLU(), nn.Conv2d(c, N_TYPES + N_RECIPES + N_PARTS, 1)
+            nn.GroupNorm(math.gcd(32, c), c), nn.SiLU(), nn.Conv2d(c, sum(self.head_sizes), 1)
         )
         # The noise distribution is part of the model: generation must start
         # from the same distribution training corrupted with.
@@ -309,23 +327,102 @@ class DenoiserUNet(nn.Module):
         self.register_buffer("noise_prior", torch.full((N_TYPES,), 1.0 / N_TYPES))
 
     def _embed(self, s):
-        fixed = ~free_mask(s)
-        return torch.cat(
-            [
-                self.ent_embed(s[:, _CH_ENT]).permute(0, 3, 1, 2),
-                self.item_embed(s[:, _CH_ITEMS]).permute(0, 3, 1, 2),
+        parts = [
+            self.ent_embed(s[:, _CH_ENT]).permute(0, 3, 1, 2),
+            self.item_embed(s[:, _CH_ITEMS]).permute(0, 3, 1, 2),
+            F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
+            F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
+            s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
+        ]
+        if self.io == "token":
+            parts += [
                 self.part_embed(s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2),
-                F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
-                F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
-                s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
-                fixed.unsqueeze(1).float(),
-            ],
-            dim=1,
+                (~free_mask(s)).unsqueeze(1).float(),
+            ]
+        return torch.cat(parts, dim=1)
+
+    # ── Reading the head logits ─────────────────────────────────────
+    # `token`: one softmax over TYPES, then recipe and part given the type.
+    # `factored`: entity, then direction / item / misc given the entity; it
+    # predicts no part, so `legalize` re-derives footprints (part=None).
+
+    def pick(self, logits, temperature=0.0, generator=None):
+        """Sample (temperature > 0) or argmax (type, recipe, part) tokens, each
+        head restricted to the values its tile's entity can take."""
+        L = _luts(logits.device)
+        if self.io == "token":
+            tl, rl, pl = logits.split(self.head_sizes, dim=1)
+            typ = _pick(tl, temperature, generator)
+            recipe = torch.where(L.is_asm[typ], 1 + _pick(rl[:, 1:], temperature, generator), 0)
+            return typ, recipe, _pick(_masked(pl, L.part_valid[typ]), temperature, generator)
+        el, dl, il, ml = logits.split(self.head_sizes, dim=1)
+        ent = _pick(el.masked_fill(~L.ent_ok.view(1, -1, 1, 1), float("-inf")), temperature, generator)
+        d = _pick(_masked(dl, L.dir_ok[ent]), temperature, generator)
+        item = _pick(_masked(il, L.item_ok[ent]), temperature, generator)
+        m = _pick(_masked(ml, L.misc_ok[ent]), temperature, generator)
+        typ = L.type_lut[ent, d, m]
+        return typ, L.recipe_lut[item], torch.zeros_like(typ)
+
+    def logp(self, logits, toks):
+        """(B, W, H) log-probability of each tile's tokens as `pick` samples them."""
+        L = _luts(logits.device)
+        typ, rec, part = toks
+        if self.io == "token":
+            tl, rl, pl = logits.split(self.head_sizes, dim=1)
+            lp_rec = _gather(F.log_softmax(rl[:, 1:], dim=1), (rec - 1).clamp(min=0))
+            lp_part = _gather(F.log_softmax(_masked(pl, L.part_valid[typ]), dim=1), part)
+            return (
+                _gather(F.log_softmax(tl, dim=1), typ)
+                + torch.where(L.is_asm[typ], lp_rec, 0.0)
+                + torch.where(L.n_parts[typ] > 1, lp_part, 0.0)
+            )
+        el, dl, il, ml = logits.split(self.head_sizes, dim=1)
+        ent, d, m = L.types[typ].unbind(-1)
+        return (
+            _gather(F.log_softmax(el.masked_fill(~L.ent_ok.view(1, -1, 1, 1), float("-inf")), dim=1), ent)
+            + _gather(F.log_softmax(_masked(dl, L.dir_ok[ent]), dim=1), d)
+            + _gather(F.log_softmax(_masked(il, L.item_ok[ent]), dim=1), L.recipes[rec])
+            + _gather(F.log_softmax(_masked(ml, L.misc_ok[ent]), dim=1), m)
         )
 
+    def conf(self, logits, toks):
+        """(B, W, H) probability of each tile's type (`token`) / entity."""
+        L = _luts(logits.device)
+        first = logits[:, : self.head_sizes[0]]
+        idx = toks[0] if self.io == "token" else L.types[toks[0]][..., 0]
+        return _gather(F.softmax(first, dim=1), idx)
+
+    def losses(self, logits, clean, free):
+        """Cross entropy of each head against the clean tokens, averaged over
+        the free tiles it applies to, plus `cost`: the expected per-tile entity
+        cost of the predicted factory."""
+        L = _luts(logits.device)
+        typ, rec, part = clean
+        freef = free.float()
+        n_free = freef.sum().clamp(min=1)
+
+        def ce(head_logits, target, mask):
+            return (F.cross_entropy(head_logits, target, reduction="none") * mask).sum() / mask.sum().clamp(min=1)
+
+        if self.io == "token":
+            tl, rl, pl = logits.split(self.head_sizes, dim=1)
+            terms = {
+                "type": ce(tl, typ, freef),
+                "recipe": ce(rl, rec, (L.is_asm[typ] & free).float()),
+                "part": ce(pl, part, (L.n_parts[typ] > 1).float() * freef),
+            }
+            cost_probs, tile_cost = F.softmax(tl, dim=1), L.tile_cost
+        else:
+            el, dl, il, ml = logits.split(self.head_sizes, dim=1)
+            ent, d, m = L.types[typ].unbind(-1)
+            terms = {"entity": ce(el, ent, freef), "direction": ce(dl, d, freef), "item": ce(il, L.recipes[rec], freef), "misc": ce(ml, m, freef)}
+            cost_probs, tile_cost = F.softmax(el, dim=1), L.ent_tile_cost
+        terms["cost"] = (cost_probs * tile_cost.view(1, -1, 1, 1)).sum(1).mul(freef).sum() / n_free
+        return terms
+
     def forward(self, state):
-        """(B, STATE_CHANNELS, W, H) state -> (B, N_TYPES + N_RECIPES + N_PARTS, W, H)
-        fp32 logits; split them with `split_logits`."""
+        """(B, STATE_CHANNELS, W, H) state -> (B, sum(head_sizes), W, H) fp32
+        logits, read by `pick` / `logp` / `conf` / `losses`."""
         s = state.long()
         W, H = s.shape[2:]
         pw, ph = -W % self.stride, -H % self.stride
@@ -374,7 +471,9 @@ def load_denoiser(path, device="cpu") -> DenoiserUNet:
 # ── Turning tokens into a real factory ─────────────────────────────────
 
 
-def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np.ndarray, conf: np.ndarray) -> np.ndarray:
+def legalize(
+    cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: Optional[np.ndarray], conf: np.ndarray
+) -> np.ndarray:
     """The valid (C, W, H) world closest to a token grid.
 
     Every multi-tile tile votes for the anchor its part implies; an entity is
@@ -382,7 +481,11 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     tile is free and unclaimed, strongest vote first (its recipe/facing by
     vote). 1x1 tokens fill the remaining free tiles; multi-tile tokens no
     entity claimed become empty. The simulator would otherwise score a stray
-    assembler tile as a whole machine."""
+    assembler tile as a whole machine. Without parts, each multi-tile entity
+    is anchored where a raster scan first meets it, as the engine groups
+    tiles (`graph.rs::unit_anchors`)."""
+    if part is None:
+        part = _raster_parts(typ)
     world = cond_CWH.copy()
     ent = world[_CH_ENT]
     W, H = ent.shape
@@ -423,6 +526,21 @@ def legalize(cond_CWH: np.ndarray, typ: np.ndarray, recipe: np.ndarray, part: np
     return world
 
 
+def _raster_parts(typ: np.ndarray) -> np.ndarray:
+    part = np.zeros_like(typ)
+    claimed = np.zeros(typ.shape, dtype=bool)
+    for x, y in zip(*np.nonzero(_IS_MULTI_NP[typ])):
+        if claimed[x, y]:
+            continue
+        e = _TYPES_NP[typ[x, y], 0]
+        for dx, dy in _OFFSETS[typ[x, y]]:
+            u, v = x + dx, y + dy
+            if u < typ.shape[0] and v < typ.shape[1] and not claimed[u, v] and _TYPES_NP[typ[u, v], 0] == e:
+                claimed[u, v] = True
+                part[u, v] = dx * 3 + dy
+    return part
+
+
 def entity_cost(world_CWH: np.ndarray, cost_scale: float) -> tuple[float, float]:
     """(entity_cost, cost_efficiency), as `FactorioEnv._world_cost` scores it."""
     counts = np.bincount(world_CWH[_CH_ENT].ravel(), minlength=len(entities))[: len(entities)]
@@ -461,7 +579,7 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
     B = cond.shape[0]
     for k in range(steps):
         logits = model(tokens_to_state(cond, free, *toks))
-        toks = pick_tokens(logits, temperature, generator)
+        toks = model.pick(logits, temperature, generator)
         t_next = 1.0 - (k + 1) / steps
         if t_next > 0:
             toks = corrupt(toks, free, torch.full((B,), t_next, device=cond.device), prior, generator)
@@ -469,7 +587,7 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
     n_refine = torch.zeros(B, dtype=torch.long, device=cond.device)
     logits = model(tokens_to_state(cond, free, *toks))
     for _ in range(refine):
-        new = pick_tokens(logits)
+        new = model.pick(logits)
         same = torch.stack([((a == b) | ~free).flatten(1).all(1) for a, b in zip(new, toks)]).all(0)
         converged |= same
         if bool(converged.all()):
@@ -477,8 +595,7 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
         n_refine += ~converged
         toks = new
         logits = model(tokens_to_state(cond, free, *toks))
-    conf = F.softmax(logits[:, :N_TYPES], dim=1).gather(1, toks[0].unsqueeze(1)).squeeze(1)
-    return toks, conf, converged, n_refine
+    return toks, model.conf(logits, toks), converged, n_refine
 
 
 def run_denoise_eval(
@@ -528,7 +645,7 @@ def run_denoise_eval(
         typ, rec, part = (t.cpu().numpy() for t in toks)
         conf_np, cond_np = conf.float().cpu().numpy(), cond.cpu().numpy().astype(np.int64)
         for i, (f, j) in enumerate(chunk):
-            world = legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i], conf_np[i])
+            world = legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
             r = score_world(world, factories[f][2].max_throughput, cost_scale)
             r.update(chain=j, world=world)
             results[f].append(r)

@@ -37,10 +37,8 @@ from denoise import (  # noqa: E402
     free_mask,
     legalize,
     load_denoiser,
-    pick_tokens,
     run_denoise_eval,
     score_world,
-    split_logits,
     state_to_tokens,
     tokens_to_state,
     world_to_state,
@@ -142,41 +140,14 @@ def noise_prior_from(states: torch.Tensor) -> torch.Tensor:
     return 0.95 * freq / freq.sum() + 0.05 / N_TYPES
 
 
-def token_losses(logits, clean, free):
-    """Per-head cross entropies against the clean tokens (type on every free
-    tile, recipe on assembler tiles, part on multi-tile tiles) and the
-    expected per-tile entity cost of the predicted types."""
-    L = _luts(logits.device)
-    tl, rl, pl = split_logits(logits)
-    typ, rec, part = clean
+def tokens_logp(model, logits, toks, free):
+    """Per-example log-probability of `toks` under `logits`, averaged over
+    free tiles."""
     freef = free.float()
-    n_free = freef.sum().clamp(min=1)
-    asm = (L.is_asm[typ] & free).float()
-    multi = (L.n_parts[typ] > 1).float() * freef
-    return {
-        "type": (F.cross_entropy(tl, typ, reduction="none") * freef).sum() / n_free,
-        "recipe": (F.cross_entropy(rl, rec, reduction="none") * asm).sum() / asm.sum().clamp(min=1),
-        "part": (F.cross_entropy(pl, part, reduction="none") * multi).sum() / multi.sum().clamp(min=1),
-        "cost": (F.softmax(tl, dim=1) * L.tile_cost.view(1, -1, 1, 1)).sum(1).mul(freef).sum() / n_free,
-    }
+    return (model.logp(logits, toks) * freef).sum((1, 2)) / freef.sum((1, 2)).clamp(min=1)
 
 
-def tokens_logp(logits, toks, free):
-    """Per-example log-probability of `toks` under `logits`, as `pick_tokens`
-    samples them, averaged over free tiles."""
-    L = _luts(logits.device)
-    tl, rl, pl = split_logits(logits)
-    typ, rec, part = toks
-    lp = F.log_softmax(tl, dim=1).gather(1, typ.unsqueeze(1)).squeeze(1)
-    lp_rec = F.log_softmax(rl[:, 1:], dim=1).gather(1, (rec - 1).clamp(min=0).unsqueeze(1)).squeeze(1)
-    pl = pl.masked_fill(~L.part_valid[typ].permute(0, 3, 1, 2), float("-inf"))
-    lp_part = F.log_softmax(pl, dim=1).gather(1, part.unsqueeze(1)).squeeze(1)
-    lp = lp + torch.where(L.is_asm[typ], lp_rec, 0.0) + torch.where(L.n_parts[typ] > 1, lp_part, 0.0)
-    freef = free.float()
-    return (lp * freef).sum((1, 2)) / freef.sum((1, 2)).clamp(min=1)
-
-
-def throughput_pg_loss(logits, state, free, max_thput, t, args: SftArgs):
+def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
     """REINFORCE on simulated throughput. Up to `rl_inputs` lightly-corrupted
     examples (t ≤ rl_max_noise, where a sample is a plausible factory) each get
     `rl_samples` factories sampled from the prediction; each is legalized and
@@ -189,20 +160,24 @@ def throughput_pg_loss(logits, state, free, max_thput, t, args: SftArgs):
     rep = idx.repeat_interleave(K)
     lg, fr = logits[rep], free[rep]
     with torch.no_grad():
-        toks = pick_tokens(lg.detach(), temperature=1.0)
-        conf = F.softmax(lg[:, :N_TYPES], dim=1).gather(1, toks[0].unsqueeze(1)).squeeze(1)
+        toks = model.pick(lg.detach(), temperature=1.0)
+        conf = model.conf(lg.detach(), toks)
     cond = state[rep, :5].cpu().numpy().astype(np.int64)
     typ, rec, part = (x.cpu().numpy() for x in toks)
     conf_np, mt = conf.float().cpu().numpy(), max_thput[rep].tolist()
     scores = torch.tensor(
         [
-            score_world(legalize(cond[i], typ[i], rec[i], part[i], conf_np[i]), mt[i], PpoArgs.entity_cost_scale)["score"]
+            score_world(
+                legalize(cond[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i]),
+                mt[i],
+                PpoArgs.entity_cost_scale,
+            )["score"]
             for i in range(len(rep))
         ],
         device=logits.device,
     ).view(-1, K)
     adv = (scores - (scores.sum(1, keepdim=True) - scores) / (K - 1)).view(-1)
-    return -(adv * tokens_logp(lg, toks, fr)).mean(), float(scores.mean())
+    return -(adv * tokens_logp(model, lg, toks, fr)).mean(), float(scores.mean())
 
 
 def denoise_step(model, state, max_thput, args: SftArgs):
@@ -213,28 +188,24 @@ def denoise_step(model, state, max_thput, args: SftArgs):
     t = noise_levels(state.shape[0], args, state.device)
     noisy = corrupt(clean, free, t, model.noise_prior)
     logits = model(tokens_to_state(state, free, *noisy))
-    terms = token_losses(logits, clean, free)
+    terms = model.losses(logits, clean, free)
     if args.unroll:
         # SUNDAE: also denoise the model's own sample of its prediction, the
         # kind of input every generation step after the first sees.
         with torch.no_grad():
-            own = pick_tokens(logits.detach(), temperature=1.0)
-        terms2 = token_losses(model(tokens_to_state(state, free, *own)), clean, free)
+            own = model.pick(logits.detach(), temperature=1.0)
+        terms2 = model.losses(model(tokens_to_state(state, free, *own)), clean, free)
         terms = {k: (v + terms2[k]) / 2 for k, v in terms.items()}
-    loss = (
-        args.lw_type * terms["type"]
-        + args.lw_recipe * terms["recipe"]
-        + args.lw_part * terms["part"]
-        + args.lw_cost * terms["cost"]
-    )
+    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
+    loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
     stats = {k: v.detach() for k, v in terms.items()}
     if args.lw_thput > 0:
-        pg, mean_score = throughput_pg_loss(logits, state, free, max_thput, t, args)
+        pg, mean_score = throughput_pg_loss(model, logits, state, free, max_thput, t, args)
         loss = loss + args.lw_thput * pg
         stats["thput_pg"] = pg.detach()
         stats["rl_score"] = torch.tensor(mean_score)
     with torch.no_grad():
-        typ_pred = split_logits(logits)[0].argmax(1)
+        typ_pred = model.pick(logits.detach())[0]
         stats["type_acc"] = ((typ_pred == clean[0]) & free).sum() / free.sum().clamp(min=1)
     return loss, stats
 
@@ -246,9 +217,12 @@ def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
     model.eval()
     gen = torch.Generator(device=device).manual_seed(args.seed)
     out: dict = {}
+    L = _luts(device)
+    # `factored` predicts no parts: its footprints are re-derived by `legalize`.
+    heads = ("type", "recipe", "part") if model.io == "token" else ("type", "recipe")
     for t in _VAL_NOISE_LEVELS:
-        hits = {"type": 0.0, "recipe": 0.0, "part": 0.0}
-        counts = dict.fromkeys(hits, 0.0)
+        hits = dict.fromkeys(heads, 0.0)
+        counts = dict.fromkeys(heads, 0.0)
         exact, loss_sum, n_tiles = 0, 0.0, 0.0
         for lo in range(0, len(val_states), args.batch_size):
             s = val_states[lo : lo + args.batch_size].to(device).long()
@@ -256,25 +230,25 @@ def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
             clean = state_to_tokens(s)
             noisy = corrupt(clean, free, torch.full((len(s),), t, device=device), model.noise_prior, gen)
             logits = model(tokens_to_state(s, free, *noisy))
-            pred = pick_tokens(logits)
-            L = _luts(device)
+            pred = model.pick(logits)
             masks = {"type": free, "recipe": L.is_asm[clean[0]] & free, "part": (L.n_parts[clean[0]] > 1) & free}
             ok_all = torch.ones(len(s), dtype=torch.bool, device=device)
-            for (name, m), p, c in zip(masks.items(), pred, clean):
+            for name, p, c in zip(heads, pred, clean):
+                m = masks[name]
                 ok = p == c
                 hits[name] += float((ok & m).sum())
                 counts[name] += float(m.sum())
                 ok_all &= (ok | ~m).flatten(1).all(1)
             exact += int(ok_all.sum())
-            tl = split_logits(logits)[0]
-            loss_sum += float((F.cross_entropy(tl, clean[0], reduction="none") * free).sum())
-            n_tiles += float(free.sum())
+            n = float(free.sum())
+            loss_sum += n * float(sum(v for k, v in model.losses(logits, clean, free).items() if k != "cost"))
+            n_tiles += n
         tag = f"val/t{t:.2f}"
         out[f"{tag}/loss"] = loss_sum / max(n_tiles, 1)
         out[f"{tag}/exact"] = exact / len(val_states)
         for name in hits:
             out[f"{tag}/{name}_acc"] = hits[name] / max(counts[name], 1)
-    for key in ("loss", "type_acc", "recipe_acc", "part_acc"):
+    for key in ("loss", *(f"{h}_acc" for h in heads)):
         out[f"val/{key}"] = float(np.mean([out[f"val/t{t:.2f}/{key}"] for t in _VAL_NOISE_LEVELS]))
     # A clean factory left untouched: the stopping criterion of generation.
     out["val/identity"] = out["val/t0.00/exact"]
@@ -367,6 +341,7 @@ def train_sft(args: SftArgs):
             attn_layers=args.attn_layers,
             attn_heads=args.attn_heads,
             dropout=args.dropout,
+            io=args.io,
         )
         model.noise_prior.copy_(noise_prior_from(val_states))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
