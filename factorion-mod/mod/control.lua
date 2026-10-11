@@ -23,6 +23,8 @@ local parity = require("parity")
 local PROTOCOL_VERSION = "9"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
+-- Loading a checkpoint (often a W&B download) blocks the server's polls.
+local MODEL_LOAD_TIMEOUT_TICKS = 60 * 60
 local STOP_REASONS = {
   eot = "the model chose to stop",
   max_steps = "hit the %s-step limit",
@@ -895,6 +897,18 @@ local function recently(tick)
   return tick ~= nil and game.tick - tick < SERVER_TIMEOUT_TICKS
 end
 
+-- Every call the server makes counts: it doesn't poll while it is building.
+local function heard_from_server()
+  storage.server_contact_tick = game.tick
+end
+
+local function server_alive()
+  local timeout = storage.model_loading and MODEL_LOAD_TIMEOUT_TICKS
+    or SERVER_TIMEOUT_TICKS
+  return storage.server_contact_tick ~= nil
+    and game.tick - storage.server_contact_tick < timeout
+end
+
 local function server_help()
   if not game.is_multiplayer() then
     return "This game isn't hosted, so Factorio hasn't opened its RCON port. " ..
@@ -914,7 +928,7 @@ local function server_help()
 end
 
 local function check_server()
-  local connected = recently(storage.server_poll_tick)
+  local connected = server_alive()
   if connected == storage.server_connected then return end
   -- Give a freshly started game time for the server's first poll.
   if storage.server_connected == nil and not connected
@@ -936,7 +950,7 @@ script.on_event("factorion-execute", function(event)
   if not player then return end
   local _, msg = try_request_prediction(event.player_index)
   player.print("[Factorion] " .. msg)
-  if not recently(storage.server_poll_tick) then
+  if not server_alive() then
     player.print("[Factorion] No model server is connected, so nothing " ..
       "will happen yet. " .. server_help())
   end
@@ -966,7 +980,7 @@ remote.add_interface("factorion", {
         type = "protocol_mismatch", mod_protocol = PROTOCOL_VERSION,
       })
     end
-    storage.server_poll_tick = game.tick
+    heard_from_server()
     storage.outbox = storage.outbox or {}
     if #storage.outbox == 0 then return "" end
     return table.remove(storage.outbox, 1)
@@ -975,6 +989,7 @@ remote.add_interface("factorion", {
   -- Create one model-predicted entity at footprint-relative coordinates,
   -- replacing whatever it overlaps. A placement without a name only deletes.
   place_prediction = function(request_id, placement_json)
+    heard_from_server()
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
     if not player_index then
@@ -1044,6 +1059,7 @@ remote.add_interface("factorion", {
 
   -- Complete the streamed request and release its pending state.
   finish_prediction = function(request_id, summary_json)
+    heard_from_server()
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
     if not player_index then
@@ -1084,6 +1100,7 @@ remote.add_interface("factorion", {
   -- Replies to a load_model message. A reply for a checkpoint the setting has
   -- since moved away from is ignored; the newer load is already queued.
   model_loaded = function(model_json)
+    heard_from_server()
     local model = helpers.json_to_table(model_json)
     if not model or model.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model = model
@@ -1095,6 +1112,7 @@ remote.add_interface("factorion", {
     return "ok"
   end,
   model_failed = function(error_json)
+    heard_from_server()
     local failure = helpers.json_to_table(error_json) or {}
     if failure.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model_loading = nil
