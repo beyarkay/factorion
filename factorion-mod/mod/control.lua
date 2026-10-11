@@ -32,8 +32,8 @@ local STOP_REASONS = {
   server_error = "the server hit an error",
 }
 
-local function get_default_item()
-  return settings.global["factorion-default-item"].value
+local function get_default_item(role)
+  return settings.global["factorion-default-" .. role .. "-item"].value
 end
 
 local function get_checkpoint()
@@ -298,7 +298,7 @@ local function register_endpoint(entity, item)
   end
   config.entity = entity
   config.role = role
-  config.item = item or config.item or get_default_item()
+  config.item = item or config.item or get_default_item(role)
   storage.endpoints[entity.unit_number] = config
   if role == "sink" then
     if item_changed or not config.throughput_rate then
@@ -382,7 +382,7 @@ local function open_marker_dialog(player, state, role, entity)
   frame.add({ type = "label", caption = prompt })
   frame.add({
     type = "choose-elem-button", name = ITEM_PICKER,
-    elem_type = "item", item = config and config.item or get_default_item(),
+    elem_type = "item", item = config and config.item or get_default_item(role),
   })
   local actions = frame.add({ type = "flow", direction = "horizontal" })
   actions.add({
@@ -728,7 +728,6 @@ end
 
 local function gather_request(state, player_index)
   local fp = state.footprint
-  local default_item = get_default_item()
   local player = game.get_player(player_index)
 
   local sources = {}
@@ -747,7 +746,7 @@ local function gather_request(state, player_index)
       local entry = {
         x = rx, y = ry,
         direction = FACTORIO_TO_DIRECTION[entity.direction],
-        item = config.item or default_item,
+        item = config.item,
       }
       if config.role == "source" then
         table.insert(sources, entry)

@@ -1,10 +1,17 @@
 data:extend({
   {
     type = "string-setting",
-    name = "factorion-default-item",
+    name = "factorion-default-source-item",
     setting_type = "runtime-global",
     default_value = "iron-plate",
     order = "a",
+  },
+  {
+    type = "string-setting",
+    name = "factorion-default-sink-item",
+    setting_type = "runtime-global",
+    default_value = "iron-gear-wheel",
+    order = "a2",
   },
   {
     type = "string-setting",
