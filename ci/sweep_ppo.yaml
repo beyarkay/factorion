@@ -9,24 +9,23 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# Ranges from the 40-run random screen m5efstjq (500k steps from mvbipbr0),
-# read off random-forest + ARD-GP partial dependence on its final
-# eval/thput@8 and on late-run rollout/thput (the cleaner target: it averages
-# hundreds of episodes). No run collapsed, and the 8 that barely moved agree
-# to 0.463 ± 0.006, so gains of 0.02-0.04 clear eval noise, but the models explain
-# little (CV R^2 0.1-0.2), so each range stays ~2x wider than its good band:
-#   - target_kl (most important on both targets): good from ~0.013 and still
-#     rising at the screen's 0.05 ceiling, so the range goes past it.
-#   - update_epochs: good from ~3, still rising at 8.
-#   - learning_rate: peaks at 5e-6-1e-5 on rollout/thput, flat on eval.
-#   - ent_coef_start: lower is better and flat below ~5e-4, so the floor drops
-#     below the screen's.
-# Pinned: divergence_penalty (no consistent signal; a mid-range anchor for the
-# longer horizon), num_steps (importance ~0.02), and the screen's short
-# warmups. A final eval at 12 factories per lesson, plus one at mid-run.
+# From the 40-run random screen m5efstjq (500k steps from mvbipbr0). No run
+# collapsed; the 8 that barely moved agree to 0.463 ± 0.006, and the best
+# reached 0.507. A random forest fitted on its final eval/thput@8 and late-run
+# rollout/thput says which knobs carry signal: refit without a knob and see
+# whether cross-validated R^2 drops (eval / rollout):
+#   - target_kl      +0.10 / +0.19  good from ~0.013, still rising at the
+#                                   screen's 0.05 ceiling, so the range goes past it
+#   - update_epochs  +0.10 / +0.12  good from ~3, still rising at 8
+#   - learning_rate  -0.03 / +0.06  peaks at 5e-6-1e-5 on rollout/thput
+#   - ent_coef_start, divergence_penalty, num_steps: <= 0 on both, so pinned.
+#     The entropy bonus sits in the flat low region its curves favour;
+#     divergence_penalty is a moderate anchor for the longer runs.
+# The forest explains little (CV R^2 0.1-0.2), so each range stays ~2x wider
+# than its good band. Three knobs need fewer runs than six.
 
 method: bayes
-run_cap: 30
+run_cap: 24
 metric:
   name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
@@ -36,6 +35,8 @@ parameters:
     value: 5
   critic_warmup:
     value: 5
+  ent_coef_start:
+    value: 2.0e-4
   ent_coef_end:
     value: 0.0
   num_steps:
@@ -59,10 +60,6 @@ parameters:
     distribution: log_uniform_values
     min: 0.01
     max: 0.1
-  ent_coef_start:
-    distribution: log_uniform_values
-    min: 1.0e-5
-    max: 1.0e-3
 
 program: ppo.py
 
