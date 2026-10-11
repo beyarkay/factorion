@@ -366,9 +366,9 @@ local function handle_tool_selection(event)
   draw_footprint(player, state)
   local fp = state.footprint
   player.print(string.format(
-    "[Factorion] Stamped 11x11 region at x=%d..%d, y=%d..%d. " ..
+    "[Factorion] Stamped %dx%d region at x=%d..%d, y=%d..%d. " ..
     "Now place a source and sink.",
-    fp.x, fp.x + 10, fp.y, fp.y + 10))
+    fp.w, fp.h, fp.x, fp.x + fp.w - 1, fp.y, fp.y + fp.h - 1))
 end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
