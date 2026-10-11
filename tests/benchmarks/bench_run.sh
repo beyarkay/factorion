@@ -33,10 +33,10 @@ case "$KIND" in
       --summary-path "${SUMMARY_PATH:-/tmp/bench_ppo_speed.json}" "$@"
     ;;
   ppo-quality)
-    CKPT="${CKPT:-checkpoints/sft_j0s5y2mc.pt}"
+    CKPT="${CKPT:-checkpoints/sft_mvbipbr0.pt}"
     if [ ! -f "$CKPT" ]; then
       echo "ERROR: SFT checkpoint not found at $CKPT" >&2
-      echo "Recreate offline via _resolve_wandb_checkpoint('j0s5y2mc')." >&2
+      echo "Recreate offline via _resolve_wandb_checkpoint('mvbipbr0')." >&2
       exit 1
     fi
     WANDB_MODE=disabled WANDB_DISABLED=true uv run ppo.py \
@@ -47,7 +47,6 @@ case "$KIND" in
       --gae-lambda 0.9021936994100002 --gamma 0.9957335539938416 \
       --max-grad-norm 1.979 --clip-coef 0.2746 --target-kl 0.02 \
       --critic-warmup 5 --tile-head-std 0.06503 --adam-epsilon 6.866e-6 \
-      --layer1 93 --layer2 69 --layer3 96 \
       --eval-every 0 \
       --target-metric rollout/reward --target-value -0.15 \
       --quality-ema-alpha 0.4 --max-seconds 300 --total-timesteps 100000000 \

@@ -32,7 +32,7 @@ Manual path:
 ```bash
 # from the repo root, so `factorion` and `factorion_rs` import cleanly
 uv run python factorion-mod/server/server.py \
-  --checkpoint hcozpmwt \
+  --checkpoint mvbipbr0 \
   --rcon-host 127.0.0.1 \
   --rcon-port 27015 \
   --rcon-password factorion

@@ -140,7 +140,7 @@ class PpoArgs(SharedArgs):
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 6.379e-05
+    learning_rate: float = 5e-06
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -148,7 +148,7 @@ class PpoArgs(SharedArgs):
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
-    lr_warmup_iters: int = 22
+    lr_warmup_iters: int = 5
     """iterations of linear actor-LR warmup up to `learning_rate` at the start
     of the post-critic-warmup window — absolute, not a fraction, so runs of
     different lengths warm up identically (0 = start at peak)"""
@@ -177,9 +177,9 @@ class PpoArgs(SharedArgs):
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
 
-    ent_coef_start: float = 0.008034
+    ent_coef_start: float = 2e-4
     """entropy coefficient at the start of training (high = more exploration)"""
-    ent_coef_end: float = 0.0007372
+    ent_coef_end: float = 0.0
     """entropy coefficient at the end of training (low = more exploitation)"""
     vf_coef: float = 0.794
     """coefficient of the value function"""
@@ -191,7 +191,7 @@ class PpoArgs(SharedArgs):
     """the maximum norm for the gradient clipping"""
     target_kl: Optional[float] = 0.02
     """the target KL divergence threshold, checked per minibatch."""
-    divergence_penalty: float = 0.008
+    divergence_penalty: float = 0.05
     """Weight β on the KL(π_θ ‖ π_ref) loss penalty anchoring the policy to the
     frozen --start-from SFT reference. Covers the five placement heads;
     the EOT head's KL is logged but never penalized (it sets the episode
@@ -208,7 +208,7 @@ class PpoArgs(SharedArgs):
     """Dropout probability in the CNN encoder."""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: summary.json next to ppo.py)"""
-    critic_warmup: int = 9
+    critic_warmup: int = 5
     """Freeze the actor (encoder + all policy heads) for this many PPO iterations and train only the critic head, then unfreeze."""
     critic_lr: float = 4.798e-06
     """peak learning rate of the critic (value head); the actor's peak is

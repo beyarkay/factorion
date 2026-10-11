@@ -170,7 +170,7 @@ class TestHandEdit:
 
 
 def test_default_wandb_run():
-    assert fb.Args().wandb_run == "8gqpfppb"
+    assert fb.Args().wandb_run == "mvbipbr0"
 
 
 # ── Pure helpers ────────────────────────────────────────────────────────────
