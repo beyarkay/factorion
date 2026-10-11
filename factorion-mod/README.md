@@ -42,7 +42,9 @@ Orange sinks consume every item that reaches their tile, but count only their
 configured item toward the displayed throughput. The endpoint's current
 rotation is sent to the model. Rerunning a prediction removes only the entities
 created by the previous prediction, so endpoint belts stay in place until you
-mine them. As in training, a model placement replaces every entity it overlaps
+mine them. Model placements appear as ghosts by default (the placement mode
+setting builds them immediately instead). As in training, a model placement
+replaces every entity or ghost it overlaps
 inside the region; entities you built are mined back into your inventory.
 
 ## RCON setup

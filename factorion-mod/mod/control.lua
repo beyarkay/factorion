@@ -867,13 +867,19 @@ local function clear_placement_area(player, state, fp, placement)
   for _, unit_number in ipairs(state.predicted_entities or {}) do
     predicted[unit_number] = true
   end
-  for _, entity in pairs(player.surface.find_entities_filtered({
-    area = {
-      { left + 0.01, top + 0.01 },
-      { left + placement.width - 0.01, top + placement.height - 0.01 },
-    },
-    name = MODEL_ENTITY_NAMES,
+  local area = {
+    { left + 0.01, top + 0.01 },
+    { left + placement.width - 0.01, top + placement.height - 0.01 },
+  }
+  local overlapped = player.surface.find_entities_filtered({
+    area = area, name = MODEL_ENTITY_NAMES,
+  })
+  for _, ghost in pairs(player.surface.find_entities_filtered({
+    area = area, ghost_name = MODEL_ENTITY_NAMES,
   })) do
+    table.insert(overlapped, ghost)
+  end
+  for _, entity in pairs(overlapped) do
     local box = entity.bounding_box
     if box.left_top.x >= fp.x and box.left_top.y >= fp.y
         and box.right_bottom.x <= fp.x + fp.w
@@ -1034,6 +1040,10 @@ remote.add_interface("factorion", {
     }
     if placement.type then params.type = placement.type end
     if placement.recipe then params.recipe = placement.recipe end
+    if settings.global["factorion-placement-mode"].value == "ghost" then
+      params.inner_name = params.name
+      params.name = "entity-ghost"
+    end
     local created, entity = pcall(
       function() return player.surface.create_entity(params) end)
     if not created then

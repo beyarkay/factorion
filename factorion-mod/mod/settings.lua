@@ -21,6 +21,14 @@ data:extend({
     order = "b",
   },
   {
+    type = "string-setting",
+    name = "factorion-placement-mode",
+    setting_type = "runtime-global",
+    default_value = "ghost",
+    allowed_values = { "ghost", "build" },
+    order = "b2",
+  },
+  {
     type = "double-setting",
     name = "factorion-placement-delay",
     setting_type = "runtime-global",
