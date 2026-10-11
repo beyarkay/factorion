@@ -45,6 +45,17 @@ local function setting(name)
   return SETTING_DEFAULTS[name]
 end
 
+-- Sampling settings named in the request message when not at their default.
+local SAMPLING_SUMMARY = {
+  { "factorion-temperature", "temperature %g" },
+  { "factorion-top-k", "top-k %d" },
+  { "factorion-top-p", "top-p %g" },
+  { "factorion-stop-rule", "stop rule: %s" },
+  { "factorion-stop-threshold", "stop threshold %g" },
+  { "factorion-max-steps", "max %d steps" },
+  { "factorion-seed", "seed %d" },
+}
+
 local function get_default_item(role)
   return setting("factorion-default-" .. role .. "-item")
 end
@@ -839,11 +850,16 @@ local function try_request_prediction(player_index)
   }
   log("[Factorion] enqueued request " .. request.request_id ..
       " json=" .. request_json)
-  return true, string.format(
-    "Requesting a factory %s using checkpoint %s (temperature %g, top-k %d, " ..
-    "top-p %g, stop: %s).",
-    description, request.checkpoint, request.temperature, request.top_k,
-    request.top_p, request.stop_rule)
+  local changed = {}
+  for _, knob in ipairs(SAMPLING_SUMMARY) do
+    local value = setting(knob[1])
+    if value ~= SETTING_DEFAULTS[knob[1]] then
+      table.insert(changed, string.format(knob[2], value))
+    end
+  end
+  return true, string.format("Requesting a factory %s using checkpoint %s%s.",
+    description, request.checkpoint,
+    #changed > 0 and " (" .. table.concat(changed, ", ") .. ")" or "")
 end
 
 local function describe_placement_failure(surface, fp, placement)

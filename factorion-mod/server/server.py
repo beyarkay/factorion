@@ -16,7 +16,7 @@ import logging
 import secrets
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional
@@ -222,6 +222,13 @@ class Sampling:
     stop_threshold: float = 0.5
     max_steps: int = 0
     """0 = the training episode length, grid width x height."""
+
+    def __str__(self) -> str:
+        changed = [
+            f"{f.name}={getattr(self, f.name)}"
+            for f in fields(self) if getattr(self, f.name) != f.default
+        ]
+        return ", ".join(changed) or "default sampling"
 
     @classmethod
     def from_request(cls, req: dict) -> "Sampling":
