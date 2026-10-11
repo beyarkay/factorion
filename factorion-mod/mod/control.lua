@@ -94,7 +94,8 @@ end
 local function show_startup_message(player)
   player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
     "tile with it to choose what to make, then click a tile for each source " ..
-    "and press CTRL+P. Right-click with it to clear the plan.")
+    "and press CTRL+P. Right-click with it to clear the plan. Source and sink " ..
+    "belts placed by hand (map editor) work too: press CTRL+P near them.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -518,30 +519,40 @@ local function orient_markers(plan, fp)
   end
 end
 
-local function finish_plan(player, state)
-  local plan = state.plan
+-- Centres the model's grid on tiles, or says why it can't.
+local function set_region(player, state, tiles)
   local size = storage.model.grid_size
   local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
-  for _, marker in ipairs(plan.tiles) do
-    min_x, max_x = math.min(min_x, marker.x), math.max(max_x, marker.x)
-    min_y, max_y = math.min(min_y, marker.y), math.max(max_y, marker.y)
+  for _, tile in ipairs(tiles) do
+    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
   end
   local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
-  plan.done = true
   if span_x > size or span_y > size then
     player.print(string.format(
       "[Factorion] These belts span %dx%d tiles, more than the model's %dx%d " ..
-      "grid. Click with the [item=%s] to start a new plan.",
-      span_x, span_y, size, size, PLANNER))
-    return
+      "grid.", span_x, span_y, size, size))
+    return false
   end
   state.footprint = {
     x = min_x - math.floor((size - span_x) / 2),
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
   }
-  orient_markers(plan, state.footprint)
   draw_footprint(player, state)
+  return true
+end
+
+-- Belts the player placed themselves (plan.existing) count towards the region
+-- but keep the direction they were given.
+local function finish_plan(player, state)
+  local plan = state.plan
+  plan.done = true
+  local tiles = {}
+  for _, tile in ipairs(plan.tiles) do table.insert(tiles, tile) end
+  for _, tile in ipairs(plan.existing or {}) do table.insert(tiles, tile) end
+  if not set_region(player, state, tiles) then return end
+  orient_markers(plan, state.footprint)
   player.print("[Factorion] Region ready. Press CTRL+P to build the factory.")
 end
 
@@ -550,15 +561,22 @@ local function place_sink(player, state)
   local item = frame and frame[PLAN_ITEM].elem_value
   local plan = state.plan
   if not item or not plan then return end
-  local sources, reason = source_items(item)
-  if not sources then
-    player.print("[Factorion] Can't plan that: " .. reason .. ".")
-    return
+  local sources, reason
+  if not plan.keep_sources then
+    sources, reason = source_items(item)
+    if not sources then
+      player.print("[Factorion] Can't plan that: " .. reason .. ".")
+      return
+    end
   end
   close_plan_dialog(player)
   if not place_plan_marker(player, plan, "sink", item, plan.sink_tile) then
     player.print("[Factorion] That tile is blocked; click another one.")
     state.plan = nil
+    return
+  end
+  if plan.keep_sources then
+    finish_plan(player, state)
     return
   end
   plan.sources, plan.next = sources, 1
@@ -577,6 +595,12 @@ local function handle_tool_selection(event)
   local x, y = area_center_tile(event.area)
   local tile = { x = x, y = y }
   local plan = state.plan
+
+  if plan and plan.awaiting_sink then
+    plan.awaiting_sink, plan.sink_tile = nil, tile
+    open_plan_dialog(player)
+    return
+  end
 
   if plan and plan.sources and not plan.done then
     local item = plan.sources[plan.next]
@@ -1170,11 +1194,107 @@ script.on_nth_tick(60, function()
   inference.refresh_all()
 end)
 
+-- Puts the planner in the player's hand, from their inventory if they have one.
+local function hand_planner(player)
+  local cursor = player.cursor_stack
+  if not cursor then return end
+  if cursor.valid_for_read and cursor.name == PLANNER then return end
+  if not player.clear_cursor() then return end
+  local inventory = player.get_main_inventory()
+  local stack = inventory and inventory.find_item_stack(PLANNER)
+  if stack then cursor.swap_stack(stack) else cursor.set_stack({ name = PLANNER }) end
+end
+
+local function endpoints_near(player, position)
+  local size = storage.model.grid_size
+  local sources, sinks = {}, {}
+  for _, entity in pairs(player.surface.find_entities_filtered({
+    area = {
+      { position.x - size, position.y - size },
+      { position.x + size, position.y + size },
+    },
+    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+  })) do
+    local tile = {
+      x = math.floor(entity.position.x), y = math.floor(entity.position.y),
+      entity = entity,
+    }
+    table.insert(endpoint_role(entity) == "source" and sources or sinks, tile)
+  end
+  return sources, sinks
+end
+
+-- Ingredients of every sink's recipe, each once, in recipe order.
+local function sources_for_sinks(sinks)
+  local items, seen = {}, {}
+  for _, sink in ipairs(sinks) do
+    local config = register_endpoint(sink.entity)
+    local sources, reason = source_items(config.item)
+    if not sources then return nil, reason end
+    for _, item in ipairs(sources) do
+      if not seen[item] then
+        seen[item] = true
+        table.insert(items, item)
+      end
+    end
+  end
+  return items
+end
+
+-- CTRL+P builds the planned region; without one it uses the source and sink
+-- belts near the cursor, and guides the player to place whichever is missing.
+local function predict_or_guide(player, state, cursor_position)
+  local plan = state.plan
+  if plan and not plan.done then
+    hand_planner(player)
+    if plan.sources then
+      return string.format("Click a tile for source %d of %d: [item=%s]",
+        plan.next, #plan.sources, plan.sources[plan.next])
+    end
+    return "Click a tile with the planner to place the sink."
+  end
+  if state.footprint then
+    local _, msg = try_request_prediction(player.index)
+    return msg
+  end
+  if not storage.model then
+    request_model_load()
+    return "No model loaded yet."
+  end
+  local sources, sinks = endpoints_near(player, cursor_position)
+  if #sinks == 0 then
+    state.plan = {
+      awaiting_sink = true, keep_sources = #sources > 0, existing = sources,
+      markers = {}, tiles = {},
+    }
+    hand_planner(player)
+    return "No sink near the cursor. Click a tile with the planner to place one."
+  end
+  if #sources == 0 then
+    local items, reason = sources_for_sinks(sinks)
+    if not items then return "Can't work out the sources: " .. reason .. "." end
+    state.plan = {
+      existing = sinks, sources = items, next = 1, markers = {}, tiles = {},
+    }
+    hand_planner(player)
+    return string.format(
+      "No source near the cursor. Click a tile for source 1 of %d: [item=%s]",
+      #items, items[1])
+  end
+  local tiles = {}
+  for _, tile in ipairs(sources) do table.insert(tiles, tile) end
+  for _, tile in ipairs(sinks) do table.insert(tiles, tile) end
+  if not set_region(player, state, tiles) then return nil end
+  local _, msg = try_request_prediction(player.index)
+  return msg
+end
+
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
-  local _, msg = try_request_prediction(event.player_index)
-  player.print("[Factorion] " .. msg)
+  local msg = predict_or_guide(
+    player, ensure_player_state(event.player_index), event.cursor_position)
+  if msg then player.print("[Factorion] " .. msg) end
   if not server_alive() then
     player.print("[Factorion] No model server is connected, so nothing " ..
       "will happen yet. " .. server_help())
