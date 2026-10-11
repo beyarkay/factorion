@@ -499,22 +499,6 @@ local function show_source_panel(player, plan)
 end
 
 -- The region must stay the model's grid size, so editing it means moving it.
-local function open_region_panel(player)
-  local frame = open_panel(player)
-  frame.add({ type = "label", caption = "Press CTRL+P to build. Move the region:" })
-  local pad = frame.add({ type = "table", column_count = 3 })
-  for _, cell in ipairs({ "", "up", "", "left", "", "right", "", "down", "" }) do
-    if cell == "" then
-      pad.add({ type = "empty-widget" })
-    else
-      pad.add({
-        type = "button", caption = cell:sub(1, 1):upper() .. cell:sub(2),
-        tags = { factorion_region = cell },
-      })
-    end
-  end
-end
-
 local function nudge_region(player, state, direction)
   local fp = state.footprint
   if not fp then return end
@@ -532,6 +516,7 @@ local function nudge_region(player, state, direction)
   end
   state.footprint = moved
   draw_footprint(player, state)
+  inference.refresh(player)
 end
 
 local function clear_region(player, state)
@@ -653,7 +638,7 @@ local function set_region(player, state, tiles)
     w = size, h = size,
   }
   draw_footprint(player, state)
-  open_region_panel(player)
+  close_panel(player)
   return true
 end
 
@@ -667,7 +652,8 @@ local function finish_plan(player, state)
   for _, tile in ipairs(plan.existing or {}) do table.insert(tiles, tile) end
   if not set_region(player, state, tiles) then return end
   orient_sink(plan, state.footprint)
-  player.print("[Factorion] Region ready. Press CTRL+P to build the factory.")
+  player.print("[Factorion] Region ready. Press CTRL+P to build the factory; " ..
+    "move the region from any GPU server's window.")
 end
 
 -- A source belt the player places while a plan is waiting for sources becomes

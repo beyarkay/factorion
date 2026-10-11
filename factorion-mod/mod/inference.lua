@@ -93,11 +93,20 @@ local function model_caption()
   return "Loading " .. config.checkpoint .. "…"
 end
 
+local function region_caption(player)
+  local state = storage.players and storage.players[player.index]
+  local fp = state and state.footprint
+  if not fp then return "No region planned yet: use the [item=factorion-planner]." end
+  return string.format("x %d..%d, y %d..%d", fp.x, fp.x + fp.w - 1, fp.y,
+    fp.y + fp.h - 1)
+end
+
 function M.refresh(player)
   local frame = player.gui.screen[FRAME]
   if not frame then return end
   frame.status.caption = status_caption()
   frame.settings.model_status.caption = model_caption()
+  frame.region.caption = region_caption(player)
 end
 
 function M.refresh_all()
@@ -156,6 +165,22 @@ function M.open(player)
       })
     end
     number_field(field)
+  end
+
+  -- The region keeps the model's grid size, so it can only be moved.
+  frame.add({ type = "line" })
+  frame.add({ type = "label", caption = "Your region" })
+  frame.add({ type = "label", name = "region" })
+  local pad = frame.add({ type = "table", column_count = 3 })
+  for _, cell in ipairs({ "", "up", "", "left", "", "right", "", "down", "" }) do
+    if cell == "" then
+      pad.add({ type = "empty-widget" })
+    else
+      pad.add({
+        type = "button", caption = cell:sub(1, 1):upper() .. cell:sub(2),
+        tags = { factorion_region = cell },
+      })
+    end
   end
 
   M.refresh(player)
