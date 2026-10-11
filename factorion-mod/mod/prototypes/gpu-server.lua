@@ -7,6 +7,18 @@ local NAME = "factorion-gpu-server"
 local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 
+-- Same 384x384 half-scale canvas as the art in graphics/entity/gpu-server/.
+local function placeholder(orientation)
+  return {
+    filename = "__factorion__/graphics/entity/gpu-server-placeholder-"
+      .. orientation .. ".png",
+    width = 384,
+    height = 384,
+    scale = 0.5,
+    priority = "high",
+  }
+end
+
 data:extend({
   {
     type = "electric-energy-interface",
@@ -25,12 +37,11 @@ data:extend({
       buffer_capacity = "10kJ",
     },
     energy_usage = "4.5kW",
-    picture = {
-      filename = "__factorion__/graphics/entity/gpu-server.png",
-      width = 256,
-      height = 128,
-      scale = 0.5,
-      priority = "high",
+    pictures = {
+      north = placeholder("horizontal"),
+      east = placeholder("vertical"),
+      south = placeholder("horizontal"),
+      west = placeholder("vertical"),
     },
   },
   {
