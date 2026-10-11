@@ -416,6 +416,10 @@ def _lua_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ") + "'"
 
 
+class PredictionCancelled(Exception):
+    """The player cancelled the request in game (CTRL+R or a region clear)."""
+
+
 def _stream_placement(
     rcon: RconClient,
     request_id: str,
@@ -430,6 +434,8 @@ def _stream_placement(
         if placement_delay_s > 0:
             time.sleep(placement_delay_s)
         return True
+    if response == "cancelled":
+        raise PredictionCancelled
     log.error("Factorio rejected %s: %s", placement, response or "(empty response)")
     return False
 
@@ -462,7 +468,7 @@ def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
         "error": stats.get("error"),
     }, separators=(",", ":"))
     response = _call_mod(rcon, "finish_prediction", request_id, summary)
-    if response != "ok":
+    if response not in ("ok", "cancelled"):
         raise RuntimeError(
             f"Factorio could not finish request {request_id}: "
             f"{response or '(empty response)'}"
@@ -574,6 +580,8 @@ def handle_request(
                 placement_delay_s=float(req.get("placement_delay_s", 0.0)),
             ),
         )
+    except PredictionCancelled:
+        stats["stop_reason"] = "cancelled"
     except Exception as exc:
         stats["error"] = str(exc)
         raise

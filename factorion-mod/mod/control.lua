@@ -1043,7 +1043,7 @@ remote.add_interface("factorion", {
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
     if not player_index then
-      return "error: unknown request_id " .. tostring(request_id)
+      return "cancelled"
     end
 
     if player_index == 0 then
@@ -1118,7 +1118,7 @@ remote.add_interface("factorion", {
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
     if not player_index then
-      return "error: unknown request_id " .. tostring(request_id)
+      return "cancelled"
     end
     storage.pending_by_request[request_id] = nil
     if player_index == 0 then
