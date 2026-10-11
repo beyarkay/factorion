@@ -32,12 +32,25 @@ local STOP_REASONS = {
   server_error = "the server hit an error",
 }
 
+local SETTING_DEFAULTS = {}
+for _, spec in pairs(require("settings_spec")) do
+  SETTING_DEFAULTS[spec.name] = spec.default_value
+end
+
+-- Settings load only when Factorio starts, but this file reloads on every
+-- re-host, so a running game may not have a newly added setting yet.
+local function setting(name)
+  local current = settings.global[name]
+  if current then return current.value end
+  return SETTING_DEFAULTS[name]
+end
+
 local function get_default_item(role)
-  return settings.global["factorion-default-" .. role .. "-item"].value
+  return setting("factorion-default-" .. role .. "-item")
 end
 
 local function get_checkpoint()
-  return settings.global["factorion-checkpoint"].value
+  return setting("factorion-checkpoint")
 end
 
 local function ensure_player_state(player_index)
@@ -612,7 +625,7 @@ end
 local function service_endpoint_belts()
   -- Per-tick exponential moving average; the setting is its time constant.
   local decay = math.exp(
-    -1 / (60 * settings.global["factorion-sink-smoothing"].value))
+    -1 / (60 * setting("factorion-sink-smoothing")))
   for unit_number, config in pairs(storage.endpoints or {}) do
     local entity = config.entity
     if not entity or not endpoint_role(entity) then
@@ -776,14 +789,14 @@ local function gather_request(state, player_index)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = fp.w,
-    placement_delay_s = settings.global["factorion-placement-delay"].value,
-    temperature   = settings.global["factorion-temperature"].value,
-    top_k         = settings.global["factorion-top-k"].value,
-    top_p         = settings.global["factorion-top-p"].value,
-    stop_rule     = settings.global["factorion-stop-rule"].value,
-    stop_threshold = settings.global["factorion-stop-threshold"].value,
-    max_steps     = settings.global["factorion-max-steps"].value,
-    seed          = settings.global["factorion-seed"].value,
+    placement_delay_s = setting("factorion-placement-delay"),
+    temperature   = setting("factorion-temperature"),
+    top_k         = setting("factorion-top-k"),
+    top_p         = setting("factorion-top-p"),
+    stop_rule     = setting("factorion-stop-rule"),
+    stop_threshold = setting("factorion-stop-threshold"),
+    max_steps     = setting("factorion-max-steps"),
+    seed          = setting("factorion-seed"),
     entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
@@ -1040,7 +1053,7 @@ remote.add_interface("factorion", {
     }
     if placement.type then params.type = placement.type end
     if placement.recipe then params.recipe = placement.recipe end
-    if settings.global["factorion-placement-mode"].value == "ghost" then
+    if setting("factorion-placement-mode") == "ghost" then
       params.inner_name = params.name
       params.name = "entity-ghost"
     end
