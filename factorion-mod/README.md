@@ -284,7 +284,7 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Stochastic / temperature sampling.** Inference is argmax-only, so it
+- **Stochastic / temperature sampling.** Inference is argmax-only; with
   weak checkpoints the policy can argmax-loop on the same tile. A
   `--temperature` flag with `Categorical(logits)` sampling is ~10 LoC.
 - **Full multi-tile action masking.** The tile head masks occupied anchor
