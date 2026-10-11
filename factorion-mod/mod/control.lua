@@ -447,22 +447,60 @@ local function remove_plan_markers(state)
   state.plan = nil
 end
 
-local REGION_PANEL = "factorion-region-panel"
+local PANEL = "factorion-panel"
 local NUDGES = { left = { -1, 0 }, up = { 0, -1 }, down = { 0, 1 }, right = { 1, 0 } }
 
-local function close_region_panel(player)
-  local frame = player and player.gui.screen[REGION_PANEL]
+-- Source and sink belts in area, read from the world so belts moved or copied
+-- by any means are seen where they are now.
+local function endpoints_in(surface, area)
+  local sources, sinks = {}, {}
+  for _, entity in pairs(surface.find_entities_filtered({
+    area = area,
+    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+  })) do
+    local tile = {
+      x = math.floor(entity.position.x), y = math.floor(entity.position.y),
+      entity = entity,
+    }
+    table.insert(endpoint_role(entity) == "source" and sources or sinks, tile)
+  end
+  return sources, sinks
+end
+
+local function inside(tile, fp)
+  return tile.x >= fp.x and tile.y >= fp.y
+    and tile.x < fp.x + fp.w and tile.y < fp.y + fp.h
+end
+
+local function close_panel(player)
+  local frame = player and player.gui.screen[PANEL]
   if frame then frame.destroy() end
+end
+
+local function open_panel(player)
+  close_panel(player)
+  local frame = player.gui.screen.add({
+    type = "frame", name = PANEL, caption = "Factorion", direction = "vertical",
+  })
+  frame.location = { 20, 200 }
+  return frame
+end
+
+local function show_source_panel(player, plan)
+  local item = plan.sources[plan.next]
+  local row = open_panel(player).add({ type = "flow", direction = "horizontal" })
+  row.style.vertical_align = "center"
+  row.add({ type = "sprite", sprite = "item/" .. item })
+  row.add({
+    type = "label",
+    caption = { "", string.format("Place source %d of %d: ", plan.next, #plan.sources),
+      prototypes.item[item].localised_name },
+  })
 end
 
 -- The region must stay the model's grid size, so editing it means moving it.
 local function open_region_panel(player)
-  close_region_panel(player)
-  local frame = player.gui.screen.add({
-    type = "frame", name = REGION_PANEL, caption = "Factorion region",
-    direction = "vertical",
-  })
-  frame.location = { 20, 200 }
+  local frame = open_panel(player)
   frame.add({ type = "label", caption = "Press CTRL+P to build. Move the region:" })
   local pad = frame.add({ type = "table", column_count = 3 })
   for _, cell in ipairs({ "", "up", "", "left", "", "right", "", "down", "" }) do
@@ -482,9 +520,11 @@ local function nudge_region(player, state, direction)
   if not fp then return end
   local step = NUDGES[direction]
   local moved = { x = fp.x + step[1], y = fp.y + step[2], w = fp.w, h = fp.h }
-  for _, tile in ipairs(state.region_tiles or {}) do
-    if tile.x < moved.x or tile.y < moved.y
-        or tile.x >= moved.x + moved.w or tile.y >= moved.y + moved.h then
+  local sources, sinks = endpoints_in(player.surface,
+    { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } })
+  for _, tile in ipairs(sources) do table.insert(sinks, tile) end
+  for _, tile in ipairs(sinks) do
+    if not inside(tile, moved) then
       player.print("[Factorion] Can't move the region that way: a source or " ..
         "sink belt would end up outside it.")
       return
@@ -498,9 +538,8 @@ local function clear_region(player, state)
   cancel_pending(state)
   destroy_footprint_render(state)
   clear_predicted_entities(state, player)
-  close_region_panel(player)
+  close_panel(player)
   state.footprint = nil
-  state.region_tiles = nil
 end
 
 local function place_plan_marker(player, plan, role, item, tile)
@@ -525,8 +564,11 @@ local function close_plan_dialog(player)
   if frame then frame.destroy() end
 end
 
+-- The planner leaves the cursor first, or clicking the item picker would drop
+-- it into the picker.
 local function open_plan_dialog(player)
   close_plan_dialog(player)
+  player.clear_cursor()
   local frame = player.gui.screen.add({
     type = "frame", name = PLAN_DIALOG, caption = "Plan a factory",
     direction = "vertical",
@@ -555,8 +597,20 @@ local function hand_item(player, name)
   if stack then cursor.swap_stack(stack) else cursor.set_stack({ name = name }) end
 end
 
+-- Exactly one fresh source belt per source, never a stack from the inventory.
+local function hand_source_belt(player)
+  local cursor = player.cursor_stack
+  if not cursor then return end
+  local name = ENDPOINT_ENTITY_NAMES.source
+  if not (cursor.valid_for_read and cursor.name == name) and not player.clear_cursor() then
+    return
+  end
+  cursor.set_stack({ name = name, count = 1 })
+end
+
 local function prompt_next_source(player, plan)
-  hand_item(player, ENDPOINT_ENTITY_NAMES.source)
+  hand_source_belt(player)
+  show_source_panel(player, plan)
   player.print(string.format(
     "[Factorion] Place source %d of %d: [item=%s] (rotate it with R first if needed)",
     plan.next, #plan.sources, plan.sources[plan.next]))
@@ -598,10 +652,6 @@ local function set_region(player, state, tiles)
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
   }
-  state.region_tiles = {}
-  for _, tile in ipairs(tiles) do
-    table.insert(state.region_tiles, { x = tile.x, y = tile.y })
-  end
   draw_footprint(player, state)
   open_region_panel(player)
   return true
@@ -1276,21 +1326,30 @@ end)
 
 local function endpoints_near(player, position)
   local size = storage.model.grid_size
-  local sources, sinks = {}, {}
-  for _, entity in pairs(player.surface.find_entities_filtered({
-    area = {
-      { position.x - size, position.y - size },
-      { position.x + size, position.y + size },
-    },
-    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
-  })) do
-    local tile = {
-      x = math.floor(entity.position.x), y = math.floor(entity.position.y),
-      entity = entity,
-    }
-    table.insert(endpoint_role(entity) == "source" and sources or sinks, tile)
+  return endpoints_in(player.surface, {
+    { position.x - size, position.y - size },
+    { position.x + size, position.y + size },
+  })
+end
+
+-- Re-reads the belts around the region: it stays put (keeping any nudges)
+-- while they all fit inside it, and re-centres on them once one is moved out.
+local function refresh_region(player, state)
+  local fp = state.footprint
+  local sources, sinks = endpoints_in(player.surface, {
+    { fp.x - fp.w, fp.y - fp.h }, { fp.x + 2 * fp.w, fp.y + 2 * fp.h },
+  })
+  local tiles = {}
+  for _, tile in ipairs(sources) do table.insert(tiles, tile) end
+  for _, tile in ipairs(sinks) do table.insert(tiles, tile) end
+  for _, tile in ipairs(tiles) do
+    if not inside(tile, fp) then
+      if not set_region(player, state, tiles) then return false end
+      player.print("[Factorion] Belts have moved; the region is re-centred on them.")
+      return true
+    end
   end
-  return sources, sinks
+  return true
 end
 
 -- Ingredients of every sink's recipe, each once, in recipe order.
@@ -1323,6 +1382,7 @@ local function predict_or_guide(player, state, cursor_position)
     return "Click a tile with the planner to place the sink."
   end
   if state.footprint then
+    if not refresh_region(player, state) then return nil end
     local _, msg = try_request_prediction(player.index)
     return msg
   end
