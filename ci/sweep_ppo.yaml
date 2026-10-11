@@ -1,4 +1,4 @@
-# ci/sweep_ppo.yaml — wide, short screen for PPO settings that don't collapse the SFT base.
+# ci/sweep_ppo.yaml — PPO finetune of an SFT base: where in the non-collapsing region it improves most.
 #
 # Launched with: /ci sweep ppo
 # Sweep results are reported (ci sweep-report), not auto-applied —
@@ -9,26 +9,26 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# At the training_config defaults PPO destroys the base (run 6etby4zk:
-# eval/thput 0.43 -> 0.03 over 1M steps, almost all of it tile-head drift).
-# Rollout and update log-probs agree exactly (approx_kl == 0 while the actor
-# is frozen), so this screens step size and batch noise, not a bug:
-#   - learning_rate: lr 1e-5 already hits target_kl 0.02 on the second joint
-#     iteration, so the range reaches far below the default.
-#   - update_epochs, target_kl: the rest of how far one batch moves the policy.
-#   - divergence_penalty: up to 1, where the KL anchor dominates the PG loss.
-#   - ent_coef_start: the bonus spans ~225 tile choices; annealed to 0.
-#   - num_steps: episodes run ~150 steps, so 256 x 16 envs holds only ~25
-#     episodes per update; 1024 holds ~100.
-# Warmups are pinned short in iterations so every batch size gets the same
-# steps of joint training. The metric is one final eval at 12 factories per
-# lesson (standard error ~0.03); a run that holds the base's val/thput@8
-# (0.53 for mvbipbr0) didn't collapse.
-#
-# Stage 2: narrow to the non-collapsing region, longer runs, bayes.
+# Ranges from the 40-run random screen m5efstjq (500k steps from mvbipbr0).
+# No run collapsed. Every run is scored on the same factories and sampling
+# noise, so the 8 runs that barely moved (KL to base < 0.006) agree to
+# 0.463 ± 0.006, and 9 runs reached 0.485-0.507:
+#   - update_epochs (rank corr +0.39): 1 epoch averaged at the base (0.461);
+#     4-8 averaged 0.475.
+#   - target_kl (+0.33): below 0.005 averaged at the base; >= 0.015 averaged
+#     0.476 and holds the best run (0.044).
+#   - ent_coef_start (-0.25): 4 of the 5 runs ending > 0.2 nats from the base
+#     had >= 0.0045; those 5 scored <= 0.467 with ~12% longer episodes.
+#   - learning_rate: no signal alone over 4e-7-9e-5; 7 of the 9 best runs sat
+#     at 9e-7-1e-5.
+#   - divergence_penalty (+0.18): weak; kept for the longer horizon, where
+#     drift grows.
+# Pinned: num_steps 256 (no signal, rank corr -0.03) and the screen's short
+# warmups. A final eval at 12 factories per lesson, plus one at mid-run so a
+# run's trend shows.
 
-method: random
-run_cap: 40
+method: bayes
+run_cap: 30
 metric:
   name: "eval/thput@8"  # @ training_config eval_best_of
   goal: maximize
@@ -40,31 +40,31 @@ parameters:
     value: 5
   ent_coef_end:
     value: 0.0
+  num_steps:
+    value: 256
   eval_every:
-    value: 1000
+    value: 122
   eval_seeds_per_kind:
     value: 12
 
   learning_rate:
     distribution: log_uniform_values
-    min: 3.0e-7
-    max: 1.0e-4
+    min: 1.0e-6
+    max: 5.0e-5
   update_epochs:
-    values: [1, 2, 4, 8]
+    values: [2, 4, 8]
   target_kl:
     distribution: log_uniform_values
-    min: 0.001
+    min: 0.005
     max: 0.05
   divergence_penalty:
     distribution: log_uniform_values
-    min: 1.0e-3
-    max: 1.0
+    min: 3.0e-3
+    max: 0.3
   ent_coef_start:
     distribution: log_uniform_values
     min: 1.0e-4
-    max: 3.0e-2
-  num_steps:
-    values: [256, 1024]
+    max: 5.0e-3
 
 program: ppo.py
 
@@ -75,6 +75,6 @@ command:
   - --start-from
   - mvbipbr0
   - --total-timesteps
-  - 500_000
+  - 1_000_000
   - --track
   - ${args}
