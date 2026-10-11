@@ -327,19 +327,17 @@ class DenoiserUNet(nn.Module):
         self.register_buffer("noise_prior", torch.full((N_TYPES,), 1.0 / N_TYPES))
 
     def _embed(self, s):
-        parts = [
-            self.ent_embed(s[:, _CH_ENT]).permute(0, 3, 1, 2),
-            self.item_embed(s[:, _CH_ITEMS]).permute(0, 3, 1, 2),
+        ent = self.ent_embed(s[:, _CH_ENT]).permute(0, 3, 1, 2)
+        item = self.item_embed(s[:, _CH_ITEMS]).permute(0, 3, 1, 2)
+        onehots = [
             F.one_hot(s[:, _CH_DIR], len(Direction)).permute(0, 3, 1, 2).float(),
             F.one_hot(s[:, _CH_MISC], len(Misc)).permute(0, 3, 1, 2).float(),
             s[:, _CH_FOOTPRINT : _CH_FOOTPRINT + 1].float(),
         ]
-        if self.io == "token":
-            parts += [
-                self.part_embed(s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2),
-                (~free_mask(s)).unsqueeze(1).float(),
-            ]
-        return torch.cat(parts, dim=1)
+        if self.io == "factored":
+            return torch.cat([ent, item, *onehots], dim=1)
+        part = self.part_embed(s[:, CH_PART].clamp(0, N_PARTS - 1)).permute(0, 3, 1, 2)
+        return torch.cat([ent, item, part, *onehots, (~free_mask(s)).unsqueeze(1).float()], dim=1)
 
     # ── Reading the head logits ─────────────────────────────────────
     # `token`: one softmax over TYPES, then recipe and part given the type.
