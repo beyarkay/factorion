@@ -265,8 +265,20 @@ def _streamed_actions(agent, **sampling):
     return streamed
 
 
+def _tie_free_agent():
+    """An untrained agent scores every tile of an empty grid identically until
+    its (zero-initialised) positional embedding is randomised."""
+    torch.manual_seed(0)
+    agent = AgentCNN(
+        mod_server._duck_envs(11), attn_dim=32, attn_heads=2, attn_layers=1,
+    ).eval()
+    assert agent.attn is not None and agent.attn.pos_embed is not None
+    torch.nn.init.normal_(agent.attn.pos_embed)
+    return agent
+
+
 def test_seed_replays_a_sampled_run_and_new_seeds_differ():
-    agent = AgentCNN(mod_server._duck_envs(11)).eval()
+    agent = _tie_free_agent()
 
     assert _streamed_actions(agent, seed=1) == _streamed_actions(agent, seed=1)
     assert _streamed_actions(agent, seed=1) != _streamed_actions(agent, seed=2)
@@ -274,9 +286,35 @@ def test_seed_replays_a_sampled_run_and_new_seeds_differ():
 
 @pytest.mark.parametrize("truncation", [{"top_k": 1}, {"top_p": 1e-6}])
 def test_top_k_and_top_p_can_narrow_sampling_to_greedy(truncation):
-    agent = AgentCNN(mod_server._duck_envs(11)).eval()
+    agent = _tie_free_agent()
     never = {"stop_rule": "never", "seed": 3}
 
     greedy = _streamed_actions(agent, temperature=0, **never)
     assert len(greedy) == 8
     assert _streamed_actions(agent, **truncation, **never) == greedy
+
+
+class _CancelledRcon:
+    def __init__(self):
+        self.commands = []
+
+    def exec(self, command):
+        self.commands.append(command)
+        return "cancelled"
+
+
+def test_cancel_in_game_stops_quietly(monkeypatch):
+    action = _action("transport_belt", xy=(1, 5), direction=2)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
+    rcon = _CancelledRcon()
+    agent = cast(AgentCNN, SimpleNamespace(width=11, height=11))
+
+    mod_server.handle_request(
+        _request() | {"request_id": "r", "checkpoint": "c", "max_steps": 4},
+        lambda _: (agent, "run"), cast(mod_server.RconClient, rcon),
+        device=torch.device("cpu"),
+    )
+
+    place, finish = rcon.commands
+    assert "place_prediction" in place
+    assert "finish_prediction" in finish and "cancelled" in finish
