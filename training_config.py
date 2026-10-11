@@ -140,7 +140,7 @@ class PpoArgs(SharedArgs):
     """the id of the environment"""
     total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 5e-06
+    learning_rate: float = 1e-05
     """the learning rate of the optimizer"""
     num_envs: int = 16
     """the number of parallel game environments. More envs -> less likely to fit on GPU"""
@@ -168,7 +168,7 @@ class PpoArgs(SharedArgs):
     """the lambda for the general advantage estimation"""
     num_minibatches: int = 32
     """the number of mini-batches. more minibatches -> smaller minibatch size -> more likely to fit on GPU"""
-    update_epochs: int = 8
+    update_epochs: int = 10
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -189,7 +189,7 @@ class PpoArgs(SharedArgs):
     cumulative craft time."""
     max_grad_norm: float = 1.221
     """the maximum norm for the gradient clipping"""
-    target_kl: Optional[float] = 0.02
+    target_kl: Optional[float] = 0.04
     """the target KL divergence threshold, checked per minibatch."""
     divergence_penalty: float = 0.05
     """Weight β on the KL(π_θ ‖ π_ref) loss penalty anchoring the policy to the
