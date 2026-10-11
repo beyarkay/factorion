@@ -8,6 +8,7 @@ runs
 videos/
 *.png
 !factorio-icons/*.png
+!factorion-mod/mod/graphics/**/*.png
 factorion_rs/target/
 factorion_rs/dist/
 __pycache__/

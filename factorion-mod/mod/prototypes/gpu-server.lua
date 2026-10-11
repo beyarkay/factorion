@@ -1,5 +1,5 @@
--- Placeholder 4x2 GPU server (purple block until the real art lands). Draws a
--- 4x H200 server's power: 4 x 700 W GPUs plus ~1.7 kW of host.
+-- 4x2 GPU server. Draws a 4x H200 server's power: 4 x 700 W GPUs plus
+-- ~1.7 kW of host.
 
 local NAME = "factorion-gpu-server"
 -- Space Age is an optional dependency, so it has loaded before this file
@@ -7,14 +7,14 @@ local NAME = "factorion-gpu-server"
 local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 
--- Same 384x384 half-scale canvas as the art in graphics/entity/gpu-server/.
-local function placeholder(orientation)
+-- The art spans 320 of its 384 px canvas along the machine; scale 0.4 makes
+-- that exactly 4 tiles so servers tile end to end without overlapping.
+local function sprite(direction)
   return {
-    filename = "__factorion__/graphics/entity/gpu-server-placeholder-"
-      .. orientation .. ".png",
+    filename = "__factorion__/graphics/entity/gpu-server/" .. direction .. ".png",
     width = 384,
     height = 384,
-    scale = 0.5,
+    scale = 0.4,
     priority = "high",
   }
 end
@@ -24,7 +24,7 @@ data:extend({
     type = "electric-energy-interface",
     name = NAME,
     icon = "__factorion__/graphics/icons/gpu-server.png",
-    icon_size = 64,
+    icon_size = 128,
     flags = { "placeable-player", "player-creation" },
     minable = { mining_time = 0.5, result = NAME },
     max_health = 300,
@@ -38,17 +38,17 @@ data:extend({
     },
     energy_usage = "4.5kW",
     pictures = {
-      north = placeholder("horizontal"),
-      east = placeholder("vertical"),
-      south = placeholder("horizontal"),
-      west = placeholder("vertical"),
+      north = sprite("north"),
+      east = sprite("east"),
+      south = sprite("south"),
+      west = sprite("west"),
     },
   },
   {
     type = "item",
     name = NAME,
     icon = "__factorion__/graphics/icons/gpu-server.png",
-    icon_size = 64,
+    icon_size = 128,
     subgroup = "energy",
     order = "z[factorion]-a[gpu-server]",
     place_result = NAME,
