@@ -7,14 +7,13 @@ local NAME = "factorion-gpu-server"
 local processor = data.raw.item["quantum-processor"] and "quantum-processor"
   or "processing-unit"
 
--- The art spans 320 of its 384 px canvas along the machine; scale 0.4 makes
--- that exactly 4 tiles so servers tile end to end without overlapping.
-local function sprite(direction)
+-- Purple placeholder blocks exactly 4x2 (or 2x4) tiles at half scale.
+local function placeholder(orientation)
   return {
-    filename = "__factorion__/graphics/entity/gpu-server/" .. direction .. ".png",
+    filename = "__factorion__/graphics/entity/gpu-server-" .. orientation .. ".png",
     width = 384,
     height = 384,
-    scale = 0.4,
+    scale = 0.5,
     priority = "high",
   }
 end
@@ -24,7 +23,7 @@ data:extend({
     type = "electric-energy-interface",
     name = NAME,
     icon = "__factorion__/graphics/icons/gpu-server.png",
-    icon_size = 128,
+    icon_size = 64,
     flags = { "placeable-player", "player-creation" },
     minable = { mining_time = 0.5, result = NAME },
     max_health = 300,
@@ -38,17 +37,17 @@ data:extend({
     },
     energy_usage = "4.5kW",
     pictures = {
-      north = sprite("north"),
-      east = sprite("east"),
-      south = sprite("south"),
-      west = sprite("west"),
+      north = placeholder("horizontal"),
+      east = placeholder("vertical"),
+      south = placeholder("horizontal"),
+      west = placeholder("vertical"),
     },
   },
   {
     type = "item",
     name = NAME,
     icon = "__factorion__/graphics/icons/gpu-server.png",
-    icon_size = 128,
+    icon_size = 64,
     subgroup = "energy",
     order = "z[factorion]-a[gpu-server]",
     place_result = NAME,
