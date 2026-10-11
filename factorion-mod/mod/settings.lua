@@ -7,6 +7,15 @@ data:extend({
     order = "a",
   },
   {
+    type = "double-setting",
+    name = "factorion-sink-smoothing",
+    setting_type = "runtime-global",
+    default_value = 2,
+    minimum_value = 0.05,
+    maximum_value = 30,
+    order = "a3",
+  },
+  {
     type = "string-setting",
     name = "factorion-default-sink-item",
     setting_type = "runtime-global",

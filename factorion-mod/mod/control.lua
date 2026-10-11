@@ -187,9 +187,6 @@ local MODEL_ENTITY_NAMES = {
   "underground-belt",
   "splitter",
 }
--- Per-tick exponential moving average with a 0.25 s time constant: a new rate
--- (or zero) shows within about a second.
-local SINK_RATE_DECAY = math.exp(-1 / 15)
 local SINK_LABEL_REFRESH_TICKS = 10
 
 local function endpoint_role(entity)
@@ -613,6 +610,9 @@ local function drain_sink(mark, entity)
 end
 
 local function service_endpoint_belts()
+  -- Per-tick exponential moving average; the setting is its time constant.
+  local decay = math.exp(
+    -1 / (60 * settings.global["factorion-sink-smoothing"].value))
   for unit_number, config in pairs(storage.endpoints or {}) do
     local entity = config.entity
     if not entity or not endpoint_role(entity) then
@@ -621,8 +621,8 @@ local function service_endpoint_belts()
     elseif config.role == "source" then
       feed_source(config, entity)
     else
-      config.throughput_rate = (config.throughput_rate or 0) * SINK_RATE_DECAY
-        + drain_sink(config, entity) * 60 * (1 - SINK_RATE_DECAY)
+      config.throughput_rate = (config.throughput_rate or 0) * decay
+        + drain_sink(config, entity) * 60 * (1 - decay)
       if game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
         refresh_sink_rate_label(entity, config)
       end

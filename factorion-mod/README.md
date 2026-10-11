@@ -34,7 +34,8 @@ are real 1×1 transport belts: place, mine, rotate, copy, paste, and blueprint
 them like ordinary belts. Click a placed endpoint to choose the item it
 provides or receives. Alt mode displays that configured item over the belt.
 Each sink also displays the items per second it consumes, an exponential
-moving average that settles on a new rate (or zero) within about a second.
+moving average whose time constant is the "sink throughput smoothing" setting
+(default 2 s, so a new rate or zero shows almost fully within about 6 s).
 
 Green sources keep both lanes supplied with the chosen item. Changing a
 source's item removes the old item from its connected downstream belt network.
