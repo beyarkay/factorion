@@ -20,10 +20,12 @@
 
 local parity = require("parity")
 
-local GRID_SIZE = 15
-
 local function get_default_item()
   return settings.global["factorion-default-item"].value
+end
+
+local function get_checkpoint()
+  return settings.global["factorion-checkpoint"].value
 end
 
 local function ensure_player_state(player_index)
@@ -112,10 +114,10 @@ local function area_center_tile(area)
     tile_floor((area.left_top.y + area.right_bottom.y) / 2)
 end
 
-local function fixed_footprint(area)
+local function fixed_footprint(area, size)
   local cx, cy = area_center_tile(area)
-  local radius = math.floor(GRID_SIZE / 2)
-  return { x = cx - radius, y = cy - radius, w = GRID_SIZE, h = GRID_SIZE }
+  local radius = math.floor(size / 2)
+  return { x = cx - radius, y = cy - radius, w = size, h = size }
 end
 
 local function destroy_footprint_render(state)
@@ -302,6 +304,20 @@ local function endpoint_config(entity)
   return storage.endpoints[entity.unit_number]
 end
 
+-- The server loads the checkpoint and reports its grid size via model_loaded;
+-- until then storage.model is nil and no region can be stamped.
+local function request_model_load()
+  local checkpoint = get_checkpoint()
+  if storage.model_loading == checkpoint then return end
+  storage.model = nil
+  storage.model_loading = checkpoint
+  storage.outbox = storage.outbox or {}
+  table.insert(storage.outbox, helpers.table_to_json({
+    type = "load_model", checkpoint = checkpoint,
+  }))
+  game.print("[Factorion] Asking the model server to load " .. checkpoint .. "…")
+end
+
 local function clear_predicted_entities(state)
   for _, unit_number in ipairs(state.predicted_entities or {}) do
     local entity = game.get_entity_by_unit_number(unit_number)
@@ -361,8 +377,14 @@ local function handle_tool_selection(event)
     return
   end
 
+  if not storage.model then
+    request_model_load()
+    player.print("[Factorion] No model loaded yet; stamp again once the server reports in.")
+    return
+  end
+
   clear_predicted_entities(state)
-  state.footprint = fixed_footprint(event.area)
+  state.footprint = fixed_footprint(event.area, storage.model.grid_size)
   draw_footprint(player, state)
   local fp = state.footprint
   player.print(string.format(
@@ -630,6 +652,20 @@ script.on_event("factorion-reset", function(event)
   end
 end)
 
+-- A new checkpoint may have a different grid size, so stamped regions go.
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+  if event.setting ~= "factorion-checkpoint" then return end
+  for player_index, state in pairs(storage.players or {}) do
+    local player = game.get_player(player_index)
+    if state.footprint and player and player.connected then
+      player.print("[Factorion] Checkpoint changed; stamp your region again.")
+    end
+    destroy_footprint_render(state)
+    state.footprint = nil
+  end
+  request_model_load()
+end)
+
 -- ----------------------------------------------------------------------------
 -- execute: write a request JSON the server picks up
 -- ----------------------------------------------------------------------------
@@ -736,8 +772,10 @@ local function gather_request(state, player_index)
     #model_entities, #sources, #sinks)
 
   local request = {
+    type          = "predict",
     request_id    = new_request_id(),
-    grid_size     = GRID_SIZE,
+    checkpoint    = storage.model.checkpoint,
+    grid_size     = fp.w,
     entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
@@ -756,6 +794,13 @@ local function try_request_prediction(player_index)
   end
   if state.pending then
     return false, "A prediction is already in progress."
+  end
+  if not storage.model then
+    request_model_load()
+    return false, "No model loaded yet."
+  end
+  if storage.model.grid_size ~= state.footprint.w then
+    return false, "This region was stamped for another model; stamp it again."
   end
   local request, provenance = gather_request(state, player_index)
   if #request.sources == 0 then
@@ -955,7 +1000,33 @@ remote.add_interface("factorion", {
         tostring(summary.steps_taken or "?"),
         tostring(summary.invalid_steps or "?"),
         tostring(summary.stop_reason or "unknown")))
+      if summary.error then
+        player.print("[Factorion] Server error: " .. tostring(summary.error))
+      end
     end
+    return "ok"
+  end,
+
+  -- Replies to a load_model message. A reply for a checkpoint the setting has
+  -- since moved away from is ignored; the newer load is already queued.
+  model_loaded = function(model_json)
+    local model = helpers.json_to_table(model_json)
+    if not model or model.checkpoint ~= get_checkpoint() then return "stale" end
+    storage.model = model
+    storage.model_loading = nil
+    game.print(string.format(
+      "[Factorion] Model %s (%s) ready: %dx%d region. Stamp it with the " ..
+      "[item=factorion-footprint-tool].",
+      model.checkpoint, tostring(model.name), model.grid_size, model.grid_size))
+    return "ok"
+  end,
+  model_failed = function(error_json)
+    local failure = helpers.json_to_table(error_json) or {}
+    if failure.checkpoint ~= get_checkpoint() then return "stale" end
+    storage.model_loading = nil
+    game.print(string.format(
+      "[Factorion] Could not load checkpoint %s: %s",
+      tostring(failure.checkpoint), tostring(failure.error)))
     return "ok"
   end,
 
@@ -964,7 +1035,7 @@ remote.add_interface("factorion", {
     return "factorion-mod alive at tick " .. tostring(game.tick)
   end,
   protocol_version = function()
-    return "5"
+    return "6"
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
@@ -1048,6 +1119,7 @@ script.on_init(function()
   storage.pending_by_request = {}
   storage.outbox = {}
   storage.endpoints = {}
+  request_model_load()
 end)
 
 script.on_configuration_changed(function()
@@ -1068,4 +1140,6 @@ script.on_configuration_changed(function()
       register_endpoint(entity)
     end
   end
+  storage.model_loading = nil
+  request_model_load()
 end)

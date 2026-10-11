@@ -10,6 +10,7 @@ importable (e.g. via `uv run python factorion-mod/server/server.py ...`).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
 import sys
@@ -33,8 +34,9 @@ from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # n
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
-MOD_GRID_SIZE = 15
-MOD_PROTOCOL_VERSION = "5"
+MOD_PROTOCOL_VERSION = "6"
+ModelLoader = Callable[[str], tuple[AgentCNN, str]]
+"""Checkpoint spec (the mod's setting) → (agent, display name)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +131,8 @@ def load_agent(ckpt_path: Path, hp: Hyperparams, device: torch.device) -> AgentC
         attn_pos_embed=hp.attn_pos_embed,
     ).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    agent.load_state_dict(state)
+    # PPO checkpoints are saved from a torch.compile'd module.
+    agent.load_state_dict({k.removeprefix("_orig_mod."): v for k, v in state.items()})
     agent.eval()
     return agent
 
@@ -358,10 +361,7 @@ def _stream_placement(
 ) -> bool:
     placement = action_to_placement(action)
     payload = json.dumps(placement, separators=(",", ":"))
-    response = rcon.exec(
-        "/silent-command rcon.print(remote.call('factorion','place_prediction',"
-        f"{_lua_string(request_id)},{_lua_string(payload)}))"
-    ).strip()
+    response = _call_mod(rcon, "place_prediction", request_id, payload)
     if response == "ok":
         if placement_delay_s > 0:
             time.sleep(placement_delay_s)
@@ -370,16 +370,33 @@ def _stream_placement(
     return False
 
 
+def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
+    quoted = ",".join(_lua_string(a) for a in args)
+    return rcon.exec(
+        f"/silent-command rcon.print(remote.call('factorion','{method}',{quoted}))"
+    ).strip()
+
+
+def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader) -> None:
+    try:
+        agent, name = get_model(checkpoint)
+        method = "model_loaded"
+        payload = {"checkpoint": checkpoint, "name": name, "grid_size": agent.width}
+    except Exception as exc:
+        log.exception("Could not load checkpoint %s", checkpoint)
+        method = "model_failed"
+        payload = {"checkpoint": checkpoint, "error": str(exc)}
+    _call_mod(rcon, method, json.dumps(payload, separators=(",", ":")))
+
+
 def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
     summary = json.dumps({
         "steps_taken": stats["steps_taken"],
         "invalid_steps": stats["invalid_steps"],
         "stop_reason": stats["stop_reason"],
+        "error": stats.get("error"),
     }, separators=(",", ":"))
-    response = rcon.exec(
-        "/silent-command rcon.print(remote.call('factorion','finish_prediction',"
-        f"{_lua_string(request_id)},{_lua_string(summary)}))"
-    ).strip()
+    response = _call_mod(rcon, "finish_prediction", request_id, summary)
     if response != "ok":
         raise RuntimeError(
             f"Factorio could not finish request {request_id}: "
@@ -388,7 +405,7 @@ def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
 
 
 def poll_loop(
-    agent: AgentCNN,
+    get_model: ModelLoader,
     rcon: RconClient,
     *,
     poll_interval: float = 0.25,
@@ -438,9 +455,12 @@ def poll_loop(
             continue
 
         try:
+            if req.get("type") == "load_model":
+                _report_model(rcon, req["checkpoint"], get_model)
+                continue
             handle_request(
                 req,
-                agent,
+                get_model,
                 rcon,
                 max_steps=max_steps,
                 placement_delay_s=placement_delay_s,
@@ -452,7 +472,7 @@ def poll_loop(
 
 def handle_request(
     req: dict,
-    agent: AgentCNN,
+    get_model: ModelLoader,
     rcon: RconClient,
     *,
     max_steps: int,
@@ -462,6 +482,7 @@ def handle_request(
     t0 = time.time()
     stats = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "server_error"}
     try:
+        agent, _ = get_model(req["checkpoint"])
         if req["grid_size"] != agent.width:
             raise ValueError(
                 f"game requested a {req['grid_size']}x{req['grid_size']} grid, "
@@ -482,6 +503,9 @@ def handle_request(
                 placement_delay_s=placement_delay_s,
             ),
         )
+    except Exception as exc:
+        stats["error"] = str(exc)
+        raise
     finally:
         _finish_prediction(rcon, req["request_id"], stats)
     log.info(
@@ -494,9 +518,10 @@ def handle_request(
 # CLI.
 # --------------------------------------------------------------------------- #
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True,
-                    help="Local .pt path, W&B run id, or entity/project/id.")
+    ap = argparse.ArgumentParser(
+        description="The checkpoint is chosen in-game via the mod's "
+        "'Factorion checkpoint' setting.",
+    )
     ap.add_argument("--wandb-project", default="factorion")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--rcon-host", default="127.0.0.1")
@@ -522,18 +547,17 @@ def main():
     )
 
     device = torch.device(args.device)
-    checkpoint, wandb_hp, source = resolve_checkpoint(
-        args.checkpoint, args.wandb_project, args.wandb_entity,
-    )
-    hp = wandb_hp or Hyperparams.from_json_sibling(checkpoint)
-    if hp.grid_size != MOD_GRID_SIZE:
-        ap.error(
-            f"checkpoint uses {hp.grid_size}x{hp.grid_size}; "
-            f"the in-game region brush is fixed at {MOD_GRID_SIZE}x{MOD_GRID_SIZE}"
+
+    @functools.cache
+    def get_model(spec: str) -> tuple[AgentCNN, str]:
+        checkpoint, wandb_hp, source = resolve_checkpoint(
+            spec, args.wandb_project, args.wandb_entity,
         )
-    if source:
-        log.info("W&B run: %s (%s)", source["run_id"], source["run_url"])
-    agent = load_agent(checkpoint, hp, device)
+        hp = wandb_hp or Hyperparams.from_json_sibling(checkpoint)
+        if source:
+            log.info("W&B run: %s (%s)", source["run_id"], source["run_url"])
+        name = source["run_name"] if source else checkpoint.name
+        return load_agent(checkpoint, hp, device), name
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
     while True:
@@ -576,7 +600,7 @@ def main():
         )
 
         poll_loop(
-            agent, rcon,
+            get_model, rcon,
             poll_interval=0.25,
             max_steps=args.max_steps,
             placement_delay_s=args.placement_delay_ms / 1000,

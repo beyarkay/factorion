@@ -97,21 +97,22 @@ factorion-mod/
    ```
 
    This installs dependencies and builds the Rust extension when needed,
-   installs and enables the mod, downloads the run's latest model artifact,
-   reads the exact grid/encoder architecture from W&B, and waits for Factorio.
-   It defaults to checkpoint `mvbipbr0`; pass a local checkpoint or another W&B
-   run as the first argument, or set `FACTORION_CHECKPOINT`.
+   installs and enables the mod, and waits for Factorio.
 
-2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
-   region brush uses a fixed 15×15 grid; checkpoints
-   trained at another size are rejected with a clear error.
+2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
-For a manual or headless setup, start the server directly. `--checkpoint`
-accepts a local `.pt`, bare W&B run id, or `entity/project/id`:
+The model is chosen in-game: **Settings → Mod settings → Map → Factorion
+checkpoint** takes a bare W&B run id (default `mvbipbr0`), `entity/project/id`,
+or a local `.pt` path on the server's machine. On a new game or a change to
+the setting, the mod asks the server to load it; the server downloads the run's
+latest model artifact, reads its grid and encoder architecture from the W&B
+config, and reports the grid size back. The region tool then stamps a region
+of that size. Loaded models stay cached, so switching back is instant.
+
+For a manual or headless setup, start the server directly:
 
 ```bash
 uv run python factorion-mod/server/server.py \
-  --checkpoint mvbipbr0 \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -123,25 +124,21 @@ automatically.
 
    - Press `Ctrl+T` to receive the blue region tool plus ten source belts and
      ten sink belts.
-   - Click once with the blue **region tool**. It stamps a 15×15 region
-     centered on that tile—there is no size-sensitive drag.
+   - Click once with the blue **region tool**. It stamps a square region the
+     size of the model's grid, centered on that tile—there is no drag.
    - Place the green **source belt** and orange **sink belt** inside it as
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
    - Each predicted entity is placed directly into the marked region as soon
      as the model emits it. When the model stops, chat reports how many
-     entities were placed and why inference ended.
+     steps it took, how many were invalid, and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
 
    - `Ctrl+P` — request prediction
    - `Ctrl+R` — clear the region and model-placed entities
    - `Ctrl+T` — re-grant the region tool and endpoint belts
-
-   Models not trained on a 15×15 grid are rejected because the in-game brush
-   is intentionally fixed. Restart `./start-mod.sh` with another checkpoint to
-   change models.
 
 ## Engine parity harness (issue #261)
 

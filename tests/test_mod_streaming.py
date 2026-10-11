@@ -168,18 +168,38 @@ def _request():
 
 
 def test_request_error_still_releases_pending_state():
-    req = _request() | {"request_id": "request-1"}
+    req = _request() | {"request_id": "request-1", "checkpoint": "ckpt"}
     rcon = _AcceptingRcon()
     wrong_size = SimpleNamespace(width=8, height=8)
 
     with pytest.raises(ValueError):
         mod_server.handle_request(
-            req, cast(AgentCNN, wrong_size), cast(mod_server.RconClient, rcon),
+            req, lambda _: (cast(AgentCNN, wrong_size), "run"),
+            cast(mod_server.RconClient, rcon),
             max_steps=4, device=torch.device("cpu"),
         )
 
     assert "finish_prediction" in rcon.commands[-1]
     assert "server_error" in rcon.commands[-1]
+    assert "expects 8x8" in rcon.commands[-1]
+
+
+def test_load_model_reports_grid_size_or_error():
+    rcon = _AcceptingRcon()
+    agent = cast(AgentCNN, SimpleNamespace(width=15, height=15))
+
+    def get_model(spec):
+        if spec == "missing":
+            raise FileNotFoundError("no such run")
+        return agent, "sft-run"
+
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model)
+
+    loaded, failed = rcon.commands
+    assert "'model_loaded'" in loaded and '"grid_size":15' in loaded
+    assert '"name":"sft-run"' in loaded
+    assert "'model_failed'" in failed and "no such run" in failed
 
 
 @pytest.mark.parametrize(("accepted", "stop_reason"), [
