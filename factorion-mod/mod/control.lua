@@ -185,8 +185,10 @@ local MODEL_ENTITY_NAMES = {
   "underground-belt",
   "splitter",
 }
-local SINK_RATE_SAMPLE_TICKS = 10
-local SINK_RATE_WINDOW_TICKS = 60
+-- Per-tick exponential moving average with a 0.25 s time constant: a new rate
+-- (or zero) shows within about a second.
+local SINK_RATE_DECAY = math.exp(-1 / 15)
+local SINK_LABEL_REFRESH_TICKS = 10
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
@@ -297,12 +299,7 @@ local function register_endpoint(entity, item)
   config.item = item or config.item or get_default_item()
   storage.endpoints[entity.unit_number] = config
   if role == "sink" then
-    if item_changed or not config.throughput_samples then
-      config.throughput_samples = {}
-      config.throughput_pending_count = 0
-      config.throughput_total_count = 0
-      config.throughput_total_ticks = 0
-      config.throughput_last_sample_tick = game.tick
+    if item_changed or not config.throughput_rate then
       config.throughput_rate = 0
     end
     refresh_sink_rate_label(entity, config)
@@ -613,42 +610,6 @@ local function drain_sink(mark, entity)
   return removed_total
 end
 
-local function sample_sink_throughput(config, entity)
-  local elapsed = game.tick - (config.throughput_last_sample_tick or game.tick)
-  if elapsed < SINK_RATE_SAMPLE_TICKS then return end
-
-  local sample = {
-    count = config.throughput_pending_count or 0,
-    ticks = elapsed,
-  }
-  local samples = config.throughput_samples or {}
-  table.insert(samples, sample)
-  config.throughput_samples = samples
-  config.throughput_pending_count = 0
-  config.throughput_last_sample_tick = game.tick
-  config.throughput_total_count =
-    (config.throughput_total_count or 0) + sample.count
-  config.throughput_total_ticks =
-    (config.throughput_total_ticks or 0) + sample.ticks
-
-  while config.throughput_total_ticks > SINK_RATE_WINDOW_TICKS
-      and #samples > 1 do
-    local expired = table.remove(samples, 1)
-    config.throughput_total_count =
-      config.throughput_total_count - expired.count
-    config.throughput_total_ticks =
-      config.throughput_total_ticks - expired.ticks
-  end
-
-  if config.throughput_total_ticks > 0 then
-    config.throughput_rate =
-      config.throughput_total_count * 60 / config.throughput_total_ticks
-  else
-    config.throughput_rate = 0
-  end
-  refresh_sink_rate_label(entity, config)
-end
-
 local function service_endpoint_belts()
   for unit_number, config in pairs(storage.endpoints or {}) do
     local entity = config.entity
@@ -658,9 +619,11 @@ local function service_endpoint_belts()
     elseif config.role == "source" then
       feed_source(config, entity)
     else
-      config.throughput_pending_count =
-        (config.throughput_pending_count or 0) + drain_sink(config, entity)
-      sample_sink_throughput(config, entity)
+      config.throughput_rate = (config.throughput_rate or 0) * SINK_RATE_DECAY
+        + drain_sink(config, entity) * 60 * (1 - SINK_RATE_DECAY)
+      if game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
+        refresh_sink_rate_label(entity, config)
+      end
     end
   end
 end

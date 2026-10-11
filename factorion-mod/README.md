@@ -33,8 +33,8 @@ The normal workflow uses a green **source belt** and orange **sink belt**. They
 are real 1×1 transport belts: place, mine, rotate, copy, paste, and blueprint
 them like ordinary belts. Click a placed endpoint to choose the item it
 provides or receives. Alt mode displays that configured item over the belt.
-Each sink also displays the items per second it consumed over a rolling
-1-second window, refreshed six times per second.
+Each sink also displays the items per second it consumes, an exponential
+moving average that settles on a new rate (or zero) within about a second.
 
 Green sources keep both lanes supplied with the chosen item. Changing a
 source's item removes the old item from its connected downstream belt network.
