@@ -13,6 +13,7 @@ import argparse
 import functools
 import json
 import logging
+import secrets
 import sys
 import time
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # n
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "7"
+MOD_PROTOCOL_VERSION = "8"
 ModelLoader = Callable[[str], tuple[AgentCNN, str]]
 """Checkpoint spec (the mod's setting) → (agent, display name)."""
 
@@ -207,22 +208,43 @@ def request_to_obs(req: dict) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# Iterative inference: place one entity at a time, greedy (argmax).
+# Iterative inference: sample one entity at a time, as a PPO episode does.
 # --------------------------------------------------------------------------- #
-def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
+def _sample_action(
+    agent: AgentCNN,
+    obs_CWH: np.ndarray,
+    rng: np.random.Generator,
+    temperature: float,
+    device,
+) -> tuple[dict, float]:
+    """One step of the shared sampler (temperature 0 = greedy, eot at p>0.5),
+    with its randomness drawn from `rng` so a seed replays the whole run."""
+    head_sizes = {
+        "tile": agent.width * agent.height, "entity": agent.num_entities,
+        "direction": agent.num_directions, "item": agent.num_items,
+        "misc": agent.num_misc, "eot": 1,
+    }
+    u = torch.as_tensor(rng.random(sum(head_sizes.values()), dtype=np.float32))
+    noise = {
+        k: v.unsqueeze(0).to(device)
+        for k, v in zip(head_sizes, u.split(list(head_sizes.values())))
+    }
+    noise["eot"] = noise["eot"].squeeze(1)
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
-        # temperature=0 = the shared sampler's greedy (argmax) mode.
-        act = agent.sample_action(
-            x, temperature=0.0, legal_mask=True, compute_value=False,
-        )["action"]
+        out = agent.sample_action(
+            x, temperature=temperature, noise=noise, legal_mask=True,
+            compute_value=False,
+        )
+    act = out["action"]
     return {
         "xy": (int(act["xy"][0, 0]), int(act["xy"][0, 1])),
         "entity": int(act["entity"].item()),
         "direction": int(act["direction"].item()),
         "item": int(act["item"].item()),
         "misc": int(act["misc"].item()),
-    }
+        "eot": int(act["eot"].item()),
+    }, float(out["eot_prob"].item())
 
 
 def action_to_placement(action: dict) -> dict:
@@ -283,32 +305,32 @@ def run_inference(
     req: dict,
     max_steps: int,
     device,
-    eot_threshold: float = 0.5,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until eot_head signals "done" or we hit the
+    """Iteratively place entities until the policy samples eot or we hit the
     safety budget. Invalid actions can't exist in the world, so they are
     counted rather than streamed."""
     obs = request_to_obs(req)
     src_id, snk_id = _source_id(), _sink_id()
+    seed = int(req.get("seed", secrets.randbits(31)))
+    temperature = float(req.get("temperature", 1.0))
+    rng = np.random.default_rng(seed)
+    log.info("  seed=%d temperature=%.2f", seed, temperature)
 
     stats: dict = {
         "steps_taken": 0,
         "invalid_steps": 0,
         "stop_reason": "max_steps",
+        "seed": seed,
     }
 
     for step in range(max_steps):
-        # Ask the model first: do you think we're done?
-        with torch.no_grad():
-            x = torch.from_numpy(obs).unsqueeze(0).to(device)
-            eot_p = float(agent.eot_prob(x).item())
-        if eot_p > eot_threshold:
-            log.info("  step %d: eot_prob=%.3f > %.2f → STOP", step, eot_p, eot_threshold)
+        action, eot_p = _sample_action(agent, obs, rng, temperature, device)
+        if action["eot"]:
+            log.info("  step %d: eot_prob=%.3f → sampled STOP", step, eot_p)
             stats["stop_reason"] = "eot"
             stats["steps_taken"] = step
             break
-        action = _argmax_action(agent, obs, device)
         ent_id = action["entity"]
         ent_name = entities[ent_id].name if ent_id in entities else "?"
         item_id = action["item"]
@@ -397,6 +419,7 @@ def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
         "steps_taken": stats["steps_taken"],
         "invalid_steps": stats["invalid_steps"],
         "stop_reason": stats["stop_reason"],
+        "seed": stats.get("seed"),
         "error": stats.get("error"),
     }, separators=(",", ":"))
     response = _call_mod(rcon, "finish_prediction", request_id, summary)
@@ -413,7 +436,6 @@ def poll_loop(
     *,
     poll_interval: float = 0.25,
     max_steps: int = 64,
-    placement_delay_s: float = 0.01,
     device: torch.device,
 ):
     """Poll Factorio over RCON for queued requests; handle each as it arrives.
@@ -423,7 +445,6 @@ def poll_loop(
     Factorio restart without needing to be restarted itself.
     """
     log.info("Polling factorion.poll_request every %.0f ms", poll_interval * 1000)
-    log.info("Placement pacing delay: %.0f ms", placement_delay_s * 1000)
 
     while True:
         try:
@@ -475,7 +496,6 @@ def poll_loop(
                 get_model,
                 rcon,
                 max_steps=max_steps,
-                placement_delay_s=placement_delay_s,
                 device=device,
             )
         except Exception:
@@ -488,7 +508,6 @@ def handle_request(
     rcon: RconClient,
     *,
     max_steps: int,
-    placement_delay_s: float = 0.01,
     device,
 ):
     t0 = time.time()
@@ -512,7 +531,7 @@ def handle_request(
                 rcon,
                 req["request_id"],
                 action,
-                placement_delay_s=placement_delay_s,
+                placement_delay_s=float(req.get("placement_delay_s", 0.0)),
             ),
         )
     except Exception as exc:
@@ -541,17 +560,9 @@ def main():
     ap.add_argument("--rcon-password", default="factorion")
     ap.add_argument("--max-steps", type=int, default=64,
                     help="Iterative inference budget per request.")
-    ap.add_argument(
-        "--placement-delay-ms",
-        type=float,
-        default=10.0,
-        help="Delay after each accepted world placement (default: 10 ms).",
-    )
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
-    if args.placement_delay_ms < 0:
-        ap.error("--placement-delay-ms must be non-negative")
 
     logging.basicConfig(
         level=args.log_level.upper(),
@@ -615,7 +626,6 @@ def main():
             get_model, rcon,
             poll_interval=0.25,
             max_steps=args.max_steps,
-            placement_delay_s=args.placement_delay_ms / 1000,
             device=device,
         )
     finally:

@@ -146,13 +146,14 @@ def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
     assert sleeps == [0.01]
 
 
-class _OneStepAgent:
-    def __init__(self):
-        self.calls = 0
+def _fake_sampler(action, steps_before_eot):
+    calls = []
 
-    def eot_prob(self, _obs):
-        self.calls += 1
-        return torch.tensor([0.0 if self.calls == 1 else 1.0])
+    def sample(*_):
+        calls.append(None)
+        return action | {"eot": int(len(calls) > steps_before_eot)}, 0.0
+
+    return sample
 
 
 def _request():
@@ -207,18 +208,18 @@ def test_load_model_reports_grid_size_or_error():
 ])
 def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_reason):
     action = _action("transport_belt", xy=(1, 5), direction=2)
-    monkeypatch.setattr(mod_server, "_argmax_action", lambda *_: action)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 1))
     streamed = []
 
     _, stats = mod_server.run_inference(
-        cast(AgentCNN, _OneStepAgent()),
+        cast(AgentCNN, None),
         _request(),
         max_steps=4,
         device=torch.device("cpu"),
         on_placement=lambda predicted: streamed.append(predicted) or accepted,
     )
 
-    assert streamed == [action]
+    assert streamed == [action | {"eot": 0}]
     assert stats["steps_taken"] == 1
     assert stats["stop_reason"] == stop_reason
 
@@ -229,22 +230,17 @@ def test_empty_action_becomes_a_deletion():
     }
 
 
-class _NeverDoneAgent:
-    def eot_prob(self, _obs):
-        return torch.tensor([0.0])
-
-
 def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
-    request = _request() | {"entities": [{
+    request = _request() | {"seed": 7, "entities": [{
         "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
         "item": "electronic-circuit",
     }]}
     action = _action("transport_belt", xy=(5, 4), direction=2)
-    monkeypatch.setattr(mod_server, "_argmax_action", lambda *_: action)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
     streamed = []
 
     obs, stats = mod_server.run_inference(
-        cast(AgentCNN, _NeverDoneAgent()),
+        cast(AgentCNN, None),
         request,
         max_steps=4,
         device=torch.device("cpu"),
@@ -254,7 +250,24 @@ def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
     ent = obs[Channel.ENTITIES.value]
     assert (ent == _id("assembling_machine_1")).sum() == 0
     assert ent[5, 4] == _id("transport_belt")
-    assert streamed == [action] * 4
+    assert streamed == [action | {"eot": 0}] * 4
     assert stats == {
         "steps_taken": 4, "invalid_steps": 0, "stop_reason": "max_steps",
+        "seed": 7,
     }
+
+
+def test_seed_replays_a_sampled_run_and_new_seeds_differ():
+    agent = AgentCNN(mod_server._duck_envs(11)).eval()
+
+    def actions(seed):
+        streamed = []
+        mod_server.run_inference(
+            agent, _request() | {"seed": seed}, max_steps=8,
+            device=torch.device("cpu"),
+            on_placement=lambda action: streamed.append(action) or True,
+        )
+        return streamed
+
+    assert actions(1) == actions(1)
+    assert actions(1) != actions(2)

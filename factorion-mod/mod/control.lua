@@ -20,7 +20,7 @@
 
 local parity = require("parity")
 
-local PROTOCOL_VERSION = "7"
+local PROTOCOL_VERSION = "8"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
 
@@ -785,6 +785,8 @@ local function gather_request(state, player_index)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = fp.w,
+    placement_delay_s = settings.global["factorion-placement-delay"].value,
+    temperature   = settings.global["factorion-temperature"].value,
     entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
@@ -1062,10 +1064,11 @@ remote.add_interface("factorion", {
     summary = ok and summary or {}
     if player then
       player.print(string.format(
-        "[Factorion] Prediction complete: %s steps, %s invalid (stop: %s).",
+        "[Factorion] Prediction complete: %s steps, %s invalid (stop: %s, seed %s).",
         tostring(summary.steps_taken or "?"),
         tostring(summary.invalid_steps or "?"),
-        tostring(summary.stop_reason or "unknown")))
+        tostring(summary.stop_reason or "unknown"),
+        tostring(summary.seed or "?")))
       if summary.error then
         player.print("[Factorion] Server error: " .. tostring(summary.error))
       end
