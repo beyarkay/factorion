@@ -105,7 +105,14 @@ end)
 
 script.on_event(defines.events.on_player_joined_game, function(event)
   local player = game.get_player(event.player_index)
-  if player then show_startup_message(player) end
+  if player then
+    -- Saves keep open windows, including ones a newer mod version no longer
+    -- manages; every Factorion window is transient, so none should persist.
+    for _, element in pairs(player.gui.screen.children) do
+      if element.name:find("^factorion%-") then element.destroy() end
+    end
+    show_startup_message(player)
+  end
   -- Re-announce the server's state (after the grace period) to whoever joined.
   if storage.server_connected == false then
     storage.server_connected = nil
