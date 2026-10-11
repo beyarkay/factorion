@@ -9,23 +9,21 @@
 # without one can't be loaded as a base, and beware PR-experiment runs such
 # as single-lesson trains — their val/thput@8 is not comparable).
 #
-# Ranges from the 40-run random screen m5efstjq (500k steps from mvbipbr0).
-# No run collapsed. Every run is scored on the same factories and sampling
-# noise, so the 8 runs that barely moved (KL to base < 0.006) agree to
-# 0.463 ± 0.006, and 9 runs reached 0.485-0.507:
-#   - update_epochs (rank corr +0.39): 1 epoch averaged at the base (0.461);
-#     4-8 averaged 0.475.
-#   - target_kl (+0.33): below 0.005 averaged at the base; >= 0.015 averaged
-#     0.476 and holds the best run (0.044).
-#   - ent_coef_start (-0.25): 4 of the 5 runs ending > 0.2 nats from the base
-#     had >= 0.0045; those 5 scored <= 0.467 with ~12% longer episodes.
-#   - learning_rate: no signal alone over 4e-7-9e-5; 7 of the 9 best runs sat
-#     at 9e-7-1e-5.
-#   - divergence_penalty (+0.18): weak; kept for the longer horizon, where
-#     drift grows.
-# Pinned: num_steps 256 (no signal, rank corr -0.03) and the screen's short
-# warmups. A final eval at 12 factories per lesson, plus one at mid-run so a
-# run's trend shows.
+# Ranges from the 40-run random screen m5efstjq (500k steps from mvbipbr0),
+# read off random-forest + ARD-GP partial dependence on its final
+# eval/thput@8 and on late-run rollout/thput (the cleaner target: it averages
+# hundreds of episodes). No run collapsed, and the 8 that barely moved agree
+# to 0.463 ± 0.006, so gains of 0.02-0.04 clear eval noise, but the models explain
+# little (CV R^2 0.1-0.2), so each range stays ~2x wider than its good band:
+#   - target_kl (most important on both targets): good from ~0.013 and still
+#     rising at the screen's 0.05 ceiling, so the range goes past it.
+#   - update_epochs: good from ~3, still rising at 8.
+#   - learning_rate: peaks at 5e-6-1e-5 on rollout/thput, flat on eval.
+#   - ent_coef_start: lower is better and flat below ~5e-4, so the floor drops
+#     below the screen's.
+# Pinned: divergence_penalty (no consistent signal; a mid-range anchor for the
+# longer horizon), num_steps (importance ~0.02), and the screen's short
+# warmups. A final eval at 12 factories per lesson, plus one at mid-run.
 
 method: bayes
 run_cap: 30
@@ -42,6 +40,8 @@ parameters:
     value: 0.0
   num_steps:
     value: 256
+  divergence_penalty:
+    value: 0.05
   eval_every:
     value: 122
   eval_seeds_per_kind:
@@ -49,22 +49,20 @@ parameters:
 
   learning_rate:
     distribution: log_uniform_values
-    min: 1.0e-6
-    max: 5.0e-5
+    min: 1.5e-6
+    max: 3.0e-5
   update_epochs:
-    values: [2, 4, 8]
+    distribution: int_uniform
+    min: 3
+    max: 12
   target_kl:
     distribution: log_uniform_values
-    min: 0.005
-    max: 0.05
-  divergence_penalty:
-    distribution: log_uniform_values
-    min: 3.0e-3
-    max: 0.3
+    min: 0.01
+    max: 0.1
   ent_coef_start:
     distribution: log_uniform_values
-    min: 1.0e-4
-    max: 5.0e-3
+    min: 1.0e-5
+    max: 1.0e-3
 
 program: ppo.py
 
