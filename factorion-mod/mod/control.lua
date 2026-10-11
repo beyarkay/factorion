@@ -20,7 +20,7 @@
 
 local parity = require("parity")
 
-local PROTOCOL_VERSION = "8"
+local PROTOCOL_VERSION = "9"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
 local STOP_REASONS = {
@@ -777,6 +777,12 @@ local function gather_request(state, player_index)
     grid_size     = fp.w,
     placement_delay_s = settings.global["factorion-placement-delay"].value,
     temperature   = settings.global["factorion-temperature"].value,
+    top_k         = settings.global["factorion-top-k"].value,
+    top_p         = settings.global["factorion-top-p"].value,
+    stop_rule     = settings.global["factorion-stop-rule"].value,
+    stop_threshold = settings.global["factorion-stop-threshold"].value,
+    max_steps     = settings.global["factorion-max-steps"].value,
+    seed          = settings.global["factorion-seed"].value,
     entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
@@ -820,8 +826,10 @@ local function try_request_prediction(player_index)
   log("[Factorion] enqueued request " .. request.request_id ..
       " json=" .. request_json)
   return true, string.format(
-    "Requesting a factory %s using checkpoint %s (temperature %g).",
-    description, request.checkpoint, request.temperature)
+    "Requesting a factory %s using checkpoint %s (temperature %g, top-k %d, " ..
+    "top-p %g, stop: %s).",
+    description, request.checkpoint, request.temperature, request.top_k,
+    request.top_p, request.stop_rule)
 end
 
 local function describe_placement_failure(surface, fp, placement)

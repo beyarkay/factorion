@@ -281,9 +281,6 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Stochastic / temperature sampling.** Inference is argmax-only; with
-  weak checkpoints the policy can argmax-loop on the same tile. A
-  `--temperature` flag with `Categorical(logits)` sampling is ~10 LoC.
 - **Full multi-tile action masking.** The tile head masks occupied anchor
   tiles, and Factorio rejects a streamed entity whose rotated footprint lies
   outside the region or hits an entity crossing its edge. The model-side mask does not

@@ -4,7 +4,7 @@ Loads the trained Factorion `AgentCNN` checkpoint named by the mod's
 "Factorion checkpoint" setting (local or directly from a W&B run), polls a
 running
 Factorio instance over RCON for prediction requests, runs iterative
-greedy inference, and streams each predicted entity back via the same RCON
+sampled inference, and streams each predicted entity back via the same RCON
 connection for immediate placement in the world.
 
 ## Run
@@ -17,14 +17,10 @@ Factorio's GUI RCON config, and waits for a hosted game:
 ./start-mod.sh
 ```
 
-Predicted entities are paced with a 10 ms delay after each placement, making
-the sequence easier to follow. Override it in milliseconds when needed:
-
-```bash
-./start-mod.sh --placement-delay-ms 30
-```
-
-Use `--placement-delay-ms 0` to restore unpaced placement.
+Placement pacing and every sampling knob (temperature, top-k, top-p, stop
+rule and threshold, max steps, seed) are map settings under **Settings → Mod
+settings → Map**; each request carries their current values. Each prediction
+draws a fresh seed (reported in chat) unless the seed setting fixes one.
 
 Manual path:
 
@@ -132,7 +128,7 @@ from server import action_to_placement, load_agent, run_inference
 import torch
 agent = load_agent(...)
 obs, stats = run_inference(
-    agent, fake_req, max_steps=64, device=torch.device("cpu"),
+    agent, fake_req, device=torch.device("cpu"),
     on_placement=lambda action: print(action_to_placement(action)) or True,
 )
 print(stats)

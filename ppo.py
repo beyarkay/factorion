@@ -1360,12 +1360,23 @@ def _bernoulli_kl(z_B, zq_B):
 _KL_REF_PENALIZED_HEADS = ("tile", "entity", "direction", "item", "misc")
 
 
-def _select_action(logp_all_BN, temperature, u_BN=None):
+def _select_action(logp_all_BN, temperature, u_BN=None, top_k=0, top_p=1.0):
     """Pick one category per row: argmax at temperature==0 (greedy), else
     sample the temperature-scaled distribution (==1 is the on-policy sample).
     log_softmax is shift-invariant, so scaling log-probs by 1/T == softmax(
     logits/T). Given uniforms `u_BN`, the sample is their Gumbel-max, so the
-    caller owns each row's randomness."""
+    caller owns each row's randomness. `top_k` > 0 keeps only the k likeliest
+    categories and `top_p` < 1 the smallest set holding that much probability
+    (both on the untempered distribution; inference only)."""
+    if top_k > 0 and top_k < logp_all_BN.shape[-1]:
+        kth_B1 = logp_all_BN.topk(top_k, dim=-1).values[..., -1:]
+        logp_all_BN = logp_all_BN.masked_fill(logp_all_BN < kth_B1, float("-inf"))
+    if top_p < 1.0:
+        sorted_BN, order_BN = logp_all_BN.sort(dim=-1, descending=True)
+        p_sorted_BN = sorted_BN.exp()
+        drop_sorted_BN = p_sorted_BN.cumsum(dim=-1) - p_sorted_BN >= top_p
+        drop_BN = torch.zeros_like(drop_sorted_BN).scatter(-1, order_BN, drop_sorted_BN)
+        logp_all_BN = logp_all_BN.masked_fill(drop_BN, float("-inf"))
     if temperature == 0.0:
         return logp_all_BN.argmax(dim=-1)
     if u_BN is not None:
@@ -1693,6 +1704,8 @@ class AgentCNN(nn.Module):
         action=None,
         compute_value: bool = True,
         noise=None,
+        top_k: int = 0,
+        top_p: float = 1.0,
     ):
         """The one sampler every consumer routes through. temperature=1 is the
         stochastic PPO path (eot ~ Bernoulli); temperature=0 is greedy argmax
@@ -1725,7 +1738,7 @@ class AgentCNN(nn.Module):
 
         u = noise or {}
         if action is None:
-            tile_idx_B = _select_action(tile_logp_all_BN, temperature, u.get("tile"))  # (B,)
+            tile_idx_B = _select_action(tile_logp_all_BN, temperature, u.get("tile"), top_k, top_p)  # (B,)
         else:
             # Reconstruct tile index from stored (x, y)
             tile_idx_B = action[:, 0] * self.height + action[:, 1]
@@ -1756,7 +1769,7 @@ class AgentCNN(nn.Module):
         p_eot_B = torch.sigmoid(eot_logit_B)
 
         if action is None:
-            ent_B = _select_action(e_logp_all_BE, temperature, u.get("entity"))
+            ent_B = _select_action(e_logp_all_BE, temperature, u.get("entity"), top_k, top_p)
         else:
             ent_B = action[:, 2]
 
@@ -1765,9 +1778,9 @@ class AgentCNN(nn.Module):
         )
 
         if action is None:
-            dir_B = _select_action(d_logp_all_BD, temperature, u.get("direction"))
-            item_B = _select_action(i_logp_all_BI, temperature, u.get("item"))
-            misc_B = _select_action(m_logp_all_BM, temperature, u.get("misc"))
+            dir_B = _select_action(d_logp_all_BD, temperature, u.get("direction"), top_k, top_p)
+            item_B = _select_action(i_logp_all_BI, temperature, u.get("item"), top_k, top_p)
+            misc_B = _select_action(m_logp_all_BM, temperature, u.get("misc"), top_k, top_p)
             if temperature == 0.0:
                 eot_B = (p_eot_B > eot_threshold).float()
             elif noise is not None:

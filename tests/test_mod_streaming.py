@@ -177,7 +177,7 @@ def test_request_error_still_releases_pending_state():
         mod_server.handle_request(
             req, lambda _: (cast(AgentCNN, wrong_size), "run"),
             cast(mod_server.RconClient, rcon),
-            max_steps=4, device=torch.device("cpu"),
+            device=torch.device("cpu"),
         )
 
     assert "finish_prediction" in rcon.commands[-1]
@@ -213,8 +213,7 @@ def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_re
 
     _, stats = mod_server.run_inference(
         cast(AgentCNN, None),
-        _request(),
-        max_steps=4,
+        _request() | {"max_steps": 4},
         device=torch.device("cpu"),
         on_placement=lambda predicted: streamed.append(predicted) or accepted,
     )
@@ -231,7 +230,7 @@ def test_empty_action_becomes_a_deletion():
 
 
 def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
-    request = _request() | {"seed": 7, "entities": [{
+    request = _request() | {"seed": 7, "max_steps": 4, "entities": [{
         "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
         "item": "electronic-circuit",
     }]}
@@ -242,7 +241,6 @@ def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
     obs, stats = mod_server.run_inference(
         cast(AgentCNN, None),
         request,
-        max_steps=4,
         device=torch.device("cpu"),
         on_placement=lambda predicted: streamed.append(predicted) or True,
     )
@@ -257,17 +255,28 @@ def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
     }
 
 
+def _streamed_actions(agent, **sampling):
+    streamed = []
+    mod_server.run_inference(
+        agent, _request() | {"max_steps": 8} | sampling,
+        device=torch.device("cpu"),
+        on_placement=lambda action: streamed.append(action) or True,
+    )
+    return streamed
+
+
 def test_seed_replays_a_sampled_run_and_new_seeds_differ():
     agent = AgentCNN(mod_server._duck_envs(11)).eval()
 
-    def actions(seed):
-        streamed = []
-        mod_server.run_inference(
-            agent, _request() | {"seed": seed}, max_steps=8,
-            device=torch.device("cpu"),
-            on_placement=lambda action: streamed.append(action) or True,
-        )
-        return streamed
+    assert _streamed_actions(agent, seed=1) == _streamed_actions(agent, seed=1)
+    assert _streamed_actions(agent, seed=1) != _streamed_actions(agent, seed=2)
 
-    assert actions(1) == actions(1)
-    assert actions(1) != actions(2)
+
+@pytest.mark.parametrize("truncation", [{"top_k": 1}, {"top_p": 1e-6}])
+def test_top_k_and_top_p_can_narrow_sampling_to_greedy(truncation):
+    agent = AgentCNN(mod_server._duck_envs(11)).eval()
+    never = {"stop_rule": "never", "seed": 3}
+
+    greedy = _streamed_actions(agent, temperature=0, **never)
+    assert len(greedy) == 8
+    assert _streamed_actions(agent, **truncation, **never) == greedy

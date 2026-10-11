@@ -35,7 +35,7 @@ from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # n
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "8"
+MOD_PROTOCOL_VERSION = "9"
 ModelLoader = Callable[[str], tuple[AgentCNN, str]]
 """Checkpoint spec (the mod's setting) → (agent, display name)."""
 
@@ -210,15 +210,41 @@ def request_to_obs(req: dict) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Iterative inference: sample one entity at a time, as a PPO episode does.
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Sampling:
+    """Per-request sampling knobs, set by the mod's map settings."""
+
+    temperature: float = 1.0
+    top_k: int = 0
+    top_p: float = 1.0
+    stop_rule: str = "sample"
+    """sample the eot head (as in training), stop above `stop_threshold`, or never."""
+    stop_threshold: float = 0.5
+    max_steps: int = 0
+    """0 = the training episode length, grid width x height."""
+
+    @classmethod
+    def from_request(cls, req: dict) -> "Sampling":
+        d = cls()
+        return cls(
+            temperature=float(req.get("temperature", d.temperature)),
+            top_k=int(req.get("top_k", d.top_k)),
+            top_p=float(req.get("top_p", d.top_p)),
+            stop_rule=str(req.get("stop_rule", d.stop_rule)),
+            stop_threshold=float(req.get("stop_threshold", d.stop_threshold)),
+            max_steps=int(req.get("max_steps", d.max_steps)),
+        )
+
+
 def _sample_action(
     agent: AgentCNN,
     obs_CWH: np.ndarray,
     rng: np.random.Generator,
-    temperature: float,
+    sampling: Sampling,
     device,
 ) -> tuple[dict, float]:
-    """One step of the shared sampler (temperature 0 = greedy, eot at p>0.5),
-    with its randomness drawn from `rng` so a seed replays the whole run."""
+    """One step of the shared sampler, with its randomness drawn from `rng` so
+    a seed replays the whole run."""
     head_sizes = {
         "tile": agent.width * agent.height, "entity": agent.num_entities,
         "direction": agent.num_directions, "item": agent.num_items,
@@ -233,18 +259,24 @@ def _sample_action(
     x = torch.from_numpy(obs_CWH).unsqueeze(0).to(device)
     with torch.no_grad():
         out = agent.sample_action(
-            x, temperature=temperature, noise=noise, legal_mask=True,
-            compute_value=False,
+            x, temperature=sampling.temperature, noise=noise, legal_mask=True,
+            compute_value=False, top_k=sampling.top_k, top_p=sampling.top_p,
         )
     act = out["action"]
+    eot_p = float(out["eot_prob"].item())
+    stop = {
+        "sample": float(noise["eot"]) < eot_p,
+        "threshold": eot_p > sampling.stop_threshold,
+        "never": False,
+    }[sampling.stop_rule]
     return {
         "xy": (int(act["xy"][0, 0]), int(act["xy"][0, 1])),
         "entity": int(act["entity"].item()),
         "direction": int(act["direction"].item()),
         "item": int(act["item"].item()),
         "misc": int(act["misc"].item()),
-        "eot": int(act["eot"].item()),
-    }, float(out["eot_prob"].item())
+        "eot": int(stop),
+    }, eot_p
 
 
 def action_to_placement(action: dict) -> dict:
@@ -303,19 +335,18 @@ def action_to_placement(action: dict) -> dict:
 def run_inference(
     agent: AgentCNN,
     req: dict,
-    max_steps: int,
     device,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until the policy samples eot or we hit the
-    safety budget. Invalid actions can't exist in the world, so they are
+    """Iteratively place entities until the stop rule fires or we hit the
+    step budget. Invalid actions can't exist in the world, so they are
     counted rather than streamed."""
     obs = request_to_obs(req)
     src_id, snk_id = _source_id(), _sink_id()
-    seed = int(req.get("seed", secrets.randbits(31)))
-    temperature = float(req.get("temperature", 1.0))
+    seed = int(req.get("seed") or secrets.randbits(31))
+    sampling = Sampling.from_request(req)
     rng = np.random.default_rng(seed)
-    log.info("  seed=%d temperature=%.2f", seed, temperature)
+    log.info("  seed=%d %s", seed, sampling)
 
     stats: dict = {
         "steps_taken": 0,
@@ -324,10 +355,11 @@ def run_inference(
         "seed": seed,
     }
 
+    max_steps = sampling.max_steps or agent.width * agent.height
     for step in range(max_steps):
-        action, eot_p = _sample_action(agent, obs, rng, temperature, device)
+        action, eot_p = _sample_action(agent, obs, rng, sampling, device)
         if action["eot"]:
-            log.info("  step %d: eot_prob=%.3f → sampled STOP", step, eot_p)
+            log.info("  step %d: eot_prob=%.3f → STOP", step, eot_p)
             stats["stop_reason"] = "eot"
             stats["steps_taken"] = step
             break
@@ -435,7 +467,6 @@ def poll_loop(
     rcon: RconClient,
     *,
     poll_interval: float = 0.25,
-    max_steps: int = 64,
     device: torch.device,
 ):
     """Poll Factorio over RCON for queued requests; handle each as it arrives.
@@ -495,7 +526,6 @@ def poll_loop(
                 req,
                 get_model,
                 rcon,
-                max_steps=max_steps,
                 device=device,
             )
         except Exception:
@@ -507,7 +537,6 @@ def handle_request(
     get_model: ModelLoader,
     rcon: RconClient,
     *,
-    max_steps: int,
     device,
 ):
     t0 = time.time()
@@ -521,16 +550,15 @@ def handle_request(
             )
         log.info(
             "Requesting a factory converting [%s] to [%s] using checkpoint %s "
-            "(%dx%d, temperature %s, %d existing entities)",
+            "(%dx%d, %s, %d existing entities)",
             ", ".join(e["item"] for e in req.get("sources", [])),
             ", ".join(e["item"] for e in req.get("sinks", [])),
             req["checkpoint"], req["grid_size"], req["grid_size"],
-            req.get("temperature", 1.0), len(req.get("entities", [])),
+            Sampling.from_request(req), len(req.get("entities", [])),
         )
         _, stats = run_inference(
             agent,
             req,
-            max_steps=max_steps,
             device=device,
             on_placement=lambda action: _stream_placement(
                 rcon,
@@ -563,8 +591,6 @@ def main():
     ap.add_argument("--rcon-host", default="127.0.0.1")
     ap.add_argument("--rcon-port", type=int, default=27015)
     ap.add_argument("--rcon-password", default="factorion")
-    ap.add_argument("--max-steps", type=int, default=64,
-                    help="Iterative inference budget per request.")
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -630,7 +656,6 @@ def main():
         poll_loop(
             get_model, rcon,
             poll_interval=0.25,
-            max_steps=args.max_steps,
             device=device,
         )
     finally:
