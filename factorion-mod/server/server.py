@@ -519,9 +519,14 @@ def handle_request(
                 f"game requested a {req['grid_size']}x{req['grid_size']} grid, "
                 f"but the checkpoint expects {agent.width}x{agent.height}"
             )
-        log.info("Request %s: grid=%dx%d, %d sources, %d sinks",
-                 req["request_id"], req["grid_size"], req["grid_size"],
-                 len(req.get("sources", [])), len(req.get("sinks", [])))
+        log.info(
+            "Requesting a factory converting [%s] to [%s] using checkpoint %s "
+            "(%dx%d, temperature %s, %d existing entities)",
+            ", ".join(e["item"] for e in req.get("sources", [])),
+            ", ".join(e["item"] for e in req.get("sinks", [])),
+            req["checkpoint"], req["grid_size"], req["grid_size"],
+            req.get("temperature", 1.0), len(req.get("entities", [])),
+        )
         _, stats = run_inference(
             agent,
             req,

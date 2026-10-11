@@ -23,6 +23,12 @@ local parity = require("parity")
 local PROTOCOL_VERSION = "8"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
+local STOP_REASONS = {
+  eot = "the model chose to stop",
+  max_steps = "hit the %s-step limit",
+  placement_error = "Factorio refused a placement",
+  server_error = "the server hit an error",
+}
 
 local function get_default_item()
   return settings.global["factorion-default-item"].value
@@ -776,9 +782,19 @@ local function gather_request(state, player_index)
     ::continue::
   end
 
-  local provenance = string.format(
-    "%d existing supported entities, %d source belt(s), %d sink belt(s)",
-    #model_entities, #sources, #sinks)
+  local function icons(endpoints)
+    local parts = {}
+    for _, endpoint in ipairs(endpoints) do
+      table.insert(parts, "[item=" .. endpoint.item .. "]")
+    end
+    return table.concat(parts, " ")
+  end
+  local description = string.format("converting %s to %s",
+    icons(sources), icons(sinks))
+  if #model_entities > 0 then
+    description = description .. string.format(
+      " around %d existing entities", #model_entities)
+  end
 
   local request = {
     type          = "predict",
@@ -791,7 +807,7 @@ local function gather_request(state, player_index)
     sources       = sources,
     sinks         = sinks,
   }
-  return request, provenance
+  return request, description
 end
 
 -- Build a request from the player's configured endpoint belts and enqueue it
@@ -813,7 +829,7 @@ local function try_request_prediction(player_index)
   if storage.model.grid_size ~= state.footprint.w then
     return false, "This region was stamped for another model; stamp it again."
   end
-  local request, provenance = gather_request(state, player_index)
+  local request, description = gather_request(state, player_index)
   if #request.sources == 0 then
     return false, "No source belt inside the region."
   end
@@ -824,12 +840,14 @@ local function try_request_prediction(player_index)
   local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
   storage.pending_by_request[request.request_id] = player_index
-  state.pending = { request_id = request.request_id, tick = game.tick }
+  state.pending = {
+    request_id = request.request_id, tick = game.tick, description = description,
+  }
   log("[Factorion] enqueued request " .. request.request_id ..
-      " (" .. provenance .. ") json=" .. request_json)
+      " json=" .. request_json)
   return true, string.format(
-    "Request %s queued (%s). Waiting for server…",
-    request.request_id, provenance)
+    "Requesting a factory %s using checkpoint %s (temperature %g).",
+    description, request.checkpoint, request.temperature)
 end
 
 local function describe_placement_failure(surface, fp, placement)
@@ -1058,16 +1076,21 @@ remote.add_interface("factorion", {
 
     local player = game.get_player(player_index)
     local state = ensure_player_state(player_index)
+    local description = state.pending and state.pending.description
+      or "for an unknown request"
     state.pending = nil
     local ok, summary = pcall(
       function() return helpers.json_to_table(summary_json) end)
     summary = ok and summary or {}
     if player then
+      local stop = STOP_REASONS[summary.stop_reason]
+        or tostring(summary.stop_reason)
       player.print(string.format(
-        "[Factorion] Prediction complete: %s steps, %s invalid (stop: %s, seed %s).",
+        "[Factorion] Finished %s: %s steps, %s invalid; %s. Seed %s.",
+        description,
         tostring(summary.steps_taken or "?"),
         tostring(summary.invalid_steps or "?"),
-        tostring(summary.stop_reason or "unknown"),
+        stop:format(summary.steps_taken or "?"),
         tostring(summary.seed or "?")))
       if summary.error then
         player.print("[Factorion] Server error: " .. tostring(summary.error))
