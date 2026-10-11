@@ -241,7 +241,7 @@ def _post(ctx, body: str) -> int:
 
 
 def cmd_sft(args, ctx) -> None:
-    # SftArgs' 45M default is ~20h of GPU, so a bare `/ci sft` needs the cap
+    # SftArgs' production default is hours of GPU, so a bare `/ci sft` needs the cap
     # as much as an explicit --num-samples does.
     args.num_samples = _cap(
         ctx, args.num_samples, CLAUDE_MAX_NUM_SAMPLES, SftArgs.num_samples
@@ -281,7 +281,7 @@ def cmd_ppo(args, ctx) -> None:
 
 def _compare_wait_seconds(args) -> int:
     if args.algo == "sft":
-        per = sft_budget_seconds(args.num_samples, 1)
+        per = sft_budget_seconds(args.num_samples)
     else:
         from training_config import PpoArgs
 

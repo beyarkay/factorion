@@ -33,21 +33,24 @@ THPUT_TOL = 1e-6
 _ENV_ID = "factorion/FactorioEnv-v0-diff"
 
 
+def _resolve(spec: str) -> tuple[str, dict]:
+    """A checkpoint spec's local path and its run's config ({} for a path)."""
+    from ppo import _resolve_wandb_checkpoint
+
+    if os.path.exists(spec):
+        return spec, {}
+    path, source = _resolve_wandb_checkpoint(spec, PpoArgs.wandb_project_name, PpoArgs.wandb_entity)
+    return path, source.get("config", {})
+
+
 def load_agent(spec: str, device):
     """Load a checkpoint into an `AgentCNN` built to its run's architecture."""
     import gymnasium as gym
     import torch
 
-    from ppo import AgentCNN, _resolve_wandb_checkpoint, layers_from_args, make_env
+    from ppo import AgentCNN, layers_from_args, make_env
 
-    config: dict = {}
-    if os.path.exists(spec):
-        path = spec
-    else:
-        path, source = _resolve_wandb_checkpoint(
-            spec, PpoArgs.wandb_project_name, PpoArgs.wandb_entity
-        )
-        config = source.get("config", {})
+    path, config = _resolve(spec)
     args = PpoArgs(**{f.name: config[f.name] for f in fields(PpoArgs) if f.name in config})
 
     if _ENV_ID not in gym.registry:
@@ -70,18 +73,47 @@ def load_agent(spec: str, device):
     return agent, args
 
 
+def _collect_denoiser(path: str, config: dict, *, seed: int, per_kind: int, device) -> list[dict]:
+    """`collect` for a denoiser checkpoint (sft.py), at its run's generation
+    settings."""
+    from denoise import load_denoiser, run_denoise_eval
+    from sft import build_eval_factories
+    from training_config import SftArgs
+
+    args = SftArgs(**{f.name: config[f.name] for f in fields(SftArgs) if f.name in config})
+    args.seed, args.eval_seeds_per_kind = seed, per_kind
+    records: list[dict] = []
+    run_denoise_eval(
+        load_denoiser(path, device),
+        build_eval_factories(args),
+        device,
+        best_of=args.eval_best_of,
+        steps=args.gen_steps,
+        refine=args.gen_refine,
+        temperature=args.gen_temperature,
+        cost_scale=PpoArgs.entity_cost_scale,
+        seed=seed,
+        batch_chains=args.eval_batch_chains,
+        records=records,
+    )
+    return records
+
+
 def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[dict]:
     """Best-of-N roll out `spec` over `per_kind` held-out factories per LessonKind.
 
     The factory set is PPO's own eval set at this seed, so two checkpoints
     collected at the same seed and grid size see exactly the same factories.
+    A denoiser checkpoint (sft.py) generates them from pure noise instead.
     """
     import torch
 
-    from ppo import _build_eval_set
-    from sft import run_rollout_eval
+    from ppo import _build_eval_set, run_rollout_eval
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    path, config = _resolve(spec)
+    if "arch" in torch.load(path, map_location="cpu", weights_only=True):
+        return _collect_denoiser(path, config, seed=seed, per_kind=per_kind, device=device)
     agent, args = load_agent(spec, device)
     eval_args = SimpleNamespace(
         size=args.size, seed=seed, max_level=0, eval_seeds_per_kind=per_kind
@@ -90,7 +122,7 @@ def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[d
     records: list[dict] = []
     run_rollout_eval(
         agent,
-        eval_args,  # ty: ignore[invalid-argument-type]
+        eval_args,
         seeds_to_kind,
         device,
         max_seeds=len(seeds_to_kind),

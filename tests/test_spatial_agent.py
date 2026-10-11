@@ -22,7 +22,7 @@ from ppo import (  # noqa: E402
     _EMPTY_ENT_ID,
     _FOOTPRINT_UNAVAILABLE,
 )
-from training_config import SharedArgs  # noqa: E402
+from training_config import PpoArgs  # noqa: E402
 from helpers import _TINY_ATTN, Channel, Direction, Misc, items, recipes, str2ent, str2item  # noqa: E402
 from factorion import Footprint  # noqa: E402
 
@@ -407,9 +407,9 @@ class TestArchVariants:
     def test_attn_on_by_default_off_when_zero(self, envs):
         on = AgentCNN(envs, layers=(16, 16, 16))
         assert on.attn_dim > 0 and hasattr(on, "attn")
-        # Head count and depth default to the SharedArgs (swept-winning) values.
-        assert len(on.attn.transformer.layers) == SharedArgs.attn_layers
-        assert on.attn.transformer.layers[0].self_attn.num_heads == SharedArgs.attn_heads
+        # Head count and depth default to the PpoArgs (swept-winning) values.
+        assert len(on.attn.transformer.layers) == PpoArgs.attn_layers
+        assert on.attn.transformer.layers[0].self_attn.num_heads == PpoArgs.attn_heads
         # Positional embedding defaults on (one learned vector per grid cell).
         assert on.attn.pos_embed is not None
         assert on.attn.pos_embed.shape == (1, 25, on.attn_dim)

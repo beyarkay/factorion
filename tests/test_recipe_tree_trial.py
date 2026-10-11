@@ -214,14 +214,16 @@ class TestTrialEnv:
 
 
 class TestTrialSftExclusion:
-    def test_demo_stream_never_draws_a_trial(self):
-        from sft import _iter_demo_pairs
+    def test_factory_stream_never_draws_a_trial(self):
+        """A trial's world is only its markers; every training factory has
+        something placed between them."""
+        from itertools import islice
 
-        trial_values = {k.value for k in TRIAL_KINDS}
-        rows = list(_iter_demo_pairs(SIZE, SIZE * SIZE, base_seed=1, worker_id=0,
-                                     num_workers=1, target=60))
-        assert rows, "sampler produced no pairs at all"
-        assert all(row[9] not in trial_values for row in rows)
+        from sft import _iter_factories
+
+        states = [s for s, _ in islice(_iter_factories(SIZE, 1, 0, 1), 40)]
+        placeable = {str2ent(n).value for n in ("transport_belt", "inserter", "assembling_machine_1")}
+        assert all(any(int(e) in placeable for e in s[0].flatten()) for s in states)
 
 
 class TestTrialEvalIsScoredApart:
@@ -255,12 +257,12 @@ class TestTrialEvalIsScoredApart:
         return agent
 
     def _run(self, seeds):
-        import torch
-        from sft import run_rollout_eval
-        from training_config import SftArgs
+        from types import SimpleNamespace
 
-        args = SftArgs(seed=1, size=SIZE, max_level=2 * SIZE,
-                       layer1=16, layer2=16, layer3=16)
+        import torch
+        from ppo import run_rollout_eval
+
+        args = SimpleNamespace(seed=1, size=SIZE, max_level=2 * SIZE)
         return run_rollout_eval(
             self._agent(), args, seeds, device=torch.device("cpu"),
             max_seeds=len(seeds),

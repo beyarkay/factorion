@@ -145,10 +145,10 @@ SWEEP_BUDGET_SECONDS = 24 * 3600  # sweeps run until run_cap (from the yaml)
 AGENTS_PER_POD_DEFAULT = 1
 
 
-def sft_budget_seconds(num_samples: int, epochs: int) -> int:
+def sft_budget_seconds(num_samples: int) -> int:
     # 15x15 SFT trains at ~1.9 s per 1000 samples (eyrcyuq9); a pod that
     # outlives its run costs nothing, one killed short loses the run.
-    return int(num_samples * epochs / 1000 * 3.0) + SETUP_SLACK_SECONDS
+    return int(num_samples / 1000 * 3.0) + SETUP_SLACK_SECONDS
 
 
 def ppo_budget_seconds(total_timesteps: int) -> int:
@@ -187,7 +187,7 @@ class SftJob:
     def budget_seconds(self) -> int:
         defaults = SftArgs()
         n = self.num_samples if self.num_samples is not None else defaults.num_samples
-        return sft_budget_seconds(n, defaults.epochs)
+        return sft_budget_seconds(n)
 
 
 @dataclass
@@ -255,7 +255,7 @@ class CompareJob:
         if self.algo == "sft":
             defaults = SftArgs()
             n = self.num_samples if self.num_samples is not None else defaults.num_samples
-            per = sft_budget_seconds(n, defaults.epochs)
+            per = sft_budget_seconds(n)
         else:
             t = (
                 self.total_timesteps

@@ -98,26 +98,23 @@ class TestPPOFactoryDiversity:
         assert len(set(seen)) == 28
 
 
-# ── SFT: the demo generator marches its seed ─────────────────────────────────
+# ── SFT: the factory stream marches its seed ─────────────────────────────────
 
 
 class TestSFTFactoryDiversity:
-    def _distinct_factory_seeds(self, num_samples: int) -> int:
-        from sft import _materialise
+    @staticmethod
+    def _states(worker_id, num_workers, n):
+        from itertools import islice
 
-        out = _materialise(5, 25, 1, target=num_samples)
-        seed_tensor = out[8]  # per-pair lesson seed; unique => one per factory
-        return len(set(seed_tensor.tolist()))
+        from sft import _iter_factories
 
-    def test_dataset_covers_many_distinct_factories(self):
-        # Each factory yields only a handful of (state, action) pairs, so a
-        # few-hundred-pair dataset must span many distinct factories — not a
-        # tiny fixed set.
-        assert self._distinct_factory_seeds(200) >= 20
+        return [s.numpy().tobytes() for s, _ in islice(_iter_factories(9, 1, worker_id, num_workers), n)]
 
-    def test_distinct_factories_scale_with_num_samples(self):
-        # The decisive "not the same N forever" check: ask for more data, get
-        # more distinct factories (the seed marches; it is not capped at N).
-        small = self._distinct_factory_seeds(150)
-        large = self._distinct_factory_seeds(450)
-        assert large > small
+    def test_stream_covers_many_distinct_factories(self):
+        assert len(set(self._states(0, 1, 40))) >= 30
+
+    def test_workers_draw_disjoint_factories(self):
+        """Each worker walks its own seed residue, so two workers' streams
+        don't hand the trainer the same factories."""
+        a, b = self._states(0, 2, 20), self._states(1, 2, 20)
+        assert len(set(a) & set(b)) <= 2
