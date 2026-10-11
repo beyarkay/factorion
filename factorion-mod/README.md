@@ -42,7 +42,8 @@ Orange sinks consume every item that reaches their tile, but count only their
 configured item toward the displayed throughput. The endpoint's current
 rotation is sent to the model. Rerunning a prediction removes only the entities
 created by the previous prediction, so endpoint belts stay in place until you
-mine them.
+mine them. As in training, a model placement replaces every entity it overlaps
+inside the region; entities you built are mined back into your inventory.
 
 ## RCON setup
 
@@ -283,12 +284,12 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Stochastic / temperature sampling.** Inference is argmax-only; with
-  weak checkpoints the policy can argmax-loop on the same tile. A
+- **Stochastic / temperature sampling.** Inference is argmax-only, so it
+  stops as soon as a placement leaves the grid unchanged. A
   `--temperature` flag with `Categorical(logits)` sampling is ~10 LoC.
 - **Full multi-tile action masking.** The tile head masks occupied anchor
   tiles, and Factorio rejects a streamed entity whose rotated footprint lies
-  outside the region or collides in the world. The model-side mask does not
+  outside the region or hits an entity crossing its edge. The model-side mask does not
   yet pre-mask every invalid multi-tile anchor.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with

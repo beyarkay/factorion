@@ -201,3 +201,38 @@ def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_re
     assert streamed == [action]
     assert stats["steps_taken"] == 1
     assert stats["stop_reason"] == stop_reason
+
+
+def test_empty_action_becomes_a_deletion():
+    assert mod_server.action_to_placement(_action("empty", direction=0)) == {
+        "tile_x": 2, "tile_y": 3, "width": 1, "height": 1,
+    }
+
+
+class _NeverDoneAgent:
+    def eot_prob(self, _obs):
+        return torch.tensor([0.0])
+
+
+def test_overwrite_removes_whole_entity_and_repeat_stops(monkeypatch):
+    request = _request() | {"entities": [{
+        "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
+        "item": "electronic-circuit",
+    }]}
+    action = _action("transport_belt", xy=(5, 4), direction=2)
+    monkeypatch.setattr(mod_server, "_argmax_action", lambda *_: action)
+    streamed = []
+
+    obs, stats = mod_server.run_inference(
+        cast(AgentCNN, _NeverDoneAgent()),
+        request,
+        max_steps=4,
+        device=torch.device("cpu"),
+        on_placement=lambda predicted: streamed.append(predicted) or True,
+    )
+
+    ent = obs[Channel.ENTITIES.value]
+    assert (ent == _id("assembling_machine_1")).sum() == 0
+    assert ent[5, 4] == _id("transport_belt")
+    assert streamed == [action]
+    assert stats == {"steps_taken": 1, "stop_reason": "no_change"}

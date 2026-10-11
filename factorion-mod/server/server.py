@@ -28,15 +28,13 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from factorion import Channel, Misc, entities, items, str2ent  # noqa: E402
-from ppo import AgentCNN, _resolve_wandb_checkpoint  # noqa: E402
-
-import factorion_rs  # noqa: E402
+from ppo import AgentCNN, _resolve_wandb_checkpoint, apply_placement_action  # noqa: E402
 
 from blueprint import _DIR_MODEL_TO_BP, _hyphenate  # noqa: E402
 
 log = logging.getLogger("factorion-server")
 MOD_GRID_SIZE = 15
-MOD_PROTOCOL_VERSION = "4"
+MOD_PROTOCOL_VERSION = "5"
 
 
 # --------------------------------------------------------------------------- #
@@ -162,27 +160,6 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     src_id, snk_id = _source_id(), _sink_id()
 
-    for existing in req.get("entities", []):
-        entity = str2ent(existing.get("name"))
-        if entity is None or not entity.is_placeable:
-            log.warning(
-                "Ignoring unsupported existing entity %r",
-                existing.get("name"),
-            )
-            continue
-        if entity.value in {src_id, snk_id}:
-            # Endpoints have their own request lists because they also carry
-            # the configured source/sink item.
-            continue
-        item = str2ent(existing.get("item", existing.get("recipe", "empty")))
-        _apply_placement(obs, {
-            "xy": (int(existing["x"]), int(existing["y"])),
-            "entity": entity.value,
-            "direction": int(existing.get("direction", 0)),
-            "item": item.value if item is not None else 0,
-            "misc": int(existing.get("misc", Misc.NONE.value)),
-        })
-
     for s in req.get("sources", []):
         x, y = s["x"], s["y"]
         obs[Channel.ENTITIES.value, x, y] = src_id
@@ -198,6 +175,30 @@ def request_to_obs(req: dict) -> np.ndarray:
         item = str2ent(s["item"])
         if item is not None:
             obs[Channel.ITEMS.value, x, y] = item.value
+
+    for existing in req.get("entities", []):
+        entity = str2ent(existing.get("name"))
+        if entity is None or not entity.is_placeable:
+            log.warning(
+                "Ignoring unsupported existing entity %r",
+                existing.get("name"),
+            )
+            continue
+        item = str2ent(existing.get("item", existing.get("recipe", "empty")))
+        is_invalid, reason, _ = apply_placement_action(
+            torch.from_numpy(obs),
+            {
+                "xy": (int(existing["x"]), int(existing["y"])),
+                "entity": entity.value,
+                "direction": int(existing.get("direction", 0)),
+                "item": item.value if item is not None else 0,
+                "misc": int(existing.get("misc", Misc.NONE.value)),
+            },
+            source_id=src_id,
+            sink_id=snk_id,
+        )
+        if is_invalid:
+            log.warning("Ignoring existing %s: %s", entity.name, reason)
 
     return obs
 
@@ -221,49 +222,19 @@ def _argmax_action(agent: AgentCNN, obs_CWH: np.ndarray, device) -> dict:
     }
 
 
-def _apply_placement(obs_CWH: np.ndarray, action: dict) -> bool:
-    """Update obs in-place with the predicted entity. Returns True if the
-    placement was non-empty (so we should keep iterating)."""
-    ent_id = action["entity"]
-    if ent_id == 0:  # no-op / empty
-        return False
-    x, y = action["xy"]
-    ent_meta = entities.get(ent_id)
-    if ent_meta is None or not ent_meta.is_placeable:
-        # A legal mask should prevent this, but stop safely if a mismatched
-        # checkpoint still emits an unsupported catalog entry.
-        log.debug("Skipping non-placeable predicted entity id %d", ent_id)
-        return False
-
-    direction = action["direction"]
-    width, height = ent_meta.width, ent_meta.height
-
-    try:
-        tiles = factorion_rs.py_entity_tiles(x, y, direction, width, height)
-    except Exception:
-        tiles = None
-    if tiles is None:
-        # Fall back to the anchor tile; better to under-mark than crash.
-        tiles = [(x, y)]
-
-    _, W, H = obs_CWH.shape
-    for tx, ty in tiles:
-        if 0 <= tx < W and 0 <= ty < H:
-            obs_CWH[Channel.ENTITIES.value, tx, ty] = ent_id
-            obs_CWH[Channel.DIRECTION.value, tx, ty] = direction
-            obs_CWH[Channel.ITEMS.value, tx, ty] = action["item"]
-            obs_CWH[Channel.MISC.value, tx, ty] = action["misc"]
-    return True
-
-
 def action_to_placement(action: dict) -> dict:
-    """Convert one model action into a Factorio create_entity specification."""
+    """Convert one model action into a Factorio create_entity specification.
+
+    The mod first removes every entity the placement's tiles overlap, so an
+    `empty` action becomes a name-less placement that only deletes."""
     ent_id = int(action["entity"])
+    x, y = (int(v) for v in action["xy"])
+    if ent_id == 0:
+        return {"tile_x": x, "tile_y": y, "width": 1, "height": 1}
     ent_meta = entities.get(ent_id)
     if ent_meta is None or not ent_meta.is_placeable:
         raise ValueError(f"entity id {ent_id} is not placeable")
 
-    x, y = (int(v) for v in action["xy"])
     direction_model = int(action["direction"])
     direction = _DIR_MODEL_TO_BP.get(direction_model)
     if direction is None:
@@ -312,9 +283,10 @@ def run_inference(
     eot_threshold: float = 0.5,
     on_placement: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[np.ndarray, dict]:
-    """Iteratively place entities until eot_head signals "done", the model
-    emits a no-op, or we hit the safety budget."""
+    """Iteratively place entities until eot_head signals "done", a placement
+    leaves the grid unchanged, or we hit the safety budget."""
     obs = request_to_obs(req)
+    src_id, snk_id = _source_id(), _sink_id()
 
     stats: dict = {
         "steps_taken": 0,
@@ -342,10 +314,15 @@ def run_inference(
             action["xy"][0], action["xy"][1],
             action["direction"], item_name, item_id, action["misc"],
         )
-        if not _apply_placement(obs, action):
-            log.info("  → empty/no-op placement, stopping")
-            stats["stop_reason"] = "empty"
-            stats["steps_taken"] = step + 1
+        before = obs.copy()
+        is_invalid, reason, _ = apply_placement_action(
+            torch.from_numpy(obs), action, source_id=src_id, sink_id=snk_id,
+        )
+        # Greedy decoding on an unchanged grid repeats the same action forever.
+        if is_invalid or np.array_equal(before, obs):
+            log.info("  → grid unchanged (%s), stopping", reason or "no-op")
+            stats["stop_reason"] = "invalid" if is_invalid else "no_change"
+            stats["steps_taken"] = step
             break
         stats["steps_taken"] = step + 1
         if on_placement is not None and not on_placement(action):

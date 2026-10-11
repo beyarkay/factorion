@@ -800,6 +800,36 @@ local function describe_placement_failure(surface, fp, placement)
     #blockers > 0 and table.concat(blockers, ", ") or "none")
 end
 
+-- Mirrors the model's overwrite rule: every entity the placement touches is
+-- removed whole. The model never saw entities crossing the region boundary,
+-- so those are left alone and block the placement instead.
+local function clear_placement_area(player, state, fp, placement)
+  local left = fp.x + placement.tile_x
+  local top = fp.y + placement.tile_y
+  local predicted = {}
+  for _, unit_number in ipairs(state.predicted_entities or {}) do
+    predicted[unit_number] = true
+  end
+  for _, entity in pairs(player.surface.find_entities_filtered({
+    area = {
+      { left + 0.01, top + 0.01 },
+      { left + placement.width - 0.01, top + placement.height - 0.01 },
+    },
+    name = MODEL_ENTITY_NAMES,
+  })) do
+    local box = entity.bounding_box
+    if box.left_top.x >= fp.x and box.left_top.y >= fp.y
+        and box.right_bottom.x <= fp.x + fp.w
+        and box.right_bottom.y <= fp.y + fp.h then
+      if predicted[entity.unit_number] then
+        entity.destroy({ raise_destroy = true })
+      else
+        player.mine_entity(entity, true)
+      end
+    end
+  end
+end
+
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
@@ -829,7 +859,8 @@ remote.add_interface("factorion", {
     return table.remove(storage.outbox, 1)
   end,
 
-  -- Create one model-predicted entity at footprint-relative coordinates.
+  -- Create one model-predicted entity at footprint-relative coordinates,
+  -- replacing whatever it overlaps. A placement without a name only deletes.
   place_prediction = function(request_id, placement_json)
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
@@ -852,7 +883,7 @@ remote.add_interface("factorion", {
     local ok, placement = pcall(
       function() return helpers.json_to_table(placement_json) end)
     if not ok or not placement then return "error: invalid placement JSON" end
-    if not placement.name or not placement.tile_x or not placement.tile_y
+    if not placement.tile_x or not placement.tile_y
         or not placement.width or not placement.height then
       return "error: incomplete placement"
     end
@@ -861,6 +892,9 @@ remote.add_interface("factorion", {
         or placement.tile_y + placement.height > fp.h then
       return "error: placement lies outside the footprint"
     end
+
+    clear_placement_area(player, state, fp, placement)
+    if not placement.name then return "ok" end
 
     local params = {
       name = placement.name,
@@ -928,7 +962,7 @@ remote.add_interface("factorion", {
     return "factorion-mod alive at tick " .. tostring(game.tick)
   end,
   protocol_version = function()
-    return "4"
+    return "5"
   end,
 
   -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
