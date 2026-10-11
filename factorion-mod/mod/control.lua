@@ -19,6 +19,7 @@
 -- vanilla mod has is RCON, and we use it both ways.
 
 local parity = require("parity")
+local inference = require("inference")
 
 local PROTOCOL_VERSION = "9"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
@@ -47,13 +48,13 @@ end
 
 -- Sampling settings named in the request message when not at their default.
 local SAMPLING_SUMMARY = {
-  { "factorion-temperature", "temperature %g" },
-  { "factorion-top-k", "top-k %d" },
-  { "factorion-top-p", "top-p %g" },
-  { "factorion-stop-rule", "stop rule: %s" },
-  { "factorion-stop-threshold", "stop threshold %g" },
-  { "factorion-max-steps", "max %d steps" },
-  { "factorion-seed", "seed %d" },
+  { "temperature", "temperature %g" },
+  { "top_k", "top-k %d" },
+  { "top_p", "top-p %g" },
+  { "stop_rule", "stop rule: %s" },
+  { "stop_threshold", "stop threshold %g" },
+  { "max_steps", "max %d steps" },
+  { "seed", "seed %d" },
 }
 
 local function get_default_item(role)
@@ -61,7 +62,7 @@ local function get_default_item(role)
 end
 
 local function get_checkpoint()
-  return setting("factorion-checkpoint")
+  return inference.config().checkpoint
 end
 
 local function ensure_player_state(player_index)
@@ -507,6 +508,7 @@ local function save_marker_dialog(player, state)
 end
 
 script.on_event(defines.events.on_gui_click, function(event)
+  if inference.on_gui_click(event) then return end
   local element = event.element
   if not element or not element.valid or element.name ~= SAVE_MARKER then return end
   local player = game.get_player(event.player_index)
@@ -522,7 +524,23 @@ script.on_event("factorion-confirm-dialog", function(event)
   save_marker_dialog(player, state)
 end)
 
+script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_changed)
+script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
+script.on_event(defines.events.on_gui_selection_state_changed,
+  inference.on_gui_selection_state_changed)
+
+-- The server keeps its built-in window only so clicking it raises this event;
+-- the shared inference window replaces it straight away.
+local function open_gpu_server(player, entity)
+  if not entity or not entity.valid or entity.name ~= inference.GPU_SERVER then
+    return false
+  end
+  inference.open(player)
+  return true
+end
+
 script.on_event(defines.events.on_gui_closed, function(event)
+  if inference.on_gui_closed(event) then return end
   if not event.element or not event.element.valid
       or event.element.name ~= MARKER_DIALOG then return end
   ensure_player_state(event.player_index).picker = nil
@@ -530,10 +548,11 @@ end)
 
 script.on_event(defines.events.on_gui_opened, function(event)
   local entity = event.entity
-  local role = endpoint_role(entity)
-  if not role then return end
   local player = game.get_player(event.player_index)
   if not player then return end
+  if open_gpu_server(player, entity) then return end
+  local role = endpoint_role(entity)
+  if not role then return end
   player.opened = nil
   register_endpoint(entity)
   open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
@@ -688,8 +707,7 @@ script.on_event("factorion-reset", function(event)
 end)
 
 -- A new checkpoint may have a different grid size, so stamped regions go.
-script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
-  if event.setting ~= "factorion-checkpoint" then return end
+inference.on_load = function()
   for player_index, state in pairs(storage.players or {}) do
     local player = game.get_player(player_index)
     if state.footprint and player and player.connected then
@@ -698,8 +716,9 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
     destroy_footprint_render(state)
     state.footprint = nil
   end
+  storage.model_loading = nil
   request_model_load()
-end)
+end
 
 -- ----------------------------------------------------------------------------
 -- execute: write a request JSON the server picks up
@@ -815,19 +834,20 @@ local function gather_request(state, player_index)
       " around %d existing entities", #model_entities)
   end
 
+  local config = inference.config()
   local request = {
     type          = "predict",
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = fp.w,
     placement_delay_s = setting("factorion-placement-delay"),
-    temperature   = setting("factorion-temperature"),
-    top_k         = setting("factorion-top-k"),
-    top_p         = setting("factorion-top-p"),
-    stop_rule     = setting("factorion-stop-rule"),
-    stop_threshold = setting("factorion-stop-threshold"),
-    max_steps     = setting("factorion-max-steps"),
-    seed          = setting("factorion-seed"),
+    temperature   = config.temperature,
+    top_k         = config.top_k,
+    top_p         = config.top_p,
+    stop_rule     = config.stop_rule,
+    stop_threshold = config.stop_threshold,
+    max_steps     = config.max_steps,
+    seed          = config.seed,
     entities      = model_entities,
     sources       = sources,
     sinks         = sinks,
@@ -847,6 +867,8 @@ local function try_request_prediction(player_index)
   if state.pending then
     return false, "A prediction is already in progress; CTRL+R cancels it."
   end
+  local no_gpu = inference.unavailable_reason()
+  if no_gpu then return false, no_gpu end
   if not storage.model then
     request_model_load()
     return false, "No model loaded yet."
@@ -872,8 +894,8 @@ local function try_request_prediction(player_index)
       " json=" .. request_json)
   local changed = {}
   for _, knob in ipairs(SAMPLING_SUMMARY) do
-    local value = setting(knob[1])
-    if value ~= SETTING_DEFAULTS[knob[1]] then
+    local value = inference.config()[knob[1]]
+    if value ~= inference.DEFAULTS[knob[1]] then
       table.insert(changed, string.format(knob[2], value))
     end
   end
@@ -993,7 +1015,10 @@ local function check_server()
   end
 end
 
-script.on_nth_tick(60, check_server)
+script.on_nth_tick(60, function()
+  check_server()
+  inference.refresh_all()
+end)
 
 script.on_event("factorion-execute", function(event)
   local player = game.get_player(event.player_index)
@@ -1160,6 +1185,8 @@ remote.add_interface("factorion", {
     if not model or model.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model = model
     storage.model_loading = nil
+    storage.model_error = nil
+    inference.refresh_all()
     game.print(string.format(
       "[Factorion] Model %s (%s) ready: %dx%d region. Stamp it with the " ..
       "[item=factorion-footprint-tool].",
@@ -1171,6 +1198,8 @@ remote.add_interface("factorion", {
     local failure = helpers.json_to_table(error_json) or {}
     if failure.checkpoint ~= get_checkpoint() then return "stale" end
     storage.model_loading = nil
+    storage.model_error = tostring(failure.error)
+    inference.refresh_all()
     game.print(string.format(
       "[Factorion] Could not load checkpoint %s: %s",
       tostring(failure.checkpoint), tostring(failure.error)))

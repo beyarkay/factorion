@@ -30,7 +30,7 @@ data:extend({
     max_health = 300,
     collision_box = { { -1.9, -0.9 }, { 1.9, 0.9 } },
     selection_box = { { -2, -1 }, { 2, 1 } },
-    gui_mode = "none",
+    gui_mode = "all",
     energy_source = {
       type = "electric",
       usage_priority = "secondary-input",
