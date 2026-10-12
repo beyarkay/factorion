@@ -4,6 +4,7 @@ import pytest
 import random
 import re
 import torch
+from training_config import SharedArgs
 
 from helpers import (
     Channel,
@@ -3255,18 +3256,19 @@ def test_full_factory_kinds_build_at_default_size():
         ), kind
 
 
-def test_full_factory_kinds_rebuild_from_expert_actions():
+@pytest.mark.parametrize("size, seeds", [(SharedArgs.size, 3), (32, 1)])
+def test_full_factory_kinds_rebuild_from_expert_actions(size, seeds):
     """Replaying a factory's expert actions through the env from a blank grid
     rebuilds it exactly (multi-tile splitters and assemblers included) and it
-    flows — so every SFT demonstration is a working build."""
+    flows — so every SFT demonstration is a working build, on a big grid's
+    column factories too."""
     from factorion import FULL_FACTORY_KINDS, LESSON_IS_TRIAL
     from ppo import FactorioEnv
     from sft import extract_expert_actions
-    from training_config import SharedArgs
 
-    env = FactorioEnv(size=SharedArgs.size)
+    env = FactorioEnv(size=size)
     for kind in (k for k in FULL_FACTORY_KINDS if not LESSON_IS_TRIAL[k]):
-        for seed in range(3):
+        for seed in range(seeds):
             env.reset(seed=seed, options={"kind": kind})
             solved, task = env._solved_world_CWH.clone(), env._world_CWH.clone()
             H = solved.shape[2]

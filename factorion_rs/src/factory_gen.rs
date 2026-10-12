@@ -634,6 +634,9 @@ pub fn build_factory(
     max_entities: f64,
 ) -> Option<BuiltFactory> {
     let mut rng = Rng::seeded(seed);
+    if let Some(n) = column_ingredients(kind).filter(|_| size >= COLUMN_GRID) {
+        return build_columns(size, &mut rng, max_entities, n);
+    }
     match kind {
         LessonKind::MoveOneItem => build_move_one_item(size, &mut rng, random_item, max_entities),
         LessonKind::MoveOneItemChaos => {
@@ -5565,6 +5568,440 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
     None
 }
 
+// ── Column factories: every line lesson on a big grid ───────────────────────
+
+/// The smallest grid a line lesson is built on as a column factory
+/// ([`build_columns`]); smaller grids keep the lesson's own line layout.
+const COLUMN_GRID: usize = 20;
+
+/// The ingredient count of a line lesson's recipe — all a column factory
+/// takes from its kind — or `None` for every other kind.
+fn column_ingredients(kind: LessonKind) -> Option<usize> {
+    match kind {
+        LessonKind::OppositeSides1In
+        | LessonKind::SameSide1In
+        | LessonKind::Splitter1In
+        | LessonKind::Mirrored1In => Some(1),
+        LessonKind::ReachOver2In
+        | LessonKind::SharedBelt2In
+        | LessonKind::UgWeave2In
+        | LessonKind::OppositeFeeds2In
+        | LessonKind::DirectInsert2In
+        | LessonKind::IntermediateBelt2In
+        | LessonKind::Mirrored2In => Some(2),
+        LessonKind::ReachOver3In => Some(3),
+        LessonKind::ReachOver4In => Some(4),
+        _ => None,
+    }
+}
+
+/// The repeating units of a column factory, left to right.
+#[derive(Clone, Copy)]
+enum Unit {
+    /// Two mirrored stacks sharing their output belt, inputs outside.
+    SharedOut,
+    /// Two mirrored stacks sharing their input belts, outputs outside.
+    SharedIn,
+    /// One stack, inputs west.
+    Lone,
+}
+
+/// One stack of assemblers in a column factory, anchored at column `ax`. Its
+/// inserters stand in columns `ins_x` (input) and `out_ins_x` (output), all
+/// facing `flow`: plain ones take from the `near` belt, long-handed ones reach
+/// over it to the `far` belt, and output drops onto the `out` belt.
+struct Stack {
+    ax: i64,
+    ins_x: i64,
+    out_ins_x: i64,
+    out: i64,
+    near: i64,
+    far: Option<i64>,
+    flow: Direction,
+}
+
+/// Build a column factory filling the grid: one source per ingredient, one
+/// sink, and in between mirrored pairs of assembler stacks running the height
+/// of the grid, repeated across its width, all crafting one recipe with
+/// `n_ingredients` inputs. A pair either shares its output belt between the
+/// stacks (inputs outside) or its input belts (outputs outside).
+///
+/// Input belts run down beside the stacks, each fed by a splitter tapping a
+/// header belt along the top (the last tap just turns down); the output belts
+/// run down to a collector along the bottom, each joining it through a
+/// splitter. Up to two ingredients ride one belt, one per lane (side-loaded
+/// at the header's head); three or four need a second, far belt, reached by
+/// long-handed inserters over the near one and tunnelling under the second
+/// header. Everything is placed outright — only the markers are routed, each
+/// source to its header and the collector to the sink. Later stacks may run
+/// dry; any positive throughput will do.
+fn build_columns(
+    size: usize,
+    rng: &mut Rng,
+    max_entities: f64,
+    n_ingredients: usize,
+) -> Option<BuiltFactory> {
+    let s = size as i64;
+    let recipes = am1_recipes(n_ingredients)?;
+    // Input belts beside each stack, carrying up to two ingredients (a lane
+    // each) apiece.
+    let g: i64 = if n_ingredients > 2 { 2 } else { 1 };
+    let attempts = 20;
+    for attempt in 1..=attempts {
+        let (recipe_key, recipe) = &recipes[rng.choice_index(recipes.len())];
+        let mut ingredients: Vec<Item> = recipe.consumes.iter().map(|&(i, _)| i).collect();
+        rng.shuffle(&mut ingredients);
+        let split = if g == 1 {
+            ingredients.len()
+        } else {
+            rng.randint(n_ingredients as i64 - 2, 2) as usize
+        };
+        let lanes = [&ingredients[..split], &ingredients[split..]];
+
+        // Two headers' heads need room for up to four routes beside them.
+        let hx = rng.randint(2, 3) + 3 * (g - 1);
+        let y0 = rng.randint(2, 3);
+        let headers: Vec<i64> = (0..g).map(|i| y0 + 3 * i).collect();
+        // The far belt surfaces from under the second header at y0 + 5.
+        let ym = y0 + 2 + 4 * (g - 1);
+        let n = (s - 3 - ym) / 3;
+        let y_c = ym + 3 * n + 1;
+
+        // Units left to right: mirrored pairs sharing their output belt
+        // (inputs outside) or their input belts (outputs outside), whichever
+        // fits first in a random order, then a lone stack (inputs west) if
+        // only that fits. Two output belts stand two columns apart (the
+        // first one's merge splitter between them), anything else one.
+        let mut stacks: Vec<Stack> = Vec::new();
+        let mut groups: Vec<Vec<i64>> = Vec::new();
+        let mut outs: Vec<i64> = Vec::new();
+        let far = |c: i64| (g == 2).then_some(c);
+        // The column past the last unit, and whether it ends in an output belt.
+        let mut end: Option<(i64, bool)> = None;
+        let mut exit_x = 0;
+        loop {
+            let mut pairs = [Unit::SharedOut, Unit::SharedIn];
+            rng.shuffle(&mut pairs);
+            let placed = pairs.into_iter().chain([Unit::Lone]).find_map(|unit| {
+                let (width, starts_out, ends_out) = match unit {
+                    Unit::SharedOut => (2 * g + 11, false, false),
+                    Unit::SharedIn => (g + 12, true, true),
+                    Unit::Lone => (g + 6, false, true),
+                };
+                let x = match end {
+                    None => hx + 2,
+                    Some((e, prev_out)) => e + 1 + i64::from(prev_out && starts_out),
+                };
+                (x + width + i64::from(ends_out) < s).then_some((unit, x, width, ends_out))
+            });
+            let Some((unit, x, width, ends_out)) = placed else {
+                break;
+            };
+            match unit {
+                Unit::SharedOut => {
+                    let (o, r) = (x + g + 5, x + g + 11);
+                    stacks.push(Stack {
+                        ax: x + g + 1,
+                        ins_x: x + g,
+                        out_ins_x: o - 1,
+                        out: o,
+                        near: x + g - 1,
+                        far: far(x),
+                        flow: Direction::East,
+                    });
+                    stacks.push(Stack {
+                        ax: o + 2,
+                        ins_x: r - 1,
+                        out_ins_x: o + 1,
+                        out: o,
+                        near: r,
+                        far: far(r + 1),
+                        flow: Direction::West,
+                    });
+                    groups.push((x..x + g).collect());
+                    groups.push((r..r + g).collect());
+                    outs.push(o);
+                }
+                Unit::SharedIn => {
+                    let (m, o) = (x + 6, x + 11 + g);
+                    stacks.push(Stack {
+                        ax: x + 2,
+                        ins_x: m - 1,
+                        out_ins_x: x + 1,
+                        out: x,
+                        near: m,
+                        far: far(m + 1),
+                        flow: Direction::West,
+                    });
+                    stacks.push(Stack {
+                        ax: m + g + 1,
+                        ins_x: m + g,
+                        out_ins_x: o - 1,
+                        out: o,
+                        near: m + g - 1,
+                        far: far(m),
+                        flow: Direction::East,
+                    });
+                    groups.push((m..m + g).collect());
+                    outs.extend([x, o]);
+                }
+                Unit::Lone => {
+                    let o = x + g + 5;
+                    stacks.push(Stack {
+                        ax: x + g + 1,
+                        ins_x: x + g,
+                        out_ins_x: o - 1,
+                        out: o,
+                        near: x + g - 1,
+                        far: far(x),
+                        flow: Direction::East,
+                    });
+                    groups.push((x..x + g).collect());
+                    outs.push(o);
+                }
+            }
+            // A trailing output belt merges one column past itself, unless
+            // it is the first and just turns into the collector.
+            exit_x = x + width + i64::from(ends_out && outs.len() > 1);
+            end = Some((x + width, ends_out));
+        }
+        if n < 1 || stacks.is_empty() {
+            return None;
+        }
+        let exit = (exit_x, y_c);
+
+        // Machines and inserters. Each machine takes from every input belt
+        // of its stack and drops onto its output belt; every input belt ends
+        // at its lowest taker and every output belt starts at its highest
+        // dropper, so no belt tile is left carrying nothing.
+        let mut anchors: Vec<Cell> = Vec::new();
+        let mut inserters: Vec<(Cell, Direction, Item)> = Vec::new();
+        let mut lowest: HashMap<i64, i64> = HashMap::new();
+        let mut highest: HashMap<i64, i64> = HashMap::new();
+        for st in &stacks {
+            for j in 0..n {
+                let ay = ym + 3 * j;
+                anchors.push((st.ax, ay));
+                let mut rows = [ay, ay + 1, ay + 2];
+                rng.shuffle(&mut rows);
+                let takes: Vec<(i64, i64, Item)> = match st.far {
+                    None => rows[..rng.randint(1, 3) as usize]
+                        .iter()
+                        .map(|&y| (y, st.near, Item::Inserter))
+                        .collect(),
+                    Some(far) => {
+                        let mut t = vec![
+                            (rows[0], st.near, Item::Inserter),
+                            (rows[1], far, Item::LongHandedInserter),
+                        ];
+                        match rng.choice_index(3) {
+                            0 => t.push((rows[2], st.near, Item::Inserter)),
+                            1 => t.push((rows[2], far, Item::LongHandedInserter)),
+                            _ => {}
+                        }
+                        t
+                    }
+                };
+                for (y, belt, kind) in takes {
+                    inserters.push(((st.ins_x, y), st.flow, kind));
+                    let low = lowest.entry(belt).or_insert(y);
+                    *low = (*low).max(y);
+                }
+                let k = rng.randint(1, 3) as usize;
+                for y in rng.sample(&[ay, ay + 1, ay + 2], k) {
+                    inserters.push(((st.out_ins_x, y), st.flow, Item::Inserter));
+                    let high = highest.entry(st.out).or_insert(y);
+                    *high = (*high).min(y);
+                }
+            }
+        }
+
+        // Headers and input belts. Header i feeds belt i of every group: a
+        // splitter one column before each tap but the last, where the header
+        // turns down instead. With two headers the first one's belts tunnel
+        // under the second (and its splitters, which sit on those belts).
+        let mut belts: Vec<UgPlacement> = Vec::new();
+        let mut splitters: Vec<[Cell; 2]> = Vec::new();
+        let mut ug: Vec<UgPlacement> = Vec::new();
+        for (i, &y) in headers.iter().enumerate() {
+            let taps: Vec<i64> = groups.iter().map(|gr| gr[i]).collect();
+            let (&last, split_taps) = taps.split_last()?;
+            for &t in split_taps {
+                splitters.push([(t - 1, y), (t - 1, y + 1)]);
+            }
+            belts.extend(
+                (hx..last)
+                    .filter(|&c| !split_taps.contains(&(c + 1)))
+                    .map(|c| (c, y, Direction::East, Misc::None)),
+            );
+            belts.push((last, y, Direction::South, Misc::None));
+            for &t in &taps {
+                for yy in y + 1..=lowest[&t] {
+                    let tunnel = if i == 0 && g == 2 {
+                        match yy - headers[1] {
+                            -1 => Some(Misc::UndergroundDown),
+                            0 | 1 => continue,
+                            2 => Some(Misc::UndergroundUp),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let p = (t, yy, Direction::South, tunnel.unwrap_or(Misc::None));
+                    if tunnel.is_some() {
+                        ug.push(p);
+                    }
+                    belts.push(p);
+                }
+            }
+        }
+
+        // Output belts and the collector: the first output belt turns into
+        // the collector, each later one turns into a splitter merging it in.
+        for (k, &o) in outs.iter().enumerate() {
+            belts.extend((highest[&o]..y_c - 1).map(|yy| (o, yy, Direction::South, Misc::None)));
+            if k == 0 {
+                belts.push((o, y_c - 1, Direction::South, Misc::None));
+            } else {
+                belts.push((o, y_c - 1, Direction::East, Misc::None));
+                splitters.push([(o + 1, y_c - 1), (o + 1, y_c)]);
+            }
+        }
+        belts.extend(
+            (outs[0]..exit.0)
+                .filter(|&c| !outs[1..].contains(&(c - 1)))
+                .map(|c| (c, y_c, Direction::East, Misc::None)),
+        );
+
+        // Markers: a source per header lane, its route ending in a head
+        // just west of the header's (head-on for one lane; for two, turning
+        // into a feeder that side-loads it from either flank), the sink
+        // beside the exit. The whole block is off-limits to the routes.
+        let mut heads: Vec<(Cell, Item)> = Vec::new();
+        let mut taken: HashSet<Cell> = (hx..exit.0)
+            .flat_map(|cx| (y0..=y_c).map(move |cy| (cx, cy)))
+            .collect();
+        for (&y, items) in headers.iter().zip(lanes) {
+            if let [item] = items {
+                heads.push(((hx - 1, y), *item));
+            } else {
+                for ((fy, dir), &item) in [(y - 1, Direction::South), (y + 1, Direction::North)]
+                    .into_iter()
+                    .zip(items)
+                {
+                    belts.push((hx, fy, dir, Misc::None));
+                    taken.insert((hx, fy));
+                    heads.push(((hx - 1, fy), item));
+                }
+            }
+        }
+        // Innermost heads first: they have the fewest ways in.
+        let mid = headers[0] + headers[g as usize - 1];
+        heads.sort_by_key(|&((_, y), _)| (2 * y - mid).abs());
+        // A merge splitter's spare output.
+        taken.insert((exit.0, y_c - 1));
+        // A marker within three cells of `c` that `side` accepts, never on a
+        // head nor so near another that the cells kept clear around the
+        // marker would cut that head's route off.
+        let mut pick_near = |c: Cell, side: &dyn Fn(Cell) -> bool, taken: &HashSet<Cell>| {
+            let near: Vec<Cell> = (c.0 - 3..=c.0 + 3)
+                .flat_map(|cx| (c.1 - 3..=c.1 + 3).map(move |cy| (cx, cy)))
+                .filter(|&p| {
+                    in_grid(p, s)
+                        && side(p)
+                        && p != exit
+                        && !taken.contains(&p)
+                        && !heads.iter().any(|&(h, _)| {
+                            h == p || (h != c && (h.0 - p.0).abs() + (h.1 - p.1).abs() < 3)
+                        })
+                })
+                .collect();
+            (!near.is_empty()).then(|| near[rng.choice_index(near.len())])
+        };
+        // Sources west of the heads' approach column, so no route cuts
+        // another off; the sink no higher than the exit.
+        let Some(sources) = heads
+            .iter()
+            .map(|&(head, _)| {
+                let p = pick_near(head, &|p: Cell| p.0 < hx - 1, &taken)?;
+                taken.insert(p);
+                Some(p)
+            })
+            .collect::<Option<Vec<Cell>>>()
+        else {
+            continue;
+        };
+        let Some(sink_pos) = pick_near(exit, &|p: Cell| p.1 >= y_c, &taken) else {
+            continue;
+        };
+        taken.insert(sink_pos);
+        let Some((source_dirs, routes, sink_dir)) = wire_markers(
+            rng,
+            s,
+            taken,
+            &sources,
+            &heads
+                .iter()
+                .map(|&(h, _)| (h, Direction::East))
+                .collect::<Vec<_>>(),
+            sink_pos,
+            exit,
+            Direction::East,
+            &ug,
+        ) else {
+            continue;
+        };
+
+        let total_entities = anchors.len()
+            + inserters.len()
+            + belts.len()
+            + splitters.len()
+            + routes.iter().map(Vec::len).sum::<usize>();
+        if (total_entities as f64) > max_entities {
+            continue;
+        }
+
+        let mut world = World::empty(size, size);
+        for &(ax, ay) in &anchors {
+            place_assembler(&mut world, ax, ay, *recipe_key as i64);
+        }
+        for &(pos, dir, kind) in &inserters {
+            place_inserter(&mut world, pos, dir, kind);
+        }
+        for tiles in &splitters {
+            place_splitter(&mut world, tiles, Direction::East);
+        }
+        place_belts(&mut world, &belts);
+        for route in &routes {
+            place_belts(&mut world, route);
+        }
+        for ((&(_, item), &pos), &dir) in heads.iter().zip(&sources).zip(&source_dirs) {
+            place_marker(&mut world, pos, Item::Source, dir, item as i64);
+        }
+        place_marker(
+            &mut world,
+            sink_pos,
+            Item::Sink,
+            sink_dir,
+            recipe.produces.first().0 as i64,
+        );
+
+        if rng.choice_index(2) == 1 {
+            world = flip_world_x(&world);
+        }
+        for _ in 0..rng.choice_index(4) {
+            world = rotate_world_cw(&world);
+        }
+
+        let (deliveries, unreachable) = calc_throughput(&build_graph(&world));
+        if factory_score(&deliveries) <= 0.0 || unreachable != 0 {
+            continue;
+        }
+        return finish(world, total_entities, vec![], attempts - attempt + 1);
+    }
+    None
+}
+
 /// The throughput ceiling of an assembler lesson: `machines` saturated
 /// assemblers crafting `recipe`, each fed by at most `feed_in` and drained by
 /// at most `feed_out` items/s of inserters — the most the lesson's layout
@@ -7369,6 +7806,47 @@ mod tests {
                 );
             }
             assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_column_factories_fill_big_grids() {
+        // Every line lesson on a big grid builds, every seed, as one flowing,
+        // orphan-free factory: a source per ingredient, a single
+        // sink, and at 64 entities over most of the grid in both directions.
+        for &kind in all_lesson_kinds() {
+            let Some(n) = column_ingredients(kind) else {
+                continue;
+            };
+            for size in [COLUMN_GRID, 32, 64] {
+                for seed in 0..3u64 {
+                    let f = build_factory(size, kind, seed, true, f64::INFINITY)
+                        .unwrap_or_else(|| panic!("{} {size} seed={seed}: None", kind.name()));
+                    let (tp, unreachable) = tp_unreachable(&f.world);
+                    assert!(tp > 0.0, "{} {size} seed={seed}: dead", kind.name());
+                    assert_eq!(unreachable, 0, "{} {size} seed={seed}", kind.name());
+                    let cells: Vec<(usize, usize)> = (0..size)
+                        .flat_map(|x| (0..size).map(move |y| (x, y)))
+                        .filter(|&(x, y)| f.world.entity_at(x, y).is_some())
+                        .collect();
+                    let count = |item| {
+                        cells
+                            .iter()
+                            .filter(|&&(x, y)| f.world.entity_at(x, y) == Some(item))
+                            .count()
+                    };
+                    assert_eq!(count(Item::Source), n, "{} {size} seed={seed}", kind.name());
+                    assert_eq!(count(Item::Sink), 1, "{} {size} seed={seed}", kind.name());
+                    if size == 64 {
+                        let span = |axis: fn(&(usize, usize)) -> usize| {
+                            cells.iter().map(axis).max().unwrap()
+                                - cells.iter().map(axis).min().unwrap()
+                        };
+                        assert!(cells.len() > size * size / 2, "{} seed={seed}", kind.name());
+                        assert!(span(|c| c.0).min(span(|c| c.1)) > size * 4 / 5);
+                    }
+                }
+            }
         }
     }
 
