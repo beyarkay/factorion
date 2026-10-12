@@ -280,7 +280,7 @@ class SftArgs(SharedArgs):
     denoising), the input every generation step after the first sees"""
 
     # ── Architecture (denoise.DenoiserUNet) ──────────────────────────
-    width: int = 80
+    width: int = 128
     """channels at full resolution; each lower level doubles them"""
     levels: int = 2
     """UNet resolutions (levels - 1 stride-2 downsamples)"""
