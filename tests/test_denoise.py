@@ -135,6 +135,34 @@ def test_model_is_fully_convolutional(size):
     assert logits.shape[2:] == (size, size)
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_legalized_noise_is_buildable_through_the_env(seed):
+    """Whatever token grid it gets, `legalize` returns a world the env's own
+    placement actions rebuild exactly, scored at the same throughput: the
+    denoiser is never credited for a factory the agent couldn't place."""
+    from ppo import FactorioEnv, _CH_DIR, _CH_ENT, _CH_ITEMS, _CH_MISC
+    from denoise import noise_tokens, part_map, score_world
+
+    kind = LessonKind.SPLITTER_1IN
+    factory = _factory(15, kind, seed)
+    cond = blank_entities(factory)[0].numpy().astype(np.int64)
+    prior = torch.full((len(TYPES),), 1.0 / len(TYPES))
+    typ, rec, part = (t[0].numpy() for t in noise_tokens(prior, (1, 15, 15), torch.Generator().manual_seed(seed)))
+    world = legalize(cond, typ, rec, part, np.ones(typ.shape))
+
+    env = FactorioEnv(size=15)
+    env.reset(seed=seed, options={"kind": kind, "num_missing_entities": 225})
+    anchors = (world[_CH_ENT] != 0) & (cond[_CH_ENT] == 0) & (part_map(world) == 0)
+    info = {}
+    for x, y in zip(*np.nonzero(anchors)):
+        c = world[:, x, y]
+        *_, info = env.step({"xy": np.array([x, y]), "entity": int(c[_CH_ENT]), "direction": int(c[_CH_DIR]),
+                             "item": int(c[_CH_ITEMS]), "misc": int(c[_CH_MISC])})
+        assert not any(info["invalid_reason"].values())
+    assert np.array_equal(env._world_CWH.numpy().astype(np.int64), world)
+    assert info["thput_normed"] == score_world(world, factory.max_throughput, 0.0)["thput"]
+
+
 def test_generate_never_edits_the_markers():
     factory = _factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=1)
     cond = torch.from_numpy(world_to_state(blank_entities(factory)[0])).long()[None].repeat(3, 1, 1, 1)
