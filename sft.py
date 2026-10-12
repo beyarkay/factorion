@@ -12,6 +12,7 @@ Usage:
 
 import copy
 import io
+import itertools
 import json
 import math
 import os
@@ -325,6 +326,7 @@ def train_sft(args: SftArgs):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     assert_device_ok(device)
 
+    train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
     factories = build_eval_factories(args)
     val_states = torch.stack(
         [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
@@ -343,7 +345,8 @@ def train_sft(args: SftArgs):
             dropout=args.dropout,
             io=args.io,
         )
-        model.noise_prior.copy_(noise_prior_from(val_states))
+        prior_states = [s for s, _ in itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256)]
+        model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
     print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
     model.to(device)
     model.amp = args.amp and device.type == "cuda"
@@ -359,7 +362,7 @@ def train_sft(args: SftArgs):
 
     workers = min(16, os.cpu_count() or 1)
     loader = DataLoader(
-        FactoryStream(args.size, _TRAIN_SEED_BASE + args.seed * 100_000_000),
+        FactoryStream(args.size, train_seed),
         batch_size=args.batch_size // args.noise_repeats,
         num_workers=workers,
         pin_memory=device.type == "cuda",
