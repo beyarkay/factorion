@@ -66,7 +66,7 @@ class TestTrainSFTEndToEnd:
         ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
             size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
-            eval_best_of=2, gen_steps=2, gen_refine=2, rl_inputs=2, rl_samples=2, rl_max_noise=1.0,
+            eval_best_of=2, gen_steps=2, gen_refine=2, lw_thput=0.1, rl_inputs=2, rl_samples=2, rl_max_noise=1.0,
             checkpoint_path=str(ckpt), summary_path=str(summary), io=io, **TINY,
         )
         model = train_sft(args)

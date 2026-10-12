@@ -327,9 +327,11 @@ class SftArgs(SharedArgs):
     lw_cost: float = 0.05
     """weight of the predicted factory's expected per-tile entity cost: a
     pull toward leaving unneeded tiles empty"""
-    lw_thput: float = 0.1
+    lw_thput: float = 0.0
     """weight of the REINFORCE loss on simulated throughput × cost efficiency
-    of factories sampled from the prediction (0 disables)"""
+    of factories sampled from the prediction (0 disables). Off: at 5M samples
+    it left val/thput@64 unchanged (0.612 vs 0.609, runs gyh6chx8/r7inipmm)
+    while its CPU-side legalize + simulate halved training speed."""
     rl_inputs: int = 32
     """examples per batch the throughput loss samples from"""
     rl_samples: int = 4
