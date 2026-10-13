@@ -234,17 +234,19 @@ class TestSelfTraining:
         assert select_self_targets([(0, LessonKind.SAME_SIDE_1IN, f)], [[self._build(f, world)]], 1.0) == []
 
     def test_train_sft_fills_the_buffer_and_trains_from_it(self, monkeypatch, tmp_path):
-        """With the model's builds swapped for the references (an untrained
-        model builds nothing that flows), the selected ones fill the buffer and
-        are trained on."""
+        """Self-training builds trials only. With each one's first build
+        swapped for a flowing factory (an untrained model builds nothing that
+        flows), it fills the buffer and is trained on."""
         real_chains, real_step = sft.generate_chains, sft.denoise_step
-        self_states, trained = set(), []
+        donor = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
+        assert donor is not None
+        built, trained = [], []
 
         def fake_chains(model, factories, *a, **k):
             results, n_conv, n_ref = real_chains(model, factories, *a, **k)
-            for (_, _, f), rs in zip(factories, results):
-                rs[0] = self._build(f, f.world_CWH.numpy())
-                self_states.add(world_to_state(f.world_CWH).tobytes())
+            for (_, kind, f), rs in zip(factories, results):
+                built.append(kind)
+                rs[0] = self._build(f, donor.world_CWH.numpy())
             return results, n_conv, n_ref
 
         def spy_step(model, state, *a, **k):
@@ -257,17 +259,17 @@ class TestSelfTraining:
         monkeypatch.setattr(sft, "denoise_step", spy_step)
         args = SftArgs(
             size=15, num_samples=96, batch_size=16, eval_every_n_samples=32, self_frac=0.25,
-            self_factories=8, self_top_frac=0.5, track=True,
+            self_factories=6, self_top_frac=0.5, track=True,
             checkpoint_path=str(tmp_path / "k.pt"), summary_path=str(tmp_path / "k.json"), **TINY, **FAST_EVAL,
         )
         train_sft(args)
 
+        assert built and all(LESSON_IS_TRIAL[k] for k in built)
         self_logs = [m for m in logged if "self/buffer_size" in m]
-        assert len(self_logs) == 2 and self_logs[0]["self/buffer_size"] > 0
-        assert self_logs[0]["self/lesson_accept_frac"] > 0
-        assert self_logs[0]["self/target_thput"] == pytest.approx(self_logs[0]["self/ref_thput"])
+        assert len(self_logs) == 2 and self_logs[0]["self/buffer_size"] == 1
+        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_1/accept_frac"] > 0
         assert logged[-1]["self/batch_frac"] == pytest.approx(0.25)
-        assert self_states & set(trained)
+        assert world_to_state(donor.world_CWH).tobytes() in trained
 
     def test_off_never_generates(self, monkeypatch, tmp_path):
         logged: list = []

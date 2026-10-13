@@ -352,9 +352,8 @@ class SftArgs(SharedArgs):
     real factories stay the majority and the model can't collapse onto its
     own mode."""
     self_factories: int = 2048
-    """training-seed factories (lessons and trials, blanked to their markers)
-    the EMA model builds best of eval_best_of at every eval, to refill the
-    buffer"""
+    """training-seed trial factories (blanked to their markers) the EMA model
+    builds best of eval_best_of at every eval, to refill the buffer"""
     self_top_frac: float = 0.1
     """fraction of each kind's builds kept as targets, ranked by PPO's score
     (only builds that flow and leave no inserter dangling qualify)"""

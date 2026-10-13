@@ -5,8 +5,9 @@ random fraction t ~ U[0, 1] of its free tiles resampled from noise; the model
 always regresses the clean factory. The eval generates factories for held-out
 lessons from pure noise (best of `eval_best_of` chains each) and scores them
 in the throughput simulator. With `self_frac` > 0 each eval also builds
-training-seed factories, trials included, and replays the model's top builds
-by PPO's score as extra clean targets (expert iteration).
+training-seed trial factories and replays the model's top builds by PPO's
+score as extra clean targets (expert iteration): trials have no reference to
+denoise towards otherwise.
 
 Usage:
     python sft.py --num-samples 2000000
@@ -787,10 +788,11 @@ def select_self_targets(factories, results, top_frac: float) -> list[tuple[Lesso
 
 
 def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> dict:
-    """Build `self_factories` training-seed factories (cycling `kinds`) best of
-    `eval_best_of` with the EMA model, add the selected builds to `buffer`
-    (keyed by world bytes, so a repeat refreshes its place rather than
-    duplicating) and return the round's self/ metrics."""
+    """Build `self_factories` training-seed factories (cycling the trial
+    `kinds`: lessons already train on their references) best of `eval_best_of`
+    with the EMA model, add the selected builds to `buffer` (keyed by world
+    bytes, so a repeat refreshes its place rather than duplicating) and return
+    the round's self/ metrics."""
     factories = []
     while len(factories) < args.self_factories:
         s = next(seeds)
@@ -806,26 +808,18 @@ def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> d
     for kind, r, factory in targets:
         key = r["world"].tobytes()
         buffer.pop(key, None)
-        buffer[key] = (torch.from_numpy(world_to_state(r["world"])), factory.max_throughput, LESSON_IS_TRIAL[kind])
+        buffer[key] = (torch.from_numpy(world_to_state(r["world"])), factory.max_throughput, kind)
     while len(buffer) > args.self_buffer_size:
         buffer.popitem(last=False)
 
-    lessons = [(r, f) for k, r, f in targets if not LESSON_IS_TRIAL[k]]
-    trials = [r for k, r, _ in targets if LESSON_IS_TRIAL[k]]
-    n_trial_builds = args.eval_best_of * sum(LESSON_IS_TRIAL[k] for _, k, _ in factories)
-    n_lesson_builds = args.eval_best_of * len(factories) - n_trial_builds
-    mean = lambda xs: float(np.mean(xs)) if xs else 0.0  # noqa: E731
-    return {
-        "self/lesson_accept_frac": len(lessons) / max(n_lesson_builds, 1),
-        "self/trial_accept_frac": len(trials) / max(n_trial_builds, 1),
-        "self/target_thput": mean([r["thput"] for r, _ in lessons]),
-        "self/ref_thput": mean(
-            [score_world(f.world_CWH.numpy(), f.max_throughput, PpoArgs.entity_cost_scale)["thput"] for _, f in lessons]
-        ),
-        "self/trial_target_thput": mean([r["thput"] for r in trials]),
-        "self/buffer_size": len(buffer),
-        "self/buffer_trial_frac": mean([e[2] for e in buffer.values()]),
-    }
+    metrics: dict = {"self/buffer_size": len(buffer)}
+    for kind in kinds:
+        thputs = [r["thput"] for k, r, _ in targets if k == kind]
+        n_builds = args.eval_best_of * sum(k == kind for _, k, _ in factories)
+        metrics[f"self/{kind.name}/accept_frac"] = len(thputs) / max(n_builds, 1)
+        metrics[f"self/{kind.name}/target_thput"] = float(np.mean(thputs)) if thputs else 0.0
+        metrics[f"self/{kind.name}/buffer_frac"] = sum(e[2] == kind for e in buffer.values()) / max(len(buffer), 1)
+    return metrics
 
 
 def build_eval_factories(args: SftArgs) -> list:
@@ -940,7 +934,7 @@ def train_sft(args: SftArgs):
     # The self-training replay buffer, oldest first; its own RNGs, so
     # self_frac=0 leaves training's random stream untouched.
     buffer: collections.OrderedDict = collections.OrderedDict()
-    self_kinds = sorted({k for _, k, _ in factories}, key=lambda k: k.value)
+    self_kinds = sorted({k for _, k, _ in factories if LESSON_IS_TRIAL[k]}, key=lambda k: k.value)
     seeds, self_rng = self_seeds(args), random.Random(args.seed)
     self_gen = torch.Generator(device=device).manual_seed(args.seed)
     self_rows = window_rows = 0
@@ -1007,7 +1001,7 @@ def train_sft(args: SftArgs):
         if args.self_frac > 0:
             metrics["self/batch_frac"] = self_rows / max(window_rows, 1)
             self_rows = window_rows = 0
-        if args.self_frac > 0 and samples_seen < args.num_samples:
+        if args.self_frac > 0 and self_kinds and samples_seen < args.num_samples:
             t_self = time.time()
             metrics |= self_round(ema, self_kinds, seeds, buffer, args, device, self_gen)
             metrics["perf/self_seconds"] = time.time() - t_self
