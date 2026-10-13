@@ -967,11 +967,9 @@ local function apply_paint(surface, name, positions)
   end
 end
 
--- The paint is a tile only for the brush: the ground goes straight back, along
--- with the paint used and any floor tile the game handed back for it.
-script.on_event(defines.events.on_player_built_tile, function(event)
-  local name = event.tile.name
-  if name ~= MASK and name ~= MASK_ERASER then return end
+-- The paint is a tile only for the brush, so whatever the brush builds over or
+-- mines is put back, and any floor tile the game refunded is taken back.
+local function restore_ground(event)
   local surface = game.get_surface(event.surface_index)
   local player = game.get_player(event.player_index)
   if not (surface and player) then return end
@@ -984,11 +982,29 @@ script.on_event(defines.events.on_player_built_tile, function(event)
     end
   end
   surface.set_tiles(ground, false, false, false, false)
+  return surface, player, positions
+end
+
+script.on_event(defines.events.on_player_built_tile, function(event)
+  local name = event.tile.name
+  if name ~= MASK and name ~= MASK_ERASER then return end
+  local surface, player, positions = restore_ground(event)
+  if not surface then return end
   local cursor = player.cursor_stack
   if cursor and (not cursor.valid_for_read or cursor.name == name) then
     cursor.set_stack({ name = name, count = prototypes.item[name].stack_size })
   end
   apply_paint(surface, name, positions)
+end)
+
+-- Right-clicking with either brush erases, as it removes concrete.
+script.on_event(defines.events.on_player_mined_tile, function(event)
+  local player = game.get_player(event.player_index)
+  local cursor = player and player.cursor_stack
+  if not (cursor and cursor.valid_for_read) then return end
+  if cursor.name ~= MASK and cursor.name ~= MASK_ERASER then return end
+  local surface, _, positions = restore_ground(event)
+  if surface then apply_paint(surface, MASK_ERASER, positions) end
 end)
 
 local function entity_built(event)
