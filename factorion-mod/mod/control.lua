@@ -11,9 +11,10 @@
 --      enqueue it on `storage.outbox`. The Python server is polling our
 --      `poll_request` remote interface over RCON; when there's something
 --      in the queue it gets popped and returned as a JSON string.
---   2. After each model step, the server calls `place_prediction` over RCON.
---      We create that entity directly in the requesting player's world.
---   3. The server calls `finish_prediction` when the model stops.
+--   2. After each denoising step, the server calls `place_predictions` over
+--      RCON with the entities that step changed. We replace them directly in
+--      the requesting player's world.
+--   3. The server calls `finish_prediction` when the denoising ends.
 --
 -- No script-output files are involved. The only outbound channel a
 -- vanilla mod has is RCON, and we use it both ways.
@@ -21,14 +22,14 @@
 local parity = require("parity")
 local inference = require("inference")
 
-local PROTOCOL_VERSION = "9"
+local PROTOCOL_VERSION = "10"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
 -- Loading a checkpoint (often a W&B download) blocks the server's polls.
 local MODEL_LOAD_TIMEOUT_TICKS = 60 * 60
 local STOP_REASONS = {
-  eot = "the build is complete",
-  placement_error = "Factorio refused a placement",
+  converged = "the model settled on it",
+  max_steps = "it was still changing at the step limit",
   server_error = "the server hit an error",
 }
 
@@ -45,9 +46,12 @@ local function setting(name)
   return SETTING_DEFAULTS[name]
 end
 
--- Sampling settings named in the request message when not at their default.
+-- Generation settings named in the request message when not at their default.
 local SAMPLING_SUMMARY = {
   { "temperature", "temperature %g" },
+  { "steps", "%d denoising steps" },
+  { "refine", "up to %d refinement steps" },
+  { "best_of", "best of %d" },
   { "seed", "seed %d" },
 }
 
@@ -1125,8 +1129,11 @@ local function gather_request(state, player_index)
     request_id    = new_request_id(),
     checkpoint    = storage.model.checkpoint,
     grid_size     = fp.w,
-    placement_delay_s = setting("factorion-placement-delay"),
+    step_delay_s  = setting("factorion-step-delay"),
     temperature   = config.temperature,
+    steps         = config.steps,
+    refine        = config.refine,
+    best_of       = config.best_of,
     seed          = config.seed,
     entities      = model_entities,
     sources       = sources,
@@ -1197,7 +1204,7 @@ local function describe_placement_failure(surface, fp, placement)
   end
   table.sort(blockers)
   return string.format(
-    "error: Factorio refused %s at relative tile (%s,%s), " ..
+    "Factorio refused %s at relative tile (%s,%s), " ..
     "world tile (%d,%d) on %s; blockers=[%s]",
     tostring(placement.name),
     tostring(placement.tile_x),
@@ -1237,6 +1244,59 @@ local function clear_placement_area(player, state, fp, placement)
         and box.right_bottom.y <= fp.y + fp.h then
       remove_entity(entity, player, predicted[entity.unit_number])
     end
+  end
+end
+
+-- Create one model-predicted entity at footprint-relative coordinates,
+-- replacing whatever it overlaps. Returns why Factorio refused it, if it did.
+local function place_one(player, player_index, state, fp, placement)
+  if not placement.tile_x or not placement.tile_y
+      or not placement.width or not placement.height then
+    return "incomplete placement"
+  end
+  if placement.tile_x < 0 or placement.tile_y < 0
+      or placement.tile_x + placement.width > fp.w
+      or placement.tile_y + placement.height > fp.h then
+    return "placement lies outside the footprint"
+  end
+
+  clear_placement_area(player, state, fp, placement)
+  if not placement.name then return nil end
+
+  local params = {
+    name = placement.name,
+    position = { fp.x + placement.x, fp.y + placement.y },
+    direction = placement.direction,
+    force = player.force,
+    player = player,
+    raise_built = true,
+    create_build_effect_smoke = true,
+  }
+  if placement.type then params.type = placement.type end
+  if placement.recipe then params.recipe = placement.recipe end
+  if setting("factorion-placement-mode") == "ghost" then
+    params.inner_name = params.name
+    params.name = "entity-ghost"
+    params.tags = { factorion_player = player_index }
+  end
+  local created, entity = pcall(
+    function() return player.surface.create_entity(params) end)
+  if not created then
+    return string.format(
+      "create_entity raised while placing %s at relative tile " ..
+      "(%s,%s): %s",
+      tostring(placement.name),
+      tostring(placement.tile_x),
+      tostring(placement.tile_y),
+      tostring(entity))
+  end
+  if not entity then
+    return describe_placement_failure(player.surface, fp, placement)
+  end
+
+  state.predicted_entities = state.predicted_entities or {}
+  if entity.unit_number then
+    table.insert(state.predicted_entities, entity.unit_number)
   end
 end
 
@@ -1443,9 +1503,10 @@ remote.add_interface("factorion", {
     return table.remove(storage.outbox, 1)
   end,
 
-  -- Create one model-predicted entity at footprint-relative coordinates,
-  -- replacing whatever it overlaps. A placement without a name only deletes.
-  place_prediction = function(request_id, placement_json)
+  -- Apply one denoising step: footprint-relative placements, each replacing
+  -- whatever it overlaps (one without a name only deletes). A placement
+  -- Factorio refuses doesn't stop the rest of the step.
+  place_predictions = function(request_id, placements_json)
     heard_from_server()
     ensure_pending_lookup()
     local player_index = storage.pending_by_request[request_id]
@@ -1454,8 +1515,8 @@ remote.add_interface("factorion", {
     end
 
     if player_index == 0 then
-      log("[Factorion] (headless) placement for " .. tostring(request_id) ..
-        ": " .. tostring(placement_json))
+      log("[Factorion] (headless) placements for " .. tostring(request_id) ..
+        ": " .. tostring(placements_json))
       return "ok"
     end
 
@@ -1465,58 +1526,22 @@ remote.add_interface("factorion", {
     local fp = state.footprint
     if not fp then return "error: footprint was cleared" end
 
-    local ok, placement = pcall(
-      function() return helpers.json_to_table(placement_json) end)
-    if not ok or not placement then return "error: invalid placement JSON" end
-    if not placement.tile_x or not placement.tile_y
-        or not placement.width or not placement.height then
-      return "error: incomplete placement"
+    local ok, placements = pcall(
+      function() return helpers.json_to_table(placements_json) end)
+    if not ok or type(placements) ~= "table" then
+      return "error: invalid placements JSON"
     end
-    if placement.tile_x < 0 or placement.tile_y < 0
-        or placement.tile_x + placement.width > fp.w
-        or placement.tile_y + placement.height > fp.h then
-      return "error: placement lies outside the footprint"
+    local refused, first_error = 0, nil
+    for _, placement in ipairs(placements) do
+      local err = place_one(player, player_index, state, fp, placement)
+      if err then
+        refused = refused + 1
+        first_error = first_error or err
+      end
     end
-
-    clear_placement_area(player, state, fp, placement)
-    if not placement.name then return "ok" end
-
-    local params = {
-      name = placement.name,
-      position = { fp.x + placement.x, fp.y + placement.y },
-      direction = placement.direction,
-      force = player.force,
-      player = player,
-      raise_built = true,
-      create_build_effect_smoke = true,
-    }
-    if placement.type then params.type = placement.type end
-    if placement.recipe then params.recipe = placement.recipe end
-    if setting("factorion-placement-mode") == "ghost" then
-      params.inner_name = params.name
-      params.name = "entity-ghost"
-      params.tags = { factorion_player = player_index }
-    end
-    local created, entity = pcall(
-      function() return player.surface.create_entity(params) end)
-    if not created then
-      return string.format(
-        "error: create_entity raised while placing %s at relative tile " ..
-        "(%s,%s): %s",
-        tostring(placement.name),
-        tostring(placement.tile_x),
-        tostring(placement.tile_y),
-        tostring(entity))
-    end
-    if not entity then
-      return describe_placement_failure(player.surface, fp, placement)
-    end
-
-    state.predicted_entities = state.predicted_entities or {}
-    if entity.unit_number then
-      table.insert(state.predicted_entities, entity.unit_number)
-    end
-    return "ok"
+    if refused == 0 then return "ok" end
+    return string.format("error: %d of %d placements refused; first: %s",
+      refused, #placements, first_error)
   end,
 
   -- Complete the streamed request and release its pending state.
@@ -1546,12 +1571,19 @@ remote.add_interface("factorion", {
       local stop = STOP_REASONS[summary.stop_reason]
         or tostring(summary.stop_reason)
       player.print(string.format(
-        "[Factorion] Finished %s: %s steps, %s invalid; %s. Seed %s.",
+        "[Factorion] Finished %s after %s denoising steps, the best of %s " ..
+        "chains at %.2f items/s; %s. Seed %s.",
         description,
         tostring(summary.steps_taken or "?"),
-        tostring(summary.invalid_steps or "?"),
-        stop:format(summary.steps_taken or "?"),
+        tostring(summary.best_of or "?"),
+        tonumber(summary.thput) or 0,
+        stop,
         tostring(summary.seed or "?")))
+      if (summary.refused_steps or 0) > 0 then
+        player.print(string.format(
+          "[Factorion] Factorio refused part of %d step(s); see the server log.",
+          summary.refused_steps))
+      end
       if summary.error then
         player.print("[Factorion] Server error: " .. tostring(summary.error))
       end

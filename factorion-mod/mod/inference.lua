@@ -10,12 +10,21 @@ local SERVER_KW = 4.5
 M.DEFAULTS = {
   checkpoint = "3y1q7k0v",
   temperature = 1,
+  steps = 0,
+  refine = 0,
+  best_of = 8,
   seed = 0,
 }
 
 local NUMBER_FIELDS = {
   { key = "temperature", caption = "Temperature", min = 0, max = 2, decimal = true,
-    tooltip = "0 always takes the most likely choice; 1 samples the model's own distribution, as in training." },
+    tooltip = "0 always takes the most likely factory at each denoising step; 1 samples the model's own distribution, as in training." },
+  { key = "steps", caption = "Denoising steps", min = 0, max = 100,
+    tooltip = "Steps from pure noise to a factory. 0 uses the checkpoint's training schedule." },
+  { key = "refine", caption = "Refinement steps", min = 0, max = 100,
+    tooltip = "Most extra greedy steps after denoising; they end early once the model leaves its own factory unchanged. 0 uses the checkpoint's training schedule." },
+  { key = "best_of", caption = "Best of", min = 1, max = 64,
+    tooltip = "Factories denoised side by side; the one with the highest simulated throughput is built, step by step." },
   { key = "seed", caption = "Seed", min = 0, max = 2147483647,
     tooltip = "0 draws a fresh random seed each prediction; any other value replays that seed exactly." },
 }
@@ -116,7 +125,7 @@ function M.open(player)
   })
   row.add({
     type = "textfield", name = "checkpoint", text = config.checkpoint,
-    tooltip = "W&B run id (e.g. dr17bmik, or entity/project/id) or a local .pt path on the server's machine.",
+    tooltip = "W&B run id of a denoiser SFT run (e.g. dr17bmik, or entity/project/id) or a local .pt path on the server's machine.",
     tags = { factorion_gpu = "checkpoint" },
   })
   row.add({ type = "button", caption = "Load", tags = { factorion_gpu = "load" } })

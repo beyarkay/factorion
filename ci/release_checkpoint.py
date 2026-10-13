@@ -19,7 +19,7 @@ import torch
 
 from denoise import load_denoiser
 from factorion import Channel, str2ent
-from factorion_server.server import best_build
+from factorion_server.server import Generation, Model, denoise_frames
 from sft import resolve_checkpoint
 from training_config import SftArgs
 
@@ -35,7 +35,8 @@ def main(inference_lua: Path, out_dir: Path) -> None:
     obs[Channel.FOOTPRINT.value] = 1
     obs[Channel.ENTITIES.value, 0, size // 2] = str2ent("source").value
     obs[Channel.ENTITIES.value, size - 1, size // 2] = str2ent("sink").value
-    best_build(load_denoiser(path).eval(), obs, 1.0, 0, torch.device("cpu"))
+    model = Model(load_denoiser(path).eval(), run_id, SftArgs())
+    denoise_frames(model, obs.astype(np.int64), Generation(), 0, torch.device("cpu"))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(path, out_dir / f"{run_id}.pt")

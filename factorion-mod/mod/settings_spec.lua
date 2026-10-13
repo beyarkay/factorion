@@ -34,11 +34,11 @@ return {
   },
   {
     type = "double-setting",
-    name = "factorion-placement-delay",
+    name = "factorion-step-delay",
     setting_type = "runtime-global",
-    default_value = 0.01,
+    default_value = 0.3,
     minimum_value = 0,
-    maximum_value = 1,
+    maximum_value = 5,
     order = "c",
   },
 }
