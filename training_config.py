@@ -339,9 +339,6 @@ class SftArgs(SharedArgs):
     rl_max_noise: float = 0.5
     """only examples at most this corrupted feed the throughput loss: from a
     noisier input a one-step sample is rarely a working factory"""
-    eval_best_of: int = 64
-    """chains denoised from pure noise per held-out factory; each factory
-    scores its best. thput is also logged at @1 and @8 from the same chains."""
     gen_steps: int = 8
     """ancestral steps of a chain (noise level 1 → 0)"""
     gen_refine: int = 8

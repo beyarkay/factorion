@@ -11,7 +11,7 @@
 method: bayes
 run_cap: 30
 metric:
-  name: "val/thput@64"  # @ training_config SftArgs.eval_best_of
+  name: "val/thput@8"  # @ training_config eval_best_of
   goal: maximize
 
 parameters:

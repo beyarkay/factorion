@@ -99,11 +99,11 @@ class TestSweepCommand:
         pinned here instead."""
         import yaml
         from pathlib import Path
-        from training_config import PpoArgs, SftArgs
+        from training_config import SharedArgs
 
-        for algo, section, args in (("ppo", "eval", PpoArgs), ("sft", "val", SftArgs)):
+        for algo, section in (("ppo", "eval"), ("sft", "val")):
             cfg = yaml.safe_load((Path(__file__).parents[1] / "ci" / f"sweep_{algo}.yaml").read_text())
-            assert cfg["metric"]["name"] == f"{section}/thput@{args.eval_best_of}"
+            assert cfg["metric"]["name"] == f"{section}/thput@{SharedArgs.eval_best_of}"
 
 
 class _FakeProc:
