@@ -22,4 +22,15 @@ item.icon = nil
 item.place_as_tile.result = NAME
 item.order = "z[factorion]-d[mask]"
 
-data:extend({ tile, item })
+data:extend({
+  tile,
+  item,
+  {
+    type = "recipe",
+    name = NAME,
+    enabled = true,
+    energy_required = 0.5,
+    ingredients = { { type = "item", name = "stone-brick", amount = 1 } },
+    results = { { type = "item", name = NAME, amount = 10 } },
+  },
+})
