@@ -32,7 +32,6 @@ from typing import Iterator, Optional
 import matplotlib
 
 matplotlib.use("Agg")
-import gymnasium as gym  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -62,13 +61,20 @@ from factorion import (  # noqa: E402
     plot_flow_network,
     render_factory,
 )
-from ppo import (  # noqa: E402
-    AgentCNN,
-    FactorioEnv,
-    _resolve_wandb_checkpoint,
-    apply_placement_action,
-    make_env,
+from denoise import (  # noqa: E402
+    CH_PART,
+    DenoiserUNet,
+    corrupt,
+    free_mask,
+    generate,
+    legalize,
+    load_denoiser,
+    noise_tokens,
+    tokens_to_state,
+    world_to_state,
 )
+from ppo import _resolve_wandb_checkpoint, apply_placement_action  # noqa: E402
+from training_config import SftArgs  # noqa: E402
 
 
 # Order shown in the palette and dropdowns.
@@ -146,18 +152,17 @@ MISC_VALUES = ["NONE", "UNDERGROUND_DOWN", "UNDERGROUND_UP"]
 HELP_LINES = [
     "Hotbar: 1–9, 0",
     "Place: click / drag slot onto tile",
-    "Select / edit: click an empty tile (no ghost)",
-    "Apply a ghost prediction: click the ghosted tile",
+    "Select / edit: click an empty tile",
     "Rotate selected: r (cw), R (ccw)",
     "Clear selected: Delete / Backspace / right-click",
     "Deselect hotbar: Esc",
     "Eyedropper: z picks up the hovered entity (rotation, recipe); click places it, r rotates it, Esc drops it",
     "Generate lesson: g (set 'entities to clear' to blank N first)",
-    "Apply prediction: tap a once / hold a for fast autoregressive placement",
+    "Denoise: tap a for one step, hold a to run the chain to its fixed point; a after that starts a new chain",
     "Resize / clear grid: c",
     "Undo / redo: Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y)",
     "Scan seeds tab: rebuild N blanked seeds at once, click a result to open it",
-    "Scan filter: / focuses it, e.g. lesson=A,B thput>=0.5 eot=false steps<=123; Esc clears",
+    "Scan filter: / focuses it, e.g. lesson=A,B thput>=0.5 converged=false steps<=12; Esc clears",
 ]
 
 
@@ -168,9 +173,9 @@ class Args:
     size: int = 15
     """default grid size"""
     checkpoint: Optional[str] = None
-    """path to a trained SFT/PPO checkpoint (.pt). If set, the UI shows
-    the model's predicted next placement and exposes an Apply button."""
-    wandb_run: Optional[str] = "8gqpfppb"
+    """path to a trained denoiser checkpoint (`sft.py`'s .pt). If set, `a`
+    denoises the grid one step at a time."""
+    wandb_run: Optional[str] = "dr17bmik"
     """W&B run id (or full path 'entity/project/run_id'). The run's most
     recent model-type artifact is downloaded to /tmp/factorion-checkpoints
     and loaded. Mutually exclusive with --checkpoint."""
@@ -604,19 +609,13 @@ def factory_yaml(grid: list[list[dict]], source: Optional[str] = None) -> str:
 
 
 # ── Model inference ──────────────────────────────────────────────────────────
-# AgentCNN init reads sizes from a gym env, so we keep one cached per grid
-# size — the user can resize the UI grid live and we rebuild lazily on
-# first request for that size. The state dict is loaded with strict=False
-# because the critic head's flat dim depends on W*H and we only use the
-# action heads for inference.
 
-_AGENT_DEVICE = torch.device(
+_DEVICE = torch.device(
     "cuda" if torch.cuda.is_available()
     else "mps" if torch.backends.mps.is_available()
     else "cpu"
 )
-_AGENT_CACHE: dict[int, AgentCNN] = {}
-_CHECKPOINT_STATE: Optional[dict] = None
+_MODEL: Optional[DenoiserUNet] = None
 _CHECKPOINT_PATH: Optional[str] = None
 # How the current checkpoint was loaded. Surfaced to the UI so it can
 # render meaningful info (e.g. wandb run id + link) instead of the
@@ -624,72 +623,36 @@ _CHECKPOINT_PATH: Optional[str] = None
 # or {"kind": "wandb", "run_id", "run_url", "run_name", "artifact"}.
 _CHECKPOINT_SOURCE: Optional[dict] = None
 
-# Reverse lookup: head index -> readable name. The entity head excludes the
-# last two catalog entries (source/sink) but its index space starts at 0 and
-# aligns with the first N-2 Item values, so entities[idx].name works as-is.
-_ENT_NAMES = {ent.value: ent.name for ent in entities.values()}
-_ITEM_NAMES = {it.value: it.name for it in items.values()}
-_DIR_NAMES = {d.value: d.name for d in Direction}
-_MISC_NAMES = {m.value: m.name for m in Misc}
-
-
-def _encoder_arch(state) -> tuple[list[int], int]:
-    """Infer the encoder architecture (per-layer channel widths, kernel size)
-    from a checkpoint's conv weights. Filters by 4-D weight shape and sorts by
-    layer index rather than hardcoding `encoder.0/2/4`, so any depth/kernel and
-    interleaved non-conv layers (e.g. Dropout2d) reconstruct correctly — no
-    sidecar, no assumption of exactly three layers."""
-    conv_keys = sorted(
-        (
-            k
-            for k, v in state.items()
-            if k.startswith("encoder.") and k.endswith(".weight") and v.dim() == 4
-        ),
-        key=lambda k: int(k.split(".")[1]),
-    )
-    layers = [int(state[k].shape[0]) for k in conv_keys]
-    kernel_size = int(state[conv_keys[0]].shape[-1])
-    return layers, kernel_size
-
 
 def _load_checkpoint(path: str) -> None:
-    """Load the checkpoint .pt and stash it. Clears the per-size agent
-    cache so subsequent /predict calls rebuild against the new
-    weights. Does NOT touch _CHECKPOINT_SOURCE — the caller knows the
-    provenance (local vs wandb) and sets it after this returns."""
-    global _CHECKPOINT_STATE, _CHECKPOINT_PATH
-    state = torch.load(path, map_location="cpu", weights_only=True)
-    # ppo.py saves its agent *after* torch.compile, which prepends
-    # "_orig_mod." to every parameter name; SFT checkpoints are saved
-    # uncompiled (clean names). Strip the prefix so both load identically
-    # — otherwise _encoder_arch finds zero conv keys and crashes, and the
-    # critic/eot-head filtering below silently misses every key.
-    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-    _CHECKPOINT_STATE = state
+    """Load a denoiser checkpoint. Does NOT touch _CHECKPOINT_SOURCE — the
+    caller knows the provenance (local vs wandb) and sets it after this
+    returns."""
+    global _MODEL, _CHECKPOINT_PATH
+    _MODEL = load_denoiser(path, _DEVICE).eval()
     _CHECKPOINT_PATH = path
-    _AGENT_CACHE.clear()
-    layers, kernel_size = _encoder_arch(state)
-    print(
-        f"Loaded checkpoint {path} "
-        f"(layers={layers}, kernel_size={kernel_size}, device={_AGENT_DEVICE})"
-    )
+    print(f"Loaded checkpoint {path} ({_MODEL.arch}, device={_DEVICE})")
+
+
+def _model() -> DenoiserUNet:
+    if _MODEL is None:
+        raise RuntimeError("no checkpoint loaded — pass --checkpoint at launch")
+    return _MODEL
 
 
 def _model_info() -> dict:
     """Snapshot of the currently-loaded model for the UI's status line.
     Returns `loaded: False` when nothing is loaded yet, so the UI can
     render "(none loaded)" without special-casing on the JS side."""
-    if _CHECKPOINT_STATE is None:
+    if _MODEL is None:
         return {"loaded": False}
-    s = _CHECKPOINT_STATE
-    layers, kernel_size = _encoder_arch(s)
     return {
         "loaded": True,
         "path": _CHECKPOINT_PATH,
         "source": _CHECKPOINT_SOURCE,
-        "layers": layers,
-        "kernel_size": kernel_size,
-        "device": str(_AGENT_DEVICE),
+        "arch": _MODEL.arch,
+        "params": sum(p.numel() for p in _MODEL.parameters()),
+        "device": str(_DEVICE),
     }
 
 
@@ -717,370 +680,116 @@ def _swap_model(value: str, project: str, entity: Optional[str]) -> dict:
     return _model_info()
 
 
-def _get_agent(size: int) -> AgentCNN:
-    if _CHECKPOINT_STATE is None:
-        raise RuntimeError("no checkpoint loaded — pass --checkpoint at launch")
-    if size in _AGENT_CACHE:
-        return _AGENT_CACHE[size]
-
-    layers, kernel_size = _encoder_arch(_CHECKPOINT_STATE)
-
-    env_id = "factorion/FactorioEnv-v0-fb"
-    if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fb")])
-    try:
-        agent = AgentCNN(envs, layers=layers, kernel_size=kernel_size)
-    finally:
-        envs.close()
-    # Several tensors are grid-size-dependent, so their saved shapes are wrong
-    # whenever the UI grid size != the training size. strict=False would *not*
-    # save us — it ignores missing/unexpected keys but still raises on shape
-    # mismatches, so we filter explicitly.
-    #
-    # critic_head: always dropped (the critic isn't called during inference,
-    # so loading it is wasted work even on a size match).
-    #
-    # attn.pos_embed ((1, W*H, attn_dim)): dropped on size mismatch, kept on
-    # a size match. Pre-#103 checkpoints have no eot_head keys at all →
-    # load_state_dict (strict=False) leaves the freshly-initialised head in
-    # place.
-    saved_pos = _CHECKPOINT_STATE.get("attn.pos_embed")
-    keep_pos = saved_pos is not None and saved_pos.shape[1] == size * size
-    drop_prefixes: tuple[str, ...] = ("critic_head.",)
-    if not keep_pos:
-        drop_prefixes = drop_prefixes + ("attn.pos_embed",)
-    filtered = {
-        k: v for k, v in _CHECKPOINT_STATE.items()
-        if not k.startswith(drop_prefixes)
-    }
-    missing, unexpected = agent.load_state_dict(filtered, strict=False)
-    ignorable = {
-        "critic_head.weight", "critic_head.bias",
-        "eot_head.weight", "eot_head.bias",
-        "attn.pos_embed",
-    }
-    real_missing = [k for k in missing if k not in ignorable]
-    real_unexpected = [k for k in unexpected if k not in ignorable]
-    if real_missing or real_unexpected:
-        print(
-            f"[warn] state_dict mismatch at size={size}: "
-            f"missing={real_missing} unexpected={real_unexpected}"
-        )
-    agent.to(_AGENT_DEVICE).eval()
-    _AGENT_CACHE[size] = agent
-    return agent
+def _legalize(model: DenoiserUNet, cond: torch.Tensor, toks, conf: torch.Tensor) -> list[np.ndarray]:
+    """Each chain's tokens as a valid (C, W, H) world."""
+    typ, rec, part = (t.cpu().numpy() for t in toks)
+    cond_np, conf_np = cond.cpu().numpy().astype(np.int64), conf.float().cpu().numpy()
+    return [
+        legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
+        for i in range(len(cond_np))
+    ]
 
 
-def _top_p_named(probs: torch.Tensor, names: dict, top_p: float = 0.95) -> tuple[list[dict], float]:
-    """Sort `probs` (1-D) by descending probability, take entries until
-    cumulative mass >= top_p, return them as [{name, p}, ...] plus the
-    remaining "rest" mass. Useful for showing the model's distribution
-    over discrete choices (entities, directions, items, misc)."""
-    probs_1d = probs.flatten()
-    sorted_p, sorted_i = torch.sort(probs_1d, descending=True)
-    top: list[dict] = []
-    cum = 0.0
-    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
-        top.append({"name": names.get(i, str(i)), "p": float(p)})
-        cum += float(p)
-        if cum >= top_p:
-            break
-    return top, max(0.0, 1.0 - cum)
+@torch.no_grad()
+def _denoise_step(grid: list[list[dict]], chain: Optional[dict]) -> dict:
+    """Advance one chain of `denoise.generate` by one model call.
 
-
-def _tile_top_p(probs: torch.Tensor, H: int, top_p: float = 0.95) -> tuple[list[dict], float]:
-    """Same as _top_p_named but emits (x, y, p) entries for the tile
-    head, since each entry is a 2-D coordinate rather than a named
-    category."""
-    sorted_p, sorted_i = torch.sort(probs.flatten(), descending=True)
-    top: list[dict] = []
-    cum = 0.0
-    for p, i in zip(sorted_p.tolist(), sorted_i.tolist()):
-        top.append({"x": int(i) // H, "y": int(i) % H, "p": float(p)})
-        cum += float(p)
-        if cum >= top_p:
-            break
-    return top, max(0.0, 1.0 - cum)
-
-
-EOT_STOP_THRESHOLD = 0.5
-"""EOT-head probability above which the UI treats the model as finished: the
-hold-to-apply loop stops and no further placement is applied. Matches
-`AgentCNN.eot_should_stop`'s default, so holding `a` reproduces what a greedy
-rollout would build."""
-
-
-CANDIDATE_TILE_THRESHOLD = 0.01
-"""Minimum p(tile) for a tile to appear as a ghost candidate in the UI.
-Tiles with `p(tile) < CANDIDATE_TILE_THRESHOLD` are dropped — they're
-too unlikely to be worth visualising, and the long tail is dominated by
-the rest mass anyway."""
-
-
-def _predict(grid: list[list[dict]]) -> dict:
-    """Run the model on `grid` and return:
-      * the argmax placement (drives the Apply button + tile border),
-      * per-head top-p=0.95 distributions conditioned on the argmax
-        tile (drives the side panel),
-      * a candidates list — every tile with p(tile) > threshold, paired
-        with its conditional argmax (entity / dir / item / misc) so the
-        UI can render ghost overlays across the whole grid.
-
-    The four per-tile heads (ent/dir/item/misc) are linear projections
-    of the encoder feature at the chosen tile, so computing them for
-    every tile is one batched matmul each — cheap."""
-    world_WHC = build_world(grid)
-    size = world_WHC.shape[0]
-    agent = _get_agent(size)
-
-    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
-    W = obs_CWH.shape[2]
-    H = obs_CWH.shape[3]
-
-    with torch.no_grad():
-        # Greedy prediction via the shared sampler; the argmax tile is the
-        # "Apply" target, and logp_heads drives the side-panel top-p lists.
-        out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
-        heads = out["logp_heads"]
-        eot_prob = float(out["eot_prob"][0].item())
-
-        tile_probs = heads["tile"].exp()[0]
-        tile_top, tile_rest = _tile_top_p(tile_probs, H)
-        x = int(out["action"]["xy"][0, 0].item())
-        y = int(out["action"]["xy"][0, 1].item())
-
-        ent_top, ent_rest = _top_p_named(heads["entity"].exp()[0], _ENT_NAMES)
-        dir_top, dir_rest = _top_p_named(heads["direction"].exp()[0], _DIR_NAMES)
-        item_top, item_rest = _top_p_named(heads["item"].exp()[0], _ITEM_NAMES)
-        misc_top, misc_rest = _top_p_named(heads["misc"].exp()[0], _MISC_NAMES)
-
-        # Ghost overlays need the greedy per-head pick at EVERY tile, not just
-        # the sampled one — a whole-grid matmul on the shared heads.
-        encoded_BCWH = agent.encode(obs_CWH)
-        feats_all = encoded_BCWH[0].permute(1, 2, 0).reshape(W * H, -1)
-        ent_pick = agent.ent_head(feats_all).argmax(dim=-1)
-        dir_pick = agent.dir_head(feats_all).argmax(dim=-1)
-        item_pick = agent.item_head(feats_all).argmax(dim=-1)
-        misc_pick = agent.misc_head(feats_all).argmax(dim=-1)
-
-        candidates: list[dict] = []
-        mask = (tile_probs > CANDIDATE_TILE_THRESHOLD).nonzero(as_tuple=False).squeeze(-1).tolist()
-        for t in mask:
-            candidates.append({
-                "x": t // H,
-                "y": t % H,
-                "p_tile": float(tile_probs[t].item()),
-                "entity": _ENT_NAMES.get(int(ent_pick[t].item()), str(int(ent_pick[t].item()))),
-                "direction": _DIR_NAMES.get(int(dir_pick[t].item()), str(int(dir_pick[t].item()))),
-                "item": _ITEM_NAMES.get(int(item_pick[t].item()), str(int(item_pick[t].item()))),
-                "misc": _MISC_NAMES.get(int(misc_pick[t].item()), str(int(misc_pick[t].item()))),
-            })
-
+    The server keeps no state: `chain` is the previous response's ``chain``
+    (the tokens the next call reads, and how many steps it has taken), or
+    None to start a fresh one from noise around the grid's markers and
+    walls. The response's ``grid`` is the step's clean-factory prediction,
+    legalized; ``done`` once the greedy refinement reaches a fixed point or
+    the step budget runs out."""
+    model = _model()
+    steps, refine = SftArgs.gen_steps, SftArgs.gen_refine
+    world_CWH = build_world(grid).permute(2, 0, 1).numpy()
+    cond = torch.as_tensor(world_to_state(world_CWH), device=_DEVICE)[None]
+    free = free_mask(cond)
+    if chain is None:
+        step, toks = 0, noise_tokens(model.noise_prior, free.shape)
+    else:
+        step = int(chain["step"])
+        toks = tuple(torch.tensor(chain[k], device=_DEVICE)[None] for k in ("type", "recipe", "part"))
+    ancestral = step < steps
+    logits = model(tokens_to_state(cond, free, *toks))
+    new = model.pick(logits, SftArgs.gen_temperature if ancestral else 0.0)
+    converged = not ancestral and all(bool(((a == b) | ~free).all()) for a, b in zip(new, toks))
+    conf = torch.where(free, model.conf(logits, new), 1.0)
+    world = _legalize(model, cond, new, conf)[0]
+    nxt = new
+    t_next = 1.0 - (step + 1) / steps
+    if ancestral and t_next > 0:
+        nxt = corrupt(new, free, torch.tensor([t_next], device=_DEVICE), model.noise_prior)
     return {
-        "x": x,
-        "y": y,
-        "entity": ent_top[0]["name"],
-        "direction": dir_top[0]["name"],
-        "item": item_top[0]["name"],
-        "misc": misc_top[0]["name"],
-        "tile_top": tile_top,
-        "tile_rest": tile_rest,
-        "entity_top": ent_top,
-        "entity_rest": ent_rest,
-        "direction_top": dir_top,
-        "direction_rest": dir_rest,
-        "item_top": item_top,
-        "item_rest": item_rest,
-        "misc_top": misc_top,
-        "misc_rest": misc_rest,
-        "candidates": candidates,
-        "eot_prob": eot_prob,
-        **_throughput(world_WHC),
-    }
-
-
-def _predict_action(grid: list[list[dict]]) -> dict:
-    """Return only the greedy next placement, plus the EOT probability.
-
-    This is the latency-sensitive path used while the user holds ``a``. The
-    detailed predictor above additionally builds probability tables and ghost
-    candidates for inspection, none of which an autoregressive placement needs
-    — but both go through the shared sampler, so what the held key applies is
-    exactly what the panel showed. Reading the heads directly instead skips the
-    entity-conditional masks `sample_action` applies to direction / item / misc
-    (which is how a belt ends up tagged with a recipe, or an assembler with
-    none), and skips `eot_prob`, without which the loop cannot stop where a
-    rollout would.
-    """
-    world_WHC = build_world(grid)
-    agent = _get_agent(world_WHC.shape[0])
-    obs_CWH = world_WHC.permute(2, 0, 1).float().unsqueeze(0).to(_AGENT_DEVICE)
-
-    with torch.inference_mode():
-        out = agent.sample_action(obs_CWH, temperature=0.0, compute_value=False)
-        act = out["action"]
-        x = int(act["xy"][0, 0].item())
-        y = int(act["xy"][0, 1].item())
-        entity = int(act["entity"][0].item())
-        direction = int(act["direction"][0].item())
-        item = int(act["item"][0].item())
-        misc = int(act["misc"][0].item())
-        eot_prob = float(out["eot_prob"][0].item())
-
-    return {
-        "x": x,
-        "y": y,
-        "entity": _ENT_NAMES.get(entity, str(entity)),
-        "direction": _DIR_NAMES.get(direction, str(direction)),
-        "item": _ITEM_NAMES.get(item, str(item)),
-        "misc": _MISC_NAMES.get(misc, str(misc)),
-        "eot_prob": eot_prob,
-        # Rides along so the readout tracks a held-`a` build as it happens,
-        # one placement behind, instead of going blank until the key is let go.
-        **_throughput(world_WHC),
+        "grid": world_CWH_to_grid(torch.from_numpy(world)),
+        "chain": {"step": step + 1, **{k: t[0].tolist() for k, t in zip(("type", "recipe", "part"), nxt)}},
+        "phase": "denoise" if ancestral else "refine",
+        "noise": max(t_next, 0.0) if ancestral else 0.0,
+        "converged": converged,
+        "done": converged or step + 1 >= steps + refine,
+        "conf": conf[0].T.float().cpu().numpy().round(3).tolist(),
+        **_throughput(torch.from_numpy(world.transpose(1, 2, 0))),
     }
 
 
 # ── Batched seed scan ────────────────────────────────────────────────────────
 
-ROLLOUT_BATCH_SIZE = 64
-"""Rollouts advanced in lockstep per batched forward. Every slot stays in the
-batch until the last of its group finishes, so a wider batch mostly buys stale
-compute at the tail; a bigger scan runs as back-to-back groups instead. There
-is deliberately no ceiling on the scan itself: groups are built and freed one
-at a time so memory is flat in the count, results stream as they finish, and
-Stop cancels — nothing a cap would protect against."""
+SCAN_BATCH_CHAINS = 256
+"""Chains denoised per batched `generate` call. A scan larger than one batch
+runs as back-to-back groups, so memory is flat in the count, results stream
+as each group finishes, and Stop cancels between groups."""
 
 
-def _reset_rollout_env(
-    env: FactorioEnv,
-    kind: LessonKind,
-    seed: int,
-    num_missing_entities: Optional[int],
-) -> tuple[np.ndarray, int]:
-    """Reset `env` onto (kind, seed) and return (obs, the seed that built).
-
-    The seed is settled against `build_factory` first — `FactorioEnv.reset`
-    turns a failed build into a bare RuntimeError it also raises for
-    unrelated reasons, so probing here (as `ppo._build_eval_set` does)
-    keeps a scan from swallowing a real error as an unlucky seed. Omitting
-    ``num_missing_entities`` leaves the env's default of "blank
-    everything", which is the point of the scan: rebuild from the lesson's
-    protected tiles alone.
-    """
-    _factory, used_seed = _build_with_retry(kind, env.size, seed)
-    options: dict = {"kind": kind}
-    if num_missing_entities is not None:
-        options["num_missing_entities"] = num_missing_entities
-    obs, _info = env.reset(seed=used_seed, options=options)
-    return obs, used_seed
+def _num_entities(world_CWH: np.ndarray) -> int:
+    ent = world_CWH[Channel.ENTITIES.value]
+    area = {it.value: it.width * it.height for it in items.values() if it.name not in ("empty", *_MARKERS)}
+    return round(sum(1 / area[v] for v in ent.ravel().tolist() if v in area))
 
 
-def _rollout_result(
-    index: int, env: FactorioEnv, seed: int, info: dict, terminated: bool
-) -> dict:
-    return {
-        "type": "result",
-        "index": index,
-        "kind": env._kind.name,
-        "seed": seed,
-        "size": env.size,
-        "steps": int(env.steps),
-        "stopped_by": "eot" if terminated else "max_steps",
-        "thput_normed": float(info.get("thput_normed", 0.0)),
-        "thput_raw": float(info.get("thput_raw", 0.0)),
-        "max_throughput": float(env._max_throughput),
-        "num_placed_entities": int(info.get("num_placed_entities", 0)),
-        "frac_reachable": float(info.get("frac_reachable", 0.0)),
-        "invalid_actions": int(env.invalid_actions),
-        "grid": world_CWH_to_grid(env._world_CWH),
-        "solved_grid": world_CWH_to_grid(env._solved_world_CWH),
-    }
+def _thput_raw(world_CWH: np.ndarray) -> float:
+    return _throughput(torch.from_numpy(world_CWH.transpose(1, 2, 0))).get("thput") or 0.0
 
 
-def _batch_rollout(
-    kinds: list[LessonKind],
-    seeds: list[int],
-    size: int,
-    num_missing_entities: Optional[int],
-    legal_mask: bool,
-) -> Iterator[dict]:
-    """Greedily rebuild one blanked factory per (kind, seed), yielding an
-    event per finished rollout.
-
-    Rollouts advance in lockstep through one batched ``sample_action``, in
-    groups of ``ROLLOUT_BATCH_SIZE``; a scan larger than one group runs the
-    groups back to back, so the wall clock stays linear in the count instead
-    of the count being truncated to fit one batch. Slots that have already
-    stopped stay in their group's batch and their outputs are discarded:
-    compacting would change the batch shape every step, and mps re-plans
-    kernels per shape, which measures far slower than the wasted slots
-    (N=64: 5.6s fixed vs 29.8s compacted). ``sft.run_rollout_eval`` makes the
-    same choice.
-
-    One greedy (argmax, legal-tile-masked) rollout per factory, where
-    ``eval/thput@N`` scores the best of several sampled ones: the scan shows the
-    single factory the model considers most likely, finished where its EOT head
-    says.
-    """
-    agent = _get_agent(size)
+@torch.no_grad()
+def _batch_rollout(kinds: list[LessonKind], seeds: list[int], size: int, best_of: int) -> Iterator[dict]:
+    """Rebuild each (kind, seed)'s factory from its markers alone, yielding an
+    event per factory: `best_of` chains denoise it from pure noise, as
+    `denoise.run_denoise_eval` scores it, and it shows its highest-throughput
+    chain."""
+    model = _model()
     yield {"type": "start", "n": len(seeds)}
-
-    step = 0
-    for base in range(0, len(seeds), ROLLOUT_BATCH_SIZE):
-        group = slice(base, base + ROLLOUT_BATCH_SIZE)
-        envs: list[FactorioEnv] = []
-        used_seeds: list[int] = []
-        obs_list: list[np.ndarray] = []
-        for kind, seed in zip(kinds[group], seeds[group]):
-            env = FactorioEnv(size=size, idx=0)
-            # Only the terminal throughput is ever shown, and the per-step
-            # simulate_throughput otherwise dominates the rollout.
-            env._full_diagnostics = False
-            obs, used = _reset_rollout_env(env, kind, seed, num_missing_entities)
-            envs.append(env)
-            used_seeds.append(used)
-            obs_list.append(obs)
-
-        obs_NCWH = np.stack(obs_list)
-        active = [True] * len(envs)
-        with torch.no_grad():
-            while any(active):
-                batch = torch.as_tensor(
-                    obs_NCWH, dtype=torch.float32, device=_AGENT_DEVICE
-                )
-                out = agent.sample_action(
-                    batch, temperature=0.0, legal_mask=legal_mask,
-                    eot_threshold=EOT_STOP_THRESHOLD, compute_value=False,
-                )
-                act = out["action"]
-                xy = act["xy"].cpu().numpy()
-                ent = act["entity"].reshape(-1).cpu().numpy()
-                dirs = act["direction"].reshape(-1).cpu().numpy()
-                item = act["item"].reshape(-1).cpu().numpy()
-                misc = act["misc"].reshape(-1).cpu().numpy()
-                eot = act["eot"].reshape(-1).cpu().numpy()
-                step += 1
-                for i, env in enumerate(envs):
-                    if not active[i]:
-                        continue
-                    action = {
-                        "xy": np.array([int(xy[i, 0]), int(xy[i, 1])], dtype=int),
-                        "entity": int(ent[i]),
-                        "direction": int(dirs[i]),
-                        "item": int(item[i]),
-                        "misc": int(misc[i]),
-                        "eot": int(eot[i]),
-                    }
-                    next_obs, _reward, terminated, truncated, info = env.step(action)
-                    obs_NCWH[i] = next_obs
-                    if terminated or truncated:
-                        active[i] = False
-                        yield _rollout_result(
-                            base + i, env, used_seeds[i], info, terminated
-                        )
-                yield {"type": "progress", "step": step}
+    per_group = max(1, SCAN_BATCH_CHAINS // best_of)
+    for base in range(0, len(seeds), per_group):
+        built = [
+            (kind, *_build_with_retry(kind, size, seed))
+            for kind, seed in zip(kinds[base : base + per_group], seeds[base : base + per_group])
+        ]
+        blanks = [world_to_state(blank_entities(factory)[0].numpy()) for _, factory, _ in built]
+        cond = torch.as_tensor(np.stack(blanks), device=_DEVICE).repeat_interleave(best_of, 0)
+        toks, conf, converged, n_refine = generate(
+            model, cond, SftArgs.gen_steps, SftArgs.gen_refine, SftArgs.gen_temperature
+        )
+        worlds = _legalize(model, cond, toks, conf)
+        raws = [_thput_raw(w) for w in worlds]
+        for i, (kind, factory, seed) in enumerate(built):
+            j = max(range(i * best_of, (i + 1) * best_of), key=lambda j: raws[j])
+            raw, world = raws[j], worlds[j]
+            yield {
+                "type": "result",
+                "index": base + i,
+                "kind": kind.name,
+                "seed": seed,
+                "size": size,
+                "steps": SftArgs.gen_steps + int(n_refine[j]),
+                "stopped_by": "converged" if converged[j] else "max_steps",
+                "thput_normed": min(1.0, raw / factory.max_throughput) if factory.max_throughput > 0 else 0.0,
+                "thput_raw": raw,
+                "max_throughput": float(factory.max_throughput),
+                "num_placed_entities": _num_entities(world),
+                "grid": world_CWH_to_grid(torch.from_numpy(world)),
+                "solved_grid": world_CWH_to_grid(factory.world_CWH),
+            }
+        yield {"type": "progress", "step": base + len(built)}
     yield {"type": "done"}
 
 
@@ -1101,14 +810,8 @@ def _batch_rollout_request(payload: dict) -> Iterator[dict]:
         # Kinds cycle before seeds so a stopped scan still covers every lesson.
         kinds = [kind for _ in range(count) for kind in chosen]
         seeds = [start_seed + i for i in range(count) for _ in chosen]
-        clear = payload.get("num_missing_entities")
-        num_missing = None if clear in (None, "") else max(0, int(clear))
         yield from _batch_rollout(
-            kinds=kinds,
-            seeds=seeds,
-            size=size,
-            num_missing_entities=num_missing,
-            legal_mask=bool(payload.get("legal_mask", True)),
+            kinds=kinds, seeds=seeds, size=size, best_of=max(1, int(payload.get("best_of", 1)))
         )
     except Exception as e:
         traceback.print_exc()
@@ -1217,12 +920,11 @@ def render_index(default_size: int) -> str:
         '</div>'
         '<div id="model-load-status" class="help"></div>'
         '</div>'
-        '<h3 style="margin-top:0.8em;">Prediction</h3>'
-        '<div id="model-info" class="help">(no prediction yet)</div>'
-        '<pre id="model-action"></pre>'
+        '<h3 style="margin-top:0.8em;">Denoise</h3>'
+        '<div id="model-info" class="help">(no chain yet)</div>'
         '<div class="model-buttons">'
-        '<button id="model-apply" title="Apply the predicted placement at the highlighted tile">'
-        'Apply prediction <span class="kbd">a</span></button>'
+        '<button id="model-apply" title="Run one denoising step: a fresh chain starts from noise around the markers">'
+        'Denoise step <span class="kbd">a</span></button>'
         '</div>'
         '</div>'
     )
@@ -1316,9 +1018,6 @@ def render_index(default_size: int) -> str:
     position: relative; background: #fff;
   }}
   table.grid td.selected {{ outline: 2px solid #28c850; outline-offset: -2px; }}
-  table.grid td.predicted {{
-    box-shadow: inset 0 0 0 3px #0d47a1;
-  }}
   table.grid td.unavailable {{
     background:
       repeating-linear-gradient(45deg,
@@ -1350,12 +1049,6 @@ def render_index(default_size: int) -> str:
     text-shadow: 0 0 1px white, 0 0 1px white;
     pointer-events: none;
   }}
-  /* "ghost" = a predicted placement drawn on top of an empty cell. One
-     ghost per candidate tile (all tiles with p(tile) > threshold).
-     Opacity is set inline per element so it can encode the model's
-     confidence — solid for high p(tile), faded for marginal ones. The
-     argmax tile additionally gets the dark-blue inset border via
-     td.predicted so the top pick stays unambiguous. */
   .editor label {{ display: block; font-size: 0.8em; margin-top: 0.4em; }}
   .editor select, .editor button {{ width: 100%; padding: 0.2em; }}
   .out-img {{ max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }}
@@ -1585,11 +1278,8 @@ def render_index(default_size: int) -> str:
     <label title="Seed the next batch starts from. Advances by the seed count after each run, so repeated clicks keep drawing fresh factories.">
       start seed <input id="scan-seed" type="number" value="0" step="1">
     </label>
-    <label title="Entities to remove before the model rebuilds. Blank = remove everything the lesson allows (source, sink and reserved tiles always survive).">
-      entities to clear <input id="scan-clear" type="number" min="0" placeholder="all" style="width:4.5em">
-    </label>
-    <label title="Restrict the tile head's argmax to empty, buildable cells — what sft.run_rollout_eval does. Off shows the raw head, including illegal proposals.">
-      <input id="scan-mask" type="checkbox" checked> legal-tile mask
+    <label title="Chains denoised per factory; the gallery shows the one with the highest throughput, as val/thput@N scores it">
+      best of <input id="scan-best-of" type="number" min="1" value="8" style="width:4.5em">
     </label>
     <label title="Also draw the generator's own solution next to each rebuild">
       <input id="scan-ref" type="checkbox"> show reference
@@ -1601,7 +1291,7 @@ def render_index(default_size: int) -> str:
         <option value="seed">run order</option>
       </select>
     </label>
-    <button id="scan-run" title="Blank each seed's factory, let the model rebuild it until its EOT head fires, and add every final factory to the gallery">
+    <button id="scan-run" title="Blank each seed's factory to its markers, denoise it from noise, and add every final factory to the gallery">
       Run scan
     </button>
     <button id="scan-stop" disabled>Stop</button>
@@ -1616,9 +1306,9 @@ def render_index(default_size: int) -> str:
   <div class="scan-summary" id="scan-summary">no scan yet</div>
   <div class="scan-stats" id="scan-stats"></div>
   <div class="scan-filter" id="scan-filter">
-    <label title="Space-separated clauses that must all hold. Operators: = != &lt; &lt;= &gt; &gt;=. Fields: lesson, thput, raw, steps, seed, placed, invalid, reach, eot. A comma list after = means any of.">
+    <label title="Space-separated clauses that must all hold. Operators: = != &lt; &lt;= &gt; &gt;=. Fields: lesson, thput, raw, steps, seed, placed, converged. A comma list after = means any of.">
       filter <input id="scan-q" size="60" spellcheck="false"
-        placeholder="lesson=A,B thput>=0.5 eot=false steps<=123">
+        placeholder="lesson=A,B thput>=0.5 converged=false steps<=12">
     </label>
     <span id="scan-filter-status"></span>
   </div>
@@ -1630,12 +1320,14 @@ const HOTBAR = {json.dumps(HOTBAR)};
 const DIR_ARROW = {{ NONE: '', NORTH: '↑', EAST: '→', SOUTH: '↓', WEST: '←' }};
 const MISC_GLYPH = {{ NONE: '', UNDERGROUND_DOWN: '▼', UNDERGROUND_UP: '▲' }};
 const DIR_CYCLE = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
-const EOT_STOP_THRESHOLD = {EOT_STOP_THRESHOLD};
+// Tiles the model is less sure of than this get a confidence badge: they are
+// the ones the next step is likely to change.
+const UNSURE_BELOW = 0.9;
 const OK_ICON = '{OK_ICON}';
 const BAD_ICON = '{BAD_ICON}';
 // `modelLoaded` is set by refreshModelInfo() at startup and after each
-// successful /load_model call. Prediction calls are gated on it so we
-// don't pester the server with /predict when no checkpoint is loaded.
+// successful /load_model call. Denoise calls are gated on it so we
+// don't pester the server with /denoise when no checkpoint is loaded.
 let modelLoaded = false;
 
 let SIZE = {default_size};
@@ -1644,7 +1336,7 @@ let selected = null;     // {{x, y}} or null
 let activeHotbar = null; // 0..9 or null
 let cursor = null;   // an entity picked up with z: {{entity, direction, item, misc}}
 let hovered = null;  // the grid cell under the mouse, {{x, y}}
-let prediction = null;   // last /predict response (or null)
+let denoised = null;     // last /denoise response, while `grid` is still its output
 let gridSource = null;   // what produced `grid`, or null if hand-built
 let gridSnapshot = '';   // `grid` as adopted, to detect later edits
 let autoApplying = false;
@@ -1698,28 +1390,16 @@ function cellGlyphs(c) {{
   return html;
 }}
 
-// The stop head is authoritative for every apply path in the UI, not just
-// the visualisation: once it fires, a rollout is over, so the page must not
-// place anything more either.
-function eotStop(pred) {{
-  return !!pred && pred.eot_prob > EOT_STOP_THRESHOLD;
-}}
-
-function eotStopMessage(pred) {{
-  return 'model says done (eot ' + fmtPct(pred.eot_prob) + ')';
+// The server keeps no chain state, so the chain is only valid while `grid`
+// is exactly what its last step returned: any other edit starts a new one.
+function currentChain() {{
+  if (denoised && JSON.stringify(grid) !== denoised.gridJson) denoised = null;
+  return denoised;
 }}
 
 function renderGrid() {{
   const host = document.getElementById('grid-host');
-  // Build (x,y) -> candidate map once per render so the per-cell
-  // ghost lookup is O(1).
-  // When the model's EOT probability crosses 0.5 it's saying "I'm done
-  // placing things" — the candidate ghosts would just be misleading
-  // hallucinations of a forced placement, so suppress them.
-  const candByXY = {{}};
-  if (prediction && prediction.candidates && !eotStop(prediction)) {{
-    for (const c of prediction.candidates) candByXY[c.x + ',' + c.y] = c;
-  }}
+  const conf = currentChain() ? denoised.conf : null;
   const tbl = document.createElement('table');
   tbl.className = 'grid';
   for (let y = 0; y < SIZE; y++) {{
@@ -1730,44 +1410,14 @@ function renderGrid() {{
       const c = grid[y][x];
       if (c.footprint === 'UNAVAILABLE') td.classList.add('unavailable');
       if (selected && selected.x === x && selected.y === y) td.classList.add('selected');
-      // The blue argmax border tracks the same suppression rule as the
-      // ghost overlays: if the model says it's done (eot > 0.5), don't
-      // visually nominate a "next placement" tile.
-      if (
-        prediction && prediction.x === x && prediction.y === y
-        && !eotStop(prediction)
-      ) td.classList.add('predicted');
 
       const inner = document.createElement('div');
       inner.className = 'cell-inner';
       let html = `<div class="xy">${{x}},${{y}}</div>` + cellGlyphs(c);
-      // Ghost overlay: render every candidate tile (all tiles where
-      // p(tile) > threshold) on top of empty cells, with opacity
-      // proportional to the tile probability so the user can see what
-      // the model is *considering*, not just the top pick. The argmax
-      // tile additionally gets the dark-blue inset border (above).
-      // Skip non-empty cells to keep the visualisation legible.
-      const cand = candByXY[x + ',' + y];
-      if (cand && c.entity === 'empty') {{
-        // Map p in [0.05, 1.0] to opacity in [0.18, 0.95] so the
-        // weakest visible ghost still has some presence and the
-        // strongest reads as near-solid.
-        const op = (0.18 + 0.77 * cand.p_tile).toFixed(2);
-        if (cand.entity && cand.entity !== 'empty')
-          html += `<i class="ent ghost ic-${{cand.entity}}" style="opacity:${{op}}"></i>`;
-        if (cand.item && cand.item !== 'empty')
-          html += `<i class="itm ghost ic-${{cand.item}}" style="opacity:${{op}}"></i>`;
-        const garrow = DIR_ARROW[cand.direction] || '';
-        if (garrow) html += `<div class="arrow ghost" style="opacity:${{op}}">${{garrow}}</div>`;
-        const gmisc = MISC_GLYPH[cand.misc] || '';
-        if (gmisc) html += `<div class="misc ghost" style="opacity:${{op}}">${{gmisc}}</div>`;
-        // Percentage badge bottom-right: same data the ghost opacity
-        // encodes, but as a precise number for tiles where the eye
-        // can't tell a 60% ghost from a 75% ghost.
-        const pct = cand.p_tile >= 0.01
-          ? Math.round(cand.p_tile * 100) + '%'
-          : '<1%';
-        html += `<div class="p-badge" style="color:${{pBadgeColor(cand.p_tile)}}">${{pct}}</div>`;
+      const p = conf ? conf[y][x] : 1;
+      if (p < UNSURE_BELOW) {{
+        const pct = p >= 0.01 ? Math.round(p * 100) + '%' : '<1%';
+        html += `<div class="p-badge" style="color:${{pBadgeColor(1 - p)}}">${{pct}}</div>`;
       }}
       inner.innerHTML = html;
       if (cursor && hovered && hovered.x === x && hovered.y === y) {{
@@ -1796,17 +1446,6 @@ function renderGrid() {{
             placeEntity(x, y, ent);
             return;
           }}
-        }}
-        // Clicking a tile that's showing a ghost prediction applies it,
-        // just like Apply but for *any* candidate — not only the blue
-        // argmax. Gated on the same condition that drew the ghost here
-        // (candidate present + cell empty) so the click does exactly
-        // what the user sees. An active hotbar still wins (handled
-        // above): an explicit palette pick overrides the suggestion.
-        const cand = candByXY[x + ',' + y];
-        if (cand && c.entity === 'empty') {{
-          applyCandidate(cand);
-          return;
         }}
         renderGrid(); syncEditor();
       }});
@@ -2032,8 +1671,6 @@ function showThput(data) {{
       : '');
 }}
 
-// Every response that already built the world carries the throughput, so this
-// is only for the case where nothing else will ask: no model loaded.
 async function computeThroughput() {{
   try {{
     const resp = await fetch('/throughput', {{
@@ -2047,10 +1684,10 @@ async function computeThroughput() {{
   }}
 }}
 
-let _predictionTimer = null;
+let _thputTimer = null;
 let _graphTimer = null;
 function cancelCompute() {{
-  clearTimeout(_predictionTimer);
+  clearTimeout(_thputTimer);
   clearTimeout(_graphTimer);
 }}
 // Every grid change ends in scheduleCompute, so recording history here covers
@@ -2076,7 +1713,6 @@ function stepHistory(from, to) {{
   const state = JSON.parse(historyState);
   SIZE = state.size;
   grid = state.grid;
-  prediction = null;
   if (selected && (selected.x >= SIZE || selected.y >= SIZE)) selected = null;
   document.getElementById('size').value = SIZE;
   renderGrid(); syncEditor();
@@ -2089,157 +1725,55 @@ function scheduleCompute() {{
   // Whatever number is on screen belongs to a grid that no longer exists.
   showThputPending();
   if (autoApplying) return;
-  // Prediction is interactive; refresh it almost immediately, and the
-  // throughput rides back with it. Matplotlib graph rendering is ~1s and
-  // shares the server thread, so only do it after the user has actually
-  // paused — the readout must never queue behind it.
-  _predictionTimer = setTimeout(computePrediction, 25);
+  // The throughput costs ~0.1 ms, so refresh it almost immediately.
+  // Matplotlib graph rendering is ~1s and shares the server thread, so only
+  // do it after the user has actually paused — the readout must never queue
+  // behind it.
+  _thputTimer = setTimeout(computeThroughput, 25);
   _graphTimer = setTimeout(computeGraph, 1000);
 }}
 
-// Format a probability as a short percent string. Matches the user's
-// preferred ".3%" style (no leading zero for sub-1% values) so the
-// numbers stay compact even when the top-p tail gets long.
-function fmtPct(p) {{
-  const v = p * 100;
-  if (v >= 10) return v.toFixed(1) + '%';
-  if (v >= 1)  return v.toFixed(1) + '%';
-  return v.toFixed(1).replace(/^0/, '') + '%';
+function denoiseStatus(data) {{
+  const step = data.chain.step;
+  if (data.converged) return 'converged: step ' + step + ' reproduced its input';
+  if (data.done) return 'stopped after ' + step + ' steps without converging';
+  return 'step ' + step + ' · ' + (data.phase === 'denoise'
+    ? 're-noised to ' + data.noise.toFixed(2) + ' for the next step'
+    : 'refining toward a fixed point');
 }}
 
-function fmtTopNamed(top, rest) {{
-  const parts = top.map(t => t.name + ' (' + fmtPct(t.p) + ')');
-  parts.push('rest (' + fmtPct(rest) + ')');
-  return parts.join(', ');
-}}
-
-function fmtTopTile(top, rest) {{
-  const parts = top.map(t => '(' + t.x + ',' + t.y + ') (' + fmtPct(t.p) + ')');
-  parts.push('rest (' + fmtPct(rest) + ')');
-  return parts.join(', ');
-}}
-
-async function computePrediction() {{
-  if (!modelLoaded) {{
-    prediction = null;
-    const info = document.getElementById('model-info');
-    if (info) info.textContent = '(no model loaded)';
-    const out = document.getElementById('model-action');
-    if (out) out.textContent = '';
-    renderGrid();
-    computeThroughput();
-    return;
-  }}
-  const info = document.getElementById('model-info');
-  const out = document.getElementById('model-action');
-  if (info) info.textContent = 'predicting…';
-  try {{
-    const resp = await fetch('/predict', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ grid }}),
-    }});
-    const data = await resp.json();
-    if (data.error) {{
-      if (info) info.textContent = 'error: ' + data.error;
-      if (out) out.textContent = '';
-      prediction = null;
-      renderGrid();
-      showThput({{ thput: null, note: 'error: ' + data.error }});
-      return;
-    }}
-    prediction = data;
-    showThput(data);
-    if (info) {{
-      info.textContent = eotStop(data)
-        ? eotStopMessage(data) + ' — no placement offered'
-        : 'predicted next placement at (' + data.x + ', ' + data.y + ')';
-    }}
-    if (out) {{
-      // Each line: "head:   cand1 (p1), cand2 (p2), ..., rest (R)".
-      // The <pre> uses white-space:pre + overflow-x:auto so long top-p
-      // lines scroll horizontally instead of wrapping.
-      // EOT line: model's "I'm done" probability. The {{stop}} /
-      // {{continue}} marker matches the threshold in
-      // agent.eot_should_stop — a quick read for whether the model
-      // would terminate an inference rollout right now.
-      const eotPct = fmtPct(data.eot_prob);
-      const eotMark = eotStop(data) ? '[stop]' : '[continue]';
-      const lines = [
-        '  eot:       ' + eotPct + ' ' + eotMark,
-        '  tile:      ' + fmtTopTile(data.tile_top, data.tile_rest),
-        '  entity:    ' + fmtTopNamed(data.entity_top, data.entity_rest),
-        '  direction: ' + fmtTopNamed(data.direction_top, data.direction_rest),
-        '  item:      ' + fmtTopNamed(data.item_top, data.item_rest),
-        '  misc:      ' + fmtTopNamed(data.misc_top, data.misc_rest),
-      ];
-      out.textContent = lines.join('\\n');
-    }}
-    renderGrid();
-  }} catch (e) {{
-    if (info) info.textContent = 'predict failed: ' + e;
-  }}
-}}
-
-async function requestFastPrediction() {{
-  const resp = await fetch('/predict', {{
+// One model call, continuing the current chain, or starting a fresh one from
+// noise once the last has finished.
+async function denoiseStep() {{
+  const chain = currentChain();
+  const resp = await fetch('/denoise', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
-    body: JSON.stringify({{ grid, detail: 'action' }}),
+    body: JSON.stringify({{ grid, chain: chain && !chain.done ? chain.chain : null }}),
   }});
   const data = await resp.json();
   if (data.error) throw new Error(data.error);
+  grid = data.grid;
+  denoised = {{ ...data, gridJson: JSON.stringify(grid) }};
+  const info = document.getElementById('model-info');
+  if (info) info.textContent = denoiseStatus(data);
   return data;
 }}
 
-// Apply through the server-side placement function shared with
-// FactorioEnv.step. The browser deliberately has no copy of multi-tile
-// geometry or action-validity rules.
-async function applyCandidate(cand, interactive = true) {{
-  const {{ x, y, entity, direction, item, misc }} = cand;
+function denoiseFailed(e) {{
   const info = document.getElementById('model-info');
-  try {{
-    const resp = await fetch('/apply_prediction', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ grid, prediction: {{
-        x, y, entity, direction, item, misc,
-      }} }}),
-    }});
-    const data = await resp.json();
-    if (data.error) {{
-      if (info) info.textContent = 'apply failed: ' + data.error;
-      return false;
-    }}
-    if (!data.applied) {{
-      if (info) {{
-        info.textContent =
-          'prediction rejected: ' + (data.invalid_reason || 'invalid action');
-      }}
-      return false;
-    }}
-    grid = data.grid;
-    selected = {{ x, y }};
-    prediction = null;
-    if (interactive) {{
-      renderGrid(); syncEditor();
-      scheduleCompute();
-    }}
-    return true;
-  }} catch (e) {{
-    if (info) info.textContent = 'apply failed: ' + e;
-    return false;
-  }}
+  if (info) info.textContent = 'denoise failed: ' + e;
 }}
 
-function applyPrediction() {{
-  if (!prediction) return;
-  if (eotStop(prediction)) {{
-    const info = document.getElementById('model-info');
-    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
-    return;
+async function applyStep() {{
+  if (!modelLoaded) return;
+  try {{
+    await denoiseStep();
+    renderGrid(); syncEditor();
+    scheduleCompute();
+  }} catch (e) {{
+    denoiseFailed(e);
   }}
-  applyCandidate(prediction);
 }}
 
 function renderAutoApplyFrame() {{
@@ -2252,40 +1786,21 @@ function renderAutoApplyFrame() {{
 }}
 
 async function runAutoApply(generation) {{
-  const info = document.getElementById('model-info');
-  let count = 0;
-  const started = performance.now();
   try {{
     while (autoApplying && generation === autoApplyGeneration) {{
-      const action = await requestFastPrediction();
-      if (!autoApplying || generation !== autoApplyGeneration) break;
-      showThput(action);
-      if (eotStop(action)) {{
-        autoApplying = false;
-        if (info) {{
-          info.textContent =
-            'fast apply: stopped after ' + count + ' placements · ' +
-            eotStopMessage(action);
-        }}
+      const data = await denoiseStep();
+      if (generation !== autoApplyGeneration) {{
+        // Released mid-request: stopAutoApply already settled the old grid.
+        renderGrid(); syncEditor(); scheduleCompute();
         break;
       }}
-      const applied = await applyCandidate(action, false);
-      if (!applied) {{
-        autoApplying = false;
-        break;
-      }}
-      count += 1;
       renderAutoApplyFrame();
-      if (info) {{
-        const elapsed = Math.max((performance.now() - started) / 1000, 0.001);
-        info.textContent =
-          'fast apply: ' + count + ' placements · ' +
-          (count / elapsed).toFixed(1) + '/s';
-      }}
+      showThput(data);
+      if (data.done) autoApplying = false;
     }}
   }} catch (e) {{
     autoApplying = false;
-    if (info) info.textContent = 'fast apply failed: ' + e;
+    denoiseFailed(e);
   }}
 }}
 
@@ -2307,8 +1822,8 @@ function stopAutoApply() {{
   }}
   renderGrid();
   syncEditor();
-  // Restore the rich probability/ghost view promptly; leave the PNG until
-  // one second of idle so it can never throttle the held-key loop.
+  // Leave the PNG until one second of idle so it can never throttle the
+  // held-key loop.
   scheduleCompute();
 }}
 
@@ -2316,25 +1831,24 @@ function beginApplyKey() {{
   if (!modelLoaded) return;
   applyKeyHeld = true;
   cancelCompute();
-  // Preserve tap-to-apply: consume the visible prediction once, then only
-  // enter the continuous request pump if the key remains down.
-  let firstApply = Promise.resolve(true);
-  if (eotStop(prediction)) {{
-    // Resolving false also keeps the hold from entering the request pump.
-    firstApply = Promise.resolve(false);
-    const info = document.getElementById('model-info');
-    if (info) info.textContent = eotStopMessage(prediction) + ' — nothing applied';
-  }} else if (prediction) {{
-    firstApply = applyCandidate(prediction, false);
-    firstApply.then((applied) => {{
-      if (applied) renderAutoApplyFrame();
-    }});
-  }}
+  // A tap is one step; only a key still down after it enters the loop.
+  const firstStep = denoiseStep().then((data) => {{
+    if (applyKeyHeld) {{
+      renderAutoApplyFrame();
+      showThput(data);
+    }} else {{
+      renderGrid(); syncEditor(); scheduleCompute();
+    }}
+    return !data.done;
+  }}, (e) => {{
+    denoiseFailed(e);
+    return false;
+  }});
   clearTimeout(autoApplyHoldTimer);
   autoApplyHoldTimer = setTimeout(async () => {{
     autoApplyHoldTimer = null;
-    const applied = await firstApply;
-    if (applyKeyHeld && applied) startAutoApply();
+    const more = await firstStep;
+    if (applyKeyHeld && more) startAutoApply();
   }}, 120);
 }}
 
@@ -2426,7 +1940,7 @@ document.getElementById('copy-yaml').addEventListener('click', (ev) =>
 document.getElementById('copy-ascii').addEventListener('click', (ev) =>
   copyRender(grid, ev.currentTarget));
 
-document.getElementById('model-apply').addEventListener('click', applyPrediction);
+document.getElementById('model-apply').addEventListener('click', applyStep);
 document.getElementById('model-load').addEventListener('click', loadModel);
 
 // Minimal HTML escape so we can safely inject artifact names + run
@@ -2449,8 +1963,9 @@ async function refreshModelInfo() {{
     const data = await resp.json();
     if (data.loaded) {{
       modelLoaded = true;
-      const shape = 'layers=' + (data.layers || []).join('-') +
-        ' k=' + data.kernel_size + ' ' + data.device;
+      const a = data.arch;
+      const shape = 'w' + a.width + 'x' + a.levels + ' attn' + a.attn_layers + ' ' +
+        (data.params / 1e6).toFixed(1) + 'M params ' + data.device;
       const src = data.source || {{}};
       if (src.kind === 'wandb') {{
         // Show the run id directly — that's what the user types into
@@ -2493,9 +2008,8 @@ async function loadModel() {{
     }}
     status.textContent = 'loaded ✓';
     await refreshModelInfo();
-    // Recompute prediction with the new weights so the UI updates
-    // immediately instead of waiting for the next grid edit.
-    computePrediction();
+    denoised = null;
+    renderGrid();
   }} catch (e) {{
     status.textContent = 'load failed: ' + e;
   }} finally {{
@@ -2503,14 +2017,12 @@ async function loadModel() {{
   }}
 }}
 // Adopt a whole grid as the Build tab's working state. The stale selection
-// and prediction have to be dropped along with the old grid — otherwise the
-// ghost overlays and argmax border are drawn over a factory they don't
-// belong to — so every wholesale swap goes through here.
+// has to be dropped along with the old grid, so every wholesale swap goes
+// through here.
 function adoptGrid(size, cells, source) {{
   SIZE = size;
   grid = cells;
   selected = null;
-  prediction = null;
   gridSource = source || null;
   gridSnapshot = JSON.stringify(grid);
   document.getElementById('size').value = SIZE;
@@ -2678,8 +2190,8 @@ function bindHelp() {{
 }}
 
 // ── Scan tab ────────────────────────────────────────────────────────────
-// A scan blanks N factories, lets the model rebuild each one until its EOT
-// head fires, and lays the finished factories out side by side.
+// A scan blanks N factories to their markers, denoises each from noise, and
+// lays the finished factories out side by side.
 let scanResults = [];
 let scanAbort = null;
 let scanIndexBase = 0;
@@ -2698,13 +2210,12 @@ const tabHash = {{ build: '#build', scan: '#scan' }};
 let loadedBuildHash = null;
 
 // Gallery filter: space-separated clauses that must all hold, e.g.
-// `lesson=A,B thput>=0.5 eot=false steps<=123`. A comma list after = or !=
+// `lesson=A,B thput>=0.5 converged=false steps<=12`. A comma list after = or !=
 // means any of; in the URL the clauses are joined with & instead of spaces.
 const FILTER_FIELDS = {{
   lesson: r => r.kind, thput: r => r.thput_normed, raw: r => r.thput_raw,
   steps: r => r.steps, seed: r => r.seed, placed: r => r.num_placed_entities,
-  invalid: r => r.invalid_actions, reach: r => r.frac_reachable,
-  eot: r => r.stopped_by === 'eot',
+  converged: r => r.stopped_by === 'converged',
 }};
 const CLAUSE = /^([a-z]+)(<=|>=|!=|=|<|>)(.+)$/;
 let scanFilter = {{ text: '', clauses: [], error: null }};
@@ -2829,9 +2340,9 @@ function scanCard(r, showRef) {{
   // Binary because what counts as a good thput differs by lesson. The border
   // is the fastest read in the gallery: a cluster of zeros registers first.
   card.style.borderLeftColor = fracColor(r.thput_normed > 0 ? 1 : 0);
-  const stop = r.stopped_by === 'eot'
-    ? 'stopped at ' + r.steps
-    : 'no stop, ' + r.steps + ' steps';
+  const stop = r.stopped_by === 'converged'
+    ? 'converged at step ' + r.steps
+    : 'not converged, ' + r.steps + ' steps';
   const head =
     `<div class="hd"><a href="${{scanHref('lesson=' + r.kind)}}" data-lesson="${{r.kind}}">` +
     `${{escHtml(r.kind)}}</a><button class="copy-yaml"` +
@@ -2841,8 +2352,7 @@ function scanCard(r, showRef) {{
     ` title="Open this seed's reference factory in the Build tab">${{r.seed}}</a>` +
     ` · thput ${{r.thput_normed.toFixed(3)}}` +
     ` (${{r.thput_raw.toFixed(2)}} of ${{r.max_throughput.toFixed(2)}} i/s)</div>` +
-    `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed · ` +
-    `${{r.invalid_actions}} invalid · reach ${{Math.round(r.frac_reachable * 100)}}%</div>`;
+    `<div class="sub">${{stop}} · ${{r.num_placed_entities}} placed</div>`;
   const built =
     `<figure><figcaption>built</figcaption>${{miniGrid(r.grid)}}</figure>`;
   const ref = showRef
@@ -2904,12 +2414,12 @@ function scanSummary(status) {{
   const mean = t.reduce((a, b) => a + b, 0) / n;
   const zeros = t.filter(v => v <= 0).length;
   const atRef = t.filter(v => v >= REFERENCE_THPUT).length;
-  const eot = scanResults.filter(r => r.stopped_by === 'eot').length;
+  const converged = scanResults.filter(r => r.stopped_by === 'converged').length;
   const link = (query, text) => `<a href="${{scanHref(query)}}">${{text}}</a>`;
   el.innerHTML =
     `${{n}} done · mean thput ${{mean.toFixed(3)}} · ${{link('thput<=0', zeros + ' at zero')}} · ` +
     `${{link('thput>=' + REFERENCE_THPUT, atRef + ' ≥ reference thput')}} · ` +
-    `${{link('eot=true', 'eot fired ' + eot + '/' + n)}}` +
+    `${{link('converged=true', 'converged ' + converged + '/' + n)}}` +
     (status ? '  ·  ' + escHtml(status) : '');
 }}
 
@@ -2934,7 +2444,7 @@ function renderScanStats() {{
       mean: rs.reduce((a, r) => a + r.thput_normed, 0) / n,
       nonzero: rs.filter(r => r.thput_normed > 0).length,
       atRef: rs.filter(r => r.thput_normed >= REFERENCE_THPUT).length,
-      eot: rs.filter(r => r.stopped_by === 'eot').length,
+      converged: rs.filter(r => r.stopped_by === 'converged').length,
     }};
   }});
   rows.sort((a, b) =>
@@ -2942,7 +2452,7 @@ function renderScanStats() {{
     a.kind.localeCompare(b.kind));
   const head =
     '<tr><th>lesson</th><th>runs</th><th>mean thput</th><th>thput = 0</th>' +
-    '<th>thput &gt; 0</th><th>≥ reference thput</th><th>eot fired</th></tr>';
+    '<th>thput &gt; 0</th><th>≥ reference thput</th><th>converged</th></tr>';
   const body = rows.map(row => {{
     const link = (query, text) =>
       `<a href="${{scanHref(('lesson=' + row.kind + ' ' + query).trim())}}">${{text}}</a>`;
@@ -2956,7 +2466,7 @@ function renderScanStats() {{
       `<td style="color:${{fracColor(row.nonzero / row.n)}}">` +
       `${{link('thput>0', frac(row.nonzero, row.n))}}</td>` +
       `<td>${{link('thput>=' + REFERENCE_THPUT, frac(row.atRef, row.n))}}</td>` +
-      `<td>${{link('eot=true', frac(row.eot, row.n))}}</td></tr>`;
+      `<td>${{link('converged=true', frac(row.converged, row.n))}}</td></tr>`;
   }}).join('');
   host.innerHTML = `<table>${{head}}${{body}}</table>`;
 }}
@@ -2974,15 +2484,12 @@ async function runScan() {{
     document.getElementById('scan-summary').textContent = 'tick at least one lesson';
     return;
   }}
-  const clearRaw = parseInt(document.getElementById('scan-clear').value, 10);
   const body = {{
     kinds,
     count: parseInt(document.getElementById('scan-count').value, 10) || 1,
     seed: parseInt(document.getElementById('scan-seed').value, 10) || 0,
     size: SIZE,
-    legal_mask: document.getElementById('scan-mask').checked,
-    num_missing_entities:
-      Number.isFinite(clearRaw) && clearRaw >= 0 ? clearRaw : null,
+    best_of: parseInt(document.getElementById('scan-best-of').value, 10) || 1,
   }};
   // Each run appends. Indices are offset by the running total so they stay
   // unique across runs and keep the server's within-run ordering, which is
@@ -3022,7 +2529,7 @@ async function runScan() {{
         const ev = JSON.parse(line);
         if (ev.type === 'start') {{
           total = ev.n;
-          scanSummary('running ' + total + ' rollouts…');
+          scanSummary('denoising ' + total + ' factories…');
         }} else if (ev.type === 'result') {{
           ev.index += indexBase;
           scanResults.push(ev);
@@ -3037,8 +2544,8 @@ async function runScan() {{
         }} else if (ev.type === 'progress') {{
           const secs = (performance.now() - started) / 1000;
           scanSummary(
-            'step ' + ev.step + ' · ' + (scanResults.length - before) + '/' +
-            total + ' finished · ' + secs.toFixed(1) + 's'
+            (scanResults.length - before) + '/' + total + ' finished · ' +
+            secs.toFixed(1) + 's'
           );
         }} else if (ev.type === 'error') {{
           scanSummary('error: ' + ev.error);
@@ -3098,7 +2605,7 @@ function setScanKinds(checked) {{
 // site data), in which case the page starts from its defaults.
 const PREFS_KEY = 'factory-builder-prefs';
 const PREF_INPUTS = [
-  'scan-count', 'scan-seed', 'scan-clear', 'scan-mask', 'scan-ref', 'scan-sort',
+  'scan-count', 'scan-seed', 'scan-best-of', 'scan-ref', 'scan-sort',
   'lesson-kind', 'lesson-seed', 'lesson-clear',
 ];
 function savePrefs() {{
@@ -3329,8 +2836,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if self.path not in (
             "/graph",
-            "/predict",
-            "/apply_prediction",
+            "/denoise",
             "/hand_edit",
             "/load_model",
             "/load_lesson",
@@ -3360,15 +2866,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/render":
                 world_CWH = build_world(payload["grid"]).permute(2, 0, 1)
                 result = {"text": render_factory(world_CWH)}
-            elif self.path == "/predict":
-                if payload.get("detail") == "action":
-                    result = _predict_action(payload["grid"])
-                else:
-                    result = _predict(payload["grid"])
-            elif self.path == "/apply_prediction":
-                result = _apply_prediction(
-                    payload["grid"], payload["prediction"]
-                )
+            elif self.path == "/denoise":
+                result = _denoise_step(payload["grid"], payload.get("chain"))
             elif self.path == "/hand_edit":
                 result = _hand_edit(payload["grid"], payload["ops"])
             elif self.path == "/lesson_previews":
@@ -3406,7 +2905,7 @@ def main(args: Args) -> None:
         _load_checkpoint(args.checkpoint)
         _CHECKPOINT_SOURCE = {"kind": "local", "path": args.checkpoint}
     else:
-        print("(no checkpoint — model prediction panel disabled)")
+        print("(no checkpoint — denoising disabled)")
 
     httpd = _BuilderServer(("127.0.0.1", args.port), Handler)
     httpd.default_size = args.size

@@ -1,12 +1,10 @@
 """Tests for scripts/factory_builder.py — the interactive UI server.
 
-Covers the model inference path (the parts that aren't covered by
-test_sft.py): per-head top-p extraction, the agent cache that lets the
-UI resize the grid live, checkpoint loading + cache invalidation on
-swap, and the full /predict response schema.
+Covers the model path: checkpoint loading and swapping, the stateless
+one-step /denoise endpoint, and the batched seed scan.
 
 HTTP endpoints aren't exercised here — the underlying functions
-(_predict, _model_info, _swap_model) are tested directly, so wiring
+(_denoise_step, _model_info, _swap_model) are tested directly, so wiring
 them to BaseHTTPRequestHandler would only re-test stdlib socket
 behaviour. wandb downloads aren't tested either: they'd require
 mocking the wandb client, which is high-effort for low payoff."""
@@ -20,8 +18,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
-import gymnasium as gym
 import numpy as np
 import pytest
 import torch
@@ -37,79 +35,52 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 import factorion_rs  # noqa: E402
 import factory_builder as fb  # noqa: E402
+from denoise import DenoiserUNet  # noqa: E402
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
-    Channel,
     LessonKind,
+    blank_entities,
     entities,
     items,
     render_factory,
 )
-from ppo import AgentCNN, FactorioEnv, make_env  # noqa: E402
-from helpers import _TINY_ATTN  # noqa: E402
+from training_config import SftArgs  # noqa: E402
 
-
-@pytest.fixture(autouse=True)
-def _tiny_attention(monkeypatch):
-    """The builder sizes its attention stack from the training defaults, and a
-    CPU rollout through the production stack is what these tests would spend
-    their time on; they exercise the pipeline, not the model."""
-    monkeypatch.setattr(
-        fb, "AgentCNN", lambda *a, **kw: AgentCNN(*a, **kw, **_TINY_ATTN)
-    )
+TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
-def _make_tiny_checkpoint(size: int = 4, chan: int = 8) -> Path:
-    """Build a small AgentCNN at the given size + channel width, save
-    its state_dict to a temp .pt, and return the path. The model isn't
-    trained — we only care about *shape* compatibility with the inference
-    pipeline, not accuracy."""
-    env_id = "factorion/FactorioEnv-v0-fbtest"
-    if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, size, "fbtest")])
-    try:
-        agent = AgentCNN(envs, layers=(chan, chan, chan), **_TINY_ATTN)
-    finally:
-        envs.close()
+def _make_tiny_checkpoint() -> Path:
+    """Save an untrained tiny denoiser as `sft.py` saves its checkpoint. Only
+    the pipeline is under test, not the model's accuracy."""
+    model = DenoiserUNet(**TINY)
     fd, path = tempfile.mkstemp(suffix=".pt")
     os.close(fd)
-    torch.save(agent.state_dict(), path)
+    torch.save({"arch": model.arch, "model": model.state_dict()}, path)
     return Path(path)
 
 
-def _make_compiled_checkpoint(size: int = 4, chan: int = 8) -> Path:
-    """Like `_make_tiny_checkpoint`, but every key is prefixed with
-    ``_orig_mod.`` to mimic a checkpoint saved by ppo.py *after*
-    ``torch.compile`` (which wraps the module and renames params). SFT
-    checkpoints are saved uncompiled, PPO ones are not — the builder must
-    load both."""
-    plain = _make_tiny_checkpoint(size=size, chan=chan)
+@pytest.fixture
+def tiny_model():
+    path = _make_tiny_checkpoint()
     try:
-        state = torch.load(str(plain), map_location="cpu", weights_only=True)
+        fb._load_checkpoint(str(path))
+        yield path
     finally:
-        plain.unlink(missing_ok=True)
-    compiled = {f"_orig_mod.{k}": v for k, v in state.items()}
-    fd, path = tempfile.mkstemp(suffix=".pt")
-    os.close(fd)
-    torch.save(compiled, path)
-    return Path(path)
+        path.unlink(missing_ok=True)
 
 
 @pytest.fixture(autouse=True)
 def _reset_fb_state():
-    """factory_builder keeps the loaded checkpoint and per-size agents
-    as module-level globals. Reset them between tests so one test's
-    "no checkpoint loaded" state doesn't leak into the next."""
-    fb._CHECKPOINT_STATE = None
+    """factory_builder keeps the loaded model as a module-level global.
+    Reset it between tests so one test's "no checkpoint loaded" state
+    doesn't leak into the next."""
+    fb._MODEL = None
     fb._CHECKPOINT_PATH = None
-    fb._AGENT_CACHE.clear()
     yield
-    fb._CHECKPOINT_STATE = None
+    fb._MODEL = None
     fb._CHECKPOINT_PATH = None
-    fb._AGENT_CACHE.clear()
 
 
 def _empty_grid(size: int) -> list[list[dict]]:
@@ -170,46 +141,7 @@ class TestHandEdit:
 
 
 def test_default_wandb_run():
-    assert fb.Args().wandb_run == "8gqpfppb"
-
-
-# ── Pure helpers ────────────────────────────────────────────────────────────
-
-class TestTopP:
-    def test_top_p_named_includes_until_mass_reached(self):
-        # 50/30/15/5 split — top-p=0.95 should include 50+30+15=95, then
-        # the 4th item (5%) takes us to 100%, so it's the last one in.
-        probs = torch.tensor([0.50, 0.30, 0.15, 0.05])
-        names = {0: "a", 1: "b", 2: "c", 3: "d"}
-        top, rest = fb._top_p_named(probs, names, top_p=0.95)
-        assert [t["name"] for t in top] == ["a", "b", "c"]
-        assert top[0]["p"] == pytest.approx(0.50)
-        assert rest == pytest.approx(0.05)
-
-    def test_top_p_named_emits_argmax_first(self):
-        """Order must be descending so the UI's "top pick" is top[0]."""
-        probs = torch.tensor([0.10, 0.70, 0.20])
-        names = {0: "a", 1: "b", 2: "c"}
-        top, _ = fb._top_p_named(probs, names)
-        assert top[0]["name"] == "b"
-
-    def test_top_p_named_concentrated(self):
-        """If the top mass already exceeds top_p in one item, only that
-        item is returned and rest is whatever's left."""
-        probs = torch.tensor([0.99, 0.005, 0.005])
-        names = {0: "a", 1: "b", 2: "c"}
-        top, rest = fb._top_p_named(probs, names, top_p=0.95)
-        assert len(top) == 1 and top[0]["name"] == "a"
-        assert rest == pytest.approx(0.01, abs=1e-5)
-
-    def test_tile_top_p_emits_xy(self):
-        # H=3, so flat idx 4 -> (x=1, y=1); flat idx 0 -> (x=0, y=0).
-        # Probs designed so 4 is top-1 and 0 is top-2.
-        probs = torch.tensor([0.30, 0.05, 0.0, 0.0, 0.60, 0.05, 0.0, 0.0, 0.0])
-        top, rest = fb._tile_top_p(probs, H=3, top_p=0.85)
-        assert top[0] == {"x": 1, "y": 1, "p": pytest.approx(0.60)}
-        assert top[1] == {"x": 0, "y": 0, "p": pytest.approx(0.30)}
-        assert rest == pytest.approx(0.10, abs=1e-5)
+    assert fb.Args().wandb_run == "dr17bmik"
 
 
 class TestBuildWorld:
@@ -467,97 +399,30 @@ class TestLoadLesson:
         assert out["num_removed"] == 0
 
 
-# ── Model loading + cache ───────────────────────────────────────────────────
+# ── Model loading ───────────────────────────────────────────────────────────
 
 class TestCheckpointLoading:
-    def test_load_checkpoint_populates_state(self):
-        path = _make_tiny_checkpoint()
-        try:
-            fb._load_checkpoint(str(path))
-            assert fb._CHECKPOINT_STATE is not None
-            assert fb._CHECKPOINT_PATH == str(path)
-        finally:
-            path.unlink(missing_ok=True)
+    def test_load_checkpoint_builds_the_saved_arch(self, tiny_model):
+        assert fb._MODEL is not None
+        assert fb._MODEL.arch == DenoiserUNet(**TINY).arch
+        assert fb._CHECKPOINT_PATH == str(tiny_model)
 
-    def test_load_compiled_checkpoint(self):
-        """A PPO checkpoint is saved after torch.compile, so every key
-        carries an ``_orig_mod.`` prefix. The builder must strip it:
-        otherwise _encoder_arch finds zero conv keys and crashes with
-        IndexError (regression for switching to a PPO model in the UI)."""
-        path = _make_compiled_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            assert fb._CHECKPOINT_STATE is not None
-            # Keys must be normalised — nothing should retain the prefix.
-            assert all(
-                not k.startswith("_orig_mod.")
-                for k in fb._CHECKPOINT_STATE
-            )
-            info = fb._model_info()
-            assert info["loaded"] is True
-            assert info["layers"] == [8, 8, 8]
-            assert info["kernel_size"] == 3
-            # And the agent must build + load the weights without falling
-            # back to a fully random net.
-            agent = fb._get_agent(4)
-            assert agent is not None
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_swap_clears_agent_cache(self):
-        """The agent cache must be invalidated on reload — otherwise a
-        UI-triggered model swap would silently keep predicting from the
-        old weights."""
-        ckpt_a = _make_tiny_checkpoint(size=4, chan=8)
-        ckpt_b = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(ckpt_a))
-            # Prime the cache.
-            agent_a = fb._get_agent(4)
-            assert 4 in fb._AGENT_CACHE
-            # Reload triggers cache invalidation.
-            fb._load_checkpoint(str(ckpt_b))
-            assert 4 not in fb._AGENT_CACHE, (
-                "_load_checkpoint must clear _AGENT_CACHE; otherwise the "
-                "next predict() uses stale weights"
-            )
-            # Building anew yields a fresh object.
-            agent_b = fb._get_agent(4)
-            assert agent_a is not agent_b
-        finally:
-            ckpt_a.unlink(missing_ok=True)
-            ckpt_b.unlink(missing_ok=True)
-
-    def test_get_agent_caches_per_size(self):
-        path = _make_tiny_checkpoint(size=4)
-        try:
-            fb._load_checkpoint(str(path))
-            agent4_first = fb._get_agent(4)
-            agent4_second = fb._get_agent(4)
-            agent6 = fb._get_agent(6)
-            assert agent4_first is agent4_second, "Same size → cached"
-            assert agent6 is not agent4_first, "Different size → fresh agent"
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_predict_without_checkpoint_raises(self):
+    def test_denoise_without_checkpoint_raises(self):
         with pytest.raises(RuntimeError, match="no checkpoint"):
-            fb._predict(_empty_grid(4))
+            fb._denoise_step(_empty_grid(4), None)
 
 
 class TestSwapModel:
-    def test_swap_local_path(self):
-        ckpt_a = _make_tiny_checkpoint(size=4, chan=8)
-        ckpt_b = _make_tiny_checkpoint(size=4, chan=8)
+    def test_swap_local_path(self, tiny_model):
+        other = _make_tiny_checkpoint()
         try:
-            fb._load_checkpoint(str(ckpt_a))
-            info = fb._swap_model(str(ckpt_b), project="x", entity=None)
+            before = fb._MODEL
+            info = fb._swap_model(str(other), project="x", entity=None)
             assert info["loaded"] is True
-            assert info["path"] == str(ckpt_b)
-            assert fb._CHECKPOINT_PATH == str(ckpt_b)
+            assert info["path"] == str(other)
+            assert fb._MODEL is not before
         finally:
-            ckpt_a.unlink(missing_ok=True)
-            ckpt_b.unlink(missing_ok=True)
+            other.unlink(missing_ok=True)
 
     def test_swap_falls_through_to_wandb_when_no_local_file(self, monkeypatch):
         """A value that isn't an existing path is treated as a wandb run id."""
@@ -578,256 +443,54 @@ class TestSwapModel:
             fb._swap_model("", project="x", entity=None)
 
 
-# ── End-to-end /predict schema ──────────────────────────────────────────────
+# ── One denoising step per /denoise call ────────────────────────────────────
 
-class TestPredictSchema:
-    def test_predict_action_returns_compact_placement(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            result = fb._predict_action(_empty_grid(4))
-            assert set(result) == {
-                "x", "y", "entity", "direction", "item", "misc", "eot_prob",
-                # The throughput rides along so the readout can track a
-                # held-`a` build without a request of its own.
-                "thput", "note",
-            }
-            assert 0 <= result["x"] < 4
-            assert 0 <= result["y"] < 4
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_predict_action_matches_detailed_argmax(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            grid = _empty_grid(4)
-            compact = fb._predict_action(grid)
-            detailed = fb._predict(grid)
-            assert compact == {
-                key: detailed[key] for key in compact
-            }
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_predict_returns_full_schema(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            result = fb._predict(_empty_grid(4))
-            # Argmax-pick fields drive the dark-blue border + Apply.
-            for key in ("x", "y", "entity", "direction", "item", "misc"):
-                assert key in result, f"missing argmax field: {key}"
-            assert 0 <= result["x"] < 4
-            assert 0 <= result["y"] < 4
-            # Side-panel top-p distributions per head.
-            for head in ("tile", "entity", "direction", "item", "misc"):
-                assert f"{head}_top" in result
-                assert f"{head}_rest" in result
-                top = result[f"{head}_top"]
-                rest = result[f"{head}_rest"]
-                assert isinstance(top, list) and len(top) >= 1
-                # Cumulative mass should account for ~all the probability.
-                cum = sum(t["p"] for t in top) + rest
-                assert cum == pytest.approx(1.0, abs=1e-4)
-            # Ghost overlay candidates list.
-            assert "candidates" in result
-            for cand in result["candidates"]:
-                assert cand["p_tile"] > fb.CANDIDATE_TILE_THRESHOLD
-                for key in ("x", "y", "entity", "direction", "item", "misc"):
-                    assert key in cand
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_predict_returns_eot_prob(self):
-        """_predict must surface `eot_prob` in [0, 1] so the UI can show
-        the model's "I'm done" probability."""
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            result = fb._predict(_empty_grid(4))
-            assert "eot_prob" in result
-            assert isinstance(result["eot_prob"], float)
-            assert 0.0 <= result["eot_prob"] <= 1.0
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_eot_head_loaded_at_any_size(self):
-        """The pooled eot_head is grid-size independent, so the trained
-        weights load whether or not the UI size matches the checkpoint."""
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            assert fb._CHECKPOINT_STATE is not None
-            saved_w = fb._CHECKPOINT_STATE["eot_head.weight"]
-            # _get_agent moves the model to _AGENT_DEVICE (mps/cuda on
-            # local, cpu on CI); pull weights back to cpu for comparison.
-            for size in (4, 6):
-                agent = fb._get_agent(size)
-                assert torch.equal(agent.eot_head.weight.cpu(), saved_w.cpu())
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_predict_argmax_in_tile_top(self):
-        """The argmax (x, y) must appear in tile_top[0] — the UI relies
-        on this invariant when drawing the dark-blue border."""
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            result = fb._predict(_empty_grid(4))
-            tile_top0 = result["tile_top"][0]
-            assert (tile_top0["x"], tile_top0["y"]) == (result["x"], result["y"])
-        finally:
-            path.unlink(missing_ok=True)
+def _fixed_tiles(grid: list[list[dict]]) -> dict:
+    return {
+        (x, y): c for y, row in enumerate(grid) for x, c in enumerate(row)
+        if c["entity"] in fb._MARKERS or c["footprint"] == "UNAVAILABLE"
+    }
 
 
-class TestRenderIndexApplyWiring:
-    """The served HTML must wire clicking a ghosted tile to applying that
-    candidate through the server-side rollout placement path."""
+class TestDenoiseStep:
+    def test_a_chain_runs_from_noise_to_done_around_the_markers(self, tiny_model):
+        """Feeding each response's grid and chain back, as the page does, walks
+        the whole `denoise.generate` schedule: ancestral steps with falling
+        noise, then greedy refinement until a fixed point or the budget."""
+        factory, _ = fb._build_with_retry(LessonKind.SPLITTER_SPLIT, 11, 0)
+        grid = fb.world_CWH_to_grid(blank_entities(factory)[0])
+        fixed = _fixed_tiles(grid)
+        chain, noise = None, []
+        for step in range(1, SftArgs.gen_steps + SftArgs.gen_refine + 1):
+            out = fb._denoise_step(grid, chain)
+            json.dumps(out)
+            grid, chain = out["grid"], out["chain"]
+            assert chain["step"] == step
+            assert _fixed_tiles(grid) == fixed
+            assert len(out["conf"]) == 11 and all(0 <= p <= 1 for row in out["conf"] for p in row)
+            assert "thput" in out
+            assert out["phase"] == ("denoise" if step <= SftArgs.gen_steps else "refine")
+            noise.append(out["noise"])
+            if out["done"]:
+                break
+        assert out["done"]
+        assert step > SftArgs.gen_steps, "the chain must not stop before its schedule ends"
+        assert noise[: SftArgs.gen_steps] == sorted(noise[: SftArgs.gen_steps], reverse=True)
+        assert noise[SftArgs.gen_steps - 1] == 0
 
-    def test_click_applies_visible_candidate(self):
-        html = fb.render_index(default_size=11)
-        # The shared apply helper exists and the cell click handler calls
-        # it for a candidate that's actually drawn here (present + empty),
-        # mirroring the ghost-render guard.
-        assert "function applyCandidate(" in html
-        assert "applyCandidate(cand)" in html
-        assert "candByXY[x + ',' + y]" in html
-        assert "cand && c.entity === 'empty'" in html
-
-    def test_apply_helper_consumes_candidate_fields(self):
-        """applyCandidate destructures exactly the placement fields that
-        _predict emits per candidate — keep the two in lockstep."""
-        html = fb.render_index(default_size=11)
-        assert "const { x, y, entity, direction, item, misc } = cand;" in html
-        assert "fetch('/apply_prediction'" in html
-        assert "body: JSON.stringify({ grid, prediction:" in html
-        assert "grid = data.grid;" in html
-        # The same fields _predict guarantees on each candidate (see
-        # TestPredictSchema.test_predict_returns_full_schema).
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            result = fb._predict(_empty_grid(4))
-        finally:
-            path.unlink(missing_ok=True)
-        for cand in result["candidates"]:
-            for key in ("x", "y", "entity", "direction", "item", "misc"):
-                assert key in cand
-
-    def test_hold_a_uses_compact_prediction_loop(self):
-        html = fb.render_index(default_size=11)
-        assert "function beginApplyKey(" in html
-        assert "function endApplyKey(" in html
-        assert "function startAutoApply(" in html
-        assert "function stopAutoApply(" in html
-        assert "detail: 'action'" in html
-        assert "document.addEventListener('keyup'" in html
-
-
-# The page's own script, driven under node against a stub DOM: `fetch` and the
-# apply endpoint are replaced, so what runs is the real loop, not a paraphrase.
-# `applyCandidate` starts refusing at CAP placements the way a filled grid
-# would, which is the only reason a stop-blind loop terminates at all.
-_JS_HARNESS = """
-import fs from 'node:fs';
-const src = fs.readFileSync(process.argv[2], 'utf8');
-const mode = process.argv[3];
-const stub = () => new Proxy({}, {
-  get(t, k) {
-    if (k === 'style' || k === 'dataset' || k === 'classList') return stub();
-    if (k in t) return t[k];
-    return () => stub();
-  },
-  set(t, k, v) { t[k] = v; return true; },
-});
-globalThis.document = {
-  getElementById: () => stub(), createElement: () => stub(),
-  addEventListener: () => {}, querySelectorAll: () => [], body: stub(),
-};
-globalThis.addEventListener = () => {};
-globalThis.window = globalThis;
-globalThis.location = { hash: '' };
-globalThis.history = {
-  pushState: (_s, _t, h) => { location.hash = h; },
-  replaceState: (_s, _t, h) => { location.hash = h; },
-};
-globalThis.performance = { now: () => 0 };
-globalThis.requestAnimationFrame = () => 0;
-globalThis.cancelAnimationFrame = () => {};
-globalThis.fetch = async () => ({ json: async () => ({}) });
-
-const driver = `
-const CAP = 50;
-const STOP_AFTER = 3;
-let applied = 0;
-const stops = ${JSON.stringify(mode)} !== 'never_stops';
-requestFastPrediction = async () => ({
-  x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
-  item: 'empty', misc: 'NONE',
-  eot_prob: (stops && applied >= STOP_AFTER) ? 0.9 : 0.01,
-});
-applyCandidate = async () => { applied += 1; return applied < CAP; };
-modelLoaded = true;
-(async () => {
-  if (${JSON.stringify(mode)} === 'tap') {
-    prediction = { x: 0, y: 0, entity: 'transport-belt', direction: 'NORTH',
-                   item: 'empty', misc: 'NONE', eot_prob: 0.9 };
-    beginApplyKey();
-    await new Promise((r) => setTimeout(r, 250));
-    endApplyKey();
-  } else {
-    autoApplying = true;
-    autoApplyGeneration = 7;
-    await runAutoApply(7);
-  }
-  return { applied, autoApplying, threshold: EOT_STOP_THRESHOLD };
-})();
-`;
-console.log(JSON.stringify(await eval(src + driver)));
-"""
-
-
-@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
-class TestHoldToApplyRespectsEot:
-    """Holding `a` is a rollout, so the model's stop head must end it — the UI
-    kept placing entities until the grid refused them, long past eot."""
-
-    def _drive(self, tmp_path: Path, mode: str) -> dict:
-        html = fb.render_index(default_size=11)
-        js = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
-        (tmp_path / "page.js").write_text(js)
-        (tmp_path / "harness.mjs").write_text(_JS_HARNESS)
-        assert _NODE is not None  # narrowed by the skipif above
-        proc = subprocess.run(
-            [_NODE, str(tmp_path / "harness.mjs"), str(tmp_path / "page.js"), mode],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        assert proc.returncode == 0, f"node failed:\n{proc.stderr}"
-        return json.loads(proc.stdout.strip().splitlines()[-1])
-
-    def test_loop_stops_on_the_step_eot_fires(self, tmp_path):
-        out = self._drive(tmp_path, "stops")
-        assert out["applied"] == 3, (
-            "the loop must apply exactly the placements the model offered "
-            "before it declared itself done"
-        )
-        assert out["autoApplying"] is False
-
-    def test_loop_keeps_building_while_eot_stays_low(self, tmp_path):
-        """The stop is the head firing, not the loop being timid: with eot
-        pinned low it runs until the grid stops accepting placements."""
-        out = self._drive(tmp_path, "never_stops")
-        assert out["applied"] == 50
-
-    def test_holding_a_on_a_finished_factory_places_nothing(self, tmp_path):
-        """The visible prediction is already suppressed at eot > threshold, so
-        the key that consumes it must not apply the hidden placement either."""
-        out = self._drive(tmp_path, "tap")
-        assert out["applied"] == 0
-        assert out["autoApplying"] is False
+    def test_a_converged_chain_reports_its_fixed_point(self, tiny_model, monkeypatch):
+        """A model whose prediction is its own input converges on the first
+        refinement step."""
+        grid = _empty_grid(5)
+        chain = None
+        monkeypatch.setattr(fb.SftArgs, "gen_steps", 1)
+        out = fb._denoise_step(grid, chain)
+        assert out["phase"] == "denoise" and not out["done"]
+        monkeypatch.setattr(fb._MODEL, "pick", lambda logits, *a: tuple(
+            torch.tensor(out["chain"][k])[None] for k in ("type", "recipe", "part")
+        ))
+        out = fb._denoise_step(out["grid"], out["chain"])
+        assert out["converged"] and out["done"]
 
 
 _PAGE_HARNESS = """
@@ -895,8 +558,8 @@ const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
                footprint: 'AVAILABLE' };
 const result = (kind, seed, thput) => ({
   kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
-  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'eot',
-  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
+  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'converged',
+  num_placed_entities: 0,
 });
 const zero = scanCard(result('MIRRORED_1IN', 7, 0), false);
 const low = scanCard(result('SPLITTER_1IN', 42, 0.01), false);
@@ -1034,8 +697,8 @@ const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
                footprint: 'AVAILABLE' };
 const result = (kind, seed, thput) => ({
   kind, seed, size: 1, grid: [[cell]], solved_grid: [[cell]], thput_normed: thput,
-  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'eot',
-  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
+  thput_raw: thput, max_throughput: 1, steps: 1, stopped_by: 'converged',
+  num_placed_entities: 0,
 });
 scanResults = [result('A', 0, 0), result('A', 1, 0.5), result('B', 0, 0)];
 const shown = () => scanResults.filter(inScanFilter).map(r => r.kind + r.seed);
@@ -1069,7 +732,7 @@ class TestDeepLinks:
         assert "showing 1 of 3" in links["filterBar"]
 
     def test_lesson_table_cells_link_to_their_subset(self, links):
-        for query in ("thput>0", "thput>=0.999", "eot=true"):
+        for query in ("thput>0", "thput>=0.999", "converged=true"):
             assert f'href="#scan?lesson=A&{query}"' in links["stats"]
         # The filter being shown links back to the unfiltered gallery.
         assert 'href="#scan?lesson=A&thput<=0"' not in links["stats"]
@@ -1141,10 +804,9 @@ def test_lesson_previews_load_once_and_show_and_hide_instantly(tmp_path):
 
 
 _FILTER_DRIVER = """
-const r = (kind, thput, steps, eot) => ({
-  kind, thput_normed: thput, thput_raw: thput, steps, seed: 0,
-  num_placed_entities: 0, invalid_actions: 0, frac_reachable: 0,
-  stopped_by: eot ? 'eot' : 'max_steps',
+const r = (kind, thput, steps, converged) => ({
+  kind, thput_normed: thput, thput_raw: thput, steps, seed: 0, num_placed_entities: 0,
+  stopped_by: converged ? 'converged' : 'max_steps',
 });
 const rows = [r('MOVE_ONE_ITEM', 0, 10, true), r('SPLITTER_SPLIT', 0.6, 200, false),
               r('CROSS_UNDER_BELT', 1, 50, true)];
@@ -1155,10 +817,10 @@ const run = (text) => {
 };
 ({
   thput: run('thput>=0.5'),
-  eotFalse: run('eot=false'),
+  notConverged: run('converged=false'),
   steps: run('steps<=50'),
   lessons: run('lesson=move_one_item,cross_under_belt'),
-  notLesson: run('lesson!=MOVE_ONE_ITEM eot=TRUE'),
+  notLesson: run('lesson!=MOVE_ONE_ITEM converged=TRUE'),
   combined: run('thput>0 steps<100'),
   badField: run('colour=red'),
   badClause: run('thput'),
@@ -1170,13 +832,58 @@ const run = (text) => {
 def test_scan_filter_language(tmp_path):
     out = _run_page(tmp_path, _FILTER_DRIVER)
     assert out["thput"] == ["SPLITTER_SPLIT", "CROSS_UNDER_BELT"]
-    assert out["eotFalse"] == ["SPLITTER_SPLIT"]
+    assert out["notConverged"] == ["SPLITTER_SPLIT"]
     assert out["steps"] == ["MOVE_ONE_ITEM", "CROSS_UNDER_BELT"]
     assert out["lessons"] == ["MOVE_ONE_ITEM", "CROSS_UNDER_BELT"]
     assert out["notLesson"] == ["CROSS_UNDER_BELT"]
     assert out["combined"] == ["CROSS_UNDER_BELT"]
     assert out["badField"].startswith('error: no field "colour"')
     assert out["badClause"].startswith('error: can\'t read "thput"')
+
+
+_DENOISE_DRIVER = """
+const cell = { entity: 'empty', direction: 'NONE', item: 'empty', misc: 'NONE',
+               footprint: 'AVAILABLE' };
+const sent = [];
+globalThis.fetch = async (url, opts) => {
+  if (url !== '/denoise') return { json: async () => ({}) };
+  const body = JSON.parse(opts.body);
+  sent.push(body.chain && body.chain.step);
+  const step = (body.chain ? body.chain.step : 0) + 1;
+  const grid = [[{ ...cell, entity: step % 2 ? 'transport_belt' : 'inserter' }]];
+  return { json: async () => ({
+    grid, chain: { step }, phase: 'denoise', noise: 0.5, conf: [[0.5]], thput: step,
+    converged: step >= 3, done: step >= 3,
+  }) };
+};
+const flush = async () => { for (let i = 0; i < 20; i++) await null; };
+modelLoaded = true; SIZE = 1; grid = [[{ ...cell }]];
+(async () => {
+  beginApplyKey(); await flush(); endApplyKey();
+  const tap = sent.slice();
+  autoApplying = true; autoApplyGeneration = 7; await runAutoApply(7);
+  const hold = sent.slice();
+  const holding = autoApplying;
+  const info = document.getElementById('model-info').textContent;
+  await denoiseStep();
+  grid[0][0] = { ...cell };
+  await denoiseStep();
+  return { tap, hold, holding, info, all: sent };
+})();
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="needs node to execute the page's JS")
+def test_a_steps_the_chain_and_holding_it_runs_to_the_fixed_point(tmp_path):
+    """The page carries the chain between stateless /denoise calls: a tap is
+    one step from noise, holding continues that chain until the server says
+    done, and a finished chain or any edit to the grid starts a new one."""
+    out = _run_page(tmp_path, _DENOISE_DRIVER)
+    assert out["tap"] == [None]
+    assert out["hold"] == [None, 1, 2]
+    assert out["holding"] is False
+    assert out["info"].startswith("converged")
+    assert out["all"] == [None, 1, 2, None, None]
 
 
 class TestRenderIndexHelpPopover:
@@ -1196,8 +903,7 @@ class TestRenderIndexHelpPopover:
         # by <br> inside the popover div.
         for line in fb.HELP_LINES:
             assert line in html
-        # The new click-to-apply shortcut is documented.
-        assert any("ghost" in line for line in fb.HELP_LINES)
+        assert any("hold a" in line for line in fb.HELP_LINES)
 
 
 class TestModelInfo:
@@ -1205,21 +911,17 @@ class TestModelInfo:
         info = fb._model_info()
         assert info == {"loaded": False}
 
-    def test_loaded_state_exposes_shape(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            info = fb._model_info()
-            assert info["loaded"] is True
-            assert info["path"] == str(path)
-            assert info["layers"] == [8, 8, 8]
-        finally:
-            path.unlink(missing_ok=True)
+    def test_loaded_state_exposes_shape(self, tiny_model):
+        info = fb._model_info()
+        assert info["loaded"] is True
+        assert info["path"] == str(tiny_model)
+        assert info["arch"]["width"] == TINY["width"]
+        assert info["params"] == sum(p.numel() for p in DenoiserUNet(**TINY).parameters())
 
 
 class TestBatchRollout:
-    """The Scan tab's batched rollout: N blanked factories rebuilt in
-    lockstep and streamed back as one event per finished rollout."""
+    """The Scan tab's batched denoising: N factories blanked to their markers,
+    rebuilt from noise, and streamed back as one event per factory."""
 
     @staticmethod
     def _scan(payload: dict) -> list[dict]:
@@ -1230,28 +932,10 @@ class TestBatchRollout:
             json.dumps(event)
         return events
 
-    def test_reset_blanks_all_but_protected(self):
-        """A scan hands the model a world stripped down to the lesson's
-        protected tiles — the source, sink and reserved cells — which is
-        the "rebuild from nothing" test the Scan tab exists to run."""
-        env = FactorioEnv(size=11, idx=0)
-        obs, used_seed = fb._reset_rollout_env(
-            env, LessonKind.MOVE_ONE_ITEM, seed=0, num_missing_entities=None
+    def test_streams_a_result_per_seed(self, tiny_model):
+        events = self._scan(
+            {"kinds": ["MOVE_ONE_ITEM"], "count": 3, "seed": 0, "size": 5, "best_of": 2}
         )
-        assert used_seed == 0
-        blanked = int((obs[Channel.ENTITIES.value] != 0).sum())
-        solved = int((env._solved_world_CWH[Channel.ENTITIES.value] != 0).sum())
-        assert 0 < blanked < solved
-
-    def test_streams_a_result_per_seed(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = self._scan(
-                {"kinds": ["MOVE_ONE_ITEM"], "count": 3, "seed": 0, "size": 5}
-            )
-        finally:
-            path.unlink(missing_ok=True)
         assert events[0] == {"type": "start", "n": 3}
         assert events[-1]["type"] == "done"
         results = [e for e in events if e["type"] == "result"]
@@ -1259,38 +943,30 @@ class TestBatchRollout:
         assert all(r["kind"] == "MOVE_ONE_ITEM" for r in results)
         assert any(e["type"] == "progress" for e in events)
 
-    def test_result_carries_both_grids(self):
+    def test_result_carries_both_grids(self, tiny_model):
         """Each result ships the factory the model built *and* the
         generator's own solution, so the gallery can show them side by
-        side without a second round trip."""
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = self._scan(
-                {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 7, "size": 11}
-            )
-        finally:
-            path.unlink(missing_ok=True)
+        side without a second round trip. The build keeps the markers."""
+        events = self._scan(
+            {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 7, "size": 11}
+        )
         result = next(e for e in events if e["type"] == "result")
-        assert result["stopped_by"] in ("eot", "max_steps")
+        assert result["stopped_by"] in ("converged", "max_steps")
         for grid in (result["grid"], result["solved_grid"]):
             assert len(grid) == 11 and all(len(row) == 11 for row in grid)
-        assert any(
-            c["entity"] != "empty" for row in result["solved_grid"] for c in row
-        )
+        markers = [
+            {(x, y) for y, row in enumerate(g) for x, c in enumerate(row) if c["entity"] in fb._MARKERS}
+            for g in (result["grid"], result["solved_grid"])
+        ]
+        assert markers[0] == markers[1] != set()
 
-    def test_count_seeds_of_each_lesson_kinds_first(self):
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = self._scan({
-                "kinds": ["MOVE_ONE_ITEM", "SPLITTER_SPLIT"],
-                "count": 2,
-                "seed": 4,
-                "size": 11,
-            })
-        finally:
-            path.unlink(missing_ok=True)
+    def test_count_seeds_of_each_lesson_kinds_first(self, tiny_model):
+        events = self._scan({
+            "kinds": ["MOVE_ONE_ITEM", "SPLITTER_SPLIT"],
+            "count": 2,
+            "seed": 4,
+            "size": 11,
+        })
         assert events[0] == {"type": "start", "n": 4}
         results = sorted(
             (e for e in events if e["type"] == "result"), key=lambda r: r["index"]
@@ -1304,37 +980,18 @@ class TestBatchRollout:
         events = self._scan({"kinds": [], "count": 1, "size": 11})
         assert events[-1]["type"] == "error"
 
-    def test_runs_more_rollouts_than_one_batch(self, monkeypatch):
-        """A count above the lockstep batch width runs as back-to-back
-        groups instead of being truncated to fit a single batch."""
-        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = self._scan(
-                {"kinds": ["MOVE_ONE_ITEM"], "count": 5, "seed": 0, "size": 5}
-            )
-        finally:
-            path.unlink(missing_ok=True)
+    def test_runs_more_factories_than_one_batch(self, tiny_model, monkeypatch):
+        """A count above the batch width runs as back-to-back groups instead
+        of being truncated to fit a single batch."""
+        monkeypatch.setattr(fb, "SCAN_BATCH_CHAINS", 4)
+        events = self._scan(
+            {"kinds": ["MOVE_ONE_ITEM"], "count": 5, "seed": 0, "size": 5, "best_of": 2}
+        )
+        assert events[0] == {"type": "start", "n": 5}
         results = [e for e in events if e["type"] == "result"]
         assert sorted(r["seed"] for r in results) == [0, 1, 2, 3, 4]
         # Indices stay unique across groups — the gallery sorts on them.
         assert sorted(r["index"] for r in results) == [0, 1, 2, 3, 4]
-
-    def test_count_is_never_silently_capped(self, monkeypatch):
-        """The requested count is what runs. A cap that quietly trimmed the
-        scan would read as "that's all there was to find"."""
-        monkeypatch.setattr(fb, "ROLLOUT_BATCH_SIZE", 2)
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = self._scan(
-                {"kinds": ["MOVE_ONE_ITEM"], "count": 7, "seed": 0, "size": 5}
-            )
-        finally:
-            path.unlink(missing_ok=True)
-        assert events[0] == {"type": "start", "n": 7}
-        assert len([e for e in events if e["type"] == "result"]) == 7
 
     def test_bad_kind_yields_an_error_event(self):
         """The response headers are already sent by the time the scan
@@ -1358,7 +1015,7 @@ class TestRenderIndexScanTab:
         html = fb.render_index(default_size=11)
         assert 'data-tab="scan"' in html and 'data-tab="build"' in html
         for element_id in (
-            "scan-kinds", "scan-count", "scan-seed", "scan-clear", "scan-mask",
+            "scan-kinds", "scan-count", "scan-seed", "scan-best-of",
             "scan-ref", "scan-sort", "scan-run", "scan-stop", "scan-results",
             "scan-summary", "scan-stats", "scan-clear-results",
         ):
@@ -1377,7 +1034,7 @@ class TestRenderIndexScanTab:
         # URL to the handler's route list.
         assert "/batch_rollout" in inspect.getsource(fb.Handler.do_POST)
 
-    def test_result_fields_the_page_reads_are_all_emitted(self):
+    def test_result_fields_the_page_reads_are_all_emitted(self, tiny_model):
         """Every `r.<field>` the scan JS reads must exist on a real result
         event. Asserting against a hardcoded list on either side would keep
         passing while the two drifted apart, so this derives one side from
@@ -1385,14 +1042,9 @@ class TestRenderIndexScanTab:
         html = fb.render_index(default_size=11)
         read_fields = set(re.findall(r"\br\.([a-z_]+)", html))
         assert read_fields, "no r.<field> reads found in the served page"
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            events = TestBatchRollout._scan(
-                {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 1, "size": 11}
-            )
-        finally:
-            path.unlink(missing_ok=True)
+        events = TestBatchRollout._scan(
+            {"kinds": ["MOVE_ONE_ITEM"], "count": 1, "seed": 1, "size": 11}
+        )
         result = next(e for e in events if e["type"] == "result")
         assert read_fields <= set(result), read_fields - set(result)
 
@@ -1428,17 +1080,10 @@ class TestThroughputReadout:
                       "footprint": "AVAILABLE"}
         assert fb._throughput(fb.build_world(grid))["thput"] == 0
 
-    def test_rides_on_both_prediction_paths(self):
-        """Both are the responses that already built the world, so neither
-        should make the readout pay for a request of its own."""
-        path = _make_tiny_checkpoint(size=4, chan=8)
-        try:
-            fb._load_checkpoint(str(path))
-            grid = _empty_grid(4)
-            assert "thput" in fb._predict(grid)
-            assert "thput" in fb._predict_action(grid)
-        finally:
-            path.unlink(missing_ok=True)
+    def test_rides_on_each_denoise_step(self, tiny_model):
+        """The step already built the world, so a held `a` shouldn't make the
+        readout pay for a request of its own."""
+        assert "thput" in fb._denoise_step(_empty_grid(4), None)
 
 
 class TestRenderIndexThroughput:
@@ -1463,7 +1108,7 @@ class TestRenderIndexThroughput:
         and the server answers one request at a time, so a readout that waited
         on it would be ~10000x slower than the number costs to compute."""
         html = fb.render_index(default_size=11)
-        assert "setTimeout(computePrediction, 25)" in html
+        assert "setTimeout(computeThroughput, 25)" in html
         assert "setTimeout(computeGraph, 1000)" in html
         # computeGraph must not be the thing that feeds the readout.
         graph_fn = html.split("async function computeGraph(")[1].split("\n}")[0]
@@ -1472,19 +1117,14 @@ class TestRenderIndexThroughput:
     def test_held_apply_updates_the_readout_as_it_builds(self):
         html = fb.render_index(default_size=11)
         loop = html.split("async function runAutoApply(")[1].split("\n}")[0]
-        assert "showThput(action)" in loop
+        assert "showThput(data)" in loop
 
-    def test_falls_back_to_its_own_endpoint_with_no_model(self):
-        """Without a checkpoint nothing else asks the server anything, and
-        hand-building a factory is exactly when the readout matters most."""
+    def test_has_its_own_endpoint(self):
+        """Hand-building a factory is exactly when the readout matters most,
+        and nothing model-side runs then."""
         html = fb.render_index(default_size=11)
         assert "fetch('/throughput'" in html
         assert "/throughput" in inspect.getsource(fb.Handler.do_POST)
-        # The body up to the first `return;` is the no-model early exit.
-        fn = html.split("async function computePrediction(")[1].split("\n}")[0]
-        early_exit = fn.split("return;")[0]
-        assert "!modelLoaded" in early_exit
-        assert "computeThroughput()" in early_exit
 
 
 class TestFactoryYaml:
