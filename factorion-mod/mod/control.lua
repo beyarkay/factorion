@@ -123,11 +123,96 @@ end
 
 local MASK_TILE = "factorion-mask"
 local MASK_OUTLINE_COLOR = { r = 0.2, g = 0.45, b = 1.0, a = 1 }
+local MASK_TOO_BIG_COLOR = { r = 1.0, g = 0.25, b = 0.2, a = 1 }
 -- Runs overlap by half a line width so their corners meet.
 local MASK_OUTLINE_OVERLAP = 0.08
 
--- Outlines each painted area of the surface, in alt-mode only.
-local function draw_mask_outline(surface)
+local function tile_key(x, y) return x .. "," .. y end
+
+-- The tiles of entity's footprint.
+local function tile_box(entity)
+  local box = entity.bounding_box
+  return math.floor(box.left_top.x + 0.01), math.floor(box.left_top.y + 0.01),
+    math.ceil(box.right_bottom.x - 0.01) - 1, math.ceil(box.right_bottom.y - 0.01) - 1
+end
+
+local NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+
+-- The painted area against a GPU server, as tile keys, or nil and why. Paint
+-- bigger than the model's grid is cut to the grid square against the server's
+-- most-painted side, which is returned too.
+local function painted_area(server, size)
+  local surface = server.surface
+  local x0, y0, x1, y1 = tile_box(server)
+  local function free_paint(x, y)
+    local under_server = x >= x0 and x <= x1 and y >= y0 and y <= y1
+    return not under_server and surface.get_tile(x, y).name == MASK_TILE
+  end
+  local sides = { north = {}, south = {}, west = {}, east = {} }
+  for x = x0, x1 do
+    if free_paint(x, y0 - 1) then table.insert(sides.north, { x = x, y = y0 - 1 }) end
+    if free_paint(x, y1 + 1) then table.insert(sides.south, { x = x, y = y1 + 1 }) end
+  end
+  for y = y0, y1 do
+    if free_paint(x0 - 1, y) then table.insert(sides.west, { x = x0 - 1, y = y }) end
+    if free_paint(x1 + 1, y) then table.insert(sides.east, { x = x1 + 1, y = y }) end
+  end
+  local seeds, best = {}, nil
+  for name, side in pairs(sides) do
+    for _, seed in ipairs(side) do table.insert(seeds, seed) end
+    if #side > 0 and (not best or #side > #sides[best]) then best = name end
+  end
+  if not best then
+    return nil, "it doesn't touch any [item=" .. MASK_TILE .. "] paint"
+  end
+  -- nil once the paint outgrows the grid, unless it is confined to window.
+  local function flood(start, window)
+    local area, queue = { [tile_key(start.x, start.y)] = start }, { start }
+    local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
+    while #queue > 0 do
+      local tile = table.remove(queue)
+      min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+      min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+      if not window and (max_x - min_x >= size or max_y - min_y >= size) then return nil end
+      for _, step in ipairs(NEIGHBOURS) do
+        local x, y = tile.x + step[1], tile.y + step[2]
+        local inside = not window or (x >= window.x and x < window.x + size
+          and y >= window.y and y < window.y + size)
+        if inside and not area[tile_key(x, y)] and free_paint(x, y) then
+          area[tile_key(x, y)] = { x = x, y = y }
+          table.insert(queue, { x = x, y = y })
+        end
+      end
+    end
+    return area
+  end
+  local area, window = flood(seeds[1]), nil
+  if not area then
+    local across_x = x0 - math.floor((size - (x1 - x0 + 1)) / 2)
+    local across_y = y0 - math.floor((size - (y1 - y0 + 1)) / 2)
+    window = ({
+      north = { x = across_x, y = y0 - size },
+      south = { x = across_x, y = y1 + 1 },
+      west = { x = x0 - size, y = across_y },
+      east = { x = x1 + 1, y = across_y },
+    })[best]
+    window.w, window.h = size, size
+    seeds = sides[best]
+    area = flood(seeds[1], window)
+  end
+  for _, seed in ipairs(seeds) do
+    if not area[tile_key(seed.x, seed.y)] then
+      return nil, "it touches more than one painted area"
+    end
+  end
+  return area, window
+end
+
+-- Outlines each painted area of the surface, in alt-mode only. An area
+-- bigger than the model's grid is outlined only where a GPU server would
+-- build, or in red when no server touches it. removed is a GPU server about
+-- to go.
+local function draw_mask_outline(surface, removed)
   storage.mask_outlines = storage.mask_outlines or {}
   for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
     local object = rendering.get_object_by_id(id)
@@ -136,47 +221,90 @@ local function draw_mask_outline(surface)
   local ids = {}
   storage.mask_outlines[surface.index] = ids
   if not prototypes.tile[MASK_TILE] then return end
+
+  local function outline(tiles, color)
+    -- Unit edges grouped by the grid line they lie on.
+    local lines = {}
+    local function edge(horizontal, at, along)
+      local key = (horizontal and "h" or "v") .. at
+      lines[key] = lines[key] or { horizontal = horizontal, at = at, along = {} }
+      table.insert(lines[key].along, along)
+    end
+    for _, tile in pairs(tiles) do
+      local x, y = tile.x, tile.y
+      if not tiles[tile_key(x, y - 1)] then edge(true, y, x) end
+      if not tiles[tile_key(x, y + 1)] then edge(true, y + 1, x) end
+      if not tiles[tile_key(x - 1, y)] then edge(false, x, y) end
+      if not tiles[tile_key(x + 1, y)] then edge(false, x + 1, y) end
+    end
+    local function point(line, along)
+      if line.horizontal then return { along, line.at } end
+      return { line.at, along }
+    end
+    for _, line in pairs(lines) do
+      table.sort(line.along)
+      local start = line.along[1]
+      for i, along in ipairs(line.along) do
+        local next_along = line.along[i + 1]
+        if next_along ~= along + 1 then
+          local object = rendering.draw_line({
+            surface = surface,
+            from = point(line, start - MASK_OUTLINE_OVERLAP),
+            to = point(line, along + 1 + MASK_OUTLINE_OVERLAP),
+            color = color,
+            width = 5,
+            only_in_alt_mode = true,
+            draw_on_ground = true,
+          })
+          table.insert(ids, object.id)
+          start = next_along
+        end
+      end
+    end
+  end
+
   local painted = {}
   for _, tile in pairs(surface.find_tiles_filtered({ name = MASK_TILE })) do
-    painted[tile.position.x .. "," .. tile.position.y] = true
+    painted[tile_key(tile.position.x, tile.position.y)] = { x = tile.position.x, y = tile.position.y }
   end
-  local function is_painted(x, y) return painted[x .. "," .. y] == true end
-  -- Unit edges grouped by the grid line they lie on.
-  local lines = {}
-  local function edge(horizontal, at, along)
-    local key = (horizontal and "h" or "v") .. at
-    lines[key] = lines[key] or { horizontal = horizontal, at = at, along = {} }
-    table.insert(lines[key].along, along)
-  end
-  for key in pairs(painted) do
-    local x, y = key:match("^(-?%d+),(-?%d+)$")
-    x, y = tonumber(x), tonumber(y)
-    if not is_painted(x, y - 1) then edge(true, y, x) end
-    if not is_painted(x, y + 1) then edge(true, y + 1, x) end
-    if not is_painted(x - 1, y) then edge(false, x, y) end
-    if not is_painted(x + 1, y) then edge(false, x + 1, y) end
-  end
-  local function point(line, along)
-    if line.horizontal then return { along, line.at } end
-    return { line.at, along }
-  end
-  for _, line in pairs(lines) do
-    table.sort(line.along)
-    local start = line.along[1]
-    for i, along in ipairs(line.along) do
-      local next_along = line.along[i + 1]
-      if next_along ~= along + 1 then
-        local object = rendering.draw_line({
-          surface = surface,
-          from = point(line, start - MASK_OUTLINE_OVERLAP),
-          to = point(line, along + 1 + MASK_OUTLINE_OVERLAP),
-          color = MASK_OUTLINE_COLOR,
-          width = 5,
-          only_in_alt_mode = true,
-          draw_on_ground = true,
-        })
-        table.insert(ids, object.id)
-        start = next_along
+  local size = storage.model and storage.model.grid_size
+  local seen = {}
+  for key, start in pairs(painted) do
+    if not seen[key] then
+      local area, queue = { [key] = start }, { start }
+      seen[key] = true
+      local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
+      while #queue > 0 do
+        local tile = table.remove(queue)
+        min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+        min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+        for _, step in ipairs(NEIGHBOURS) do
+          local next_key = tile_key(tile.x + step[1], tile.y + step[2])
+          if painted[next_key] and not seen[next_key] then
+            seen[next_key] = true
+            area[next_key] = painted[next_key]
+            table.insert(queue, painted[next_key])
+          end
+        end
+      end
+      if not size or (max_x - min_x < size and max_y - min_y < size) then
+        outline(area, MASK_OUTLINE_COLOR)
+      else
+        local used = false
+        for _, server in pairs(surface.find_entities_filtered({
+          name = inference.GPU_SERVER,
+          area = { { min_x - 5, min_y - 5 }, { max_x + 6, max_y + 6 } },
+        })) do
+          if server ~= removed then
+            local part = painted_area(server, size)
+            local _, tile = next(part or {})
+            if tile and area[tile_key(tile.x, tile.y)] then
+              outline(part, MASK_OUTLINE_COLOR)
+              used = true
+            end
+          end
+        end
+        if not used then outline(area, MASK_TOO_BIG_COLOR) end
       end
     end
   end
@@ -799,6 +927,9 @@ local function entity_built(event)
   if owner and entity and entity.valid and entity.unit_number then
     owner.model_entities[entity.unit_number] = entity
   end
+  if entity and entity.valid and entity.name == inference.GPU_SERVER then
+    draw_mask_outline(entity.surface)
+  end
   local role = endpoint_role(entity)
   if not role then return end
   local item = event.tags and event.tags.factorion_item or nil
@@ -854,6 +985,7 @@ local function endpoint_entity_removed(event)
     cancel_pending(server)
     storage.servers[entity.unit_number] = nil
   end
+  if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   destroy_endpoint_alt_icon(config)
   destroy_sink_rate_label(config)
@@ -1084,63 +1216,6 @@ local function server_state(server)
   return state
 end
 
-local function tile_key(x, y) return x .. "," .. y end
-
--- The tiles of entity's footprint, and the ring of tiles touching it outside.
-local function tile_box(entity)
-  local box = entity.bounding_box
-  return math.floor(box.left_top.x + 0.01), math.floor(box.left_top.y + 0.01),
-    math.ceil(box.right_bottom.x - 0.01) - 1, math.ceil(box.right_bottom.y - 0.01) - 1
-end
-
-local NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
-
--- The painted area against a GPU server, as tile keys, or nil and why. The
--- flood stops once the area outgrows the model's grid.
-local function painted_area(server, size)
-  local surface = server.surface
-  local x0, y0, x1, y1 = tile_box(server)
-  local function free_paint(x, y)
-    local under_server = x >= x0 and x <= x1 and y >= y0 and y <= y1
-    return not under_server and surface.get_tile(x, y).name == MASK_TILE
-  end
-  local seeds = {}
-  for x = x0 - 1, x1 + 1 do
-    for y = y0 - 1, y1 + 1 do
-      local corner = (x < x0 or x > x1) and (y < y0 or y > y1)
-      if not corner and free_paint(x, y) then table.insert(seeds, { x = x, y = y }) end
-    end
-  end
-  if #seeds == 0 then
-    return nil, "it doesn't touch any [item=" .. MASK_TILE .. "] paint"
-  end
-  local area, queue = {}, { seeds[1] }
-  area[tile_key(seeds[1].x, seeds[1].y)] = seeds[1]
-  local min_x, min_y, max_x, max_y = seeds[1].x, seeds[1].y, seeds[1].x, seeds[1].y
-  while #queue > 0 do
-    local tile = table.remove(queue)
-    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
-    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
-    if max_x - min_x >= size or max_y - min_y >= size then
-      return nil, string.format("the paint it touches is wider than the model's %dx%d grid",
-        size, size)
-    end
-    for _, step in ipairs(NEIGHBOURS) do
-      local x, y = tile.x + step[1], tile.y + step[2]
-      if not area[tile_key(x, y)] and free_paint(x, y) then
-        area[tile_key(x, y)] = { x = x, y = y }
-        table.insert(queue, { x = x, y = y })
-      end
-    end
-  end
-  for _, seed in ipairs(seeds) do
-    if not area[tile_key(seed.x, seed.y)] then
-      return nil, "it touches more than one painted area"
-    end
-  end
-  return area
-end
-
 -- The server's painted area, the source and sink belts on or beside it, and
 -- the model's grid around them all; or nil and why not.
 local function region_for(server)
@@ -1149,8 +1224,8 @@ local function region_for(server)
     return nil, "no model is loaded yet"
   end
   local size = storage.model.grid_size
-  local area, reason = painted_area(server, size)
-  if not area then return nil, reason end
+  local area, window = painted_area(server, size)
+  if not area then return nil, window end
   local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
   local tiles = 0
   for _, tile in pairs(area) do
@@ -1159,6 +1234,10 @@ local function region_for(server)
     tiles = tiles + 1
   end
   local function touches(x, y)
+    if window and not (x >= window.x and x < window.x + size
+        and y >= window.y and y < window.y + size) then
+      return false
+    end
     if area[tile_key(x, y)] then return true end
     for _, step in ipairs(NEIGHBOURS) do
       if area[tile_key(x + step[1], y + step[2])] then return true end
@@ -1183,7 +1262,7 @@ local function region_for(server)
     return nil, string.format("the paint and its belts span %dx%d tiles, more " ..
       "than the model's %dx%d grid", span_x, span_y, size, size)
   end
-  local fp = {
+  local fp = window or {
     x = min_x - math.floor((size - span_x) / 2),
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
@@ -1211,13 +1290,29 @@ local function icons(endpoints)
 end
 
 -- What the GPU server's window says about the area it would build.
-inference.describe = function(server)
+-- The region server would build now, or nil and why it can't.
+local function predictable_region(server)
   local state = server_state(server)
-  if state.pending then return "Building " .. state.pending.description .. "…" end
+  if state.pending then
+    return nil, "Building " .. state.pending.description .. "…"
+  end
+  if server.energy <= 0 then return nil, "This GPU server has no power." end
   local region, reason = region_for(server)
-  if not region then return "Can't predict: " .. reason .. "." end
+  if not region then return nil, "Can't predict: " .. reason .. "." end
+  if #region.sources == 0 then
+    return nil, "No source belt on or beside the painted area."
+  end
+  if #region.sinks == 0 then
+    return nil, "No sink belt on or beside the painted area."
+  end
+  return region
+end
+
+inference.describe = function(server)
+  local region, reason = predictable_region(server)
+  if not region then return reason, false end
   return string.format("Painted area of %d tiles, converting %s to %s.",
-    region.tiles, icons(region.sources), icons(region.sinks))
+    region.tiles, icons(region.sources), icons(region.sinks)), true
 end
 
 local function gather_request(state, region)
@@ -1253,19 +1348,9 @@ end
 -- this server built before. Returns the message for the player.
 inference.on_predict = function(player, server)
   ensure_pending_lookup()
+  local region, reason = predictable_region(server)
+  if not region then return reason end
   local state = server_state(server)
-  if state.pending then
-    return "This GPU server is still building; press Clear to stop it."
-  end
-  if server.energy <= 0 then return "This GPU server has no power." end
-  local region, reason = region_for(server)
-  if not region then return "Can't predict: " .. reason .. "." end
-  if #region.sources == 0 then
-    return "No source belt on or beside the painted area."
-  end
-  if #region.sinks == 0 then
-    return "No sink belt on or beside the painted area."
-  end
   clear_predicted_entities(state, player)
   local request, description = gather_request(state, region)
   local request_json = helpers.table_to_json(request)
@@ -1294,6 +1379,13 @@ inference.on_predict = function(player, server)
   end
   return message
 end
+
+script.on_event("factorion-predict", function(event)
+  local player = game.get_player(event.player_index)
+  local server = player and player.selected
+  if not (server and server.name == inference.GPU_SERVER) then return end
+  player.print("[Factorion] " .. inference.on_predict(player, server))
+end)
 
 -- Stops the server's prediction and removes everything it built.
 inference.on_clear = function(player, server)
@@ -1538,6 +1630,7 @@ remote.add_interface("factorion", {
     storage.model = model
     storage.model_loading = nil
     storage.model_error = nil
+    for _, surface in pairs(game.surfaces) do draw_mask_outline(surface) end
     inference.refresh_all()
     game.print(string.format(
       "[Factorion] Model %s (%s) ready: it builds painted areas up to %dx%d " ..

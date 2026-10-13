@@ -31,9 +31,9 @@ local NUMBER_FIELDS = {
 
 -- Set by control.lua: on_load gets the new checkpoint when the player presses
 -- Load; describe, on_predict and on_clear get the window's GPU server and
--- return a message.
+-- return a message (describe also returns whether Predict can run).
 M.on_load = function(_) end
-M.describe = function(_) return "" end
+M.describe = function(_) return "", false end
 M.on_predict = function(_, _) return "" end
 M.on_clear = function(_, _) return "" end
 
@@ -89,7 +89,9 @@ function M.refresh(player)
   end
   frame.status.caption = status_caption()
   frame.settings.model_status.caption = model_caption()
-  frame.region.caption = M.describe(server)
+  local caption, can_predict = M.describe(server)
+  frame.region.caption = caption
+  frame.actions.predict.enabled = can_predict
 end
 
 function M.refresh_all()
@@ -107,9 +109,25 @@ function M.open(player, server)
   storage.gpu_windows[player.index] = server
   local config = M.config()
   local frame = player.gui.screen.add({
-    type = "frame", name = FRAME, caption = "GPU servers", direction = "vertical",
+    type = "frame", name = FRAME, direction = "vertical",
   })
   frame.auto_center = true
+  local titlebar = frame.add({ type = "flow", direction = "horizontal" })
+  titlebar.drag_target = frame
+  titlebar.add({
+    type = "label", caption = "GPU server", style = "frame_title",
+    ignored_by_interaction = true,
+  })
+  local drag = titlebar.add({
+    type = "empty-widget", style = "draggable_space_header",
+    ignored_by_interaction = true,
+  })
+  drag.style.height = 24
+  drag.style.horizontally_stretchable = true
+  titlebar.add({
+    type = "sprite-button", style = "frame_action_button", sprite = "utility/close",
+    tooltip = { "gui.close-instruction" }, tags = { factorion_gpu = "close" },
+  })
   frame.add({ type = "label", name = "status" })
   frame.add({ type = "line" })
 
@@ -142,9 +160,9 @@ function M.open(player, server)
   local region = frame.add({ type = "label", name = "region" })
   region.style.single_line = false
   region.style.maximal_width = 400
-  local actions = frame.add({ type = "flow", direction = "horizontal" })
+  local actions = frame.add({ type = "flow", name = "actions", direction = "horizontal" })
   actions.add({
-    type = "button", caption = "Predict", style = "confirm_button",
+    type = "button", name = "predict", caption = "Predict", style = "green_button",
     tooltip = "Build a factory on the painted area touching this server, " ..
       "replacing what this server built before.",
     tags = { factorion_gpu = "predict" },
@@ -179,11 +197,15 @@ function M.on_gui_click(event)
     load_checkpoint(player)
     return true
   end
+  if tag == "close" then
+    M.close(player)
+    return true
+  end
   local action = (tag == "predict" and M.on_predict) or (tag == "clear" and M.on_clear)
   if not action then return false end
   local server = window_server(player)
   if server then player.print("[Factorion] " .. action(player, server)) end
-  M.refresh(player)
+  if tag == "predict" then M.close(player) else M.refresh(player) end
   return true
 end
 
