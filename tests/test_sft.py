@@ -1,8 +1,10 @@
 """Tests for SFT pre-training pipeline."""
 
+import json
 import os
-import random
+import re
 import sys
+from typing import Any
 
 import pytest
 import torch
@@ -18,518 +20,72 @@ from helpers import (
     TINY_ARCH,
     TINY_ARCH_ARGS,
     Channel,
-    Direction,
     LessonKind,
-    blank_entities,
     build_factory,
     str2ent,
 )
 from factorion import LESSON_IS_TRIAL, Footprint
+from denoise import DenoiserUNet, load_denoiser, world_to_state
 import sft
 from sft import (
     SftArgs,
-    StreamingDemoDataset,
     _artifact_name,
     _humanize_count,
     _humanize_lr,
-    _iter_demo_pairs,
-    _materialise,
-    _steps_per_epoch,
     _solved_assembler_recipes,
     build_lr_schedule,
-    extract_expert_actions,
+    noise_levels,
     run_rollout_eval,
+    throughput_pg_loss,
     train_sft,
 )
 from ppo import (
-    FactorioEnv, AgentCNN, make_env, layers_from_args, _legal_tile_mask, apply_placement_action,
+    FactorioEnv, AgentCNN, make_env, _legal_tile_mask,
 )
 
-
-def _materialise_args(args):
-    """Eagerly collect a full dataset (the 10-tensor tuple) for assertions,
-    matching how train_sft draws its data from `_materialise`."""
-    max_level = args.max_level if args.max_level > 0 else args.size * args.size
-    return _materialise(args.size, max_level, args.seed, target=args.num_samples)
+TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
+# Generation eval shrunk to a couple of short chains per factory.
+FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
 
 
-class TestErrorInjection:
-    @pytest.mark.parametrize("kind", [
-        LessonKind.MOVE_ONE_ITEM,
-        LessonKind.MOVE_VIA_UG_BELT,
-        LessonKind.SPLITTER_SPLIT,
-        LessonKind.MEMORISE_2_INGREDIENT_RECIPES,
-    ])
-    def test_each_injected_error_is_fixed_by_its_label(self, kind):
-        """At error_prob=1 every placement is followed by a corrupted copy of
-        its resulting state; replaying that copy's label through the env's
-        placement path restores the clean state the trajectory continues
-        from."""
-        factory = next(
-            f for s in range(50)
-            if (f := build_factory(size=11, kind=kind, seed=s)) is not None
-        )
-        task, _ = blank_entities(factory)
-        random.seed(0)
-        pairs = extract_expert_actions(factory.world_CWH, task, error_prob=1.0)
-        clean, fixes = pairs[0:-1:2], pairs[1:-1:2]
-        assert len(clean) == len(fixes) > 0
-        restored_states = [p[0] for p in clean[1:]] + [pairs[-1][0]]
-        source, sink = str2ent("source").value, str2ent("sink").value
-        for (obs, tile, ent, d, item, misc, mask, eot), want in zip(fixes, restored_states):
-            assert eot == 0
-            assert mask.nonzero().flatten().tolist() == [tile]
-            assert not torch.equal(obs, want), "the mutation must change the state"
-            world = obs.to(torch.float32)
-            H = world.shape[2]
-            is_invalid, _, _ = apply_placement_action(
-                world,
-                {"xy": (tile // H, tile % H), "entity": ent, "direction": d, "item": item, "misc": misc},
-                source_id=source, sink_id=sink,
-            )
-            assert not is_invalid
-            assert torch.equal(world.to(torch.uint8), want)
+def _batch(n=4, size=15):
+    factories = [f for s in range(n) if (f := build_factory(size=size, kind=LessonKind.SAME_SIDE_1IN, seed=s))]
+    assert len(factories) == n
+    state = torch.stack([torch.from_numpy(world_to_state(f.world_CWH)) for f in factories]).long()
+    return state, torch.tensor([f.max_throughput for f in factories])
 
 
-class TestExtractExpertActions:
-    def test_reconstructs_solved_world(self):
-        """Replaying all extracted actions should reconstruct the solved world."""
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
-        assert factory is not None
-        solved, _ = blank_entities(factory, num_missing_entities=0)
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
-        assert factory is not None
-        task, _ = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task)
-        assert len(pairs) > 0, "Should have at least one action"
-
-        # Replay placement actions onto task world. The action carries all
-        # four placement channels (entity, direction, item, misc) — the
-        # agent is responsible for each. Skip terminal pairs (eot=1) which
-        # carry sentinel placement targets, not real placements.
-        state = task.clone()
-        for (
-            obs,
-            tile_idx,
-            entity_id,
-            direction_id,
-            item_id,
-            misc_id,
-            valid_mask,
-            eot,
-        ) in pairs:
-            if eot == 1:
-                continue
-            H = state.shape[2]
-            x = tile_idx // H
-            y = tile_idx % H
-            state[Channel.ENTITIES.value, x, y] = entity_id
-            state[Channel.DIRECTION.value, x, y] = direction_id
-            state[Channel.ITEMS.value, x, y] = item_id
-            state[Channel.MISC.value, x, y] = misc_id
-
-        # Entity and direction channels should match solved
-        assert torch.equal(
-            state[Channel.ENTITIES.value], solved[Channel.ENTITIES.value]
-        ), "Entities should match after replaying all actions"
-        assert torch.equal(
-            state[Channel.DIRECTION.value], solved[Channel.DIRECTION.value]
-        ), "Directions should match after replaying all actions"
-
-    def test_no_actions_when_identical(self):
-        """No actions needed when solved == task."""
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
-        assert factory is not None
-        solved, _ = blank_entities(factory, num_missing_entities=0)
-        pairs = extract_expert_actions(solved, solved.clone())
-        assert len(pairs) == 0
-
-    def test_action_count_matches_missing(self):
-        """Number of pairs should equal num_missing_entities placement
-        actions + 1 terminal (eot=1) pair."""
-        for seed in [1, 7, 42]:
-            factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
-            assert factory is not None
-            solved, _ = blank_entities(factory, num_missing_entities=0)
-            # generate_lesson returns (world, actual_removed) where actual_removed
-            # may be less than num_missing_entities if the factory has fewer entities
-            factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=seed)
-            assert factory is not None
-            task, min_ent = blank_entities(factory, num_missing_entities=2)
-            pairs = extract_expert_actions(solved, task)
-            assert len(pairs) == min_ent + 1, (
-                f"seed={seed}: expected {min_ent} placement pairs + 1 "
-                f"terminal pair, got {len(pairs)}"
-            )
-            # Exactly one terminal pair, appended last.
-            eot_flags = [p[7] for p in pairs]
-            assert eot_flags[:-1] == [0] * min_ent
-            assert eot_flags[-1] == 1
-
-    def test_intermediate_states_are_sequential(self):
-        """Each observation should reflect previously applied actions."""
-        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=99)
-        assert factory is not None
-        solved, _ = blank_entities(factory, num_missing_entities=3)
-        factory = build_factory(size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=99)
-        assert factory is not None
-        task, _ = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task)
-
-        if len(pairs) < 2:
-            pytest.skip("Need at least 2 actions for this test")
-
-        # The second observation should differ from the first
-        # (because the first action was applied)
-        obs0 = pairs[0][0]
-        obs1 = pairs[1][0]
-        assert not torch.equal(obs0, obs1), (
-            "Sequential observations should differ after action application"
-        )
-
-    def test_entity_ids_are_valid(self):
-        """All extracted placement entity IDs should be valid (non-empty)
-        entity values. Terminal pairs (eot=1) carry sentinel zeros and are
-        excluded from this check."""
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
-        assert factory is not None
-        solved, _ = blank_entities(factory, num_missing_entities=2)
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=42)
-        assert factory is not None
-        task, _ = blank_entities(factory, num_missing_entities=2)
-        pairs = extract_expert_actions(solved, task)
-        for _, _, entity_id, direction_id, _, _, _, eot in pairs:
-            if eot == 1:
-                continue
-            assert entity_id != str2ent("empty").value, (
-                "Expert actions shouldn't place empty"
-            )
-            assert direction_id != Direction.NONE.value, (
-                "Expert belt actions need a direction"
-            )
-
-    def test_ug_belt_action_carries_misc(self):
-        """A MOVE_VIA_UG_BELT lesson with the UG pair blanked must produce
-        action pairs whose misc_id is UNDERGROUND_DOWN or UNDERGROUND_UP —
-        not NONE. Without this the env rejects every UG placement at step
-        time (ug_belt_wo_up_or_down)."""
-        from helpers import Misc
-
-        ug_id = str2ent("underground_belt").value
-        found_down = found_up = False
-        for seed in range(50):
-            try:
-                factory = build_factory(
-                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
-                )
-                assert factory is not None
-                solved, _ = blank_entities(factory, num_missing_entities=0)
-                factory = build_factory(
-                    size=8, kind=LessonKind.MOVE_VIA_UG_BELT, seed=seed
-                )
-                assert factory is not None
-                task, _ = blank_entities(factory, num_missing_entities=2)
-            except Exception:
-                continue
-            for _, _, ent_id, _, _, misc_id, _, eot in extract_expert_actions(
-                solved, task
-            ):
-                if eot == 1:
-                    continue
-                if ent_id == ug_id:
-                    assert misc_id != Misc.NONE.value, (
-                        f"seed={seed}: UG belt action emitted with misc=NONE"
-                    )
-                    if misc_id == Misc.UNDERGROUND_DOWN.value:
-                        found_down = True
-                    if misc_id == Misc.UNDERGROUND_UP.value:
-                        found_up = True
-            if found_down and found_up:
-                break
-        assert found_down and found_up, (
-            f"Expected to see both DOWN and UP actions across seeds; "
-            f"found_down={found_down}, found_up={found_up}"
-        )
-
-    def test_source_and_sink_always_present(self):
-        """Task observations should always contain source and sink entities."""
-        source_id = str2ent("source").value
-        sink_id = str2ent("sink").value
-        for seed in [1, 7, 42, 99]:
-            for level in [1, 4, 8, 16]:
-                try:
-                    factory = build_factory(
-                        size=8, kind=LessonKind.MOVE_ONE_ITEM, seed=seed
-                    )
-                    assert factory is not None
-                    task, _ = blank_entities(factory, num_missing_entities=level)
-                except Exception:
-                    continue
-                ent = task[Channel.ENTITIES.value]
-                assert (ent == source_id).any(), (
-                    f"seed={seed}, level={level}: source missing from task"
-                )
-                assert (ent == sink_id).any(), (
-                    f"seed={seed}, level={level}: sink missing from task"
-                )
+class TestNoiseLevels:
+    def test_point_masses_and_range(self):
+        args = SftArgs(noise_zero_frac=0.2, noise_one_frac=0.3)
+        t = noise_levels(20_000, args, torch.device("cpu"))
+        assert ((t >= 0) & (t <= 1)).all()
+        assert (t == 0).float().mean() == pytest.approx(0.2, abs=0.02)
+        assert (t == 1).float().mean() == pytest.approx(0.3, abs=0.02)
 
 
-class TestGenerateDataset:
-    def test_generates_correct_count(self):
-        """Dataset should have the requested number of samples."""
-        args = SftArgs(seed=1, size=5, num_samples=100, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, eots, seeds, kinds = (
-            _materialise_args(args)
-        )
-        assert len(obs) == 100
-        assert len(tiles) == 100
-        assert len(ents) == 100
-        assert len(dirs) == 100
-        assert len(items_t) == 100
-        assert len(miscs_t) == 100
-        assert len(masks) == 100
-        assert len(eots) == 100
-        assert len(seeds) == 100
-        assert len(kinds) == 100
+class TestThroughputLoss:
+    @pytest.mark.parametrize("io", ["token", "factored"])
+    def test_reinforces_sampled_factories(self, io):
+        from denoise import free_mask
 
-    def test_observation_shape(self):
-        """Observations should have correct shape (C, W, H)."""
-        args = SftArgs(seed=1, size=5, num_samples=50, max_level=2)
-        obs, *_ = _materialise_args(args)
-        assert obs.shape[1] == len(Channel)  # channels
-        assert obs.shape[2] == 5  # width
-        assert obs.shape[3] == 5  # height
+        state, max_thput = _batch()
+        model = DenoiserUNet(**TINY, io=io)
+        logits = model(state)
+        args = SftArgs(rl_inputs=2, rl_samples=3, rl_max_noise=0.5)
+        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.zeros(4), args)
+        loss.backward()
+        assert torch.isfinite(loss) and score >= 0
+        assert model.head[-1].weight.grad is not None
 
-    def test_tile_indices_in_range(self):
-        """Tile indices should be in [0, W*H)."""
-        args = SftArgs(seed=1, size=5, num_samples=50, max_level=2)
-        _, tiles, *_ = _materialise_args(args)
-        assert (tiles >= 0).all()
-        assert (tiles < 5 * 5).all()
+    def test_skips_heavily_corrupted_inputs(self):
+        from denoise import free_mask
 
-    def test_seeds_returned_per_pair(self):
-        """_materialise returns a per-pair lesson_seed tensor; pairs
-        from the same lesson share the same seed (multiple pairs per
-        lesson when level > 1)."""
-        args = SftArgs(seed=1, size=5, num_samples=100, max_level=2)
-        *_, seeds, _kinds = _materialise_args(args)
-        # Multiple unique seeds expected (each lesson has its own seed).
-        assert len(set(seeds.tolist())) >= 2
-        # And at least one seed appears more than once (level=2 → ~2 pairs).
-        from collections import Counter
-
-        counts = Counter(seeds.tolist())
-        assert any(c > 1 for c in counts.values()), (
-            "expected at least one lesson to produce >1 pair sharing a seed"
-        )
-
-    @pytest.mark.parametrize("kind_name", ["SPLITTER_MERGE_SIDELOADED", "SPLITTER_SPLIT"])
-    @pytest.mark.parametrize("seed", range(20))
-    def test_multi_tile_entities_emit_one_pair(self, kind_name, seed):
-        """Splitters are one entity that occupy two tiles; extract_expert_actions
-        must emit a single (anchor) action pair per splitter, not one per cell.
-        Otherwise the model is trained to call place-splitter twice for one
-        splitter, which would place two splitters at execution time."""
-        kind = getattr(LessonKind, kind_name)
-        try:
-            factory = build_factory(size=8, kind=kind, seed=seed)
-            assert factory is not None
-            solved, _ = blank_entities(factory, num_missing_entities=0)
-            factory = build_factory(size=8, kind=kind, seed=seed)
-            assert factory is not None
-            task, _ = blank_entities(factory, num_missing_entities=20)
-        except Exception:
-            pytest.skip(f"{kind_name} seed {seed}: lesson generation failed")
-
-        splitter_id = str2ent("splitter").value
-        solved_splitter = (solved[Channel.ENTITIES.value] == splitter_id).sum().item()
-        task_splitter = (task[Channel.ENTITIES.value] == splitter_id).sum().item()
-        # Skip cases where this lesson didn't include / didn't blank the splitter:
-        # without a splitter diff there's nothing to verify here.
-        if solved_splitter != 2 or task_splitter != 0:
-            pytest.skip("splitter not present + blanked in this case")
-
-        pairs = extract_expert_actions(solved, task)
-        splitter_pairs = [p for p in pairs if p[2] == splitter_id]
-        assert len(splitter_pairs) == 1, (
-            f"{kind_name} seed={seed}: expected 1 splitter placement pair, "
-            f"got {len(splitter_pairs)} (one per occupied cell — bug)"
-        )
-
-    @pytest.mark.skip(reason="skipping ASSEMBLE_(1|2)IN_1OUT")
-    def test_assembler_blanking_yields_nonzero_item_targets(self):
-        """ASSEMBLE_1IN_1OUT lessons must occasionally emit an expert action
-        whose item_id is a real recipe (non-zero). Without this, the item
-        head never learns to predict recipes — see issue #107. We sweep many
-        seeds at a large num_missing_entities so the assembler gets sampled
-        for blanking, then assert at least one non-zero item target appears."""
-        nonzero_item_targets = 0
-        asm_id = str2ent("assembling_machine_1").value
-        asm_pair_count = 0
-        for seed in range(60):
-            factory = build_factory(
-                size=10,
-                kind=LessonKind.ASSEMBLE_1IN_1OUT,
-                seed=seed,
-            )
-            if factory is None:
-                continue
-            solved = factory.world_CWH
-            task, _ = blank_entities(factory, num_missing_entities=20)
-            for _, _, ent_id, _, item_id, _, _, eot in extract_expert_actions(
-                solved, task
-            ):
-                if eot == 1:
-                    continue
-                if ent_id == asm_id:
-                    asm_pair_count += 1
-                    if item_id != 0:
-                        nonzero_item_targets += 1
-        assert asm_pair_count > 0, (
-            "Assembler was never emitted as an expert action across 60 seeds — "
-            "the lesson generator stopped blanking it"
-        )
-        assert nonzero_item_targets > 0, (
-            f"Got {asm_pair_count} assembler placement pairs but 0 had a "
-            f"non-zero item_id target — recipe channel is being stripped"
-        )
-
-    def test_observations_have_diverse_items(self):
-        """SFT observations should carry varied item IDs in the ITEMS
-        channel (sources/sinks). Without random_item the lessons all
-        carry electronic_circuit, which would let the model memorise
-        item_id == electronic_circuit as a constant feature."""
-        args = SftArgs(seed=1, size=8, num_samples=200, max_level=4)
-        obs, *_ = _materialise_args(args)
-        item_channel = obs[:, Channel.ITEMS.value]
-        unique_items = set(item_channel.flatten().tolist())
-        # 0 = empty (always present); we want at least 2 non-empty item types.
-        non_empty = unique_items - {0}
-        assert len(non_empty) >= 2, (
-            f"Expected >=2 distinct non-empty item types, got {sorted(unique_items)}"
-        )
-
-    def test_kinds_returned_per_pair(self):
-        """_materialise must return a per-pair kind tensor with the
-        same length as the rest. Values must be valid LessonKind enum
-        values, and at least two distinct kinds should appear (proves the
-        per-kind val aggregation in train_sft has something to bucket)."""
-        args = SftArgs(seed=1, size=8, num_samples=400, max_level=8)
-        obs, tiles, *_, kinds = _materialise_args(args)
-        assert len(kinds) == len(obs)
-        valid_values = {k.value for k in LessonKind}
-        assert set(kinds.tolist()).issubset(valid_values), (
-            f"kind tensor contains values outside LessonKind: "
-            f"{set(kinds.tolist()) - valid_values}"
-        )
-        assert len(set(kinds.tolist())) >= 2, (
-            f"expected >=2 distinct kinds, got {sorted(set(kinds.tolist()))}"
-        )
-
-    def test_samples_span_multiple_kinds(self):
-        """Dataset should draw from more than one LessonKind (the per-pair kind
-        tensor carries the labels directly)."""
-        args = SftArgs(seed=1, size=8, num_samples=400, max_level=8)
-        *_, kinds = _materialise_args(args)
-        assert len(set(kinds.tolist())) >= 2
-
-    def test_pairs_balanced_across_kinds(self):
-        """Sampling balances by pair count, not by lesson: every kind lands
-        within a small band. Uniform-by-lesson would push this ratio to ~0.1."""
-        from collections import Counter
-
-        args = SftArgs(seed=1, size=9, num_samples=3000, max_level=8)
-        *_, kinds = _materialise_args(args)
-        vals = [c for c in Counter(kinds.tolist()).values() if c > 0]
-        n_teachable = sum(
-            1
-            for k in LessonKind
-            if not LESSON_IS_TRIAL[k]
-            and any(build_factory(size=args.size, kind=k, seed=s) for s in range(5))
-        )
-        assert len(vals) == n_teachable, (
-            "every non-trial kind that fits the grid should contribute pairs"
-        )
-        assert min(vals) / max(vals) >= 0.8, f"pair counts not balanced: {sorted(vals)}"
-
-    def test_obs_uint8_masks_bool(self):
-        """obs stored uint8 and masks bool (the memory cut); eot stays float."""
-        args = SftArgs(seed=1, size=8, num_samples=300, max_level=4)
-        obs, *_, masks, eots, _seeds, _kinds = _materialise_args(args)
-        assert obs.dtype == torch.uint8
-        assert masks.dtype == torch.bool
-        assert int(obs.max()) < 256  # nothing overflowed the uint8 range
-        assert eots.dtype == torch.float
-
-    def test_unbuildable_kinds_dropped_not_hung(self):
-        """A lesson kind that can't fit the grid (a side-load gadget or an
-        assembler row doesn't fit at size 5) must be dropped from the sampler,
-        not retried forever. Generation completes and simply omits those kinds;
-        the buildable memorise lessons still appear."""
-        args = SftArgs(seed=1, size=5, num_samples=400, max_level=0)
-        *_, kinds = _materialise_args(args)
-        produced = set(kinds.tolist())
-        # Neither of these ever builds at size 5.
-        assert LessonKind.SPLITTER_MERGE_SIDELOADED.value not in produced
-        assert LessonKind.OPPOSITE_SIDES_1IN.value not in produced
-        # ...but the memorise lessons (which fit) do appear.
-        assert LessonKind.MEMORISE_1_INGREDIENT_RECIPES.value in produced
-        assert LessonKind.MEMORISE_2_INGREDIENT_RECIPES.value in produced
-
-
-class TestStreamingDemoDataset:
-    """StreamingDemoDataset generates the same pairs as the materialised path,
-    but lazily and sharded across DataLoader workers."""
-
-    def test_yields_target_count_and_shapes(self):
-        """A pass yields exactly `target` pairs with the extract 8-tuple's
-        shapes/dtypes (obs uint8 (C,W,H), mask bool (W*H), collated to a batch)."""
-        from torch.utils.data import DataLoader
-
-        target = 300
-        ds = StreamingDemoDataset(size=5, max_level=25, base_seed=1, target=target)
-        loader = DataLoader(ds, batch_size=64, num_workers=0)
-        batches = list(loader)
-        assert sum(b[0].shape[0] for b in batches) == target
-        obs, tile, ent, dirn, item, misc, mask, eot = batches[0]
-        assert obs.dtype == torch.uint8
-        assert obs.shape[1:] == (len(Channel), 5, 5)
-        assert mask.dtype == torch.bool
-        assert mask.shape[1] == 5 * 5
-        assert tile.shape[0] == obs.shape[0]
-
-    def test_workers_walk_disjoint_seeds(self):
-        """Sharding is leak-free: worker w of W walks a seed class no other
-        worker touches, so no factory is ever generated twice. (seed is at
-        index 8 of the yielded 10-tuple.)"""
-        random.seed(0)
-        seeds_w0 = {row[8] for row in _iter_demo_pairs(5, 25, 100, 0, 2, 150)}
-        seeds_w1 = {row[8] for row in _iter_demo_pairs(5, 25, 100, 1, 2, 150)}
-        assert seeds_w0 and seeds_w1
-        assert seeds_w0.isdisjoint(seeds_w1)
-
-    def test_train_stream_disjoint_from_val(self):
-        """Training starts one seed above the highest val seed, so the val set
-        and the training stream never share a factory (as train_sft wires it)."""
-        val = _materialise(5, 25, 1, n_lessons=30)
-        val_seeds = set(val[8].tolist())
-        train_base = max(val_seeds) + 1
-        random.seed(1)
-        train_seeds = {
-            row[8] for row in _iter_demo_pairs(5, 25, train_base, 0, 1, 200)
-        }
-        assert min(train_seeds) >= train_base
-        assert val_seeds.isdisjoint(train_seeds)
-
-    def test_steps_per_epoch_matches_loader(self):
-        """_steps_per_epoch predicts the batch count the DataLoader actually
-        yields (used to size the LR schedule before training)."""
-        from torch.utils.data import DataLoader
-
-        target, batch, workers = 240, 64, 2
-        ds = StreamingDemoDataset(size=5, max_level=25, base_seed=1, target=target)
-        loader = DataLoader(ds, batch_size=batch, num_workers=workers)
-        assert len(list(loader)) == _steps_per_epoch(target, workers, batch)
+        state, max_thput = _batch(2)
+        model = DenoiserUNet(**TINY)
+        logits = model(state)
+        loss, score = throughput_pg_loss(model, logits, state, free_mask(state), max_thput, torch.ones(2), SftArgs())
+        assert float(loss) == 0.0 and score == 0.0
 
 
 ENV_ID = "factorion/FactorioEnv-v0-sft-test"
@@ -592,205 +148,28 @@ class TestSFTCheckpointLoading:
 
         envs.close()
 
-    def test_train_sft_start_from_loads_checkpoint_weights(
-        self, registered_env, tmp_path
-    ):
-        """train_sft(--start-from ckpt) resumes a prior run: it loads that
-        checkpoint's full state dict into the agent before training, rather than
-        starting from a fresh init. Marks one head's bias with a sentinel in the
-        checkpoint and asserts it reaches the agent via load_state_dict."""
-        import sft as sft_mod
-
-        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        ref = AgentCNN(envs, **TINY_ARCH)
-        envs.close()
-        with torch.no_grad():
-            ref.ent_head.bias.fill_(4.2)
-        ckpt = str(tmp_path / "resume_from.pt")
-        torch.save(ref.state_dict(), ckpt)
-
-        # Spy on the constructed agent's load_state_dict so we capture the
-        # tensors actually loaded (training mutates them afterwards, so the
-        # load is the only clean observation point).
-        captured = {}
-        real_cls = sft_mod.AgentCNN
-
-        def spy(*a, **kw):
-            agent = real_cls(*a, **kw)
-            orig_load = agent.load_state_dict
-
-            def load(state_dict, *la, **lkw):
-                captured["ent_bias"] = state_dict["ent_head.bias"].clone()
-                return orig_load(state_dict, *la, **lkw)
-
-            agent.load_state_dict = load  # ty: ignore[invalid-assignment]
-            return agent
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(sft_mod, "AgentCNN", spy)
-            args = SftArgs(
-                seed=1,
-                size=5,
-                num_samples=100,
-                max_level=2,
-                epochs=1,
-                batch_size=32,
-                **TINY_ARCH_ARGS,
-                eval_rollouts_max_seeds=8,
-                start_from=ckpt,
-                checkpoint_path=str(tmp_path / "resumed.pt"),
-                summary_path=str(tmp_path / "resumed.json"),
-            )
-            train_sft(args)
-
-        assert "ent_bias" in captured, "--start-from must trigger a state-dict load"
-        assert torch.allclose(
-            captured["ent_bias"], torch.full_like(captured["ent_bias"], 4.2)
-        ), "the resumed checkpoint's weights must be the ones loaded"
-
-
-class TestSFTLossConvergence:
-    def test_loss_decreases_on_small_dataset(self, registered_env):
-        """SFT loss should decrease when training on a small expert dataset."""
-        args = SftArgs(seed=42, size=5, num_samples=200, max_level=2)
-        obs, tiles, ents, dirs, items_t, miscs_t, masks, _eots, _, _ = _materialise_args(
-            args
-        )
-
-        envs = gym.vector.SyncVectorEnv([make_env(ENV_ID, 0, False, 5, "test")])
-        agent = AgentCNN(envs, **TINY_ARCH)
-        envs.close()
-
-        optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
-        ce_loss = torch.nn.CrossEntropyLoss()
-        bce_loss = torch.nn.BCEWithLogitsLoss()
-
-        losses = []
-        for epoch in range(5):
-            agent.train()
-            batch_obs = obs.float()
-            encoded = agent.encode(batch_obs)
-            B = encoded.shape[0]
-
-            tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile = bce_loss(tile_logits, masks.float())  # masks are bool
-
-            x_B = tiles // agent.height
-            y_B = tiles % agent.height
-            batch_idx = torch.arange(B)
-            tile_features = agent.tile_features(encoded, batch_idx, x_B, y_B)
-
-            ent_logits = agent.ent_head(tile_features)
-            dir_logits = agent.dir_head(tile_features)
-            item_logits = agent.item_head(tile_features)
-            misc_logits = agent.misc_head(tile_features)
-            loss = (
-                loss_tile
-                + ce_loss(ent_logits, ents)
-                + ce_loss(dir_logits, dirs)
-                + ce_loss(item_logits, items_t)
-                + ce_loss(misc_logits, miscs_t)
-            )
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            losses.append(loss.item())
-
-        assert losses[-1] < losses[0], (
-            f"Loss should decrease: first={losses[0]:.4f}, last={losses[-1]:.4f}"
-        )
-
 
 class TestTrainSFTEndToEnd:
-    def test_train_sft_produces_checkpoint(self, tmp_path):
-        """End-to-end: train_sft() should run and produce a valid checkpoint."""
-        ckpt = str(tmp_path / "sft_e2e.pt")
-        summary = str(tmp_path / "sft_e2e_summary.json")
+    @pytest.mark.parametrize("io", ["token", "factored"])
+    def test_trains_evaluates_and_checkpoints(self, tmp_path, io):
+        ckpt, summary = tmp_path / "ckpt.pt", tmp_path / "summary.json"
         args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=100,
-            max_level=2,
-            epochs=2,
-            batch_size=32,
-            **TINY_ARCH_ARGS,
-            eval_rollouts_max_seeds=8,
-            checkpoint_path=ckpt,
-            summary_path=summary,
+            size=15, num_samples=64, batch_size=16, eval_seeds_per_kind=1,
+            eval_best_of=2, gen_steps=2, gen_refine=2, lw_thput=0.1, rl_inputs=2, rl_samples=2, rl_max_noise=1.0,
+            checkpoint_path=str(ckpt), summary_path=str(summary), io=io, **TINY,
         )
-        agent = train_sft(args)
-        assert os.path.exists(ckpt), "Checkpoint should be saved"
-        assert os.path.exists(summary), "Summary JSON should be saved"
+        model = train_sft(args)
+        out = json.loads(summary.read_text())
+        assert out["samples_seen"] == 64 and 0.0 <= out["best_val_throughput"] <= 1.0
+        loaded = load_denoiser(ckpt)
+        assert loaded.arch == model.arch
+        for (k, a), b in zip(loaded.state_dict().items(), model.state_dict().values()):
+            assert torch.equal(a, b.cpu()), k
 
-        import json
-
-        with open(summary) as f:
-            s = json.load(f)
-        assert "best_val_acc" in s
-        assert s["num_samples"] == 100
-        assert s["epochs"] == 2
-
-    def test_train_sft_dataset_cache_roundtrips(self, tmp_path):
-        """--dataset-cache materialises the training stream to disk on the first
-        run and trains from it on the second. Both runs produce a checkpoint."""
-        cache = str(tmp_path / "ds_cache.pt")
-
-        def run(tag):
-            args = SftArgs(
-                seed=1,
-                size=5,
-                num_samples=300,
-                epochs=1,
-                batch_size=64,
-                **TINY_ARCH_ARGS,
-                eval_rollouts_max_seeds=8,
-                dataset_cache=cache,
-                checkpoint_path=str(tmp_path / f"ckpt_{tag}.pt"),
-                summary_path=str(tmp_path / f"summary_{tag}.json"),
-            )
-            train_sft(args)
-
-        run("create")
-        assert os.path.exists(cache), "Cache should be written on first run"
-        run("load")  # second run loads the cache instead of generating
-        assert os.path.exists(str(tmp_path / "ckpt_load.pt"))
-
-
-class TestSFTDropout:
-    """The SFT dropout knob, when set, must reach the encoder via AgentCNN —
-    mirrors ppo.PpoArgs' regularisation contract."""
-
-    def test_train_sft_threads_dropout_into_agent(self, monkeypatch, tmp_path):
-        """train_sft must pass args.dropout through to AgentCNN. Spy on the
-        constructor — checkpoints don't persist Dropout2d's p, so the call is
-        the only observable point — and assert a non-zero value lands."""
-        import sft as sft_mod
-
-        captured = {}
-        real_agent_cls = sft_mod.AgentCNN
-
-        def spy(*a, **kw):
-            captured.update(kw)
-            return real_agent_cls(*a, **kw)
-
-        monkeypatch.setattr(sft_mod, "AgentCNN", spy)
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=100,
-            max_level=2,
-            epochs=1,
-            batch_size=32,
-            **TINY_ARCH_ARGS,
-            eval_rollouts_max_seeds=8,
-            dropout=0.5,
-            checkpoint_path=str(tmp_path / "drop.pt"),
-            summary_path=str(tmp_path / "drop.json"),
-        )
-        train_sft(args)
-        assert captured.get("dropout") == 0.5
+        # --start-from resumes those weights (and the noise prior with them).
+        args.start_from, args.num_samples = str(ckpt), 16
+        args.checkpoint_path = str(tmp_path / "ckpt2.pt")
+        assert torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
 
 
 class TestTrackedArtifact:
@@ -799,7 +178,7 @@ class TestTrackedArtifact:
     that crashed every tracked run with AttributeError *after* training — only
     at upload. This pins the path end-to-end."""
 
-    def test_tracked_run_finishes_with_layer_metadata(self, monkeypatch, tmp_path):
+    def test_tracked_run_finishes_with_arch_metadata(self, monkeypatch, tmp_path):
         import wandb
         from unittest.mock import MagicMock
 
@@ -820,20 +199,18 @@ class TestTrackedArtifact:
             size=5,
             num_samples=200,
             max_level=2,
-            epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY,
+            **FAST_EVAL,
             track=True,
-            eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
         train_sft(args)  # must not raise at the artifact step
 
         meta = captured["metadata"]
-        assert meta["layers"] == [16, 16, 16]
-        assert meta["kernel_size"] == 3
-        assert "chan1" not in meta
+        assert meta["width"] == 16
+        assert meta["attn_layers"] == 1
 
     def test_run_named_by_artifact_name(self, monkeypatch, tmp_path):
         """The W&B run name is the full hyperparameter signature (== the model
@@ -859,11 +236,10 @@ class TestTrackedArtifact:
             size=5,
             num_samples=200,
             max_level=2,
-            epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY,
+            **FAST_EVAL,
             track=True,
-            eval_rollouts=False,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
         )
@@ -882,12 +258,12 @@ class TestTrackedArtifact:
         import sft
 
         thputs = itertools.chain([0.1, 0.1, 0.3], itertools.repeat(0.2))
-        real_rollout = sft.run_rollout_eval
+        real_generation = sft.generation_metrics
 
-        def fake_rollout(*a, **k):
-            roll = real_rollout(*a, **k)
-            roll["overall"] = next(thputs)
-            return roll
+        def fake_generation(model, factories, args, *a, **k):
+            metrics = real_generation(model, factories, args, *a, **k)
+            metrics[f"val/thput@{args.eval_best_of}"] = next(thputs)
+            return metrics
 
         artifacts, uploads = [], []
 
@@ -905,16 +281,16 @@ class TestTrackedArtifact:
         fake_run.log_artifact.side_effect = fake_log_artifact
         monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
         monkeypatch.setattr(wandb, "Artifact", fake_artifact)
-        monkeypatch.setattr(sft, "run_rollout_eval", fake_rollout)
+        monkeypatch.setattr(sft, "generation_metrics", fake_generation)
 
         args = SftArgs(
             seed=1,
             size=5,
             num_samples=400,
             max_level=2,
-            epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY,
+            **FAST_EVAL,
             track=True,
             eval_every_n_samples=64,
             checkpoint_path=str(tmp_path / "k.pt"),
@@ -930,9 +306,9 @@ class TestTrackedArtifact:
         final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
         assert final_files == [args.checkpoint_path, args.summary_path]
 
-    def test_rollout_metrics_are_logged_only_as_best_of_n(self, monkeypatch, tmp_path):
-        """Every metric from the best-of-N rollout carries @N, and no plain key
-        (which would read as best-of-1) duplicates it."""
+    def test_generation_metrics_are_logged_as_best_of_n(self, monkeypatch, tmp_path):
+        """Every metric from the best-of-N generation eval carries @N, and no
+        plain key (which would read as best-of-1) duplicates it."""
         import wandb
         from unittest.mock import MagicMock
 
@@ -949,9 +325,9 @@ class TestTrackedArtifact:
             size=5,
             num_samples=400,
             max_level=2,
-            epochs=1,
             batch_size=32,
-            **TINY_ARCH_ARGS,
+            **TINY,
+            **FAST_EVAL,
             track=True,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
@@ -962,7 +338,7 @@ class TestTrackedArtifact:
         assert f"val/thput@{n}" in logged
         assert f"val/inserters_no_input@{n}" in logged
         assert any(k.endswith(f"/MOVE_ONE_ITEM/thput@{n}") for k in logged)
-        assert all(k.endswith(f"@{n}") for k in logged if "thput" in k or "inserters_no" in k)
+        assert all(re.search(r"@\d+$", k) for k in logged if "thput" in k or "inserters_no" in k)
         assert f"best_val_throughput@{n}" in fake_run.summary
 
 
@@ -1577,42 +953,6 @@ class TestLegalTileMask:
 class TestEotHead:
     """Tests for the binary end-of-turn head."""
 
-    def test_eot_label_per_lesson(self):
-        """A lesson with N missing entities emits N placement pairs
-        (eot=0) followed by one terminal pair (eot=1) whose obs equals
-        the fully-solved factory."""
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
-        assert factory is not None
-        solved, _ = blank_entities(factory, num_missing_entities=0)
-        factory = build_factory(size=5, kind=LessonKind.MOVE_ONE_ITEM, seed=11)
-        assert factory is not None
-        task, min_ent = blank_entities(factory, num_missing_entities=3)
-        pairs = extract_expert_actions(solved, task)
-        # eot flag is at index 7 in the tuple
-        eots = [p[7] for p in pairs]
-        assert sum(eots) == 1, f"Expected exactly one terminal pair, got {sum(eots)}"
-        assert eots[-1] == 1, "Terminal pair must come last"
-        # Terminal observation equals solved (entities + directions). obs is
-        # uint8, so cast to compare against the int64 solved world.
-        terminal_obs = pairs[-1][0]
-        assert terminal_obs.dtype == torch.uint8
-        assert torch.equal(
-            terminal_obs[Channel.ENTITIES.value].long(), solved[Channel.ENTITIES.value]
-        )
-        assert torch.equal(
-            terminal_obs[Channel.DIRECTION.value].long(),
-            solved[Channel.DIRECTION.value],
-        )
-
-    def test_eot_tensor_in_dataset(self):
-        """_materialise must return a per-pair eot tensor with values
-        in {0.0, 1.0} and at least one positive (terminal) example."""
-        args = SftArgs(seed=1, size=5, num_samples=200, max_level=4)
-        *_, eots, _seeds, _kinds = _materialise_args(args)
-        assert eots.dtype == torch.float
-        assert set(eots.unique().tolist()).issubset({0.0, 1.0})
-        assert eots.sum().item() >= 1, "Dataset must contain >=1 terminal pair"
-
     def test_eot_head_exists_and_forwards(self, registered_env):
         """AgentCNN must expose an eot_head producing a single logit per
         observation."""
@@ -1655,166 +995,6 @@ class TestEotHead:
         assert agent.eot_should_stop(x, threshold=-0.01).all()
 
 
-class TestPerKindEotMetrics:
-    """val/<LESSON>/eot_acc and /eot_pos_recall — the per-LessonKind breakdown
-    of the global EOT stop-signal metrics."""
-
-    def test_per_kind_eot_metrics_logged(self, monkeypatch, tmp_path):
-        """train_sft must log val/<LESSON>/eot_acc and /eot_pos_recall for
-        every LessonKind present in the val split, each in [0, 1] and paired
-        1:1 with the existing per-kind placement /acc. The per-kind metrics go
-        only to wandb (not summary.json), so capture the logged dict via a
-        mock run."""
-        import wandb
-        from unittest.mock import MagicMock
-
-        logged: dict = {}
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
-        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
-        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=400,
-            max_level=2,
-            epochs=1,
-            batch_size=32,
-            **TINY_ARCH_ARGS,
-            track=True,
-            eval_rollouts=False,  # skip the slow rollout eval
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)
-
-        acc_keys = [
-            k
-            for k in logged
-            if k.startswith("val/") and k.endswith("/eot_acc") and k != "val/eot_acc"
-        ]
-        rec_keys = [
-            k
-            for k in logged
-            if k.startswith("val/")
-            and k.endswith("/eot_pos_recall")
-            and k != "val/eot_pos_recall"
-        ]
-        assert acc_keys, "expected per-kind val/<LESSON>/eot_acc to be logged"
-        assert rec_keys, "expected per-kind val/<LESSON>/eot_pos_recall to be logged"
-        for k in acc_keys + rec_keys:
-            assert 0.0 <= logged[k] <= 1.0, f"{k}={logged[k]} out of [0, 1]"
-
-        # The per-kind eot keys must cover exactly the kinds that already get a
-        # placement /acc — same val split, same buckets, emitted together.
-        place_kinds = {
-            k.split("/")[1]
-            for k in logged
-            if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
-        }
-        assert {k.split("/")[1] for k in acc_keys} == place_kinds
-
-
-class TestNotNoneHeadAccuracy:
-    """val/not_none_<HEAD>_acc and val/<LESSON>/not_none_<HEAD>_acc — per-head
-    accuracy restricted to samples whose target is a real (non-NONE) option, so
-    the dominant NONE class stops inflating the plain *_acc metrics."""
-
-    _HEADS = ["ent", "dir", "item", "misc", "eot"]
-
-    def test_not_none_metrics_logged(self, monkeypatch, tmp_path):
-        """train_sft must log the global val/not_none_<HEAD>_acc for every head
-        and the per-kind val/<LESSON>/not_none_<HEAD>_acc for kinds that
-        exercise a non-NONE target, each in [0, 1]."""
-        import wandb
-        from unittest.mock import MagicMock
-
-        logged: dict = {}
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
-        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
-        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=400,
-            max_level=2,
-            epochs=1,
-            batch_size=32,
-            **TINY_ARCH_ARGS,
-            track=True,
-            eval_rollouts=False,  # skip the slow rollout eval
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)
-
-        # Every head gets a global not-none metric, always in [0, 1].
-        for head in self._HEADS:
-            key = f"val/not_none_{head}_acc"
-            assert key in logged, f"expected global {key} to be logged"
-            assert 0.0 <= logged[key] <= 1.0, f"{key}={logged[key]} out of [0, 1]"
-
-        # Entity/direction have a non-NONE target on essentially every
-        # placement, so their per-kind not-none metric must appear for the
-        # kinds that get a placement /acc.
-        place_kinds = {
-            k.split("/")[1]
-            for k in logged
-            if k.startswith("val/") and k.endswith("/acc") and k.count("/") == 2
-        }
-        for head in ("ent", "dir"):
-            kinds = {
-                k.split("/")[1]
-                for k in logged
-                if k.endswith(f"/not_none_{head}_acc") and k.count("/") == 2
-            }
-            assert kinds, f"expected per-kind val/<LESSON>/not_none_{head}_acc"
-            assert kinds <= place_kinds
-
-        # Any per-kind not-none metric that surfaced must be a valid fraction.
-        for k, v in logged.items():
-            if "/not_none_" in k and k.endswith("_acc") and k.count("/") == 2:
-                assert 0.0 <= v <= 1.0, f"{k}={v} out of [0, 1]"
-
-    def test_not_none_eot_acc_equals_pos_recall(self, monkeypatch, tmp_path):
-        """EOT's not-none option is the positive (stop) class, so its not-none
-        accuracy is exactly the positive-class recall already logged."""
-        import wandb
-        from unittest.mock import MagicMock
-
-        logged: dict = {}
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
-        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
-        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=400,
-            max_level=2,
-            epochs=1,
-            batch_size=32,
-            **TINY_ARCH_ARGS,
-            track=True,
-            eval_rollouts=False,
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)
-
-        assert logged["val/not_none_eot_acc"] == logged["val/eot_pos_recall"]
-
-
 class TestArtifactNameHelpers:
     """The W&B artifact name encodes hyperparams so runs with identical
     configs collapse into versions of one artifact. These tests pin the
@@ -1855,42 +1035,12 @@ class TestArtifactNameHelpers:
         args = SftArgs(
             size=16,
             num_samples=200_000,
-            epochs=50,
             batch_size=1024,
             lr=3e-4,
-            layer1=48,
-            layer2=48,
-            layer3=48,
+            width=48,
+            levels=3,
         )
-        assert _artifact_name(args) == "sft-s16-n200k-e50-bs1024-lr3e-4-c48-48-48"
-
-    def test_artifact_name_encodes_depth(self):
-        """Depth is part of the suffix: a 4-layer encoder of the same width
-        must not collide with a 3-layer one (else the deeper run would file
-        under the shallower run's artifact)."""
-        three = SftArgs(layer1=48, layer2=48, layer3=48, layer4=0)
-        four = SftArgs(layer1=48, layer2=48, layer3=48, layer4=48)
-        assert _artifact_name(three).endswith("-c48-48-48")
-        assert _artifact_name(four).endswith("-c48-48-48-48")
-        assert _artifact_name(three) != _artifact_name(four)
-
-    def test_artifact_name_asymmetric_channels(self):
-        """Differing per-layer widths expand into the full list, so a
-        c32-64-64 run can't accidentally file under a c48-48-48 run."""
-        args = SftArgs(layer1=32, layer2=64, layer3=64)
-        # Assert only the channel suffix (the behaviour under test) so this
-        # doesn't break when the default size/samples/epochs/lr change.
-        assert _artifact_name(args).endswith("-c32-64-64")
-
-    def test_artifact_name_kernel_size_suffix(self):
-        """A non-default kernel size appends -k{N} so two runs differing only
-        in receptive field get distinct artifacts; the default k=3 adds no
-        token (keeps existing names stable)."""
-        # Default kernel (3) adds no suffix; a non-default kernel appends
-        # -k{N}. Derive from the default name so this survives default changes.
-        base = _artifact_name(SftArgs())
-        assert not base.endswith(("-k3", "-k5", "-k7"))
-        assert _artifact_name(SftArgs(kernel_size=5)) == base + "-k5"
+        assert _artifact_name(args) == "dn-s16-n200k-bs1024-lr3e-4-w48x3b2a4"
 
     def test_artifact_name_stable_across_runs(self):
         """Two SftArgs with the same hyperparams must produce the same

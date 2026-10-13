@@ -1,250 +1,80 @@
-"""Supervised Fine-Tuning (SFT) pre-training for AgentCNN.
+"""Denoising pretraining of the whole-factory UNet (`denoise.py`).
 
-Uses expert demonstrations from generate_lesson() to teach basic belt
-placement patterns before RL training via PPO.
+Every training example is a known-correct factory from `build_factory` with a
+random fraction t ~ U[0, 1] of its free tiles resampled from noise; the model
+always regresses the clean factory. The eval generates factories for held-out
+lessons from pure noise (best of `eval_best_of` chains each) and scores them
+in the throughput simulator.
 
 Usage:
-    python sft.py --size 15 --num-samples 5000000 --epochs 1
-    python ppo.py --start_from sft_checkpoint.pt ...
+    python sft.py --num-samples 2000000
 """
 
 import copy
 import io
+import itertools
 import json
+import math
 import os
 import random
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, TypedDict
 
-import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
 import tyro
-from torch.utils.data import DataLoader, IterableDataset, TensorDataset
+from torch.utils.data import DataLoader, IterableDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-import factorion_rs  # noqa: E402
+from denoise import (  # noqa: E402
+    CH_PART,
+    DenoiserUNet,
+    N_TYPES,
+    _luts,
+    corrupt,
+    free_mask,
+    legalize,
+    load_denoiser,
+    run_denoise_eval,
+    score_world,
+    state_to_tokens,
+    tokens_to_state,
+    world_to_state,
+)
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
     TRAINING_KINDS,
-    Direction,
-    Misc,
     LessonKind,
-    blank_entities,
     build_factory,
     count_dangling_inserters,
-    entities,
     render_factory,
 )
 
 from ppo import (  # noqa: E402
-    AgentCNN,
     FactorioEnv,
-    make_env,
-    layers_from_args,
     assert_device_ok,
     cuda_env_info,
+    _build_eval_set,
     _resolve_start_from,
     _upload_replacing,
     _CH_ENT,
-    _CH_DIR,
     _CH_ITEMS,
-    _CH_MISC,
-    _EMPTY_ENT_ID,
-    _EMPTY_ITEM_VAL,
-    _DIR_NONE_VAL,
-    _MISC_NONE_VAL,
     _ASM_MACHINE_ENT_ID,
-    _ASM_RECIPE_ITEM_IDS,
-    _UG_BELT_ENT_ID,
-    _VALID_ENTITY_ACTION_IDS,
 )
-from training_config import SftArgs, wsd_multiplier  # noqa: E402
+from training_config import PpoArgs, SftArgs, wsd_multiplier  # noqa: E402
 
-
-_SMALL_ENTITY_IDS = tuple(
-    e for e in _VALID_ENTITY_ACTION_IDS
-    if e != _EMPTY_ENT_ID and entities[e].width == entities[e].height == 1
-)
-_CARDINAL_DIRS = tuple(d.value for d in Direction if d != Direction.NONE)
-_UG_MISCS = (Misc.UNDERGROUND_DOWN.value, Misc.UNDERGROUND_UP.value)
-
-
-def _mutate_entity(state_CWH, x, y):
-    """Corrupt the entity anchored at (x, y) in place: pick one of its entity
-    type, direction, recipe or underground state and change it to another
-    value a placement action could have put there, keeping the footprint.
-    Nearly every such edit breaks the factory, which is what makes it an
-    error to train a fix for."""
-    ent, d, item, misc = (int(state_CWH[c, x, y]) for c in (_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC))
-    proto = entities[ent]
-
-    def tiles(direction):
-        t = factorion_rs.py_entity_tiles(x, y, direction, proto.width, proto.height)
-        return {tuple(p) for p in t} if t is not None else {(x, y)}
-
-    by_channel = [
-        [
-            (e, d, _EMPTY_ITEM_VAL, random.choice(_UG_MISCS) if e == _UG_BELT_ENT_ID else _MISC_NONE_VAL)
-            for e in _SMALL_ENTITY_IDS if e != ent and ent in _SMALL_ENTITY_IDS
-        ],
-        [
-            (ent, nd, item, misc) for nd in _CARDINAL_DIRS
-            if ent != _ASM_MACHINE_ENT_ID and nd != d and tiles(nd) == tiles(d)
-        ],
-        [(ent, d, r, misc) for r in _ASM_RECIPE_ITEM_IDS if ent == _ASM_MACHINE_ENT_ID and r != item],
-        [(ent, d, item, m) for m in _UG_MISCS if ent == _UG_BELT_ENT_ID and m != misc],
-    ]
-    mutated = random.choice(random.choice([opts for opts in by_channel if opts]))
-    for tx, ty in tiles(d):
-        for c, v in zip((_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC), mutated):
-            state_CWH[c, tx, ty] = v
-
-
-def extract_expert_actions(solved_CWH, task_CWH, error_prob=0.0):
-    """Extract (state, action) pairs by diffing solved vs task worlds.
-
-    Returns list of (state_CWH, tile_idx, entity_id, direction_id, item_id,
-    misc_id, valid_tile_mask, eot) tuples. The agent's action covers all
-    four placement channels because the env (ppo.py FactorioEnv.step)
-    rejects placements with mismatched channels — e.g. an underground belt
-    without misc=DOWN/UP, or an assembling_machine_1 without an item
-    (= recipe).
-
-    The valid_tile_mask is a flat binary tensor marking ALL tiles that still
-    need entities at this step — not just the one chosen. This allows
-    multi-label tile loss to avoid penalizing the model for predicting a
-    valid-but-different tile.
-
-    Multi-tile entities (e.g. splitters) emit a single pair at the anchor
-    tile, not one per occupied cell — placing the anchor fills the whole
-    footprint at execution time.
-
-    Actions are applied sequentially in random order, so intermediate states
-    reflect realistic observations the agent would see.
-
-    `eot` (end-of-turn) is 0 for every placement step (the factory still
-    has entities to place) and 1 for a single terminal pair appended at
-    the end (state is the fully-solved factory). Placement targets on the
-    terminal pair are sentinel zeros — the SFT loop masks placement losses
-    on eot=1 samples.
-
-    With probability `error_prob` after each placement, a corrupted copy of
-    the state is also emitted (one already-placed entity mutated by
-    :func:`_mutate_entity`), labelled with the overwrite that restores the
-    solved entity at its anchor — the only valid tile, so the fix comes
-    first. The trajectory then continues from the clean state, so the model
-    is never trained to make the error, only to repair it.
-    """
-    C, W, H = solved_CWH.shape
-    solved_ent = solved_CWH[Channel.ENTITIES.value]
-    task_ent = task_CWH[Channel.ENTITIES.value]
-
-    # Find tiles that differ: solved has entity, task has empty
-    diff_mask = solved_ent != task_ent
-    diff_locs = diff_mask.nonzero(as_tuple=False).tolist()
-
-    if len(diff_locs) == 0:
-        return []
-
-    # Group multi-tile entities so each placement is one (anchor) action,
-    # not one per occupied cell. Walk in raster order; when we encounter a
-    # multi-tile entity, claim its anchor and mark the rest as secondaries
-    # to skip.
-    diff_set = {tuple(loc) for loc in diff_locs}
-    secondary_tiles: set[tuple[int, int]] = set()
-    for x, y in sorted(diff_set):
-        if (x, y) in secondary_tiles:
-            continue
-        ent_val = int(solved_CWH[Channel.ENTITIES.value, x, y])
-        proto = entities[ent_val]
-        if proto.width == 1 and proto.height == 1:
-            continue
-        d_val = int(solved_CWH[Channel.DIRECTION.value, x, y])
-        tile_list = factorion_rs.py_entity_tiles(x, y, d_val, proto.width, proto.height)
-        if tile_list is None:
-            continue
-        anchor = tuple(tile_list[0])
-        for tx, ty in tile_list:
-            if (tx, ty) != anchor:
-                secondary_tiles.add((tx, ty))
-
-    diff_locs = [loc for loc in diff_locs if tuple(loc) not in secondary_tiles]
-
-    # Shuffle for diversity
-    random.shuffle(diff_locs)
-
-    state = task_CWH.clone()
-    pairs = []
-
-    # Build per-step valid_mask = all remaining anchor tiles. We pop as we go.
-    remaining_locs = [tuple(loc) for loc in diff_locs]
-
-    for step, (x, y) in enumerate(diff_locs):
-        valid_mask = torch.zeros(W * H, dtype=torch.bool)
-        for rx, ry in remaining_locs[step:]:
-            valid_mask[rx * H + ry] = True
-
-        # uint8 obs / bool mask: ~8x smaller than int64/float32, cast at use.
-        obs = state.to(torch.uint8)
-        tile_idx = x * H + y
-        entity_id = int(solved_CWH[Channel.ENTITIES.value, x, y])
-        direction_id = int(solved_CWH[Channel.DIRECTION.value, x, y])
-        item_id = int(solved_CWH[Channel.ITEMS.value, x, y])
-        misc_id = int(solved_CWH[Channel.MISC.value, x, y])
-
-        pairs.append(
-            (obs, tile_idx, entity_id, direction_id, item_id, misc_id, valid_mask, 0)
-        )
-
-        # Apply action: copy the entity's full footprint from solved, not
-        # just the anchor cell, so the observation reflects what placing
-        # the anchor does at execution time.
-        proto = entities[entity_id]
-        if proto.width == 1 and proto.height == 1:
-            tiles_to_apply = [(x, y)]
-        else:
-            tile_list = factorion_rs.py_entity_tiles(
-                x, y, direction_id, proto.width, proto.height
-            )
-            tiles_to_apply = (
-                [tuple(t) for t in tile_list] if tile_list is not None else [(x, y)]
-            )
-        for tx, ty in tiles_to_apply:
-            for ch in range(C):
-                state[ch, tx, ty] = solved_CWH[ch, tx, ty]
-
-        # The guard keeps error_prob=0 from consuming RNG, so clean data
-        # streams stay bit-identical.
-        if error_prob and random.random() < error_prob:
-            ex, ey = random.choice(diff_locs[: step + 1])
-            corrupted = state.clone()
-            _mutate_entity(corrupted, ex, ey)
-            fix_mask = torch.zeros(W * H, dtype=torch.bool)
-            fix_mask[ex * H + ey] = True
-            pairs.append((
-                corrupted.to(torch.uint8), ex * H + ey,
-                *(int(solved_CWH[c, ex, ey]) for c in (_CH_ENT, _CH_DIR, _CH_ITEMS, _CH_MISC)),
-                fix_mask, 0,
-            ))
-
-    # Terminal pair: every placement has been applied, so `state` now equals
-    # `solved_CWH`. Emit a sample with eot=1 and sentinel zeros for
-    # placement targets; the SFT loop's placement_mask zeroes out the
-    # placement losses for this sample. valid_mask=all-zero matches the
-    # invariant "no remaining tiles to place".
-    terminal_obs = state.to(torch.uint8)
-    terminal_valid_mask = torch.zeros(W * H, dtype=torch.bool)
-    pairs.append((terminal_obs, 0, 0, 0, 0, 0, terminal_valid_mask, 1))
-
-    return pairs
-
+# Training factories come from far above the held-out eval seeds (9M-11M).
+_TRAIN_SEED_BASE = 1_000_000_000
+# Noise levels the val/ denoising metrics are measured at.
+_VAL_NOISE_LEVELS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
 def _humanize_count(n: int) -> str:
@@ -277,24 +107,14 @@ def _artifact_name(args: "SftArgs") -> str:
     """Build a descriptive W&B artifact name from the training config.
 
     Identical-config runs collapse into versions of the same artifact;
-    config-changing runs (different size / sample count / lr / channels)
-    get their own artifact. `best_val_acc` deliberately goes to the alias
-    instead, since baking a varying number into the name would defeat
-    versioning."""
-    # Encode the full layer list (one token per conv layer) so runs that
-    # differ in depth or width get distinct artifacts; append a kernel suffix
-    # only for non-default kernels.
-    layers = layers_from_args(args)
-    chan_str = "c" + "-".join(str(c) for c in layers)
-    if args.kernel_size != 3:
-        chan_str += f"-k{args.kernel_size}"
+    config-changing runs (different size / sample count / lr / architecture)
+    get their own artifact."""
     return (
-        f"sft-s{args.size}"
+        f"dn-s{args.size}"
         f"-n{_humanize_count(args.num_samples)}"
-        f"-e{args.epochs}"
         f"-bs{args.batch_size}"
         f"-lr{_humanize_lr(args.lr)}"
-        f"-{chan_str}"
+        f"-w{args.width}x{args.levels}b{args.blocks}a{args.attn_layers}"
     )
 
 
@@ -303,43 +123,30 @@ def _artifact_name(args: "SftArgs") -> str:
 # build_factory already exhausts a full rejection-sampling budget per call, so a
 # None is a strong "can't build" signal; an unbuildable kind (e.g. a 3x3
 # assembler with 5 ingredient arms on a size-5 grid) returns None for every seed.
-# Without this cap the balance-by-fewest sampler would keep re-drawing that kind
-# forever (it stays at 0 samples, always the minimum) and hang.
+# Without this cap the sampler would keep re-drawing that kind forever and hang.
 _MAX_BUILD_FAILURES_PER_KIND = 100
 
 
-def _iter_demo_pairs(
-    size, max_level, base_seed, worker_id, num_workers, target=None, error_prob=0.0
-):
-    """Yield (obs, tile, ent, dir, item, misc, mask, eot, seed, kind) demos.
+def _iter_factories(size, base_seed, worker_id, num_workers):
+    """Yield (state uint8, max_throughput) for fresh lesson factories forever.
 
     Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
-    concurrent workers never share a factory. Draws the fewest-pairs kind each
-    step so output balances by pair count, not by lesson. Blanks at max_level
-    (the full placement progression per lesson); obs/mask are uint8/bool. Runs
-    until `target` pairs are produced, or forever when `target` is None. Callers
-    own their own RNG seeding.
+    concurrent workers never share a factory. Kinds are drawn uniformly.
     """
-    # Trial kinds have no known solution, so they can never emit an expert
-    # pair — left in the pool they'd stay at 0 samples forever and the
-    # fewest-pairs draw below would redraw them every time. Trials are
-    # RL-only; PPO samples them directly.
+    # Trial kinds have no known solution, so there is no clean factory to
+    # denoise towards. Trials are RL-only; PPO samples them directly.
     kinds = [k for k in TRAINING_KINDS if not LESSON_IS_TRIAL[k]]
-    kind_samples = {k.name: 0 for k in kinds}
     # Kinds still believed buildable at this size, plus a per-kind counter of
     # consecutive build failures. A kind that can't fit the grid returns None for
     # every seed; once it exhausts the failure budget it is dropped so the
     # sampler doesn't spin on it forever (see _MAX_BUILD_FAILURES_PER_KIND).
     available = list(kinds)
     consecutive_fails = {k.name: 0 for k in kinds}
+    rng = random.Random(base_seed + worker_id)
 
     seed = base_seed + worker_id
-    produced = 0
-    while target is None or produced < target:
-        # Draw the fewest-pairs kind: big factories emit ~10x more pairs, so
-        # uniform kind choice starves the rare recipe/assembler heads.
-        fewest = min(kind_samples[k.name] for k in available)
-        kind = random.choice([k for k in available if kind_samples[k.name] == fewest])
+    while True:
+        kind = rng.choice(available)
         seed += num_workers
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
@@ -358,87 +165,24 @@ def _iter_demo_pairs(
                     )
             continue
         consecutive_fails[kind.name] = 0
-        task, _ = blank_entities(factory, num_missing_entities=max_level)
-
-        for pair in extract_expert_actions(factory.world_CWH, task, error_prob):
-            yield (*pair, seed, kind.value)
-            kind_samples[kind.name] += 1
-            produced += 1
-            if target is not None and produced >= target:
-                break
+        yield torch.from_numpy(world_to_state(factory.world_CWH)), float(factory.max_throughput)
 
 
-def _materialise(size, max_level, base_seed, target=None, n_lessons=None, error_prob=0.0):
-    """Eagerly collect demonstrations into stacked tensors (obs, tile, ent, dir,
-    item, misc, mask, eot, seed, kind). Stops after `target` pairs, or after
-    `n_lessons` distinct factories when that is given instead."""
-    random.seed(base_seed)
-    rows = []
-    seeds = set()
-    for row in _iter_demo_pairs(size, max_level, base_seed, 0, 1, target, error_prob):
-        if n_lessons is not None and row[8] not in seeds:
-            if len(seeds) >= n_lessons:
-                break
-            seeds.add(row[8])
-        rows.append(row)
-    cols = list(zip(*rows))
-    return (
-        torch.stack(cols[0]),
-        torch.tensor(cols[1], dtype=torch.long),
-        torch.tensor(cols[2], dtype=torch.long),
-        torch.tensor(cols[3], dtype=torch.long),
-        torch.tensor(cols[4], dtype=torch.long),
-        torch.tensor(cols[5], dtype=torch.long),
-        torch.stack(cols[6]),
-        torch.tensor(cols[7], dtype=torch.float),
-        torch.tensor(cols[8], dtype=torch.long),
-        torch.tensor(cols[9], dtype=torch.long),
-    )
+class FactoryStream(IterableDataset):
+    """Generates training factories on the fly, sharded across DataLoader workers.
 
-
-class StreamingDemoDataset(IterableDataset):
-    """Generates SFT demonstrations on the fly, sharded across DataLoader workers.
-
-    Yields the model-input 8-tuple (obs uint8, tile, ent, dir, item, misc,
-    mask bool, eot) for `target` pairs per pass; worker w of W walks the disjoint
-    seed range base_seed+w mod W so no factory is produced twice. CPU generation
-    overlaps GPU training via DataLoader prefetch.
+    CPU generation overlaps GPU training via DataLoader prefetch.
     """
 
-    def __init__(self, size, max_level, base_seed, target, error_prob=0.0):
+    def __init__(self, size, base_seed):
         self.size = size
-        self.max_level = max_level
         self.base_seed = base_seed
-        self.target = target
-        self.error_prob = error_prob
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
         worker_id = 0 if info is None else info.id
         num_workers = 1 if info is None else info.num_workers
-        random.seed(self.base_seed + worker_id)
-        base, rem = divmod(self.target, num_workers)
-        my_target = base + (1 if worker_id < rem else 0)
-        for row in _iter_demo_pairs(
-            self.size, self.max_level, self.base_seed, worker_id, num_workers, my_target,
-            self.error_prob,
-        ):
-            # row is (obs, tile, ent, dir, item, misc, mask, eot, seed, kind);
-            # training only needs the first 8 — seed/kind are val-only metadata.
-            yield row[:8]
-
-
-def _steps_per_epoch(target, n_workers, batch_size):
-    """Optimizer steps one streaming pass yields: each worker batches its own
-    per-worker share (partial last batch), so it's the sum of per-worker
-    ceil-divisions, not one global ceil-division."""
-    n = max(1, n_workers)
-    base, rem = divmod(target, n)
-    total = 0
-    for w in range(n):
-        pw = base + (1 if w < rem else 0)
-        total += (pw + batch_size - 1) // batch_size
-    return max(1, total)
+        return _iter_factories(self.size, self.base_seed, worker_id, num_workers)
 
 
 def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
@@ -448,8 +192,7 @@ def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
     share their LR curve until their cooldowns diverge — and a cooldown can be
     branched off a stable-phase checkpoint
     (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
-    repeating the shared prefix. Warmup and floor from sweep ndc8tvvy (run
-    c0kwcui1), peak and cooldown from sweep mf3ugnfn (run 7bfvox6n).
+    repeating the shared prefix.
     """
     return torch.optim.lr_scheduler.LambdaLR(
         optimizer,
@@ -845,31 +588,196 @@ def run_rollout_eval(
     }
 
 
-def _upload_checkpoint(run, args, best_val_throughput, best_val_acc, files, previous):
+def noise_levels(n, args: SftArgs, device):
+    """Per-example corruption level: U[0, 1] plus point masses at 0 (a clean
+    factory must map to itself, which is what stops generation) and 1 (pure
+    noise, where generation starts)."""
+    u = torch.rand((2, n), device=device)
+    t = u[0]
+    t = torch.where(u[1] < args.noise_zero_frac, 0.0, t)
+    return torch.where(u[1] > 1 - args.noise_one_frac, 1.0, t)
+
+
+def noise_prior_from(states: torch.Tensor) -> torch.Tensor:
+    """The noise distribution over types: their frequency on the free tiles of
+    `states`, mixed with 5% uniform so every type can appear."""
+    typ = state_to_tokens(states)[0][free_mask(states)]
+    freq = torch.bincount(typ, minlength=N_TYPES).float()
+    return 0.95 * freq / freq.sum() + 0.05 / N_TYPES
+
+
+def tokens_logp(model, logits, toks, free):
+    """Per-example log-probability of `toks` under `logits`, averaged over
+    free tiles."""
+    freef = free.float()
+    return (model.logp(logits, toks) * freef).sum((1, 2)) / freef.sum((1, 2)).clamp(min=1)
+
+
+def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
+    """REINFORCE on simulated throughput. Up to `rl_inputs` lightly-corrupted
+    examples (t ≤ rl_max_noise, where a sample is a plausible factory) each get
+    `rl_samples` factories sampled from the prediction; each is legalized and
+    scored with PPO's reward (raw throughput × cost efficiency ÷ reference) and
+    reinforced against its siblings' mean (RLOO). Returns (loss, mean score)."""
+    idx = torch.nonzero(t <= args.rl_max_noise).squeeze(1)[: args.rl_inputs]
+    if len(idx) == 0:
+        return logits.new_zeros(()), 0.0
+    K = args.rl_samples
+    rep = idx.repeat_interleave(K)
+    lg, fr = logits[rep], free[rep]
+    with torch.no_grad():
+        toks = model.pick(lg.detach(), temperature=1.0)
+        conf = model.conf(lg.detach(), toks)
+    cond = state[rep, :CH_PART].cpu().numpy().astype(np.int64)
+    typ, rec, part = (x.cpu().numpy() for x in toks)
+    conf_np, mt = conf.float().cpu().numpy(), max_thput[rep].tolist()
+    scores = torch.tensor(
+        [
+            score_world(
+                legalize(cond[i], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i]),
+                mt[i],
+                PpoArgs.entity_cost_scale,
+            )["score"]
+            for i in range(len(rep))
+        ],
+        device=logits.device,
+    ).view(-1, K)
+    adv = (scores - (scores.sum(1, keepdim=True) - scores) / (K - 1)).view(-1)
+    return -(adv * tokens_logp(model, lg, toks, fr)).mean(), float(scores.mean())
+
+
+def denoise_step(model, state, max_thput, args: SftArgs):
+    """One training batch: corrupt, predict, (unroll), loss. Returns (loss,
+    stats) where stats holds detached per-term values."""
+    free = free_mask(state)
+    clean = state_to_tokens(state)
+    t = noise_levels(state.shape[0], args, state.device)
+    noisy = corrupt(clean, free, t, model.noise_prior)
+    logits = model(tokens_to_state(state, free, *noisy))
+    terms = model.losses(logits, clean, free)
+    if args.unroll:
+        # SUNDAE: also denoise the model's own sample of its prediction, the
+        # kind of input every generation step after the first sees.
+        with torch.no_grad():
+            own = model.pick(logits.detach(), temperature=1.0)
+        terms2 = model.losses(model(tokens_to_state(state, free, *own)), clean, free)
+        terms = {k: (v + terms2[k]) / 2 for k, v in terms.items()}
+    weights = {"type": args.lw_type, "recipe": args.lw_recipe, "part": args.lw_part, "cost": args.lw_cost}
+    loss = sum(weights.get(k, 1.0) * v for k, v in terms.items())
+    stats = {k: v.detach() for k, v in terms.items()}
+    if args.lw_thput > 0:
+        pg, mean_score = throughput_pg_loss(model, logits, state, free, max_thput, t, args)
+        loss = loss + args.lw_thput * pg
+        stats["thput_pg"] = pg.detach()
+        stats["rl_score"] = torch.tensor(mean_score)
+    with torch.no_grad():
+        typ_pred = model.pick(logits.detach())[0]
+        stats["type_acc"] = ((typ_pred == clean[0]) & free).sum() / free.sum().clamp(min=1)
+    return loss, stats
+
+
+@torch.no_grad()
+def val_denoise_metrics(model, val_states, args: SftArgs, device) -> dict:
+    """Denoising accuracy of the clean-factory prediction at fixed noise
+    levels on held-out factories (same noise draw every eval)."""
+    model.eval()
+    gen = torch.Generator(device=device).manual_seed(args.seed)
+    out: dict = {}
+    L = _luts(device)
+    # `factored` predicts no parts: its footprints are re-derived by `legalize`.
+    heads = ("type", "recipe", "part") if model.io == "token" else ("type", "recipe")
+    for t in _VAL_NOISE_LEVELS:
+        hits = dict.fromkeys(heads, 0.0)
+        counts = dict.fromkeys(heads, 0.0)
+        exact, loss_sum, n_tiles = 0, 0.0, 0.0
+        for lo in range(0, len(val_states), args.batch_size):
+            s = val_states[lo : lo + args.batch_size].to(device).long()
+            free = free_mask(s)
+            clean = state_to_tokens(s)
+            noisy = corrupt(clean, free, torch.full((len(s),), t, device=device), model.noise_prior, gen)
+            logits = model(tokens_to_state(s, free, *noisy))
+            pred = model.pick(logits)
+            masks = {"type": free, "recipe": L.is_asm[clean[0]] & free, "part": (L.n_parts[clean[0]] > 1) & free}
+            ok_all = torch.ones(len(s), dtype=torch.bool, device=device)
+            for name, p, c in zip(heads, pred, clean):
+                m = masks[name]
+                ok = p == c
+                hits[name] += float((ok & m).sum())
+                counts[name] += float(m.sum())
+                ok_all &= (ok | ~m).flatten(1).all(1)
+            exact += int(ok_all.sum())
+            n = float(free.sum())
+            loss_sum += n * float(sum(v for k, v in model.losses(logits, clean, free).items() if k != "cost"))
+            n_tiles += n
+        tag = f"val/t{t:.2f}"
+        out[f"{tag}/loss"] = loss_sum / max(n_tiles, 1)
+        out[f"{tag}/exact"] = exact / len(val_states)
+        for name in hits:
+            out[f"{tag}/{name}_acc"] = hits[name] / max(counts[name], 1)
+    for key in ("loss", *(f"{h}_acc" for h in heads)):
+        out[f"val/{key}"] = float(np.mean([out[f"val/t{t:.2f}/{key}"] for t in _VAL_NOISE_LEVELS]))
+    # A clean factory left untouched: the stopping criterion of generation.
+    out["val/identity"] = out["val/t0.00/exact"]
+    return out
+
+
+def generation_metrics(model, factories, args: SftArgs, device, records=None) -> dict:
+    """val/ metrics of `run_denoise_eval`, keyed `<metric>@N` (N = chains)."""
+    N = args.eval_best_of
+    roll = run_denoise_eval(
+        model,
+        factories,
+        device,
+        best_of=N,
+        steps=args.gen_steps,
+        refine=args.gen_refine,
+        temperature=args.gen_temperature,
+        cost_scale=PpoArgs.entity_cost_scale,
+        seed=args.seed,
+        batch_chains=args.eval_batch_chains,
+        records=records,
+    )
+    out = {
+        f"val/converged_frac@{N}": roll["converged_frac"],
+        f"val/refine_steps@{N}": roll["refine_steps"],
+        f"val/inserters_no_input@{N}": roll["dangling"][0],
+        f"val/inserters_no_output@{N}": roll["dangling"][1],
+    }
+    if roll["n_trials"]:
+        out[f"val/trial_inserters_no_input@{N}"] = roll["dangling"][2]
+        out[f"val/trial_inserters_no_output@{N}"] = roll["dangling"][3]
+    for key, v in roll.items():
+        if key.startswith("thput@"):
+            out[f"val/{key}"] = v
+        elif key.startswith("trial_thput@") and roll["n_trials"]:
+            out[f"val/{key}"] = v
+        elif key.startswith("per_kind@"):
+            n = key.split("@")[1]
+            out |= {f"val/{kind}/thput@{n}": x for kind, x in v.items()}
+    return out
+
+
+def build_eval_factories(args: SftArgs) -> list:
+    """The held-out (seed, kind, Factory) set: PPO's eval seeds (trials
+    included), so a generation eval is directly comparable to PPO's."""
+    seeds_to_kind = _build_eval_set(SimpleNamespace(size=args.size, seed=args.seed, eval_seeds_per_kind=args.eval_seeds_per_kind))
+    return [(s, LessonKind(k), build_factory(size=args.size, kind=LessonKind(k), seed=s)) for s, k in seeds_to_kind.items()]
+
+
+def _upload_checkpoint(run, args, best_thput, files, previous):
     """Upload the run's best checkpoint via `_upload_replacing`."""
     return _upload_replacing(
         run,
         _artifact_name(args),
         files,
-        {
-            "best_val_throughput": best_val_throughput,
-            "best_val_acc": best_val_acc,
-            "size": args.size,
-            "layers": layers_from_args(args),
-            "kernel_size": args.kernel_size,
-            "num_samples": args.num_samples,
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-            "lr": args.lr,
-            "seed": args.seed,
-        },
-        ["latest", f"thp{best_val_throughput:.3f}", f"val{best_val_acc:.3f}"],
+        {"best_val_throughput": best_thput, **{k: v for k, v in vars(args).items() if isinstance(v, (int, float, str))}},
+        ["latest", f"thp{best_thput:.3f}"],
         previous,
     )
 
 
 def train_sft(args: SftArgs):
-    """Main SFT training loop."""
+    """Main denoising training loop."""
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(line_buffering=True)
     random.seed(args.seed)
@@ -877,62 +785,10 @@ def train_sft(args: SftArgs):
     torch.manual_seed(args.seed)
 
     t0 = time.time()
-    max_level = args.max_level if args.max_level > 0 else args.size * args.size
-
-    # Held-out validation: the first eval_rollouts_max_seeds distinct factories
-    # from seed `args.seed` upward. The rollout eval replays these same lessons,
-    # so val/acc and val/thput@N stay directly comparable.
-    val = _materialise(
-        args.size, max_level, args.seed, n_lessons=args.eval_rollouts_max_seeds
-    )
-    val_tensors_cpu = (*val[:8], val[9])  # obs..eot, kind (per-pair seed dropped)
-    val_seeds_to_kind: dict[int, int] = dict(zip(val[8].tolist(), val[9].tolist()))
-
-    # Training draws every seed above the ones validation consumed, so the two
-    # sets are disjoint by construction — no factory is ever both trained and
-    # validated on. Streams on the fly (bounded memory); --dataset-cache instead
-    # materialises the stream to disk once and trains from it, so repeated runs
-    # (benchmarks, dev iteration) skip build_factory.
-    train_base = int(val[8].max()) + 1
-    cached_train = None
-    if args.dataset_cache is not None:
-        if os.path.exists(args.dataset_cache):
-            print(f"Loading cached dataset from {args.dataset_cache} ...")
-            # weights_only=False: our own locally-produced, trusted cache.
-            cached_train = torch.load(args.dataset_cache, weights_only=False)
-        else:
-            print(f"Materialising {args.num_samples} demonstrations to cache ...")
-            cached_train = _materialise(
-                args.size, max_level, train_base, target=args.num_samples,
-                error_prob=args.error_inject_prob,
-            )[:8]
-            torch.save(cached_train, args.dataset_cache)
-            print(f"Cached dataset to {args.dataset_cache}")
-
-    # Re-seed so training RNG is identical whether the cache was just created
-    # (which consumes the generator RNG) or loaded.
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
-    # Create agent via a temporary env (AgentCNN needs envs for init)
-    env_id = "factorion/FactorioEnv-v0-sft"
-    if env_id not in gym.registry:
-        gym.register(id=env_id, entry_point="ppo:FactorioEnv")
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, False, args.size, "sft")])
-
-    agent = AgentCNN(
-        envs,
-        layers=layers_from_args(args),
-        kernel_size=args.kernel_size,
-        tile_head_std=args.tile_head_std,
-        dropout=args.dropout,
-        attn_dim=args.attn_dim,
-        attn_heads=args.attn_heads,
-        attn_layers=args.attn_layers,
-        attn_pos_embed=args.attn_pos_embed,
-    )
-    envs.close()
+    if args.batch_size % args.noise_repeats:
+        raise ValueError("batch_size must be a multiple of noise_repeats")
+    if args.lw_thput > 0 and args.rl_samples < 2:
+        raise ValueError("the throughput loss needs rl_samples >= 2 for its leave-one-out baseline")
 
     device = torch.device(
         "cuda"
@@ -943,819 +799,150 @@ def train_sft(args: SftArgs):
     )
     assert_device_ok(device)
 
+    train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
+    factories = build_eval_factories(args)
+    val_states = torch.stack(
+        [torch.from_numpy(world_to_state(f.world_CWH)) for _, k, f in factories if not LESSON_IS_TRIAL[k]]
+    )
+
     if args.start_from is not None:
         print(f"Loading model weights from {args.start_from}")
-        ckpt_path = _resolve_start_from(
-            args.start_from, args.wandb_project_name, args.wandb_entity
-        )
-        # Load to CPU first; the checkpoint may hold CUDA tensors (saved on a
-        # GPU pod) and the agent is moved onto `device` just below, so this
-        # keeps --start-from working on CPU/MPS boxes too.
-        agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
-
-    agent.to(device)
-    agent.amp = args.amp and device.type == "cuda"
-
-    # Static shapes: only the epoch's and val's ragged last batches differ.
-    encode = (
-        torch.compile(agent.encode, dynamic=False)
-        if args.compile and device.type == "cuda"
-        else agent.encode
-    )
-
-    if cached_train is not None:
-        # Cached: the whole training set goes GPU-resident once (obs stay uint8,
-        # cast to float per-batch), shuffled via a DataLoader over indices so no
-        # data is copied per batch.
-        (
-            tr_obs, tr_tile, tr_ent, tr_dir, tr_item, tr_misc, tr_mask, tr_eot,
-        ) = (
-            cached_train[0].to(device),
-            *(t.to(device) for t in cached_train[1:]),
-        )
-        n_train = tr_obs.shape[0]
-        train_index_loader = DataLoader(
-            TensorDataset(torch.arange(n_train)),
-            batch_size=args.batch_size,
-            shuffle=True,
-        )
-        steps_per_epoch = max(1, (n_train + args.batch_size - 1) // args.batch_size)
+        model = load_denoiser(_resolve_start_from(args.start_from, args.wandb_project_name, args.wandb_entity))
     else:
-        # Stream: train batches are generated on the fly by DataLoader workers,
-        # so memory is bounded by the prefetch buffer. pin_memory + non_blocking
-        # (in the batch source) hide the per-batch host->device copy behind the
-        # GPU step.
-        stream_workers = min(16, os.cpu_count() or 1)
-        train_stream_loader = DataLoader(
-            StreamingDemoDataset(
-                args.size, max_level, train_base, args.num_samples, args.error_inject_prob
-            ),
-            batch_size=args.batch_size,
-            num_workers=stream_workers,
-            pin_memory=(device.type == "cuda"),
-            persistent_workers=stream_workers > 0,
-            multiprocessing_context="forkserver",
+        model = DenoiserUNet(
+            width=args.width,
+            levels=args.levels,
+            blocks=args.blocks,
+            attn_layers=args.attn_layers,
+            attn_heads=args.attn_heads,
+            dropout=args.dropout,
+            io=args.io,
         )
-        n_train = args.num_samples
-        steps_per_epoch = _steps_per_epoch(
-            args.num_samples, stream_workers, args.batch_size
-        )
-    # Val goes GPU-resident too, iterated via an index DataLoader.
-    (
-        va_obs, va_tile, va_ent, va_dir, va_item, va_misc, va_mask, va_eot, va_kind,
-    ) = (
-        val_tensors_cpu[0].to(device),
-        *(t.to(device) for t in val_tensors_cpu[1:]),
-    )
-    n_val = va_obs.shape[0]
-    val_index_loader = DataLoader(
-        TensorDataset(torch.arange(n_val)),
-        batch_size=args.batch_size,
-        shuffle=False,
-    )
+        prior_states = [s for s, _ in itertools.islice(_iter_factories(args.size, train_seed, 0, 1), 256)]
+        model.noise_prior.copy_(noise_prior_from(torch.stack(prior_states)))
+    print(f"Denoiser has {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M params")
+    model.to(device)
+    model.amp = args.amp and device.type == "cuda"
+    ema = copy.deepcopy(model).requires_grad_(False)
+    ema.eval()
+    # The compiled module shares the model's parameters; generation and the
+    # val metrics run on the EMA copy, uncompiled (their shapes vary).
+    fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
 
-    optimizer = optim.AdamW(
-        agent.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-
-    # Scheduler spans every optimizer step (not every epoch) so cooldown_frac
-    # is a fraction of the whole run regardless of dataset size.
-    total_steps = args.epochs * steps_per_epoch
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+    total_steps = max(1, math.ceil(args.num_samples / args.batch_size))
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
-    # All losses use reduction="none" so we can (a) mask placement losses
-    # off on terminal (eot=1) samples and (b) aggregate per-LessonKind in
-    # the val loop without re-running the forward pass.
-    ce_loss_none = nn.CrossEntropyLoss(reduction="none")
-    bce_loss_none = nn.BCEWithLogitsLoss(reduction="none")
-    bce_eot = nn.BCEWithLogitsLoss()
-
-    # Map kind value -> name so per-kind dict keys read as "MOVE_ONE_ITEM"
-    # instead of "0" both in print() lines and in wandb panel titles.
-    kind_names = {k.value: k.name for k in LessonKind}
+    workers = min(16, os.cpu_count() or 1)
+    loader = DataLoader(
+        FactoryStream(args.size, train_seed),
+        batch_size=args.batch_size // args.noise_repeats,
+        num_workers=workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=True,
+        multiprocessing_context="forkserver",
+    )
 
     run = None
     if args.track:
         import wandb
 
-        sft_tags = ["sft"] + (args.tags or [])
-        if args.start_from is not None:
-            sft_tags.append(f"start_from:{args.start_from}")
         run = wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
             config={**vars(args), **cuda_env_info()},
             name=_artifact_name(args),
             group=args.wandb_group,
-            tags=sft_tags,
+            tags=["sft", "denoise"] + (args.tags or []),
             id=args.wandb_run_id,
             resume="allow" if args.wandb_run_id else None,
         )
 
-    best_val_acc = 0.0
-    best_val_throughput = 0.0
-    uploaded, uploaded_thp = None, -1.0
-    ever_saved = False
-    val_loss = 0.0
-    val_tile_acc = 0.0
-    val_ent_acc = 0.0
-    val_dir_acc = 0.0
-    val_item_acc = 0.0
-    val_misc_acc = 0.0
-    val_eot_acc = 0.0
-    val_eot_pos_recall = 0.0
-    nn_heads = ("ent", "dir", "item", "misc")
-    val_not_none_acc = {h: 0.0 for h in (*nn_heads, "eot")}
-    # Cumulative optimisation pressure, used as the wandb x-axis (see the
-    # define_metric calls above). global_step counts optimiser updates;
-    # samples_seen counts training pairs the model has been updated on.
-    global_step = 0
-    samples_seen = 0
-    total_samples = args.epochs * n_train
-    print(f"Training for {args.epochs} epochs ({total_samples} samples) on {device}...")
-
-    # Train batch source yielding the 8 model-input tensors per batch (obs, tile,
-    # ent, dir, item, misc, mask, eot; obs/eot already float). Cached: gather
-    # GPU-resident tensors by shuffled index (no host->device copy). Stream: pull
-    # CPU batches from the generating workers and copy them to device
-    # (non_blocking, overlapping the GPU step).
-    def _train_batches():
-        if cached_train is not None:
-            for (idx_cpu,) in train_index_loader:
-                idx = idx_cpu.to(device)
-                yield (
-                    tr_obs[idx].float(), tr_tile[idx], tr_ent[idx], tr_dir[idx],
-                    tr_item[idx], tr_misc[idx], tr_mask[idx], tr_eot[idx],
-                )
-        else:
-            for b_obs, b_tile, b_ent, b_dir, b_item, b_misc, b_mask, b_eot in (
-                train_stream_loader
-            ):
-                yield (
-                    b_obs.to(device, non_blocking=True).float(),
-                    b_tile.to(device, non_blocking=True),
-                    b_ent.to(device, non_blocking=True),
-                    b_dir.to(device, non_blocking=True),
-                    b_item.to(device, non_blocking=True),
-                    b_misc.to(device, non_blocking=True),
-                    b_mask.to(device, non_blocking=True),
-                    b_eot.to(device, non_blocking=True).float(),
-                )
-
-    def _batch_stream():
-        """(epoch, is_epoch_end, batch) across every epoch; a fresh
-        _train_batches() per epoch re-runs the stream / reshuffles the cache.
-        Streamed epochs can vary by a batch, so is_epoch_end is keyed to the
-        predicted steps_per_epoch; the final eval is guaranteed by exhaustion."""
-        for ep in range(1, args.epochs + 1):
-            for i, batch in enumerate(_train_batches()):
-                yield ep, i == steps_per_epoch - 1, batch
-
-    stream = _batch_stream()
-    epoch = 0
     eval_every = args.eval_every_n_samples
     if eval_every is None:
-        eval_every = 100_000 if total_samples <= 2_000_000 else 1_000_000
-    next_eval_at = eval_every
-    stream_done = False
-    pbar = tqdm.tqdm(total=total_samples, unit="smpl", unit_scale=True)
-    while not stream_done:
-        t_train = time.time()
-        agent.train()
-        # On-GPU accumulators converted ONCE per eval window (logging-only),
-        # instead of ~10 .item() syncs/batch; see tests/benchmarks/EXPERIMENT_LOG.md.
-        acc_loss = torch.zeros(7, device=device)  # total,tile,ent,dir,item,misc,eot
-        acc_correct = torch.zeros((), device=device)
-        acc_eot_correct = torch.zeros((), device=device)
-        acc_grad_norm = torch.zeros((), device=device)
-        train_total = 0
-        grad_norm_count = 0
-        # DataLoader-wait attribution (CPU side; needs no GPU sync). The compute
-        # share is derived at window end as train_seconds - train_data_s.
-        train_data_s = 0.0
+        eval_every = 250_000 if args.num_samples <= 2_000_000 else 1_000_000
+    next_eval = eval_every
+    best_thput, uploaded = -1.0, None
+    key = f"val/thput@{args.eval_best_of}"
+    samples_seen = step = 0
+    acc: dict[str, torch.Tensor] = {}
+    n_acc = 0
+    t_window, data_s, window_samples = time.time(), 0.0, 0
+    pbar = tqdm.tqdm(total=args.num_samples, unit="smpl", unit_scale=True)
+    it = iter(loader)
+    while samples_seen < args.num_samples:
+        t_data = time.time()
+        state_cpu, max_cpu = next(it)
+        data_s += time.time() - t_data
+        state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
+        max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
 
-        t_batch = time.time()
-        for epoch, is_epoch_end, batch in stream:
-            t_ready = time.time()
-            train_data_s += t_ready - t_batch
-            (
-                batch_obs, batch_tile, batch_ent, batch_dir,
-                batch_item, batch_misc, batch_mask, batch_eot,
-            ) = batch
-
-            encoded = encode(batch_obs)
-            B = encoded.shape[0]
-            # Placement loss is only meaningful for non-terminal samples;
-            # eot=1 samples carry sentinel placement targets. Normalise by
-            # the placement-sample count so the loss scale is independent
-            # of the per-batch mix of terminal / placement samples.
-            placement_mask = (batch_eot < 0.5).float()
-            n_place = placement_mask.sum().clamp(min=1.0)
-
-            # EOT head — BCE on every sample.
-            eot_logits = agent.eot_logit(encoded)
-            loss_eot = bce_eot(eot_logits, batch_eot)
-
-            # Tile logits — use BCE with multi-label mask so ALL valid
-            # tiles are rewarded, not just the randomly-chosen one. Reduce
-            # to per-sample, mask off terminal samples, then average.
-            tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-            loss_tile_per = bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
-            loss_tile = (loss_tile_per * placement_mask).sum() / n_place
-
-            # Extract features at target tile for entity/direction/item/misc heads
-            x_B = batch_tile // agent.height
-            y_B = batch_tile % agent.height
-            batch_idx = torch.arange(B, device=device)
-            tile_features = agent.tile_features(encoded, batch_idx, x_B, y_B)
-
-            ent_logits = agent.ent_head(tile_features)
-            dir_logits = agent.dir_head(tile_features)
-            item_logits = agent.item_head(tile_features)
-            misc_logits = agent.misc_head(tile_features)
-            loss_ent_per = ce_loss_none(ent_logits, batch_ent)
-            loss_dir_per = ce_loss_none(dir_logits, batch_dir)
-            loss_item_per = ce_loss_none(item_logits, batch_item)
-            loss_misc_per = ce_loss_none(misc_logits, batch_misc)
-            loss_ent = (loss_ent_per * placement_mask).sum() / n_place
-            loss_dir = (loss_dir_per * placement_mask).sum() / n_place
-            loss_item = (loss_item_per * placement_mask).sum() / n_place
-            loss_misc = (loss_misc_per * placement_mask).sum() / n_place
-
-            loss = (
-                args.lw_tile * loss_tile
-                + args.lw_ent * loss_ent
-                + args.lw_dir * loss_dir
-                + args.lw_item * loss_item
-                + args.lw_misc * loss_misc
-                + args.lw_eot * loss_eot
-            )
-
-            optimizer.zero_grad()
-            loss.backward()
-            if args.max_grad_norm > 0:
-                grad_norm = nn.utils.clip_grad_norm_(
-                    agent.parameters(), args.max_grad_norm
-                )
-                acc_grad_norm += grad_norm
-                grad_norm_count += 1
-            optimizer.step()
-            scheduler.step()
-            global_step += 1
-            samples_seen += B
-            pbar.update(B)
-
-            acc_loss += torch.stack([
-                loss, loss_tile, loss_ent, loss_dir, loss_item, loss_misc, loss_eot
-            ]).detach() * B
-            # Whole-action accuracy: the model agrees with the demo on
-            # every output for this sample. For placement samples (eot=0)
-            # that means all 5 placement heads correct AND EOT predicted
-            # "not done". For terminal samples (eot=1) that means EOT
-            # predicted "done"; placement targets are sentinels so they
-            # don't enter the check.
-            pred_tile = tile_logits.argmax(dim=1)
-            tile_hit = batch_mask[batch_idx, pred_tile] > 0
-            pred_ent = ent_logits.argmax(dim=1)
-            pred_dir = dir_logits.argmax(dim=1)
-            pred_item = item_logits.argmax(dim=1)
-            pred_misc = misc_logits.argmax(dim=1)
-            place_heads_correct = (
-                tile_hit
-                & (pred_ent == batch_ent)
-                & (pred_dir == batch_dir)
-                & (pred_item == batch_item)
-                & (pred_misc == batch_misc)
-            )
-            is_place = placement_mask.bool()
-            eot_pred_bool = eot_logits > 0
-            eot_correct_t = eot_pred_bool == (batch_eot > 0.5)
-            correct = torch.where(
-                is_place,
-                place_heads_correct & eot_correct_t,
-                eot_correct_t,
-            )
-            acc_correct += correct.sum()
-            train_total += B
-            acc_eot_correct += eot_correct_t.sum()
-            # No per-batch sync: t_batch just bounds the next DataLoader wait.
-            t_batch = time.time()
-
-            hit_sample_cadence = (
-                eval_every > 0 and samples_seen >= next_eval_at
-            )
-            if hit_sample_cadence:
-                next_eval_at += eval_every
-            if hit_sample_cadence or is_epoch_end:
-                break
-        else:
-            stream_done = True
-
-        # A window that consumed nothing (stream exhausted right on a boundary)
-        # has no stats to sync or log; skip straight to loop exit.
-        if train_total == 0:
-            break
-
-        # Single GPU->CPU sync for the whole window's accumulated stats.
-        (
-            train_loss,
-            train_loss_tile,
-            train_loss_ent,
-            train_loss_dir,
-            train_loss_item,
-            train_loss_misc,
-            train_loss_eot,
-        ) = (acc_loss / train_total).tolist()
-        train_acc = (acc_correct / train_total).item()
-        train_eot_acc = (acc_eot_correct / train_total).item()
-        grad_norm_sum = acc_grad_norm.item()
-        train_seconds = time.time() - t_train
-        train_compute_s = max(0.0, train_seconds - train_data_s)
-
-        # Validation
-        t_val = time.time()
-        agent.eval()
-        val_loss = 0.0
-        val_loss_tile = 0.0
-        val_loss_ent = 0.0
-        val_loss_dir = 0.0
-        val_loss_item = 0.0
-        val_loss_misc = 0.0
-        val_loss_eot = 0.0
-        val_correct = 0
-        val_tile_correct = 0
-        val_ent_correct = 0
-        val_dir_correct = 0
-        val_item_correct = 0
-        val_misc_correct = 0
-        val_eot_correct = 0
-        val_eot_pos_correct = 0
-        val_eot_pos_total = 0
-        val_nn_correct = {h: 0 for h in nn_heads}
-        val_nn_total = {h: 0 for h in nn_heads}
-        val_total = 0
-        val_place_total = 0
-
-        # Per-LessonKind accumulators. Indexed by kind name to make wandb
-        # panel keys read as "val/MOVE_ONE_ITEM/acc" rather than enum ints.
-        per_kind_n = {k.name: 0 for k in LessonKind}
-        per_kind_correct = {k.name: 0 for k in LessonKind}
-        per_kind_tile_correct = {k.name: 0 for k in LessonKind}
-        per_kind_ent_correct = {k.name: 0 for k in LessonKind}
-        per_kind_dir_correct = {k.name: 0 for k in LessonKind}
-        per_kind_item_correct = {k.name: 0 for k in LessonKind}
-        per_kind_misc_correct = {k.name: 0 for k in LessonKind}
-        per_kind_loss_sum = {k.name: 0.0 for k in LessonKind}
-        # EOT is scored over EVERY sample of a kind (the placement eot=0 steps
-        # plus the one terminal eot=1), so it needs full-sample counts, not the
-        # placement-only per_kind_n. The pos_* counters track recall on the rare
-        # terminal (eot=1) samples — the ones that actually trigger "stop".
-        per_kind_eot_correct = {k.name: 0 for k in LessonKind}
-        per_kind_eot_total = {k.name: 0 for k in LessonKind}
-        per_kind_eot_pos_correct = {k.name: 0 for k in LessonKind}
-        per_kind_eot_pos_total = {k.name: 0 for k in LessonKind}
-        per_kind_nn_correct = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
-        per_kind_nn_total = {h: {k.name: 0 for k in LessonKind} for h in nn_heads}
-
+        model.train()
+        loss, stats = denoise_step(fwd, state, max_thput, args)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm or float("inf"))
+        optimizer.step()
+        scheduler.step()
+        decay = min(args.ema_decay, (1 + step) / (10 + step))
         with torch.no_grad():
-            for (idx_cpu,) in val_index_loader:
-                idx = idx_cpu.to(device)
-                batch_obs = va_obs[idx].float()
-                batch_tile = va_tile[idx]
-                batch_ent = va_ent[idx]
-                batch_dir = va_dir[idx]
-                batch_item = va_item[idx]
-                batch_misc = va_misc[idx]
-                batch_mask = va_mask[idx]
-                batch_eot = va_eot[idx]
-                batch_kind = va_kind[idx]
+            for pe, pm in zip(ema.parameters(), model.parameters()):
+                pe.lerp_(pm, 1 - decay)
+        step += 1
+        samples_seen += state.shape[0]
+        window_samples += state.shape[0]
+        pbar.update(state.shape[0])
+        stats["loss"], stats["grad_norm"] = loss.detach(), grad_norm.detach()
+        for k, v in stats.items():
+            acc[k] = acc.get(k, 0) + v.to(device)
+        n_acc += 1
 
-                encoded = encode(batch_obs)
-                B = encoded.shape[0]
-                placement_mask = (batch_eot < 0.5).float()
-                is_place = placement_mask.bool()
-
-                eot_logits = agent.eot_logit(encoded)
-                loss_eot_per = bce_loss_none(eot_logits, batch_eot)
-
-                tile_logits = agent.tile_logits(encoded).reshape(B, -1)
-                # Per-sample losses: needed so we can sum them within each
-                # LessonKind and so terminal samples can be masked out of
-                # placement losses. mean over the tile axis matches the
-                # scale of bce_loss(reduction="mean"), keeping
-                # val/loss_tile comparable to train/loss_tile.
-                loss_tile_per = (
-                    bce_loss_none(tile_logits, batch_mask.float()).mean(dim=1)
-                    * placement_mask
-                )
-
-                x_B = batch_tile // agent.height
-                y_B = batch_tile % agent.height
-                batch_idx = torch.arange(B, device=device)
-                tile_features = agent.tile_features(encoded, batch_idx, x_B, y_B)
-
-                ent_logits = agent.ent_head(tile_features)
-                dir_logits = agent.dir_head(tile_features)
-                item_logits = agent.item_head(tile_features)
-                misc_logits = agent.misc_head(tile_features)
-                loss_ent_per = ce_loss_none(ent_logits, batch_ent) * placement_mask
-                loss_dir_per = ce_loss_none(dir_logits, batch_dir) * placement_mask
-                loss_item_per = ce_loss_none(item_logits, batch_item) * placement_mask
-                loss_misc_per = ce_loss_none(misc_logits, batch_misc) * placement_mask
-
-                loss_per_sample = (
-                    args.lw_tile * loss_tile_per
-                    + args.lw_ent * loss_ent_per
-                    + args.lw_dir * loss_dir_per
-                    + args.lw_item * loss_item_per
-                    + args.lw_misc * loss_misc_per
-                    + args.lw_eot * loss_eot_per
-                )
-                val_loss += loss_per_sample.sum().item()
-                val_loss_tile += loss_tile_per.sum().item()
-                val_loss_ent += loss_ent_per.sum().item()
-                val_loss_dir += loss_dir_per.sum().item()
-                val_loss_item += loss_item_per.sum().item()
-                val_loss_misc += loss_misc_per.sum().item()
-                val_loss_eot += loss_eot_per.sum().item()
-
-                pred_tile = tile_logits.argmax(dim=1)
-                tile_hit = batch_mask[batch_idx, pred_tile] > 0
-                pred_ent = ent_logits.argmax(dim=1)
-                pred_dir = dir_logits.argmax(dim=1)
-                pred_item = item_logits.argmax(dim=1)
-                pred_misc = misc_logits.argmax(dim=1)
-                ent_correct_per = pred_ent == batch_ent
-                dir_correct_per = pred_dir == batch_dir
-                item_correct_per = pred_item == batch_item
-                misc_correct_per = pred_misc == batch_misc
-                # EOT-head accuracy + recall on positives separately.
-                # Recall on positives matters because the positives are
-                # rare; "always predict 0" would give high accuracy but
-                # never trigger episode termination.
-                eot_pred_bool = eot_logits > 0
-                eot_correct_per = eot_pred_bool == (batch_eot > 0.5)
-
-                # Whole-sample accuracy. Placement sample (eot=0): all 5
-                # placement heads correct AND EOT predicted "not done".
-                # Terminal sample (eot=1): EOT predicted "done"; placement
-                # targets are sentinels so they don't enter the check.
-                place_heads_correct = (
-                    tile_hit
-                    & ent_correct_per
-                    & dir_correct_per
-                    & item_correct_per
-                    & misc_correct_per
-                )
-                correct_per = torch.where(
-                    is_place,
-                    place_heads_correct & eot_correct_per,
-                    eot_correct_per,
-                )
-                val_correct += int(correct_per.sum().item())
-                val_tile_correct += tile_hit[is_place].sum().item()
-                val_ent_correct += ent_correct_per[is_place].sum().item()
-                val_dir_correct += dir_correct_per[is_place].sum().item()
-                val_item_correct += item_correct_per[is_place].sum().item()
-                val_misc_correct += misc_correct_per[is_place].sum().item()
-                val_total += B
-                val_place_total += int(is_place.sum().item())
-
-                # Per head: (correctness, "target is a real non-NONE option" mask).
-                nn_masks = {
-                    "ent": (ent_correct_per, is_place & (batch_ent != _EMPTY_ENT_ID)),
-                    "dir": (dir_correct_per, is_place & (batch_dir != _DIR_NONE_VAL)),
-                    "item": (item_correct_per, is_place & (batch_item != _EMPTY_ITEM_VAL)),
-                    "misc": (misc_correct_per, is_place & (batch_misc != _MISC_NONE_VAL)),
-                }
-                for h, (correct, m) in nn_masks.items():
-                    val_nn_correct[h] += int((correct & m).sum().item())
-                    val_nn_total[h] += int(m.sum().item())
-
-                val_eot_correct += int(eot_correct_per.sum().item())
-                is_pos = batch_eot > 0.5
-                val_eot_pos_correct += int(eot_correct_per[is_pos].sum().item())
-                val_eot_pos_total += int(is_pos.sum().item())
-
-                # Per-kind aggregation: bucket placement metrics by kind on
-                # placement samples only (terminal samples carry no kind-
-                # specific placement signal; their eot loss is folded in
-                # via loss_per_sample). unique() keeps this
-                # O(num_kinds_in_batch) so adding new LessonKind enum
-                # values has no cost here.
-                for k_val in batch_kind.unique().tolist():
-                    k_name = kind_names[k_val]
-                    mask_k = (batch_kind == k_val) & is_place
-                    per_kind_n[k_name] += int(mask_k.sum().item())
-                    per_kind_correct[k_name] += int(correct_per[mask_k].sum().item())
-                    per_kind_tile_correct[k_name] += int(tile_hit[mask_k].sum().item())
-                    per_kind_ent_correct[k_name] += int(
-                        ent_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_dir_correct[k_name] += int(
-                        dir_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_item_correct[k_name] += int(
-                        item_correct_per[mask_k].sum().item()
-                    )
-                    per_kind_misc_correct[k_name] += int(
-                        misc_correct_per[mask_k].sum().item()
-                    )
-                    for h, (correct, m) in nn_masks.items():
-                        mk = m & mask_k
-                        per_kind_nn_correct[h][k_name] += int((correct & mk).sum().item())
-                        per_kind_nn_total[h][k_name] += int(mk.sum().item())
-                    per_kind_loss_sum[k_name] += loss_per_sample[mask_k].sum().item()
-                    # EOT spans the whole kind (placement + terminal), so use
-                    # the full kind mask here, not the placement-only mask_k.
-                    kind_k = batch_kind == k_val
-                    kind_k_pos = kind_k & is_pos
-                    per_kind_eot_correct[k_name] += int(
-                        eot_correct_per[kind_k].sum().item()
-                    )
-                    per_kind_eot_total[k_name] += int(kind_k.sum().item())
-                    per_kind_eot_pos_correct[k_name] += int(
-                        eot_correct_per[kind_k_pos].sum().item()
-                    )
-                    per_kind_eot_pos_total[k_name] += int(kind_k_pos.sum().item())
-
-        # Placement losses were already masked off on terminal samples (their
-        # per-sample contribution is zero), so dividing by val_place_total
-        # gives the average over the placement subset. The eot loss spans
-        # every sample, so it's divided by val_total.
-        place_norm = max(1, val_place_total)
-        val_loss /= val_total
-        val_loss_tile /= place_norm
-        val_loss_ent /= place_norm
-        val_loss_dir /= place_norm
-        val_loss_item /= place_norm
-        val_loss_misc /= place_norm
-        val_loss_eot /= val_total
-        val_acc = val_correct / val_total
-        val_tile_acc = val_tile_correct / place_norm
-        val_ent_acc = val_ent_correct / place_norm
-        val_dir_acc = val_dir_correct / place_norm
-        val_item_acc = val_item_correct / place_norm
-        val_misc_acc = val_misc_correct / place_norm
-        val_eot_acc = val_eot_correct / val_total
-        val_eot_pos_recall = (
-            val_eot_pos_correct / val_eot_pos_total if val_eot_pos_total > 0 else 0.0
-        )
-        # 0.0 when a head saw no non-NONE target this window (e.g. no recipe
-        # placements → no item targets); EOT reuses its positive-class recall.
-        val_not_none_acc = {
-            h: (val_nn_correct[h] / val_nn_total[h] if val_nn_total[h] > 0 else 0.0)
-            for h in nn_heads
+        if samples_seen < next_eval and samples_seen < args.num_samples:
+            continue
+        next_eval += eval_every
+        train_seconds = time.time() - t_window
+        metrics = {f"train/{k}": float(v) / n_acc for k, v in acc.items()}
+        acc, n_acc = {}, 0
+        t_eval = time.time()
+        metrics |= val_denoise_metrics(ema, val_states, args, device)
+        t_gen = time.time()
+        metrics |= generation_metrics(ema, factories, args, device)
+        metrics |= {
+            "train/samples_seen": samples_seen,
+            "train/global_step": step,
+            "train/lr": optimizer.param_groups[0]["lr"],
+            "perf/train_seconds": train_seconds,
+            "perf/train_data_seconds": data_s,
+            "perf/samples_per_second": window_samples / max(train_seconds, 1e-9),
+            "perf/val_seconds": t_gen - t_eval,
+            "perf/gen_seconds": time.time() - t_gen,
         }
-        val_not_none_acc["eot"] = val_eot_pos_recall
-
-        # Build per-kind metric dict for both stdout and wandb. Skip kinds
-        # absent from the val split (e.g. small datasets where some kinds
-        # land entirely in train).
-        per_kind_metrics: dict[str, float] = {}
-        for k in LessonKind:
-            n = per_kind_n[k.name]
-            if n == 0:
-                continue
-            per_kind_metrics[f"val/{k.name}/loss"] = per_kind_loss_sum[k.name] / n
-            per_kind_metrics[f"val/{k.name}/acc"] = per_kind_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/tile_acc"] = (
-                per_kind_tile_correct[k.name] / n
-            )
-            per_kind_metrics[f"val/{k.name}/ent_acc"] = per_kind_ent_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/dir_acc"] = per_kind_dir_correct[k.name] / n
-            per_kind_metrics[f"val/{k.name}/item_acc"] = (
-                per_kind_item_correct[k.name] / n
-            )
-            per_kind_metrics[f"val/{k.name}/misc_acc"] = (
-                per_kind_misc_correct[k.name] / n
-            )
-            # EOT acc/recall use full-sample / positive-only denominators (NOT
-            # n, which counts placement samples only). Mirrors the global
-            # val/eot_acc + val/eot_pos_recall, but per LessonKind so we can see
-            # which lessons the stop-signal misfires on.
-            eot_n = per_kind_eot_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_acc"] = (
-                per_kind_eot_correct[k.name] / eot_n if eot_n > 0 else 0.0
-            )
-            eot_pos_n = per_kind_eot_pos_total[k.name]
-            per_kind_metrics[f"val/{k.name}/eot_pos_recall"] = (
-                per_kind_eot_pos_correct[k.name] / eot_pos_n if eot_pos_n > 0 else 0.0
-            )
-
-            # Guarded per head so a metric only surfaces for kinds that actually
-            # exercise a non-NONE target for it (else the ratio is meaningless).
-            for h in nn_heads:
-                nn_n = per_kind_nn_total[h][k.name]
-                if nn_n > 0:
-                    per_kind_metrics[f"val/{k.name}/not_none_{h}_acc"] = (
-                        per_kind_nn_correct[h][k.name] / nn_n
-                    )
-            if eot_pos_n > 0:
-                per_kind_metrics[f"val/{k.name}/not_none_eot_acc"] = (
-                    per_kind_eot_pos_correct[k.name] / eot_pos_n
-                )
-
-        val_seconds = time.time() - t_val
-
-        # Rollout eval: best-of-N rebuild the held-out factories and record
-        # throughput. Same lessons as val accuracy, so val/thput is directly
-        # comparable to val/acc curves. Runs on every eval window unless
-        # disabled (it's the slow part of an eval).
-        do_rollout = args.eval_rollouts
-        if do_rollout and len(val_seeds_to_kind) > 0:
-            t_rollout = time.time()
-            roll = run_rollout_eval(
-                agent,
-                args,
-                val_seeds_to_kind,
-                device,
-                max_seeds=args.eval_rollouts_max_seeds,
-                num_envs=args.eval_rollouts_num_envs,
-                best_of=args.eval_best_of,
-            )
-            rollout_seconds = time.time() - t_rollout
-            overall_thp = roll["overall"]
-            per_kind_thp_n = roll["per_kind_n"]
-            per_kind_metrics["val/rollout_seconds"] = rollout_seconds
-            roll_metrics = {"val/thput": overall_thp}
-            for kn, thp in roll["per_kind"].items():
-                if per_kind_thp_n[kn] > 0:
-                    roll_metrics[f"val/{kn}/thput"] = thp
-            # Recipe-pick accuracy from the same rollout: fraction of the
-            # assemblers the agent placed that got the right recipe. Only logged
-            # for factories that actually have an assembler (so it appears once
-            # the agent starts placing them, and never for belt-only lessons).
-            per_kind_asm_n = roll["per_kind_asm_n"]
-            if sum(per_kind_asm_n.values()) > 0:
-                roll_metrics["val/asm_item_acc"] = roll["asm_item_acc"]
-            for kn, acc in roll["per_kind_asm_item_acc"].items():
-                if per_kind_asm_n[kn] > 0:
-                    roll_metrics[f"val/{kn}/asm_item_acc"] = acc
-            for j, name in enumerate(("inserters_no_input", "inserters_no_output")):
-                roll_metrics[f"val/{name}"] = roll["dangling_inserters"][j]
-                if roll["trial_n"] > 0:
-                    roll_metrics[f"val/trial_{name}"] = roll["trial_dangling_inserters"][j]
-                for kn, counts in roll["per_kind_dangling_inserters"].items():
-                    if per_kind_thp_n[kn] > 0:
-                        roll_metrics[f"val/{kn}/{name}"] = counts[j]
-            # Each comes from the factory's best of N samples; an unsuffixed
-            # metric is best-of-1.
-            per_kind_metrics |= {f"{k}@{args.eval_best_of}": v for k, v in roll_metrics.items()}
-        else:
-            overall_thp = None
-            rollout_seconds = None
-            per_kind_thp_n = {}
-
         pbar.write(
-            f"{samples_seen:>{len(str(total_samples))}}/{total_samples} samples "
-            f"(epoch {epoch}/{args.epochs}) | "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
-            f"train_eot_acc={train_eot_acc:.3f} | "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.3f} "
-            f"(tile={val_tile_acc:.3f} ent={val_ent_acc:.3f} dir={val_dir_acc:.3f} "
-            f"item={val_item_acc:.3f} misc={val_misc_acc:.3f} "
-            f"eot={val_eot_acc:.3f} eot+={val_eot_pos_recall:.3f})"
-            + (
-                f"  val_thp={overall_thp:.3f} ({rollout_seconds:.1f}s)"
-                if overall_thp is not None
-                else ""
-            )
-            + (
-                f" | t: train={train_seconds:.1f}s "
-                f"(data={train_data_s:.1f}s compute={train_compute_s:.1f}s) "
-                f"val={val_seconds:.1f}s"
-            )
+            f"{samples_seen} samples | loss {metrics['train/loss']:.4f} | val type_acc {metrics['val/type_acc']:.3f} "
+            f"identity {metrics['val/identity']:.3f} | {key} {metrics[key]:.3f} "
+            f"trial {metrics.get(f'val/trial_thput@{args.eval_best_of}', 0.0):.3f} "
+            f"converged {metrics[f'val/converged_frac@{args.eval_best_of}']:.2f} | "
+            f"train {train_seconds:.0f}s (data {data_s:.0f}s) gen {metrics['perf/gen_seconds']:.0f}s"
         )
-        if per_kind_metrics:
-            kind_summary = "  ".join(
-                f"{k.name}={per_kind_correct[k.name] / per_kind_n[k.name]:.3f}"
-                for k in LessonKind
-                if per_kind_n[k.name] > 0
-            )
-            pbar.write(f"  per-kind val_acc: {kind_summary}")
-
-        if args.track and run is not None:
-            # Drive wandb's underlying _step with samples_seen (cumulative
-            # training pairs the model has been updated on) instead of
-            # letting it auto-increment once per epoch. This is what makes
-            # the x-axis measure "optimisation pressure applied": two runs
-            # with the same epoch count but different num_samples now spread
-            # across proportionally different x-ranges. Crucially, _step is
-            # the axis EVERY default panel plots against — including ones
-            # already pinned to "Step" in an existing workspace — so this
-            # fixes panels (e.g. val/<kind>/thput) that define_metric's
-            # step_metric alone could not retarget. samples_seen rather than
-            # global_step because it stays comparable across batch_size
-            # changes; both are still logged as metrics so either can be
-            # picked as a custom x-axis in the UI. (_step must increase
-            # monotonically — samples_seen does, by construction.)
-            run.log(
-                {
-                    "train/loss": train_loss,
-                    "train/loss_tile": train_loss_tile,
-                    "train/loss_ent": train_loss_ent,
-                    "train/loss_dir": train_loss_dir,
-                    "train/loss_item": train_loss_item,
-                    "train/loss_misc": train_loss_misc,
-                    "train/loss_eot": train_loss_eot,
-                    "train/acc": train_acc,
-                    "train/eot_acc": train_eot_acc,
-                    "val/loss": val_loss,
-                    "val/loss_tile": val_loss_tile,
-                    "val/loss_ent": val_loss_ent,
-                    "val/loss_dir": val_loss_dir,
-                    "val/loss_item": val_loss_item,
-                    "val/loss_misc": val_loss_misc,
-                    "val/loss_eot": val_loss_eot,
-                    "val/acc": val_acc,
-                    "val/tile_acc": val_tile_acc,
-                    "val/ent_acc": val_ent_acc,
-                    "val/dir_acc": val_dir_acc,
-                    "val/item_acc": val_item_acc,
-                    "val/misc_acc": val_misc_acc,
-                    "val/eot_acc": val_eot_acc,
-                    "val/eot_pos_recall": val_eot_pos_recall,
-                    **{
-                        f"val/not_none_{h}_acc": acc
-                        for h, acc in val_not_none_acc.items()
-                    },
-                    "train/epoch": epoch,
-                    "train/samples_seen": samples_seen,
-                    "train/global_step": global_step,
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "train/grad_norm": (grad_norm_sum / grad_norm_count)
-                    if grad_norm_count > 0
-                    else float("nan"),
-                    # Real wall-clock (no added syncs); train splits into
-                    # DataLoader wait vs compute to expose data-vs-compute bound.
-                    "perf/train_seconds": train_seconds,
-                    "perf/train_data_seconds": train_data_s,
-                    "perf/train_compute_seconds": train_compute_s,
-                    "perf/val_seconds": val_seconds,
-                    **per_kind_metrics,
-                },
-                step=samples_seen,
-                commit=True,
-            )
-
-        # Track best val accuracy for the summary, but DON'T select on it.
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-
-        # Select on the factory the model chooses to submit, not one it could
-        # have built after its stop head fired.
-        # overall_thp is None on evals where no rollout ran.
-        if overall_thp is not None and overall_thp >= best_val_throughput:
-            best_val_throughput = overall_thp
-            torch.save(agent.state_dict(), args.checkpoint_path)
-            ever_saved = True
-            pbar.write(f"  -> Saved best checkpoint (val/thput@{args.eval_best_of} {overall_thp:.3f})")
-            if args.track and run is not None and overall_thp > uploaded_thp:
-                uploaded = _upload_checkpoint(
-                    run, args, overall_thp, best_val_acc, [args.checkpoint_path], uploaded
-                )
-                uploaded_thp = overall_thp
-
+        if run is not None:
+            run.log(metrics, step=samples_seen)
+        if metrics[key] > best_thput:
+            best_thput = metrics[key]
+            torch.save({"arch": ema.arch, "model": ema.state_dict()}, args.checkpoint_path)
+            pbar.write(f"  -> Saved best checkpoint ({key} {best_thput:.3f})")
+            if run is not None:
+                uploaded = _upload_checkpoint(run, args, best_thput, [args.checkpoint_path], uploaded)
+        t_window, data_s, window_samples = time.time(), 0.0, 0
     pbar.close()
-    if not ever_saved:
-        # Rollouts disabled or no val factories — fall back to the final model
-        # so a checkpoint always exists.
-        torch.save(agent.state_dict(), args.checkpoint_path)
-    total_time = time.time() - t0
-    print(
-        f"\nBest val/thput@{args.eval_best_of}: {best_val_throughput:.3f}  (best val_acc {best_val_acc:.3f})"
-    )
-    print(f"Checkpoint saved to: {args.checkpoint_path}")
 
-    # Write summary JSON (total_time includes dataset generation + training)
     summary = {
-        "best_val_throughput": round(best_val_throughput, 4),
-        "best_val_acc": round(best_val_acc, 4),
-        "val_tile_acc": round(val_tile_acc, 4),
-        "val_ent_acc": round(val_ent_acc, 4),
-        "val_dir_acc": round(val_dir_acc, 4),
-        "val_item_acc": round(val_item_acc, 4),
-        "val_misc_acc": round(val_misc_acc, 4),
-        "val_eot_acc": round(val_eot_acc, 4),
-        "val_eot_pos_recall": round(val_eot_pos_recall, 4),
-        **{
-            f"val_not_none_{h}_acc": round(acc, 4)
-            for h, acc in val_not_none_acc.items()
-        },
-        "val_loss": round(val_loss, 4),
+        "best_val_throughput": round(best_thput, 4),
         "num_samples": args.num_samples,
-        "epochs": args.epochs,
-        # Total optimisation pressure applied — the magnitudes the wandb
-        # x-axis ends at. Records how much training actually happened
-        # independent of the epoch count.
         "samples_seen": samples_seen,
-        "optimizer_steps": global_step,
+        "optimizer_steps": step,
         "size": args.size,
-        "lr": args.lr,
-        "batch_size": args.batch_size,
         "seed": args.seed,
-        "runtime_seconds": round(total_time, 1),
+        "runtime_seconds": round(time.time() - t0, 1),
         "checkpoint_path": args.checkpoint_path,
         "wandb_url": run.url if run is not None else None,
     }
@@ -1763,33 +950,13 @@ def train_sft(args: SftArgs):
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Summary written to {summary_path}")
-
-    if args.track and run is not None:
-        # Headline metric in the W&B run table: best-of-N throughput, the same
-        # number that selected the checkpoint.
-        run.summary[f"best_val_throughput@{args.eval_best_of}"] = best_val_throughput
-        run.summary["best_val_acc"] = best_val_acc
-
-        # Upload the best checkpoint + summary so a Mac can grab the trained
-        # model with `wandb artifact get` without rummaging through the pod.
-        #
-        # Name encodes hyperparams so runs with identical config collapse
-        # into versions of one artifact, while different configs land in
-        # separate artifacts — easier to navigate than a wall of
-        # `sft-checkpoint-vN`. val_acc varies per run, so it stays as an
-        # alias instead of being baked into the name.
-        _upload_checkpoint(
-            run,
-            args,
-            best_val_throughput,
-            best_val_acc,
-            [args.checkpoint_path, summary_path],
-            uploaded,
-        )
-        print(f"Logged W&B artifact: {_artifact_name(args)}")
+    print(f"\nBest {key}: {best_thput:.3f}")
+    print(f"Checkpoint saved to: {args.checkpoint_path}")
+    if run is not None:
+        run.summary[f"best_val_throughput@{args.eval_best_of}"] = best_thput
+        _upload_checkpoint(run, args, best_thput, [args.checkpoint_path, summary_path], uploaded)
         run.finish()
-
-    return agent
+    return ema
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ importing it (from Python or a shell one-liner) stays cheap.
 
 Fields that share a *name* but not a *value* across PPO (`PpoArgs`) and SFT (they are tuned
 independently — e.g. `learning_rate`/`lr`, `dropout`, `weight_decay`,
-`max_grad_norm`, `tile_head_std`) live on each dataclass, not on `SharedArgs`.
+`max_grad_norm`) live on each dataclass, not on `SharedArgs`.
 """
 
 import math
@@ -61,8 +61,8 @@ def wsd_multiplier(
 class SharedArgs:
     """Defaults common to PPO (`PpoArgs`) and SFT (`SftArgs`) with identical values.
 
-    The CNN encoder shape (`layer1..8`, `kernel_size`) and `size` MUST match
-    between the two so an SFT checkpoint loads into the PPO policy unchanged.
+    The CNN encoder shape (`layer1..8`, `kernel_size`, `attn_*`) is PPO's
+    `AgentCNN`; SFT's denoiser takes its own architecture fields.
     """
 
     seed: int = 1
@@ -264,80 +264,96 @@ class SftArgs(SharedArgs):
     """Checkpoint to resume training from instead of a fresh model: either a
     local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74')."""
 
-    # One epoch over fresh data; architecture, lr, cooldown, clip and loss
-    # weights from sweep mf3ugnfn (run 7bfvox6n).
-    num_samples: int = 45_000_000
-    """(state, action) pairs streamed per epoch. Generated on the fly by
-    DataLoader workers, so this is never held in memory all at once."""
+    num_samples: int = 20_000_000
+    """corrupted training examples to train on. Factories are generated on the
+    fly by DataLoader workers, each one used for `noise_repeats` examples."""
     max_level: int = 0
     """max curriculum level (0 = auto: size*size)"""
-    error_inject_prob: float = 0.03
-    """chance, after each expert placement, of also training on a copy of the
-    state with one placed entity randomly mutated, labelled with the
-    overwrite that fixes it. Assumes a random edit is nearly always an error.
-    Validation stays clean."""
-    epochs: int = 1
-    """number of training epochs"""
-    batch_size: int = 512
-    """training batch size"""
-    lr: float = 4.273e-4
+    batch_size: int = 256
+    """corrupted examples per optimizer step"""
+    noise_repeats: int = 4
+    """examples per generated factory, each at its own noise level; amortises
+    factory generation, the CPU-side bottleneck"""
+    noise_zero_frac: float = 0.05
+    """fraction of examples left clean (noise level 0): the model must learn to
+    leave a finished factory alone, which is what stops generation"""
+    noise_one_frac: float = 0.1
+    """fraction of examples that are pure noise (level 1), where generation
+    starts; the rest are uniform in [0, 1]"""
+    unroll: bool = True
+    """also train on the model's own sampled prediction (SUNDAE's unrolled
+    denoising), the input every generation step after the first sees"""
+    width: int = 128
+    """denoiser channels at full resolution; each lower level doubles them"""
+    levels: int = 2
+    """UNet resolutions (levels - 1 stride-2 downsamples)"""
+    blocks: int = 2
+    """residual blocks per level, on each side of the UNet"""
+    attn_layers: int = 4
+    """rotary self-attention blocks over the bottleneck cells (head dim must
+    be a multiple of 4)"""
+    io: str = "token"
+    """tile encoding in and out: 'token' (entity × facing × underground type,
+    recipe, footprint part) or 'factored' (AgentCNN's encoding and its
+    per-channel entity / direction / item / misc heads)"""
+    lr: float = 3e-4
     """peak learning rate, held flat for the whole stable phase"""
-    warmup_steps: int = 300
+    warmup_steps: int = 500
     """optimizer steps of linear warmup up to lr — absolute, not a fraction, so
     runs of different lengths warm up identically"""
-    cooldown_frac: float = 0.5401
+    cooldown_frac: float = 0.3
     """fraction of total steps for the final (1-sqrt) cooldown — the only phase
     that depends on run length"""
-    min_lr_ratio: float = 0.053792
+    min_lr_ratio: float = 0.05
     """LR at the final step, as a fraction of lr"""
-    weight_decay: float = 1.661e-3
+    weight_decay: float = 0.01
     """AdamW weight decay"""
     dropout: float = 0.0
-    """spatial dropout (Dropout2d) after each encoder conv. 0.0 = off (no-op)."""
+    """dropout in residual and attention blocks. Every example is fresh."""
     amp: bool = True
-    """run the encoder forward under bf16 autocast on CUDA; the heads and losses
-    stay fp32. bf16 is what unlocks the flash-attention kernel."""
+    """bf16 autocast for the network on CUDA; losses stay fp32"""
     compile: bool = True
-    """torch.compile the encoder forward (CUDA only), fusing the transformer's
-    elementwise ops (about a third of the step's GPU time)."""
-    max_grad_norm: float = 0.3338
+    """torch.compile the training forward (CUDA only)"""
+    max_grad_norm: float = 1.0
     """grad L2-norm clip (0 disables clipping)"""
-    lw_tile: float = 1.162
-    """loss weight for the tile-selection (BCE) head"""
-    lw_ent: float = 0.4294
-    """loss weight for the entity (CE) head"""
-    lw_dir: float = 0.948
-    """loss weight for the direction (CE) head"""
-    lw_item: float = 0.6349
-    """loss weight for the item / recipe (CE) head"""
-    lw_misc: float = 0.7356
-    """loss weight for the misc (CE) head"""
-    lw_eot: float = 0.9817
-    """loss weight for the EOT (end-of-trajectory) BCE head"""
+    ema_decay: float = 0.999
+    """decay of the weight EMA that is evaluated and checkpointed"""
+    lw_type: float = 1.0
+    """weight of the per-tile entity/facing cross entropy"""
+    lw_recipe: float = 1.0
+    """weight of the recipe cross entropy (assembler tiles)"""
+    lw_part: float = 1.0
+    """weight of the footprint-offset cross entropy (multi-tile tiles)"""
+    lw_cost: float = 0.05
+    """weight of the predicted factory's expected per-tile entity cost: a
+    pull toward leaving unneeded tiles empty"""
+    lw_thput: float = 0.0
+    """weight of the REINFORCE loss on simulated throughput × cost efficiency
+    of factories sampled from the prediction (0 disables). Off: at 5M samples
+    it left val/thput@64 unchanged (0.612 vs 0.609, runs gyh6chx8/r7inipmm)
+    while its CPU-side legalize + simulate halved training speed."""
+    rl_inputs: int = 32
+    """examples per batch the throughput loss samples from"""
+    rl_samples: int = 4
+    """factories sampled per example (leave-one-out baseline, so >= 2)"""
+    rl_max_noise: float = 0.5
+    """only examples at most this corrupted feed the throughput loss: from a
+    noisier input a one-step sample is rarely a working factory"""
+    gen_steps: int = 8
+    """ancestral steps of a chain (noise level 1 → 0)"""
+    gen_refine: int = 8
+    """max greedy refinement steps after them; a chain stops early once its
+    prediction reproduces its input"""
+    gen_temperature: float = 1.0
+    """sampling temperature of the ancestral steps"""
+    eval_seeds_per_kind: int = 16
+    """held-out factories per training lesson kind (and per trial kind)"""
+    eval_batch_chains: int = 2048
+    """chains denoised per batched forward"""
     eval_every_n_samples: Optional[int] = None
-    """run validation + rollout eval + logging + checkpoint selection every N
-    optimiser-seen samples rather than once per epoch (0 = evaluate only once,
-    after the final batch). Samples, not epochs, so a single-epoch run over a
-    huge dataset still yields a real training curve instead of one point.
-    None = 100k for runs of at most 2M samples, else 1M: a best-of-8 eval
-    costs about as much as training on 1M samples."""
-    eval_rollouts: bool = True
-    """run the rollout eval (the default checkpoint-selection metric) on
-    each eval. Disable to skip the slow rollout (val accuracy still logged)."""
-    eval_rollouts_max_seeds: int = 400
-    """cap on val seeds per rollout eval — the sample size of the selection
-    metric (val/thput@N), so it sets its noise floor. Drawn from val lessons."""
-    eval_rollouts_num_envs: int = 64
-    """val factories rolled out in parallel, each over eval_best_of envs;
-    batches the CNN forward across them"""
+    """evaluate (and select checkpoints) every N training examples. None =
+    250k for runs of at most 2M samples, else 1M."""
     checkpoint_path: str = "sft_checkpoint.pt"
     """path to save the trained model"""
-    tile_head_std: float = 0.02208
-    """tile head init std"""
     summary_path: Optional[str] = None
     """path to write summary JSON (default: sft_summary.json next to sft.py)"""
-    dataset_cache: Optional[str] = None
-    """if set, materialise the training stream to this path once and reuse it on
-    later runs (torch.save/torch.load), trading the streaming generation for a
-    fixed on-disk dataset. Lets repeated runs (benchmarks, dev iteration) skip
-    build_factory; the tensors are a pure function of (size, num_samples, seed)."""

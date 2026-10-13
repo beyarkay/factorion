@@ -331,14 +331,14 @@ class TestWatchdog:
 
 class TestBudgets:
     def test_budgets_scale_with_work(self):
-        assert sft_budget_seconds(10_000_000, 1) > sft_budget_seconds(1_000_000, 1)
+        assert sft_budget_seconds(10_000_000) > sft_budget_seconds(1_000_000)
         assert ppo_budget_seconds(1_000_000) > ppo_budget_seconds(100_000)
 
     def test_one_seed_compare_budget_equals_single_run(self):
         (job, *_) = compare_fanout(
             "sft", SHA, BASE_SHA, nonce="ab12", seeds=1, num_samples=1_000_000
         )
-        assert job.budget_seconds() == sft_budget_seconds(1_000_000, 1)
+        assert job.budget_seconds() == sft_budget_seconds(1_000_000)
 
     def test_compare_budget_scales_with_sequential_seeds(self):
         # 3 seeds on one pod: setup slack paid once, training time paid 3x —

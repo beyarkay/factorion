@@ -2014,7 +2014,13 @@ if __name__ == "__main__":
         # Load to CPU first; the SFT checkpoint may hold CUDA tensors (saved on
         # a GPU pod) and the agent is moved onto `device` just below. This keeps
         # --start-from working on CPU/MPS boxes, not only the GPU CI pod.
-        agent.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+        state = torch.load(ckpt_path, map_location="cpu")
+        if "arch" in state:
+            raise SystemExit(
+                f"{args.start_from} is a denoiser checkpoint (sft.py); PPO trains "
+                f"AgentCNN and can only start from an AgentCNN state dict"
+            )
+        agent.load_state_dict(state)
         # Snapshot the divergence-penalty anchor before the critic re-init below.
         ref_agent = copy.deepcopy(agent).to(device)
         ref_agent.requires_grad_(False).eval()

@@ -90,6 +90,17 @@ class TestRolloutRecords:
         assert "overall" in roll
 
 
+def test_denoiser_checkpoint_is_collected_by_generation(tmp_path):
+    from denoise import DenoiserUNet
+    from factory_diff import collect
+
+    model = DenoiserUNet(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
+    path = tmp_path / "dn.pt"
+    torch.save({"arch": model.arch, "model": model.state_dict()}, path)
+    records = collect(str(path), seed=1, per_kind=1)
+    assert records and {"seed", "kind", "thput", "render"} <= set(records[0])
+
+
 class TestDiffMarkdown:
     def test_only_differing_factories_rendered_biggest_gap_first(self):
         pr = [

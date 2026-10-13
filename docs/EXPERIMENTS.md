@@ -57,6 +57,7 @@ One line per PR, all ~360 of them, so an idea can be checked against what has al
 | [#455](https://github.com/beyarkay/factorion/pull/455) | ⏭️ | Replace EOT head with raw items/s throughput regression and caller-controlled stop target; replaced by #456/#458 |
 | [#456](https://github.com/beyarkay/factorion/pull/456) | ⏭️ | Replace EOT with throughput regression head; superseded by leaner #458 |
 | [#458](https://github.com/beyarkay/factorion/pull/458) | ⏳ | Replace EOT head with throughput-prediction head (log1p MSE), stop when predicted thput >= target; minimal rebuild of #456 |
+| [#478](https://github.com/beyarkay/factorion/pull/478) | ⏳ | Whole-factory UNet denoiser replaces autoregressive SFT: ties it at equal data (val/thput@8 0.486 vs 0.486) at ~10x less training and generation compute; 100M run @8 0.614 |
 
 ### SFT recipe
 
