@@ -126,11 +126,84 @@ local function area_center_tile(area)
     tile_floor((area.left_top.y + area.right_bottom.y) / 2)
 end
 
+local MASK_TILE = "factorion-mask"
+local MASK_OUTLINE_COLOR = { r = 0.2, g = 0.45, b = 1.0, a = 1 }
+-- Runs overlap by half a line width so their corners meet.
+local MASK_OUTLINE_OVERLAP = 0.08
+
+-- Painted tiles inside fp, relative to it.
+local function painted_tiles(surface, fp)
+  local painted = {}
+  -- The tile exists only once Factorio has restarted with this mod version.
+  if not prototypes.tile[MASK_TILE] then return painted end
+  for _, tile in pairs(surface.find_tiles_filtered({
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+    name = MASK_TILE,
+  })) do
+    table.insert(painted, { x = tile.position.x - fp.x, y = tile.position.y - fp.y })
+  end
+  return painted
+end
+
 local function destroy_footprint_render(state)
-  if not state.footprint_render_id then return end
-  local object = rendering.get_object_by_id(state.footprint_render_id)
+  local object = state.footprint_render_id and rendering.get_object_by_id(state.footprint_render_id)
   if object then object.destroy() end
   state.footprint_render_id = nil
+  for _, id in ipairs(state.mask_render_ids or {}) do
+    object = rendering.get_object_by_id(id)
+    if object then object.destroy() end
+  end
+  state.mask_render_ids = {}
+end
+
+-- Outlines the painted part of the region, in alt-mode only.
+local function draw_mask_outline(player, state)
+  local fp = state.footprint
+  local painted = {}
+  for _, tile in ipairs(painted_tiles(player.surface, fp)) do
+    painted[tile.x .. "," .. tile.y] = true
+  end
+  local function is_painted(x, y) return painted[x .. "," .. y] == true end
+  -- Unit edges grouped by the grid line they lie on.
+  local lines = {}
+  local function edge(horizontal, at, along)
+    local key = (horizontal and "h" or "v") .. at
+    lines[key] = lines[key] or { horizontal = horizontal, at = at, along = {} }
+    table.insert(lines[key].along, along)
+  end
+  for key in pairs(painted) do
+    local x, y = key:match("^(-?%d+),(-?%d+)$")
+    x, y = tonumber(x), tonumber(y)
+    if not is_painted(x, y - 1) then edge(true, y, x) end
+    if not is_painted(x, y + 1) then edge(true, y + 1, x) end
+    if not is_painted(x - 1, y) then edge(false, x, y) end
+    if not is_painted(x + 1, y) then edge(false, x + 1, y) end
+  end
+  local function point(line, along)
+    if line.horizontal then return { fp.x + along, fp.y + line.at } end
+    return { fp.x + line.at, fp.y + along }
+  end
+  for _, line in pairs(lines) do
+    table.sort(line.along)
+    local start = line.along[1]
+    for i, along in ipairs(line.along) do
+      local next_along = line.along[i + 1]
+      if next_along ~= along + 1 then
+        local object = rendering.draw_line({
+          surface = player.surface,
+          from = point(line, start - MASK_OUTLINE_OVERLAP),
+          to = point(line, along + 1 + MASK_OUTLINE_OVERLAP),
+          color = MASK_OUTLINE_COLOR,
+          width = 5,
+          players = { player },
+          only_in_alt_mode = true,
+          draw_on_ground = true,
+        })
+        table.insert(state.mask_render_ids, object.id)
+        start = next_along
+      end
+    end
+  end
 end
 
 local function draw_footprint(player, state)
@@ -147,7 +220,25 @@ local function draw_footprint(player, state)
     draw_on_ground = true,
   })
   state.footprint_render_id = object.id
+  draw_mask_outline(player, state)
 end
+
+local function redraw_footprints(event)
+  for _, player in pairs(game.players) do
+    local state = storage.players and storage.players[player.index]
+    if state and state.footprint and player.surface.index == event.surface_index then
+      draw_footprint(player, state)
+    end
+  end
+end
+
+script.on_event({
+  defines.events.on_player_built_tile,
+  defines.events.on_robot_built_tile,
+  defines.events.on_player_mined_tile,
+  defines.events.on_robot_mined_tile,
+  defines.events.script_raised_set_tiles,
+}, redraw_footprints)
 
 local MARKER_DIALOG = "factorion-marker-dialog"
 local ITEM_PICKER = "factorion-marker-item"
@@ -180,7 +271,6 @@ local MODEL_ENTITY_NAMES = {
   "substation",
 }
 local SINK_LABEL_REFRESH_TICKS = 30
-local MASK_TILE = "factorion-mask"
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
@@ -1114,16 +1204,7 @@ local function gather_request(state, player_index)
     end
     return table.concat(parts, " ")
   end
-  -- The tile exists only once Factorio has restarted with this mod version.
-  local allowed = {}
-  if prototypes.tile[MASK_TILE] then
-    for _, tile in pairs(player.surface.find_tiles_filtered({
-      area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
-      name = MASK_TILE,
-    })) do
-      table.insert(allowed, { x = tile.position.x - fp.x, y = tile.position.y - fp.y })
-    end
-  end
+  local allowed = painted_tiles(player.surface, fp)
 
   local description = string.format("converting %s to %s",
     icons(sources), icons(sinks))
