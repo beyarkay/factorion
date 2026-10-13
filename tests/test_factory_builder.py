@@ -487,7 +487,7 @@ class TestDenoiseStep:
         out = fb._denoise_step(grid, chain)
         assert out["phase"] == "denoise" and not out["done"]
         monkeypatch.setattr(fb._MODEL, "pick", lambda logits, *a: tuple(
-            torch.tensor(out["chain"][k])[None] for k in ("type", "recipe", "part")
+            torch.tensor(out["chain"][k], device=fb._DEVICE)[None] for k in ("type", "recipe", "part")
         ))
         out = fb._denoise_step(out["grid"], out["chain"])
         assert out["converged"] and out["done"]
