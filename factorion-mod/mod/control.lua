@@ -133,47 +133,14 @@ local function destroy_footprint_render(state)
   state.footprint_render_id = nil
 end
 
-local MASK = "factorion-mask"
-local MASK_ERASER = "factorion-mask-eraser"
-local MASK_COLOR = { r = 0.1, g = 0.75, b = 1.0, a = 0.95 }
-local MASK_INSET = 0.1
-
--- Painted tiles of a surface, as tiles[x][y] = the tile's drawn border.
-local function surface_mask(surface)
-  storage.mask = storage.mask or {}
-  local mask = storage.mask[surface.index]
-  if not mask then
-    mask = { tiles = {} }
-    storage.mask[surface.index] = mask
-  end
-  return mask
-end
-
-local function painted(mask, x, y)
-  return mask.tiles[x] ~= nil and mask.tiles[x][y] ~= nil
-end
-
-local function painted_in(surface, fp)
-  local mask = surface_mask(surface)
-  local allowed = {}
-  for x = fp.x, fp.x + fp.w - 1 do
-    for y = fp.y, fp.y + fp.h - 1 do
-      if painted(mask, x, y) then table.insert(allowed, { x = x - fp.x, y = y - fp.y }) end
-    end
-  end
-  return allowed
-end
-
--- A painted region shows its paint instead.
 local function draw_footprint(player, state)
   destroy_footprint_render(state)
   local fp = state.footprint
-  if #painted_in(player.surface, fp) > 0 then return end
   local object = rendering.draw_rectangle({
     surface = player.surface,
     left_top = { fp.x, fp.y },
     right_bottom = { fp.x + fp.w, fp.y + fp.h },
-    color = MASK_COLOR,
+    color = { r = 0.1, g = 0.75, b = 1.0, a = 0.95 },
     width = 4,
     filled = false,
     players = { player },
@@ -213,6 +180,7 @@ local MODEL_ENTITY_NAMES = {
   "substation",
 }
 local SINK_LABEL_REFRESH_TICKS = 30
+local MASK_TILE = "factorion-mask"
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
@@ -891,79 +859,8 @@ script.on_event(defines.events.on_gui_opened, function(event)
   open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
 end)
 
-local function apply_paint(surface, name, positions)
-  local mask = surface_mask(surface)
-  for _, position in pairs(positions) do
-    local x, y = math.floor(position.x), math.floor(position.y)
-    if name == MASK and not painted(mask, x, y) then
-      mask.tiles[x] = mask.tiles[x] or {}
-      mask.tiles[x][y] = rendering.draw_rectangle({
-        surface = surface, color = MASK_COLOR, width = 2, filled = false,
-        left_top = { x + MASK_INSET, y + MASK_INSET },
-        right_bottom = { x + 1 - MASK_INSET, y + 1 - MASK_INSET },
-        draw_on_ground = true,
-      })
-    elseif name ~= MASK and painted(mask, x, y) then
-      mask.tiles[x][y].destroy()
-      mask.tiles[x][y] = nil
-    end
-  end
-  for _, player in pairs(game.players) do
-    local state = storage.players and storage.players[player.index]
-    if state and state.footprint and player.surface == surface then
-      draw_footprint(player, state)
-    end
-  end
-end
-
--- The paint is a tile only for the brush, so whatever the brush builds over or
--- mines is put back, and any floor tile the game refunded is taken back.
-local function restore_ground(event)
-  local surface = game.get_surface(event.surface_index)
-  local player = game.get_player(event.player_index)
-  if not (surface and player) then return end
-  local ground, positions = {}, {}
-  for _, tile in pairs(event.tiles) do
-    table.insert(ground, { name = tile.old_tile.name, position = tile.position })
-    table.insert(positions, tile.position)
-    for _, product in pairs(tile.old_tile.mineable_properties.products or {}) do
-      player.remove_item({ name = product.name, count = product.amount })
-    end
-  end
-  surface.set_tiles(ground, false, false, false, false)
-  return surface, player, positions
-end
-
-script.on_event(defines.events.on_player_built_tile, function(event)
-  local name = event.tile.name
-  if name ~= MASK and name ~= MASK_ERASER then return end
-  local surface, player, positions = restore_ground(event)
-  if not surface then return end
-  local cursor = player.cursor_stack
-  if cursor and (not cursor.valid_for_read or cursor.name == name) then
-    cursor.set_stack({ name = name, count = prototypes.item[name].stack_size })
-  end
-  apply_paint(surface, name, positions)
-end)
-
--- Right-clicking with either brush erases, as it removes concrete.
-script.on_event(defines.events.on_player_mined_tile, function(event)
-  local player = game.get_player(event.player_index)
-  local cursor = player and player.cursor_stack
-  if not (cursor and cursor.valid_for_read) then return end
-  if cursor.name ~= MASK and cursor.name ~= MASK_ERASER then return end
-  local surface, _, positions = restore_ground(event)
-  if surface then apply_paint(surface, MASK_ERASER, positions) end
-end)
-
 local function entity_built(event)
   local entity = event.entity or event.created_entity
-  if entity and entity.valid and entity.type == "tile-ghost"
-      and (entity.ghost_name == MASK or entity.ghost_name == MASK_ERASER) then
-    apply_paint(entity.surface, entity.ghost_name, { entity.position })
-    entity.destroy()
-    return
-  end
   -- A built model ghost keeps counting as the model's, so rerun/reset finds it.
   local owner = event.tags and event.tags.factorion_player
   if owner and entity and entity.valid and entity.unit_number then
@@ -1217,7 +1114,16 @@ local function gather_request(state, player_index)
     end
     return table.concat(parts, " ")
   end
-  local allowed = painted_in(player.surface, fp)
+  -- The tile exists only once Factorio has restarted with this mod version.
+  local allowed = {}
+  if prototypes.tile[MASK_TILE] then
+    for _, tile in pairs(player.surface.find_tiles_filtered({
+      area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+      name = MASK_TILE,
+    })) do
+      table.insert(allowed, { x = tile.position.x - fp.x, y = tile.position.y - fp.y })
+    end
+  end
 
   local description = string.format("converting %s to %s",
     icons(sources), icons(sinks))

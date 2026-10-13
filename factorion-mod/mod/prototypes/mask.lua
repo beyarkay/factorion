@@ -1,40 +1,36 @@
--- Paint and eraser for the tiles the model may build on. They are tiles only
--- to get Factorio's resizable brush: control.lua puts the ground back the
--- moment one is placed and keeps the paint as a drawn overlay instead.
+-- Blue concrete marking the tiles the model may build on. A placeable tile
+-- gets Factorio's own resizable brush, and mining it restores the ground.
 
-local function paint(name, color, order)
-  ---@diagnostic disable-next-line: undefined-field
-  local tile = table.deepcopy(data.raw.tile["refined-concrete"])
-  tile.name = name
-  tile.localised_name = { "item-name." .. name }
-  tile.minable = { mining_time = 0.1, result = name }
-  tile.tint = color
-  tile.map_color = color
-  tile.frozen_variant = nil
-  tile.thawed_variant = nil
+local NAME = "factorion-mask"
+local blue = { r = 0.25, g = 0.55, b = 1.0, a = 1 }
 
-  ---@diagnostic disable-next-line: undefined-field
-  local item = table.deepcopy(data.raw.item["refined-concrete"])
-  item.name = name
-  item.icons = { { icon = item.icon, icon_size = item.icon_size, tint = color } }
-  item.icon = nil
-  item.place_as_tile.result = name
-  item.order = "z[factorion]-" .. order
+---@diagnostic disable-next-line: undefined-field
+local tile = table.deepcopy(data.raw.tile["refined-concrete"])
+tile.name = NAME
+tile.localised_name = { "item-name." .. NAME }
+tile.minable = { mining_time = 0.1, result = NAME }
+tile.tint = blue
+tile.map_color = blue
+tile.frozen_variant = nil
+tile.thawed_variant = nil
 
-  -- Placing never uses the paint up, so one stack lasts forever.
-  data:extend({
-    tile,
-    item,
-    {
-      type = "recipe",
-      name = name,
-      enabled = true,
-      energy_required = 0.5,
-      ingredients = {},
-      results = { { type = "item", name = name, amount = item.stack_size } },
-    },
-  })
-end
+---@diagnostic disable-next-line: undefined-field
+local item = table.deepcopy(data.raw.item["refined-concrete"])
+item.name = NAME
+item.icons = { { icon = item.icon, icon_size = item.icon_size, tint = blue } }
+item.icon = nil
+item.place_as_tile.result = NAME
+item.order = "z[factorion]-d[mask]"
 
-paint("factorion-mask", { r = 0.25, g = 0.55, b = 1.0, a = 1 }, "d[mask]")
-paint("factorion-mask-eraser", { r = 1.0, g = 0.3, b = 0.25, a = 1 }, "e[mask-eraser]")
+data:extend({
+  tile,
+  item,
+  {
+    type = "recipe",
+    name = NAME,
+    enabled = true,
+    energy_required = 0.5,
+    ingredients = { { type = "item", name = "stone-brick", amount = 1 } },
+    results = { { type = "item", name = NAME, amount = 10 } },
+  },
+})
