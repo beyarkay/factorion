@@ -1,5 +1,5 @@
 -- Inference settings shared by every GPU server, and the window that edits
--- them. Clicking any GPU server opens the same global settings.
+-- them and builds the painted area against the clicked server.
 
 local M = {}
 
@@ -29,8 +29,13 @@ local NUMBER_FIELDS = {
     tooltip = "0 draws a fresh random seed each prediction; any other value replays that seed exactly." },
 }
 
--- Called with the new checkpoint when the player presses Load.
+-- Set by control.lua: on_load gets the new checkpoint when the player presses
+-- Load; describe, on_predict and on_clear get the window's GPU server and
+-- return a message.
 M.on_load = function(_) end
+M.describe = function(_) return "" end
+M.on_predict = function(_, _) return "" end
+M.on_clear = function(_, _) return "" end
 
 function M.config()
   storage.inference = storage.inference or {}
@@ -52,20 +57,6 @@ function M.server_counts()
   return total, powered
 end
 
--- nil when predictions may run, else why not.
-function M.unavailable_reason()
-  local total, powered = M.server_counts()
-  if total == 0 then
-    return "No GPU server on the map. Build a [item=" .. M.GPU_SERVER ..
-      "] and connect it to power to run predictions."
-  end
-  if powered == 0 then
-    return string.format("None of your %d [item=%s] has power. Connect one " ..
-      "to your electric network to run predictions.", total, M.GPU_SERVER)
-  end
-  return nil
-end
-
 local function status_caption()
   local total, powered = M.server_counts()
   return string.format("%d GPU server(s), %d powered, drawing %.1f kW",
@@ -83,20 +74,22 @@ local function model_caption()
   return "Loading " .. config.checkpoint .. "…"
 end
 
-local function region_caption(player)
-  local state = storage.players and storage.players[player.index]
-  local fp = state and state.footprint
-  if not fp then return "No region planned yet: use the [item=factorion-planner]." end
-  return string.format("x %d..%d, y %d..%d", fp.x, fp.x + fp.w - 1, fp.y,
-    fp.y + fp.h - 1)
+local function window_server(player)
+  local server = storage.gpu_windows and storage.gpu_windows[player.index]
+  return server and server.valid and server or nil
 end
 
 function M.refresh(player)
   local frame = player.gui.screen[FRAME]
   if not frame then return end
+  local server = window_server(player)
+  if not server then
+    frame.destroy()
+    return
+  end
   frame.status.caption = status_caption()
   frame.settings.model_status.caption = model_caption()
-  frame.region.caption = region_caption(player)
+  frame.region.caption = M.describe(server)
 end
 
 function M.refresh_all()
@@ -108,8 +101,10 @@ function M.close(player)
   if frame then frame.destroy() end
 end
 
-function M.open(player)
+function M.open(player, server)
   M.close(player)
+  storage.gpu_windows = storage.gpu_windows or {}
+  storage.gpu_windows[player.index] = server
   local config = M.config()
   local frame = player.gui.screen.add({
     type = "frame", name = FRAME, caption = "GPU servers", direction = "vertical",
@@ -142,21 +137,23 @@ function M.open(player)
   end
   for _, field in ipairs(NUMBER_FIELDS) do number_field(field) end
 
-  -- The region keeps the model's grid size, so it can only be moved.
   frame.add({ type = "line" })
-  frame.add({ type = "label", caption = "Your region" })
-  frame.add({ type = "label", name = "region" })
-  local pad = frame.add({ type = "table", column_count = 3 })
-  for _, cell in ipairs({ "", "up", "", "left", "", "right", "", "down", "" }) do
-    if cell == "" then
-      pad.add({ type = "empty-widget" })
-    else
-      pad.add({
-        type = "button", caption = cell:sub(1, 1):upper() .. cell:sub(2),
-        tags = { factorion_region = cell },
-      })
-    end
-  end
+  frame.add({ type = "label", caption = "This server's factory" })
+  local region = frame.add({ type = "label", name = "region" })
+  region.style.single_line = false
+  region.style.maximal_width = 400
+  local actions = frame.add({ type = "flow", direction = "horizontal" })
+  actions.add({
+    type = "button", caption = "Predict", style = "confirm_button",
+    tooltip = "Build a factory on the painted area touching this server, " ..
+      "replacing what this server built before.",
+    tags = { factorion_gpu = "predict" },
+  })
+  actions.add({
+    type = "button", caption = "Clear",
+    tooltip = "Stop this server's prediction and remove what it built.",
+    tags = { factorion_gpu = "clear" },
+  })
 
   M.refresh(player)
   player.opened = frame
@@ -176,9 +173,17 @@ end
 -- Each handler returns true when the event belonged to this window.
 function M.on_gui_click(event)
   local tag = event.element.valid and event.element.tags.factorion_gpu
-  if tag ~= "load" then return false end
   local player = game.get_player(event.player_index)
-  if player then load_checkpoint(player) end
+  if not player then return false end
+  if tag == "load" then
+    load_checkpoint(player)
+    return true
+  end
+  local action = (tag == "predict" and M.on_predict) or (tag == "clear" and M.on_clear)
+  if not action then return false end
+  local server = window_server(player)
+  if server then player.print("[Factorion] " .. action(player, server)) end
+  M.refresh(player)
   return true
 end
 
