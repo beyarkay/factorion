@@ -187,6 +187,29 @@ def test_denoising_replays_its_seed_and_keeps_markers_and_walls():
     assert stats["best_of"] == 3 and stats["stop_reason"] in ("converged", "max_steps")
 
 
+def test_nothing_is_ever_placed_outside_the_painted_mask(monkeypatch):
+    monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
+    painted = {(x, y) for x in range(11) for y in range(4, 7)}
+    req = _request() | {
+        "request_id": "r", "checkpoint": "c", "seed": 5,
+        "allowed": [{"x": x, "y": y} for x, y in sorted(painted)],
+        "entities": [{"name": "transport-belt", "x": 3, "y": 9, "direction": 2}],
+    }
+    world = mod_server.request_to_obs(req)
+    assert world[Channel.ENTITIES.value, 3, 9] == _id("transport_belt")
+    assert {tuple(t) for t in np.argwhere(world[Channel.FOOTPRINT.value] == 1)} == painted
+
+    rcon = _AcceptingRcon()
+    mod_server.handle_request(req, lambda _: _model(), cast(mod_server.RconClient, rcon), device=torch.device("cpu"))
+
+    *steps, _ = rcon.commands
+    placed = [p for c in steps for p in _payload(c)]
+    assert placed
+    for p in placed:
+        tiles = {(p["tile_x"] + dx, p["tile_y"] + dy) for dx in range(p["width"]) for dy in range(p["height"])}
+        assert tiles <= painted, p
+
+
 class _AcceptingRcon:
     def __init__(self, response="ok"):
         self.response = response
