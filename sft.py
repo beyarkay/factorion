@@ -4,12 +4,15 @@ Every training example is a known-correct factory from `build_factory` with a
 random fraction t ~ U[0, 1] of its free tiles resampled from noise; the model
 always regresses the clean factory. The eval generates factories for held-out
 lessons from pure noise (best of `eval_best_of` chains each) and scores them
-in the throughput simulator.
+in the throughput simulator. With `self_frac` > 0 each eval also builds
+training-seed factories, trials included, and replays the model's top builds
+by PPO's score as extra clean targets (expert iteration).
 
 Usage:
     python sft.py --num-samples 2000000
 """
 
+import collections
 import copy
 import io
 import itertools
@@ -21,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional, TypedDict
+from typing import Iterator, Optional, TypedDict
 
 import numpy as np
 import torch
@@ -40,6 +43,7 @@ from denoise import (  # noqa: E402
     _luts,
     corrupt,
     free_mask,
+    generate_chains,
     legalize,
     load_denoiser,
     run_denoise_eval,
@@ -51,6 +55,7 @@ from denoise import (  # noqa: E402
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
+    Factory,
     TRAINING_KINDS,
     LessonKind,
     build_factory,
@@ -73,6 +78,9 @@ from training_config import PpoArgs, SftArgs, wsd_multiplier  # noqa: E402
 
 # Training factories come from far above the held-out eval seeds (9M-11M).
 _TRAIN_SEED_BASE = 1_000_000_000
+# Self-generated targets are built from the upper half of the run's training
+# seed block: past any seed its loader reaches, far above the eval seeds.
+_SELF_SEED_OFFSET = 50_000_000
 # Noise levels the val/ denoising metrics are measured at.
 _VAL_NOISE_LEVELS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
@@ -757,6 +765,69 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
     return out
 
 
+def self_seeds(args: SftArgs) -> Iterator[int]:
+    return itertools.count(_TRAIN_SEED_BASE + args.seed * 100_000_000 + _SELF_SEED_OFFSET)
+
+
+def select_self_targets(factories, results, top_frac: float) -> list[tuple[LessonKind, dict, Factory]]:
+    """The top `top_frac` of each kind's builds by PPO's score (the cheaper
+    first among ties), keeping only those that flow and leave no inserter
+    dangling. Kinds are ranked apart so the hard ones, trials above all, still
+    contribute their best. Returns (kind, build, Factory) per target."""
+    by_kind: dict = {}
+    for (_, kind, factory), rs in zip(factories, results):
+        by_kind.setdefault(kind, []).extend((r, factory) for r in rs)
+    out = []
+    for kind, builds in by_kind.items():
+        builds.sort(key=lambda b: (-b[0]["score"], b[0]["entity_cost"]))
+        for r, factory in builds[: math.ceil(top_frac * len(builds))]:
+            if r["thput_raw"] > 0 and count_dangling_inserters(torch.from_numpy(r["world"])) == (0, 0):
+                out.append((kind, r, factory))
+    return out
+
+
+def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> dict:
+    """Build `self_factories` training-seed factories (cycling `kinds`) best of
+    `eval_best_of` with the EMA model, add the selected builds to `buffer`
+    (keyed by world bytes, so a repeat refreshes its place rather than
+    duplicating) and return the round's self/ metrics."""
+    factories = []
+    while len(factories) < args.self_factories:
+        s = next(seeds)
+        kind = kinds[s % len(kinds)]
+        if (f := build_factory(size=args.size, kind=kind, seed=s)) is not None:
+            factories.append((s, kind, f))
+    results, _, _ = generate_chains(
+        ema, factories, device, best_of=args.eval_best_of, steps=args.gen_steps, refine=args.gen_refine,
+        temperature=args.gen_temperature, cost_scale=PpoArgs.entity_cost_scale, generator=generator,
+        batch_chains=args.eval_batch_chains,
+    )
+    targets = select_self_targets(factories, results, args.self_top_frac)
+    for kind, r, factory in targets:
+        key = r["world"].tobytes()
+        buffer.pop(key, None)
+        buffer[key] = (torch.from_numpy(world_to_state(r["world"])), factory.max_throughput, LESSON_IS_TRIAL[kind])
+    while len(buffer) > args.self_buffer_size:
+        buffer.popitem(last=False)
+
+    lessons = [(r, f) for k, r, f in targets if not LESSON_IS_TRIAL[k]]
+    trials = [r for k, r, _ in targets if LESSON_IS_TRIAL[k]]
+    n_trial_builds = args.eval_best_of * sum(LESSON_IS_TRIAL[k] for _, k, _ in factories)
+    n_lesson_builds = args.eval_best_of * len(factories) - n_trial_builds
+    mean = lambda xs: float(np.mean(xs)) if xs else 0.0  # noqa: E731
+    return {
+        "self/lesson_accept_frac": len(lessons) / max(n_lesson_builds, 1),
+        "self/trial_accept_frac": len(trials) / max(n_trial_builds, 1),
+        "self/target_thput": mean([r["thput"] for r, _ in lessons]),
+        "self/ref_thput": mean(
+            [score_world(f.world_CWH.numpy(), f.max_throughput, PpoArgs.entity_cost_scale)["thput"] for _, f in lessons]
+        ),
+        "self/trial_target_thput": mean([r["thput"] for r in trials]),
+        "self/buffer_size": len(buffer),
+        "self/buffer_trial_frac": mean([e[2] for e in buffer.values()]),
+    }
+
+
 def build_eval_factories(args: SftArgs) -> list:
     """The held-out (seed, kind, Factory) set: PPO's eval seeds (trials
     included), so a generation eval is directly comparable to PPO's."""
@@ -787,6 +858,8 @@ def train_sft(args: SftArgs):
     t0 = time.time()
     if args.batch_size % args.noise_repeats:
         raise ValueError("batch_size must be a multiple of noise_repeats")
+    if not 0 <= args.self_frac < 0.5:
+        raise ValueError("self_frac must be in [0, 0.5): real factories must stay the majority")
     if args.lw_thput > 0 and args.rl_samples < 2:
         raise ValueError("the throughput loss needs rl_samples >= 2 for its leave-one-out baseline")
 
@@ -864,6 +937,13 @@ def train_sft(args: SftArgs):
     next_eval = eval_every
     best_thput, uploaded = -1.0, None
     key = f"val/thput@{args.eval_best_of}"
+    # The self-training replay buffer, oldest first; its own RNGs, so
+    # self_frac=0 leaves training's random stream untouched.
+    buffer: collections.OrderedDict = collections.OrderedDict()
+    self_kinds = sorted({k for _, k, _ in factories}, key=lambda k: k.value)
+    seeds, self_rng = self_seeds(args), random.Random(args.seed)
+    self_gen = torch.Generator(device=device).manual_seed(args.seed)
+    self_rows = window_rows = 0
     samples_seen = step = 0
     acc: dict[str, torch.Tensor] = {}
     n_acc = 0
@@ -874,6 +954,13 @@ def train_sft(args: SftArgs):
         t_data = time.time()
         state_cpu, max_cpu = next(it)
         data_s += time.time() - t_data
+        window_rows += len(max_cpu)
+        if buffer:
+            n_self = round(args.self_frac * len(max_cpu))
+            rows = self_rng.choices(list(buffer.values()), k=n_self)
+            state_cpu[:n_self] = torch.stack([r[0] for r in rows])
+            max_cpu[:n_self] = torch.tensor([r[1] for r in rows], dtype=max_cpu.dtype)
+            self_rows += n_self
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
         max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
 
@@ -917,12 +1004,20 @@ def train_sft(args: SftArgs):
             "perf/val_seconds": t_gen - t_eval,
             "perf/gen_seconds": time.time() - t_gen,
         }
+        if args.self_frac > 0:
+            metrics["self/batch_frac"] = self_rows / max(window_rows, 1)
+            self_rows = window_rows = 0
+        if args.self_frac > 0 and samples_seen < args.num_samples:
+            t_self = time.time()
+            metrics |= self_round(ema, self_kinds, seeds, buffer, args, device, self_gen)
+            metrics["perf/self_seconds"] = time.time() - t_self
         pbar.write(
             f"{samples_seen} samples | loss {metrics['train/loss']:.4f} | val type_acc {metrics['val/type_acc']:.3f} "
             f"identity {metrics['val/identity']:.3f} | {key} {metrics[key]:.3f} "
             f"trial {metrics.get(f'val/trial_thput@{args.eval_best_of}', 0.0):.3f} "
             f"converged {metrics[f'val/converged_frac@{args.eval_best_of}']:.2f} | "
-            f"train {train_seconds:.0f}s (data {data_s:.0f}s) gen {metrics['perf/gen_seconds']:.0f}s"
+            f"train {train_seconds:.0f}s (data {data_s:.0f}s) gen {metrics['perf/gen_seconds']:.0f}s "
+            f"self {metrics.get('perf/self_seconds', 0.0):.0f}s buffer {len(buffer)}"
         )
         if run is not None:
             run.log(metrics, step=samples_seen)

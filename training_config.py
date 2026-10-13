@@ -346,6 +346,20 @@ class SftArgs(SharedArgs):
     prediction reproduces its input"""
     gen_temperature: float = 1.0
     """sampling temperature of the ancestral steps"""
+    self_frac: float = 0.125
+    """fraction of each batch's factories replaced by self-generated targets
+    from the replay buffer (expert iteration; 0 disables it). Below 0.5 so
+    real factories stay the majority and the model can't collapse onto its
+    own mode."""
+    self_factories: int = 2048
+    """training-seed factories (lessons and trials, blanked to their markers)
+    the EMA model builds best of eval_best_of at every eval, to refill the
+    buffer"""
+    self_top_frac: float = 0.1
+    """fraction of each kind's builds kept as targets, ranked by PPO's score
+    (only builds that flow and leave no inserter dangling qualify)"""
+    self_buffer_size: int = 8192
+    """most self-generated targets kept, oldest evicted first"""
     eval_seeds_per_kind: int = 64
     """held-out factories per training lesson kind (and per trial kind)"""
     eval_batch_chains: int = 2048

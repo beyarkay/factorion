@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,11 +22,12 @@ from helpers import (
     TINY_ARCH_ARGS,
     Channel,
     LessonKind,
+    blank_entities,
     build_factory,
     str2ent,
 )
 from factorion import LESSON_IS_TRIAL, Footprint
-from denoise import DenoiserUNet, load_denoiser, world_to_state
+from denoise import DenoiserUNet, load_denoiser, score_world, world_to_state
 import sft
 from sft import (
     SftArgs,
@@ -36,12 +38,15 @@ from sft import (
     build_lr_schedule,
     noise_levels,
     run_rollout_eval,
+    select_self_targets,
+    self_seeds,
     throughput_pg_loss,
     train_sft,
 )
 from ppo import (
-    FactorioEnv, AgentCNN, make_env, _legal_tile_mask,
+    FactorioEnv, AgentCNN, make_env, _build_eval_set, _legal_tile_mask,
 )
+from training_config import PpoArgs
 
 TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
 # Generation eval shrunk to a couple of short chains per factory.
@@ -170,6 +175,110 @@ class TestTrainSFTEndToEnd:
         args.start_from, args.num_samples = str(ckpt), 16
         args.checkpoint_path = str(tmp_path / "ckpt2.pt")
         assert torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
+
+
+def _fake_wandb(monkeypatch, logged):
+    import wandb
+    from unittest.mock import MagicMock
+
+    run = MagicMock()
+    run.url = "http://test/run"
+    run.summary = {}
+    run.log.side_effect = lambda d, *a, **k: logged.append(d)
+    monkeypatch.setattr(wandb, "init", lambda *a, **k: run)
+    monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
+
+
+class TestSelfTraining:
+    def _build(self, factory, world, chain=0):
+        return {**score_world(world, factory.max_throughput, PpoArgs.entity_cost_scale), "world": world, "chain": chain}
+
+    def test_self_seeds_are_disjoint_from_the_eval_set(self):
+        for seed in (0, 1, 7):
+            args = SftArgs(size=15, seed=seed, eval_seeds_per_kind=2)
+            eval_seeds = _build_eval_set(SimpleNamespace(size=15, seed=seed, eval_seeds_per_kind=2))
+            # The seeds count up from the first, so every one clears the eval set.
+            assert next(self_seeds(args)) > max(eval_seeds)
+
+    def test_keeps_each_kinds_top_flowing_builds(self):
+        f = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
+        assert f is not None
+        blank = blank_entities(f)[0].numpy()
+        builds = [self._build(f, f.world_CWH.numpy(), 0)] + [self._build(f, blank, j) for j in range(1, 10)]
+        # The reference is the top 10%; the rest don't flow even when ranked in.
+        for frac in (0.1, 1.0):
+            kept = select_self_targets([(0, LessonKind.SAME_SIDE_1IN, f)], [builds], frac)
+            assert [(k, r["chain"]) for k, r, _ in kept] == [(LessonKind.SAME_SIDE_1IN, 0)]
+
+        # A lesson build below the top 10% is dropped, while a trial's flowing
+        # build is ranked among trials alone and kept.
+        worse = self._build(f, blank, 1)
+        trial = LessonKind.TRIAL_RECIPE_TREE_DEPTH_1
+        kept = select_self_targets(
+            [(0, LessonKind.SAME_SIDE_1IN, f), (1, trial, f)],
+            [[self._build(f, f.world_CWH.numpy())] + [worse] * 9, [self._build(f, f.world_CWH.numpy(), 3)]],
+            0.1,
+        )
+        assert [(k, r["chain"]) for k, r, _ in kept] == [(LessonKind.SAME_SIDE_1IN, 0), (trial, 3)]
+
+    def test_rejects_dangling_inserters(self):
+        f = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
+        assert f is not None
+        world = f.world_CWH.numpy().copy()
+        ent = world[Channel.ENTITIES.value]
+        empty = np.argwhere(np.lib.stride_tricks.sliding_window_view(np.pad(ent, 1, constant_values=1), (3, 3)).max((2, 3)) == 0)
+        x, y = empty[0]
+        world[Channel.ENTITIES.value, x, y] = str2ent("inserter").value
+        world[Channel.DIRECTION.value, x, y] = 1
+        assert self._build(f, world)["thput_raw"] > 0
+        assert select_self_targets([(0, LessonKind.SAME_SIDE_1IN, f)], [[self._build(f, world)]], 1.0) == []
+
+    def test_train_sft_fills_the_buffer_and_trains_from_it(self, monkeypatch, tmp_path):
+        """With the model's builds swapped for the references (an untrained
+        model builds nothing that flows), the selected ones fill the buffer and
+        are trained on."""
+        real_chains, real_step = sft.generate_chains, sft.denoise_step
+        self_states, trained = set(), []
+
+        def fake_chains(model, factories, *a, **k):
+            results, n_conv, n_ref = real_chains(model, factories, *a, **k)
+            for (_, _, f), rs in zip(factories, results):
+                rs[0] = self._build(f, f.world_CWH.numpy())
+                self_states.add(world_to_state(f.world_CWH).tobytes())
+            return results, n_conv, n_ref
+
+        def spy_step(model, state, *a, **k):
+            trained.extend(s.to(torch.uint8).numpy().tobytes() for s in state.cpu())
+            return real_step(model, state, *a, **k)
+
+        logged: list = []
+        _fake_wandb(monkeypatch, logged)
+        monkeypatch.setattr(sft, "generate_chains", fake_chains)
+        monkeypatch.setattr(sft, "denoise_step", spy_step)
+        args = SftArgs(
+            size=15, num_samples=96, batch_size=16, eval_every_n_samples=32, self_frac=0.25,
+            self_factories=8, self_top_frac=0.5, track=True,
+            checkpoint_path=str(tmp_path / "k.pt"), summary_path=str(tmp_path / "k.json"), **TINY, **FAST_EVAL,
+        )
+        train_sft(args)
+
+        self_logs = [m for m in logged if "self/buffer_size" in m]
+        assert len(self_logs) == 2 and self_logs[0]["self/buffer_size"] > 0
+        assert self_logs[0]["self/lesson_accept_frac"] > 0
+        assert self_logs[0]["self/target_thput"] == pytest.approx(self_logs[0]["self/ref_thput"])
+        assert logged[-1]["self/batch_frac"] == pytest.approx(0.25)
+        assert self_states & set(trained)
+
+    def test_off_never_generates(self, monkeypatch, tmp_path):
+        logged: list = []
+        _fake_wandb(monkeypatch, logged)
+        monkeypatch.setattr(sft, "self_round", lambda *a, **k: pytest.fail("self-training is off"))
+        args = SftArgs(
+            size=15, num_samples=64, batch_size=16, eval_every_n_samples=32, self_frac=0.0, track=True,
+            checkpoint_path=str(tmp_path / "k.pt"), summary_path=str(tmp_path / "k.json"), **TINY, **FAST_EVAL,
+        )
+        train_sft(args)
+        assert not any(k.startswith("self/") for m in logged for k in m)
 
 
 class TestTrackedArtifact:
