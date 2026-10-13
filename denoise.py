@@ -591,7 +591,9 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
         if bool(converged.all()):
             break
         n_refine += ~converged
-        toks = new
+        # A converged chain keeps its fixed point even if a later batched
+        # forward differs in the last bit.
+        toks = tuple(torch.where(converged.view(-1, 1, 1), t, n) for t, n in zip(toks, new))
         logits = model(tokens_to_state(cond, free, *toks))
     return toks, model.conf(logits, toks), converged, n_refine
 
