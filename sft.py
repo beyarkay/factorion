@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, IterableDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from denoise import (  # noqa: E402
+    CH_PART,
     DenoiserUNet,
     N_TYPES,
     _luts,
@@ -627,7 +628,7 @@ def throughput_pg_loss(model, logits, state, free, max_thput, t, args: SftArgs):
     with torch.no_grad():
         toks = model.pick(lg.detach(), temperature=1.0)
         conf = model.conf(lg.detach(), toks)
-    cond = state[rep, :5].cpu().numpy().astype(np.int64)
+    cond = state[rep, :CH_PART].cpu().numpy().astype(np.int64)
     typ, rec, part = (x.cpu().numpy() for x in toks)
     conf_np, mt = conf.float().cpu().numpy(), max_thput[rep].tolist()
     scores = torch.tensor(
