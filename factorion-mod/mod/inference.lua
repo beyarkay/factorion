@@ -91,8 +91,8 @@ function M.refresh(player)
   frame.settings.model_status.caption = model_caption()
   local caption, can_predict = M.describe(server)
   frame.region.caption = caption
-  frame.actions.predict.enabled = can_predict
-  frame.actions.clear.enabled = server.energy > 0
+  frame.action_row.predict_button.enabled = can_predict
+  frame.action_row.clear_button.enabled = server.energy > 0
 end
 
 function M.refresh_all()
@@ -161,15 +161,15 @@ function M.open(player, server)
   local region = frame.add({ type = "label", name = "region" })
   region.style.single_line = false
   region.style.maximal_width = 400
-  local actions = frame.add({ type = "flow", name = "actions", direction = "horizontal" })
+  local actions = frame.add({ type = "flow", name = "action_row", direction = "horizontal" })
   actions.add({
-    type = "button", name = "predict", caption = "Predict", style = "green_button",
+    type = "button", name = "predict_button", caption = "Predict", style = "green_button",
     tooltip = "Build a factory on the painted area touching this server, " ..
       "starting from what this server built before.",
     tags = { factorion_gpu = "predict" },
   })
   actions.add({
-    type = "button", name = "clear", caption = "Clear",
+    type = "button", name = "clear_button", caption = "Clear",
     tooltip = "Stop this server's prediction and remove what it built.",
     tags = { factorion_gpu = "clear" },
   })
