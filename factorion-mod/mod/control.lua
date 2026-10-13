@@ -1,19 +1,20 @@
 -- Factorion mod runtime.
 --
--- State per player lives in `storage.players[player_index]`:
---   footprint = { x=int, y=int, w=int, h=int }   world-tile bbox
+-- A region is a painted (blue) area with a GPU server against its edge; the
+-- server's state lives in `storage.servers[unit_number]`:
+--   footprint = { x=int, y=int, w=int, h=int }   model grid, world tiles
 --   pending   = { request_id=string, tick=int }  in-flight request, if any
 --
 -- Round trip (single-channel RCON, both directions):
---   1. On key `factorion-execute`, we build a request JSON describing the
---      footprint + existing entities + sources + sinks (in footprint-relative
---      coords) and
+--   1. On the GPU server's Predict button, we build a request JSON describing
+--      the painted tiles + existing entities + sources + sinks (in
+--      footprint-relative coords) and
 --      enqueue it on `storage.outbox`. The Python server is polling our
 --      `poll_request` remote interface over RCON; when there's something
 --      in the queue it gets popped and returned as a JSON string.
 --   2. After each denoising step, the server calls `place_predictions` over
 --      RCON with the entities that step changed. We replace them directly in
---      the requesting player's world.
+--      the world.
 --   3. The server calls `finish_prediction` when the denoising ends.
 --
 -- No script-output files are involved. The only outbound channel a
@@ -66,19 +67,13 @@ end
 local function ensure_player_state(player_index)
   storage.players = storage.players or {}
   if not storage.players[player_index] then
-    storage.players[player_index] = {
-      footprint = nil,
-      pending   = nil,
-      picker    = nil,
-      footprint_render_id = nil,
-      model_entities = {},
-    }
+    storage.players[player_index] = { picker = nil }
   end
   return storage.players[player_index]
 end
 
 local function ensure_pending_lookup()
-  -- request_id -> player_index, so the RCON callback can find the player.
+  -- request_id -> GPU server unit number (0 for headless injections).
   storage.pending_by_request = storage.pending_by_request or {}
   -- FIFO of JSON request strings waiting for the server to pop via RCON.
   storage.outbox = storage.outbox or {}
@@ -91,9 +86,9 @@ end
 
 local function show_startup_message(player)
   player.print("[Factorion] Ready. Craft a [item=factorion-planner], click a " ..
-    "tile with it to choose what to make, then click a tile for each source " ..
-    "and press CTRL+P. Right-click with it to clear the plan. Source and sink " ..
-    "belts placed by hand (map editor) work too: press CTRL+P near them.")
+    "tile with it to choose what to make, then click a tile for each source. " ..
+    "Paint the tiles the factory may use with [item=factorion-mask], put a " ..
+    "[item=factorion-gpu-server] against the paint and press Predict in its window.")
 end
 
 script.on_event(defines.events.on_player_created, function(event)
@@ -130,27 +125,6 @@ local MASK_TILE = "factorion-mask"
 local MASK_OUTLINE_COLOR = { r = 0.2, g = 0.45, b = 1.0, a = 1 }
 -- Runs overlap by half a line width so their corners meet.
 local MASK_OUTLINE_OVERLAP = 0.08
-
--- Painted tiles inside fp, relative to it.
-local function painted_tiles(surface, fp)
-  local painted = {}
-  -- The tile exists only once Factorio has restarted with this mod version.
-  if not prototypes.tile[MASK_TILE] then return painted end
-  for _, tile in pairs(surface.find_tiles_filtered({
-    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
-    name = MASK_TILE,
-  })) do
-    table.insert(painted, { x = tile.position.x - fp.x, y = tile.position.y - fp.y })
-  end
-  return painted
-end
-
-local function destroy_footprint_render(state)
-  if not state.footprint_render_id then return end
-  local object = rendering.get_object_by_id(state.footprint_render_id)
-  if object then object.destroy() end
-  state.footprint_render_id = nil
-end
 
 -- Outlines each painted area of the surface, in alt-mode only.
 local function draw_mask_outline(surface)
@@ -206,22 +180,6 @@ local function draw_mask_outline(surface)
       end
     end
   end
-end
-
-local function draw_footprint(player, state)
-  destroy_footprint_render(state)
-  local fp = state.footprint
-  local object = rendering.draw_rectangle({
-    surface = player.surface,
-    left_top = { fp.x, fp.y },
-    right_bottom = { fp.x + fp.w, fp.y + fp.h },
-    color = { r = 0.1, g = 0.75, b = 1.0, a = 0.95 },
-    width = 4,
-    filled = false,
-    players = { player },
-    draw_on_ground = true,
-  })
-  state.footprint_render_id = object.id
 end
 
 local function mask_tiles_changed(event)
@@ -492,7 +450,7 @@ end
 
 -- ----------------------------------------------------------------------------
 -- planner: click a tile and pick the sink item, then click one tile per
--- ingredient source; the region is the model's grid centred on those belts
+-- ingredient source
 -- ----------------------------------------------------------------------------
 
 local PLANNER = "factorion-planner"
@@ -543,29 +501,6 @@ local function remove_plan_markers(state)
 end
 
 local PANEL = "factorion-panel"
-local NUDGES = { left = { -1, 0 }, up = { 0, -1 }, down = { 0, 1 }, right = { 1, 0 } }
-
--- Source and sink belts in area, read from the world so belts moved or copied
--- by any means are seen where they are now.
-local function endpoints_in(surface, area)
-  local sources, sinks = {}, {}
-  for _, entity in pairs(surface.find_entities_filtered({
-    area = area,
-    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
-  })) do
-    local tile = {
-      x = math.floor(entity.position.x), y = math.floor(entity.position.y),
-      entity = entity,
-    }
-    table.insert(endpoint_role(entity) == "source" and sources or sinks, tile)
-  end
-  return sources, sinks
-end
-
-local function inside(tile, fp)
-  return tile.x >= fp.x and tile.y >= fp.y
-    and tile.x < fp.x + fp.w and tile.y < fp.y + fp.h
-end
 
 local function close_panel(player)
   local frame = player and player.gui.screen[PANEL]
@@ -591,35 +526,6 @@ local function show_source_panel(player, plan)
     caption = { "", string.format("Place source %d of %d: ", plan.next, #plan.sources),
       prototypes.item[item].localised_name },
   })
-end
-
--- The region must stay the model's grid size, so editing it means moving it.
-local function nudge_region(player, state, direction)
-  local fp = state.footprint
-  if not fp then return end
-  local step = NUDGES[direction]
-  local moved = { x = fp.x + step[1], y = fp.y + step[2], w = fp.w, h = fp.h }
-  local sources, sinks = endpoints_in(player.surface,
-    { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } })
-  for _, tile in ipairs(sources) do table.insert(sinks, tile) end
-  for _, tile in ipairs(sinks) do
-    if not inside(tile, moved) then
-      player.print("[Factorion] Can't move the region that way: a source or " ..
-        "sink belt would end up outside it.")
-      return
-    end
-  end
-  state.footprint = moved
-  draw_footprint(player, state)
-  inference.refresh(player)
-end
-
-local function clear_region(player, state)
-  cancel_pending(state)
-  destroy_footprint_render(state)
-  clear_predicted_entities(state, player)
-  close_panel(player)
-  state.footprint = nil
 end
 
 local function place_plan_marker(player, plan, role, item, tile)
@@ -666,17 +572,6 @@ local function open_plan_dialog(player)
   player.opened = frame
 end
 
--- Puts one of name in the player's hand, from their inventory if they have it.
-local function hand_item(player, name)
-  local cursor = player.cursor_stack
-  if not cursor then return end
-  if cursor.valid_for_read and cursor.name == name then return end
-  if not player.clear_cursor() then return end
-  local inventory = player.get_main_inventory()
-  local stack = inventory and inventory.find_item_stack(name)
-  if stack then cursor.swap_stack(stack) else cursor.set_stack({ name = name }) end
-end
-
 -- Exactly one fresh source belt per source, never a stack from the inventory.
 local function hand_source_belt(player)
   local cursor = player.cursor_stack
@@ -696,13 +591,19 @@ local function prompt_next_source(player, plan)
     plan.next, #plan.sources, plan.sources[plan.next]))
 end
 
--- The sink is placed for the player, so it is turned to face out of the
--- region as in training; sources keep the rotation they were placed with.
-local function orient_sink(plan, fp)
-  local cx, cy = fp.x + fp.w / 2, fp.y + fp.h / 2
+-- The sink is placed for the player, so it is turned to face away from the
+-- sources as in training; sources keep the rotation they were placed with.
+local function orient_sink(plan)
+  local cx, cy, sources = 0, 0, 0
+  for _, marker in ipairs(plan.tiles) do
+    if marker.role == "source" then
+      cx, cy, sources = cx + marker.x, cy + marker.y, sources + 1
+    end
+  end
+  cx, cy = cx / sources, cy / sources
   for _, marker in ipairs(plan.tiles) do
     if marker.role == "sink" and marker.entity.valid then
-      local dx, dy = marker.x + 0.5 - cx, marker.y + 0.5 - cy
+      local dx, dy = marker.x - cx, marker.y - cy
       if math.abs(dx) >= math.abs(dy) then
         marker.entity.direction = dx >= 0 and defines.direction.east or defines.direction.west
       else
@@ -712,43 +613,14 @@ local function orient_sink(plan, fp)
   end
 end
 
--- Centres the model's grid on tiles, or says why it can't.
-local function set_region(player, state, tiles)
-  local size = storage.model.grid_size
-  local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
-  for _, tile in ipairs(tiles) do
-    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
-    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
-  end
-  local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
-  if span_x > size or span_y > size then
-    player.print(string.format(
-      "[Factorion] These belts span %dx%d tiles, more than the model's %dx%d " ..
-      "grid.", span_x, span_y, size, size))
-    return false
-  end
-  state.footprint = {
-    x = min_x - math.floor((size - span_x) / 2),
-    y = min_y - math.floor((size - span_y) / 2),
-    w = size, h = size,
-  }
-  draw_footprint(player, state)
-  close_panel(player)
-  return true
-end
-
--- Belts the player placed themselves (plan.existing) count towards the region
--- but keep the direction they were given.
 local function finish_plan(player, state)
   local plan = state.plan
   plan.done = true
-  local tiles = {}
-  for _, tile in ipairs(plan.tiles) do table.insert(tiles, tile) end
-  for _, tile in ipairs(plan.existing or {}) do table.insert(tiles, tile) end
-  if not set_region(player, state, tiles) then return end
-  orient_sink(plan, state.footprint)
-  player.print("[Factorion] Region ready. Press CTRL+P to build the factory; " ..
-    "move the region from any GPU server's window.")
+  orient_sink(plan)
+  close_panel(player)
+  player.print("[Factorion] Belts placed. Paint the tiles the factory may use " ..
+    "with [item=factorion-mask], then put a [item=factorion-gpu-server] against " ..
+    "the paint and press Predict in its window.")
 end
 
 -- A source belt the player places while a plan is waiting for sources becomes
@@ -777,22 +649,15 @@ local function place_sink(player, state)
   local item = frame and frame[PLAN_ITEM].elem_value
   local plan = state.plan
   if not item or not plan then return end
-  local sources, reason
-  if not plan.keep_sources then
-    sources, reason = source_items(item)
-    if not sources then
-      player.print("[Factorion] Can't plan that: " .. reason .. ".")
-      return
-    end
+  local sources, reason = source_items(item)
+  if not sources then
+    player.print("[Factorion] Can't plan that: " .. reason .. ".")
+    return
   end
   close_plan_dialog(player)
   if not place_plan_marker(player, plan, "sink", item, plan.sink_tile) then
     player.print("[Factorion] That tile is blocked; click another one.")
     state.plan = nil
-    return
-  end
-  if plan.keep_sources then
-    finish_plan(player, state)
     return
   end
   plan.sources, plan.next = sources, 1
@@ -805,41 +670,23 @@ local function handle_tool_selection(event)
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   if not player then return end
-  if state.pending then
-    player.print("[Factorion] Wait for the current prediction, or right-click with the planner to cancel it.")
-    return
-  end
   local x, y = area_center_tile(event.area)
-  local tile = { x = x, y = y }
-  local plan = state.plan
-
-  if plan and plan.awaiting_sink then
-    plan.awaiting_sink, plan.sink_tile = nil, tile
-    open_plan_dialog(player)
-    return
-  end
-
-  if not storage.model then
-    request_model_load()
-    player.print("[Factorion] No model loaded yet; try again once the server reports in.")
-    return
-  end
   remove_plan_markers(state)
-  clear_region(player, state)
-  state.plan = { sink_tile = tile, markers = {}, tiles = {} }
+  close_panel(player)
+  state.plan = { sink_tile = { x = x, y = y }, markers = {}, tiles = {} }
   open_plan_dialog(player)
 end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
 
--- Right-clicking with the planner cancels the plan and clears its region.
+-- Right-clicking with the planner cancels the plan.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
   if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
   remove_plan_markers(state)
-  clear_region(player, state)
   if player then
+    close_panel(player)
     close_plan_dialog(player)
     player.print("[Factorion] Plan cleared.")
   end
@@ -883,12 +730,6 @@ end
 
 script.on_event(defines.events.on_gui_click, function(event)
   if inference.on_gui_click(event) then return end
-  local nudge = event.element.valid and event.element.tags.factorion_region
-  if nudge then
-    local player = game.get_player(event.player_index)
-    if player then nudge_region(player, ensure_player_state(event.player_index), nudge) end
-    return
-  end
   if event.element.valid and event.element.tags.factorion_plan == "place_sink" then
     local player = game.get_player(event.player_index)
     if player then place_sink(player, ensure_player_state(event.player_index)) end
@@ -917,12 +758,12 @@ script.on_event(defines.events.on_gui_text_changed, inference.on_gui_text_change
 script.on_event(defines.events.on_gui_confirmed, inference.on_gui_confirmed)
 
 -- The server keeps its built-in window only so clicking it raises this event;
--- the shared inference window replaces it straight away.
+-- the inference window replaces it straight away.
 local function open_gpu_server(player, entity)
   if not entity or not entity.valid or entity.name ~= inference.GPU_SERVER then
     return false
   end
-  inference.open(player)
+  inference.open(player, entity)
   return true
 end
 
@@ -953,10 +794,10 @@ end)
 
 local function entity_built(event)
   local entity = event.entity or event.created_entity
-  -- A built model ghost keeps counting as the model's, so rerun/reset finds it.
-  local owner = event.tags and event.tags.factorion_player
+  -- A built model ghost keeps counting as its server's, so rerun/clear finds it.
+  local owner = event.tags and storage.servers and storage.servers[event.tags.factorion_server]
   if owner and entity and entity.valid and entity.unit_number then
-    ensure_player_state(owner).model_entities[entity.unit_number] = entity
+    owner.model_entities[entity.unit_number] = entity
   end
   local role = endpoint_role(entity)
   if not role then return end
@@ -1007,6 +848,12 @@ end)
 local function endpoint_entity_removed(event)
   local entity = event.entity
   if not entity or not entity.unit_number then return end
+  -- What a removed GPU server built stays, as the player's own entities.
+  local server = storage.servers and storage.servers[entity.unit_number]
+  if server then
+    cancel_pending(server)
+    storage.servers[entity.unit_number] = nil
+  end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   destroy_endpoint_alt_icon(config)
   destroy_sink_rate_label(config)
@@ -1089,308 +936,9 @@ local function service_endpoint_belts()
   end
 end
 
--- A new checkpoint may have a different grid size, so planned regions go.
 inference.on_load = function()
-  for player_index, state in pairs(storage.players or {}) do
-    local player = game.get_player(player_index)
-    if state.footprint and player and player.connected then
-      player.print("[Factorion] Checkpoint changed; plan your factory again.")
-    end
-    destroy_footprint_render(state)
-    state.footprint = nil
-  end
   storage.model_loading = nil
   request_model_load()
-end
-
--- ----------------------------------------------------------------------------
--- execute: write a request JSON the server picks up
--- ----------------------------------------------------------------------------
-
-local function new_request_id()
-  return string.format("%d-%d-%d", game.tick,
-    math.random(0, 2^30), math.random(0, 2^30))
-end
-
-local function gather_existing_entities(state, surface, fp)
-  local predicted = state.model_entities or {}
-  local result = {}
-  local candidates = surface.find_entities_filtered({
-    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
-    name = MODEL_ENTITY_NAMES,
-  })
-  for _, entity in pairs(candidates) do
-    if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
-      local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
-      local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
-      if direction then
-        -- Factorio stores an inserter's drop direction; the model stores its
-        -- pickup direction.
-        if entity.type == "inserter" then
-          direction = OPPOSITE_DIRECTION[direction]
-        end
-
-        local width = entity.prototype.tile_width
-        local height = entity.prototype.tile_height
-        if direction == 2 or direction == 4 then
-          width, height = height, width
-        end
-        local world_x = math.floor(entity.position.x - width / 2 + 0.0001)
-        local world_y = math.floor(entity.position.y - height / 2 + 0.0001)
-        local rx, ry = world_x - fp.x, world_y - fp.y
-
-        -- An entity crossing the region boundary cannot be represented as a
-        -- complete model unit, so leave it out rather than supplying a clipped
-        -- and misleading footprint.
-        if rx >= 0 and ry >= 0 and rx + width <= fp.w and ry + height <= fp.h then
-          local entry = {
-            name = entity.name,
-            x = rx,
-            y = ry,
-            direction = direction,
-          }
-          if entity.type == "assembling-machine" then
-            local recipe = entity.get_recipe()
-            if recipe then entry.item = recipe.name end
-          end
-          if entity.type == "underground-belt" then
-            if entity.belt_to_ground_type == "input" then
-              entry.misc = 1
-            elseif entity.belt_to_ground_type == "output" then
-              entry.misc = 2
-            end
-          end
-          table.insert(result, entry)
-        end
-      end
-    end
-  end
-  return result
-end
-
-local function gather_request(state, player_index)
-  local fp = state.footprint
-  local player = game.get_player(player_index)
-
-  local sources = {}
-  local sinks = {}
-  local model_entities = gather_existing_entities(state, player.surface, fp)
-  local entities = player.surface.find_entities_filtered({
-    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
-    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
-  })
-  for _, entity in pairs(entities) do
-    local x, y = math.floor(entity.position.x), math.floor(entity.position.y)
-    local rx, ry = x - fp.x, y - fp.y
-    if rx >= 0 and rx < fp.w and ry >= 0 and ry < fp.h then
-      local config = register_endpoint(entity)
-      if not config then goto continue end
-      local entry = {
-        x = rx, y = ry,
-        direction = FACTORIO_TO_DIRECTION[entity.direction],
-        item = config.item,
-      }
-      if config.role == "source" then
-        table.insert(sources, entry)
-      else
-        table.insert(sinks, entry)
-      end
-    end
-    ::continue::
-  end
-
-  local function icons(endpoints)
-    local parts = {}
-    for _, endpoint in ipairs(endpoints) do
-      table.insert(parts, "[item=" .. endpoint.item .. "]")
-    end
-    return table.concat(parts, " ")
-  end
-  local allowed = painted_tiles(player.surface, fp)
-
-  local description = string.format("converting %s to %s",
-    icons(sources), icons(sinks))
-  if #allowed > 0 then
-    description = description .. string.format(" on %d painted tiles", #allowed)
-  end
-  if #model_entities > 0 then
-    description = description .. string.format(
-      " around %d existing entities", #model_entities)
-  end
-
-  local config = inference.config()
-  local request = {
-    type          = "predict",
-    request_id    = new_request_id(),
-    checkpoint    = storage.model.checkpoint,
-    grid_size     = fp.w,
-    step_delay_s  = setting("factorion-step-delay"),
-    temperature   = config.temperature,
-    steps         = config.steps,
-    refine        = config.refine,
-    best_of       = config.best_of,
-    seed          = config.seed,
-    entities      = model_entities,
-    allowed       = allowed,
-    sources       = sources,
-    sinks         = sinks,
-  }
-  return request, description
-end
-
--- Build a request from the player's configured endpoint belts and enqueue it
--- for the server. Returns
--- (true, message) on success, (false, message) on a precheck failure.
-local function try_request_prediction(player_index)
-  local state = ensure_player_state(player_index)
-  ensure_pending_lookup()
-  if not state.footprint then
-    return false, "No footprint set."
-  end
-  if state.pending then
-    return false, "A prediction is already in progress; right-click with the planner to cancel it."
-  end
-  local no_gpu = inference.unavailable_reason()
-  if no_gpu then return false, no_gpu end
-  if not storage.model then
-    request_model_load()
-    return false, "No model loaded yet."
-  end
-  if storage.model.grid_size ~= state.footprint.w then
-    return false, "This region was planned for another model; plan it again."
-  end
-  local request, description = gather_request(state, player_index)
-  if #request.sources == 0 then
-    return false, "No source belt inside the region."
-  end
-  if #request.sinks == 0 then
-    return false, "No sink belt inside the region."
-  end
-  clear_predicted_entities(state, game.get_player(player_index))
-  local request_json = helpers.table_to_json(request)
-  table.insert(storage.outbox, request_json)
-  storage.pending_by_request[request.request_id] = player_index
-  state.pending = {
-    request_id = request.request_id, tick = game.tick, description = description,
-  }
-  log("[Factorion] enqueued request " .. request.request_id ..
-      " json=" .. request_json)
-  local changed = {}
-  for _, knob in ipairs(SAMPLING_SUMMARY) do
-    local value = inference.config()[knob[1]]
-    if value ~= inference.DEFAULTS[knob[1]] then
-      table.insert(changed, string.format(knob[2], value))
-    end
-  end
-  return true, string.format("Requesting a factory %s using checkpoint %s%s.",
-    description, request.checkpoint,
-    #changed > 0 and " (" .. table.concat(changed, ", ") .. ")" or "")
-end
-
-local function describe_placement_failure(surface, fp, placement)
-  local left = fp.x + placement.tile_x
-  local top = fp.y + placement.tile_y
-  local blockers = {}
-  local found = surface.find_entities({
-    { left, top },
-    { left + placement.width, top + placement.height },
-  })
-  for _, entity in pairs(found) do
-    table.insert(blockers, entity.name)
-  end
-  table.sort(blockers)
-  return string.format(
-    "Factorio refused %s at relative tile (%s,%s), " ..
-    "world tile (%d,%d) on %s; blockers=[%s]",
-    tostring(placement.name),
-    tostring(placement.tile_x),
-    tostring(placement.tile_y),
-    left,
-    top,
-    surface.name,
-    #blockers > 0 and table.concat(blockers, ", ") or "none")
-end
-
--- Mirrors the model's overwrite rule: every entity the placement touches is
--- removed whole. The model never saw entities crossing the region boundary,
--- so those are left alone and block the placement instead.
-local function clear_placement_area(player, state, fp, placement)
-  local left = fp.x + placement.tile_x
-  local top = fp.y + placement.tile_y
-  local predicted = state.model_entities or {}
-  local area = {
-    { left + 0.01, top + 0.01 },
-    { left + placement.width - 0.01, top + placement.height - 0.01 },
-  }
-  local overlapped = player.surface.find_entities_filtered({
-    area = area, name = MODEL_ENTITY_NAMES,
-  })
-  for _, ghost in pairs(player.surface.find_entities_filtered({
-    area = area, ghost_name = MODEL_ENTITY_NAMES,
-  })) do
-    table.insert(overlapped, ghost)
-  end
-  for _, entity in pairs(overlapped) do
-    local box = entity.bounding_box
-    if box.left_top.x >= fp.x and box.left_top.y >= fp.y
-        and box.right_bottom.x <= fp.x + fp.w
-        and box.right_bottom.y <= fp.y + fp.h then
-      remove_entity(entity, player, predicted[entity.unit_number] ~= nil)
-    end
-  end
-end
-
--- Create one model-predicted entity at footprint-relative coordinates,
--- replacing whatever it overlaps. Returns why Factorio refused it, if it did.
-local function place_one(player, player_index, state, fp, placement)
-  if not placement.tile_x or not placement.tile_y
-      or not placement.width or not placement.height then
-    return "incomplete placement"
-  end
-  if placement.tile_x < 0 or placement.tile_y < 0
-      or placement.tile_x + placement.width > fp.w
-      or placement.tile_y + placement.height > fp.h then
-    return "placement lies outside the footprint"
-  end
-
-  clear_placement_area(player, state, fp, placement)
-  if not placement.name then return nil end
-
-  local params = {
-    name = placement.name,
-    position = { fp.x + placement.x, fp.y + placement.y },
-    direction = placement.direction,
-    force = player.force,
-    player = player,
-    raise_built = true,
-    create_build_effect_smoke = true,
-  }
-  if placement.type then params.type = placement.type end
-  if placement.recipe then params.recipe = placement.recipe end
-  if setting("factorion-placement-mode") == "ghost" then
-    params.inner_name = params.name
-    params.name = "entity-ghost"
-    params.tags = { factorion_player = player_index }
-  end
-  local created, entity = pcall(
-    function() return player.surface.create_entity(params) end)
-  if not created then
-    return string.format(
-      "create_entity raised while placing %s at relative tile " ..
-      "(%s,%s): %s",
-      tostring(placement.name),
-      tostring(placement.tile_x),
-      tostring(placement.tile_y),
-      tostring(entity))
-  end
-  if not entity then
-    return describe_placement_failure(player.surface, fp, placement)
-  end
-
-  state.model_entities = state.model_entities or {}
-  if entity.unit_number then
-    state.model_entities[entity.unit_number] = entity
-  end
 end
 
 -- ----------------------------------------------------------------------------
@@ -1461,110 +1009,406 @@ script.on_nth_tick(60, function()
   inference.refresh_all()
 end)
 
-local function endpoints_near(player, position)
-  local size = storage.model.grid_size
-  return endpoints_in(player.surface, {
-    { position.x - size, position.y - size },
-    { position.x + size, position.y + size },
-  })
+-- ----------------------------------------------------------------------------
+-- execute: write a request JSON the server picks up
+-- ----------------------------------------------------------------------------
+
+local function new_request_id()
+  return string.format("%d-%d-%d", game.tick,
+    math.random(0, 2^30), math.random(0, 2^30))
 end
 
--- Re-reads the belts around the region: it stays put (keeping any nudges)
--- while they all fit inside it, and re-centres on them once one is moved out.
-local function refresh_region(player, state)
-  local fp = state.footprint
-  local sources, sinks = endpoints_in(player.surface, {
-    { fp.x - fp.w, fp.y - fp.h }, { fp.x + 2 * fp.w, fp.y + 2 * fp.h },
+local function gather_existing_entities(state, surface, fp)
+  local predicted = state.model_entities or {}
+  local result = {}
+  local candidates = surface.find_entities_filtered({
+    area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+    name = MODEL_ENTITY_NAMES,
   })
-  local tiles = {}
-  for _, tile in ipairs(sources) do table.insert(tiles, tile) end
-  for _, tile in ipairs(sinks) do table.insert(tiles, tile) end
-  for _, tile in ipairs(tiles) do
-    if not inside(tile, fp) then
-      if not set_region(player, state, tiles) then return false end
-      player.print("[Factorion] Belts have moved; the region is re-centred on them.")
-      return true
-    end
-  end
-  return true
-end
+  for _, entity in pairs(candidates) do
+    if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
+      local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
+      local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
+      if direction then
+        -- Factorio stores an inserter's drop direction; the model stores its
+        -- pickup direction.
+        if entity.type == "inserter" then
+          direction = OPPOSITE_DIRECTION[direction]
+        end
 
--- Ingredients of every sink's recipe, each once, in recipe order.
-local function sources_for_sinks(sinks)
-  local items, seen = {}, {}
-  for _, sink in ipairs(sinks) do
-    local config = register_endpoint(sink.entity)
-    local sources, reason = source_items(config.item)
-    if not sources then return nil, reason end
-    for _, item in ipairs(sources) do
-      if not seen[item] then
-        seen[item] = true
-        table.insert(items, item)
+        local width = entity.prototype.tile_width
+        local height = entity.prototype.tile_height
+        if direction == 2 or direction == 4 then
+          width, height = height, width
+        end
+        local world_x = math.floor(entity.position.x - width / 2 + 0.0001)
+        local world_y = math.floor(entity.position.y - height / 2 + 0.0001)
+        local rx, ry = world_x - fp.x, world_y - fp.y
+
+        -- An entity crossing the region boundary cannot be represented as a
+        -- complete model unit, so leave it out rather than supplying a clipped
+        -- and misleading footprint.
+        if rx >= 0 and ry >= 0 and rx + width <= fp.w and ry + height <= fp.h then
+          local entry = {
+            name = entity.name,
+            x = rx,
+            y = ry,
+            direction = direction,
+          }
+          if entity.type == "assembling-machine" then
+            local recipe = entity.get_recipe()
+            if recipe then entry.item = recipe.name end
+          end
+          if entity.type == "underground-belt" then
+            if entity.belt_to_ground_type == "input" then
+              entry.misc = 1
+            elseif entity.belt_to_ground_type == "output" then
+              entry.misc = 2
+            end
+          end
+          table.insert(result, entry)
+        end
       end
     end
   end
-  return items
+  return result
 end
 
--- CTRL+P builds the planned region; without one it uses the source and sink
--- belts near the cursor, and guides the player to place whichever is missing.
-local function predict_or_guide(player, state, cursor_position)
-  local plan = state.plan
-  if plan and not plan.done then
-    if plan.sources then
-      prompt_next_source(player, plan)
-      return nil
+local function server_state(server)
+  storage.servers = storage.servers or {}
+  local state = storage.servers[server.unit_number]
+  if not state then
+    state = { entity = server, model_entities = {} }
+    storage.servers[server.unit_number] = state
+  end
+  return state
+end
+
+local function tile_key(x, y) return x .. "," .. y end
+
+-- The tiles of entity's footprint, and the ring of tiles touching it outside.
+local function tile_box(entity)
+  local box = entity.bounding_box
+  return math.floor(box.left_top.x + 0.01), math.floor(box.left_top.y + 0.01),
+    math.ceil(box.right_bottom.x - 0.01) - 1, math.ceil(box.right_bottom.y - 0.01) - 1
+end
+
+local NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+
+-- The painted area against a GPU server, as tile keys, or nil and why. The
+-- flood stops once the area outgrows the model's grid.
+local function painted_area(server, size)
+  local surface = server.surface
+  local x0, y0, x1, y1 = tile_box(server)
+  local function free_paint(x, y)
+    local under_server = x >= x0 and x <= x1 and y >= y0 and y <= y1
+    return not under_server and surface.get_tile(x, y).name == MASK_TILE
+  end
+  local seeds = {}
+  for x = x0 - 1, x1 + 1 do
+    for y = y0 - 1, y1 + 1 do
+      local corner = (x < x0 or x > x1) and (y < y0 or y > y1)
+      if not corner and free_paint(x, y) then table.insert(seeds, { x = x, y = y }) end
     end
-    hand_item(player, PLANNER)
-    return "Click a tile with the planner to place the sink."
   end
-  if state.footprint then
-    if not refresh_region(player, state) then return nil end
-    local _, msg = try_request_prediction(player.index)
-    return msg
+  if #seeds == 0 then
+    return nil, "it doesn't touch any [item=" .. MASK_TILE .. "] paint"
   end
+  local area, queue = {}, { seeds[1] }
+  area[tile_key(seeds[1].x, seeds[1].y)] = seeds[1]
+  local min_x, min_y, max_x, max_y = seeds[1].x, seeds[1].y, seeds[1].x, seeds[1].y
+  while #queue > 0 do
+    local tile = table.remove(queue)
+    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+    if max_x - min_x >= size or max_y - min_y >= size then
+      return nil, string.format("the paint it touches is wider than the model's %dx%d grid",
+        size, size)
+    end
+    for _, step in ipairs(NEIGHBOURS) do
+      local x, y = tile.x + step[1], tile.y + step[2]
+      if not area[tile_key(x, y)] and free_paint(x, y) then
+        area[tile_key(x, y)] = { x = x, y = y }
+        table.insert(queue, { x = x, y = y })
+      end
+    end
+  end
+  for _, seed in ipairs(seeds) do
+    if not area[tile_key(seed.x, seed.y)] then
+      return nil, "it touches more than one painted area"
+    end
+  end
+  return area
+end
+
+-- The server's painted area, the source and sink belts on or beside it, and
+-- the model's grid around them all; or nil and why not.
+local function region_for(server)
   if not storage.model then
     request_model_load()
-    return "No model loaded yet."
+    return nil, "no model is loaded yet"
   end
-  local sources, sinks = endpoints_near(player, cursor_position)
-  if #sinks == 0 then
-    state.plan = {
-      awaiting_sink = true, keep_sources = #sources > 0, existing = sources,
-      markers = {}, tiles = {},
-    }
-    hand_item(player, PLANNER)
-    return "No sink near the cursor. Click a tile with the planner to place one."
+  local size = storage.model.grid_size
+  local area, reason = painted_area(server, size)
+  if not area then return nil, reason end
+  local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
+  local tiles = 0
+  for _, tile in pairs(area) do
+    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+    tiles = tiles + 1
   end
-  if #sources == 0 then
-    local items, reason = sources_for_sinks(sinks)
-    if not items then return "Can't work out the sources: " .. reason .. "." end
-    state.plan = {
-      existing = sinks, sources = items, next = 1, markers = {}, tiles = {},
-    }
-    player.print("[Factorion] No source near the cursor.")
-    prompt_next_source(player, state.plan)
-    return nil
+  local function touches(x, y)
+    if area[tile_key(x, y)] then return true end
+    for _, step in ipairs(NEIGHBOURS) do
+      if area[tile_key(x + step[1], y + step[2])] then return true end
+    end
+    return false
   end
-  local tiles = {}
-  for _, tile in ipairs(sources) do table.insert(tiles, tile) end
-  for _, tile in ipairs(sinks) do table.insert(tiles, tile) end
-  if not set_region(player, state, tiles) then return nil end
-  local _, msg = try_request_prediction(player.index)
-  return msg
+  local endpoints = {}
+  for _, entity in pairs(server.surface.find_entities_filtered({
+    area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
+    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+  })) do
+    local x, y = math.floor(entity.position.x), math.floor(entity.position.y)
+    local config = touches(x, y) and register_endpoint(entity)
+    if config then
+      table.insert(endpoints, { x = x, y = y, entity = entity, config = config })
+      min_x, max_x = math.min(min_x, x), math.max(max_x, x)
+      min_y, max_y = math.min(min_y, y), math.max(max_y, y)
+    end
+  end
+  local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
+  if span_x > size or span_y > size then
+    return nil, string.format("the paint and its belts span %dx%d tiles, more " ..
+      "than the model's %dx%d grid", span_x, span_y, size, size)
+  end
+  local fp = {
+    x = min_x - math.floor((size - span_x) / 2),
+    y = min_y - math.floor((size - span_y) / 2),
+    w = size, h = size,
+  }
+  local region = { fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {} }
+  for _, tile in pairs(area) do
+    table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y })
+  end
+  for _, endpoint in ipairs(endpoints) do
+    table.insert(endpoint.config.role == "source" and region.sources or region.sinks, {
+      x = endpoint.x - fp.x, y = endpoint.y - fp.y,
+      direction = FACTORIO_TO_DIRECTION[endpoint.entity.direction],
+      item = endpoint.config.item,
+    })
+  end
+  return region
 end
 
-script.on_event("factorion-execute", function(event)
-  local player = game.get_player(event.player_index)
-  if not player then return end
-  local msg = predict_or_guide(
-    player, ensure_player_state(event.player_index), event.cursor_position)
-  if msg then player.print("[Factorion] " .. msg) end
-  if not server_alive() then
-    player.print("[Factorion] No model server is connected, so nothing " ..
-      "will happen yet. " .. server_help())
+local function icons(endpoints)
+  local parts = {}
+  for _, endpoint in ipairs(endpoints) do
+    table.insert(parts, "[item=" .. endpoint.item .. "]")
   end
-end)
+  return table.concat(parts, " ")
+end
+
+-- What the GPU server's window says about the area it would build.
+inference.describe = function(server)
+  local state = server_state(server)
+  if state.pending then return "Building " .. state.pending.description .. "…" end
+  local region, reason = region_for(server)
+  if not region then return "Can't predict: " .. reason .. "." end
+  return string.format("Painted area of %d tiles, converting %s to %s.",
+    region.tiles, icons(region.sources), icons(region.sinks))
+end
+
+local function gather_request(state, region)
+  local model_entities = gather_existing_entities(state, state.entity.surface, region.fp)
+  local description = string.format("converting %s to %s on %d painted tiles",
+    icons(region.sources), icons(region.sinks), region.tiles)
+  if #model_entities > 0 then
+    description = description .. string.format(
+      " around %d existing entities", #model_entities)
+  end
+
+  local config = inference.config()
+  local request = {
+    type          = "predict",
+    request_id    = new_request_id(),
+    checkpoint    = storage.model.checkpoint,
+    grid_size     = region.fp.w,
+    step_delay_s  = setting("factorion-step-delay"),
+    temperature   = config.temperature,
+    steps         = config.steps,
+    refine        = config.refine,
+    best_of       = config.best_of,
+    seed          = config.seed,
+    entities      = model_entities,
+    allowed       = region.allowed,
+    sources       = region.sources,
+    sinks         = region.sinks,
+  }
+  return request, description
+end
+
+-- Rebuilds the factory in the painted area against server, replacing what
+-- this server built before. Returns the message for the player.
+inference.on_predict = function(player, server)
+  ensure_pending_lookup()
+  local state = server_state(server)
+  if state.pending then
+    return "This GPU server is still building; press Clear to stop it."
+  end
+  if server.energy <= 0 then return "This GPU server has no power." end
+  local region, reason = region_for(server)
+  if not region then return "Can't predict: " .. reason .. "." end
+  if #region.sources == 0 then
+    return "No source belt on or beside the painted area."
+  end
+  if #region.sinks == 0 then
+    return "No sink belt on or beside the painted area."
+  end
+  clear_predicted_entities(state, player)
+  local request, description = gather_request(state, region)
+  local request_json = helpers.table_to_json(request)
+  table.insert(storage.outbox, request_json)
+  storage.pending_by_request[request.request_id] = server.unit_number
+  state.footprint = region.fp
+  state.player_index = player.index
+  state.pending = {
+    request_id = request.request_id, tick = game.tick, description = description,
+  }
+  log("[Factorion] enqueued request " .. request.request_id ..
+      " json=" .. request_json)
+  local changed = {}
+  for _, knob in ipairs(SAMPLING_SUMMARY) do
+    local value = inference.config()[knob[1]]
+    if value ~= inference.DEFAULTS[knob[1]] then
+      table.insert(changed, string.format(knob[2], value))
+    end
+  end
+  local message = string.format("Requesting a factory %s using checkpoint %s%s.",
+    description, request.checkpoint,
+    #changed > 0 and " (" .. table.concat(changed, ", ") .. ")" or "")
+  if not server_alive() then
+    message = message .. " No model server is connected, so nothing will " ..
+      "happen yet. " .. server_help()
+  end
+  return message
+end
+
+-- Stops the server's prediction and removes everything it built.
+inference.on_clear = function(player, server)
+  local state = server_state(server)
+  cancel_pending(state)
+  clear_predicted_entities(state, player)
+  return "Cleared this GPU server's factory."
+end
+
+local function describe_placement_failure(surface, fp, placement)
+  local left = fp.x + placement.tile_x
+  local top = fp.y + placement.tile_y
+  local blockers = {}
+  local found = surface.find_entities({
+    { left, top },
+    { left + placement.width, top + placement.height },
+  })
+  for _, entity in pairs(found) do
+    table.insert(blockers, entity.name)
+  end
+  table.sort(blockers)
+  return string.format(
+    "Factorio refused %s at relative tile (%s,%s), " ..
+    "world tile (%d,%d) on %s; blockers=[%s]",
+    tostring(placement.name),
+    tostring(placement.tile_x),
+    tostring(placement.tile_y),
+    left,
+    top,
+    surface.name,
+    #blockers > 0 and table.concat(blockers, ", ") or "none")
+end
+
+-- Mirrors the model's overwrite rule: every entity the placement touches is
+-- removed whole. The model never saw entities crossing the region boundary,
+-- so those are left alone and block the placement instead.
+local function clear_placement_area(player, state, fp, placement)
+  local surface = state.entity.surface
+  local left = fp.x + placement.tile_x
+  local top = fp.y + placement.tile_y
+  local predicted = state.model_entities or {}
+  local area = {
+    { left + 0.01, top + 0.01 },
+    { left + placement.width - 0.01, top + placement.height - 0.01 },
+  }
+  local overlapped = surface.find_entities_filtered({
+    area = area, name = MODEL_ENTITY_NAMES,
+  })
+  for _, ghost in pairs(surface.find_entities_filtered({
+    area = area, ghost_name = MODEL_ENTITY_NAMES,
+  })) do
+    table.insert(overlapped, ghost)
+  end
+  for _, entity in pairs(overlapped) do
+    local box = entity.bounding_box
+    if box.left_top.x >= fp.x and box.left_top.y >= fp.y
+        and box.right_bottom.x <= fp.x + fp.w
+        and box.right_bottom.y <= fp.y + fp.h then
+      remove_entity(entity, player, predicted[entity.unit_number] ~= nil)
+    end
+  end
+end
+
+-- Create one model-predicted entity at footprint-relative coordinates,
+-- replacing whatever it overlaps. Returns why Factorio refused it, if it did.
+local function place_one(player, state, fp, placement)
+  if not placement.tile_x or not placement.tile_y
+      or not placement.width or not placement.height then
+    return "incomplete placement"
+  end
+  if placement.tile_x < 0 or placement.tile_y < 0
+      or placement.tile_x + placement.width > fp.w
+      or placement.tile_y + placement.height > fp.h then
+    return "placement lies outside the footprint"
+  end
+
+  clear_placement_area(player, state, fp, placement)
+  if not placement.name then return nil end
+
+  local surface = state.entity.surface
+  local params = {
+    name = placement.name,
+    position = { fp.x + placement.x, fp.y + placement.y },
+    direction = placement.direction,
+    force = state.entity.force,
+    player = player,
+    raise_built = true,
+    create_build_effect_smoke = true,
+  }
+  if placement.type then params.type = placement.type end
+  if placement.recipe then params.recipe = placement.recipe end
+  if setting("factorion-placement-mode") == "ghost" then
+    params.inner_name = params.name
+    params.name = "entity-ghost"
+    params.tags = { factorion_server = state.entity.unit_number }
+  end
+  local created, entity = pcall(
+    function() return surface.create_entity(params) end)
+  if not created then
+    return string.format(
+      "create_entity raised while placing %s at relative tile " ..
+      "(%s,%s): %s",
+      tostring(placement.name),
+      tostring(placement.tile_x),
+      tostring(placement.tile_y),
+      tostring(entity))
+  end
+  if not entity then
+    return describe_placement_failure(surface, fp, placement)
+  end
+
+  if entity.unit_number then
+    state.model_entities[entity.unit_number] = entity
+  end
+end
 
 -- ----------------------------------------------------------------------------
 -- RCON interface: server streams predictions back here
@@ -1602,22 +1446,22 @@ remote.add_interface("factorion", {
   place_predictions = function(request_id, placements_json)
     heard_from_server()
     ensure_pending_lookup()
-    local player_index = storage.pending_by_request[request_id]
-    if not player_index then
+    local server = storage.pending_by_request[request_id]
+    if not server then
       return "cancelled"
     end
 
-    if player_index == 0 then
+    if server == 0 then
       log("[Factorion] (headless) placements for " .. tostring(request_id) ..
         ": " .. tostring(placements_json))
       return "ok"
     end
 
-    local player = game.get_player(player_index)
+    local state = storage.servers[server]
+    if not (state and state.entity.valid) then return "cancelled" end
+    local player = game.get_player(state.player_index)
     if not player then return "error: requesting player is unavailable" end
-    local state = ensure_player_state(player_index)
     local fp = state.footprint
-    if not fp then return "error: footprint was cleared" end
 
     local ok, placements = pcall(
       function() return helpers.json_to_table(placements_json) end)
@@ -1626,7 +1470,7 @@ remote.add_interface("factorion", {
     end
     local refused, first_error = 0, nil
     for _, placement in ipairs(placements) do
-      local err = place_one(player, player_index, state, fp, placement)
+      local err = place_one(player, state, fp, placement)
       if err then
         refused = refused + 1
         first_error = first_error or err
@@ -1641,19 +1485,20 @@ remote.add_interface("factorion", {
   finish_prediction = function(request_id, summary_json)
     heard_from_server()
     ensure_pending_lookup()
-    local player_index = storage.pending_by_request[request_id]
-    if not player_index then
+    local server = storage.pending_by_request[request_id]
+    if not server then
       return "cancelled"
     end
     storage.pending_by_request[request_id] = nil
-    if player_index == 0 then
+    if server == 0 then
       log("[Factorion] (headless) prediction complete for " ..
         tostring(request_id) .. ": " .. tostring(summary_json))
       return "ok"
     end
 
-    local player = game.get_player(player_index)
-    local state = ensure_player_state(player_index)
+    local state = storage.servers[server]
+    if not state then return "cancelled" end
+    local player = game.get_player(state.player_index)
     local description = state.pending and state.pending.description
       or "for an unknown request"
     state.pending = nil
@@ -1695,8 +1540,8 @@ remote.add_interface("factorion", {
     storage.model_error = nil
     inference.refresh_all()
     game.print(string.format(
-      "[Factorion] Model %s (%s) ready: %dx%d region. Plan a factory with " ..
-      "the [item=factorion-planner].",
+      "[Factorion] Model %s (%s) ready: it builds painted areas up to %dx%d " ..
+      "tiles. Plan a factory with the [item=factorion-planner].",
       model.checkpoint, tostring(model.name), model.grid_size, model.grid_size))
     return "ok"
   end,
@@ -1722,23 +1567,22 @@ remote.add_interface("factorion", {
     return PROTOCOL_VERSION
   end,
 
-  -- Headless / debug: enqueue a request JSON as if the hotkey had fired.
+  -- Headless / debug: enqueue a request JSON as if Predict had been pressed.
   -- /silent-command runs in *level scope*, not any mod's, so storage is
   -- inaccessible from RCON directly — this interface is the only way to
   -- poke an outbox entry in from outside the game.
   --
-  -- Caller supplies the request JSON and a player_index to deliver the
-  -- response to. In headless tests with no player connected, pass 0 to
-  -- signal "log streamed placements instead of creating world entities".
-  inject_request = function(request_json, deliver_to_player_index)
+  -- Caller supplies the request JSON and the unit number of the GPU server
+  -- whose region it builds. In headless tests, pass 0 to signal "log
+  -- streamed placements instead of creating world entities".
+  inject_request = function(request_json, deliver_to_server)
     storage.outbox = storage.outbox or {}
     storage.pending_by_request = storage.pending_by_request or {}
     table.insert(storage.outbox, request_json)
     -- Parse to extract request_id; helpers.json_to_table is the 2.0+ API.
     local ok, parsed = pcall(function() return helpers.json_to_table(request_json) end)
     if ok and parsed and parsed.request_id then
-      storage.pending_by_request[parsed.request_id] =
-        deliver_to_player_index or 0
+      storage.pending_by_request[parsed.request_id] = deliver_to_server or 0
     end
     return "queued, depth=" .. #storage.outbox
   end,
@@ -1768,23 +1612,6 @@ remote.add_interface("factorion", {
   parity_abort = function()
     return parity.abort()
   end,
-
-  -- Headless / debug: dump full state for a given player (or all players).
-  dump_state = function(player_index)
-    storage.players = storage.players or {}
-    local parts = {}
-    for k, p in pairs(storage.players) do
-      if player_index == nil or k == player_index then
-        local fp = p.footprint and string.format("x=%d,y=%d,w=%d,h=%d",
-            p.footprint.x, p.footprint.y, p.footprint.w, p.footprint.h)
-          or "nil"
-        table.insert(parts, string.format(
-          "player[%s]: footprint={%s}", tostring(k), fp))
-      end
-    end
-    if #parts == 0 then return "(no player state)" end
-    return table.concat(parts, "\n")
-  end,
 })
 
 -- Endpoint belts drive the player's factory; parity drives its isolated lab
@@ -1800,6 +1627,7 @@ end)
 
 script.on_init(function()
   storage.players = {}
+  storage.servers = {}
   storage.pending_by_request = {}
   storage.outbox = {}
   storage.endpoints = {}
@@ -1809,6 +1637,7 @@ end)
 
 script.on_configuration_changed(function()
   storage.players = storage.players or {}
+  storage.servers = storage.servers or {}
   storage.pending_by_request = storage.pending_by_request or {}
   storage.outbox = storage.outbox or {}
   storage.endpoints = storage.endpoints or {}
@@ -1818,9 +1647,7 @@ script.on_configuration_changed(function()
     for _, element in pairs(player.gui.screen.children) do
       if element.name:find("^factorion%-") then element.destroy() end
     end
-    local state = ensure_player_state(player.index)
-    state.model_entities = state.model_entities or {}
-    if state.footprint then draw_footprint(player, state) end
+    ensure_player_state(player.index)
   end
   for _, surface in pairs(game.surfaces) do
     draw_mask_outline(surface)
