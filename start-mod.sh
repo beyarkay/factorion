@@ -2,13 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECKPOINT="${FACTORION_CHECKPOINT:-hcozpmwt}"
 RUST_MANIFEST="$REPO_ROOT/factorion_rs/Cargo.toml"
-
-if [[ $# -gt 0 && "$1" != -* ]]; then
-    CHECKPOINT="$1"
-    shift
-fi
 
 cd "$REPO_ROOT"
 if ! uv run python -c \
@@ -18,4 +12,4 @@ if ! uv run python -c \
     uv run maturin develop --release --manifest-path "$RUST_MANIFEST"
 fi
 
-exec "$REPO_ROOT/factorion-mod/scripts/serve.sh" "$CHECKPOINT" "$@"
+exec "$REPO_ROOT/factorion-mod/scripts/serve.sh" "$@"

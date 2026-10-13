@@ -33,8 +33,9 @@ The normal workflow uses a green **source belt** and orange **sink belt**. They
 are real 1×1 transport belts: place, mine, rotate, copy, paste, and blueprint
 them like ordinary belts. Click a placed endpoint to choose the item it
 provides or receives. Alt mode displays that configured item over the belt.
-Each sink also displays the items per second it consumed over a rolling
-5-second window, refreshed twice per second.
+Each sink also displays the items per second it consumes, an exponential
+moving average whose time constant is the "sink throughput smoothing" setting
+(default 2 s, so a new rate or zero shows almost fully within about 6 s).
 
 Green sources keep both lanes supplied with the chosen item. Changing a
 source's item removes the old item from its connected downstream belt network.
@@ -42,7 +43,13 @@ Orange sinks consume every item that reaches their tile, but count only their
 configured item toward the displayed throughput. The endpoint's current
 rotation is sent to the model. Rerunning a prediction removes only the entities
 created by the previous prediction, so endpoint belts stay in place until you
-mine them.
+mine them. Model placements appear as ghosts by default (the placement mode
+setting builds them immediately instead). As in training, a model placement
+replaces every entity or ghost it overlaps inside the region. Overlapped ghosts
+vanish at once; in ghost mode a built entity is marked for deconstruction, so
+robots swap it for the new ghost, while build mode removes it immediately
+(mining your own entities back into your inventory). Model ghosts are tagged,
+so entities built from them still count as the model's for reruns and CTRL+R.
 
 ## RCON setup
 
@@ -72,7 +79,7 @@ factorion-mod/
 │   ├── parity.lua            ← engine-parity runner (build spec, measure throughput)
 │   ├── data.lua / settings.lua
 │   ├── locale/en/factorion.cfg
-│   └── prototypes/           ← endpoint belts, footprint tool, hotkey definitions
+│   └── prototypes/           ← endpoint belts, footprint tool, hotkeys, GPU server
 ├── server/                   ← local inference daemon + parity harness
 │   ├── server.py             ← RCON poll loop → model (with eot_head stop) → RCON push
 │   ├── parity.py             ← engine ↔ Factorio throughput comparison (issue #261)
@@ -96,21 +103,22 @@ factorion-mod/
    ```
 
    This installs dependencies and builds the Rust extension when needed,
-   installs and enables the mod, downloads the run's latest model artifact,
-   reads the exact grid/encoder architecture from W&B, and waits for Factorio.
-   It defaults to checkpoint `hcozpmwt`; pass a local checkpoint or another W&B
-   run as the first argument, or set `FACTORION_CHECKPOINT`.
+   installs and enables the mod, and waits for Factorio.
 
-2. Restart Factorio and choose **Play → Multiplayer → Host new game**. The
-   region brush uses a fixed 15×15 grid; checkpoints
-   trained at another size are rejected with a clear error.
+2. Restart Factorio and choose **Play → Multiplayer → Host new game**.
 
-For a manual or headless setup, start the server directly. `--checkpoint`
-accepts a local `.pt`, bare W&B run id, or `entity/project/id`:
+The model is chosen in-game: **Settings → Mod settings → Map → Factorion
+checkpoint** takes a bare W&B run id (default `mvbipbr0`), `entity/project/id`,
+or a local `.pt` path on the server's machine. On a new game or a change to
+the setting, the mod asks the server to load it; the server downloads the run's
+latest model artifact, reads its grid and encoder architecture from the W&B
+config, and reports the grid size back. The region tool then stamps a region
+of that size. Loaded models stay cached, so switching back is instant.
+
+For a manual or headless setup, start the server directly:
 
 ```bash
 uv run python factorion-mod/server/server.py \
-  --checkpoint hcozpmwt \
   --rcon-port 64502 --rcon-password <pw>
 ```
 
@@ -122,25 +130,21 @@ automatically.
 
    - Press `Ctrl+T` to receive the blue region tool plus ten source belts and
      ten sink belts.
-   - Click once with the blue **region tool**. It stamps a 15×15 region
-     centered on that tile—there is no size-sensitive drag.
+   - Click once with the blue **region tool**. It stamps a square region the
+     size of the model's grid, centered on that tile—there is no drag.
    - Place the green **source belt** and orange **sink belt** inside it as
      ordinary belts. Click each endpoint to choose its item, and hover it and
      press `R` to rotate it. Alt mode shows the configured item.
    - Press `Ctrl+P` to request a prediction.
    - Each predicted entity is placed directly into the marked region as soon
      as the model emits it. When the model stops, chat reports how many
-     entities were placed and why inference ended.
+     steps it took, how many were invalid, and why inference ended.
 
    Hotkeys (rebindable in Controls → Factorion):
 
    - `Ctrl+P` — request prediction
    - `Ctrl+R` — clear the region and model-placed entities
    - `Ctrl+T` — re-grant the region tool and endpoint belts
-
-   Models not trained on a 15×15 grid are rejected because the in-game brush
-   is intentionally fixed. Restart `./start-mod.sh` with another checkpoint to
-   change models.
 
 ## Engine parity harness (issue #261)
 
@@ -283,12 +287,9 @@ Server-callable remote methods exposed by the mod:
 
 ### Not yet integrated
 
-- **Stochastic / temperature sampling.** Inference is argmax-only; with
-  weak checkpoints the policy can argmax-loop on the same tile. A
-  `--temperature` flag with `Categorical(logits)` sampling is ~10 LoC.
 - **Full multi-tile action masking.** The tile head masks occupied anchor
   tiles, and Factorio rejects a streamed entity whose rotated footprint lies
-  outside the region or collides in the world. The model-side mask does not
+  outside the region or hits an entity crossing its edge. The model-side mask does not
   yet pre-mask every invalid multi-tile anchor.
 - **Cross-platform `launch.sh` binary discovery**. macOS Steam install
   verified; Linux / Windows paths are heuristics. Override with

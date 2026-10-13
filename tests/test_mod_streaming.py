@@ -146,13 +146,14 @@ def test_stream_placement_waits_after_factorio_accepts(monkeypatch):
     assert sleeps == [0.01]
 
 
-class _OneStepAgent:
-    def __init__(self):
-        self.calls = 0
+def _fake_sampler(action, steps_before_eot):
+    calls = []
 
-    def eot_prob(self, _obs):
-        self.calls += 1
-        return torch.tensor([0.0 if self.calls == 1 else 1.0])
+    def sample(*_):
+        calls.append(None)
+        return action | {"eot": int(len(calls) > steps_before_eot)}, 0.0
+
+    return sample
 
 
 def _request():
@@ -168,18 +169,38 @@ def _request():
 
 
 def test_request_error_still_releases_pending_state():
-    req = _request() | {"request_id": "request-1"}
+    req = _request() | {"request_id": "request-1", "checkpoint": "ckpt"}
     rcon = _AcceptingRcon()
     wrong_size = SimpleNamespace(width=8, height=8)
 
     with pytest.raises(ValueError):
         mod_server.handle_request(
-            req, cast(AgentCNN, wrong_size), cast(mod_server.RconClient, rcon),
-            max_steps=4, device=torch.device("cpu"),
+            req, lambda _: (cast(AgentCNN, wrong_size), "run"),
+            cast(mod_server.RconClient, rcon),
+            device=torch.device("cpu"),
         )
 
     assert "finish_prediction" in rcon.commands[-1]
     assert "server_error" in rcon.commands[-1]
+    assert "expects 8x8" in rcon.commands[-1]
+
+
+def test_load_model_reports_grid_size_or_error():
+    rcon = _AcceptingRcon()
+    agent = cast(AgentCNN, SimpleNamespace(width=15, height=15))
+
+    def get_model(spec):
+        if spec == "missing":
+            raise FileNotFoundError("no such run")
+        return agent, "sft-run"
+
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "abc", get_model)
+    mod_server._report_model(cast(mod_server.RconClient, rcon), "missing", get_model)
+
+    loaded, failed = rcon.commands
+    assert "'model_loaded'" in loaded and '"grid_size":15' in loaded
+    assert '"name":"sft-run"' in loaded
+    assert "'model_failed'" in failed and "no such run" in failed
 
 
 @pytest.mark.parametrize(("accepted", "stop_reason"), [
@@ -187,17 +208,113 @@ def test_request_error_still_releases_pending_state():
 ])
 def test_inference_streams_until_done_or_rejected(monkeypatch, accepted, stop_reason):
     action = _action("transport_belt", xy=(1, 5), direction=2)
-    monkeypatch.setattr(mod_server, "_argmax_action", lambda *_: action)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 1))
     streamed = []
 
     _, stats = mod_server.run_inference(
-        cast(AgentCNN, _OneStepAgent()),
-        _request(),
-        max_steps=4,
+        cast(AgentCNN, None),
+        _request() | {"max_steps": 4},
         device=torch.device("cpu"),
         on_placement=lambda predicted: streamed.append(predicted) or accepted,
     )
 
-    assert streamed == [action]
+    assert streamed == [action | {"eot": 0}]
     assert stats["steps_taken"] == 1
     assert stats["stop_reason"] == stop_reason
+
+
+def test_empty_action_becomes_a_deletion():
+    assert mod_server.action_to_placement(_action("empty", direction=0)) == {
+        "tile_x": 2, "tile_y": 3, "width": 1, "height": 1,
+    }
+
+
+def test_overwrite_removes_whole_entity_and_repeats_still_stream(monkeypatch):
+    request = _request() | {"seed": 7, "max_steps": 4, "entities": [{
+        "name": "assembling-machine-1", "x": 4, "y": 3, "direction": 0,
+        "item": "electronic-circuit",
+    }]}
+    action = _action("transport_belt", xy=(5, 4), direction=2)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
+    streamed = []
+
+    obs, stats = mod_server.run_inference(
+        cast(AgentCNN, None),
+        request,
+        device=torch.device("cpu"),
+        on_placement=lambda predicted: streamed.append(predicted) or True,
+    )
+
+    ent = obs[Channel.ENTITIES.value]
+    assert (ent == _id("assembling_machine_1")).sum() == 0
+    assert ent[5, 4] == _id("transport_belt")
+    assert streamed == [action | {"eot": 0}] * 4
+    assert stats == {
+        "steps_taken": 4, "invalid_steps": 0, "stop_reason": "max_steps",
+        "seed": 7,
+    }
+
+
+def _streamed_actions(agent, **sampling):
+    streamed = []
+    mod_server.run_inference(
+        agent, _request() | {"max_steps": 8} | sampling,
+        device=torch.device("cpu"),
+        on_placement=lambda action: streamed.append(action) or True,
+    )
+    return streamed
+
+
+def _tie_free_agent():
+    """An untrained agent scores every tile of an empty grid identically until
+    its (zero-initialised) positional embedding is randomised."""
+    torch.manual_seed(0)
+    agent = AgentCNN(
+        mod_server._duck_envs(11), attn_dim=32, attn_heads=2, attn_layers=1,
+    ).eval()
+    assert agent.attn is not None and agent.attn.pos_embed is not None
+    torch.nn.init.normal_(agent.attn.pos_embed)
+    return agent
+
+
+def test_seed_replays_a_sampled_run_and_new_seeds_differ():
+    agent = _tie_free_agent()
+
+    assert _streamed_actions(agent, seed=1) == _streamed_actions(agent, seed=1)
+    assert _streamed_actions(agent, seed=1) != _streamed_actions(agent, seed=2)
+
+
+@pytest.mark.parametrize("truncation", [{"top_k": 1}, {"top_p": 1e-6}])
+def test_top_k_and_top_p_can_narrow_sampling_to_greedy(truncation):
+    agent = _tie_free_agent()
+    never = {"stop_rule": "never", "seed": 3}
+
+    greedy = _streamed_actions(agent, temperature=0, **never)
+    assert len(greedy) == 8
+    assert _streamed_actions(agent, **truncation, **never) == greedy
+
+
+class _CancelledRcon:
+    def __init__(self):
+        self.commands = []
+
+    def exec(self, command):
+        self.commands.append(command)
+        return "cancelled"
+
+
+def test_cancel_in_game_stops_quietly(monkeypatch):
+    action = _action("transport_belt", xy=(1, 5), direction=2)
+    monkeypatch.setattr(mod_server, "_sample_action", _fake_sampler(action, 99))
+    rcon = _CancelledRcon()
+    agent = cast(AgentCNN, SimpleNamespace(width=11, height=11))
+
+    mod_server.handle_request(
+        _request() | {"request_id": "r", "checkpoint": "c", "max_steps": 4},
+        lambda _: (agent, "run"), cast(mod_server.RconClient, rcon),
+        device=torch.device("cpu"),
+    )
+
+    place, finish = rcon.commands
+    assert "place_prediction" in place
+    assert "finish_prediction" in finish and "cancelled" in finish
