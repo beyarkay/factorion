@@ -180,6 +180,7 @@ local MODEL_ENTITY_NAMES = {
   "substation",
 }
 local SINK_LABEL_REFRESH_TICKS = 30
+local MASK_TILE = "factorion-mask"
 
 local function endpoint_role(entity)
   if not entity or not entity.valid then return nil end
@@ -1113,8 +1114,22 @@ local function gather_request(state, player_index)
     end
     return table.concat(parts, " ")
   end
+  -- The tile exists only once Factorio has restarted with this mod version.
+  local allowed = {}
+  if prototypes.tile[MASK_TILE] then
+    for _, tile in pairs(player.surface.find_tiles_filtered({
+      area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
+      name = MASK_TILE,
+    })) do
+      table.insert(allowed, { x = tile.position.x - fp.x, y = tile.position.y - fp.y })
+    end
+  end
+
   local description = string.format("converting %s to %s",
     icons(sources), icons(sinks))
+  if #allowed > 0 then
+    description = description .. string.format(" on %d painted tiles", #allowed)
+  end
   if #model_entities > 0 then
     description = description .. string.format(
       " around %d existing entities", #model_entities)
@@ -1133,6 +1148,7 @@ local function gather_request(state, player_index)
     best_of       = config.best_of,
     seed          = config.seed,
     entities      = model_entities,
+    allowed       = allowed,
     sources       = sources,
     sinks         = sinks,
   }

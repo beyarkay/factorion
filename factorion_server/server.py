@@ -101,7 +101,8 @@ def _sink_id() -> int:
 
 def request_to_obs(req: dict) -> np.ndarray:
     """The region's (C, W, H) world. Entities already in it become walls the
-    model builds around, as a lesson's protected tiles are."""
+    model builds around, as a lesson's protected tiles are, and so does every
+    tile outside the painted build mask, when there is one."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -151,6 +152,11 @@ def request_to_obs(req: dict) -> np.ndarray:
 
     ent = obs[Channel.ENTITIES.value]
     obs[Channel.FOOTPRINT.value][(ent != 0) & (ent != src_id) & (ent != snk_id)] = Footprint.UNAVAILABLE.value
+    if req.get("allowed"):
+        unpainted = np.ones((size, size), dtype=bool)
+        for t in req["allowed"]:
+            unpainted[t["x"], t["y"]] = False
+        obs[Channel.FOOTPRINT.value][unpainted] = Footprint.UNAVAILABLE.value
     return obs.astype(np.int64)
 
 
