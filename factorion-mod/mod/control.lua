@@ -71,7 +71,7 @@ local function ensure_player_state(player_index)
       pending   = nil,
       picker    = nil,
       footprint_render_id = nil,
-      predicted_entities = {},
+      model_entities = {},
     }
   end
   return storage.players[player_index]
@@ -336,12 +336,13 @@ local function remove_entity(entity, player, is_predicted)
   end
 end
 
+-- Keyed by unit number, holding the entity itself: get_entity_by_unit_number
+-- can't find belts, inserters, assemblers or ghosts.
 local function clear_predicted_entities(state, player)
-  for _, unit_number in ipairs(state.predicted_entities or {}) do
-    local entity = game.get_entity_by_unit_number(unit_number)
-    if entity and entity.valid then remove_entity(entity, player, true) end
+  for _, entity in pairs(state.model_entities or {}) do
+    if entity.valid then remove_entity(entity, player, true) end
   end
-  state.predicted_entities = {}
+  state.model_entities = {}
 end
 
 local function cancel_pending(state)
@@ -862,7 +863,7 @@ local function entity_built(event)
   -- A built model ghost keeps counting as the model's, so rerun/reset finds it.
   local owner = event.tags and event.tags.factorion_player
   if owner and entity and entity.valid and entity.unit_number then
-    table.insert(ensure_player_state(owner).predicted_entities, entity.unit_number)
+    ensure_player_state(owner).model_entities[entity.unit_number] = entity
   end
   local role = endpoint_role(entity)
   if not role then return end
@@ -1019,11 +1020,7 @@ local function new_request_id()
 end
 
 local function gather_existing_entities(state, surface, fp)
-  local predicted = {}
-  for _, unit_number in ipairs(state.predicted_entities or {}) do
-    predicted[unit_number] = true
-  end
-
+  local predicted = state.model_entities or {}
   local result = {}
   local candidates = surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
@@ -1221,10 +1218,7 @@ end
 local function clear_placement_area(player, state, fp, placement)
   local left = fp.x + placement.tile_x
   local top = fp.y + placement.tile_y
-  local predicted = {}
-  for _, unit_number in ipairs(state.predicted_entities or {}) do
-    predicted[unit_number] = true
-  end
+  local predicted = state.model_entities or {}
   local area = {
     { left + 0.01, top + 0.01 },
     { left + placement.width - 0.01, top + placement.height - 0.01 },
@@ -1242,7 +1236,7 @@ local function clear_placement_area(player, state, fp, placement)
     if box.left_top.x >= fp.x and box.left_top.y >= fp.y
         and box.right_bottom.x <= fp.x + fp.w
         and box.right_bottom.y <= fp.y + fp.h then
-      remove_entity(entity, player, predicted[entity.unit_number])
+      remove_entity(entity, player, predicted[entity.unit_number] ~= nil)
     end
   end
 end
@@ -1294,9 +1288,9 @@ local function place_one(player, player_index, state, fp, placement)
     return describe_placement_failure(player.surface, fp, placement)
   end
 
-  state.predicted_entities = state.predicted_entities or {}
+  state.model_entities = state.model_entities or {}
   if entity.unit_number then
-    table.insert(state.predicted_entities, entity.unit_number)
+    state.model_entities[entity.unit_number] = entity
   end
 end
 
@@ -1726,7 +1720,7 @@ script.on_configuration_changed(function()
       if element.name:find("^factorion%-") then element.destroy() end
     end
     local state = ensure_player_state(player.index)
-    state.predicted_entities = state.predicted_entities or {}
+    state.model_entities = state.model_entities or {}
     if state.footprint then draw_footprint(player, state) end
   end
   for _, surface in pairs(game.surfaces) do
