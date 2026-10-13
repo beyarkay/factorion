@@ -146,22 +146,25 @@ local function painted_tiles(surface, fp)
 end
 
 local function destroy_footprint_render(state)
-  local object = state.footprint_render_id and rendering.get_object_by_id(state.footprint_render_id)
+  if not state.footprint_render_id then return end
+  local object = rendering.get_object_by_id(state.footprint_render_id)
   if object then object.destroy() end
   state.footprint_render_id = nil
-  for _, id in ipairs(state.mask_render_ids or {}) do
-    object = rendering.get_object_by_id(id)
-    if object then object.destroy() end
-  end
-  state.mask_render_ids = {}
 end
 
--- Outlines the painted part of the region, in alt-mode only.
-local function draw_mask_outline(player, state)
-  local fp = state.footprint
+-- Outlines each painted area of the surface, in alt-mode only.
+local function draw_mask_outline(surface)
+  storage.mask_outlines = storage.mask_outlines or {}
+  for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
+    local object = rendering.get_object_by_id(id)
+    if object then object.destroy() end
+  end
+  local ids = {}
+  storage.mask_outlines[surface.index] = ids
+  if not prototypes.tile[MASK_TILE] then return end
   local painted = {}
-  for _, tile in ipairs(painted_tiles(player.surface, fp)) do
-    painted[tile.x .. "," .. tile.y] = true
+  for _, tile in pairs(surface.find_tiles_filtered({ name = MASK_TILE })) do
+    painted[tile.position.x .. "," .. tile.position.y] = true
   end
   local function is_painted(x, y) return painted[x .. "," .. y] == true end
   -- Unit edges grouped by the grid line they lie on.
@@ -180,8 +183,8 @@ local function draw_mask_outline(player, state)
     if not is_painted(x + 1, y) then edge(false, x + 1, y) end
   end
   local function point(line, along)
-    if line.horizontal then return { fp.x + along, fp.y + line.at } end
-    return { fp.x + line.at, fp.y + along }
+    if line.horizontal then return { along, line.at } end
+    return { line.at, along }
   end
   for _, line in pairs(lines) do
     table.sort(line.along)
@@ -190,16 +193,15 @@ local function draw_mask_outline(player, state)
       local next_along = line.along[i + 1]
       if next_along ~= along + 1 then
         local object = rendering.draw_line({
-          surface = player.surface,
+          surface = surface,
           from = point(line, start - MASK_OUTLINE_OVERLAP),
           to = point(line, along + 1 + MASK_OUTLINE_OVERLAP),
           color = MASK_OUTLINE_COLOR,
           width = 5,
-          players = { player },
           only_in_alt_mode = true,
           draw_on_ground = true,
         })
-        table.insert(state.mask_render_ids, object.id)
+        table.insert(ids, object.id)
         start = next_along
       end
     end
@@ -220,16 +222,16 @@ local function draw_footprint(player, state)
     draw_on_ground = true,
   })
   state.footprint_render_id = object.id
-  draw_mask_outline(player, state)
 end
 
-local function redraw_footprints(event)
-  for _, player in pairs(game.players) do
-    local state = storage.players and storage.players[player.index]
-    if state and state.footprint and player.surface.index == event.surface_index then
-      draw_footprint(player, state)
+local function mask_tiles_changed(event)
+  local changed = event.tile ~= nil and event.tile.name == MASK_TILE
+  for _, tile in pairs(event.tiles) do
+    if tile.name == MASK_TILE or (tile.old_tile and tile.old_tile.name == MASK_TILE) then
+      changed = true
     end
   end
+  if changed then draw_mask_outline(game.get_surface(event.surface_index)) end
 end
 
 script.on_event({
@@ -238,7 +240,7 @@ script.on_event({
   defines.events.on_player_mined_tile,
   defines.events.on_robot_mined_tile,
   defines.events.script_raised_set_tiles,
-}, redraw_footprints)
+}, mask_tiles_changed)
 
 local MARKER_DIALOG = "factorion-marker-dialog"
 local ITEM_PICKER = "factorion-marker-item"
@@ -1821,6 +1823,7 @@ script.on_configuration_changed(function()
     if state.footprint then draw_footprint(player, state) end
   end
   for _, surface in pairs(game.surfaces) do
+    draw_mask_outline(surface)
     for _, entity in pairs(surface.find_entities_filtered({
       name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
     })) do
