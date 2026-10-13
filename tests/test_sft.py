@@ -75,12 +75,12 @@ class TestTrainSFTEndToEnd:
         loaded = load_denoiser(ckpt)
         assert loaded.arch == model.arch
         for (k, a), b in zip(loaded.state_dict().items(), model.state_dict().values()):
-            assert torch.equal(a, b), k
+            assert torch.equal(a, b.cpu()), k
 
         # --start-from resumes those weights (and the noise prior with them).
         args.start_from, args.num_samples = str(ckpt), 16
         args.checkpoint_path = str(tmp_path / "ckpt2.pt")
-        assert torch.equal(train_sft(args).noise_prior, loaded.noise_prior)
+        assert torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
 
 
 class TestLRSchedule:

@@ -402,7 +402,7 @@ def train_sft(args: SftArgs):
         state_cpu, max_cpu = next(it)
         data_s += time.time() - t_data
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
-        max_thput = max_cpu.to(device).repeat_interleave(args.noise_repeats, 0)
+        max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
 
         model.train()
         loss, stats = denoise_step(fwd, state, max_thput, args)
