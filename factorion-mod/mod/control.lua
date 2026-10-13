@@ -138,55 +138,74 @@ end
 
 local NEIGHBOURS = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
 
--- The painted area against a GPU server, as tile keys, or nil and why. Paint
--- bigger than the model's grid is cut to the grid square against the server's
--- most-painted side, which is returned too.
-local function painted_area(server, size)
+local DATA_CABLE = "factorion-data-cable"
+local CABLE_COLOR = { r = 0.2, g = 0.45, b = 1.0, a = 1 }
+-- Reach of a cable hop with no pole at either end, as a medium pole's wire.
+local CABLE_REACH = 9
+local CABLE_SEGMENTS = 6
+
+local function server_state(server)
+  storage.servers = storage.servers or {}
+  local state = storage.servers[server.unit_number]
+  if not state then
+    state = { entity = server, model_entities = {} }
+    storage.servers[server.unit_number] = state
+  end
+  return state
+end
+
+-- The painted tiles connected to start, as tile keys; nil once they outgrow
+-- the size x size grid, unless confined to window. Tiles under blocked (a GPU
+-- server) don't count.
+local function flood_paint(surface, start, size, window, blocked)
+  local x0, y0, x1, y1 = tile_box(blocked)
+  local function free_paint(x, y)
+    local under = x >= x0 and x <= x1 and y >= y0 and y <= y1
+    local inside = not window or (x >= window.x and x < window.x + size
+      and y >= window.y and y < window.y + size)
+    return inside and not under and surface.get_tile(x, y).name == MASK_TILE
+  end
+  local area, queue = { [tile_key(start.x, start.y)] = start }, { start }
+  local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
+  while #queue > 0 do
+    local tile = table.remove(queue)
+    min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
+    min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
+    if not window and (max_x - min_x >= size or max_y - min_y >= size) then return nil end
+    for _, step in ipairs(NEIGHBOURS) do
+      local x, y = tile.x + step[1], tile.y + step[2]
+      if not area[tile_key(x, y)] and free_paint(x, y) then
+        area[tile_key(x, y)] = { x = x, y = y }
+        table.insert(queue, { x = x, y = y })
+      end
+    end
+  end
+  return area
+end
+
+-- The painted area a GPU server touches, as tile keys, or nil and why (no
+-- reason when it touches none). Paint bigger than the model's grid is cut to
+-- the grid square against the server's most-painted side, returned too.
+local function touching_paint(server, size)
   local surface = server.surface
   local x0, y0, x1, y1 = tile_box(server)
-  local function free_paint(x, y)
-    local under_server = x >= x0 and x <= x1 and y >= y0 and y <= y1
-    return not under_server and surface.get_tile(x, y).name == MASK_TILE
-  end
+  local function painted(x, y) return surface.get_tile(x, y).name == MASK_TILE end
   local sides = { north = {}, south = {}, west = {}, east = {} }
   for x = x0, x1 do
-    if free_paint(x, y0 - 1) then table.insert(sides.north, { x = x, y = y0 - 1 }) end
-    if free_paint(x, y1 + 1) then table.insert(sides.south, { x = x, y = y1 + 1 }) end
+    if painted(x, y0 - 1) then table.insert(sides.north, { x = x, y = y0 - 1 }) end
+    if painted(x, y1 + 1) then table.insert(sides.south, { x = x, y = y1 + 1 }) end
   end
   for y = y0, y1 do
-    if free_paint(x0 - 1, y) then table.insert(sides.west, { x = x0 - 1, y = y }) end
-    if free_paint(x1 + 1, y) then table.insert(sides.east, { x = x1 + 1, y = y }) end
+    if painted(x0 - 1, y) then table.insert(sides.west, { x = x0 - 1, y = y }) end
+    if painted(x1 + 1, y) then table.insert(sides.east, { x = x1 + 1, y = y }) end
   end
   local seeds, best = {}, nil
   for name, side in pairs(sides) do
     for _, seed in ipairs(side) do table.insert(seeds, seed) end
     if #side > 0 and (not best or #side > #sides[best]) then best = name end
   end
-  if not best then
-    return nil, "it doesn't touch any [item=" .. MASK_TILE .. "] paint"
-  end
-  -- nil once the paint outgrows the grid, unless it is confined to window.
-  local function flood(start, window)
-    local area, queue = { [tile_key(start.x, start.y)] = start }, { start }
-    local min_x, min_y, max_x, max_y = start.x, start.y, start.x, start.y
-    while #queue > 0 do
-      local tile = table.remove(queue)
-      min_x, max_x = math.min(min_x, tile.x), math.max(max_x, tile.x)
-      min_y, max_y = math.min(min_y, tile.y), math.max(max_y, tile.y)
-      if not window and (max_x - min_x >= size or max_y - min_y >= size) then return nil end
-      for _, step in ipairs(NEIGHBOURS) do
-        local x, y = tile.x + step[1], tile.y + step[2]
-        local inside = not window or (x >= window.x and x < window.x + size
-          and y >= window.y and y < window.y + size)
-        if inside and not area[tile_key(x, y)] and free_paint(x, y) then
-          area[tile_key(x, y)] = { x = x, y = y }
-          table.insert(queue, { x = x, y = y })
-        end
-      end
-    end
-    return area
-  end
-  local area, window = flood(seeds[1]), nil
+  if not best then return nil end
+  local area, window = flood_paint(surface, seeds[1], size, nil, server), nil
   if not area then
     local across_x = x0 - math.floor((size - (x1 - x0 + 1)) / 2)
     local across_y = y0 - math.floor((size - (y1 - y0 + 1)) / 2)
@@ -198,7 +217,7 @@ local function painted_area(server, size)
     })[best]
     window.w, window.h = size, size
     seeds = sides[best]
-    area = flood(seeds[1], window)
+    area = flood_paint(surface, seeds[1], size, window, server)
   end
   for _, seed in ipairs(seeds) do
     if not area[tile_key(seed.x, seed.y)] then
@@ -208,10 +227,46 @@ local function painted_area(server, size)
   return area, window
 end
 
+-- The painted area at a data cable's end, cut to the grid square centred on
+-- that end when bigger than the grid; or nil and why.
+local function cable_paint(server, cable, size)
+  local surface = server.surface
+  if surface.get_tile(cable.x, cable.y).name ~= MASK_TILE then
+    return nil, "a data cable ends off the paint"
+  end
+  local start = { x = cable.x, y = cable.y }
+  local area = flood_paint(surface, start, size, nil, server)
+  if area then return area end
+  local half = math.floor(size / 2)
+  local window = { x = cable.x - half, y = cable.y - half, w = size, h = size }
+  return flood_paint(surface, start, size, window, server), window
+end
+
+-- Every painted piece server predicts for, { area, window }: the paint it
+-- touches and the paint at the end of each of its data cables. Or nil and why.
+local function server_pieces(server, size)
+  local pieces = {}
+  local area, window = touching_paint(server, size)
+  if area then
+    table.insert(pieces, { area = area, window = window })
+  elseif window then
+    return nil, window
+  end
+  for _, cable in ipairs(server_state(server).cables or {}) do
+    local cabled, cut = cable_paint(server, cable, size)
+    if not cabled then return nil, cut end
+    table.insert(pieces, { area = cabled, window = cut })
+  end
+  if #pieces == 0 then
+    return nil, "it neither touches [item=" .. MASK_TILE .. "] paint nor has a " ..
+      "[item=" .. DATA_CABLE .. "] to any"
+  end
+  return pieces
+end
+
 -- Outlines each painted area of the surface, in alt-mode only. An area
--- bigger than the model's grid is outlined only where a GPU server would
--- build, or in red when no server touches it. removed is a GPU server about
--- to go.
+-- bigger than the model's grid is outlined only where GPU servers would
+-- build, or in red when none would. removed is a GPU server about to go.
 local function draw_mask_outline(surface, removed)
   storage.mask_outlines = storage.mask_outlines or {}
   for _, id in ipairs(storage.mask_outlines[surface.index] or {}) do
@@ -268,6 +323,14 @@ local function draw_mask_outline(surface, removed)
     painted[tile_key(tile.position.x, tile.position.y)] = { x = tile.position.x, y = tile.position.y }
   end
   local size = storage.model and storage.model.grid_size
+  local covered = {}
+  for _, server in pairs(size and surface.find_entities_filtered({ name = inference.GPU_SERVER }) or {}) do
+    if server ~= removed then
+      for _, piece in ipairs(server_pieces(server, size) or {}) do
+        for key, tile in pairs(piece.area) do covered[key] = tile end
+      end
+    end
+  end
   local seen = {}
   for key, start in pairs(painted) do
     if not seen[key] then
@@ -290,24 +353,178 @@ local function draw_mask_outline(surface, removed)
       if not size or (max_x - min_x < size and max_y - min_y < size) then
         outline(area, MASK_OUTLINE_COLOR)
       else
-        local used = false
-        for _, server in pairs(surface.find_entities_filtered({
-          name = inference.GPU_SERVER,
-          area = { { min_x - 5, min_y - 5 }, { max_x + 6, max_y + 6 } },
-        })) do
-          if server ~= removed then
-            local part = painted_area(server, size)
-            local _, tile = next(part or {})
-            if tile and area[tile_key(tile.x, tile.y)] then
-              outline(part, MASK_OUTLINE_COLOR)
-              used = true
-            end
-          end
+        local part = {}
+        for tile_at, tile in pairs(area) do
+          if covered[tile_at] then part[tile_at] = tile end
         end
-        if not used then outline(area, MASK_TOO_BIG_COLOR) end
+        if next(part) then
+          outline(part, MASK_OUTLINE_COLOR)
+        else
+          outline(area, MASK_TOO_BIG_COLOR)
+        end
       end
     end
   end
+end
+
+-- Where a cable hangs from a GPU server, an electric pole's wire point, or a
+-- painted tile's centre.
+local function cable_point(node)
+  if node.x then return { x = node.x + 0.5, y = node.y + 0.5 } end
+  local lift = node.type == "electric-pole" and 2.4 or 0.5
+  return { x = node.position.x, y = node.position.y - lift }
+end
+
+local function hop_reach(from, to)
+  local function reach(node)
+    return not node.x and node.type == "electric-pole"
+      and node.prototype.get_max_wire_distance(node.quality) or nil
+  end
+  local a, b = reach(from), reach(to)
+  if a and b then return math.min(a, b) end
+  return a or b or CABLE_REACH
+end
+
+local function hop_length(from, to)
+  local a = from.x and { x = from.x + 0.5, y = from.y + 0.5 } or from.position
+  local b = to.x and { x = to.x + 0.5, y = to.y + 0.5 } or to.position
+  return math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+end
+
+-- Each hop sags like a wire.
+local function draw_cable(surface, nodes)
+  local ids = {}
+  for i = 1, #nodes - 1 do
+    local a, b = cable_point(nodes[i]), cable_point(nodes[i + 1])
+    local sag = 0.2 + 0.05 * math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+    local previous = a
+    for k = 1, CABLE_SEGMENTS do
+      local t = k / CABLE_SEGMENTS
+      local point = {
+        x = a.x + (b.x - a.x) * t,
+        y = a.y + (b.y - a.y) * t + sag * 4 * t * (1 - t),
+      }
+      table.insert(ids, rendering.draw_line({
+        surface = surface, from = previous, to = point, color = CABLE_COLOR, width = 2,
+      }).id)
+      previous = point
+    end
+  end
+  table.insert(ids, rendering.draw_circle({
+    surface = surface, target = cable_point(nodes[#nodes]), radius = 0.18,
+    color = CABLE_COLOR, filled = true, draw_on_ground = true,
+  }).id)
+  return ids
+end
+
+local function destroy_cable(cable)
+  for _, id in ipairs(cable.render_ids) do
+    local object = rendering.get_object_by_id(id)
+    if object then object.destroy() end
+  end
+end
+
+-- Removes every cable cut(server, cable) picks; returns how many.
+local function remove_cables(cut)
+  local removed, surfaces = 0, {}
+  for _, state in pairs(storage.servers or {}) do
+    local kept = {}
+    for _, cable in ipairs(state.cables or {}) do
+      if cut(state.entity, cable) then
+        destroy_cable(cable)
+        removed = removed + 1
+        if state.entity.valid then surfaces[state.entity.surface.index] = state.entity.surface end
+      else
+        table.insert(kept, cable)
+      end
+    end
+    state.cables = kept
+  end
+  for _, surface in pairs(surfaces) do draw_mask_outline(surface) end
+  return removed
+end
+
+local function through_pole(pole)
+  return function(_, cable)
+    for _, hop in ipairs(cable.poles) do
+      if not hop.valid or hop == pole then return true end
+    end
+    return false
+  end
+end
+
+-- Click a GPU server, then any electric poles to hang the cable from, then a
+-- painted tile; the cable then starts again from the same server.
+local function cable_select(event, player)
+  local state = ensure_player_state(player.index)
+  local surface = event.surface
+  local server = surface.find_entities_filtered({ area = event.area, name = inference.GPU_SERVER })[1]
+  if server then
+    state.cable = { server = server, poles = {} }
+    player.print("[Factorion] Click electric poles to run the data cable through, then a painted tile.")
+    return
+  end
+  local cable = state.cable
+  if not (cable and cable.server.valid and cable.server.surface == surface) then
+    player.print("[Factorion] Click a [item=" .. inference.GPU_SERVER .. "] first.")
+    return
+  end
+  for _, pole in ipairs(cable.poles) do
+    if not pole.valid then
+      state.cable = nil
+      player.print("[Factorion] A pole on this cable is gone; start again from the GPU server.")
+      return
+    end
+  end
+  local last = cable.poles[#cable.poles] or cable.server
+  local pole = surface.find_entities_filtered({ area = event.area, type = "electric-pole" })[1]
+  local x, y = area_center_tile(event.area)
+  local next_node = pole or { x = x, y = y }
+  if not pole and surface.get_tile(x, y).name ~= MASK_TILE then
+    player.print("[Factorion] A data cable ends on [item=" .. MASK_TILE .. "] paint; " ..
+      "click a pole or a painted tile.")
+    return
+  end
+  local length, reach = hop_length(last, next_node), hop_reach(last, next_node)
+  if length > reach then
+    player.print(string.format("[Factorion] That is %.1f tiles away; this hop reaches %.1f.",
+      length, reach))
+    return
+  end
+  if pole then
+    table.insert(cable.poles, pole)
+    return
+  end
+  remove_cables(function(owner, other)
+    return owner == cable.server and other.x == x and other.y == y
+  end)
+  local nodes = { cable.server }
+  for _, hop in ipairs(cable.poles) do table.insert(nodes, hop) end
+  table.insert(nodes, next_node)
+  local server_cables = server_state(cable.server)
+  server_cables.cables = server_cables.cables or {}
+  table.insert(server_cables.cables, {
+    poles = cable.poles, x = x, y = y, render_ids = draw_cable(surface, nodes),
+  })
+  state.cable = { server = cable.server, poles = {} }
+  draw_mask_outline(surface)
+  inference.refresh_all()
+end
+
+-- Right-click a GPU server, pole or cable end to remove the cables on it.
+local function cable_cut(event, player)
+  local surface = event.surface
+  ensure_player_state(player.index).cable = nil
+  local server = surface.find_entities_filtered({ area = event.area, name = inference.GPU_SERVER })[1]
+  local pole = surface.find_entities_filtered({ area = event.area, type = "electric-pole" })[1]
+  local x, y = area_center_tile(event.area)
+  local removed = remove_cables(function(owner, cable)
+    if server then return owner == server end
+    if pole then return through_pole(pole)(owner, cable) end
+    return cable.x == x and cable.y == y
+  end)
+  player.print(string.format("[Factorion] Removed %d data cable(s).", removed))
+  inference.refresh_all()
 end
 
 local function mask_tiles_changed(event)
@@ -794,6 +1011,11 @@ end
 
 
 local function handle_tool_selection(event)
+  if event.item == DATA_CABLE then
+    local player = game.get_player(event.player_index)
+    if player then cable_select(event, player) end
+    return
+  end
   if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
@@ -809,6 +1031,11 @@ script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
 
 -- Right-clicking with the planner cancels the plan.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
+  if event.item == DATA_CABLE then
+    local player = game.get_player(event.player_index)
+    if player then cable_cut(event, player) end
+    return
+  end
   if event.item ~= PLANNER then return end
   local state = ensure_player_state(event.player_index)
   local player = game.get_player(event.player_index)
@@ -983,8 +1210,10 @@ local function endpoint_entity_removed(event)
   local server = storage.servers and storage.servers[entity.unit_number]
   if server then
     cancel_pending(server)
+    for _, cable in ipairs(server.cables or {}) do destroy_cable(cable) end
     storage.servers[entity.unit_number] = nil
   end
+  if entity.type == "electric-pole" then remove_cables(through_pole(entity)) end
   if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   destroy_endpoint_alt_icon(config)
@@ -1208,26 +1437,21 @@ local function gather_existing_entities(state, surface, fp)
   return result, previous
 end
 
-local function server_state(server)
-  storage.servers = storage.servers or {}
-  local state = storage.servers[server.unit_number]
-  if not state then
-    state = { entity = server, model_entities = {} }
-    storage.servers[server.unit_number] = state
-  end
-  return state
-end
-
--- The server's painted area, the source and sink belts on or beside it, and
--- the model's grid around them all; or nil and why not.
+-- The server's painted areas, the source and sink belts on or beside them,
+-- and the model's grid around them all; or nil and why not.
 local function region_for(server)
   if not storage.model then
     request_model_load()
     return nil, "no model is loaded yet"
   end
   local size = storage.model.grid_size
-  local area, window = painted_area(server, size)
-  if not area then return nil, window end
+  local pieces, reason = server_pieces(server, size)
+  if not pieces then return nil, reason end
+  local window = #pieces == 1 and pieces[1].window or nil
+  local area = {}
+  for _, piece in ipairs(pieces) do
+    for key, tile in pairs(piece.area) do area[key] = tile end
+  end
   local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
   local tiles = 0
   for _, tile in pairs(area) do
