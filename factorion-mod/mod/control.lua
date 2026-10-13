@@ -367,17 +367,26 @@ local function draw_mask_outline(surface, removed)
   end
 end
 
+-- A cable node is a GPU server, an electric pole or a painted tile { x, y };
+-- reading a missing key from an entity raises, so test the type first.
+local function is_tile(node) return node.object_name ~= "LuaEntity" end
+
+local function node_position(node)
+  if is_tile(node) then return { x = node.x + 0.5, y = node.y + 0.5 } end
+  return node.position
+end
+
 -- Where a cable hangs from a GPU server, an electric pole's wire point, or a
 -- painted tile's centre.
 local function cable_point(node)
-  if node.x then return { x = node.x + 0.5, y = node.y + 0.5 } end
+  if is_tile(node) then return node_position(node) end
   local lift = node.type == "electric-pole" and 2.4 or 0.5
   return { x = node.position.x, y = node.position.y - lift }
 end
 
 local function hop_reach(from, to)
   local function reach(node)
-    return not node.x and node.type == "electric-pole"
+    return not is_tile(node) and node.type == "electric-pole"
       and node.prototype.get_max_wire_distance(node.quality) or nil
   end
   local a, b = reach(from), reach(to)
@@ -386,8 +395,7 @@ local function hop_reach(from, to)
 end
 
 local function hop_length(from, to)
-  local a = from.x and { x = from.x + 0.5, y = from.y + 0.5 } or from.position
-  local b = to.x and { x = to.x + 0.5, y = to.y + 0.5 } or to.position
+  local a, b = node_position(from), node_position(to)
   return math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
 end
 
