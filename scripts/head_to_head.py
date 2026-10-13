@@ -48,7 +48,8 @@ def _gflop(model, x) -> float:
 
 def eval_agent_cnn(spec, args: Args, device) -> dict:
     from factory_diff import load_agent
-    from ppo import _build_eval_set, run_rollout_eval
+    from ppo import _build_eval_set
+    from sft import run_rollout_eval
 
     agent, a = load_agent(spec, device)
     eval_args = SimpleNamespace(size=a.size, seed=args.seed, max_level=0, eval_seeds_per_kind=args.per_kind)
@@ -57,7 +58,9 @@ def eval_agent_cnn(spec, args: Args, device) -> dict:
     x[:, 4] = 1
     out = {"params_M": sum(p.numel() for p in agent.parameters()) / 1e6, "gflop_per_forward": _gflop(agent, x)}
     for n in args.best_of:
-        roll = run_rollout_eval(agent, eval_args, seeds_to_kind, device, max_seeds=len(seeds_to_kind), best_of=n)
+        roll = run_rollout_eval(
+            agent, eval_args, seeds_to_kind, device, max_seeds=len(seeds_to_kind), best_of=n  # ty: ignore[invalid-argument-type]
+        )
         out[f"thput@{n}"] = roll["overall"]
         out[f"trial_thput@{n}"] = roll["trial_overall"]
         out[f"per_kind@{n}"] = {k: v for k, v in roll["per_kind"].items() if roll["per_kind_n"][k]}

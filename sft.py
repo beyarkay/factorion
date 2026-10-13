@@ -21,10 +21,13 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional, TypedDict
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
 import tqdm
 import tyro
 from torch.utils.data import DataLoader, IterableDataset
@@ -44,66 +47,131 @@ from denoise import (  # noqa: E402
     tokens_to_state,
     world_to_state,
 )
-from factorion import LESSON_IS_TRIAL, TRAINING_KINDS, LessonKind, build_factory  # noqa: E402
+from factorion import (  # noqa: E402
+    LESSON_IS_TRIAL,
+    Channel,
+    TRAINING_KINDS,
+    LessonKind,
+    build_factory,
+    count_dangling_inserters,
+    render_factory,
+)
+
 from ppo import (  # noqa: E402
+    FactorioEnv,
+    assert_device_ok,
+    cuda_env_info,
     _build_eval_set,
     _resolve_start_from,
     _upload_replacing,
-    assert_device_ok,
-    cuda_env_info,
+    _CH_ENT,
+    _CH_ITEMS,
+    _ASM_MACHINE_ENT_ID,
 )
 from training_config import PpoArgs, SftArgs, wsd_multiplier  # noqa: E402
 
 # Training factories come from far above the held-out eval seeds (9M-11M).
 _TRAIN_SEED_BASE = 1_000_000_000
-# Consecutive build failures after which a kind counts as unbuildable at this
-# grid size and leaves the sampler.
-_MAX_BUILD_FAILURES_PER_KIND = 100
 # Noise levels the val/ denoising metrics are measured at.
 _VAL_NOISE_LEVELS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
 
 def _humanize_count(n: int) -> str:
-    """50_000 -> '50k', 2_500_000 -> '2.5M'."""
-    for div, suffix in ((1_000_000, "M"), (1_000, "k")):
-        if n >= div:
-            return f"{n / div:.1f}".rstrip("0").rstrip(".") + suffix
+    """50_000 -> '50k', 2_500_000 -> '2.5M'. Used in artifact names so
+    `n50k` reads better than `n50000`."""
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        s = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{s}M"
+    if n >= 1_000:
+        v = n / 1_000
+        s = f"{v:.1f}".rstrip("0").rstrip(".")
+        return f"{s}k"
     return str(n)
 
 
-def _artifact_name(args: SftArgs) -> str:
-    """W&B run/artifact name: identical configs collapse into versions of one
-    artifact, config changes get their own."""
+def _humanize_lr(lr: float) -> str:
+    """1e-3 -> '1e-3', 0.0005 -> '5e-4'. Keeps artifact names short and
+    visually obvious."""
+    if lr == 0:
+        return "0"
+    exp = int(np.floor(np.log10(lr)))
+    mantissa = lr / (10**exp)
+    if abs(mantissa - round(mantissa)) < 1e-6:
+        return f"{int(round(mantissa))}e{exp}"
+    return f"{mantissa:.2g}e{exp}"
+
+
+def _artifact_name(args: "SftArgs") -> str:
+    """Build a descriptive W&B artifact name from the training config.
+
+    Identical-config runs collapse into versions of the same artifact;
+    config-changing runs (different size / sample count / lr / architecture)
+    get their own artifact."""
     return (
-        f"dn-s{args.size}-n{_humanize_count(args.num_samples)}-bs{args.batch_size}"
-        f"-lr{args.lr:.0e}-w{args.width}x{args.levels}b{args.blocks}a{args.attn_layers}"
+        f"dn-s{args.size}"
+        f"-n{_humanize_count(args.num_samples)}"
+        f"-bs{args.batch_size}"
+        f"-lr{_humanize_lr(args.lr)}"
+        f"-w{args.width}x{args.levels}b{args.blocks}a{args.attn_layers}"
     )
 
 
+# Max consecutive build failures tolerated for a single lesson kind before it is
+# treated as unbuildable at the current grid size and dropped from the sampler.
+# build_factory already exhausts a full rejection-sampling budget per call, so a
+# None is a strong "can't build" signal; an unbuildable kind (e.g. a 3x3
+# assembler with 5 ingredient arms on a size-5 grid) returns None for every seed.
+# Without this cap the sampler would keep re-drawing that kind forever and hang.
+_MAX_BUILD_FAILURES_PER_KIND = 100
+
+
 def _iter_factories(size, base_seed, worker_id, num_workers):
-    """Yield (state uint8, max_throughput) for fresh lesson factories forever,
-    kinds uniform. Worker w walks seeds ≡ base_seed + w (mod num_workers)."""
+    """Yield (state uint8, max_throughput) for fresh lesson factories forever.
+
+    Worker `w` of `num_workers` walks seeds ≡ base_seed+w (mod num_workers), so
+    concurrent workers never share a factory. Kinds are drawn uniformly.
+    """
+    # Trial kinds have no known solution, so there is no clean factory to
+    # denoise towards. Trials are RL-only; PPO samples them directly.
     kinds = [k for k in TRAINING_KINDS if not LESSON_IS_TRIAL[k]]
-    fails = dict.fromkeys(kinds, 0)
+    # Kinds still believed buildable at this size, plus a per-kind counter of
+    # consecutive build failures. A kind that can't fit the grid returns None for
+    # every seed; once it exhausts the failure budget it is dropped so the
+    # sampler doesn't spin on it forever (see _MAX_BUILD_FAILURES_PER_KIND).
+    available = list(kinds)
+    consecutive_fails = {k.name: 0 for k in kinds}
     rng = random.Random(base_seed + worker_id)
+
     seed = base_seed + worker_id
     while True:
-        kind = rng.choice(kinds)
+        kind = rng.choice(available)
         seed += num_workers
         factory = build_factory(size=size, kind=kind, seed=seed)
         if factory is None:
-            fails[kind] += 1
-            if fails[kind] >= _MAX_BUILD_FAILURES_PER_KIND:
-                kinds.remove(kind)
-                if not kinds:
-                    raise RuntimeError(f"No lesson kind builds at size={size}")
+            consecutive_fails[kind.name] += 1
+            if consecutive_fails[kind.name] >= _MAX_BUILD_FAILURES_PER_KIND:
+                available.remove(kind)
+                print(
+                    f"[sft] {kind.name} did not build at size={size} after "
+                    f"{_MAX_BUILD_FAILURES_PER_KIND} consecutive attempts; "
+                    f"excluding it from this dataset shard."
+                )
+                if not available:
+                    raise RuntimeError(
+                        f"No lesson kind could be built at size={size}; cannot "
+                        f"generate an SFT dataset. Increase the grid size."
+                    )
             continue
-        fails[kind] = 0
+        consecutive_fails[kind.name] = 0
         yield torch.from_numpy(world_to_state(factory.world_CWH)), float(factory.max_throughput)
 
 
 class FactoryStream(IterableDataset):
-    """Clean training factories, generated on the fly by DataLoader workers."""
+    """Generates training factories on the fly, sharded across DataLoader workers.
+
+    CPU generation overlaps GPU training via DataLoader prefetch.
+    """
 
     def __init__(self, size, base_seed):
         self.size = size
@@ -111,16 +179,412 @@ class FactoryStream(IterableDataset):
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
-        wid, n = (0, 1) if info is None else (info.id, info.num_workers)
-        return _iter_factories(self.size, self.base_seed, wid, n)
+        worker_id = 0 if info is None else info.id
+        num_workers = 1 if info is None else info.num_workers
+        return _iter_factories(self.size, self.base_seed, worker_id, num_workers)
 
 
-def build_lr_schedule(optimizer, total_steps: int, args: SftArgs):
-    """Warmup-Stable-Decay (`wsd_multiplier`), stepped once per optimizer step."""
+def build_lr_schedule(optimizer, total_steps: int, args: "SftArgs"):
+    """Warmup-Stable-Decay (`wsd_multiplier`), stepped once per optimizer step.
+
+    Only the cooldown depends on `total_steps`, so runs of different budgets
+    share their LR curve until their cooldowns diverge — and a cooldown can be
+    branched off a stable-phase checkpoint
+    (`--start-from <ckpt> --warmup-steps 0 --cooldown-frac 1`) instead of
+    repeating the shared prefix.
+    """
     return torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lambda step: wsd_multiplier(step, total_steps, args.warmup_steps, args.cooldown_frac, args.min_lr_ratio),
+        lambda step: wsd_multiplier(
+            step, total_steps, args.warmup_steps, args.cooldown_frac, args.min_lr_ratio
+        ),
     )
+
+
+class RolloutEval(TypedDict):
+    """Return shape of :func:`run_rollout_eval`."""
+
+    # The overall means pool lessons only. Trials measure a different thing —
+    # inventing a factory with nothing to imitate, versus reproducing a known
+    # one — and pooling them would silently move the headline number that the
+    # SFT baseline and every historical run are quoted in.
+    overall: float  # mean lesson throughput at the moment the model stopped
+    trial_overall: float  # overall over trial kinds only (0.0 when none ran)
+    trial_n: int  # number of trial factories the eval scored
+    per_kind: dict[str, float]  # overall, keyed by LessonKind.name
+    per_kind_n: dict[str, int]  # number of val factories per LessonKind.name
+    asm_item_acc: float  # frac of placed assemblers given the correct recipe
+    per_kind_asm_item_acc: dict[str, float]  # asm_item_acc, keyed by LessonKind.name
+    per_kind_asm_n: dict[str, int]  # assembler placements scored per LessonKind.name
+    eot_acc: float  # frac of rollout steps whose EOT prediction matches "is the factory done?"
+    eot_pos_recall: float  # frac of done states where the EOT head actually fired
+    per_kind_eot_acc: dict[str, float]  # eot_acc, keyed by LessonKind.name
+    per_kind_eot_pos_recall: dict[str, float]  # eot_pos_recall, keyed by LessonKind.name
+    per_kind_eot_step_n: dict[str, int]  # rollout steps scored per LessonKind.name
+    per_kind_eot_pos_n: dict[str, int]  # done (should-stop) states seen per LessonKind.name
+    # `count_dangling_inserters` totals (no-input, no-output) over the scored
+    # factories — should be zero — lessons/trials pooled apart like `overall`.
+    dangling_inserters: tuple[int, int]
+    trial_dangling_inserters: tuple[int, int]
+    per_kind_dangling_inserters: dict[str, tuple[int, int]]
+
+
+def _solved_assembler_recipes(solved_CWH) -> set[int]:
+    """The set of recipes (item ids) carried by assemblers in a solved factory,
+    the ground truth for the rollout's recipe-pick check. Empty for factories
+    with no assembler (every non-MEMORISE lesson today)."""
+    asm_mask = solved_CWH[_CH_ENT] == _ASM_MACHINE_ENT_ID
+    recipes = solved_CWH[_CH_ITEMS][asm_mask]
+    return set() if not bool(asm_mask.any()) else {int(v) for v in recipes.unique().tolist()}
+
+
+def run_rollout_eval(
+    agent,
+    args: SftArgs,
+    val_seeds_to_kind: dict[int, int],
+    device,
+    max_seeds: int = 100,
+    num_envs: int = 8,
+    best_of: int = 1,
+    records: Optional[list[dict]] = None,
+) -> RolloutEval:
+    """Best-of-N sampled rollout eval on the held-out val factories.
+
+    Each held-out (seed, kind) gets `best_of` rollouts sampled from the policy
+    (temperature 1, tile pick restricted to legal tiles, as a PPO rollout
+    samples) and scores the best of them. A rollout steps until the sampled EOT
+    action fires — which ends it, exactly as it terminates a PPO episode — or
+    the env finishes (throughput==1.0 or max_steps) without it ever firing.
+    Throughput is the last `info['thput_normed']` the env reported for the
+    state the model stopped at: raw items/sec divided by the per-factory
+    max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
+    its absolute belt speed (the env already calls the Rust solver every
+    step, so we don't re-run it).
+
+    Every (factory, sample) pair is a work item for K=num_envs*best_of
+    FactorioEnvs run in parallel with the CNN forward batched across them;
+    slots refill from the queue as they finish, so all K stay busy until it
+    drains. Each sample draws from its own noise stream seeded by (args.seed,
+    factory seed, sample index), so the result is reproducible, independent
+    of K and of batching order, and every checkpoint faces the same random
+    numbers.
+
+    The (seed, kind) pairs are exactly the val_accuracy set. The result is
+    logged as `val/thput@N`, directly comparable to the existing per-kind val
+    accuracy curves. Eval-only; training is untouched.
+
+    Every other output (EOT and recipe-pick scoring, dangling inserters,
+    `records`) comes from each factory's selected sample. `records`, when
+    given, collects one dict per scored factory (seed, kind, thput,
+    entity_cost and the ASCII render of the world the model stopped at) — the
+    raw material for a qualitative diff of two policies (`factory_diff.py`),
+    which the aggregates alone cannot show.
+
+    Returns a dict with:
+        overall — mean best-of-N throughput at the state the model stopped at;
+        per_kind — the same, keyed by LessonKind.name;
+        per_kind_n — sample count per kind in the eval;
+        eot_acc, eot_pos_recall — EOT-head accuracy / positive-class recall;
+        per_kind_eot_acc, per_kind_eot_pos_recall — same, keyed by kind.
+    """
+    was_training = agent.training
+    agent.eval()
+
+    # Blank the WHOLE factory (size*size) so the eval builds from an
+    # empty grid — the honest "can it build from scratch" test, not a partial
+    # 2*size blank that leaves most of the factory pre-placed. Matches the
+    # data-generation path (which already auto-blanks size*size) and the
+    # max_level docstring.
+    max_level = args.max_level if args.max_level > 0 else args.size * args.size
+
+    # Deterministic, run-stable subsample of val seeds. Sorting first
+    # makes the selection independent of dict iteration order, then we
+    # shuffle with args.seed so different runs see the same selection.
+    seeds_sorted = sorted(val_seeds_to_kind.keys())
+    rng = random.Random(args.seed)
+    rng.shuffle(seeds_sorted)
+    seeds_sorted = seeds_sorted[:max_seeds]
+
+    per_kind_throughputs: dict[str, list[float]] = {k.name: [] for k in LessonKind}
+    # Lessons and trials accumulate separately — see RolloutEval.
+    all_throughputs: list[float] = []
+    trial_throughputs: list[float] = []
+    per_kind_asm_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_asm_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    # EOT-head scoring: every scored step counts toward *_step; done states
+    # (should-stop positives) also count toward *_pos.
+    per_kind_eot_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_step_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_pos_correct: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_eot_pos_total: dict[str, int] = {k.name: 0 for k in LessonKind}
+    per_kind_dangling: dict[str, tuple[int, int]] = {k.name: (0, 0) for k in LessonKind}
+
+    if not seeds_sorted:
+        if was_training:
+            agent.train()
+        zero = {kn: 0.0 for kn in per_kind_throughputs}
+        per_kind_n = {kn: 0 for kn in per_kind_throughputs}
+        return {
+            "overall": 0.0,
+            "trial_overall": 0.0,
+            "trial_n": 0,
+            "per_kind": zero,
+            "per_kind_n": per_kind_n,
+            "asm_item_acc": 0.0,
+            "per_kind_asm_item_acc": dict(zero),
+            "per_kind_asm_n": dict(per_kind_n),
+            "eot_acc": 0.0,
+            "eot_pos_recall": 0.0,
+            "per_kind_eot_acc": dict(zero),
+            "per_kind_eot_pos_recall": dict(zero),
+            "per_kind_eot_step_n": dict(per_kind_n),
+            "per_kind_eot_pos_n": dict(per_kind_n),
+            "dangling_inserters": (0, 0),
+            "trial_dangling_inserters": (0, 0),
+            "per_kind_dangling_inserters": per_kind_dangling,
+        }
+
+    # One work item per (factory, sample), a factory's samples adjacent so they
+    # share batched forwards: K slots hold num_envs factories' samples at once.
+    # Cap K at the number of work items — spinning up more envs than that
+    # wastes memory. All envs use idx=0 so the seed we pass to reset() is the
+    # seed generate_lesson sees: FactorioEnv.reset adds self.idx to the seed
+    # for env-diversity in PPO, but here we need exact seed pass-through to
+    # replay the held-out val factories.
+    queue = [(s, j) for s in seeds_sorted for j in range(best_of)]
+    K = max(1, min(num_envs * best_of, len(queue)))
+    # A factory's samples all start from the same blank grid, so it is reset
+    # once into `template` and each sample deep-copies that (~40x cheaper).
+    template = FactorioEnv(size=args.size, idx=0)
+    template_reset: dict[int, tuple] = {}
+    envs = [template] * K
+    head_sizes = {"tile": args.size * args.size, "entity": agent.num_entities,
+                  "direction": agent.num_directions, "item": agent.num_items,
+                  "misc": agent.num_misc, "eot": 1}
+    active = [True] * K
+    # Each slot's in-flight sample: its stats so far and its own noise stream,
+    # seeded by (run seed, factory, sample) so neither the batch it rides in nor
+    # the checkpoint being scored changes which random numbers it draws.
+    cur: list[dict] = [{} for _ in range(K)]
+    rngs = [np.random.default_rng() for _ in range(K)]
+    finished: dict[int, list[dict]] = {s: [] for s in seeds_sorted}
+    # Staged on the host so each step is one host->device copy, not one per env.
+    obs_batch = torch.zeros((K, len(Channel), args.size, args.size))
+
+    def load_slot(i: int) -> None:
+        """Reset slot `i` onto the next work item, deactivating it once the
+        queue is empty."""
+        if not queue:
+            active[i] = False
+            return
+        s, j = queue.pop(0)
+        k = LessonKind(val_seeds_to_kind[s])
+        if s not in template_reset:
+            template_reset.clear()
+            template_reset[s] = template.reset(
+                seed=s,
+                options={
+                    "num_missing_entities": max_level,
+                    "kind": k,
+                },
+            )
+        obs, info = template_reset[s]
+        envs[i] = copy.deepcopy(template)
+        cur[i] = {
+            "seed": s,
+            "sample": j,
+            "kind": k,
+            "thput": float(info.get("thput_normed", 0.0)),
+            # Correct recipes from the solved world; empty when that factory has
+            # no assembler, which skips the recipe check.
+            "asm_recipes": _solved_assembler_recipes(envs[i]._solved_world_CWH),
+            **dict.fromkeys(
+                ("asm_n", "asm_correct", "eot_steps", "eot_correct", "eot_pos", "eot_pos_correct"), 0
+            ),
+        }
+        rngs[i] = np.random.default_rng((args.seed, s, j))
+        obs_batch[i] = torch.as_tensor(obs, dtype=torch.float32)
+
+    def finish_slot(i: int) -> None:
+        """Record slot `i`'s finished sample, then refill the slot."""
+        c = cur[i]
+        c["entity_cost"] = float(envs[i]._entity_cost)
+        c["dangling"] = count_dangling_inserters(envs[i]._world_CWH)
+        if records is not None:
+            c["render"] = render_factory(envs[i]._world_CWH)
+        finished[c["seed"]].append(c)
+        load_slot(i)
+
+    for i in range(K):
+        load_slot(i)
+
+    with torch.no_grad():
+        while any(active):
+            # Single CNN forward across all K slots. Inactive slots'
+            # outputs are discarded; the per-eval cost of K-1 stale
+            # forwards at the tail is negligible compared to the
+            # batching win earlier in the queue. An inactive slot draws from
+            # its finished sample's stream, which nothing reads again.
+            u_KL = torch.as_tensor(
+                np.stack([r.random(sum(head_sizes.values()), dtype=np.float32) for r in rngs])
+            ).to(device)
+            noise = dict(zip(head_sizes, u_KL.split(list(head_sizes.values()), dim=1)))
+            noise["eot"] = noise["eot"].squeeze(1)
+            # The policy's own sample, as a PPO rollout draws it (legal_mask
+            # keeps it off walled and source/sink tiles); the critic is unused here.
+            out = agent.sample_action(
+                obs_batch.to(device), noise=noise, legal_mask=True, compute_value=False
+            )
+            # One device->host copy per head per step, not one per env per head.
+            act = out["action"]
+            eot_K = act["eot"].tolist()
+            x_K = act["xy"][:, 0].tolist()
+            y_K = act["xy"][:, 1].tolist()
+            ent_K = act["entity"].tolist()
+            dir_K = act["direction"].tolist()
+            item_K = act["item"].tolist()
+            misc_K = act["misc"].tolist()
+
+            for i in range(K):
+                if not active[i]:
+                    continue
+
+                c = cur[i]
+                pred_stop = bool(eot_K[i])
+
+                # Score the head against ground truth on this pre-action state:
+                # it should fire iff the factory is already complete.
+                is_done = c["thput"] >= 1.0
+                c["eot_steps"] += 1
+                c["eot_correct"] += int(pred_stop == is_done)
+                if is_done:
+                    c["eot_pos"] += 1
+                    c["eot_pos_correct"] += int(pred_stop)
+
+                # The sampled EOT action ends the rollout, exactly as it
+                # terminates a PPO episode: we score the factory the model
+                # declared finished, never one it was forced past.
+                if pred_stop:
+                    finish_slot(i)
+                    continue
+
+                action = {
+                    "xy": np.array([int(x_K[i]), int(y_K[i])], dtype=int),
+                    "entity": int(ent_K[i]),
+                    "direction": int(dir_K[i]),
+                    "item": int(item_K[i]),
+                    "misc": int(misc_K[i]),
+                }
+                next_obs, _r, terminated, truncated, info = envs[i].step(action)
+                c["thput"] = float(info.get("thput_normed", 0.0))
+
+                # Recipe-pick check: the agent tried to place an assembler in a
+                # factory that has one. Count it iff the assembler actually
+                # landed at the anchor (invalid placements are env no-ops), then
+                # score its recipe against the solved factory's recipes.
+                if c["asm_recipes"] and action["entity"] == _ASM_MACHINE_ENT_ID:
+                    ax, ay = int(action["xy"][0]), int(action["xy"][1])
+                    if int(envs[i]._world_CWH[_CH_ENT, ax, ay]) == _ASM_MACHINE_ENT_ID:
+                        c["asm_n"] += 1
+                        c["asm_correct"] += int(action["item"] in c["asm_recipes"])
+
+                if not (terminated or truncated):
+                    obs_batch[i] = torch.as_tensor(
+                        next_obs,
+                        dtype=torch.float32,
+                    )
+                    continue
+
+                # The env ran out of room or steps before the head ever fired.
+                finish_slot(i)
+
+    # Each factory scores its best sample; ties go to the cheaper build, then
+    # the lower sample index, so the pick doesn't depend on finish order. Every
+    # other output comes from that same sample.
+    for s in seeds_sorted:
+        c = max(finished[s], key=lambda r: (r["thput"], -r["entity_cost"], -r["sample"]))
+        kn = c["kind"].name
+        per_kind_throughputs[kn].append(c["thput"])
+        (trial_throughputs if LESSON_IS_TRIAL[c["kind"]] else all_throughputs).append(c["thput"])
+        per_kind_asm_total[kn] += c["asm_n"]
+        per_kind_asm_correct[kn] += c["asm_correct"]
+        per_kind_eot_step_total[kn] += c["eot_steps"]
+        per_kind_eot_correct[kn] += c["eot_correct"]
+        per_kind_eot_pos_total[kn] += c["eot_pos"]
+        per_kind_eot_pos_correct[kn] += c["eot_pos_correct"]
+        no_input, no_output = c["dangling"]
+        acc_in, acc_out = per_kind_dangling[kn]
+        per_kind_dangling[kn] = (acc_in + no_input, acc_out + no_output)
+        if records is not None:
+            records.append(
+                {
+                    "seed": s,
+                    "kind": kn,
+                    "thput": c["thput"],
+                    "entity_cost": c["entity_cost"],
+                    "inserters_no_input": no_input,
+                    "inserters_no_output": no_output,
+                    "render": c["render"],
+                }
+            )
+
+    overall = float(np.mean(all_throughputs)) if all_throughputs else 0.0
+    trial_overall = float(np.mean(trial_throughputs)) if trial_throughputs else 0.0
+    per_kind = {
+        kn: (float(np.mean(ts)) if ts else 0.0)
+        for kn, ts in per_kind_throughputs.items()
+    }
+    per_kind_n = {kn: len(ts) for kn, ts in per_kind_throughputs.items()}
+
+    asm_total_all = sum(per_kind_asm_total.values())
+    asm_item_acc = (
+        sum(per_kind_asm_correct.values()) / asm_total_all if asm_total_all else 0.0
+    )
+    per_kind_asm_item_acc = {
+        kn: (per_kind_asm_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_asm_total.items()
+    }
+
+    eot_step_all = sum(per_kind_eot_step_total.values())
+    eot_pos_all = sum(per_kind_eot_pos_total.values())
+    eot_acc = sum(per_kind_eot_correct.values()) / eot_step_all if eot_step_all else 0.0
+    eot_pos_recall = (
+        sum(per_kind_eot_pos_correct.values()) / eot_pos_all if eot_pos_all else 0.0
+    )
+    per_kind_eot_acc = {
+        kn: (per_kind_eot_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_step_total.items()
+    }
+    per_kind_eot_pos_recall = {
+        kn: (per_kind_eot_pos_correct[kn] / n if n else 0.0)
+        for kn, n in per_kind_eot_pos_total.items()
+    }
+
+    def pooled_dangling(trial: bool) -> tuple[int, int]:
+        pairs = [per_kind_dangling[k.name] for k in LessonKind if LESSON_IS_TRIAL[k] == trial]
+        return sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+
+    if was_training:
+        agent.train()
+    return {
+        "overall": overall,
+        "trial_overall": trial_overall,
+        "trial_n": len(trial_throughputs),
+        "per_kind": per_kind,
+        "per_kind_n": per_kind_n,
+        "asm_item_acc": asm_item_acc,
+        "per_kind_asm_item_acc": per_kind_asm_item_acc,
+        "per_kind_asm_n": dict(per_kind_asm_total),
+        "eot_acc": eot_acc,
+        "eot_pos_recall": eot_pos_recall,
+        "per_kind_eot_acc": per_kind_eot_acc,
+        "per_kind_eot_pos_recall": per_kind_eot_pos_recall,
+        "per_kind_eot_step_n": dict(per_kind_eot_step_total),
+        "per_kind_eot_pos_n": dict(per_kind_eot_pos_total),
+        "dangling_inserters": pooled_dangling(trial=False),
+        "trial_dangling_inserters": pooled_dangling(trial=True),
+        "per_kind_dangling_inserters": per_kind_dangling,
+    }
 
 
 def noise_levels(n, args: SftArgs, device):
@@ -300,6 +764,7 @@ def build_eval_factories(args: SftArgs) -> list:
 
 
 def _upload_checkpoint(run, args, best_thput, files, previous):
+    """Upload the run's best checkpoint via `_upload_replacing`."""
     return _upload_replacing(
         run,
         _artifact_name(args),
@@ -317,13 +782,20 @@ def train_sft(args: SftArgs):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+
     t0 = time.time()
     if args.batch_size % args.noise_repeats:
         raise ValueError("batch_size must be a multiple of noise_repeats")
     if args.lw_thput > 0 and args.rl_samples < 2:
         raise ValueError("the throughput loss needs rl_samples >= 2 for its leave-one-out baseline")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
     assert_device_ok(device)
 
     train_seed = _TRAIN_SEED_BASE + args.seed * 100_000_000
@@ -356,7 +828,7 @@ def train_sft(args: SftArgs):
     # val metrics run on the EMA copy, uncompiled (their shapes vary).
     fwd = torch.compile(model, dynamic=False) if args.compile and device.type == "cuda" else model
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.99))
     total_steps = max(1, math.ceil(args.num_samples / args.batch_size))
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
@@ -408,7 +880,7 @@ def train_sft(args: SftArgs):
         loss, stats = denoise_step(fwd, state, max_thput, args)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
         optimizer.step()
         scheduler.step()
         decay = min(args.ema_decay, (1 + step) / (10 + step))
@@ -476,7 +948,9 @@ def train_sft(args: SftArgs):
     summary_path = args.summary_path or str(Path(__file__).parent / "sft_summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
-    print(f"\nBest {key}: {best_thput:.3f}\nCheckpoint saved to: {args.checkpoint_path}")
+    print(f"Summary written to {summary_path}")
+    print(f"\nBest {key}: {best_thput:.3f}")
+    print(f"Checkpoint saved to: {args.checkpoint_path}")
     if run is not None:
         run.summary[f"best_val_throughput@{args.eval_best_of}"] = best_thput
         _upload_checkpoint(run, args, best_thput, [args.checkpoint_path, summary_path], uploaded)
@@ -485,4 +959,5 @@ def train_sft(args: SftArgs):
 
 
 if __name__ == "__main__":
-    train_sft(tyro.cli(SftArgs))
+    args = tyro.cli(SftArgs)
+    train_sft(args)

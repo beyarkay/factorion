@@ -108,7 +108,8 @@ def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[d
     """
     import torch
 
-    from ppo import _build_eval_set, run_rollout_eval
+    from ppo import _build_eval_set
+    from sft import run_rollout_eval
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     path, config = _resolve(spec)
@@ -122,7 +123,7 @@ def collect(spec: str, *, seed: int, per_kind: int = PER_KIND_DEFAULT) -> list[d
     records: list[dict] = []
     run_rollout_eval(
         agent,
-        eval_args,
+        eval_args,  # ty: ignore[invalid-argument-type]
         seeds_to_kind,
         device,
         max_seeds=len(seeds_to_kind),

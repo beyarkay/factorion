@@ -241,7 +241,7 @@ def _post(ctx, body: str) -> int:
 
 
 def cmd_sft(args, ctx) -> None:
-    # SftArgs' production default is hours of GPU, so a bare `/ci sft` needs the cap
+    # SftArgs' 20M default is ~17h of GPU, so a bare `/ci sft` needs the cap
     # as much as an explicit --num-samples does.
     args.num_samples = _cap(
         ctx, args.num_samples, CLAUDE_MAX_NUM_SAMPLES, SftArgs.num_samples

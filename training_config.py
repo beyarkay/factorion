@@ -1,7 +1,8 @@
 """Single source of truth for training hyperparameters.
 
 `PpoArgs` and `SftArgs` share their identical defaults through the
-`SharedArgs` base so a value like the grid size or the W&B project lives in exactly one place. `ppo.py` and `sft.py` import the
+`SharedArgs` base so a value like the grid size, the CNN encoder shape, or the
+W&B project lives in exactly one place. `ppo.py` and `sft.py` import the
 dataclasses from here (`from training_config import PpoArgs` / `SftArgs`). CI
 jobs (`ci/jobs.py`) pass only their whitelisted overrides on the command line,
 so everything else falls through to these defaults — never copy a value out
@@ -12,9 +13,7 @@ importing it (from Python or a shell one-liner) stays cheap.
 
 Fields that share a *name* but not a *value* across PPO (`PpoArgs`) and SFT (they are tuned
 independently — e.g. `learning_rate`/`lr`, `dropout`, `weight_decay`,
-`max_grad_norm`) live on each dataclass, not on `SharedArgs`. PPO trains the
-autoregressive `AgentCNN`, SFT the whole-factory denoiser (`denoise.py`), so
-each also carries its own architecture.
+`max_grad_norm`) live on each dataclass, not on `SharedArgs`.
 """
 
 import math
@@ -60,36 +59,17 @@ def wsd_multiplier(
 
 @dataclass
 class SharedArgs:
-    """Defaults common to PPO (`PpoArgs`) and SFT (`SftArgs`) with identical values."""
+    """Defaults common to PPO (`PpoArgs`) and SFT (`SftArgs`) with identical values.
+
+    The CNN encoder shape (`layer1..8`, `kernel_size`, `attn_*`) is PPO's
+    `AgentCNN`; SFT's denoiser takes its own architecture fields.
+    """
 
     seed: int = 1
     """seed of the experiment"""
     size: int = 15
     """the width and height of the factory grid"""
 
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "factorion"
-    """the wandb's project name"""
-    wandb_entity: Optional[str] = None
-    """the entity (team) of wandb's project"""
-    wandb_group: Optional[str] = None
-    """W&B run group name (groups parallel seeds together in the dashboard)"""
-    wandb_run_id: Optional[str] = None
-    """Pre-assigned W&B run id. CI sets this at launch so the run URL is known
-    (and linkable from the PR) before the pod even boots. None = W&B mints one."""
-    tags: typing.Optional[typing.List[str]] = None
-    """Tags to apply to the wandb run."""
-    eval_best_of: int = 8
-    """sampled rollouts per held-out factory in the rollout eval (SFT val/,
-    PPO eval/); each factory scores the best of them. Every metric that rollout
-    produces is logged as `<key>@N`; an unsuffixed metric is best-of-1."""
-
-
-@dataclass
-class PpoArgs(SharedArgs):
-    exp_name: str = "ppo"
-    """the name of this experiment"""
     # CNN encoder width per layer slot. The encoder uses every slot with
     # positive width, in order; a slot of 0 drops that layer. Exposing depth +
     # per-layer width as independent numeric slots (rather than one categorical
@@ -116,6 +96,29 @@ class PpoArgs(SharedArgs):
     (self-attention is otherwise permutation-invariant). Int not bool for W&B
     sweeps."""
 
+    track: bool = False
+    """if toggled, this experiment will be tracked with Weights and Biases"""
+    wandb_project_name: str = "factorion"
+    """the wandb's project name"""
+    wandb_entity: Optional[str] = None
+    """the entity (team) of wandb's project"""
+    wandb_group: Optional[str] = None
+    """W&B run group name (groups parallel seeds together in the dashboard)"""
+    wandb_run_id: Optional[str] = None
+    """Pre-assigned W&B run id. CI sets this at launch so the run URL is known
+    (and linkable from the PR) before the pod even boots. None = W&B mints one."""
+    tags: typing.Optional[typing.List[str]] = None
+    """Tags to apply to the wandb run."""
+    eval_best_of: int = 8
+    """sampled rollouts per held-out factory in the rollout eval (SFT val/,
+    PPO eval/); each factory scores the best of them. Every metric that rollout
+    produces is logged as `<key>@N`; an unsuffixed metric is best-of-1."""
+
+
+@dataclass
+class PpoArgs(SharedArgs):
+    exp_name: str = "ppo"
+    """the name of this experiment"""
     torch_deterministic: bool = False
     """deterministic CUDA kernels (cudnn + `torch.use_deterministic_algorithms`).
     Off because the deterministic FlashAttention backward is slower; the
@@ -259,11 +262,13 @@ class PpoArgs(SharedArgs):
 class SftArgs(SharedArgs):
     start_from: Optional[str] = None
     """Checkpoint to resume training from instead of a fresh model: either a
-    local .pt path OR a W&B run id."""
+    local .pt path OR a W&B run id (e.g. a prior SFT run like 'qv4uei74')."""
 
     num_samples: int = 20_000_000
     """corrupted training examples to train on. Factories are generated on the
     fly by DataLoader workers, each one used for `noise_repeats` examples."""
+    max_level: int = 0
+    """max curriculum level (0 = auto: size*size)"""
     batch_size: int = 256
     """corrupted examples per optimizer step"""
     noise_repeats: int = 4
@@ -278,46 +283,41 @@ class SftArgs(SharedArgs):
     unroll: bool = True
     """also train on the model's own sampled prediction (SUNDAE's unrolled
     denoising), the input every generation step after the first sees"""
-
-    # ── Architecture (denoise.DenoiserUNet) ──────────────────────────
     width: int = 128
-    """channels at full resolution; each lower level doubles them"""
+    """denoiser channels at full resolution; each lower level doubles them"""
     levels: int = 2
     """UNet resolutions (levels - 1 stride-2 downsamples)"""
     blocks: int = 2
     """residual blocks per level, on each side of the UNet"""
     attn_layers: int = 4
-    """rotary self-attention blocks over the bottleneck cells"""
-    attn_heads: int = 8
-    """bottleneck attention heads (head dim must be a multiple of 4)"""
-    dropout: float = 0.0
-    """dropout in residual and attention blocks. Every example is fresh."""
+    """rotary self-attention blocks over the bottleneck cells (head dim must
+    be a multiple of 4)"""
     io: str = "token"
     """tile encoding in and out: 'token' (entity × facing × underground type,
     recipe, footprint part) or 'factored' (AgentCNN's encoding and its
     per-channel entity / direction / item / misc heads)"""
-
-    # ── Optimisation ─────────────────────────────────────────────────
     lr: float = 3e-4
     """peak learning rate, held flat for the whole stable phase"""
     warmup_steps: int = 500
-    """optimizer steps of linear warmup up to lr"""
+    """optimizer steps of linear warmup up to lr — absolute, not a fraction, so
+    runs of different lengths warm up identically"""
     cooldown_frac: float = 0.3
-    """fraction of total steps for the final (1-sqrt) cooldown"""
+    """fraction of total steps for the final (1-sqrt) cooldown — the only phase
+    that depends on run length"""
     min_lr_ratio: float = 0.05
     """LR at the final step, as a fraction of lr"""
     weight_decay: float = 0.01
     """AdamW weight decay"""
-    max_grad_norm: float = 1.0
-    """grad L2-norm clip"""
-    ema_decay: float = 0.999
-    """decay of the weight EMA that is evaluated and checkpointed"""
+    dropout: float = 0.0
+    """dropout in residual and attention blocks. Every example is fresh."""
     amp: bool = True
     """bf16 autocast for the network on CUDA; losses stay fp32"""
     compile: bool = True
     """torch.compile the training forward (CUDA only)"""
-
-    # ── Losses ───────────────────────────────────────────────────────
+    max_grad_norm: float = 1.0
+    """grad L2-norm clip (0 disables clipping)"""
+    ema_decay: float = 0.999
+    """decay of the weight EMA that is evaluated and checkpointed"""
     lw_type: float = 1.0
     """weight of the per-tile entity/facing cross entropy"""
     lw_recipe: float = 1.0
@@ -339,8 +339,6 @@ class SftArgs(SharedArgs):
     rl_max_noise: float = 0.5
     """only examples at most this corrupted feed the throughput loss: from a
     noisier input a one-step sample is rarely a working factory"""
-
-    # ── Generation eval ──────────────────────────────────────────────
     eval_best_of: int = 64
     """chains denoised from pure noise per held-out factory; each factory
     scores its best. thput is also logged at @1 and @8 from the same chains."""

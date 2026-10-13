@@ -2,7 +2,6 @@
 
 import os
 import sys
-from types import SimpleNamespace
 
 import gymnasium as gym
 import pytest
@@ -17,7 +16,7 @@ from helpers import TINY_ARCH, LessonKind, build_factory  # noqa: E402
 
 from factory_diff import diff_markdown  # noqa: E402
 from ppo import AgentCNN, make_env  # noqa: E402
-from ppo import run_rollout_eval  # noqa: E402
+from sft import SftArgs, run_rollout_eval  # noqa: E402
 
 ENV_ID = "factorion/FactorioEnv-v0-diff-test"
 
@@ -59,7 +58,7 @@ class TestRolloutRecords:
         records = []
         roll = run_rollout_eval(
             agent,
-            SimpleNamespace(seed=1, size=size, max_level=0),
+            SftArgs(seed=1, size=size),
             seeds,
             torch.device("cpu"),
             max_seeds=len(seeds),
@@ -86,7 +85,7 @@ class TestRolloutRecords:
         agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
         roll = run_rollout_eval(
-            agent, SimpleNamespace(seed=1, size=size, max_level=0), seeds, torch.device("cpu"), max_seeds=1
+            agent, SftArgs(seed=1, size=size), seeds, torch.device("cpu"), max_seeds=1
         )
         assert "overall" in roll
 

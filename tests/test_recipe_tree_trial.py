@@ -257,12 +257,12 @@ class TestTrialEvalIsScoredApart:
         return agent
 
     def _run(self, seeds):
-        from types import SimpleNamespace
-
         import torch
-        from ppo import run_rollout_eval
+        from sft import run_rollout_eval
+        from training_config import SftArgs
 
-        args = SimpleNamespace(seed=1, size=SIZE, max_level=2 * SIZE)
+        args = SftArgs(seed=1, size=SIZE, max_level=2 * SIZE,
+                       layer1=16, layer2=16, layer3=16)
         return run_rollout_eval(
             self._agent(), args, seeds, device=torch.device("cpu"),
             max_seeds=len(seeds),
