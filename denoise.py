@@ -96,7 +96,7 @@ for _i, _o in enumerate(_OFFSETS):
         _PART_TABLE_NP[_i, _k] = _dx * 3 + _dy
         _PART_VALID_NP[_i, _dx * 3 + _dy] = True
 # Per-tile share of an entity's cost, for the differentiable cost loss.
-_ENT_TILE_COST_NP = _ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS / (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS).max()
+_ENT_TILE_COST_NP = (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS / (_ENTITY_UNIT_COSTS / _ENTITY_FOOTPRINT_AREAS).max()).astype(np.float32)
 _TYPE_TILE_COST_NP = _ENT_TILE_COST_NP[_TYPES_NP[:, 0]]
 
 # The factored heads (one softmax per world channel, as `AgentCNN` places
@@ -119,8 +119,8 @@ def _luts(device: torch.device) -> SimpleNamespace:
     return SimpleNamespace(
         types=t(_TYPES_NP), recipes=t(_RECIPES_NP), type_lut=t(_TYPE_LUT_NP), recipe_lut=t(_RECIPE_LUT_NP),
         is_asm=t(_IS_ASM_NP), n_parts=t(_N_PARTS_OF_NP), part_table=t(_PART_TABLE_NP),
-        part_valid=t(_PART_VALID_NP), tile_cost=t(_TYPE_TILE_COST_NP).float(),
-        ent_tile_cost=t(_ENT_TILE_COST_NP[:N_ENT_HEAD]).float(), ent_ok=t(_ENT_OK_NP), dir_ok=t(_DIR_OK_NP),
+        part_valid=t(_PART_VALID_NP), tile_cost=t(_TYPE_TILE_COST_NP),
+        ent_tile_cost=t(_ENT_TILE_COST_NP[:N_ENT_HEAD]), ent_ok=t(_ENT_OK_NP), dir_ok=t(_DIR_OK_NP),
         misc_ok=t(_MISC_OK_NP), item_ok=t(_ITEM_OK_NP),
     )
 
