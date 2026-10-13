@@ -23,7 +23,7 @@
 local parity = require("parity")
 local inference = require("inference")
 
-local PROTOCOL_VERSION = "10"
+local PROTOCOL_VERSION = "11"
 -- The server polls every 250 ms, so 5 s of silence means it isn't there.
 local SERVER_TIMEOUT_TICKS = 5 * 60
 -- Loading a checkpoint (often a W&B download) blocks the server's polls.
@@ -1150,15 +1150,17 @@ local function new_request_id()
     math.random(0, 2^30), math.random(0, 2^30))
 end
 
+-- The entities wholly inside fp, as the model sees them: the player's, and
+-- what this GPU server built before.
 local function gather_existing_entities(state, surface, fp)
   local predicted = state.model_entities or {}
-  local result = {}
+  local result, previous = {}, {}
   local candidates = surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
     name = MODEL_ENTITY_NAMES,
   })
   for _, entity in pairs(candidates) do
-    if not predicted[entity.unit_number] and not entity.to_be_deconstructed() then
+    if not entity.to_be_deconstructed() then
       local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
       local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
       if direction then
@@ -1198,12 +1200,12 @@ local function gather_existing_entities(state, surface, fp)
               entry.misc = 2
             end
           end
-          table.insert(result, entry)
+          table.insert(predicted[entity.unit_number] and previous or result, entry)
         end
       end
     end
   end
-  return result
+  return result, previous
 end
 
 local function server_state(server)
@@ -1316,12 +1318,16 @@ inference.describe = function(server)
 end
 
 local function gather_request(state, region)
-  local model_entities = gather_existing_entities(state, state.entity.surface, region.fp)
+  local model_entities, previous = gather_existing_entities(state, state.entity.surface, region.fp)
   local description = string.format("converting %s to %s on %d painted tiles",
     icons(region.sources), icons(region.sinks), region.tiles)
   if #model_entities > 0 then
     description = description .. string.format(
       " around %d existing entities", #model_entities)
+  end
+  if #previous > 0 then
+    description = description .. string.format(
+      ", starting from the %d it built before", #previous)
   end
 
   local config = inference.config()
@@ -1337,6 +1343,7 @@ local function gather_request(state, region)
     best_of       = config.best_of,
     seed          = config.seed,
     entities      = model_entities,
+    start_entities = previous,
     allowed       = region.allowed,
     sources       = region.sources,
     sinks         = region.sinks,
@@ -1344,14 +1351,13 @@ local function gather_request(state, region)
   return request, description
 end
 
--- Rebuilds the factory in the painted area against server, replacing what
--- this server built before. Returns the message for the player.
+-- Rebuilds the factory in the painted area against server, starting from
+-- what this server built before. Returns the message for the player.
 inference.on_predict = function(player, server)
   ensure_pending_lookup()
   local region, reason = predictable_region(server)
   if not region then return reason end
   local state = server_state(server)
-  clear_predicted_entities(state, player)
   local request, description = gather_request(state, region)
   local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
