@@ -159,6 +159,15 @@ def test_generate_never_edits_the_markers():
     assert conf.shape == (3, 11, 11) and converged.shape == n_refine.shape == (3,)
 
 
+def test_trace_records_every_step_ending_at_the_result():
+    factory = _factory(size=11, kind=LessonKind.MOVE_ONE_ITEM, seed=1)
+    cond = torch.from_numpy(world_to_state(blank_entities(factory)[0])).long()[None].repeat(2, 1, 1, 1)
+    trace: list = []
+    toks, _, _, n_refine = generate(DenoiserUNet(**TINY).eval(), cond, steps=3, refine=4, trace=trace)
+    assert len(trace) == 3 + int(n_refine.max())
+    assert all(torch.equal(a, b) for a, b in zip(trace[-1][0], toks))
+
+
 def test_eval_pools_trials_apart_and_records_each_factory():
     kinds = [LessonKind.MOVE_ONE_ITEM, LessonKind.TRIAL_RECIPE_TREE_DEPTH_1]
     factories = [(s, k, _factory(size=15, kind=k, seed=s)) for k in kinds for s in range(2)]
