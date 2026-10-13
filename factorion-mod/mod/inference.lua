@@ -12,7 +12,7 @@ M.DEFAULTS = {
   temperature = 1,
   steps = 0,
   refine = 0,
-  best_of = 8,
+  best_of = 1,
   seed = 0,
 }
 
@@ -92,6 +92,7 @@ function M.refresh(player)
   local caption, can_predict = M.describe(server)
   frame.region.caption = caption
   frame.actions.predict.enabled = can_predict
+  frame.actions.clear.enabled = server.energy > 0
 end
 
 function M.refresh_all()
@@ -164,11 +165,11 @@ function M.open(player, server)
   actions.add({
     type = "button", name = "predict", caption = "Predict", style = "green_button",
     tooltip = "Build a factory on the painted area touching this server, " ..
-      "replacing what this server built before.",
+      "starting from what this server built before.",
     tags = { factorion_gpu = "predict" },
   })
   actions.add({
-    type = "button", caption = "Clear",
+    type = "button", name = "clear", caption = "Clear",
     tooltip = "Stop this server's prediction and remove what it built.",
     tags = { factorion_gpu = "clear" },
   })
