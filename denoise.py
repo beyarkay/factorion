@@ -513,7 +513,7 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
 
 
 @torch.no_grad()
-def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None, trace=None):
+def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None, trace=None, start=None):
     """Denoise pure noise into factories, one chain per row of `cond`.
 
     `steps` ancestral steps sample the clean-factory prediction and re-corrupt
@@ -522,10 +522,14 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None, tr
     has *converged*: the model calls the factory finished). Returns the
     tokens, the confidence of each tile's type, and per-chain converged flag
     and refine steps taken. `trace`, if given, collects every step's
-    clean-factory prediction as (tokens, confidence)."""
+    clean-factory prediction as (tokens, confidence). `start`, if given, is
+    (tokens, mask): masked tiles begin from those tokens instead of noise."""
     free = free_mask(cond)
     prior = model.noise_prior
     toks = noise_tokens(prior, free.shape, generator)
+    if start is not None:
+        start_toks, mask = start
+        toks = tuple(torch.where(mask, s, t) for s, t in zip(start_toks, toks))
     B = cond.shape[0]
     for k in range(steps):
         logits = model(tokens_to_state(cond, free, *toks))
