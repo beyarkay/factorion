@@ -453,7 +453,7 @@ def train_sft(args: SftArgs):
         )
         if run is not None:
             run.log(metrics, step=samples_seen)
-        if metrics[key] >= best_thput:
+        if metrics[key] > best_thput:
             best_thput = metrics[key]
             torch.save({"arch": ema.arch, "model": ema.state_dict()}, args.checkpoint_path)
             pbar.write(f"  -> Saved best checkpoint ({key} {best_thput:.3f})")
