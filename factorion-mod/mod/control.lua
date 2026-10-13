@@ -136,23 +136,21 @@ end
 local MASK = "factorion-mask"
 local MASK_ERASER = "factorion-mask-eraser"
 local MASK_COLOR = { r = 0.1, g = 0.75, b = 1.0, a = 0.95 }
--- Premultiplied alpha, so this is a faint version of MASK_COLOR.
-local MASK_INSIDE_COLOR = { r = 0.025, g = 0.19, b = 0.25, a = 0.25 }
-local MASK_INSIDE_DEPTH = 0.25
+local MASK_INSET = 0.1
 
--- Painted tiles of a surface, as tiles[x][y] = true.
+-- Painted tiles of a surface, as tiles[x][y] = the tile's drawn border.
 local function surface_mask(surface)
   storage.mask = storage.mask or {}
   local mask = storage.mask[surface.index]
   if not mask then
-    mask = { tiles = {}, renders = {} }
+    mask = { tiles = {} }
     storage.mask[surface.index] = mask
   end
   return mask
 end
 
 local function painted(mask, x, y)
-  return mask.tiles[x] ~= nil and mask.tiles[x][y] == true
+  return mask.tiles[x] ~= nil and mask.tiles[x][y] ~= nil
 end
 
 local function painted_in(surface, fp)
@@ -166,61 +164,7 @@ local function painted_in(surface, fp)
   return allowed
 end
 
--- Outlines the paint, with a faint band along the inside of every edge.
-local function draw_mask(surface)
-  local mask = surface_mask(surface)
-  for _, object in pairs(mask.renders) do
-    if object.valid then object.destroy() end
-  end
-  mask.renders = {}
-  -- Unit edges grouped by the grid line they lie on and the side the paint is.
-  local lines = {}
-  local function edge(horizontal, at, inward, along)
-    local key = string.format("%s,%d,%d", tostring(horizontal), at, inward)
-    lines[key] = lines[key] or { horizontal = horizontal, at = at, inward = inward, along = {} }
-    table.insert(lines[key].along, along)
-  end
-  for x, column in pairs(mask.tiles) do
-    for y in pairs(column) do
-      if not painted(mask, x, y - 1) then edge(true, y, 1, x) end
-      if not painted(mask, x, y + 1) then edge(true, y + 1, -1, x) end
-      if not painted(mask, x - 1, y) then edge(false, x, 1, y) end
-      if not painted(mask, x + 1, y) then edge(false, x + 1, -1, y) end
-    end
-  end
-  local function point(line, along, depth)
-    local across = line.at + depth * line.inward
-    if line.horizontal then return { along, across } end
-    return { across, along }
-  end
-  local function draw_run(line, from, to)
-    local a, b = point(line, from, 0), point(line, to, 0)
-    local c = point(line, to, MASK_INSIDE_DEPTH)
-    table.insert(mask.renders, rendering.draw_line({
-      surface = surface, from = a, to = b, color = MASK_COLOR, width = 3,
-      draw_on_ground = true,
-    }))
-    table.insert(mask.renders, rendering.draw_rectangle({
-      surface = surface, filled = true, color = MASK_INSIDE_COLOR,
-      left_top = { math.min(a[1], c[1]), math.min(a[2], c[2]) },
-      right_bottom = { math.max(a[1], c[1]), math.max(a[2], c[2]) },
-      draw_on_ground = true,
-    }))
-  end
-  for _, line in pairs(lines) do
-    table.sort(line.along)
-    local start = line.along[1]
-    for i, along in ipairs(line.along) do
-      local next_along = line.along[i + 1]
-      if next_along ~= along + 1 then
-        draw_run(line, start, along + 1)
-        start = next_along
-      end
-    end
-  end
-end
-
--- A painted region is outlined by its paint instead.
+-- A painted region shows its paint instead.
 local function draw_footprint(player, state)
   destroy_footprint_render(state)
   local fp = state.footprint
@@ -951,14 +895,19 @@ local function apply_paint(surface, name, positions)
   local mask = surface_mask(surface)
   for _, position in pairs(positions) do
     local x, y = math.floor(position.x), math.floor(position.y)
-    if name == MASK then
+    if name == MASK and not painted(mask, x, y) then
       mask.tiles[x] = mask.tiles[x] or {}
-      mask.tiles[x][y] = true
-    elseif mask.tiles[x] then
+      mask.tiles[x][y] = rendering.draw_rectangle({
+        surface = surface, color = MASK_COLOR, width = 2, filled = false,
+        left_top = { x + MASK_INSET, y + MASK_INSET },
+        right_bottom = { x + 1 - MASK_INSET, y + 1 - MASK_INSET },
+        draw_on_ground = true,
+      })
+    elseif name ~= MASK and painted(mask, x, y) then
+      mask.tiles[x][y].destroy()
       mask.tiles[x][y] = nil
     end
   end
-  draw_mask(surface)
   for _, player in pairs(game.players) do
     local state = storage.players and storage.players[player.index]
     if state and state.footprint and player.surface == surface then
