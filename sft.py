@@ -880,7 +880,7 @@ def train_sft(args: SftArgs):
         loss, stats = denoise_step(fwd, state, max_thput, args)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm or float("inf"))
         optimizer.step()
         scheduler.step()
         decay = min(args.ema_decay, (1 + step) / (10 + step))
