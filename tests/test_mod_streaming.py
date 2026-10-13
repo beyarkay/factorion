@@ -187,6 +187,24 @@ def test_denoising_replays_its_seed_and_keeps_markers_and_walls():
     assert stats["best_of"] == 3 and stats["stop_reason"] in ("converged", "max_steps")
 
 
+def test_previous_build_stays_buildable_and_starts_every_chain(monkeypatch):
+    req = _request() | {
+        "entities": [{"name": "transport-belt", "x": 3, "y": 9, "direction": 2}],
+        "start_entities": [{"name": "transport-belt", "x": 1, "y": 5, "direction": 2}],
+    }
+    world = mod_server.request_to_obs(req)
+    assert world[Channel.ENTITIES.value, 1, 5] == _id("transport_belt")
+    assert world[Channel.FOOTPRINT.value, 1, 5] == 1
+    assert world[Channel.FOOTPRINT.value, 3, 9] == 0
+
+    starts = []
+    real = mod_server.generate
+    monkeypatch.setattr(mod_server, "generate", lambda *a, start=None, **k: starts.append(start) or real(*a, start=start, **k))
+    mod_server.denoise_frames(_model(), world, mod_server.Generation(best_of=2), 7, torch.device("cpu"))
+    (_, mask), = starts
+    assert mask.shape[0] == 2 and {tuple(t) for t in mask[0].nonzero().tolist()} == {(1, 5)}
+
+
 def test_nothing_is_ever_placed_outside_the_painted_mask(monkeypatch):
     monkeypatch.setattr(mod_server.time, "sleep", lambda _: None)
     painted = {(x, y) for x in range(11) for y in range(4, 7)}

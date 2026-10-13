@@ -26,7 +26,9 @@ import numpy as np
 import requests
 import torch
 
-from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state
+from denoise import (
+    DenoiserUNet, free_mask, generate, legalize, load_denoiser, part_map, score_world, state_to_tokens, world_to_state,
+)
 from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent
 from sft import resolve_checkpoint
 from training_config import SftArgs
@@ -34,7 +36,7 @@ from training_config import SftArgs
 from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "10"
+MOD_PROTOCOL_VERSION = "11"
 RELEASES_URL = "https://api.github.com/repos/beyarkay/factorion/releases"
 CHECKPOINT_CACHE = Path.home() / ".cache" / "factorion"
 
@@ -102,7 +104,9 @@ def _sink_id() -> int:
 def request_to_obs(req: dict) -> np.ndarray:
     """The region's (C, W, H) world. Entities already in it become walls the
     model builds around, as a lesson's protected tiles are, and so does every
-    tile outside the painted build mask, when there is one."""
+    tile outside the painted build mask, when there is one. The GPU server's
+    own previous build (`start_entities`) stays buildable, for the model to
+    start from and change."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -128,14 +132,14 @@ def request_to_obs(req: dict) -> np.ndarray:
         if item is not None:
             obs[Channel.ITEMS.value, x, y] = item.value
 
-    for existing in req.get("entities", []):
+    def place(existing: dict):
         entity = str2ent(existing.get("name"))
         if entity is None or not entity.is_placeable:
             log.warning(
                 "Ignoring unsupported existing entity %r",
                 existing.get("name"),
             )
-            continue
+            return
         item = str2ent(existing.get("item", existing.get("recipe", "empty")))
         reason = apply_placement_action(
             torch.from_numpy(obs),
@@ -150,6 +154,8 @@ def request_to_obs(req: dict) -> np.ndarray:
         if reason is not None:
             log.warning("Ignoring existing %s: %s", entity.name, reason)
 
+    for existing in req.get("entities", []):
+        place(existing)
     ent = obs[Channel.ENTITIES.value]
     obs[Channel.FOOTPRINT.value][(ent != 0) & (ent != src_id) & (ent != snk_id)] = Footprint.UNAVAILABLE.value
     if req.get("allowed"):
@@ -157,6 +163,8 @@ def request_to_obs(req: dict) -> np.ndarray:
         for t in req["allowed"]:
             unpainted[t["x"], t["y"]] = False
         obs[Channel.FOOTPRINT.value][unpainted] = Footprint.UNAVAILABLE.value
+    for existing in req.get("start_entities", []):
+        place(existing)
     return obs.astype(np.int64)
 
 
@@ -172,7 +180,7 @@ class Generation:
     """Ancestral denoising steps; 0 = the checkpoint's `gen_steps`."""
     refine: int = 0
     """Most greedy refinement steps; 0 = the checkpoint's `gen_refine`."""
-    best_of: int = 8
+    best_of: int = 1
 
     def __str__(self) -> str:
         changed = [
@@ -196,18 +204,21 @@ class Generation:
 def denoise_frames(
     model: Model, world_CWH: np.ndarray, gen: Generation, seed: int, device,
 ) -> tuple[list[np.ndarray], dict]:
-    """Denoise `best_of` chains from noise around the region's markers and
-    walls, and return the best chain's legalized prediction at every step,
-    its final factory last. Best is the highest simulated throughput, then
-    the cheapest build, as `val/thput@N` picks."""
+    """Denoise `best_of` chains around the region's markers and walls, from
+    the entities already on its buildable tiles and noise everywhere else,
+    and return the best chain's legalized prediction at every step, its final
+    factory last. Best is the highest simulated throughput, then the cheapest
+    build, as `val/thput@N` picks."""
     net = model.denoiser
     steps = gen.steps or model.config.gen_steps
     refine = gen.refine or model.config.gen_refine
     cond = torch.as_tensor(world_to_state(world_CWH), device=device)[None].repeat(gen.best_of, 1, 1, 1)
+    started = free_mask(cond) & (cond[:, Channel.ENTITIES.value] != 0)
     trace: list = []
     toks, conf, converged, n_refine = generate(
         net, cond, steps, refine, gen.temperature,
         torch.Generator(device=device).manual_seed(seed), trace,
+        start=(state_to_tokens(cond), started) if bool(started.any()) else None,
     )
 
     def legal(toks, conf, i: int) -> np.ndarray:
@@ -502,11 +513,11 @@ def handle_request(
         gen = Generation.from_request(req)
         log.info(
             "Requesting a factory converting [%s] to [%s] using checkpoint %s "
-            "(%dx%d, seed=%d, %s, %d existing entities)",
+            "(%dx%d, seed=%d, %s, %d existing entities, starting from %d)",
             ", ".join(e["item"] for e in req.get("sources", [])),
             ", ".join(e["item"] for e in req.get("sinks", [])),
             req["checkpoint"], req["grid_size"], req["grid_size"], seed, gen,
-            len(req.get("entities", [])),
+            len(req.get("entities", [])), len(req.get("start_entities", [])),
         )
         world = request_to_obs(req)
         frames, result = denoise_frames(model, world, gen, seed, device)
