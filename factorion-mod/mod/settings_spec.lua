@@ -36,7 +36,7 @@ return {
     type = "double-setting",
     name = "factorion-step-delay",
     setting_type = "runtime-global",
-    default_value = 0.3,
+    default_value = 0.1,
     minimum_value = 0,
     maximum_value = 5,
     order = "c",
