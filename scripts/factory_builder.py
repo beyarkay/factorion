@@ -622,15 +622,19 @@ _CHECKPOINT_PATH: Optional[str] = None
 # anonymous /tmp download path. Either {"kind": "local", "path": "..."}
 # or {"kind": "wandb", "run_id", "run_url", "run_name", "artifact"}.
 _CHECKPOINT_SOURCE: Optional[dict] = None
+# The loaded run's generation schedule, so chains here match its val/ metrics.
+_GEN = SftArgs()
 
 
-def _load_checkpoint(path: str) -> None:
-    """Load a denoiser checkpoint. Does NOT touch _CHECKPOINT_SOURCE — the
-    caller knows the provenance (local vs wandb) and sets it after this
-    returns."""
-    global _MODEL, _CHECKPOINT_PATH
+def _load_checkpoint(path: str, config: Optional[dict] = None) -> None:
+    """Load a denoiser checkpoint, generating with its run's `config` where
+    one is known. Does NOT touch _CHECKPOINT_SOURCE — the caller knows the
+    provenance (local vs wandb) and sets it after this returns."""
+    global _MODEL, _CHECKPOINT_PATH, _GEN
     _MODEL = load_denoiser(path, _DEVICE).eval()
     _CHECKPOINT_PATH = path
+    gen = ("gen_steps", "gen_refine", "gen_temperature")
+    _GEN = SftArgs(**{k: v for k, v in (config or {}).items() if k in gen})
     print(f"Loaded checkpoint {path} ({_MODEL.arch}, device={_DEVICE})")
 
 
@@ -672,10 +676,10 @@ def _swap_model(value: str, project: str, entity: Optional[str]) -> dict:
         raise ValueError("value cannot be empty")
     if Path(value).exists():
         path = value
-        source = {"kind": "local", "path": value}
+        source: dict = {"kind": "local", "path": value}
     else:
         path, source = _resolve_wandb_checkpoint(value, project, entity)
-    _load_checkpoint(path)
+    _load_checkpoint(path, source.get("config"))
     _CHECKPOINT_SOURCE = source
     return _model_info()
 
@@ -701,7 +705,7 @@ def _denoise_step(grid: list[list[dict]], chain: Optional[dict]) -> dict:
     legalized; ``done`` once the greedy refinement reaches a fixed point or
     the step budget runs out."""
     model = _model()
-    steps, refine = SftArgs.gen_steps, SftArgs.gen_refine
+    steps, refine = _GEN.gen_steps, _GEN.gen_refine
     world_CWH = build_world(grid).permute(2, 0, 1).numpy()
     cond = torch.as_tensor(world_to_state(world_CWH), device=_DEVICE)[None]
     free = free_mask(cond)
@@ -712,7 +716,7 @@ def _denoise_step(grid: list[list[dict]], chain: Optional[dict]) -> dict:
         toks = tuple(torch.tensor(chain[k], device=_DEVICE)[None] for k in ("type", "recipe", "part"))
     ancestral = step < steps
     logits = model(tokens_to_state(cond, free, *toks))
-    new = model.pick(logits, SftArgs.gen_temperature if ancestral else 0.0)
+    new = model.pick(logits, _GEN.gen_temperature if ancestral else 0.0)
     converged = not ancestral and all(bool(((a == b) | ~free).all()) for a, b in zip(new, toks))
     conf = torch.where(free, model.conf(logits, new), 1.0)
     world = _legalize(model, cond, new, conf)[0]
@@ -767,7 +771,7 @@ def _batch_rollout(kinds: list[LessonKind], seeds: list[int], size: int, best_of
         blanks = [world_to_state(blank_entities(factory)[0].numpy()) for _, factory, _ in built]
         cond = torch.as_tensor(np.stack(blanks), device=_DEVICE).repeat_interleave(best_of, 0)
         toks, conf, converged, n_refine = generate(
-            model, cond, SftArgs.gen_steps, SftArgs.gen_refine, SftArgs.gen_temperature
+            model, cond, _GEN.gen_steps, _GEN.gen_refine, _GEN.gen_temperature
         )
         worlds = _legalize(model, cond, toks, conf)
         raws = [_thput_raw(w) for w in worlds]
@@ -780,7 +784,7 @@ def _batch_rollout(kinds: list[LessonKind], seeds: list[int], size: int, best_of
                 "kind": kind.name,
                 "seed": seed,
                 "size": size,
-                "steps": SftArgs.gen_steps + int(n_refine[j]),
+                "steps": _GEN.gen_steps + int(n_refine[j]),
                 "stopped_by": "converged" if converged[j] else "max_steps",
                 "thput_normed": min(1.0, raw / factory.max_throughput) if factory.max_throughput > 0 else 0.0,
                 "thput_raw": raw,
@@ -2899,7 +2903,7 @@ def main(args: Args) -> None:
         ckpt_path, source = _resolve_wandb_checkpoint(
             args.wandb_run, args.wandb_project, args.wandb_entity,
         )
-        _load_checkpoint(ckpt_path)
+        _load_checkpoint(ckpt_path, source.get("config"))
         _CHECKPOINT_SOURCE = source
     elif args.checkpoint:
         _load_checkpoint(args.checkpoint)

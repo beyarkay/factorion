@@ -480,10 +480,10 @@ class TestDenoiseStep:
 
     def test_a_converged_chain_reports_its_fixed_point(self, tiny_model, monkeypatch):
         """A model whose prediction is its own input converges on the first
-        refinement step."""
+        refinement step, at the schedule of the run the checkpoint came from."""
         grid = _empty_grid(5)
         chain = None
-        monkeypatch.setattr(fb.SftArgs, "gen_steps", 1)
+        fb._load_checkpoint(str(tiny_model), {"gen_steps": 1, "lr": 1.0})
         out = fb._denoise_step(grid, chain)
         assert out["phase"] == "denoise" and not out["done"]
         monkeypatch.setattr(fb._MODEL, "pick", lambda logits, *a: tuple(
