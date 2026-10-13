@@ -1,8 +1,8 @@
 """Factorion model server.
 
-Polls the Factorio mod for requests, generates a factory with the trained
-denoiser, and streams each of its entities back into the running game over
-RCON.
+Polls the Factorio mod for requests, denoises a factory for the requested
+region with a trained `denoise.DenoiserUNet`, and streams every denoising
+step into the running game over RCON as the entities that step changed.
 
 Installed as `factorion-server`; from a checkout, `uv run python -m factorion_server`.
 """
@@ -18,6 +18,7 @@ import secrets
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -28,16 +29,14 @@ import torch
 from denoise import DenoiserUNet, generate, legalize, load_denoiser, part_map, score_world, world_to_state
 from factorion import Channel, Footprint, Misc, apply_placement_action, entities, items, str2ent
 from sft import resolve_checkpoint
-from training_config import RlArgs, SftArgs
+from training_config import SftArgs
 
 from .blueprint import _DIR_MODEL_TO_BP, _hyphenate
 
 log = logging.getLogger("factorion-server")
-MOD_PROTOCOL_VERSION = "9"
+MOD_PROTOCOL_VERSION = "10"
 RELEASES_URL = "https://api.github.com/repos/beyarkay/factorion/releases"
 CHECKPOINT_CACHE = Path.home() / ".cache" / "factorion"
-ModelLoader = Callable[[str], tuple[DenoiserUNet, str]]
-"""Checkpoint spec (the mod's setting) → (model, display name)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -48,7 +47,45 @@ from .rcon import RconClient, RconError  # noqa: E402, F401
 
 
 # --------------------------------------------------------------------------- #
-# Request → obs tensor.
+# Model loading.
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Model:
+    denoiser: DenoiserUNet
+    name: str
+    config: SftArgs
+    """The run's grid size and generation schedule; defaults for a local file."""
+
+
+def load_model(spec: str, project: str, entity: Optional[str], device: torch.device) -> Model:
+    """A checkpoint spec's model. A bare run id is looked up in the releases
+    first; anything else, or a run no release carries, goes to
+    sft.resolve_checkpoint (local or W&B)."""
+    released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
+    source: dict = {"run_name": spec}
+    if released is not None:
+        path = str(released)
+    else:
+        try:
+            path, source = resolve_checkpoint(str(Path(spec).expanduser()), project, entity)
+        except ModuleNotFoundError as exc:
+            # Players' installs leave out wandb: only developers have W&B keys.
+            if exc.name != "wandb":
+                raise
+            raise RuntimeError(f"No release carries checkpoint {spec}. For a W&B run, restart the "
+                               "server as `uvx --with wandb factorion-server` with a W&B API key.") from exc
+    config = {k: v for k, v in (source.get("config") or {}).items() if k in ("size", "gen_steps", "gen_refine")}
+    denoiser = load_denoiser(path, device).eval()
+    log.info("Loaded checkpoint %s (%s)", path, denoiser.arch)
+    return Model(denoiser, source.get("run_name", Path(path).name), SftArgs(**config))
+
+
+ModelLoader = Callable[[str], Model]
+"""Checkpoint spec (the mod's setting) → loaded model."""
+
+
+# --------------------------------------------------------------------------- #
+# Request → world.
 # --------------------------------------------------------------------------- #
 def _source_id() -> int:
     e = str2ent("source")
@@ -63,8 +100,8 @@ def _sink_id() -> int:
 
 
 def request_to_obs(req: dict) -> np.ndarray:
-    """The (C, W, H) world of a request: its markers, plus its existing
-    entities as walls the model builds around, as a lesson protects its own."""
+    """The region's (C, W, H) world. Entities already in it become walls the
+    model builds around, as a lesson's protected tiles are."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -113,19 +150,82 @@ def request_to_obs(req: dict) -> np.ndarray:
             log.warning("Ignoring existing %s: %s", entity.name, reason)
 
     ent = obs[Channel.ENTITIES.value]
-    existing_mask = (ent != str2ent("empty").value) & (ent != src_id) & (ent != snk_id)
-    obs[Channel.FOOTPRINT.value][existing_mask] = Footprint.UNAVAILABLE.value
-    return obs
+    obs[Channel.FOOTPRINT.value][(ent != 0) & (ent != src_id) & (ent != snk_id)] = Footprint.UNAVAILABLE.value
+    return obs.astype(np.int64)
 
 
 # --------------------------------------------------------------------------- #
-# Inference: generate best-of-N as the eval does, stream the best build.
+# Denoising: every step of the best chain becomes one batch of placements.
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Generation:
+    """Per-request generation knobs, set in the GPU server window."""
+
+    temperature: float = 1.0
+    steps: int = 0
+    """Ancestral denoising steps; 0 = the checkpoint's `gen_steps`."""
+    refine: int = 0
+    """Most greedy refinement steps; 0 = the checkpoint's `gen_refine`."""
+    best_of: int = 8
+
+    def __str__(self) -> str:
+        changed = [
+            f"{f.name}={getattr(self, f.name)}"
+            for f in fields(self) if getattr(self, f.name) != f.default
+        ]
+        return ", ".join(changed) or "default generation"
+
+    @classmethod
+    def from_request(cls, req: dict) -> "Generation":
+        d = cls()
+        return cls(
+            temperature=float(req.get("temperature", d.temperature)),
+            steps=int(req.get("steps", d.steps)),
+            refine=int(req.get("refine", d.refine)),
+            best_of=max(1, int(req.get("best_of", d.best_of))),
+        )
+
+
+@torch.no_grad()
+def denoise_frames(
+    model: Model, world_CWH: np.ndarray, gen: Generation, seed: int, device,
+) -> tuple[list[np.ndarray], dict]:
+    """Denoise `best_of` chains from noise around the region's markers and
+    walls, and return the best chain's legalized prediction at every step,
+    its final factory last. Best is the highest simulated throughput, then
+    the cheapest build, as `val/thput@N` picks."""
+    net = model.denoiser
+    steps = gen.steps or model.config.gen_steps
+    refine = gen.refine or model.config.gen_refine
+    cond = torch.as_tensor(world_to_state(world_CWH), device=device)[None].repeat(gen.best_of, 1, 1, 1)
+    trace: list = []
+    toks, conf, converged, n_refine = generate(
+        net, cond, steps, refine, gen.temperature,
+        torch.Generator(device=device).manual_seed(seed), trace,
+    )
+
+    def legal(toks, conf, i: int) -> np.ndarray:
+        typ, rec, part = (t[i].cpu().numpy() for t in toks)
+        return legalize(world_CWH, typ, rec, part, conf[i].float().cpu().numpy())
+
+    finals = [legal(toks, conf, i) for i in range(gen.best_of)]
+    scores = [score_world(w, 1.0, 0.0) for w in finals]
+    best = max(range(gen.best_of), key=lambda i: (scores[i]["thput_raw"], -scores[i]["entity_cost"], -i))
+    taken = steps + int(n_refine[best])
+    frames = [legal(t, c, best) for t, c in trace[:taken]] + [finals[best]]
+    return frames, {
+        "steps_taken": taken,
+        "stop_reason": "converged" if converged[best] else "max_steps",
+        "best_of": gen.best_of,
+        "thput": scores[best]["thput_raw"],
+    }
+
+
 def action_to_placement(action: dict) -> dict:
-    """Convert one placement action into a Factorio create_entity specification.
+    """Convert one entity into a Factorio create_entity specification.
 
     The mod first removes every entity the placement's tiles overlap, so an
-    `empty` action becomes a name-less placement that only deletes."""
+    `empty` entity becomes a name-less placement that only deletes."""
     ent_id = int(action["entity"])
     x, y = (int(v) for v in action["xy"])
     if ent_id == 0:
@@ -174,57 +274,25 @@ def action_to_placement(action: dict) -> dict:
     return placement
 
 
-def best_build(model: DenoiserUNet, obs: np.ndarray, temperature: float, seed: int, device) -> np.ndarray:
-    """The highest-throughput (then cheapest) of `eval_best_of` factories
-    generated around `obs`'s markers."""
-    cond = torch.as_tensor(world_to_state(obs)).unsqueeze(0).repeat(SftArgs.eval_best_of, 1, 1, 1).to(device)
-    gen = torch.Generator(device=device).manual_seed(seed)
-    (typ, rec, part), conf, _, _ = generate(model, cond, SftArgs.gen_steps, SftArgs.gen_refine, temperature, gen)
-    typ, rec, part, conf = (t.cpu().numpy() for t in (typ, rec, part, conf.float()))
-    worlds = [legalize(obs.astype(np.int64), typ[i], rec[i], part[i], conf[i]) for i in range(len(cond))]
-    scores = [score_world(w, 1.0, RlArgs.entity_cost_scale) for w in worlds]
-    return worlds[max(range(len(worlds)), key=lambda i: (scores[i]["thput_raw"], -scores[i]["entity_cost"]))]
+def _units(world_CWH: np.ndarray) -> dict[tuple[int, int], tuple[int, ...]]:
+    """Every entity of a valid world, keyed by the min-corner tile it is
+    placed from."""
+    anchors = (world_CWH[Channel.ENTITIES.value] != 0) & (part_map(world_CWH) == 0)
+    return {(int(x), int(y)): tuple(world_CWH[:, x, y].tolist()) for x, y in zip(*np.nonzero(anchors))}
 
 
-def build_actions(obs: np.ndarray, world: np.ndarray) -> list[dict]:
-    """One placement action per entity `world` adds to `obs`, in raster order
-    of their anchors."""
-    ent = world[Channel.ENTITIES.value]
-    added = (ent != obs[Channel.ENTITIES.value]) & (part_map(world) == 0)
-    return [
-        {
-            "xy": (int(x), int(y)),
-            "entity": int(ent[x, y]),
-            "direction": int(world[Channel.DIRECTION.value, x, y]),
-            "item": int(world[Channel.ITEMS.value, x, y]),
-            "misc": int(world[Channel.MISC.value, x, y]),
-        }
-        for x, y in zip(*np.nonzero(added))
-    ]
+def frame_placements(prev_CWH: np.ndarray, next_CWH: np.ndarray) -> list[dict]:
+    """The placements turning world `prev` into `next`: a deletion of every
+    entity that changed, then every new entity."""
+    before, after = _units(prev_CWH), _units(next_CWH)
 
+    def placement(xy, unit):
+        ent, d, item, misc = unit[:4]
+        return action_to_placement({"xy": xy, "entity": ent, "direction": d, "item": item, "misc": misc})
 
-def run_inference(
-    model: DenoiserUNet,
-    req: dict,
-    device,
-    on_placement: Optional[Callable[[dict], bool]] = None,
-) -> tuple[np.ndarray, dict]:
-    """Generate a factory for `req` and stream its entities until done or
-    Factorio refuses one."""
-    obs = request_to_obs(req)
-    seed = int(req.get("seed") or secrets.randbits(31))
-    temperature = float(req.get("temperature", SftArgs.gen_temperature))
-    log.info("  seed=%d temperature=%g", seed, temperature)
-    world = best_build(model, obs, temperature, seed, device)
-    stats: dict = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "eot", "seed": seed}
-    for action in build_actions(obs, world):
-        log.info("  place %s at %s", entities[action["entity"]].name, action["xy"])
-        if on_placement is not None and not on_placement(action):
-            log.info("  → Factorio rejected the placement, stopping")
-            stats["stop_reason"] = "placement_error"
-            break
-        stats["steps_taken"] += 1
-    return world, stats
+    gone = [placement(xy, u) for xy, u in before.items() if after.get(xy) != u]
+    built = [placement(xy, u) for xy, u in after.items() if before.get(xy) != u]
+    return [{k: p[k] for k in ("tile_x", "tile_y", "width", "height")} for p in gone] + built
 
 
 # --------------------------------------------------------------------------- #
@@ -249,23 +317,16 @@ class PredictionCancelled(Exception):
     """The player cancelled the request in game (CTRL+R or a region clear)."""
 
 
-def _stream_placement(
-    rcon: RconClient,
-    request_id: str,
-    action: dict,
-    *,
-    placement_delay_s: float = 0.0,
-) -> bool:
-    placement = action_to_placement(action)
-    payload = json.dumps(placement, separators=(",", ":"))
-    response = _call_mod(rcon, "place_prediction", request_id, payload)
+def _stream_step(rcon: RconClient, request_id: str, placements: list[dict]) -> bool:
+    """Apply one denoising step's placements in game; False if Factorio
+    refused any of them."""
+    payload = json.dumps(placements, separators=(",", ":"))
+    response = _call_mod(rcon, "place_predictions", request_id, payload)
     if response == "ok":
-        if placement_delay_s > 0:
-            time.sleep(placement_delay_s)
         return True
     if response == "cancelled":
         raise PredictionCancelled
-    log.error("Factorio rejected %s: %s", placement, response or "(empty response)")
+    log.error("Factorio refused part of a step: %s", response or "(empty response)")
     return False
 
 
@@ -320,24 +381,6 @@ def released_checkpoint(run_id: str) -> Optional[Path]:
     return dest
 
 
-def load_model(spec: str, device, project: str, entity: Optional[str]) -> tuple[DenoiserUNet, str]:
-    """(model, display name) of a checkpoint spec. A bare run id is looked up
-    in the releases first; anything else, or a run no release carries, goes to
-    sft.resolve_checkpoint (local or W&B)."""
-    released = None if "/" in spec or spec.endswith(".pt") else released_checkpoint(spec)
-    if released is not None:
-        return load_denoiser(released, device).eval(), spec
-    try:
-        path, source = resolve_checkpoint(spec, project, entity)
-    except ModuleNotFoundError as exc:
-        # Players' installs leave out wandb: only developers have W&B keys.
-        if exc.name != "wandb":
-            raise
-        raise RuntimeError(f"No release carries checkpoint {spec}. For a W&B run, restart the "
-                           "server as `uvx --with wandb factorion-server` with a W&B API key.") from exc
-    return load_denoiser(path, device).eval(), source.get("run_name", Path(path).name)
-
-
 def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
     quoted = ",".join(_lua_string(a) for a in args)
     return rcon.exec(
@@ -347,9 +390,9 @@ def _call_mod(rcon: RconClient, method: str, *args: str) -> str:
 
 def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, grid_size: int) -> None:
     try:
-        _, name = get_model(checkpoint)
+        model = get_model(checkpoint)
         method = "model_loaded"
-        payload = {"checkpoint": checkpoint, "name": name, "grid_size": grid_size}
+        payload = {"checkpoint": checkpoint, "name": model.name, "grid_size": model.config.size}
     except Exception as exc:
         log.exception("Could not load checkpoint %s", checkpoint)
         method = "model_failed"
@@ -358,13 +401,7 @@ def _report_model(rcon: RconClient, checkpoint: str, get_model: ModelLoader, gri
 
 
 def _finish_prediction(rcon: RconClient, request_id: str, stats: dict) -> None:
-    summary = json.dumps({
-        "steps_taken": stats["steps_taken"],
-        "invalid_steps": stats["invalid_steps"],
-        "stop_reason": stats["stop_reason"],
-        "seed": stats.get("seed"),
-        "error": stats.get("error"),
-    }, separators=(",", ":"))
+    summary = json.dumps(stats, separators=(",", ":"))
     response = _call_mod(rcon, "finish_prediction", request_id, summary)
     if response not in ("ok", "cancelled"):
         raise RuntimeError(
@@ -452,28 +489,34 @@ def handle_request(
     device,
 ):
     t0 = time.time()
-    stats = {"steps_taken": 0, "invalid_steps": 0, "stop_reason": "server_error"}
+    seed = int(req.get("seed") or secrets.randbits(31))
+    stats: dict = {"steps_taken": 0, "refused_steps": 0, "stop_reason": "server_error", "seed": seed}
     try:
-        model, _ = get_model(req["checkpoint"])
+        model = get_model(req["checkpoint"])
+        gen = Generation.from_request(req)
         log.info(
             "Requesting a factory converting [%s] to [%s] using checkpoint %s "
-            "(%dx%d, %d existing entities)",
+            "(%dx%d, seed=%d, %s, %d existing entities)",
             ", ".join(e["item"] for e in req.get("sources", [])),
             ", ".join(e["item"] for e in req.get("sinks", [])),
-            req["checkpoint"], req["grid_size"], req["grid_size"],
+            req["checkpoint"], req["grid_size"], req["grid_size"], seed, gen,
             len(req.get("entities", [])),
         )
-        _, stats = run_inference(
-            model,
-            req,
-            device=device,
-            on_placement=lambda action: _stream_placement(
-                rcon,
-                req["request_id"],
-                action,
-                placement_delay_s=float(req.get("placement_delay_s", 0.0)),
-            ),
+        world = request_to_obs(req)
+        frames, result = denoise_frames(model, world, gen, seed, device)
+        log.info(
+            "Denoised %d chain(s) in %.2fs; the best takes %d step(s) to %.3f items/s (%s)",
+            gen.best_of, time.time() - t0, result["steps_taken"], result["thput"], result["stop_reason"],
         )
+        for frame in frames:
+            placements = frame_placements(world, frame)
+            world = frame
+            if not placements:
+                continue
+            if not _stream_step(rcon, req["request_id"], placements):
+                stats["refused_steps"] += 1
+            time.sleep(float(req.get("step_delay_s", 0.0)))
+        stats.update(result)
     except PredictionCancelled:
         stats["stop_reason"] = "cancelled"
     except Exception as exc:
@@ -481,10 +524,7 @@ def handle_request(
         raise
     finally:
         _finish_prediction(rcon, req["request_id"], stats)
-    log.info(
-        "Inference %.2fs; streamed %d placement step(s), stop=%s",
-        time.time() - t0, stats["steps_taken"], stats["stop_reason"],
-    )
+    log.info("Request done in %.2fs, stop=%s", time.time() - t0, stats["stop_reason"])
 
 
 # --------------------------------------------------------------------------- #
@@ -519,8 +559,8 @@ def main():
     log.info("Running the model on %s", device)
 
     @functools.cache
-    def get_model(spec: str) -> tuple[DenoiserUNet, str]:
-        return load_model(spec, device, args.wandb_project, args.wandb_entity)
+    def get_model(spec: str) -> Model:
+        return load_model(spec, args.wandb_project, args.wandb_entity, device)
 
     rcon = RconClient(args.rcon_host, args.rcon_port, args.rcon_password)
     waiting = log.info
