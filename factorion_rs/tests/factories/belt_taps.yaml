@@ -1,0 +1,40 @@
+description: |
+  A full belt (15/s) passes six inserters, each able to move 0.86/s. Each
+  inserter takes what it can and the rest stays on the belt for the next
+  one, so all six get their full 0.86/s.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 1, y: 2, item: iron_plate }
+- { x: 2, y: 2, item: iron_plate }
+- { x: 3, y: 2, item: iron_plate }
+- { x: 4, y: 2, item: iron_plate }
+- { x: 5, y: 2, item: iron_plate }
+- { x: 6, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0.86 }
+factory: |
+  S> b> b> b> b> b> b>
+  .. iv iv iv iv iv iv
+  .. Kv Kv Kv Kv Kv Kv
+---
+description: |
+  The belt carries only 0.86/s (one inserter's worth) past three inserters.
+  The first takes all of it and the two after it get nothing.
+items:
+- { x: 0, y: 0, item: iron_plate }
+- { x: 3, y: 2, item: iron_plate }
+- { x: 4, y: 2, item: iron_plate }
+- { x: 5, y: 2, item: iron_plate }
+throughput:
+- { item: iron_plate, per_second: 0.86 }
+- { item: iron_plate, per_second: 0 }
+- { item: iron_plate, per_second: 0 }
+factory: |
+  S> i> b> b> b> b>
+  .. .. .. iv iv iv
+  .. .. .. Kv Kv Kv

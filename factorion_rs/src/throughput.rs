@@ -113,6 +113,34 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
         })
         .collect();
 
+    // Inserters on a tile pick up before the flow moves on, so a node's
+    // other successors wait for its inserters and get what they leave.
+    let is_picker = |n: usize| {
+        matches!(
+            graph.nodes[n].entity_kind,
+            Item::Inserter | Item::LongHandedInserter
+        )
+    };
+    let n_pickers: Vec<usize> = graph
+        .successors
+        .iter()
+        .map(|succs| succs.iter().filter(|&&s| is_picker(s)).count())
+        .collect();
+    let n_others: Vec<usize> = graph
+        .successors
+        .iter()
+        .zip(&n_pickers)
+        .map(|(succs, &k)| succs.len() - k)
+        .collect();
+    let mut pending_pickers = vec![0usize; graph.node_count()];
+    for &p in &reachable_from_sources {
+        for &s in &graph.successors[p] {
+            if !is_picker(s) {
+                pending_pickers[s] += n_pickers[p];
+            }
+        }
+    }
+
     let mut queue: VecDeque<usize> = VecDeque::new();
     let mut in_queue: HashSet<usize> = HashSet::new();
 
@@ -123,10 +151,21 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
 
     let mut node_outputs: Vec<HashMap<Item, f64>> =
         graph.nodes.iter().map(|n| n.output.clone()).collect();
+    let mut taken: Vec<HashMap<Item, f64>> = vec![HashMap::new(); graph.node_count()];
 
     let mut already_processed: HashSet<usize> = HashSet::new();
 
-    while let Some(node_idx) = queue.pop_front() {
+    // Waiting on inserters can deadlock when an inserter is also fed through
+    // the node waiting on it (a source filling an assembler that an inserter
+    // picks from as well as the source); release the stalled node then
+    // rather than leave it, and everything downstream, without flow.
+    while let Some(node_idx) = queue.pop_front().or_else(|| {
+        (0..graph.node_count()).find(|&n| {
+            in_degree[n] == 0
+                && reachable_from_sources.contains(&n)
+                && !already_processed.contains(&n)
+        })
+    }) {
         in_queue.remove(&node_idx);
 
         if already_processed.contains(&node_idx) {
@@ -142,12 +181,16 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             // everything.
             let accumulated_input: HashMap<Item, f64> =
                 if matches!(entity_kind, Item::Inserter | Item::LongHandedInserter) {
-                    pickup_input(graph, node_idx, &node_outputs)
+                    pickup_input(graph, node_idx, &node_outputs, &n_pickers, &mut taken)
                 } else {
                     let mut acc: HashMap<Item, f64> = HashMap::new();
                     for &pred in &graph.predecessors[node_idx] {
+                        // What the inserters leave is shared, not copied, so
+                        // no item is counted once per branch (#87).
                         for (&item, &flow_rate) in &node_outputs[pred] {
-                            *acc.entry(item).or_insert(0.0) += flow_rate;
+                            let left = flow_rate - taken[pred].get(&item).copied().unwrap_or(0.0);
+                            *acc.entry(item).or_insert(0.0) +=
+                                left.max(0.0) / n_others[pred] as f64;
                         }
                     }
                     acc
@@ -165,25 +208,30 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             if let Some(entity) = EntityEnum::new(entity_kind, item, misc) {
                 node_outputs[node_idx] = entity.transform_flow(&accumulated_input);
             }
-
-            // A node hands its contents to its successors, so fanning out to
-            // k successors splits the flow k ways (each branch gets 1/k).
-            // Without this, every successor reads the node's *full* output and
-            // the same items are counted once per branch — the #87 fan-out
-            // double-count. Splitters are just the most visible case; a belt
-            // feeding two inserters splits exactly the same way. Sources are
-            // intentionally excluded: their output is pre-set to an infinite
-            // supply (so `is_empty()` skips this block) and feeds every branch
-            // fully, dividing INFINITY changes nothing downstream anyway.
-            let num_successors = graph.successors[node_idx].len();
-            if num_successors > 1 {
-                for rate in node_outputs[node_idx].values_mut() {
-                    *rate /= num_successors as f64;
-                }
-            }
         }
 
         already_processed.insert(node_idx);
+
+        if is_picker(node_idx) {
+            for &pred in &graph.predecessors[node_idx] {
+                if !reachable_from_sources.contains(&pred) {
+                    continue;
+                }
+                for &succ in &graph.successors[pred] {
+                    if !is_picker(succ) {
+                        pending_pickers[succ] = pending_pickers[succ].saturating_sub(1);
+                        if pending_pickers[succ] == 0
+                            && in_degree[succ] == 0
+                            && !already_processed.contains(&succ)
+                            && !in_queue.contains(&succ)
+                        {
+                            queue.push_back(succ);
+                            in_queue.insert(succ);
+                        }
+                    }
+                }
+            }
+        }
 
         // Decrement in-degree of successors; enqueue when all predecessors processed
         for &succ in &graph.successors[node_idx] {
@@ -192,7 +240,7 @@ pub fn calc_throughput(graph: &FactoryGraph) -> (Vec<SinkDelivery>, usize) {
             }
             // Saturating sub in case of edges from unreachable predecessors
             in_degree[succ] = in_degree[succ].saturating_sub(1);
-            if in_degree[succ] == 0 && !in_queue.contains(&succ) {
+            if in_degree[succ] == 0 && pending_pickers[succ] == 0 && !in_queue.contains(&succ) {
                 queue.push_back(succ);
                 in_queue.insert(succ);
             }
@@ -251,9 +299,10 @@ fn count_unreachable_entities(graph: &FactoryGraph, on_path: &HashSet<usize>) ->
     unit_on_path.values().filter(|&&hit| !hit).count()
 }
 
-/// An inserter's accumulated input: its capacity split evenly over the
-/// lanes it reaches — the hand sweeps the whole tile, so unlike a drop it
-/// cannot prefer a lane — then across each lane's items in proportion to
+/// An inserter's accumulated input, recorded in `taken` so the flow it
+/// leaves moves on. The inserters picking from one lane share it evenly, and
+/// each splits its capacity evenly over the lanes it reaches — the hand
+/// sweeps the whole tile, so unlike a drop it cannot prefer a lane — then across each lane's items in proportion to
 /// their rates. Poorest lane first: a rich lane served early would stop at
 /// its equal share and leave the hand under-filled, since a poor lane
 /// cannot take up the slack afterwards.
@@ -261,10 +310,17 @@ fn pickup_input(
     graph: &FactoryGraph,
     node_idx: usize,
     node_outputs: &[HashMap<Item, f64>],
+    n_pickers: &[usize],
+    taken: &mut [HashMap<Item, f64>],
 ) -> HashMap<Item, f64> {
     let mut supply: Vec<(usize, f64)> = graph.predecessors[node_idx]
         .iter()
-        .map(|&p| (p, node_outputs[p].values().sum()))
+        .map(|&p| {
+            (
+                p,
+                node_outputs[p].values().sum::<f64>() / n_pickers[p] as f64,
+            )
+        })
         .collect();
     supply.sort_by(|a, b| a.1.total_cmp(&b.1));
 
@@ -282,12 +338,13 @@ fn pickup_input(
             // A source's rate is infinite, so the ratio is indeterminate —
             // but it carries a single item, which takes the whole share.
             let take = if available.is_finite() {
-                share * rate / available
+                share * rate / n_pickers[p] as f64 / available
             } else {
                 share
             };
             if take > 0.0 {
                 *input.entry(item).or_insert(0.0) += take;
+                *taken[p].entry(item).or_insert(0.0) += take;
             }
         }
     }
