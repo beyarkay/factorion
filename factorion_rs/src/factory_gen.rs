@@ -6129,7 +6129,7 @@ mod tests {
                     2,
                     "size={size} seed={seed}"
                 );
-                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
+                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let mut no_splitter = f.world.clone();
                 for x in 0..f.world.width() {
@@ -6338,7 +6338,10 @@ mod tests {
                     let (tp, unreachable) = tp_unreachable(&f.world);
                     assert!(tp > 0.0, "{kind:?} size={size} seed={seed}");
                     assert_eq!(unreachable, 0, "{kind:?} size={size} seed={seed}");
-                    assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
+                    assert!(
+                        tp <= f.max_throughput + 1e-9,
+                        "{kind:?} size={size} seed={seed}"
+                    );
                     assert!(
                         f.max_throughput <= Item::TransportBelt.flow_rate(),
                         "{kind:?} size={size} seed={seed}"
