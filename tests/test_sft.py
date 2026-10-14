@@ -49,8 +49,9 @@ from ppo import (
 from training_config import PpoArgs
 
 TINY: dict[str, Any] = dict(width=16, levels=2, blocks=1, attn_layers=1, attn_heads=4)
-# Generation eval shrunk to a couple of short chains per factory.
-FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2)
+# Generation eval (and the self-training round that follows it) shrunk to a
+# couple of short chains on a few factories.
+FAST_EVAL: dict[str, Any] = dict(eval_seeds_per_kind=1, eval_best_of=2, gen_steps=2, gen_refine=2, self_factories=4)
 
 
 def _batch(n=4, size=15):
@@ -281,7 +282,7 @@ class TestSelfTraining:
         monkeypatch.setattr(sft, "denoise_step", spy_step)
         args = SftArgs(
             size=15, num_samples=96, batch_size=16, eval_every_n_samples=32, self_frac=0.25,
-            self_factories=6, self_top_frac=0.5, track=True,
+            self_top_frac=0.5, track=True,
             checkpoint_path=str(tmp_path / "k.pt"), summary_path=str(tmp_path / "k.json"), **TINY, **FAST_EVAL,
         )
         train_sft(args)
