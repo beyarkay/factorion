@@ -4,24 +4,29 @@ Every training example is a known-correct factory from `build_factory` with a
 random fraction t ~ U[0, 1] of its free tiles resampled from noise; the model
 always regresses the clean factory. The eval generates factories for held-out
 lessons from pure noise (best of `eval_best_of` chains each) and scores them
-in the throughput simulator.
+in the throughput simulator. With `self_frac` > 0 each eval also builds
+training-seed trial factories and replays the model's top builds by PPO's
+score as extra clean targets (expert iteration): trials have no reference to
+denoise towards otherwise.
 
 Usage:
     python sft.py --num-samples 2000000
 """
 
+import collections
 import copy
 import io
 import itertools
 import json
 import math
+import multiprocessing
 import os
 import random
 import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional, TypedDict
+from typing import Iterator, Optional, TypedDict
 
 import numpy as np
 import torch
@@ -40,6 +45,8 @@ from denoise import (  # noqa: E402
     _luts,
     corrupt,
     free_mask,
+    generate_chains,
+    improve_world,
     legalize,
     load_denoiser,
     run_denoise_eval,
@@ -51,6 +58,7 @@ from denoise import (  # noqa: E402
 from factorion import (  # noqa: E402
     LESSON_IS_TRIAL,
     Channel,
+    Factory,
     TRAINING_KINDS,
     LessonKind,
     build_factory,
@@ -73,6 +81,9 @@ from training_config import PpoArgs, SftArgs, wsd_multiplier  # noqa: E402
 
 # Training factories come from far above the held-out eval seeds (9M-11M).
 _TRAIN_SEED_BASE = 1_000_000_000
+# Self-generated targets are built from the upper half of the run's training
+# seed block: past any seed its loader reaches, far above the eval seeds.
+_SELF_SEED_OFFSET = 50_000_000
 # Noise levels the val/ denoising metrics are measured at.
 _VAL_NOISE_LEVELS = (0.0, 0.25, 0.5, 0.75, 1.0)
 
@@ -757,6 +768,83 @@ def generation_metrics(model, factories, args: SftArgs, device, records=None) ->
     return out
 
 
+def self_seeds(args: SftArgs) -> Iterator[int]:
+    return itertools.count(_TRAIN_SEED_BASE + args.seed * 100_000_000 + _SELF_SEED_OFFSET)
+
+
+def select_self_targets(factories, results, top_frac: float) -> list[tuple[LessonKind, dict, Factory]]:
+    """The top `top_frac` of each kind's builds by PPO's score (the cheaper
+    first among ties), keeping only those that flow and leave no inserter
+    dangling, and at most one per factory so no layout is replayed as several
+    near-copies. Kinds are ranked apart so the hard ones, trials above all,
+    still contribute their best. Returns (kind, build, Factory) per target."""
+    by_kind: dict = {}
+    for (s, kind, factory), rs in zip(factories, results):
+        by_kind.setdefault(kind, []).extend((r, s, factory) for r in rs)
+    out, taken = [], set()
+    for kind, builds in by_kind.items():
+        builds.sort(key=lambda b: (-b[0]["score"], b[0]["entity_cost"]))
+        for r, s, factory in builds[: math.ceil(top_frac * len(builds))]:
+            if s in taken or r["thput_raw"] <= 0 or count_dangling_inserters(torch.from_numpy(r["world"])) != (0, 0):
+                continue
+            taken.add(s)
+            out.append((kind, r, factory))
+    return out
+
+
+def repair_targets(targets, args: SftArgs) -> list[tuple[LessonKind, dict, Factory]]:
+    """`improve_world` on every target, across a process pool (each takes
+    ~1 s of simulation per step). A repair that leaves an inserter dangling
+    is dropped, keeping the build as the model made it."""
+    jobs = [(r["world"], f.max_throughput, PpoArgs.entity_cost_scale, args.self_repair_steps) for _, r, f in targets]
+    with multiprocessing.get_context("forkserver").Pool(min(32, os.cpu_count() or 1)) as pool:
+        worlds = pool.starmap(improve_world, jobs)
+    out = []
+    for (kind, r, f), w in zip(targets, worlds):
+        if count_dangling_inserters(torch.from_numpy(w)) == (0, 0):
+            r = {**score_world(w, f.max_throughput, PpoArgs.entity_cost_scale), "world": w, "model_score": r["score"]}
+        out.append((kind, r, f))
+    return out
+
+
+def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> dict:
+    """Build `self_factories` training-seed factories (cycling `kinds`) best
+    of `eval_best_of` with the EMA model, repair the selected builds and add
+    them to `buffer` (keyed by world bytes, so a repeat refreshes its place
+    rather than duplicating), and return the round's self/ metrics."""
+    factories = []
+    while len(factories) < args.self_factories:
+        s = next(seeds)
+        kind = kinds[s % len(kinds)]
+        if (f := build_factory(size=args.size, kind=kind, seed=s)) is not None:
+            factories.append((s, kind, f))
+    results, _, _ = generate_chains(
+        ema, factories, device, best_of=args.eval_best_of, steps=args.gen_steps, refine=args.gen_refine,
+        temperature=args.gen_temperature, cost_scale=PpoArgs.entity_cost_scale, generator=generator,
+        batch_chains=args.eval_batch_chains,
+    )
+    targets = select_self_targets(factories, results, args.self_top_frac)
+    if args.self_repair_steps and targets:
+        targets = repair_targets(targets, args)
+    for kind, r, factory in targets:
+        key = r["world"].tobytes()
+        buffer.pop(key, None)
+        buffer[key] = (torch.from_numpy(world_to_state(r["world"])), factory.max_throughput, kind)
+    while len(buffer) > args.self_buffer_size:
+        buffer.popitem(last=False)
+
+    metrics: dict = {"self/buffer_size": len(buffer)}
+    for kind in kinds:
+        kept = [r for k, r, _ in targets if k == kind]
+        n = sum(k == kind for _, k, _ in factories)
+        metrics[f"self/{kind.name}/factory_accept_frac"] = len(kept) / max(n, 1)
+        metrics[f"self/{kind.name}/target_thput"] = float(np.mean([r["thput"] for r in kept])) if kept else 0.0
+        gains = [r["score"] - r["model_score"] for r in kept if "model_score" in r]
+        metrics[f"self/{kind.name}/repair_gain"] = float(np.mean(gains)) if gains else 0.0
+        metrics[f"self/{kind.name}/buffer_frac"] = sum(e[2] == kind for e in buffer.values()) / max(len(buffer), 1)
+    return metrics
+
+
 def build_eval_factories(args: SftArgs) -> list:
     """The held-out (seed, kind, Factory) set: PPO's eval seeds (trials
     included), so a generation eval is directly comparable to PPO's."""
@@ -787,6 +875,8 @@ def train_sft(args: SftArgs):
     t0 = time.time()
     if args.batch_size % args.noise_repeats:
         raise ValueError("batch_size must be a multiple of noise_repeats")
+    if not 0 <= args.self_frac < 0.5:
+        raise ValueError("self_frac must be in [0, 0.5): real factories must stay the majority")
     if args.lw_thput > 0 and args.rl_samples < 2:
         raise ValueError("the throughput loss needs rl_samples >= 2 for its leave-one-out baseline")
 
@@ -834,9 +924,14 @@ def train_sft(args: SftArgs):
     scheduler = build_lr_schedule(optimizer, total_steps, args)
 
     workers = min(16, os.cpu_count() or 1)
+    n_real = args.batch_size // args.noise_repeats
+    # Self-generated targets overwrite extra rows of a fixed-shape batch (real
+    # factories until the buffer has any): growing the batch once the buffer
+    # filled halved training speed on GPU.
+    n_self = round(args.self_frac * n_real)
     loader = DataLoader(
         FactoryStream(args.size, train_seed),
-        batch_size=args.batch_size // args.noise_repeats,
+        batch_size=n_real + n_self,
         num_workers=workers,
         pin_memory=device.type == "cuda",
         persistent_workers=True,
@@ -864,6 +959,13 @@ def train_sft(args: SftArgs):
     next_eval = eval_every
     best_thput, uploaded = -1.0, None
     key = f"val/thput@{args.eval_best_of}"
+    # The self-training replay buffer, oldest first; its own RNGs, so
+    # self_frac=0 leaves training's random stream untouched.
+    buffer: collections.OrderedDict = collections.OrderedDict()
+    self_kinds = sorted({k for _, k, _ in factories if k.name in args.self_kinds}, key=lambda k: k.value)
+    seeds, self_rng = self_seeds(args), random.Random(args.seed)
+    self_gen = torch.Generator(device=device).manual_seed(args.seed)
+    self_rows = window_rows = 0
     samples_seen = step = 0
     acc: dict[str, torch.Tensor] = {}
     n_acc = 0
@@ -874,6 +976,12 @@ def train_sft(args: SftArgs):
         t_data = time.time()
         state_cpu, max_cpu = next(it)
         data_s += time.time() - t_data
+        window_rows += len(max_cpu)
+        if buffer and n_self:
+            rows = self_rng.choices(list(buffer.values()), k=n_self)
+            state_cpu[n_real:] = torch.stack([r[0] for r in rows])
+            max_cpu[n_real:] = torch.tensor([r[1] for r in rows], dtype=max_cpu.dtype)
+            self_rows += n_self
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
         max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
 
@@ -889,9 +997,11 @@ def train_sft(args: SftArgs):
             for pe, pm in zip(ema.parameters(), model.parameters()):
                 pe.lerp_(pm, 1 - decay)
         step += 1
-        samples_seen += state.shape[0]
-        window_samples += state.shape[0]
-        pbar.update(state.shape[0])
+        # Only the first n_real factories count, so the schedule and x-axis
+        # match a run without self-training.
+        samples_seen += n_real * args.noise_repeats
+        window_samples += n_real * args.noise_repeats
+        pbar.update(n_real * args.noise_repeats)
         stats["loss"], stats["grad_norm"] = loss.detach(), grad_norm.detach()
         for k, v in stats.items():
             acc[k] = acc.get(k, 0) + v.to(device)
@@ -917,12 +1027,20 @@ def train_sft(args: SftArgs):
             "perf/val_seconds": t_gen - t_eval,
             "perf/gen_seconds": time.time() - t_gen,
         }
+        if args.self_frac > 0:
+            metrics["self/batch_frac"] = self_rows / max(window_rows, 1)
+            self_rows = window_rows = 0
+        if args.self_frac > 0 and self_kinds and samples_seen < args.num_samples:
+            t_self = time.time()
+            metrics |= self_round(ema, self_kinds, seeds, buffer, args, device, self_gen)
+            metrics["perf/self_seconds"] = time.time() - t_self
         pbar.write(
             f"{samples_seen} samples | loss {metrics['train/loss']:.4f} | val type_acc {metrics['val/type_acc']:.3f} "
             f"identity {metrics['val/identity']:.3f} | {key} {metrics[key]:.3f} "
             f"trial {metrics.get(f'val/trial_thput@{args.eval_best_of}', 0.0):.3f} "
             f"converged {metrics[f'val/converged_frac@{args.eval_best_of}']:.2f} | "
-            f"train {train_seconds:.0f}s (data {data_s:.0f}s) gen {metrics['perf/gen_seconds']:.0f}s"
+            f"train {train_seconds:.0f}s (data {data_s:.0f}s) gen {metrics['perf/gen_seconds']:.0f}s "
+            f"self {metrics.get('perf/self_seconds', 0.0):.0f}s buffer {len(buffer)}"
         )
         if run is not None:
             run.log(metrics, step=samples_seen)

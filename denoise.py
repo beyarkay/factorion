@@ -558,6 +558,40 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
     }
 
 
+_SINGLE_TYPES = [tuple(int(v) for v in _TYPES_NP[i]) for i in range(N_TYPES) if not _IS_MULTI_NP[i]]
+
+
+def improve_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float, steps: int) -> np.ndarray:
+    """Hill-climb up to `steps` single-tile edits, each the best by PPO's
+    score. Only 1x1 entities (or empty) beside something built are tried, so
+    multi-tile entities stay as built."""
+    world = world_CWH.copy()
+    best = score_world(world, max_throughput, cost_scale)["score"]
+    for _ in range(steps):
+        ent = world[_CH_ENT]
+        editable = (
+            (world[_CH_FOOTPRINT] != _FOOTPRINT_UNAVAILABLE)
+            & (_ENTITY_FOOTPRINT_AREAS[ent] == 1)
+            & (ent != _SOURCE_ENT_ID)
+            & (ent != _SINK_ENT_ID)
+        )
+        near = np.lib.stride_tricks.sliding_window_view(np.pad(ent != _EMPTY_ENT_ID, 1), (3, 3)).any((2, 3))
+        move = None
+        for x, y in zip(*np.nonzero(editable & near)):
+            orig = world[:, x, y].copy()
+            for e, d, m in _SINGLE_TYPES:
+                world[[_CH_ENT, _CH_DIR, _CH_MISC, _CH_ITEMS], x, y] = e, d, m, 0
+                s = score_world(world, max_throughput, cost_scale)["score"]
+                if s > best + 1e-9:
+                    best, move = s, (x, y, e, d, m)
+            world[:, x, y] = orig
+        if move is None:
+            break
+        x, y, e, d, m = move
+        world[[_CH_ENT, _CH_DIR, _CH_MISC, _CH_ITEMS], x, y] = e, d, m, 0
+    return world
+
+
 # ── Generation ─────────────────────────────────────────────────────────
 
 
@@ -598,6 +632,35 @@ def generate(model, cond, steps=8, refine=8, temperature=1.0, generator=None):
     return toks, model.conf(logits, toks), converged, n_refine
 
 
+def generate_chains(
+    model, factories, device, *, best_of, steps, refine, temperature, cost_scale, generator, batch_chains
+) -> tuple[list[list[dict]], int, int]:
+    """Denoise `best_of` chains per `(seed, kind, Factory)`, each fully
+    blanked to its markers and walls, then legalize and score every chain's
+    factory. Returns each factory's chain results (`score_world` plus `chain`
+    and `world`), and the totals of converged chains and refine steps."""
+    from factorion import blank_entities
+
+    cond_all = torch.as_tensor(np.stack([world_to_state(blank_entities(f)[0].numpy()) for _, _, f in factories]))
+    chains = [(f, j) for f in range(len(factories)) for j in range(best_of)]
+    results: list[list[dict]] = [[] for _ in factories]
+    n_conv = n_refine_total = 0
+    for lo in range(0, len(chains), batch_chains):
+        chunk = chains[lo : lo + batch_chains]
+        cond = cond_all[[f for f, _ in chunk]].to(device)
+        toks, conf, conv, nref = generate(model, cond, steps, refine, temperature, generator)
+        n_conv += int(conv.sum())
+        n_refine_total += int(nref.sum())
+        typ, rec, part = (t.cpu().numpy() for t in toks)
+        conf_np, cond_np = conf.float().cpu().numpy(), cond.cpu().numpy().astype(np.int64)
+        for i, (f, j) in enumerate(chunk):
+            world = legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
+            r = score_world(world, factories[f][2].max_throughput, cost_scale)
+            r.update(chain=j, world=world)
+            results[f].append(r)
+    return results, n_conv, n_refine_total
+
+
 def run_denoise_eval(
     model,
     factories: list[tuple[int, LessonKind, Factory]],
@@ -623,35 +686,19 @@ def run_denoise_eval(
     convergence and the selected factories' dangling-inserter counts.
     `records` collects one dict (seed, kind, thput, render, ...) per factory.
     """
-    from factorion import blank_entities, render_factory
+    from factorion import render_factory
 
     was_training = model.training
     model.eval()
     gen = torch.Generator(device=device).manual_seed(seed)
-    conds = []
-    for _, _, factory in factories:
-        blank, _ = blank_entities(factory)
-        conds.append(world_to_state(blank.numpy()))
-    cond_all = torch.as_tensor(np.stack(conds))
-    chains = [(f, j) for f in range(len(factories)) for j in range(best_of)]
-    results: list[list[dict]] = [[] for _ in factories]
-    n_conv = n_refine_total = 0
-    for lo in range(0, len(chains), batch_chains):
-        chunk = chains[lo : lo + batch_chains]
-        cond = cond_all[[f for f, _ in chunk]].to(device)
-        toks, conf, conv, nref = generate(model, cond, steps, refine, temperature, gen)
-        n_conv += int(conv.sum())
-        n_refine_total += int(nref.sum())
-        typ, rec, part = (t.cpu().numpy() for t in toks)
-        conf_np, cond_np = conf.float().cpu().numpy(), cond.cpu().numpy().astype(np.int64)
-        for i, (f, j) in enumerate(chunk):
-            world = legalize(cond_np[i, :CH_PART], typ[i], rec[i], part[i] if model.io == "token" else None, conf_np[i])
-            r = score_world(world, factories[f][2].max_throughput, cost_scale)
-            r.update(chain=j, world=world)
-            results[f].append(r)
+    results, n_conv, n_refine_total = generate_chains(
+        model, factories, device, best_of=best_of, steps=steps, refine=refine, temperature=temperature,
+        cost_scale=cost_scale, generator=gen, batch_chains=batch_chains,
+    )
+    chains = len(factories) * best_of
 
     ns = sorted({1, min(8, best_of), best_of})
-    out: dict = {"converged_frac": n_conv / len(chains), "refine_steps": n_refine_total / len(chains)}
+    out: dict = {"converged_frac": n_conv / chains, "refine_steps": n_refine_total / chains}
     for n in ns:
         lesson, trial, per_kind = [], [], {}
         dangling = [0, 0, 0, 0]  # lesson in/out, trial in/out

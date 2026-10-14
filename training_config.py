@@ -346,6 +346,28 @@ class SftArgs(SharedArgs):
     prediction reproduces its input"""
     gen_temperature: float = 1.0
     """sampling temperature of the ancestral steps"""
+    self_frac: float = 0.125
+    """self-generated targets from the replay buffer added to each batch, as a
+    fraction of its real factories (expert iteration; 0 disables it). Added,
+    not substituted, so lessons train on exactly the data they would without
+    it; below 0.5 so real factories stay the majority and the model can't
+    collapse onto its own mode."""
+    self_kinds: tuple[str, ...] = ("TRIAL_RECIPE_TREE_DEPTH_2",)
+    """kinds self-training builds. Not lessons, which train on their
+    references; not depth-1 trials, which the model solves perfectly and whose
+    targets left their eval unchanged; not depth 3, where no build has flowed."""
+    self_factories: int = 8192
+    """training-seed factories (blanked to their markers) the EMA model builds
+    best of eval_best_of at every eval, to refill the buffer: more factories
+    rather than more chains, since best-of-64 barely beats best-of-8"""
+    self_repair_steps: int = 2
+    """greedy single-tile edits applied to each target, each the best by PPO's
+    score, so a target beats the model's own build (0 disables)"""
+    self_top_frac: float = 0.1
+    """fraction of each kind's builds kept as targets, ranked by PPO's score
+    (only builds that flow and leave no inserter dangling qualify)"""
+    self_buffer_size: int = 8192
+    """most self-generated targets kept, oldest evicted first"""
     eval_seeds_per_kind: int = 64
     """held-out factories per training lesson kind (and per trial kind)"""
     eval_batch_chains: int = 2048
