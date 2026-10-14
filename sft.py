@@ -788,9 +788,8 @@ def select_self_targets(factories, results, top_frac: float) -> list[tuple[Lesso
 
 
 def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> dict:
-    """Build `self_factories` training-seed factories (cycling the trial
-    `kinds`: lessons already train on their references) best of `eval_best_of`
-    with the EMA model, add the selected builds to `buffer` (keyed by world
+    """Build `self_factories` training-seed factories (cycling `kinds`) best
+    of `self_best_of` with the EMA model, add the selected builds to `buffer` (keyed by world
     bytes, so a repeat refreshes its place rather than duplicating) and return
     the round's self/ metrics."""
     factories = []
@@ -800,7 +799,7 @@ def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> d
         if (f := build_factory(size=args.size, kind=kind, seed=s)) is not None:
             factories.append((s, kind, f))
     results, _, _ = generate_chains(
-        ema, factories, device, best_of=args.eval_best_of, steps=args.gen_steps, refine=args.gen_refine,
+        ema, factories, device, best_of=args.self_best_of, steps=args.gen_steps, refine=args.gen_refine,
         temperature=args.gen_temperature, cost_scale=PpoArgs.entity_cost_scale, generator=generator,
         batch_chains=args.eval_batch_chains,
     )
@@ -815,7 +814,7 @@ def self_round(ema, kinds, seeds, buffer, args: SftArgs, device, generator) -> d
     metrics: dict = {"self/buffer_size": len(buffer)}
     for kind in kinds:
         thputs = [r["thput"] for k, r, _ in targets if k == kind]
-        n_builds = args.eval_best_of * sum(k == kind for _, k, _ in factories)
+        n_builds = args.self_best_of * sum(k == kind for _, k, _ in factories)
         metrics[f"self/{kind.name}/accept_frac"] = len(thputs) / max(n_builds, 1)
         metrics[f"self/{kind.name}/target_thput"] = float(np.mean(thputs)) if thputs else 0.0
         metrics[f"self/{kind.name}/buffer_frac"] = sum(e[2] == kind for e in buffer.values()) / max(len(buffer), 1)
@@ -934,7 +933,7 @@ def train_sft(args: SftArgs):
     # The self-training replay buffer, oldest first; its own RNGs, so
     # self_frac=0 leaves training's random stream untouched.
     buffer: collections.OrderedDict = collections.OrderedDict()
-    self_kinds = sorted({k for _, k, _ in factories if LESSON_IS_TRIAL[k]}, key=lambda k: k.value)
+    self_kinds = sorted({k for _, k, _ in factories if k.name in args.self_kinds}, key=lambda k: k.value)
     seeds, self_rng = self_seeds(args), random.Random(args.seed)
     self_gen = torch.Generator(device=device).manual_seed(args.seed)
     self_rows = window_rows = 0
@@ -948,12 +947,12 @@ def train_sft(args: SftArgs):
         t_data = time.time()
         state_cpu, max_cpu = next(it)
         data_s += time.time() - t_data
+        n_real = len(max_cpu) * args.noise_repeats
         window_rows += len(max_cpu)
-        if buffer:
-            n_self = round(args.self_frac * len(max_cpu))
+        if buffer and (n_self := round(args.self_frac * len(max_cpu))):
             rows = self_rng.choices(list(buffer.values()), k=n_self)
-            state_cpu[:n_self] = torch.stack([r[0] for r in rows])
-            max_cpu[:n_self] = torch.tensor([r[1] for r in rows], dtype=max_cpu.dtype)
+            state_cpu = torch.cat([state_cpu, torch.stack([r[0] for r in rows])])
+            max_cpu = torch.cat([max_cpu, torch.tensor([r[1] for r in rows], dtype=max_cpu.dtype)])
             self_rows += n_self
         state = state_cpu.to(device, non_blocking=True).long().repeat_interleave(args.noise_repeats, 0)
         max_thput = max_cpu.to(device, torch.float32).repeat_interleave(args.noise_repeats, 0)
@@ -970,9 +969,11 @@ def train_sft(args: SftArgs):
             for pe, pm in zip(ema.parameters(), model.parameters()):
                 pe.lerp_(pm, 1 - decay)
         step += 1
-        samples_seen += state.shape[0]
-        window_samples += state.shape[0]
-        pbar.update(state.shape[0])
+        # Only real examples count, so the schedule and x-axis match a run
+        # without self-training.
+        samples_seen += n_real
+        window_samples += n_real
+        pbar.update(n_real)
         stats["loss"], stats["grad_norm"] = loss.detach(), grad_norm.detach()
         for k, v in stats.items():
             acc[k] = acc.get(k, 0) + v.to(device)
@@ -999,7 +1000,7 @@ def train_sft(args: SftArgs):
             "perf/gen_seconds": time.time() - t_gen,
         }
         if args.self_frac > 0:
-            metrics["self/batch_frac"] = self_rows / max(window_rows, 1)
+            metrics["self/batch_frac"] = self_rows / max(window_rows + self_rows, 1)
             self_rows = window_rows = 0
         if args.self_frac > 0 and self_kinds and samples_seen < args.num_samples:
             t_self = time.time()

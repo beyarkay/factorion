@@ -234,13 +234,14 @@ class TestSelfTraining:
         assert select_self_targets([(0, LessonKind.SAME_SIDE_1IN, f)], [[self._build(f, world)]], 1.0) == []
 
     def test_train_sft_fills_the_buffer_and_trains_from_it(self, monkeypatch, tmp_path):
-        """Self-training builds trials only. With each one's first build
+        """Self-training builds only `self_kinds`. With each one's first build
         swapped for a flowing factory (an untrained model builds nothing that
-        flows), it fills the buffer and is trained on."""
+        flows), it fills the buffer and is trained on, on top of the real
+        factories."""
         real_chains, real_step = sft.generate_chains, sft.denoise_step
         donor = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
         assert donor is not None
-        built, trained = [], []
+        built, trained, batch_sizes = [], [], []
 
         def fake_chains(model, factories, *a, **k):
             results, n_conv, n_ref = real_chains(model, factories, *a, **k)
@@ -250,6 +251,7 @@ class TestSelfTraining:
             return results, n_conv, n_ref
 
         def spy_step(model, state, *a, **k):
+            batch_sizes.append(len(state))
             trained.extend(s.to(torch.uint8).numpy().tobytes() for s in state.cpu())
             return real_step(model, state, *a, **k)
 
@@ -264,11 +266,15 @@ class TestSelfTraining:
         )
         train_sft(args)
 
-        assert built and all(LESSON_IS_TRIAL[k] for k in built)
+        assert built and all(k.name in args.self_kinds for k in built)
         self_logs = [m for m in logged if "self/buffer_size" in m]
         assert len(self_logs) == 2 and self_logs[0]["self/buffer_size"] == 1
-        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_1/accept_frac"] > 0
-        assert logged[-1]["self/batch_frac"] == pytest.approx(0.25)
+        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_2/accept_frac"] > 0
+        # One buffer factory joins each batch's four real ones; only the real
+        # examples count towards num_samples.
+        assert logged[-1]["self/batch_frac"] == pytest.approx(0.2)
+        assert set(batch_sizes) == {16, 20}
+        assert json.loads((tmp_path / "k.json").read_text())["samples_seen"] == 96
         assert world_to_state(donor.world_CWH).tobytes() in trained
 
     def test_off_never_generates(self, monkeypatch, tmp_path):
