@@ -12,7 +12,7 @@ import math
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 ELEVATION = math.radians(38)
 FOOTPRINT = (4, 2)
@@ -24,6 +24,14 @@ sprite_dir.mkdir(parents=True, exist_ok=True)
 def load(name):
     im = Image.open(render_dir / f"{name}.png").convert("RGBA")
     return im.resize((im.width // 2, im.height // 2), Image.LANCZOS)
+
+
+def sharpen(im):
+    """Crisp the edges the way Wube's hand paint-over does."""
+    rgb = im.convert("RGB").filter(ImageFilter.UnsharpMask(radius=1.2, percent=70, threshold=1))
+    out = rgb.convert("RGBA")
+    out.putalpha(im.getchannel("A"))
+    return out
 
 
 def crop(im, anchor):
@@ -38,7 +46,7 @@ def crop(im, anchor):
     return sprite, shift
 
 
-main = load("main")
+main = sharpen(load("main"))
 # The sky darkens the whole catcher a little; only the sun's shadow counts.
 shadow_alpha = load("shadow").getchannel("A").point(lambda a: max(0, min(255, (a - 40) * 255 // 200)))
 shadow = Image.new("RGBA", main.size, (0, 0, 0, 255))
