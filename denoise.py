@@ -558,6 +558,40 @@ def score_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float)
     }
 
 
+_SINGLE_TYPES = [tuple(int(v) for v in _TYPES_NP[i]) for i in range(N_TYPES) if not _IS_MULTI_NP[i]]
+
+
+def improve_world(world_CWH: np.ndarray, max_throughput: float, cost_scale: float, steps: int) -> np.ndarray:
+    """Hill-climb up to `steps` single-tile edits, each the best by PPO's
+    score. Only 1x1 entities (or empty) beside something built are tried, so
+    multi-tile entities stay as built."""
+    world = world_CWH.copy()
+    best = score_world(world, max_throughput, cost_scale)["score"]
+    for _ in range(steps):
+        ent = world[_CH_ENT]
+        editable = (
+            (world[_CH_FOOTPRINT] != _FOOTPRINT_UNAVAILABLE)
+            & (_ENTITY_FOOTPRINT_AREAS[ent] == 1)
+            & (ent != _SOURCE_ENT_ID)
+            & (ent != _SINK_ENT_ID)
+        )
+        near = np.lib.stride_tricks.sliding_window_view(np.pad(ent != _EMPTY_ENT_ID, 1), (3, 3)).any((2, 3))
+        move = None
+        for x, y in zip(*np.nonzero(editable & near)):
+            orig = world[:, x, y].copy()
+            for e, d, m in _SINGLE_TYPES:
+                world[[_CH_ENT, _CH_DIR, _CH_MISC, _CH_ITEMS], x, y] = e, d, m, 0
+                s = score_world(world, max_throughput, cost_scale)["score"]
+                if s > best + 1e-9:
+                    best, move = s, (x, y, e, d, m)
+            world[:, x, y] = orig
+        if move is None:
+            break
+        x, y, e, d, m = move
+        world[[_CH_ENT, _CH_DIR, _CH_MISC, _CH_ITEMS], x, y] = e, d, m, 0
+    return world
+
+
 # ── Generation ─────────────────────────────────────────────────────────
 
 

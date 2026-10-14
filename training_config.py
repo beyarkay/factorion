@@ -352,16 +352,17 @@ class SftArgs(SharedArgs):
     not substituted, so lessons train on exactly the data they would without
     it; below 0.5 so real factories stay the majority and the model can't
     collapse onto its own mode."""
-    self_kinds: tuple[str, ...] = ("TRIAL_RECIPE_TREE_DEPTH_2", "TRIAL_RECIPE_TREE_DEPTH_3")
+    self_kinds: tuple[str, ...] = ("TRIAL_RECIPE_TREE_DEPTH_2",)
     """kinds self-training builds. Not lessons, which train on their
-    references, nor depth-1 trials, which the model already solves perfectly
-    and whose targets left their eval unchanged."""
-    self_factories: int = 4096
+    references; not depth-1 trials, which the model solves perfectly and whose
+    targets left their eval unchanged; not depth 3, where no build has flowed."""
+    self_factories: int = 8192
     """training-seed factories (blanked to their markers) the EMA model builds
-    at every eval, to refill the buffer"""
-    self_best_of: int = 16
-    """chains per self-training factory: more than the eval's, so the expert
-    finds builds the model alone rarely makes"""
+    best of eval_best_of at every eval, to refill the buffer: more factories
+    rather than more chains, since best-of-64 barely beats best-of-8"""
+    self_repair_steps: int = 2
+    """greedy single-tile edits applied to each target, each the best by PPO's
+    score, so a target beats the model's own build (0 disables)"""
     self_top_frac: float = 0.1
     """fraction of each kind's builds kept as targets, ranked by PPO's score
     (only builds that flow and leave no inserter dangling qualify)"""

@@ -27,7 +27,7 @@ from helpers import (
     str2ent,
 )
 from factorion import LESSON_IS_TRIAL, Footprint
-from denoise import DenoiserUNet, load_denoiser, score_world, world_to_state
+from denoise import DenoiserUNet, improve_world, load_denoiser, score_world, world_to_state
 import sft
 from sft import (
     SftArgs,
@@ -221,6 +221,25 @@ class TestSelfTraining:
         )
         assert [(k, r["chain"]) for k, r, _ in kept] == [(LessonKind.SAME_SIDE_1IN, 0), (trial, 3)]
 
+    def test_keeps_one_build_per_factory(self):
+        f = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
+        assert f is not None
+        builds = [self._build(f, f.world_CWH.numpy(), j) for j in range(4)]
+        kept = select_self_targets([(0, LessonKind.SAME_SIDE_1IN, f)], [builds], 1.0)
+        assert [r["chain"] for _, r, _ in kept] == [0]
+
+    def test_improve_world_adds_the_missing_inserter(self):
+        """The reference starves its second machine of input; one edit feeds it."""
+        f = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
+        assert f is not None
+        ref = f.world_CWH.numpy()
+        assert (improve_world(ref, f.max_throughput, PpoArgs.entity_cost_scale, 0) == ref).all()
+        better = improve_world(ref, f.max_throughput, PpoArgs.entity_cost_scale, 1)
+        changed = np.argwhere((better != ref).any(0))
+        assert len(changed) == 1 and better[Channel.ENTITIES.value, *changed[0]] == str2ent("inserter").value
+        score = lambda w: score_world(w, f.max_throughput, PpoArgs.entity_cost_scale)["score"]  # noqa: E731
+        assert score(better) > score(ref)
+
     def test_rejects_dangling_inserters(self):
         f = build_factory(size=15, kind=LessonKind.SAME_SIDE_1IN, seed=0)
         assert f is not None
@@ -255,6 +274,7 @@ class TestSelfTraining:
             trained.extend(s.to(torch.uint8).numpy().tobytes() for s in state.cpu())
             return real_step(model, state, *a, **k)
 
+        repaired = improve_world(donor.world_CWH.numpy(), 1.0, PpoArgs.entity_cost_scale, 2)
         logged: list = []
         _fake_wandb(monkeypatch, logged)
         monkeypatch.setattr(sft, "generate_chains", fake_chains)
@@ -269,13 +289,14 @@ class TestSelfTraining:
         assert built and all(k.name in args.self_kinds for k in built)
         self_logs = [m for m in logged if "self/buffer_size" in m]
         assert len(self_logs) == 2 and self_logs[0]["self/buffer_size"] == 1
-        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_2/accept_frac"] > 0
-        # One buffer factory joins each batch's four real ones; only the real
-        # examples count towards num_samples.
+        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_2/factory_accept_frac"] > 0
+        assert self_logs[0]["self/TRIAL_RECIPE_TREE_DEPTH_2/repair_gain"] > 0
+        # One buffer factory fills each batch's fifth row; only the four real
+        # ones count towards num_samples.
         assert logged[-1]["self/batch_frac"] == pytest.approx(0.2)
-        assert set(batch_sizes) == {16, 20}
+        assert set(batch_sizes) == {20}
         assert json.loads((tmp_path / "k.json").read_text())["samples_seen"] == 96
-        assert world_to_state(donor.world_CWH).tobytes() in trained
+        assert world_to_state(repaired).tobytes() in trained
 
     def test_off_never_generates(self, monkeypatch, tmp_path):
         logged: list = []
