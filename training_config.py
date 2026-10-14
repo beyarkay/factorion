@@ -346,7 +346,7 @@ class SftArgs(SharedArgs):
     prediction reproduces its input"""
     gen_temperature: float = 1.0
     """sampling temperature of the ancestral steps"""
-    eval_seeds_per_kind: int = 16
+    eval_seeds_per_kind: int = 64
     """held-out factories per training lesson kind (and per trial kind)"""
     eval_batch_chains: int = 2048
     """chains denoised per batched forward"""
