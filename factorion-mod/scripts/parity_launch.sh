@@ -32,6 +32,7 @@ case "$(uname -s)" in
       "$HOME/.factorio/bin/x64/factorio"
       "$HOME/.local/share/Steam/steamapps/common/Factorio/bin/x64/factorio"
       "/usr/share/factorio/bin/x64/factorio"
+      "${FACTORIO_HEADLESS_DIR:-$HOME/.cache/factorio-headless}/factorio/bin/x64/factorio"
     )
     ;;
   MINGW*|MSYS*|CYGWIN*)
@@ -52,6 +53,7 @@ fi
 if [[ -z "${FACTORIO_BIN:-}" || ! -x "$FACTORIO_BIN" ]]; then
   echo "Could not find Factorio binary. Set FACTORIO_BIN, e.g.:" >&2
   echo "  FACTORIO_BIN=/path/to/factorio $0 $*" >&2
+  echo "or install the free headless server: factorion-mod/scripts/install_headless.sh" >&2
   exit 1
 fi
 
