@@ -2650,9 +2650,6 @@ fn am1_recipes(n_ingredients: usize) -> Option<NonEmpty<(Item, Recipe)>> {
 /// north-face slots split between 1-2 plain inserters taking from the input
 /// lane and 1-2 long-handed inserters reaching from the machine over the
 /// input lane onto the output lane; the sink sits beyond the output lane.
-/// With one face shared by both directions a machine gets at most three
-/// inserters, so `max_throughput` is the row's [`assembler_row_ceiling`]
-/// rather than this sample's rate.
 fn build_factory_1_ingredient(
     size: usize,
     rng: &mut Rng,
@@ -2982,21 +2979,7 @@ fn build_factory_1_ingredient(
             continue;
         }
 
-        let built = finish(world, total_entities, vec![], count)?;
-        if same_side {
-            // A gapless row packs the most machines the width allows; its
-            // shared face holds at most two inserters each way.
-            return Some(BuiltFactory {
-                max_throughput: assembler_row_ceiling(
-                    &recipe,
-                    s / 3,
-                    2.0 * Item::Inserter.flow_rate(),
-                    2.0 * Item::LongHandedInserter.flow_rate(),
-                ),
-                ..built
-            });
-        }
-        return Some(built);
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -3014,7 +2997,6 @@ fn build_factory_1_ingredient(
 /// The source sits anywhere above the splitter and the sink anywhere below
 /// the output lane, wired up by the UG-aware router (the sink route tries
 /// both output-lane directions); the world is then randomly rotated.
-/// `max_throughput` is the row's [`assembler_row_ceiling`].
 fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 9 rows: the splitter's feed tile, the splitter,
@@ -3230,16 +3212,7 @@ fn build_splitter_1in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<B
             continue;
         }
 
-        // A gapless row packs the most machines the width allows.
-        return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(
-                &recipe,
-                s / 3,
-                3.0 * Item::Inserter.flow_rate(),
-                3.0 * Item::Inserter.flow_rate(),
-            ),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -3882,8 +3855,7 @@ fn wire_markers(
 /// its taps, its upstream tile fed by a source route (the output lane's
 /// downstream tile starts the sink route). The
 /// sources and sink sit at any free cells, wired up by [`wire_markers`]; the
-/// world is then randomly flipped/rotated. `max_throughput` is the row's
-/// [`assembler_row_ceiling`].
+/// world is then randomly flipped/rotated.
 fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows: A lane, A inserters, 3 assembler rows,
@@ -4047,17 +4019,7 @@ fn build_opposite_feeds_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Op
             continue;
         }
 
-        // A gapless row packs the most machines the width allows; a machine
-        // takes up to three A and two B inserters and two long-handed out.
-        return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(
-                recipe,
-                s / 3,
-                5.0 * Item::Inserter.flow_rate(),
-                2.0 * Item::LongHandedInserter.flow_rate(),
-            ),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -4069,8 +4031,6 @@ struct TwoStage {
     product: Recipe,
     x_key: Item,
     x: Recipe,
-    /// How many X one product craft consumes.
-    x_qty: f64,
     /// The product's ingredient other than `x`.
     other: Item,
 }
@@ -4095,7 +4055,6 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
                         product: r.clone(),
                         x_key,
                         x: x_recipe,
-                        x_qty: ings[k].1,
                         other: ings[1 - k].0,
                     })
                 })
@@ -4124,8 +4083,7 @@ fn two_stage_recipes() -> Option<NonEmpty<TwoStage>> {
 ///
 /// Lane directions are drawn per seed, the sources and sink sit at any free
 /// cells wired up by [`wire_markers`], and the world is then randomly
-/// flipped/rotated. `max_throughput` is the [`two_stage_ceiling`] of the
-/// most pairs either arrangement fits.
+/// flipped/rotated.
 fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Option<BuiltFactory> {
     let s = size as i64;
     // Canonical footprint is 8 rows (raw lane, its inserters, 3 machine
@@ -4342,13 +4300,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
             continue;
         }
 
-        // Each product machine has its own X machine; stacking fits one pair
-        // per three columns.
-        let pairs = if s >= 12 { s / 3 } else { n_pairs };
-        return Some(BuiltFactory {
-            max_throughput: two_stage_ceiling(stages, pairs, pairs, f64::INFINITY),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -4373,9 +4325,7 @@ fn build_direct_insert_2in(size: usize, rng: &mut Rng, max_entities: f64) -> Opt
 ///
 /// The north and output lanes' directions are drawn per seed, the sources
 /// and sink sit at any free cells wired up by [`wire_markers`], and the world
-/// is then randomly flipped/rotated. `max_throughput` is the best
-/// [`two_stage_ceiling`] over splits of the machines the grid fits between
-/// the stages.
+/// is then randomly flipped/rotated.
 fn build_intermediate_belt_2in(
     size: usize,
     rng: &mut Rng,
@@ -4628,16 +4578,7 @@ fn build_intermediate_belt_2in(
             continue;
         }
 
-        // The row's machines split between the stages, and X reaches the
-        // product machines on the one lane its inserters drop onto.
-        let machines = s / 3;
-        let lane = Item::TransportBelt.flow_rate() / 2.0;
-        return Some(BuiltFactory {
-            max_throughput: (1..machines)
-                .map(|n_x| two_stage_ceiling(stages, n_x, machines - n_x, lane))
-                .fold(0.0, f64::max),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -4655,9 +4596,7 @@ fn build_intermediate_belt_2in(
 ///
 /// The input belt's direction is drawn per seed, the sources and sink sit at
 /// any free cells wired up by [`wire_markers`], and the world is then
-/// randomly flipped/rotated. `max_throughput` is the
-/// [`assembler_row_ceiling`] of both rows packed beside the collector, capped
-/// by what the shared input belt and the collector carry.
+/// randomly flipped/rotated.
 fn build_mirrored(
     size: usize,
     rng: &mut Rng,
@@ -4855,24 +4794,7 @@ fn build_mirrored(
             continue;
         }
 
-        // Gapless rows pack the most machines beside the collector, whose one
-        // belt carries everything to the sink; the shared input belt carries
-        // each ingredient on both lanes, or on one lane apiece for two.
-        let plain3 = 3.0 * Item::Inserter.flow_rate();
-        let belt = Item::TransportBelt.flow_rate();
-        let supply = if two_in { belt / 2.0 } else { belt };
-        let fed = recipe
-            .consumes
-            .iter()
-            .map(|&(_, qty)| supply / qty)
-            .fold(f64::INFINITY, f64::min)
-            * recipe.produces.first().1;
-        return Some(BuiltFactory {
-            max_throughput: assembler_row_ceiling(recipe, 2 * ((s - 1) / 3), plain3, plain3)
-                .min(belt)
-                .min(fed),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -4898,8 +4820,6 @@ fn build_mirrored(
 ///
 /// The sources sit at any free cells and the sink beyond the output exit,
 /// wired up by the UG-aware router as in REACH_OVER_2IN.
-/// `max_throughput` is the analytic [`assembler_row_ceiling`] of the machines
-/// the grid fits, not this sample's own rate.
 fn build_factory_n_ingredients(
     size: usize,
     rng: &mut Rng,
@@ -5122,16 +5042,7 @@ fn build_factory_n_ingredients(
             continue;
         }
 
-        return Some(BuiltFactory {
-            // Up to two long-handed and one plain inserter in, three out.
-            max_throughput: assembler_row_ceiling(
-                recipe,
-                n_asm,
-                2.0 * Item::LongHandedInserter.flow_rate() + Item::Inserter.flow_rate(),
-                3.0 * Item::Inserter.flow_rate(),
-            ),
-            ..finish(world, total_entities, vec![], count)?
-        });
+        return finish(world, total_entities, vec![], count);
     }
     None
 }
@@ -5563,44 +5474,6 @@ fn build_recipe_tree_trial(size: usize, rng: &mut Rng, depth: usize) -> Option<B
         });
     }
     None
-}
-
-/// The throughput ceiling of an assembler lesson: `machines` saturated
-/// assemblers crafting `recipe`, each fed by at most `feed_in` and drained by
-/// at most `feed_out` items/s of inserters — the most the lesson's layout
-/// gives one machine. Being `machines` single-machine ceilings, it scores a
-/// one-machine build at `1 / machines`.
-///
-/// Normalizing by the sampled build's own rate instead makes `max_throughput`
-/// a floor: packing the row (#453) fixed the machine count, but the inserter
-/// counts and the feed pattern are still drawn per seed, so the reference
-/// rate varies within one recipe (up to 2.5× on the two-ingredient columns) and
-/// the uncapped PPO score pays a policy for out-building the unlucky draw
-/// (#426). The terms are the engine's own limits — an assembler scales
-/// `produces` by input sufficiency and never past 1×, the input inserters
-/// share their capacity across every ingredient a craft needs (the best split
-/// caps the ratio at `feed_in / Σ consumes`), and the output inserters drain
-/// at most `feed_out`.
-fn assembler_row_ceiling(recipe: &Recipe, machines: i64, feed_in: f64, feed_out: f64) -> f64 {
-    let per_craft: f64 = recipe.consumes.iter().map(|&(_, qty)| qty).sum();
-    let produces = recipe.produces.first().1;
-    machines as f64 * (produces * (feed_in / per_craft).min(1.0)).min(feed_out)
-}
-
-/// The [`assembler_row_ceiling`] of `n_p` product machines that get X only
-/// from `n_x` X machines, delivering at most `x_cap` X/s. An X machine takes
-/// and hands on through three plain inserters; a product machine takes
-/// through five and drains through two long-handed ones.
-fn two_stage_ceiling(ts: &TwoStage, n_x: i64, n_p: i64, x_cap: f64) -> f64 {
-    let plain = Item::Inserter.flow_rate();
-    let x_rate = assembler_row_ceiling(&ts.x, n_x, 3.0 * plain, 3.0 * plain).min(x_cap);
-    assembler_row_ceiling(
-        &ts.product,
-        n_p,
-        5.0 * plain,
-        2.0 * Item::LongHandedInserter.flow_rate(),
-    )
-    .min(x_rate / ts.x_qty * ts.product.produces.first().1)
 }
 
 /// Wrap a finished factory, but honor the rejection-sampling budget: a
@@ -6075,7 +5948,7 @@ mod tests {
         // Every build flows with no orphans; each machine has at least one
         // plain inserter taking from the input lane and one long-handed
         // inserter reaching over it to the output lane, three at most on the
-        // shared face; the reference never beats the row's ceiling.
+        // shared face.
         for size in [11usize, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(size, LessonKind::SameSide1In, seed, true, f64::INFINITY)
@@ -6091,23 +5964,6 @@ mod tests {
                     "size={size} seed={seed}"
                 );
                 assert!(long + plain <= 3 * machines, "size={size} seed={seed}");
-
-                let recipe_item = (0..f.world.width())
-                    .flat_map(|x| (0..f.world.height()).map(move |y| (x, y)))
-                    .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::AssemblingMachine1))
-                    .and_then(|(x, y)| f.world.item_at(x, y))
-                    .unwrap();
-                let recipe = crate::types::get_recipe(recipe_item).unwrap();
-                assert_eq!(
-                    f.max_throughput,
-                    assembler_row_ceiling(
-                        &recipe,
-                        (size / 3) as i64,
-                        2.0 * Item::Inserter.flow_rate(),
-                        2.0 * Item::LongHandedInserter.flow_rate()
-                    )
-                );
-                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
             }
         }
     }
@@ -6115,8 +5971,7 @@ mod tests {
     #[test]
     fn test_splitter_1in_smoke() {
         // Every build flows with no orphans through exactly one splitter, and
-        // erasing the splitter zeroes throughput (the source feeds only it);
-        // the reference never beats the row's ceiling.
+        // erasing the splitter zeroes throughput (the source feeds only it).
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(size, LessonKind::Splitter1In, seed, true, f64::INFINITY)
@@ -6129,7 +5984,6 @@ mod tests {
                     2,
                     "size={size} seed={seed}"
                 );
-                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let mut no_splitter = f.world.clone();
                 for x in 0..f.world.width() {
@@ -6151,8 +6005,8 @@ mod tests {
     #[test]
     fn test_opposite_feeds_2in_smoke() {
         // Every build flows with no orphans; each machine drains through at
-        // least one long-handed inserter; the reference never beats the
-        // ceiling; and erasing either source zeroes throughput.
+        // least one long-handed inserter; and erasing either source zeroes
+        // throughput.
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(
@@ -6168,7 +6022,6 @@ mod tests {
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
                 let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
                 assert!(count_entity(&f.world, Item::LongHandedInserter) >= machines);
-                assert!(tp <= f.max_throughput, "size={size} seed={seed}");
                 let mut sources = 0;
                 for x in 0..f.world.width() {
                     for y in 0..f.world.height() {
@@ -6188,9 +6041,8 @@ mod tests {
     #[test]
     fn test_direct_insert_2in_smoke() {
         // Every build flows with no orphans through as many intermediate as
-        // product machines; the reference never beats the ceiling; and
-        // erasing the intermediate machines zeroes throughput — the product
-        // really is crafted in two stages.
+        // product machines; and erasing the intermediate machines zeroes
+        // throughput — the product really is crafted in two stages.
         for size in [9usize, 11, 15] {
             for seed in 0..20u64 {
                 let f = build_factory(size, LessonKind::DirectInsert2In, seed, true, f64::INFINITY)
@@ -6198,7 +6050,6 @@ mod tests {
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
-                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let mut sink_item = None;
                 let mut asm_tiles: Vec<(usize, usize, Item)> = Vec::new();
@@ -6233,8 +6084,7 @@ mod tests {
     #[test]
     fn test_intermediate_belt_2in_smoke() {
         // Every build flows with no orphans through at least one machine of
-        // each stage; the reference never beats the ceiling; and erasing the
-        // intermediate machines zeroes throughput — the product really is
+        // each stage; and erasing the intermediate machines zeroes throughput — the product really is
         // crafted in two stages. A build fed by one shared source does it
         // through a splitter, and both kinds of build occur.
         let (mut shared, mut split) = (0, 0);
@@ -6251,7 +6101,6 @@ mod tests {
                 let (tp, unreachable) = tp_unreachable(&f.world);
                 assert!(tp > 0.0, "size={size} seed={seed}");
                 assert_eq!(unreachable, 0, "size={size} seed={seed}");
-                assert!(tp <= f.max_throughput + 1e-9, "size={size} seed={seed}");
 
                 let splitters = count_entity(&f.world, Item::Splitter);
                 assert_eq!(
@@ -6296,37 +6145,10 @@ mod tests {
     }
 
     #[test]
-    fn test_intermediate_belt_2in_ceiling_splits_stages() {
-        // Five machines making transport belts (1 gear + 1 plate -> 2) from
-        // gears, each at most one craft a second: two gear machines feed 4
-        // belts/s to three product machines, three feed two that make 4.
-        let mut checked = 0;
-        for seed in 0..200u64 {
-            let f = build_factory(
-                15,
-                LessonKind::IntermediateBelt2In,
-                seed,
-                true,
-                f64::INFINITY,
-            )
-            .unwrap();
-            let sink = (0..15)
-                .flat_map(|x| (0..15).map(move |y| (x, y)))
-                .find(|&(x, y)| f.world.entity_at(x, y) == Some(Item::Sink))
-                .unwrap();
-            if f.world.item_at(sink.0, sink.1) == Some(Item::TransportBelt) {
-                checked += 1;
-                assert!((f.max_throughput - 4.0).abs() < 1e-9, "seed={seed}");
-            }
-        }
-        assert!(checked > 0);
-    }
-
-    #[test]
     fn test_mirrored_smoke() {
         // Every build flows with no orphans through two equal rows of
-        // machines, one source per ingredient; the reference never beats the
-        // ceiling; and erasing any source zeroes throughput.
+        // machines, one source per ingredient; and erasing any source zeroes
+        // throughput.
         for (kind, n_in) in [(LessonKind::Mirrored1In, 1), (LessonKind::Mirrored2In, 2)] {
             for size in [15usize] {
                 let mut built = 0;
@@ -6338,14 +6160,6 @@ mod tests {
                     let (tp, unreachable) = tp_unreachable(&f.world);
                     assert!(tp > 0.0, "{kind:?} size={size} seed={seed}");
                     assert_eq!(unreachable, 0, "{kind:?} size={size} seed={seed}");
-                    assert!(
-                        tp <= f.max_throughput + 1e-9,
-                        "{kind:?} size={size} seed={seed}"
-                    );
-                    assert!(
-                        f.max_throughput <= Item::TransportBelt.flow_rate(),
-                        "{kind:?} size={size} seed={seed}"
-                    );
                     let machines = count_entity(&f.world, Item::AssemblingMachine1) / 9;
                     assert!(
                         machines >= 2 && machines.is_multiple_of(2),
@@ -6378,8 +6192,8 @@ mod tests {
         // Every build flows with no orphans; its n sources carry exactly the
         // recipe's ingredients and its sink the product; the column is packed
         // to capacity with each machine tapping both belts (plain inserters on
-        // the near belt, long-handed over it to the far one); the reference
-        // never beats the ceiling; and erasing any source zeroes throughput.
+        // the near belt, long-handed over it to the far one); and erasing any
+        // source zeroes throughput.
         for (kind, n, size, machines) in [
             (LessonKind::ReachOver3In, 3, 11usize, 3usize),
             (LessonKind::ReachOver3In, 3, 15, 4),
@@ -6425,17 +6239,6 @@ mod tests {
                 assert_eq!(got, want, "{kind:?} size={size} seed={seed}");
                 assert_eq!(want.len(), n);
                 assert_eq!(sink_item, Some(recipe.produces.first().0));
-
-                assert_eq!(
-                    f.max_throughput,
-                    assembler_row_ceiling(
-                        &recipe,
-                        machines as i64,
-                        2.0 * Item::LongHandedInserter.flow_rate() + Item::Inserter.flow_rate(),
-                        3.0 * Item::Inserter.flow_rate()
-                    )
-                );
-                assert!(tp <= f.max_throughput, "{kind:?} size={size} seed={seed}");
 
                 for &(x, y, _) in &sources {
                     let mut crippled = f.world.clone();
@@ -7372,6 +7175,28 @@ mod tests {
                 );
             }
             assert!(checked > 0, "no {} factories built", kind.name());
+        }
+    }
+
+    #[test]
+    fn test_max_throughput_is_the_solved_rate_every_lesson() {
+        // Every lesson normalizes by its own reference's simulated rate, so
+        // rebuilding the reference scores exactly 1.
+        for &kind in all_lesson_kinds() {
+            if kind.is_trial() {
+                continue;
+            }
+            for seed in 0..10u64 {
+                let Some(f) = build_factory(15, kind, seed, true, f64::INFINITY) else {
+                    continue;
+                };
+                assert_eq!(
+                    f.max_throughput,
+                    world_throughput(&f.world),
+                    "{} seed={seed}",
+                    kind.name()
+                );
+            }
         }
     }
 
