@@ -197,8 +197,10 @@ factory and Factorio-side per-entity diagnostics — belt lane occupancy,
 machine status counts (`item_ingredient_shortage`, `output_full`, …),
 `products_finished` deltas, inserter held fractions — to localise where
 flow stalls, per the diagnosis idea in #261. The exit code is 0 iff every
-sink of every factory matched. This is a local, on-demand tool — it needs
-a licensed Factorio install, so it deliberately does not run in CI.
+sink of every factory matched. This is a local, on-demand tool, so it
+deliberately does not run in CI. It needs no licence: on Linux,
+`scripts/install_headless.sh` downloads the free headless server, which
+`parity_launch.sh` then finds on its own.
 
 Runs narrate themselves in-game: chat messages (`game.print`, which also
 reach the headless server console) announce build errors, warmup→measure
