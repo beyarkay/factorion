@@ -32,6 +32,7 @@ case "$(uname -s)" in
       "$HOME/.factorio/bin/x64/factorio"
       "$HOME/.local/share/Steam/steamapps/common/Factorio/bin/x64/factorio"
       "/usr/share/factorio/bin/x64/factorio"
+      "${FACTORIO_HEADLESS_DIR:-$HOME/.cache/factorio-headless}/factorio/bin/x64/factorio"
     )
     ;;
   MINGW*|MSYS*|CYGWIN*)
@@ -52,6 +53,7 @@ fi
 if [[ -z "${FACTORIO_BIN:-}" || ! -x "$FACTORIO_BIN" ]]; then
   echo "Could not find Factorio binary. Set FACTORIO_BIN, e.g.:" >&2
   echo "  FACTORIO_BIN=/path/to/factorio $0 $*" >&2
+  echo "or install the free headless server: factorion-mod/scripts/install_headless.sh" >&2
   exit 1
 fi
 
@@ -74,9 +76,15 @@ echo "[parity] RCON port       : $RCON_PORT"
 
 # ----- spawn a headless Factorio ---------------------------------------------
 # The freeplay scenario gives us a normal game world without needing a
-# save file; RCON binds at launch in --start-server modes.
+# save file; RCON binds at launch in --start-server modes. A server with no
+# player connected auto-pauses (~0.1 ticks/s), so the harness would never
+# finish without auto_pause off; Factorio rejects the file without the
+# name/description/visibility keys.
+SERVER_SETTINGS="$(mktemp)"
+echo '{"name": "factorion-parity", "description": "", "visibility": {"public": false, "lan": false}, "auto_pause": false}' > "$SERVER_SETTINGS"
 "$FACTORIO_BIN" \
   --start-server-load-scenario base/freeplay \
+  --server-settings "$SERVER_SETTINGS" \
   --rcon-bind "127.0.0.1:$RCON_PORT" \
   --rcon-password "$RCON_PASSWORD" \
   &
@@ -88,6 +96,7 @@ cleanup() {
   if kill -0 "$FACTORIO_PID" 2>/dev/null; then
     kill "$FACTORIO_PID" 2>/dev/null || true
   fi
+  rm -f "$SERVER_SETTINGS"
 }
 trap cleanup EXIT INT TERM
 
