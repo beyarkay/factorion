@@ -181,11 +181,36 @@ local function has_power(server)
   return server_power(server).energy > 0
 end
 
+-- Within one survey or window refresh the map doesn't change, so a server's
+-- paint and a surface's clusters are worked out once instead of once per
+-- server that asks.
+local memo
+
+local function memoized(kind, key, compute)
+  if not memo then return compute() end
+  memo[kind] = memo[kind] or {}
+  local hit = memo[kind][key]
+  if not hit then
+    hit = { compute() }
+    memo[kind][key] = hit
+  end
+  return table.unpack(hit, 1, 2)
+end
+
+local function with_memo(fn)
+  if memo then return fn() end
+  memo = {}
+  local results = { fn() }
+  memo = nil
+  return table.unpack(results, 1, 4)
+end
+
 -- The painted tiles connected to start, as tile keys; nil once they outgrow
 -- the size x size grid, unless confined to window. Tiles under blocked (a GPU
 -- server) don't count.
 local function flood_paint(surface, start, size, window, blocked)
-  local x0, y0, x1, y1 = tile_box(blocked)
+  local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+  if blocked then x0, y0, x1, y1 = tile_box(blocked) end
   local function free_paint(x, y)
     local under = x >= x0 and x <= x1 and y >= y0 and y <= y1
     local inside = not window or (x >= window.x and x < window.x + size
@@ -210,6 +235,34 @@ local function flood_paint(surface, start, size, window, blocked)
   return area
 end
 
+-- Every server beside one region floods the same paint, so within a survey
+-- the flood is shared: by any of its tiles, less the tiles under server when
+-- it stands on the paint.
+local function shared_flood(surface, start, size, server)
+  local floods = memo and memo.floods
+  if memo and not floods then
+    floods = {}
+    memo.floods = floods
+  end
+  local key = surface.index .. ":" .. tile_key(start.x, start.y)
+  local area = floods and floods[key]
+  if area == nil then
+    area = flood_paint(surface, start, size, nil, nil) or false
+    if floods and area then
+      for tile in pairs(area) do floods[surface.index .. ":" .. tile] = area end
+    elseif floods then
+      floods[key] = false
+    end
+  end
+  if not area then return nil end
+  local x0, y0, x1, y1 = tile_box(server)
+  local under = false
+  for x = x0, x1 do
+    for y = y0, y1 do under = under or area[tile_key(x, y)] ~= nil end
+  end
+  return under and flood_paint(surface, start, size, nil, server) or area
+end
+
 -- The painted area a GPU server touches, as tile keys, or nil and why (no
 -- reason when it touches none). Paint bigger than the model's grid is cut to
 -- the grid square against the server's most-painted side, returned too.
@@ -232,7 +285,7 @@ local function touching_paint(server, size)
     if #side > 0 and (not best or #side > #sides[best]) then best = name end
   end
   if not best then return nil end
-  local area, window = flood_paint(surface, seeds[1], size, nil, server), nil
+  local area, window = shared_flood(surface, seeds[1], size, server), nil
   if not area then
     local across_x = x0 - math.floor((size - (x1 - x0 + 1)) / 2)
     local across_y = y0 - math.floor((size - (y1 - y0 + 1)) / 2)
@@ -275,7 +328,7 @@ end
 
 -- The painted tiles and GPU servers server reaches through data links,
 -- passing only through electric poles.
-local function linked_nodes(server)
+local function compute_linked_nodes(server)
   local start = "e" .. server.unit_number
   local seen, queue, tiles, servers = { [start] = true }, { start }, {}, {}
   while #queue > 0 do
@@ -299,32 +352,12 @@ local function linked_nodes(server)
   return tiles, servers
 end
 
+local function linked_nodes(server)
+  return memoized("links", server.unit_number, function() return compute_linked_nodes(server) end)
+end
+
 -- Every painted piece server reaches itself, { area, window }: the paint it
 -- touches and the paint its data links reach. Or nil and why.
--- Within one survey or window refresh the map doesn't change, so a server's
--- paint and a surface's clusters are worked out once instead of once per
--- server that asks.
-local memo
-
-local function memoized(kind, key, compute)
-  if not memo then return compute() end
-  memo[kind] = memo[kind] or {}
-  local hit = memo[kind][key]
-  if not hit then
-    hit = { compute() }
-    memo[kind][key] = hit
-  end
-  return table.unpack(hit, 1, 2)
-end
-
-local function with_memo(fn)
-  if memo then return fn() end
-  memo = {}
-  local results = { fn() }
-  memo = nil
-  return table.unpack(results, 1, 4)
-end
-
 local function compute_server_pieces(server, size)
   local pieces = {}
   local area, window = touching_paint(server, size)
@@ -371,7 +404,11 @@ local function compute_clusters(surface)
     return unit
   end
   local function join(a, b) parent[find(a)] = find(b) end
-  for _, server in ipairs(servers) do parent[server.unit_number] = server.unit_number end
+  local boxes = {}
+  for i, server in ipairs(servers) do
+    parent[server.unit_number] = server.unit_number
+    boxes[i] = { tile_box(server) }
+  end
   local painted_by = {}
   for i, server in ipairs(servers) do
     local unit = server.unit_number
@@ -382,9 +419,9 @@ local function compute_clusters(surface)
     end
     local _, linked = linked_nodes(server)
     for _, other in ipairs(linked) do join(unit, other.unit_number) end
-    local x0, y0, x1, y1 = tile_box(server)
+    local x0, y0, x1, y1 = table.unpack(boxes[i])
     for j = i + 1, #servers do
-      local a0, b0, a1, b1 = tile_box(servers[j])
+      local a0, b0, a1, b1 = table.unpack(boxes[j])
       local across = a0 <= x1 and a1 >= x0
       local along = b0 <= y1 and b1 >= y0
       if (across and (b0 == y1 + 1 or b1 == y0 - 1)) or (along and (a0 == x1 + 1 or a1 == x0 - 1)) then
@@ -711,6 +748,17 @@ local function node_at(surface, area)
   if surface.get_tile(x, y).name == MASK_TILE then return { x = x, y = y } end
 end
 
+local function add_link(surface, a, b)
+  local ka, kb = node_key(a, surface), node_key(b, surface)
+  local key = ka < kb and ka .. "|" .. kb or kb .. "|" .. ka
+  storage.links = storage.links or {}
+  if storage.links[key] then return end
+  storage.links[key] = {
+    a = a, b = b, ka = ka, kb = kb, surface = surface.index, render_ids = draw_cable(surface, a, b),
+  }
+  draw_mask_outline(surface)
+end
+
 -- As with vanilla wires: click one node, then another, to join them, and
 -- the same two again to separate them. The cable stays in hand from the
 -- last pole or server, so painted tiles fan out from it.
@@ -746,11 +794,7 @@ local function cable_select(event, player)
         length, reach))
       return
     end
-    storage.links[key] = {
-      a = from, b = node, ka = ka, kb = kb, surface = surface.index,
-      render_ids = draw_cable(surface, from, node),
-    }
-    draw_mask_outline(surface)
+    add_link(surface, from, node)
   end
   if not is_tile(node) then state.cable = node end
   draw_cable_preview(player)
@@ -1349,6 +1393,76 @@ script.on_event(defines.events.on_gui_opened, function(event)
   open_marker_dialog(player, ensure_player_state(event.player_index), role, entity)
 end)
 
+local function gpu_settings(entity)
+  local state = storage.servers and storage.servers[entity.unit_number]
+  return state and {
+    conditions = state.conditions, read_state = state.read_state, state_signals = state.state_signals,
+    circuit_endpoints = state.circuit_endpoints,
+  }
+end
+
+-- A server's data links, as offsets from it to the other end, for a
+-- blueprint to carry.
+local function link_offsets(server)
+  local key, offsets = "e" .. server.unit_number, {}
+  for _, link in pairs(storage.links or {}) do
+    local other = (link.ka == key and link.b) or (link.kb == key and link.a)
+    if other and node_valid(other) then
+      local at = node_position(other)
+      table.insert(offsets, {
+        kind = is_tile(other) and "tile" or other.type == "electric-pole" and "pole" or "server",
+        dx = at.x - server.position.x, dy = at.y - server.position.y,
+      })
+    end
+  end
+  return offsets
+end
+
+local function link_end_matches(entity, kind)
+  return entity.valid and (kind == "pole" and entity.type == "electric-pole"
+    or kind == "server" and entity.name == inference.GPU_SERVER)
+end
+
+-- Links a built server's blueprint carried, turned as the blueprint was;
+-- an end not built yet links when it is.
+local function restore_links(server, links, direction)
+  local turns = math.floor(((server.direction - direction) % 16) / 4)
+  for _, offset in ipairs(links) do
+    local dx, dy = offset.dx, offset.dy
+    for _ = 1, turns do dx, dy = -dy, dx end
+    local at = { x = server.position.x + dx, y = server.position.y + dy }
+    if offset.kind == "tile" then
+      add_link(server.surface, server, { x = math.floor(at.x), y = math.floor(at.y) })
+    else
+      local other
+      for _, entity in pairs(server.surface.find_entities_filtered({ position = at, radius = 0.1 })) do
+        if link_end_matches(entity, offset.kind) then other = entity end
+      end
+      if other then
+        add_link(server.surface, server, other)
+      else
+        storage.pending_links = storage.pending_links or {}
+        table.insert(storage.pending_links, { server = server, at = at, kind = offset.kind })
+      end
+    end
+  end
+end
+
+local function complete_pending_links(entity)
+  local kept = {}
+  for _, pending in ipairs(storage.pending_links or {}) do
+    if pending.server.valid then
+      if pending.server.surface == entity.surface and link_end_matches(entity, pending.kind)
+          and math.abs(entity.position.x - pending.at.x) < 0.1 and math.abs(entity.position.y - pending.at.y) < 0.1 then
+        add_link(entity.surface, pending.server, entity)
+      else
+        table.insert(kept, pending)
+      end
+    end
+  end
+  storage.pending_links = kept
+end
+
 local function entity_built(event)
   local entity = event.entity or event.created_entity
   -- A built model ghost keeps counting as its server's, so rerun/clear finds it.
@@ -1361,9 +1475,14 @@ local function entity_built(event)
     if copied then
       local state = server_state(entity)
       state.conditions, state.read_state = copied.conditions, copied.read_state
-      state.circuit_endpoints = copied.circuit_endpoints
+      state.state_signals, state.circuit_endpoints = copied.state_signals, copied.circuit_endpoints
     end
+    local carried = event.tags and event.tags.factorion_links
+    if carried then restore_links(entity, carried.links, carried.direction) end
     draw_mask_outline(entity.surface)
+  end
+  if entity and entity.valid and storage.pending_links and #storage.pending_links > 0 then
+    complete_pending_links(entity)
   end
   local role = endpoint_role(entity)
   if not role then return end
@@ -1385,14 +1504,6 @@ script.on_event(defines.events.on_entity_cloned, function(event)
     register_endpoint(event.destination, source and source.item or nil)
   end
 end)
-
-local function gpu_settings(entity)
-  local state = storage.servers and storage.servers[entity.unit_number]
-  return state and {
-    conditions = state.conditions, read_state = state.read_state,
-    circuit_endpoints = state.circuit_endpoints,
-  }
-end
 
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
   local source = endpoint_config(event.source)
@@ -1419,6 +1530,10 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
     end
     local copied = entity.name == inference.GPU_SERVER and gpu_settings(entity)
     if copied then blueprint.set_blueprint_entity_tag(index, "factorion_gpu", copied) end
+    if entity.name == inference.GPU_SERVER then
+      blueprint.set_blueprint_entity_tag(index, "factorion_links",
+        { direction = entity.direction, links = link_offsets(entity) })
+    end
   end
 end)
 
@@ -2405,40 +2520,46 @@ end
 
 -- Every second: each server's cluster size, sinks and readiness for its
 -- signals, and the warnings over servers and sources.
+-- What a survey knows about a cluster: its leader, which draws and measures
+-- its wire-set endpoints, its region, and its most recently edited settings.
+local function survey_cluster(members, groups, size)
+  local leader, latest = members[1], nil
+  for _, member in ipairs(members) do
+    if member.unit_number < leader.unit_number then leader = member end
+    local state = server_state(member)
+    if not latest or (state.settings_tick or -1) > (latest.settings_tick or -1) then latest = state end
+  end
+  local region = size and region_for(leader, groups) or nil
+  local sink_units = {}
+  for _, endpoint in ipairs(region and region.endpoints or {}) do
+    if endpoint.unit and endpoint.role == "sink" then table.insert(sink_units, endpoint.unit) end
+  end
+  return {
+    leader = leader, latest = latest, region = region, sink_units = sink_units, powered = #powered(members),
+    unlinked = size and not region and not cluster_pieces(leader, size, groups),
+  }
+end
+
 local function survey()
   local offline = storage.server_connected == false or storage.model_error ~= nil
   local size = storage.model and storage.model.grid_size
   for _, surface in pairs(game.surfaces) do
     local groups = clusters(surface)
-    -- One region per cluster, worked out from its leader.
-    local regions = {}
+    local surveyed = {}
     for _, server in ipairs(surface.find_entities_filtered({ name = inference.GPU_SERVER })) do
       local state = server_state(server)
       local members = groups[server.unit_number] or { server }
-      state.cluster_size = #powered(members)
-      local leader = server
-      for _, member in ipairs(members) do
-        if member.unit_number < leader.unit_number then leader = member end
-      end
-      if regions[members] == nil then regions[members] = size and region_for(leader, groups) or false end
-      local region = regions[members] or nil
-      state.sink_units = {}
-      for _, endpoint in ipairs(region and region.endpoints or {}) do
-        if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
-      end
-      -- One server per cluster draws, measures and ghosts its wire-set endpoints.
-      state.leader = leader.unit_number
-      local latest = state
-      for _, member in ipairs(groups[server.unit_number] or {}) do
-        local other = server_state(member)
-        if (other.settings_tick or -1) > (latest.settings_tick or -1) then latest = other end
-      end
-      if latest ~= state then copy_settings(latest, state) end
-      sync_virtual_endpoints(server, state, leader == server and region and region.signals or {})
-      local unlinked = size and not region and not cluster_pieces(server, size, groups)
+      surveyed[members] = surveyed[members] or survey_cluster(members, groups, size)
+      local cluster_info = surveyed[members]
+      local region = cluster_info.region
+      state.cluster_size = cluster_info.powered
+      state.sink_units = cluster_info.sink_units
+      state.leader = cluster_info.leader.unit_number
+      if cluster_info.latest ~= state then copy_settings(cluster_info.latest, state) end
+      sync_virtual_endpoints(server, state, cluster_info.leader == server and region and region.signals or {})
       local warned = region and #region.warnings > 0
-      set_alert(server, offline and "gpu-offline" or (unlinked and "unlinked") or (warned and "warning") or nil,
-        { 0, -0.4 })
+      set_alert(server, offline and "gpu-offline" or (cluster_info.unlinked and "unlinked")
+        or (warned and "warning") or nil, { 0, -0.4 })
     end
   end
 end
@@ -2838,8 +2959,10 @@ end)
 script.on_nth_tick(30, blink)
 script.on_nth_tick(60, function()
   check_server()
-  with_memo(survey)
-  inference.refresh_all(true)
+  with_memo(function()
+    survey()
+    inference.refresh_all(true)
+  end)
 end)
 
 -- ----------------------------------------------------------------------------
