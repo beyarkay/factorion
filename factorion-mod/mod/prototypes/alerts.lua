@@ -1,6 +1,5 @@
--- Warning icons the runtime blinks over a source belt with nothing arriving,
--- a GPU server that can't reach its model, and a painted area or GPU server
--- with nothing linked to it.
+-- Warning icons the runtime blinks over a GPU server that can't reach its
+-- model, and over a painted area or GPU server with nothing linked to it.
 
 local function alert(name)
   return {
@@ -13,4 +12,4 @@ local function alert(name)
   }
 end
 
-data:extend({ alert("source-empty"), alert("gpu-offline"), alert("unlinked") })
+data:extend({ alert("gpu-offline"), alert("unlinked") })
