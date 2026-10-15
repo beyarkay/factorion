@@ -3254,3 +3254,26 @@ def test_full_factory_kinds_build_at_default_size():
             for s in range(5)
         ), kind
 
+
+
+@pytest.mark.parametrize("kind", [LessonKind.ROUTE_BELTS, LessonKind.ROUTE_BELTS_BUS])
+@pytest.mark.parametrize("seed", range(10))
+def test_route_belts_rebuild_from_markers(kind, seed):
+    """A belt-routing lesson blanks down to its markers, which carry no flow,
+    and its solved world scores exactly its reference; every sink's item has a
+    source."""
+    f = build_factory(size=15, kind=kind, seed=seed)
+    assert f is not None
+    ent = f.world_CWH[Channel.ENTITIES.value]
+    item = f.world_CWH[Channel.ITEMS.value]
+    sink_items = set(item[ent == str2ent("sink").value].tolist())
+    assert sink_items <= set(item[ent == str2ent("source").value].tolist())
+
+    full_tp, _ = rs_throughput(f.world_CWH.permute(1, 2, 0))
+    assert full_tp == pytest.approx(f.max_throughput)
+    world, removed = blank_entities(f, num_missing_entities=float("inf"))
+    assert removed == f.total_entities
+    left = world[Channel.ENTITIES.value]
+    markers = (left == str2ent("source").value) | (left == str2ent("sink").value)
+    assert ((left > 0) == markers).all()
+    assert rs_throughput(world.permute(1, 2, 0))[0] == 0
