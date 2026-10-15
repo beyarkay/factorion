@@ -941,43 +941,15 @@ local function refresh_marker_dialog(player, state)
     if frame then close_marker_dialog(player, state) end
     return
   end
-  local item = "[item=" .. config.item .. "]"
-  local main = frame.body.main
-  if config.role == "source" then
-    if source_receiving(config) then
-      gui.set_status(main, "working", "Receiving " .. item)
-    else
-      gui.set_status(main, "waiting", "No " .. item .. " arriving; belt some in")
-    end
-  elseif (config.throughput_rate or 0) >= 0.05 then
-    gui.set_status(main, "working", string.format("%.1f %s per second", config.throughput_rate, item))
-  else
-    gui.set_status(main, "waiting", "No " .. item .. " passing through")
-  end
+  gui.marker_status(frame, config.role, config.item, source_receiving(config), config.throughput_rate or 0)
 end
 
 local function open_marker_dialog(player, state, role, entity)
   close_marker_dialog(player, state)
   state.picker = { entity = entity }
   local config = endpoint_config(entity)
-  local frame, main = gui.entity_window(player, MARKER_DIALOG,
-    { "entity-name." .. entity.name }, entity)
-  gui.heading(main, role == "source" and "Expected item" or "Counted item")
-  local row = main.add({ type = "flow", direction = "horizontal" })
-  row.style.vertical_align = "center"
-  row.add({
-    type = "choose-elem-button", name = ITEM_PICKER, elem_type = "item",
-    item = config and config.item or get_default_item(role),
-    style = "slot_button_in_shallow_frame",
-  })
-  local hint = row.add({
-    type = "label",
-    caption = role == "source"
-      and "Belt this item into the source; the model builds from it."
-      or "The model builds to make this item; its rate is shown in alt-mode.",
-  })
-  hint.style.single_line = false
-  hint.style.maximal_width = 260
+  local frame = gui.marker_window(player, MARKER_DIALOG, ITEM_PICKER, entity, role,
+    config and config.item or get_default_item(role))
   refresh_marker_dialog(player, state)
   player.opened = frame
 end
