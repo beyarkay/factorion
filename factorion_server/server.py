@@ -102,11 +102,10 @@ def _sink_id() -> int:
 
 
 def request_to_obs(req: dict) -> np.ndarray:
-    """The region's (C, W, H) world. Entities already in it become walls the
+    """The region's (C, W, H) world. `entities` sit on forbidden tiles the
     model builds around, as a lesson's protected tiles are, and so does every
-    tile outside the painted build mask, when there is one. The GPU server's
-    own previous build (`start_entities`) stays buildable, for the model to
-    start from and change."""
+    tile outside the painted build mask, when there is one. `start_entities`
+    stay buildable, for the model to start from and change."""
     size = req["grid_size"]
     C = len(Channel)
     obs = np.zeros((C, size, size), dtype=np.float32)
@@ -204,7 +203,7 @@ class Generation:
 def denoise_frames(
     model: Model, world_CWH: np.ndarray, gen: Generation, seed: int, device,
 ) -> tuple[list[np.ndarray], dict]:
-    """Denoise `best_of` chains around the region's markers and walls, from
+    """Denoise `best_of` chains around the region's markers and forbidden tiles, from
     the entities already on its buildable tiles and noise everywhere else,
     and return the best chain's legalized prediction at every step, its final
     factory last. Best is the highest simulated throughput, then the cheapest
