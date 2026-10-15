@@ -1464,6 +1464,12 @@ local function complete_pending_links(entity)
   storage.pending_links = kept
 end
 
+-- A removed source or sink belt's item, kept by where it stood, comes back
+-- when the same kind of belt is built there again, as undo does.
+local function marker_spot(entity)
+  return string.format("%d:%s:%s,%s", entity.surface.index, entity.name, entity.position.x, entity.position.y)
+end
+
 local function entity_built(event)
   local entity = event.entity or event.created_entity
   -- A built model ghost keeps counting as its server's, so rerun/clear finds it.
@@ -1487,7 +1493,9 @@ local function entity_built(event)
   end
   local role = endpoint_role(entity)
   if not role then return end
-  local item = event.tags and event.tags.factorion_item or nil
+  local spot = marker_spot(entity)
+  local item = event.tags and event.tags.factorion_item or (storage.removed_markers or {})[spot]
+  if storage.removed_markers then storage.removed_markers[spot] = nil end
   register_endpoint(entity, item)
   if role == "source" and event.player_index then
     plan_source_built(event.player_index, entity)
@@ -1566,6 +1574,10 @@ local function endpoint_entity_removed(event)
   end
   if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
+  if config and config.item then
+    storage.removed_markers = storage.removed_markers or {}
+    storage.removed_markers[marker_spot(entity)] = config.item
+  end
   destroy_endpoint_alt_icon(config)
   destroy_sink_rate_label(config)
   if storage.endpoints then storage.endpoints[entity.unit_number] = nil end
