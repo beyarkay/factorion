@@ -23,12 +23,12 @@ CANVAS_TILES = (6, 5)
 SUN = Vector((1.0, -0.25, -1.2)).normalized()
 # Cards are turned on their bases so the fixed camera sees a fan face and a
 # finned edge at once, as in the three-quarter concepts.
-CARD_TURN = math.radians(-28)
+CARD_TURN = math.radians(-18)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 
-def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, chip=None, edge=None, rust=0.6, bump=0.25, radius=0.02, emission=None):
+def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, chip=None, edge=None, rust=0.6, bump=0.4, radius=0.03, emission=None):
     """chip is wear from inward occlusion, which marks thin parts as all edge;
     edge is the bare metal the paint wears through to."""
     mat = bpy.data.materials.new(name)
@@ -106,10 +106,14 @@ def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, ch
     links.new(shade, graded.inputs["B"])
     base = graded.outputs["Result"]
 
-    # Grime in the crevices.
-    ao = node("ShaderNodeAmbientOcclusion", Distance=0.12)
-    crevice = maths("MULTIPLY", maths("SUBTRACT", 1.0, ao.outputs["AO"]), 2.0 * grime)
-    dirty = mix(base, (0.02, 0.013, 0.008), maths("MINIMUM", crevice, 0.9))
+    # Grime in the crevices, and dust settling towards the ground.
+    ao = node("ShaderNodeAmbientOcclusion", Distance=0.25)
+    crevice = maths("MULTIPLY", maths("SUBTRACT", 1.0, ao.outputs["AO"]), 2.6 * grime)
+    dirty = mix(base, (0.02, 0.013, 0.008), maths("MINIMUM", crevice, 0.92))
+    height = nodes.new("ShaderNodeSeparateXYZ")
+    links.new(coords.outputs["Object"], height.inputs["Vector"])
+    dust = maths("MULTIPLY", ramp(maths("SUBTRACT", 0.7, height.outputs["Z"]), 0.0, 0.7), 0.55 * min(grime, 1.0))
+    dirty = mix(dirty, (0.13, 0.1, 0.07), maths("MULTIPLY", dust, ramp(grunge.outputs["Fac"], 0.35, 0.6)))
 
     # Worn bright edges, where a bevelled normal departs from the true one.
     bevel = node("ShaderNodeBevel", Radius=radius)
@@ -131,7 +135,7 @@ def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, ch
         links.new(maths("ADD", roughness, maths("MULTIPLY", edge_fac, 0.25 - roughness)), bsdf.inputs["Roughness"])
 
     if bump:
-        grain = node("ShaderNodeTexNoise", Scale=60.0, Detail=6.0)
+        grain = node("ShaderNodeTexNoise", Scale=25.0, Detail=6.0)
         links.new(coords.outputs["Object"], grain.inputs["Vector"])
         bumper = node("ShaderNodeBump", Strength=bump, Distance=0.02)
         links.new(grain.outputs["Fac"], bumper.inputs["Height"])
@@ -144,14 +148,14 @@ def material(name, colour, metallic=0.6, roughness=0.55, grime=1.0, wear=0.3, ch
 
 BARE = (0.68, 0.63, 0.56)
 BLACK = material("black", (0.024, 0.019, 0.015), metallic=0.1, roughness=0.72, rust=0.2, wear=0.45, edge=BARE)
-GUNMETAL = material("gunmetal", (0.058, 0.05, 0.042), metallic=0.5, roughness=0.55, rust=0.25, wear=0.5, edge=BARE)
-SILVER = material("silver", (0.66, 0.62, 0.55), metallic=1.0, roughness=0.3, rust=0.05, wear=0.2, grime=0.6)
-DARK = material("dark", (0.012, 0.012, 0.014), metallic=0.3, roughness=0.6, rust=0.0, wear=0.0, grime=0.4)
+GUNMETAL = material("gunmetal", (0.07, 0.062, 0.052), metallic=0.45, roughness=0.68, rust=0.35, wear=0.5, edge=BARE)
+SILVER = material("silver", (0.42, 0.4, 0.36), metallic=0.7, roughness=0.6, rust=0.4, wear=0.3, grime=1.0)
+DARK = material("dark", (0.016, 0.015, 0.014), metallic=0.3, roughness=0.7, rust=0.1, wear=0.2, grime=0.8)
 VOID = material("void", (0.004, 0.004, 0.005), metallic=0.0, roughness=0.9, rust=0.0, wear=0.0, grime=0.0, bump=0.0)
 # Bright fin tips come from the bevel term alone.
-FIN = material("fin", (0.03, 0.03, 0.035), metallic=0.9, roughness=0.3, rust=0.1, wear=0.6, chip=0.0, edge=(0.75, 0.75, 0.78), grime=0.5, bump=0.0, radius=0.005)
-BLUE = material("blue", (0.025, 0.11, 0.42), metallic=0.6, roughness=0.35, rust=0.0, wear=0.3, edge=BARE, grime=0.5)
-COPPER = material("copper", (0.95, 0.42, 0.2), metallic=1.0, roughness=0.28, rust=0.0, wear=0.0, grime=0.4, bump=0.0)
+FIN = material("fin", (0.04, 0.04, 0.042), metallic=0.6, roughness=0.6, rust=0.2, wear=0.5, chip=0.0, edge=(0.5, 0.48, 0.45), grime=1.0, bump=0.2, radius=0.012)
+BLUE = material("blue", (0.05, 0.11, 0.26), metallic=0.4, roughness=0.62, rust=0.2, wear=0.45, edge=BARE, grime=1.0)
+COPPER = material("copper", (0.55, 0.27, 0.14), metallic=0.8, roughness=0.55, rust=0.15, wear=0.0, grime=1.0, bump=0.2)
 PCB = material("pcb", (0.03, 0.26, 0.09), metallic=0.1, roughness=0.4, grime=0.2, rust=0.0, wear=0.0)
 CHIP = material("chip", (0.02, 0.02, 0.02), metallic=0.2, roughness=0.35, rust=0.0, wear=0.3, bump=0.0)
 GOLD = material("gold", (0.85, 0.62, 0.22), metallic=1.0, roughness=0.3, rust=0.0, wear=0.0, bump=0.0)
@@ -161,7 +165,7 @@ CABLES = {
     "blue": material("cable_blue", (0.03, 0.08, 0.3), metallic=0.0, roughness=0.5, rust=0.1, bump=0.6),
     "green": material("cable_green", (0.04, 0.17, 0.06), metallic=0.0, roughness=0.5, rust=0.1, bump=0.6),
 }
-BLADE = material("blade", (0.03, 0.03, 0.033), metallic=0.6, roughness=0.4, rust=0.0, wear=0.15, chip=0.0, edge=BARE, bump=0.0)
+BLADE = material("blade", (0.03, 0.03, 0.033), metallic=0.4, roughness=0.6, rust=0.1, wear=0.2, chip=0.0, edge=BARE, bump=0.0)
 LED = material("led", (0.05, 0.5, 0.1), emission=((0.25, 1.0, 0.3), 10))
 
 
@@ -251,18 +255,19 @@ def rivets(points, mat=SILVER, r=0.016, axis=(0, -1, 0), parent=None):
 def fan(centre, r, parent):
     """A fan in a ring frame, facing local -Y."""
     hub = group(centre, (math.pi / 2, 0, 0), parent)
-    ring((0, 0, -0.02), (0, 0, 0.035), r, 0.022, SILVER, parent=hub)
+    ring((0, 0, -0.03), (0, 0, 0.05), r, 0.045, GUNMETAL, parent=hub)
     tube((0, 0, -0.03), (0, 0, -0.01), r - 0.01, VOID, parent=hub)
     rotor = group((0, 0, 0.0), parent=hub)
     tube((0, 0, -0.01), (0, 0, 0.03), r * 0.3, DARK, parent=rotor)
     tube((0, 0, 0.03), (0, 0, 0.036), r * 0.2, SILVER, parent=rotor)
-    for i in range(9):
-        blade = box(r * 0.22, r * 0.93, -r * 0.12, r * 0.12, -0.004, 0.004, BLADE, bevel=0, parent=rotor)
-        blade.rotation_euler = Euler((0.55, 0, i * 2 * math.pi / 9), "ZXY")
+    for i in range(7):
+        blade = box(r * 0.25, r * 0.9, -r * 0.16, r * 0.16, -0.008, 0.008, BLADE, bevel=0.004, parent=rotor)
+        blade.rotation_euler = Euler((0.55, 0, i * 2 * math.pi / 7), "ZXY")
     return rotor
 
 
-CARD_W, CARD_T, CARD_H = 0.24, 0.12, 1.5
+CARD_W, CARD_T, CARD_H = 0.36, 0.2, 1.25
+CARD_XS = (-0.62, 0.5, 1.62)
 
 
 def card(x, y, z, parent=None):
@@ -270,34 +275,28 @@ def card(x, y, z, parent=None):
     the front, copper heat pipes out of the top, power socket at the foot."""
     g = group((x, y, z), (0, 0, CARD_TURN), parent)
     w, t, h = CARD_W, CARD_T, CARD_H
-    box(-w, w, -t + 0.03, t, 0.05, h, DARK, bevel=0.008, parent=g)
-    for k in range(7):
-        yy = -t + 0.05 + k * (2 * t - 0.07) / 6
-        box(w - 0.01, w + 0.075, yy - 0.009, yy + 0.009, 0.1, h - 0.04, FIN, bevel=0.003, parent=g)
-    for k in range(12):
-        xx = -w + 0.04 + k * (2 * w - 0.08) / 11
-        box(xx - 0.008, xx + 0.008, -t + 0.04, t - 0.01, h, h + 0.05, FIN, bevel=0.003, parent=g)
-    for k, (xa, xb) in enumerate(((-0.17, 0.05), (-0.07, 0.15))):
-        yy = -0.03 + k * 0.07
-        cable([(xa, yy, h - 0.02), (xa, yy, h + 0.09), ((xa + xb) / 2, yy, h + 0.14), (xb, yy, h + 0.09), (xb, yy, h - 0.02)], 0.022, COPPER, parent=g)
-    # Silver frame rails with dark caps and a blue edge strip.
+    box(-w, w, -t + 0.03, t, 0.05, h, DARK, bevel=0.03, parent=g)
+    for k in range(3):
+        yy = -t + 0.07 + k * (2 * t - 0.12) / 2
+        box(w - 0.01, w + 0.09, yy - 0.025, yy + 0.025, 0.12, h - 0.06, FIN, bevel=0.012, parent=g)
+    for k in range(5):
+        xx = -w + 0.07 + k * (2 * w - 0.14) / 4
+        box(xx - 0.03, xx + 0.03, -t + 0.05, t - 0.02, h, h + 0.08, FIN, bevel=0.012, parent=g)
+    cable([(-0.16, 0.0, h - 0.02), (-0.16, 0.0, h + 0.13), (0.0, 0.0, h + 0.19), (0.16, 0.0, h + 0.13), (0.16, 0.0, h - 0.02)], 0.045, COPPER, parent=g)
+    # Heavy frame rails with caps, and a painted edge strip.
     for side in (-1, 1):
-        sx = side * (w + 0.02)
-        box(sx - 0.028, sx + 0.028, -t - 0.02, -t + 0.06, 0.0, h + 0.06, SILVER, bevel=0.01, parent=g)
-        for zz in (0.0, h - 0.02):
-            box(sx - 0.038, sx + 0.038, -t - 0.035, -t + 0.07, zz, zz + 0.08, GUNMETAL, bevel=0.01, parent=g)
-            rivets([(sx, -t - 0.035, zz + 0.04)], r=0.012, parent=g)
-    box(-w + 0.03, w - 0.03, -t - 0.05, -t + 0.01, 0.07, h - 0.02, BLACK, bevel=0.015, parent=g)
-    box(-w + 0.03, -w + 0.05, -t - 0.06, -t - 0.04, 0.1, h - 0.06, BLUE, bevel=0.004, parent=g)
-    rotors = [fan((0.005, -t - 0.07, zz), 0.185, g) for zz in (0.3, 0.72, 1.14)]
-    for zz in (0.51, 0.93):
-        rivets([(-w + 0.07, -t - 0.05, zz), (w - 0.07, -t - 0.05, zz)], r=0.012, parent=g)
-    for zz in (1.38, 1.43):
-        box(w - 0.09, w - 0.05, -t - 0.07, -t - 0.04, zz - 0.015, zz + 0.015, LED, bevel=0, parent=g)
+        sx = side * (w + 0.03)
+        box(sx - 0.05, sx + 0.05, -t - 0.03, -t + 0.08, 0.0, h + 0.08, GUNMETAL, bevel=0.025, parent=g)
+        for zz in (0.0, h - 0.04):
+            box(sx - 0.065, sx + 0.065, -t - 0.06, -t + 0.1, zz, zz + 0.13, BLACK, bevel=0.025, parent=g)
+            rivets([(sx, -t - 0.06, zz + 0.065)], r=0.028, parent=g)
+    box(-w + 0.04, w - 0.04, -t - 0.08, -t + 0.01, 0.08, h - 0.03, BLACK, bevel=0.04, parent=g)
+    box(-w + 0.04, -w + 0.1, -t - 0.095, -t - 0.06, 0.12, h - 0.08, BLUE, bevel=0.012, parent=g)
+    rotors = [fan((0.02, -t - 0.1, zz), 0.27, g) for zz in (0.39, 0.92)]
+    box(w - 0.13, w - 0.06, -t - 0.11, -t - 0.07, h - 0.17, h - 0.1, LED, bevel=0, parent=g)
     # Slot bracket at the foot and the socket the power loom plugs into.
-    box(-w - 0.05, w + 0.05, -t - 0.06, t + 0.04, -0.06, 0.05, GUNMETAL, bevel=0.012, parent=g)
-    box(-w + 0.01, -w + 0.19, -t - 0.13, -t - 0.05, -0.04, 0.09, BLACK, bevel=0.01, parent=g)
-    box(-w, -w + 0.2, -t - 0.15, -t - 0.12, 0.0, 0.05, SILVER, bevel=0.006, parent=g)
+    box(-w - 0.07, w + 0.07, -t - 0.08, t + 0.06, -0.08, 0.07, GUNMETAL, bevel=0.025, parent=g)
+    box(-w + 0.02, -w + 0.24, -t - 0.17, -t - 0.07, -0.05, 0.11, BLACK, bevel=0.02, parent=g)
     return g, rotors
 
 
@@ -315,81 +314,79 @@ def build_plinth(x0, x1):
     posts = (x0, -0.42, 0.42, 1.24, x1)
     for x in posts:
         box(x - 0.045, x + 0.045, y0 - 0.05, y0 + 0.06, 0.06, top - 0.02, GUNMETAL, bevel=0.012)
-        rivets([(x, y0 - 0.05, z) for z in (0.13, 0.26)], r=0.013)
+        rivets([(x, y0 - 0.05, 0.2)], r=0.026)
     for x in (x0, 0.0, x1):
         box(x - 0.13, x + 0.13, y0 - 0.12, y0 + 0.02, 0.0, 0.11, GUNMETAL, bevel=0.015)
-        rivets([(x - 0.08, y0 - 0.12, 0.055), (x + 0.08, y0 - 0.12, 0.055)], r=0.014)
+        rivets([(x, y0 - 0.12, 0.055)], r=0.028)
     for left, right in zip(posts, posts[1:]):
         a, b = left + 0.06, right - 0.06
         if right in (0.42, x1):
             # Louvres, angled so their lips catch the sky against the dark bay.
-            n = 5
+            n = 3
             for k in range(n):
-                zz = 0.17 + k * 0.035
-                slat = box(a, b, -0.026, 0.026, -0.005, 0.005, GUNMETAL, bevel=0.002)
+                zz = 0.18 + k * 0.06
+                slat = box(a, b, -0.04, 0.04, -0.012, 0.012, GUNMETAL, bevel=0.008)
                 slat.location = (0, y0 + 0.02, zz)
                 slat.rotation_euler = (math.radians(-40), 0, 0)
         else:
             box(a, b, y0 - 0.02, y0 + 0.02, 0.16, top - 0.08, BLACK, bevel=0.012)
-            rivets([(a + 0.03, y0 - 0.02, z) for z in (0.19, 0.29)] + [(b - 0.03, y0 - 0.02, z) for z in (0.19, 0.29)], r=0.011)
-            box(a + 0.08, a + 0.22, y0 - 0.035, y0 - 0.015, 0.21, 0.26, BLUE, bevel=0.004)
+            rivets([(a + 0.05, y0 - 0.02, 0.24), (b - 0.05, y0 - 0.02, 0.24)], r=0.024)
+            box(a + 0.1, a + 0.3, y0 - 0.04, y0 - 0.015, 0.2, 0.27, BLUE, bevel=0.01)
     # Rails under each card slot along the top.
-    for x in (-0.78, 0.03, 0.84, 1.65):
-        box(x - 0.3, x + 0.3, -0.25, 0.15, top, top + 0.03, SILVER, bevel=0.008)
+    for x in CARD_XS:
+        box(x - 0.48, x + 0.48, -0.32, 0.22, top, top + 0.05, GUNMETAL, bevel=0.02)
 
 
 def build_horizontal():
     build_plinth(-1.36, 1.94)
 
-    xs = (-0.78, 0.03, 0.84, 1.65)
-    cards = [card(x, -0.05, 0.43) for x in xs]
+    xs = CARD_XS
+    cards = [card(x, -0.05, 0.45) for x in xs]
     bpy.context.view_layer.update()
     rotors = [r for _, rs in cards for r in rs]
 
     # A loom from the I/O box runs along the deck in front of the cards and
     # peels off into each card's socket.
-    colours = ("black", "red", "black", "blue", "black")
+    colours = ("black", "red", "black")
     for k, colour in enumerate(colours):
-        y = -0.68 + k * 0.045
-        z = 0.44 + (k % 2) * 0.012
-        cable([(-1.4, y, 0.62), (-1.2, y, z + 0.02), (-0.4, y, z), (0.6, y, z), (1.9, y, z + 0.01)], 0.026, CABLES[colour])
-    for x in (-1.08, -0.2, 0.62, 1.45):
-        box(x - 0.035, x + 0.035, -0.72, -0.44, 0.4, 0.5, SILVER, bevel=0.01)
+        y = -0.66 + k * 0.08
+        z = 0.47 + (k % 2) * 0.02
+        cable([(-1.4, y, 0.62), (-1.2, y, z + 0.02), (-0.4, y, z), (0.6, y, z), (1.9, y, z + 0.01)], 0.04, CABLES[colour])
+    for x in (-1.15, 0.0, 1.1):
+        box(x - 0.06, x + 0.06, -0.74, -0.44, 0.42, 0.56, GUNMETAL, bevel=0.02)
     for g, _ in cards:
         socket = world_point(g, (-CARD_W + 0.1, -CARD_T - 0.12, 0.03))
         for k, colour in enumerate(("red", "black")):
             off = Vector((k * 0.05, 0, 0))
             start = Vector((socket.x - 0.12 + k * 0.05, -0.6 + k * 0.04, 0.46))
-            cable([start, start + Vector((0.04, 0.02, 0.06)), socket + off + Vector((0, -0.03, 0.02))], 0.022, CABLES[colour])
+            cable([start, start + Vector((0.04, 0.02, 0.06)), socket + off + Vector((0, -0.03, 0.02))], 0.035, CABLES[colour])
 
     # A loom along the back carrying the I/O box's data to the cards.
-    for k, colour in enumerate(("black", "green", "black", "red")):
-        y = 0.4 + k * 0.05
-        cable([(-1.4, y, 0.62), (-0.8, y, 0.45), (0.5, y, 0.44), (1.85, y, 0.47)], 0.024, CABLES[colour])
-    for x in (-0.4, 0.45, 1.25):
-        box(x - 0.035, x + 0.035, 0.36, 0.6, 0.4, 0.5, SILVER, bevel=0.01)
+    for k, colour in enumerate(("black", "green", "black")):
+        y = 0.4 + k * 0.08
+        cable([(-1.4, y, 0.62), (-0.8, y, 0.47), (0.5, y, 0.46), (1.85, y, 0.49)], 0.038, CABLES[colour])
+    for x in (-0.05, 1.05):
+        box(x - 0.06, x + 0.06, 0.34, 0.62, 0.42, 0.56, GUNMETAL, bevel=0.02)
 
     # Coolant manifold on a raised back rail, branching to each card.
     box(-1.36, 1.94, 0.64, 0.78, 0.4, 0.5, GUNMETAL, bevel=0.015)
     for k, yy in enumerate((0.67, 0.74)):
-        tube((-1.38, yy, 0.54), (1.96, yy, 0.54), 0.03, COPPER, segments=16)
-    for x in (-1.1, -0.38, 0.43, 1.24, 1.85):
-        box(x - 0.04, x + 0.04, 0.62, 0.79, 0.5, 0.6, SILVER, bevel=0.01)
-        rivets([(x, 0.705, 0.6)], axis=(0, 0, 1), r=0.014)
+        tube((-1.38, yy, 0.55), (1.96, yy, 0.55), 0.045, COPPER, segments=16)
+    for x in (-1.1, 0.0, 1.1, 1.85):
+        box(x - 0.07, x + 0.07, 0.61, 0.8, 0.5, 0.63, GUNMETAL, bevel=0.02)
+        rivets([(x, 0.705, 0.63)], axis=(0, 0, 1), r=0.026)
     for g, _ in cards:
         port = world_point(g, (0.0, CARD_T, 0.45))
-        cable([Vector((port.x + 0.12, 0.67, 0.54)), Vector((port.x + 0.1, 0.45, 0.6)), port + Vector((0, 0.04, 0))], 0.022, COPPER)
-        tube(port, port + Vector((0, 0.06, 0)), 0.04, SILVER, segments=12)
+        cable([Vector((port.x + 0.12, 0.67, 0.55)), Vector((port.x + 0.1, 0.45, 0.62)), port + Vector((0, 0.04, 0))], 0.04, COPPER)
+        tube(port, port + Vector((0, 0.08, 0)), 0.06, GUNMETAL, segments=12)
     # Voltage regulators and capacitors in the gaps behind the cards.
     for left, right in zip(xs, xs[1:]):
         x = (left + right) / 2
-        box(x - 0.1, x + 0.1, 0.12, 0.3, 0.43, 0.47, DARK, bevel=0.006)
-        for k in range(6):
-            xx = x - 0.08 + k * 0.032
-            box(xx - 0.008, xx + 0.008, 0.13, 0.29, 0.47, 0.56, FIN, bevel=0.002)
-        for dx in (-0.06, 0.06):
-            tube((x + dx, 0.36, 0.43), (x + dx, 0.36, 0.52), 0.032, BLUE, segments=12)
-            tube((x + dx, 0.36, 0.52), (x + dx, 0.36, 0.53), 0.028, SILVER, segments=12)
+        box(x - 0.14, x + 0.14, 0.1, 0.32, 0.45, 0.52, DARK, bevel=0.02)
+        for k in range(3):
+            xx = x - 0.09 + k * 0.09
+            box(xx - 0.025, xx + 0.025, 0.12, 0.3, 0.52, 0.64, FIN, bevel=0.01)
+        tube((x, 0.4, 0.45), (x, 0.4, 0.58), 0.05, BLUE, segments=12)
 
     build_io_box()
     return rotors
@@ -422,40 +419,22 @@ def build_io_box():
     # The board sits down in a tray, so the rim's inner faces show its depth.
     for rim in ((x0, x1, y0, y0 + 0.05), (x0, x1, y1 - 0.05, y1), (x0, x0 + 0.05, y0, y1), (x1 - 0.05, x1, y0, y1)):
         box(*rim, z1 - 0.06, z1 + 0.02, GUNMETAL, bevel=0.01)
-    zb = z1 - 0.05
-    box(x0 + 0.05, x1 - 0.05, y0 + 0.05, y1 - 0.05, zb - 0.02, zb, PCB, bevel=0)
-    traces(x0 + 0.08, x1 - 0.08, y0 + 0.1, y1 - 0.1, zb, random.Random(7))
-    box(-1.86, -1.68, -0.42, -0.24, zb, zb + 0.035, CHIP, bevel=0.005)
-    box(-1.62, -1.48, -0.6, -0.46, zb, zb + 0.03, CHIP, bevel=0.005)
-    box(-1.84, -1.7, 0.06, 0.2, zb, zb + 0.03, CHIP, bevel=0.005)
-    for k in range(7):
-        xx = -1.64 + k * 0.03
-        box(xx - 0.009, xx + 0.009, 0.08, 0.36, zb, zb + 0.1, FIN, bevel=0.002)
-    for p in ((-1.82, -0.1), (-1.74, -0.04), (-1.52, -0.12)):
-        tube((p[0], p[1], zb), (p[0], p[1], zb + 0.08), 0.03, BLUE, segments=12)
-        tube((p[0], p[1], zb + 0.08), (p[0], p[1], zb + 0.09), 0.026, SILVER, segments=12)
-    for k in range(4):
-        box(-1.86 + k * 0.1, -1.8 + k * 0.1, 0.48, 0.6, zb, zb + 0.05, DARK, bevel=0.004)
-
+    lid = z1 - 0.03
+    box(x0 + 0.05, x1 - 0.05, y0 + 0.05, y1 - 0.05, lid - 0.04, lid, GUNMETAL, bevel=0.02)
+    for k in range(5):
+        yy = y0 + 0.25 + k * 0.2
+        box(x0 + 0.12, x1 - 0.12, yy - 0.05, yy + 0.05, lid, lid + 0.03, BLACK, bevel=0.015)
+    rivets([(x, y, lid + 0.01) for x in (x0 + 0.09, x1 - 0.09) for y in (y0 + 0.12, y1 - 0.12)], axis=(0, 0, 1), r=0.026)
     # Front: a drive cage standing proud of the panel, sockets below.
     yf = y0
     box(x0 + 0.06, x1 - 0.06, yf - 0.1, yf + 0.01, 0.46, 0.84, GUNMETAL, bevel=0.015)
-    for k in range(3):
-        zz = 0.8 - k * 0.11
-        box(x0 + 0.1, x1 - 0.1, yf - 0.115, yf - 0.09, zz - 0.085, zz, BLACK, bevel=0.008)
-        box(x0 + 0.13, x1 - 0.2, yf - 0.125, yf - 0.11, zz - 0.055, zz - 0.035, VOID, bevel=0)
-        box(x1 - 0.17, x1 - 0.13, yf - 0.13, yf - 0.11, zz - 0.06, zz - 0.03, LED, bevel=0)
-    box(x0 + 0.06, x1 - 0.06, yf - 0.12, yf - 0.09, 0.44, 0.47, SILVER, bevel=0.006)
-    ring((-1.81, yf - 0.03, 0.33), (-1.81, yf + 0.01, 0.33), 0.075, 0.025, SILVER)
-    tube((-1.81, yf - 0.01, 0.33), (-1.81, yf + 0.01, 0.33), 0.055, BLUE)
-    for a in range(5):
-        ang = a * 2 * math.pi / 5
-        p = (-1.81 + 0.03 * math.cos(ang), 0.33 + 0.03 * math.sin(ang))
-        tube((p[0], yf - 0.025, p[1]), (p[0], yf - 0.005, p[1]), 0.008, GOLD, segments=8)
-    for x in (-1.63, -1.5):
-        for zz in (0.36, 0.22):
-            box(x - 0.05, x + 0.05, yf - 0.03, yf + 0.01, zz - 0.045, zz + 0.045, SILVER, bevel=0.008)
-            box(x - 0.033, x + 0.033, yf - 0.045, yf - 0.03, zz - 0.022, zz + 0.022, VOID, bevel=0.003)
+    for k in range(2):
+        zz = 0.8 - k * 0.17
+        box(x0 + 0.1, x1 - 0.1, yf - 0.12, yf - 0.09, zz - 0.14, zz, BLACK, bevel=0.02)
+        box(x1 - 0.2, x1 - 0.13, yf - 0.135, yf - 0.115, zz - 0.09, zz - 0.04, LED, bevel=0)
+    for x in (-1.81, -1.57):
+        box(x - 0.08, x + 0.08, yf - 0.04, yf + 0.01, 0.2, 0.38, GUNMETAL, bevel=0.02)
+        box(x - 0.05, x + 0.05, yf - 0.06, yf - 0.03, 0.24, 0.34, VOID, bevel=0.008)
     box(x0 - 0.03, x1 + 0.03, y0 - 0.05, y0 + 0.02, 0.0, 0.1, GUNMETAL, bevel=0.012)
     # Glands where the looms leave for the cards, and the feed from the ground.
     for yy in (-0.6, 0.48):
@@ -463,7 +442,7 @@ def build_io_box():
     box(x0 - 0.06, x0, -0.35, -0.05, 0.25, 0.6, SILVER, bevel=0.012)
     for k, colour in enumerate(("black", "red", "black")):
         y = -0.3 + k * 0.1
-        cable([(x0 - 0.03, y, 0.45), (x0 - 0.15, y, 0.38), (x0 - 0.12, y - 0.1, 0.1), (x0 + 0.1, y - 0.35, 0.03)], 0.03, CABLES[colour])
+        cable([(x0 - 0.03, y, 0.45), (x0 - 0.15, y, 0.38), (x0 - 0.12, y - 0.1, 0.1), (x0 + 0.1, y - 0.35, 0.03)], 0.045, CABLES[colour])
 
 
 def setup_scene():
