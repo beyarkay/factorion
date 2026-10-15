@@ -297,19 +297,24 @@ enum Routes<'a> {
     Sampled(&'a mut Rng),
 }
 
+/// Tie-breaks among routes of equal length, against a belt step's 16: each 90°
+/// turn costs `TURN_COST` and each belt orthogonally beside a `hug` cell saves
+/// `HUG_DISCOUNT`, so routes come out straight and laid side by side. Hugging
+/// outweighs a turn, so a route may turn to stay beside a belt, while a
+/// two-tile detour still needs 16 more hugging tiles to pay for itself.
+const TURN_COST: u64 = 1;
+const HUG_DISCOUNT: u64 = 2;
+
 /// Minimal-cost routes from `start` to `end` as selected by `routes`, each a
 /// `Vec<UgPlacement>` laying exactly one entity per cell from `start` through
 /// `end` (which faces `end_dir`).
 ///
 /// A weighted Dijkstra over `(x, y, arrival_dir)` states: a belt step costs 16 and
 /// a `span`-tile tunnel costs `20 * (span + 1)` (an integral 1.25×/tile penalty),
-/// so tunnels only ever clear blocked cells, with minimal span. A belt beside a
-/// `hug` cell costs `hug_discount` less, so routes stick to belts already laid:
-/// a small discount picks the tidiest of the shortest routes, and only a long
-/// enough stretch of hugging pays for a detour. Tunnels run straight; 180°
-/// reversals and self-overlapping routes are rejected. See [`Underground`] for
-/// the tunnel options; `Underground::Off` reduces this to a plain uniform-cost
-/// belt search.
+/// so tunnels only ever clear blocked cells, with minimal span, and [`TURN_COST`]
+/// and [`HUG_DISCOUNT`] break ties. Tunnels run straight; 180° reversals and
+/// self-overlapping routes are rejected. See [`Underground`] for the tunnel
+/// options; `Underground::Off` reduces this to a plain uniform-cost belt search.
 #[allow(clippy::too_many_arguments)]
 fn find_belt_paths(
     start: Cell,
@@ -320,12 +325,19 @@ fn find_belt_paths(
     underground: Underground,
     routes: Routes,
     hug: &HashSet<Cell>,
-    hug_discount: u64,
 ) -> Vec<Vec<UgPlacement>> {
     let in_bounds = |c: Cell| 0 <= c.0 && c.0 < size && 0 <= c.1 && c.1 < size;
     if !in_bounds(start) || !in_bounds(end) || blocked.contains(&start) || blocked.contains(&end) {
         return vec![];
     }
+
+    let turn_cost = |from: i64, to: Direction| {
+        if from != 0 && from != to as i64 {
+            TURN_COST
+        } else {
+            0
+        }
+    };
 
     // Whether tunnels are allowed, and the direction (if any) the route opens a
     // tunnel toward on `start` itself.
@@ -386,11 +398,14 @@ fn find_belt_paths(
         let (cx, cy, adir) = state;
         if (cx, cy) == end {
             // Reached on the surface: `end` becomes a belt facing `end_dir`.
-            if d_so_far < goal_cost {
-                goal_cost = d_so_far;
+            let cost = d_so_far + turn_cost(adir, end_dir);
+            if cost < goal_cost {
+                goal_cost = cost;
                 goal_arrivals.clear();
             }
-            goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            if cost == goal_cost {
+                goal_arrivals.push((state, vec![(end.0, end.1, end_dir, Misc::None)]));
+            }
             continue;
         }
 
@@ -415,7 +430,7 @@ fn find_belt_paths(
             let hugging = BFS_DELTAS
                 .iter()
                 .any(|&(hx, hy)| hug.contains(&(cx + hx, cy + hy)));
-            let nd = d_so_far + 16 - if hugging { hug_discount } else { 0 };
+            let nd = d_so_far + 16 + turn_cost(adir, d) - if hugging { HUG_DISCOUNT } else { 0 };
             relax(
                 &mut dist,
                 &mut preds,
@@ -607,7 +622,6 @@ fn find_belt_path(
         underground,
         one,
         &HashSet::new(),
-        0,
     )
     .into_iter()
     .next()
@@ -961,7 +975,6 @@ fn build_move_one_item(
             Underground::Off,
             sampled,
             &HashSet::new(),
-            0,
         );
         let Some(chosen) = paths.into_iter().next() else {
             continue;
@@ -5336,11 +5349,6 @@ fn build_cross_under_belt(
 /// Most sources, and most sinks, a ROUTE_BELTS lesson places.
 const ROUTE_MAX_MARKERS: usize = 8;
 
-/// How much cheaper than a 16-cost belt step a bus belt is beside one already
-/// laid: enough to pick the tidiest shortest route, while a two-tile detour
-/// still needs 16 more hugging tiles to pay for itself.
-const BUS_HUG_DISCOUNT: u64 = 2;
-
 /// How a ROUTE_BELTS group of same-item markers is wired.
 #[derive(Clone, Copy)]
 enum RouteGroup {
@@ -5481,10 +5489,9 @@ fn nearest_port(cell: Cell, ports: [Cell; 2]) -> Cell {
 /// or as one of the two outputs of a splitter splitting one source — plus
 /// sometimes sources whose item no sink takes, which stay unconnected (the
 /// lesson's only orphans). Several groups may share an item. Every route is a
-/// randomly drawn shortest path that tunnels only where it must. A `bus` lines
-/// the sources up side by side, and the sinks likewise, and routes them one
-/// after another with a small pull toward belts already laid, so they run
-/// together as a tidy bundle.
+/// randomly drawn shortest path that tunnels only where it must, hugging the
+/// belts already laid. A `bus` lines the sources up side by side, and the sinks
+/// likewise, and routes them in line order, so they run as a tidy bundle.
 fn build_route_belts(
     size: usize,
     rng: &mut Rng,
@@ -5656,18 +5663,12 @@ fn build_route_belts(
             rng.shuffle(&mut segments);
         }
 
-        let no_hug = HashSet::new();
         let mut laid: HashSet<Cell> = HashSet::new();
         let mut routes: Vec<Vec<UgPlacement>> = Vec::new();
         for (start, end, end_dir) in segments {
             let mut blocked: HashSet<Cell> = reserved.union(&laid).copied().collect();
             blocked.remove(&start);
             blocked.remove(&end);
-            let (hug, discount) = if bus {
-                (&laid, BUS_HUG_DISCOUNT)
-            } else {
-                (&no_hug, 0)
-            };
             let Some(route) = find_belt_paths(
                 start,
                 end,
@@ -5676,8 +5677,7 @@ fn build_route_belts(
                 &blocked,
                 Underground::On(None),
                 Routes::Sampled(&mut *rng),
-                hug,
-                discount,
+                &laid,
             )
             .pop() else {
                 continue 'attempt;
@@ -7022,63 +7022,36 @@ mod tests {
 
     #[test]
     fn test_shortest_n_caps_and_enumerates() {
-        // Open grid, (0,0) → (2,2): the 6 monotone Manhattan routes are the only
-        // shortest ones, so a cap above 6 returns exactly those 6.
+        // (0,1) → (2,1) facing East with (1,1) blocked: the detours over and
+        // under the block are the only shortest, fewest-turn routes, so a cap
+        // above 2 returns exactly those 2.
         let free = HashSet::new();
-        let all = find_belt_paths(
-            (0, 0),
-            (2, 2),
-            Direction::East,
-            5,
-            &free,
-            Underground::Off,
-            Routes::First(NonZeroUsize::new(50).unwrap()),
-            &free,
-            0,
-        );
-        assert_eq!(all.len(), 6);
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
+        let routes = |cap: usize| {
+            let cap = Routes::First(NonZeroUsize::new(cap).unwrap());
+            find_belt_paths(
+                (0, 1),
+                (2, 1),
+                Direction::East,
+                3,
+                &block,
+                Underground::Off,
+                cap,
+                &free,
+            )
+        };
+        let all = routes(50);
+        assert_eq!(all.len(), 2);
         for p in &all {
-            // 5 cells (0,0)..=(2,2), all plain belts, no tile reused.
             assert_eq!(p.len(), 5);
             assert!(p.iter().all(|&(_, _, _, m)| m == Misc::None));
-            let cells: HashSet<Cell> = p.iter().map(|&(x, y, _, _)| (x, y)).collect();
-            assert_eq!(cells.len(), 5);
             assert_eq!(
                 p.last().map(|&(x, y, d, _)| (x, y, d)),
-                Some((2, 2, Direction::East))
+                Some((2, 1, Direction::East))
             );
         }
         // A positive cap returns exactly that many; 1 matches `find_belt_path`.
-        assert_eq!(
-            find_belt_paths(
-                (0, 0),
-                (2, 2),
-                Direction::East,
-                5,
-                &free,
-                Underground::Off,
-                Routes::First(NonZeroUsize::new(2).unwrap()),
-                &free,
-                0,
-            )
-            .len(),
-            2
-        );
-        assert_eq!(
-            find_belt_paths(
-                (0, 0),
-                (2, 2),
-                Direction::East,
-                5,
-                &free,
-                Underground::Off,
-                Routes::First(NonZeroUsize::MIN),
-                &free,
-                0,
-            )
-            .len(),
-            1
-        );
+        assert_eq!(routes(1).len(), 1);
         // Unreachable target → no routes, whatever the cap.
         let blocked = wall(1, 5);
         assert!(find_belt_paths(
@@ -7090,7 +7063,6 @@ mod tests {
             Underground::Off,
             Routes::First(NonZeroUsize::new(50).unwrap()),
             &free,
-            0,
         )
         .is_empty());
     }
@@ -7099,31 +7071,43 @@ mod tests {
     fn test_sampled_route_is_cheap_and_varied() {
         // Corner to corner of a 20x20 grid there are C(38,19) ~ 1.7e10 shortest
         // routes — enumerating them to pick one is what OOM-killed the
-        // generator. Sampling must stay valid without collapsing onto one route.
+        // generator. The fewest-turn one is the single L whose last leg runs
+        // the way the end faces; where routes do tie, sampling visits them all.
         let free = HashSet::new();
+        let mut rng = Rng::seeded(0);
+        let paths = find_belt_paths(
+            (0, 0),
+            (19, 19),
+            Direction::East,
+            20,
+            &free,
+            Underground::Off,
+            Routes::Sampled(&mut rng),
+            &free,
+        );
+        let want: Vec<Cell> = (0..20)
+            .map(|y| (0, y))
+            .chain((1..20).map(|x| (x, 19)))
+            .collect();
+        assert_eq!(belt_cells(&paths[0]), want);
+
+        let block: HashSet<Cell> = [(1, 1)].into_iter().collect();
         let mut seen: HashSet<Vec<Cell>> = HashSet::new();
         for seed in 0..20u64 {
             let mut rng = Rng::seeded(seed);
             let paths = find_belt_paths(
-                (0, 0),
-                (19, 19),
+                (0, 1),
+                (2, 1),
                 Direction::East,
-                20,
-                &free,
+                3,
+                &block,
                 Underground::Off,
                 Routes::Sampled(&mut rng),
                 &free,
-                0,
             );
-            assert_eq!(paths.len(), 1);
-            assert_eq!(paths[0].len(), 39, "every shortest route is 39 tiles");
             seen.insert(belt_cells(&paths[0]));
         }
-        assert!(
-            seen.len() > 10,
-            "sampling collapsed onto {} routes",
-            seen.len()
-        );
+        assert_eq!(seen.len(), 2, "sampling collapsed onto one route");
     }
 
     #[test]
@@ -7731,7 +7715,6 @@ mod tests {
                 Underground::Off,
                 Routes::Sampled(&mut rng),
                 &hug,
-                2,
             );
             assert_eq!(belt_cells(&route[0]), want, "seed={seed}");
         }
