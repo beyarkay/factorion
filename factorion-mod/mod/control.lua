@@ -256,8 +256,36 @@ local function cable_paint(server, cable, size)
   return flood_paint(surface, start, size, window, server), window
 end
 
+-- Data links, like vanilla wires, each join two nodes: GPU servers,
+-- electric poles and painted tiles. storage.links[key] = { a, b, ka, kb,
+-- render_ids }, where ka and kb are the nodes' keys and key joins them.
+
+-- The painted tiles server reaches through data links, passing only through
+-- electric poles.
+local function cabled_tiles(server)
+  local start = "e" .. server.unit_number
+  local seen, queue, tiles = { [start] = true }, { start }, {}
+  while #queue > 0 do
+    local at = table.remove(queue)
+    for _, link in pairs(storage.links or {}) do
+      for _, ends in ipairs({ { link.ka, link.b, link.kb }, { link.kb, link.a, link.ka } }) do
+        local from, node, key = ends[1], ends[2], ends[3]
+        if from == at and not seen[key] then
+          seen[key] = true
+          if key:sub(1, 1) == "t" then
+            table.insert(tiles, node)
+          elseif node.valid and node.type == "electric-pole" then
+            table.insert(queue, key)
+          end
+        end
+      end
+    end
+  end
+  return tiles
+end
+
 -- Every painted piece server predicts for, { area, window }: the paint it
--- touches and the paint at the end of each of its data cables. Or nil and why.
+-- touches and the paint its data links reach. Or nil and why.
 local function server_pieces(server, size)
   local pieces = {}
   local area, window = touching_paint(server, size)
@@ -266,7 +294,7 @@ local function server_pieces(server, size)
   elseif window then
     return nil, window
   end
-  for _, cable in ipairs(server_state(server).cables or {}) do
+  for _, cable in ipairs(cabled_tiles(server)) do
     local cabled, cut = cable_paint(server, cable, size)
     if not cabled then return nil, cut end
     table.insert(pieces, { area = cabled, window = cut })
@@ -432,6 +460,13 @@ end
 -- reading a missing key from an entity raises, so test the type first.
 local function is_tile(node) return node.object_name ~= "LuaEntity" end
 
+local function node_key(node, surface)
+  if is_tile(node) then return "t" .. surface.index .. ":" .. node.x .. "," .. node.y end
+  return "e" .. node.unit_number
+end
+
+local function node_valid(node) return is_tile(node) or node.valid end
+
 local function node_position(node)
   if is_tile(node) then return { x = node.x + 0.5, y = node.y + 0.5 } end
   return node.position
@@ -460,139 +495,162 @@ local function hop_length(from, to)
   return math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
 end
 
--- Each hop sags like a wire.
-local function draw_cable(surface, nodes)
+-- Sags like a wire; a tile end gets a plug.
+local function draw_cable(surface, from, to, color, players)
   local ids = {}
-  for i = 1, #nodes - 1 do
-    local a, b = cable_point(nodes[i]), cable_point(nodes[i + 1])
-    local sag = 0.2 + 0.05 * math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
-    local previous = a
-    for k = 1, CABLE_SEGMENTS do
-      local t = k / CABLE_SEGMENTS
-      local point = {
-        x = a.x + (b.x - a.x) * t,
-        y = a.y + (b.y - a.y) * t + sag * 4 * t * (1 - t),
-      }
-      table.insert(ids, rendering.draw_line({
-        surface = surface, from = previous, to = point, color = CABLE_COLOR, width = 2,
+  local a, b = cable_point(from), cable_point(to)
+  local sag = 0.2 + 0.05 * math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+  local previous = a
+  for k = 1, CABLE_SEGMENTS do
+    local t = k / CABLE_SEGMENTS
+    local point = {
+      x = a.x + (b.x - a.x) * t,
+      y = a.y + (b.y - a.y) * t + sag * 4 * t * (1 - t),
+    }
+    table.insert(ids, rendering.draw_line({
+      surface = surface, from = previous, to = point, color = color or CABLE_COLOR, width = 2,
+      players = players,
+    }).id)
+    previous = point
+  end
+  for _, node in ipairs({ from, to }) do
+    if is_tile(node) then
+      table.insert(ids, rendering.draw_circle({
+        surface = surface, target = cable_point(node), radius = 0.18,
+        color = color or CABLE_COLOR, filled = true, draw_on_ground = true, players = players,
       }).id)
-      previous = point
     end
   end
-  table.insert(ids, rendering.draw_circle({
-    surface = surface, target = cable_point(nodes[#nodes]), radius = 0.18,
-    color = CABLE_COLOR, filled = true, draw_on_ground = true,
-  }).id)
   return ids
 end
 
-local function destroy_cable(cable)
-  for _, id in ipairs(cable.render_ids) do
+local function destroy_ids(ids)
+  for _, id in pairs(ids or {}) do
     local object = rendering.get_object_by_id(id)
     if object then object.destroy() end
   end
 end
 
--- Removes every cable cut(server, cable) picks; returns how many.
-local function remove_cables(cut)
+-- Removes every link cut(link) picks; returns how many.
+local function remove_links(cut)
   local removed, surfaces = 0, {}
-  for _, state in pairs(storage.servers or {}) do
-    local kept = {}
-    for _, cable in ipairs(state.cables or {}) do
-      if cut(state.entity, cable) then
-        destroy_cable(cable)
-        removed = removed + 1
-        if state.entity.valid then surfaces[state.entity.surface.index] = state.entity.surface end
-      else
-        table.insert(kept, cable)
-      end
+  for key, link in pairs(storage.links or {}) do
+    if cut(link) then
+      destroy_ids(link.render_ids)
+      storage.links[key] = nil
+      removed = removed + 1
+      surfaces[link.surface] = true
     end
-    state.cables = kept
   end
-  for _, surface in pairs(surfaces) do draw_mask_outline(surface) end
+  for index in pairs(surfaces) do draw_mask_outline(game.surfaces[index]) end
   return removed
 end
 
-local function through_pole(pole)
-  return function(_, cable)
-    for _, hop in ipairs(cable.poles) do
-      if not hop.valid or hop == pole then return true end
-    end
-    return false
-  end
+local function touching(key)
+  return function(link) return link.ka == key or link.kb == key end
 end
 
--- Click a GPU server, then any electric poles to hang the cable from, then a
--- painted tile; the cable then starts again from the same server.
+local function holding_cable(player)
+  local cursor = player.cursor_stack
+  return cursor and cursor.valid_for_read and cursor.name == DATA_CABLE
+end
+
+-- The cable in the player's hand: a reach circle around the node it hangs
+-- from, and a line to the pole or server under the cursor, red when out of
+-- reach. Mods can't follow the mouse itself.
+local function draw_cable_preview(player)
+  local state = ensure_player_state(player.index)
+  destroy_ids(state.cable_preview)
+  state.cable_preview = nil
+  local from = state.cable
+  if not (from and node_valid(from) and holding_cable(player)
+      and state.cable_surface == player.surface.index) then
+    return
+  end
+  local players = { player }
+  local ids = {
+    rendering.draw_circle({
+      surface = player.surface, target = node_position(from), radius = hop_reach(from, { x = 0, y = 0 }),
+      color = { r = 0.1, g = 0.22, b = 0.5, a = 0.5 }, width = 2, filled = false,
+      draw_on_ground = true, players = players,
+    }).id,
+    rendering.draw_circle({
+      surface = player.surface, target = cable_point(from), radius = 0.25,
+      color = CABLE_COLOR, width = 2, filled = false, players = players,
+    }).id,
+  }
+  local hovered = player.selected
+  if hovered and hovered ~= from and (hovered.name == inference.GPU_SERVER or hovered.type == "electric-pole") then
+    local color = hop_length(from, hovered) <= hop_reach(from, hovered) and CABLE_COLOR
+      or { r = 1, g = 0.2, b = 0.15, a = 1 }
+    for _, id in ipairs(draw_cable(player.surface, from, hovered, color, players)) do table.insert(ids, id) end
+  end
+  state.cable_preview = ids
+end
+
+local function node_at(surface, area)
+  local entity = surface.find_entities_filtered({ area = area, name = inference.GPU_SERVER })[1]
+    or surface.find_entities_filtered({ area = area, type = "electric-pole" })[1]
+  if entity then return entity end
+  local x, y = area_center_tile(area)
+  if surface.get_tile(x, y).name == MASK_TILE then return { x = x, y = y } end
+end
+
+-- As with vanilla wires: click one node, then another, to join them, and
+-- the same two again to separate them. The cable stays in hand from the
+-- last pole or server, so painted tiles fan out from it.
 local function cable_select(event, player)
   local state = ensure_player_state(player.index)
   local surface = event.surface
-  local server = surface.find_entities_filtered({ area = event.area, name = inference.GPU_SERVER })[1]
-  if server then
-    state.cable = { server = server, poles = {} }
-    player.print("[Factorion] Click electric poles to run the data cable through, then a painted tile.")
+  local node = node_at(surface, event.area)
+  if not node then
+    player.print("[Factorion] A data cable joins GPU servers, electric poles and " ..
+      "[item=" .. MASK_TILE .. "] paint.")
     return
   end
-  local cable = state.cable
-  if not (cable and cable.server.valid and cable.server.surface == surface) then
-    player.print("[Factorion] Click a [item=" .. inference.GPU_SERVER .. "] first.")
+  local from = state.cable
+  if not (from and node_valid(from) and state.cable_surface == surface.index) then
+    state.cable, state.cable_surface = node, surface.index
+    draw_cable_preview(player)
     return
   end
-  for _, pole in ipairs(cable.poles) do
-    if not pole.valid then
-      state.cable = nil
-      player.print("[Factorion] A pole on this cable is gone; start again from the GPU server.")
+  local ka, kb = node_key(from, surface), node_key(node, surface)
+  if ka == kb then return end
+  if is_tile(from) and is_tile(node) then
+    player.print("[Factorion] Run the cable from paint to a GPU server or a pole.")
+    return
+  end
+  local key = ka < kb and ka .. "|" .. kb or kb .. "|" .. ka
+  storage.links = storage.links or {}
+  if storage.links[key] then
+    remove_links(function(link) return link == storage.links[key] end)
+  else
+    local length, reach = hop_length(from, node), hop_reach(from, node)
+    if length > reach then
+      player.print(string.format("[Factorion] That is %.1f tiles away; this cable reaches %.1f.",
+        length, reach))
       return
     end
+    storage.links[key] = {
+      a = from, b = node, ka = ka, kb = kb, surface = surface.index,
+      render_ids = draw_cable(surface, from, node),
+    }
+    draw_mask_outline(surface)
   end
-  local last = cable.poles[#cable.poles] or cable.server
-  local pole = surface.find_entities_filtered({ area = event.area, type = "electric-pole" })[1]
-  local x, y = area_center_tile(event.area)
-  local next_node = pole or { x = x, y = y }
-  if not pole and surface.get_tile(x, y).name ~= MASK_TILE then
-    player.print("[Factorion] A data cable ends on [item=" .. MASK_TILE .. "] paint; " ..
-      "click a pole or a painted tile.")
-    return
-  end
-  local length, reach = hop_length(last, next_node), hop_reach(last, next_node)
-  if length > reach then
-    player.print(string.format("[Factorion] That is %.1f tiles away; this hop reaches %.1f.",
-      length, reach))
-    return
-  end
-  if pole then
-    table.insert(cable.poles, pole)
-    return
-  end
-  remove_cables(function(owner, other)
-    return owner == cable.server and other.x == x and other.y == y
-  end)
-  local nodes = { cable.server }
-  for _, hop in ipairs(cable.poles) do table.insert(nodes, hop) end
-  table.insert(nodes, next_node)
-  local server_cables = server_state(cable.server)
-  server_cables.cables = server_cables.cables or {}
-  table.insert(server_cables.cables, {
-    poles = cable.poles, x = x, y = y, render_ids = draw_cable(surface, nodes),
-  })
-  state.cable = { server = cable.server, poles = {} }
-  draw_mask_outline(surface)
+  if not is_tile(node) then state.cable = node end
+  draw_cable_preview(player)
   inference.refresh_all(true)
 end
 
--- Right-click a GPU server, pole or cable end to remove the cables on it.
+-- Right-click a GPU server, pole or painted tile to remove all its data
+-- links, as shift-click does for a pole's wires.
 local function cable_cut(event, player)
-  local surface = event.surface
-  ensure_player_state(player.index).cable = nil
-  local server = surface.find_entities_filtered({ area = event.area, name = inference.GPU_SERVER })[1]
-  local pole = surface.find_entities_filtered({ area = event.area, type = "electric-pole" })[1]
-  local x, y = area_center_tile(event.area)
-  local removed = remove_cables(function(owner, cable)
-    if server then return owner == server end
-    if pole then return through_pole(pole)(owner, cable) end
-    return cable.x == x and cable.y == y
-  end)
-  player.print(string.format("[Factorion] Removed %d data cable(s).", removed))
+  local state = ensure_player_state(player.index)
+  state.cable = nil
+  draw_cable_preview(player)
+  local node = node_at(event.surface, event.area)
+  local removed = node and remove_links(touching(node_key(node, event.surface))) or 0
+  player.print(string.format("[Factorion] Removed %d data link(s).", removed))
   inference.refresh_all(true)
 end
 
@@ -1101,6 +1159,18 @@ end
 
 script.on_event(defines.events.on_player_selected_area, handle_tool_selection)
 
+script.on_event(defines.events.on_selected_entity_changed, function(event)
+  local player = game.get_player(event.player_index)
+  if player and holding_cable(player) then draw_cable_preview(player) end
+end)
+
+script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  if not holding_cable(player) then ensure_player_state(player.index).cable = nil end
+  draw_cable_preview(player)
+end)
+
 -- Right-clicking with the planner cancels the plan.
 script.on_event(defines.events.on_player_alt_selected_area, function(event)
   if event.item == DATA_CABLE then
@@ -1284,18 +1354,14 @@ local function endpoint_entity_removed(event)
   local server = storage.servers and storage.servers[entity.unit_number]
   if server then
     cancel_pending(server)
-    for _, cable in ipairs(server.cables or {}) do destroy_cable(cable) end
     if server.signals and server.signals.valid then server.signals.destroy() end
-    for _, endpoint in pairs(server.virtual or {}) do
-      for _, id in pairs(endpoint.render_ids) do
-        local object = rendering.get_object_by_id(id)
-        if object then object.destroy() end
-      end
-    end
+    for _, endpoint in pairs(server.virtual or {}) do destroy_ids(endpoint.render_ids) end
     storage.servers[entity.unit_number] = nil
   end
   if storage.entity_alerts then storage.entity_alerts[entity.unit_number] = nil end
-  if entity.type == "electric-pole" then remove_cables(through_pole(entity)) end
+  if entity.type == "electric-pole" or entity.name == inference.GPU_SERVER then
+    remove_links(touching("e" .. entity.unit_number))
+  end
   if entity.name == inference.GPU_SERVER then draw_mask_outline(entity.surface, entity) end
   local config = storage.endpoints and storage.endpoints[entity.unit_number] or nil
   destroy_endpoint_alt_icon(config)
@@ -1957,13 +2023,6 @@ local ENDPOINT_COLORS = {
 local ARROWS = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
 local BELT_TYPES = { "transport-belt", "underground-belt", "splitter" }
 
-local function destroy_objects(ids)
-  for _, id in pairs(ids) do
-    local object = rendering.get_object_by_id(id)
-    if object then object.destroy() end
-  end
-end
-
 -- An outline in the endpoint belt's colour, its item and its direction.
 local function draw_virtual_endpoint(surface, endpoint)
   local x, y = endpoint.x, endpoint.y
@@ -2020,14 +2079,14 @@ local function sync_virtual_endpoints(server, state, endpoints)
         entry.alert = draw_alert("source-empty", { entry.x + 0.5, entry.y + 0.5 }, server.surface)
         entry.render_ids.alert = entry.alert
       elseif not empty and entry.alert then
-        destroy_objects({ entry.alert })
+        destroy_ids({ entry.alert })
         entry.alert, entry.render_ids.alert = nil, nil
       end
       kept[key] = entry
     end
   end
   for key, entry in pairs(state.virtual or {}) do
-    if not kept[key] then destroy_objects(entry.render_ids) end
+    if not kept[key] then destroy_ids(entry.render_ids) end
   end
   state.virtual = kept
 end
@@ -2491,10 +2550,27 @@ script.on_configuration_changed(function()
   storage.endpoints = storage.endpoints or {}
   -- A server whose prototype changed type is gone from the map.
   for unit, state in pairs(storage.servers) do
-    if not state.entity.valid then
-      for _, cable in ipairs(state.cables or {}) do destroy_cable(cable) end
-      storage.servers[unit] = nil
+    -- Cables ran server, poles, tile; each hop becomes a link.
+    for _, cable in ipairs(state.cables or {}) do
+      destroy_ids(cable.render_ids)
+      local nodes = { state.entity }
+      for _, pole in ipairs(cable.poles) do table.insert(nodes, pole) end
+      table.insert(nodes, { x = cable.x, y = cable.y })
+      for i = 1, #nodes - 1 do
+        local a, b = nodes[i], nodes[i + 1]
+        if node_valid(a) and node_valid(b) and state.entity.valid then
+          local surface = state.entity.surface
+          local ka, kb = node_key(a, surface), node_key(b, surface)
+          storage.links = storage.links or {}
+          storage.links[ka < kb and ka .. "|" .. kb or kb .. "|" .. ka] = {
+            a = a, b = b, ka = ka, kb = kb, surface = surface.index,
+            render_ids = draw_cable(surface, a, b),
+          }
+        end
+      end
     end
+    state.cables = nil
+    if not state.entity.valid then storage.servers[unit] = nil end
   end
   for _, player in pairs(game.players) do
     -- Saves keep open windows, including ones a newer mod version no longer
