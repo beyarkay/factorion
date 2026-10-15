@@ -23,7 +23,7 @@ sprite_dir.mkdir(parents=True, exist_ok=True)
 
 def load(name):
     im = Image.open(render_dir / f"{name}.png").convert("RGBA")
-    return im.resize((im.width // 2, im.height // 2), Image.LANCZOS)
+    return im.resize((im.width // 2, im.height // 2), Image.Resampling.LANCZOS)
 
 
 def sharpen(im):

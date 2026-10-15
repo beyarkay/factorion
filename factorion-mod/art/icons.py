@@ -47,14 +47,16 @@ def glyph():
 
 def save(im, path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    im.resize((SIZE // SS, SIZE // SS), Image.LANCZOS).save(path)
+    im.resize((SIZE // SS, SIZE // SS), Image.Resampling.LANCZOS).save(path)
 
 
 def save_alert(symbol, path):
     """The symbol's ink, not its yellow gaps, is centred on the triangle."""
     mask = Image.eval(symbol.convert("RGB"), lambda v: 255 if v < 100 else 0).convert("L")
     mask = Image.composite(mask, Image.new("L", mask.size), symbol.getchannel("A").point(lambda a: 255 if a > 128 else 0))
-    left, top, right, bottom = mask.getbbox()
+    box = mask.getbbox()
+    assert box, f"{path.name} has no ink"
+    left, top, right, bottom = box
     dx = round(GLYPH_CENTRE[0] * SS - (left + right) / 2)
     dy = round(GLYPH_CENTRE[1] * SS - (top + bottom) / 2)
     im = triangle()
