@@ -8,6 +8,8 @@ local members, style_fields = {}, {}
 
 -- Parameters of add() that set a choose-elem-button's value.
 local ELEM_VALUES = { item = true, signal = true, fluid = true, recipe = true, entity = true }
+-- Parameters of add() that aren't members of the element: a slider's range.
+local ADD_ONLY = { minimum_value = true, maximum_value = true, value_step = true, discrete_values = true }
 
 function M.setup(member_list, style_list)
   for _, name in ipairs(member_list) do members[name] = true end
@@ -41,7 +43,9 @@ local function new_element(spec, parent)
   for key, value in pairs(spec) do
     if ELEM_VALUES[key] then
       element.elem_value = value
-    elseif key ~= "type" and key ~= "name" and key ~= "style" and key ~= "tags" then
+    elseif ADD_ONLY[key] then
+      rawset(element, key, value)
+    elseif key ~= "type" and key ~= "name" and key ~= "style" and key ~= "tags" and key ~= "index" then
       if not members[key] then error("Unknown add() parameter " .. key, 3) end
       element[key] = value
     end
@@ -59,8 +63,14 @@ local function new_element(spec, parent)
       end
     end
     local child = new_element(child_spec, element)
-    table.insert(element.children, child)
+    table.insert(element.children, child_spec.index or #element.children + 1, child)
     return child
+  end
+
+  function element.get_index_in_parent()
+    for i, sibling in ipairs(parent.children) do
+      if sibling == element then return i end
+    end
   end
 
   function element.clear()

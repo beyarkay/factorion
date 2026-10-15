@@ -178,16 +178,35 @@ def test_gpu_window_opens_refreshes_and_edits_conditions(lua):
     section = frame.panels.circuit.inner.predict
     section.active.state = True
     section.condition.signal.elem_value = lua.eval('{ type = "virtual", name = "signal-P" }')
-    section.condition.constant.text = "3"
-    assert g.inference.on_gui_text_changed(event(lua, section.condition.constant))
     assert g.inference.on_gui_checked_state_changed(event(lua, section.active))
+    second = section.condition.second
+    assert second.type == "button" and second.caption == "0"
+
+    assert g.inference.on_gui_click(event(lua, second))
+    popup = g.player.gui.screen["factorion-condition-rhs"]
+    row = popup.inner.constant_row
+    row.slider.slider_value = 3
+    assert g.inference.on_gui_value_changed(event(lua, row.slider))
+    set_button = next(c for c in row.children.values() if c.tags.factorion_rhs_set)
+    assert g.inference.on_gui_click(event(lua, set_button))
     condition = g.settings_of.conditions.predict
     assert condition.enabled and condition.signal.name == "signal-P" and condition.constant == 3
+    second = section.condition.second
+    assert second.caption == "3" and not g.player.gui.screen["factorion-condition-rhs"]
+
+    g.inference.on_gui_click(event(lua, second))
+    picker = next(e for e in g.mock.descendants(g.player.gui.screen["factorion-condition-rhs"]).values()
+                  if e.tags.factorion_rhs_signal)
+    picker.elem_value = lua.eval('{ type = "virtual", name = "signal-Q" }')
+    assert g.inference.on_gui_elem_changed(event(lua, picker))
+    assert g.settings_of.conditions.predict.second_signal.name == "signal-Q"
+    second = section.condition.second
+    assert second.type == "sprite-button" and second.sprite == "virtual-signal/signal-Q"
 
     assert section.condition.signal.enabled
     section.active.state = False
     assert g.inference.on_gui_checked_state_changed(event(lua, section.active))
-    assert not section.condition.signal.enabled and not section.condition.constant.enabled
+    assert not section.condition.signal.enabled and not second.enabled
 
     header = [child.caption for child in frame.panels.circuit.inner.header.children.values() if child.type == "label"]
     assert header == ["Connected to:", "41"]
@@ -244,6 +263,10 @@ def test_condition_matches_signals_like_vanilla(lua):
     ]
     for signals, condition, expected in cases:
         assert g.gui.fulfilled(lua.eval(f"wired({signals})"), lua.eval(condition)) is expected, (signals, condition)
+    against_q = '{ enabled = true, signal = P, comparator = ">", second_signal = { type = "virtual", name = "signal-Q" } }'
+    two = 'wired({ { signal = P, count = 2 }, { signal = { type = "virtual", name = "signal-Q" }, count = 1 } })'
+    assert g.gui.fulfilled(lua.eval(two), lua.eval(against_q)) is True
+    assert g.gui.fulfilled(lua.eval("wired({ { signal = P, count = 2 } })"), lua.eval(against_q)) is True
     item_only = lua.eval('wired({ { signal = { name = "iron-plate" }, count = 5 } })')
     anything = lua.eval('{ enabled = true, signal = { type = "virtual", name = "signal-anything" }, comparator = ">", constant = 1 }')
     assert g.gui.fulfilled(item_only, anything, True) is False
