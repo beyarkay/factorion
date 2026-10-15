@@ -3,6 +3,7 @@
   "runtime.version": "Lua 5.2",
   "diagnostics.globals": [
     "data",
+    "circuit_connector_definitions",
     "commands",
     "defines",
     "game",
@@ -15,7 +16,9 @@
     "script",
     "settings",
     "storage",
-    "table_size"
+    "table_size",
+    "universal_connector_template",
+    "util"
   ],
   "diagnostics.disable": [],
   "workspace.library": [],
