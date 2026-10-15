@@ -234,8 +234,8 @@ function M.open(player, server)
   cluster.style.single_line = false
   cluster.style.maximal_width = 360
 
-  gui.heading(main, "Factory")
   main.add({ type = "flow", name = "warnings", direction = "vertical" })
+  gui.heading(main, "Build region")
   local region = main.add({ type = "label", name = "region" })
   region.style.single_line = false
   region.style.maximal_width = 360

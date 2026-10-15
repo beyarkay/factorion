@@ -2146,7 +2146,9 @@ function describe(server)
   local region, reason = predictable_region(server)
   local can_predict = region ~= nil
   local caption = region and string.format("Build region of %d tiles, converting %s to %s.",
-    region.tiles, icons(region.sources), icons(region.sinks)) or reason
+    region.tiles, icons(region.sources), icons(region.sinks))
+    or server_state(server).computing and reason
+    or "[img=utility/warning_icon] [color=1,0.75,0.3]" .. reason .. "[/color]"
   region = region or region_for(server)
   if region then
     for _, warning in ipairs(setup_warnings(server, region)) do table.insert(region.warnings, 1, warning) end
