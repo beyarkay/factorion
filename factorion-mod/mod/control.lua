@@ -756,7 +756,15 @@ local function add_link(surface, a, b)
   storage.links[key] = {
     a = a, b = b, ka = ka, kb = kb, surface = surface.index, render_ids = draw_cable(surface, a, b),
   }
+  -- However an end goes (mined, cut, deleted in the editor), its links go too.
+  for _, node in ipairs({ a, b }) do
+    if not is_tile(node) then script.register_on_object_destroyed(node) end
+  end
   draw_mask_outline(surface)
+end
+
+local function prune_links()
+  remove_links(function(link) return not node_valid(link.a) or not node_valid(link.b) end)
 end
 
 -- As with vanilla wires: click one node, then another, to join them, and
@@ -1403,12 +1411,13 @@ local function gpu_settings(entity)
 end
 
 -- A server's data links, as offsets from it to the other end, for a
--- blueprint to carry.
-local function link_offsets(server)
+-- blueprint to carry: to painted tiles, and, as vanilla keeps wires, to
+-- entities in the blueprint too.
+local function link_offsets(server, in_blueprint)
   local key, offsets = "e" .. server.unit_number, {}
   for _, link in pairs(storage.links or {}) do
     local other = (link.ka == key and link.b) or (link.kb == key and link.a)
-    if other and node_valid(other) then
+    if other and node_valid(other) and (is_tile(other) or in_blueprint[other.unit_number]) then
       local at = node_position(other)
       table.insert(offsets, {
         kind = is_tile(other) and "tile" or other.type == "electric-pole" and "pole" or "server",
@@ -1433,7 +1442,9 @@ local function restore_links(server, links, direction)
     for _ = 1, turns do dx, dy = -dy, dx end
     local at = { x = server.position.x + dx, y = server.position.y + dy }
     if offset.kind == "tile" then
-      add_link(server.surface, server, { x = math.floor(at.x), y = math.floor(at.y) })
+      -- Only onto paint, which may not be where the blueprint had it.
+      local tile = { x = math.floor(at.x), y = math.floor(at.y) }
+      if server.surface.get_tile(tile.x, tile.y).name == MASK_TILE then add_link(server.surface, server, tile) end
     else
       local other
       for _, entity in pairs(server.surface.find_entities_filtered({ position = at, radius = 0.1 })) do
@@ -1532,6 +1543,10 @@ end)
 script.on_event(defines.events.on_player_setup_blueprint, function(event)
   local blueprint = event.stack or event.record
   if not blueprint or not event.mapping then return end
+  local in_blueprint = {}
+  for _, entity in pairs(event.mapping.get()) do
+    if entity.valid and entity.unit_number then in_blueprint[entity.unit_number] = true end
+  end
   for index, entity in pairs(event.mapping.get()) do
     local config = endpoint_config(entity)
     if config then
@@ -1541,7 +1556,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
     if copied then blueprint.set_blueprint_entity_tag(index, "factorion_gpu", copied) end
     if entity.name == inference.GPU_SERVER then
       blueprint.set_blueprint_entity_tag(index, "factorion_links",
-        { direction = entity.direction, links = link_offsets(entity) })
+        { direction = entity.direction, links = link_offsets(entity, in_blueprint) })
     end
   end
 end)
@@ -3024,7 +3039,10 @@ script.on_init(function()
   request_model_load()
 end)
 
+script.on_event(defines.events.on_object_destroyed, prune_links)
+
 script.on_configuration_changed(function()
+  prune_links()
   storage.players = storage.players or {}
   storage.servers = storage.servers or {}
   storage.pending_by_request = storage.pending_by_request or {}
