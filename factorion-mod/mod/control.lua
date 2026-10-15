@@ -1958,9 +1958,8 @@ local function region_for(server, groups)
     end
   end
   if not signals then
-    -- Two tiles out, so belts that just miss the region can be pointed out.
     for _, entity in pairs(server.surface.find_entities_filtered({
-      area = { { min_x - 2, min_y - 2 }, { max_x + 3, max_y + 3 } },
+      area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
       name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
     })) do
       local config = register_endpoint(entity)
@@ -1979,10 +1978,6 @@ local function region_for(server, groups)
       min_y, max_y = math.min(min_y, endpoint.y), math.max(max_y, endpoint.y)
     elseif not endpoint.unit then
       endpoint.problem = "not on or beside the build region"
-    else
-      table.insert(notes, string.format("The [item=%s] %s belt at %d, %d is ignored: only the four tiles " ..
-        "beside a painted tile count, not diagonals or tiles further out.", endpoint.item, endpoint.role,
-        endpoint.x, endpoint.y))
     end
   end
   if window then
