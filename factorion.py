@@ -208,8 +208,11 @@ LESSON_IS_TRIAL: dict["LessonKind", bool] = {
 
 # The kinds SFT and PPO sample and evaluate on (SFT skips the trials, which
 # have no demonstrations). Every other kind stays buildable and testable, but
-# is left out of training while the full-factory lessons are trialled alone.
+# is left out of training while the belt-routing and full-factory lessons are
+# trialled alone.
 FULL_FACTORY_KINDS: tuple["LessonKind", ...] = (
+    LessonKind.ROUTE_BELTS,
+    LessonKind.ROUTE_BELTS_BUS,
     LessonKind.OPPOSITE_SIDES_1IN,
     LessonKind.SAME_SIDE_1IN,
     LessonKind.SPLITTER_1IN,
