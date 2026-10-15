@@ -202,6 +202,7 @@ def tracked_run(tmp_path_factory):
         **TINY,
         **FAST_EVAL,
         track=True,
+        min_upload_minutes=0,
         checkpoint_path=str(tmp_path / "k.pt"),
         summary_path=str(tmp_path / "k.json"),
     )
@@ -277,6 +278,7 @@ class TestTrackedArtifact:
             **TINY,
             **FAST_EVAL,
             track=True,
+            min_upload_minutes=0,
             eval_every_n_samples=64,
             checkpoint_path=str(tmp_path / "k.pt"),
             summary_path=str(tmp_path / "k.json"),
@@ -290,6 +292,30 @@ class TestTrackedArtifact:
         uploads[-1].delete.assert_not_called()
         final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
         assert final_files == [args.checkpoint_path, args.summary_path]
+
+    def test_run_younger_than_min_upload_minutes_uploads_nothing(self, monkeypatch, tmp_path):
+        import wandb
+        from unittest.mock import MagicMock
+
+        fake_run = MagicMock()
+        fake_run.url = "http://test/run"
+        fake_run.summary = {}
+        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
+        args = SftArgs(
+            seed=1,
+            size=5,
+            num_samples=200,
+            max_level=2,
+            batch_size=32,
+            **TINY,
+            **FAST_EVAL,
+            track=True,
+            checkpoint_path=str(tmp_path / "k.pt"),
+            summary_path=str(tmp_path / "k.json"),
+        )
+        train_sft(args)
+        fake_run.log_artifact.assert_not_called()
+        assert os.path.exists(args.checkpoint_path)
 
     def test_generation_metrics_are_logged_as_best_of_n(self, tracked_run):
         """Every metric from the best-of-N generation eval carries @N, and no
