@@ -1513,16 +1513,22 @@ end
 
 -- game.is_multiplayer() is false for a GUI host playing alone, even with
 -- RCON open, so it can't tell a hosted game from single-player.
-local function server_help()
-  if recently(storage.server_seen_tick) then
-    return string.format(
-      "A model server is reaching the game, but it speaks protocol %s and " ..
-      "this mod speaks %s. Whichever side is older needs restarting: quit " ..
-      "and re-host Factorio to load the latest mod, or restart the server " ..
-      "with %s.",
-      tostring(storage.server_protocol or "unknown"), PROTOCOL_VERSION,
-      server_command())
+-- Why a model server that is polling can't be served, naming the side to
+-- restart; nil when it can.
+local function protocol_mismatch()
+  if not recently(storage.server_seen_tick) or storage.server_protocol == PROTOCOL_VERSION then return nil end
+  local theirs = tonumber(storage.server_protocol)
+  if theirs and theirs > tonumber(PROTOCOL_VERSION) then
+    return string.format("Version mismatch: the model server (v%d) is newer than this mod (v%s); "
+      .. "fully restart Factorio to load the latest mod", theirs, PROTOCOL_VERSION)
   end
+  return string.format("Version mismatch: this mod (v%s) is newer than the model server (v%s); "
+    .. "restart it with %s", PROTOCOL_VERSION, tostring(storage.server_protocol), server_command())
+end
+
+local function server_help()
+  local mismatch = protocol_mismatch()
+  if mismatch then return mismatch .. "." end
   return "In a terminal, run " .. server_command() .. " (it needs uv: " ..
     "https://docs.astral.sh/uv). Factorio only lets the server in while " ..
     "hosting, so load your game with Play > Multiplayer > Host saved game " ..
@@ -1541,7 +1547,7 @@ local function check_server()
   if connected then
     game.print("[Factorion] Model server connected.")
   else
-    game.print("[Factorion] Can't reach the model server. " .. server_help())
+    game.print("[Factorion] " .. (protocol_mismatch() and server_help() or "Can't reach the model server. " .. server_help()))
   end
 end
 
@@ -2213,6 +2219,8 @@ inference.info = function(server)
   local on = has_power(server)
   if not on then
     status, caption = "broken", "No power"
+  elseif protocol_mismatch() then
+    status, caption = "broken", protocol_mismatch()
   elseif storage.server_connected == false then
     status, caption = "broken", "Can't reach the model server"
   elseif storage.model_error then
