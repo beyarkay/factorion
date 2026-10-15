@@ -55,7 +55,7 @@ M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
 M.on_clear = function(_, _) return "" end
 M.info = function(_)
-  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, network = "Not connected" }
+  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, network = "Not connected", powered = false }
 end
 M.settings = function(_) return { conditions = {} } end
 
@@ -113,7 +113,7 @@ function M.refresh(player, full)
   main.region.caption = caption
   main.cluster.caption = cluster
   main.action_row.predict_button.enabled = can_predict
-  main.action_row.clear_button.enabled = server.energy > 0
+  main.action_row.clear_button.enabled = info.powered
 end
 
 function M.refresh_all(full)
