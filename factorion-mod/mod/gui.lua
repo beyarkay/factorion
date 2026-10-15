@@ -112,12 +112,18 @@ local function compare(a, comparator, b)
 end
 
 -- Whether entity's red and green signals together meet condition, with
--- vanilla's anything and everything.
-function M.fulfilled(entity, condition)
+-- vanilla's anything and everything; item signals are left out when they
+-- place sources and sinks instead.
+function M.fulfilled(entity, condition, skip_items)
   local wanted = condition.signal
   if not (condition.enabled and wanted) then return false end
-  local signals = entity.get_signals(defines.wire_connector_id.circuit_red,
-    defines.wire_connector_id.circuit_green) or {}
+  local signals = {}
+  for _, signal in ipairs(entity.get_signals(defines.wire_connector_id.circuit_red,
+    defines.wire_connector_id.circuit_green) or {}) do
+    if not (skip_items and (signal.signal.type or "item") == "item") then
+      table.insert(signals, signal)
+    end
+  end
   local function holds(count) return compare(count, condition.comparator, condition.constant) end
   if wanted.type == "virtual" and (wanted.name == "signal-anything" or wanted.name == "signal-everything") then
     local anything = wanted.name == "signal-anything"
