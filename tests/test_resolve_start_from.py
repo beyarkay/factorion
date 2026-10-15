@@ -175,7 +175,7 @@ def test_ppo_saves_its_best_eval_checkpoint(tmp_path):
 
     arch = [f"--{k.replace('_', '-')}={v}" for k, v in TINY_ARCH_ARGS.items()]
     out = subprocess.run(
-        [sys.executable, str(Path(ppo.__file__)), "--size", "5", "--num-envs", "2",
+        [sys.executable, str(Path(ppo.__file__)), "--size", "15", "--num-envs", "2",
          "--num-steps", "16", "--total-timesteps", "96", "--num-minibatches", "1",
          "--update-epochs", "1", "--eval-every", "1", "--eval-seeds-per-kind", "1",
          "--summary-path", str(tmp_path / "summary.json"), *arch],

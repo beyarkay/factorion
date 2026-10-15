@@ -249,10 +249,11 @@ class TestTrialEvalIsScoredApart:
     @staticmethod
     def _agent():
         import gymnasium as gym
+        from helpers import TINY_ARCH
         from ppo import AgentCNN, make_env
 
         envs = gym.vector.SyncVectorEnv([make_env(EVAL_ENV_ID, 0, False, SIZE, "test")])
-        agent = AgentCNN(envs, layers=(16, 16, 16))
+        agent = AgentCNN(envs, **TINY_ARCH)
         envs.close()
         return agent
 

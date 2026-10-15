@@ -172,78 +172,63 @@ class TestTrainSFTEndToEnd:
         assert torch.equal(train_sft(args).noise_prior.cpu(), loaded.noise_prior)
 
 
+@pytest.fixture(scope="module")
+def tracked_run(tmp_path_factory):
+    """One tiny tracked run, capturing what it sends to W&B."""
+    import wandb
+    from unittest.mock import MagicMock
+
+    captured: dict = {"logged": {}}
+    fake_run = MagicMock()
+    fake_run.url = "http://test/run"
+    fake_run.summary = {}
+    fake_run.log.side_effect = lambda d, *a, **k: captured["logged"].update(d)
+
+    def fake_init(*a, **k):
+        captured["name"] = k.get("name")
+        return fake_run
+
+    def fake_artifact(*a, **k):
+        captured["metadata"] = k.get("metadata", {})
+        return MagicMock()
+
+    tmp_path = tmp_path_factory.mktemp("tracked")
+    args = SftArgs(
+        seed=1,
+        size=5,
+        num_samples=200,
+        max_level=2,
+        batch_size=32,
+        **TINY,
+        **FAST_EVAL,
+        track=True,
+        checkpoint_path=str(tmp_path / "k.pt"),
+        summary_path=str(tmp_path / "k.json"),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(wandb, "init", fake_init)
+        mp.setattr(wandb, "Artifact", fake_artifact)
+        train_sft(args)  # must not raise at the artifact step
+    return args, fake_run, captured
+
+
 class TestTrackedArtifact:
     """The track=True checkpoint-upload path. No test exercised it, so #146's
     chan1/2/3 -> layers rename left a stale args.chan1 in the artifact metadata
     that crashed every tracked run with AttributeError *after* training — only
     at upload. This pins the path end-to-end."""
 
-    def test_tracked_run_finishes_with_arch_metadata(self, monkeypatch, tmp_path):
-        import wandb
-        from unittest.mock import MagicMock
-
-        captured = {}
-
-        def fake_artifact(*a, **k):
-            captured["metadata"] = k.get("metadata", {})
-            return MagicMock()
-
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
-        monkeypatch.setattr(wandb, "Artifact", fake_artifact)
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=200,
-            max_level=2,
-            batch_size=32,
-            **TINY,
-            **FAST_EVAL,
-            track=True,
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)  # must not raise at the artifact step
-
+    def test_tracked_run_finishes_with_arch_metadata(self, tracked_run):
+        _, _, captured = tracked_run
         meta = captured["metadata"]
         assert meta["width"] == 16
         assert meta["attn_layers"] == 1
 
-    def test_run_named_by_artifact_name(self, monkeypatch, tmp_path):
+    def test_run_named_by_artifact_name(self, tracked_run):
         """The W&B run name is the full hyperparameter signature (== the model
         artifact name) so runs are distinguishable in the table — not all
         "sft-{size}x{size}"."""
-        import wandb
-        from unittest.mock import MagicMock
-
-        captured = {}
-
-        def fake_init(*a, **k):
-            captured["name"] = k.get("name")
-            run = MagicMock()
-            run.url = "http://test/run"
-            run.summary = {}
-            return run
-
-        monkeypatch.setattr(wandb, "init", fake_init)
-        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=200,
-            max_level=2,
-            batch_size=32,
-            **TINY,
-            **FAST_EVAL,
-            track=True,
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)
+        args, _, captured = tracked_run
         assert captured["name"] == _artifact_name(args)
 
 
@@ -306,33 +291,11 @@ class TestTrackedArtifact:
         final_files = [c.args[0] for c in artifacts[-1].add_file.call_args_list]
         assert final_files == [args.checkpoint_path, args.summary_path]
 
-    def test_generation_metrics_are_logged_as_best_of_n(self, monkeypatch, tmp_path):
+    def test_generation_metrics_are_logged_as_best_of_n(self, tracked_run):
         """Every metric from the best-of-N generation eval carries @N, and no
         plain key (which would read as best-of-1) duplicates it."""
-        import wandb
-        from unittest.mock import MagicMock
-
-        logged: dict = {}
-        fake_run = MagicMock()
-        fake_run.url = "http://test/run"
-        fake_run.summary = {}
-        fake_run.log.side_effect = lambda d, *a, **k: logged.update(d)
-        monkeypatch.setattr(wandb, "init", lambda *a, **k: fake_run)
-        monkeypatch.setattr(wandb, "Artifact", lambda *a, **k: MagicMock())
-
-        args = SftArgs(
-            seed=1,
-            size=5,
-            num_samples=400,
-            max_level=2,
-            batch_size=32,
-            **TINY,
-            **FAST_EVAL,
-            track=True,
-            checkpoint_path=str(tmp_path / "k.pt"),
-            summary_path=str(tmp_path / "k.json"),
-        )
-        train_sft(args)
+        args, fake_run, captured = tracked_run
+        logged = captured["logged"]
 
         n = args.eval_best_of
         assert f"val/thput@{n}" in logged
@@ -1064,11 +1027,11 @@ class TestLRSchedule:
         lrs.append(optimizer.param_groups[0]["lr"])
         return lrs
 
-    def _lrs(self, args, total_steps):
+    def _lrs(self, args, total_steps, n=None):
         model = torch.nn.Linear(4, 4)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         scheduler = build_lr_schedule(optimizer, total_steps, args)
-        return self._step_n(scheduler, optimizer, total_steps)
+        return self._step_n(scheduler, optimizer, n or total_steps)
 
     def test_warmup_stable_decay(self):
         args = SftArgs(lr=1e-3, warmup_steps=10, cooldown_frac=0.2, min_lr_ratio=0.01)
@@ -1086,7 +1049,7 @@ class TestLRSchedule:
         cooling, so their curves are directly comparable."""
         args = SftArgs(lr=1e-3, warmup_steps=50, cooldown_frac=0.2)
         short = self._lrs(args, 1_000)
-        long = self._lrs(args, 100_000)
+        long = self._lrs(args, 100_000, n=800)
         assert short[:800] == pytest.approx(long[:800], rel=1e-9)
 
     def test_handles_run_shorter_than_warmup(self):
