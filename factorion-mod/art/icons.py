@@ -22,6 +22,10 @@ def s(*values):
     return [v * SS for v in values]
 
 
+# Vanilla centres each symbol's ink here, low in the triangle.
+GLYPH_CENTRE = (32, 41)
+
+
 def triangle():
     im = Image.new("RGBA", (SIZE, SIZE))
     d = ImageDraw.Draw(im)
@@ -33,12 +37,29 @@ def triangle():
         d.line([tuple(s(*a)), tuple(s(*b))], fill=YELLOW, width=2 * r * SS)
     for p in pts:
         d.ellipse(s(p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill=YELLOW)
-    return im, d
+    return im
+
+
+def glyph():
+    im = Image.new("RGBA", (SIZE, SIZE))
+    return im, ImageDraw.Draw(im)
 
 
 def save(im, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     im.resize((SIZE // SS, SIZE // SS), Image.LANCZOS).save(path)
+
+
+def save_alert(symbol, path):
+    """The symbol's ink, not its yellow gaps, is centred on the triangle."""
+    mask = Image.eval(symbol.convert("RGB"), lambda v: 255 if v < 100 else 0).convert("L")
+    mask = Image.composite(mask, Image.new("L", mask.size), symbol.getchannel("A").point(lambda a: 255 if a > 128 else 0))
+    left, top, right, bottom = mask.getbbox()
+    dx = round(GLYPH_CENTRE[0] * SS - (left + right) / 2)
+    dy = round(GLYPH_CENTRE[1] * SS - (top + bottom) / 2)
+    im = triangle()
+    im.alpha_composite(symbol, (dx, dy))
+    save(im, path)
 
 
 def chevrons(d, cx, cy, w, h, n, fill):
@@ -66,7 +87,7 @@ def slash(d):
 
 
 # A source with nothing arriving: a belt, and a dashed empty slot on it.
-im, d = triangle()
+im, d = glyph()
 for x in (21, 43):
     d.line([tuple(s(x, 27)), tuple(s(x, 58))], fill=INK, width=3 * SS)
 chevrons(d, 32, 51, 6, 4, 2, INK)
@@ -74,23 +95,23 @@ for k in range(4):
     for side in ((25 + 4 * k, 25, 27 + 4 * k, 25), (25 + 4 * k, 39, 27 + 4 * k, 39),
                  (25, 25 + 4 * k, 25, 27 + 4 * k), (39, 25 + 4 * k, 39, 27 + 4 * k)):
         d.line([tuple(s(*side[:2])), tuple(s(*side[2:]))], fill=INK, width=int(2.5 * SS))
-save(im, out / "alerts/source-empty.png")
+save_alert(im, out / "alerts/source-empty.png")
 
 # A GPU server that can't reach its model: a card, struck out.
-im, d = triangle()
+im, d = glyph()
 card(d, 16, 31, 48, 48, INK, YELLOW)
 slash(d)
-save(im, out / "alerts/gpu-offline.png")
+save_alert(im, out / "alerts/gpu-offline.png")
 
 # A painted area with no GPU server, or a server with no area: a broken link.
-im, d = triangle()
+im, d = glyph()
 for x0 in (11, 34):
     d.rounded_rectangle(s(x0, 38, x0 + 19, 50), radius=6 * SS, outline=INK, width=3 * SS)
 d.line([tuple(s(21, 44)), tuple(s(27, 44))], fill=INK, width=3 * SS)
 d.line([tuple(s(37, 44)), tuple(s(43, 44))], fill=INK, width=3 * SS)
 for a, b in (((29, 33), (30, 37)), ((35, 33), (34, 37)), ((29, 55), (30, 51)), ((35, 55), (34, 51))):
     d.line([tuple(s(*a)), tuple(s(*b))], fill=INK, width=2 * SS)
-save(im, out / "alerts/unlinked.png")
+save_alert(im, out / "alerts/unlinked.png")
 
 # Light grey like vanilla signal glyphs, with a dark rim to read on any slot.
 im = Image.new("RGBA", (SIZE, SIZE))
