@@ -199,6 +199,11 @@ class Generation:
         )
 
 
+# Chains denoised together; a larger best of runs in batches of this many,
+# graded together at the end, so memory stays bounded.
+CHAINS_PER_BATCH = 32
+
+
 @torch.no_grad()
 def denoise_frames(
     model: Model, world_CWH: np.ndarray, gen: Generation, seed: int, device,
@@ -211,30 +216,37 @@ def denoise_frames(
     net = model.denoiser
     steps = gen.steps or model.config.gen_steps
     refine = gen.refine or model.config.gen_refine
-    cond = torch.as_tensor(world_to_state(world_CWH), device=device)[None].repeat(gen.best_of, 1, 1, 1)
-    started = free_mask(cond) & (cond[:, Channel.ENTITIES.value] != 0)
-    trace: list = []
-    toks, conf, converged, n_refine = generate(
-        net, cond, steps, refine, gen.temperature,
-        torch.Generator(device=device).manual_seed(seed), trace,
-        start=(state_to_tokens(cond), started) if bool(started.any()) else None,
-    )
+    one = torch.as_tensor(world_to_state(world_CWH), device=device)[None]
 
     def legal(toks, conf, i: int) -> np.ndarray:
         typ, rec, part = (t[i].cpu().numpy() for t in toks)
         return legalize(world_CWH, typ, rec, part, conf[i].float().cpu().numpy())
 
-    finals = [legal(toks, conf, i) for i in range(gen.best_of)]
-    scores = [score_world(w, 1.0, 0.0) for w in finals]
-    best = max(range(gen.best_of), key=lambda i: (scores[i]["thput_raw"], -scores[i]["entity_cost"], -i))
-    taken = steps + int(n_refine[best])
-    frames = [legal(t, c, best) for t, c in trace[:taken]] + [finals[best]]
-    return frames, {
-        "steps_taken": taken,
-        "stop_reason": "converged" if converged[best] else "max_steps",
-        "best_of": gen.best_of,
-        "thput": scores[best]["thput_raw"],
-    }
+    best_key, frames, result = None, [], {}
+    for first in range(0, gen.best_of, CHAINS_PER_BATCH):
+        cond = one.repeat(min(CHAINS_PER_BATCH, gen.best_of - first), 1, 1, 1)
+        started = free_mask(cond) & (cond[:, Channel.ENTITIES.value] != 0)
+        trace: list = []
+        toks, conf, converged, n_refine = generate(
+            net, cond, steps, refine, gen.temperature,
+            torch.Generator(device=device).manual_seed(seed + first), trace,
+            start=(state_to_tokens(cond), started) if bool(started.any()) else None,
+        )
+        for i in range(cond.shape[0]):
+            final = legal(toks, conf, i)
+            score = score_world(final, 1.0, 0.0)
+            key = (score["thput_raw"], -score["entity_cost"], -(first + i))
+            if best_key is None or key > best_key:
+                best_key = key
+                taken = steps + int(n_refine[i])
+                frames = [legal(t, c, i) for t, c in trace[:taken]] + [final]
+                result = {
+                    "steps_taken": taken,
+                    "stop_reason": "converged" if converged[i] else "max_steps",
+                    "best_of": gen.best_of,
+                    "thput": score["thput_raw"],
+                }
+    return frames, result
 
 
 def action_to_placement(action: dict) -> dict:
