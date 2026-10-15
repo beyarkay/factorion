@@ -146,7 +146,7 @@ BARE = (0.68, 0.63, 0.56)
 BLACK = material("black", (0.024, 0.019, 0.015), metallic=0.1, roughness=0.72, rust=0.2, wear=0.45, edge=BARE)
 GUNMETAL = material("gunmetal", (0.07, 0.062, 0.052), metallic=0.45, roughness=0.68, rust=0.35, wear=0.5, edge=BARE)
 SILVER = material("silver", (0.42, 0.4, 0.36), metallic=0.7, roughness=0.6, rust=0.4, wear=0.3, grime=1.0)
-DARK = material("dark", (0.016, 0.015, 0.014), metallic=0.3, roughness=0.7, rust=0.1, wear=0.2, grime=0.8)
+DARK = material("dark", (0.016, 0.015, 0.014), metallic=0.3, roughness=0.7, rust=0.0, wear=0.2, grime=0.45)
 VOID = material("void", (0.004, 0.004, 0.005), metallic=0.0, roughness=0.9, rust=0.0, wear=0.0, grime=0.0, bump=0.0)
 # Bright fin tips come from the bevel term alone.
 FIN = material("fin", (0.04, 0.04, 0.042), metallic=0.6, roughness=0.6, rust=0.2, wear=0.5, chip=0.0, edge=(0.5, 0.48, 0.45), grime=1.0, bump=0.2, radius=0.012)
@@ -155,6 +155,9 @@ COPPER = material("copper", (0.55, 0.27, 0.14), metallic=0.8, roughness=0.55, ru
 STEEL = material("steel", (0.3, 0.29, 0.27), metallic=0.6, roughness=0.66, rust=0.45, wear=0.35, edge=BARE)
 YELLOW = material("yellow", (0.5, 0.38, 0.03), metallic=0.2, roughness=0.6, rust=0.3, wear=0.5, edge=BARE)
 ORANGE = material("orange", (0.55, 0.16, 0.02), metallic=0.2, roughness=0.6, rust=0.3, wear=0.5, edge=BARE)
+# Black anodised aluminium, worn to bare metal on the edges.
+ALU = material("aluminium", (0.03, 0.03, 0.034), metallic=0.7, roughness=0.45, rust=0.0, wear=0.45, edge=(0.55, 0.55, 0.57), grime=0.45)
+BRIGHT = material("bright_aluminium", (0.45, 0.45, 0.47), metallic=0.85, roughness=0.42, rust=0.05, wear=0.2, grime=0.6)
 CABLES = {
     "black": material("cable_black", (0.02, 0.02, 0.02), metallic=0.0, roughness=0.5, rust=0.1, bump=0.6),
     "red": material("cable_red", (0.3, 0.035, 0.025), metallic=0.0, roughness=0.5, rust=0.1, bump=0.6),
@@ -262,117 +265,112 @@ def fan(centre, r, parent):
     return rotor
 
 
-# The chassis lies along the footprint, its front to the camera: x along the
-# 4 tiles, y from front (-) to back (+), z up, in tiles.
-X0, X1, Y0, Y1, TOP = -1.9, 1.9, -0.82, 0.8, 0.45
-FAN_Y = -0.05
+# An open-frame rig: x along the 4 tiles, y from front (-) to back (+), z
+# up, in tiles.
+X0, X1, Y0, Y1, TOP = -1.85, 1.85, -0.82, 0.82, 1.02
+PROFILE = 0.075
+CARD_XS = tuple(-1.45 + k * 0.58 for k in range(6))
+CARD_FRONT, CARD_BACK, CARD_BOTTOM = -0.62, 0.42, 0.42
 
 
-def build_chassis():
-    """A heavy open-topped tray on rubber feet."""
-    for x in (X0 + 0.15, X1 - 0.15):
-        for y in (Y0 + 0.12, Y1 - 0.12):
-            box(x - 0.1, x + 0.1, y - 0.1, y + 0.1, 0.0, 0.07, BLACK, bevel=0.02)
-    box(X0, X1, Y0, Y1, 0.06, 0.13, GUNMETAL, bevel=0.025)
-    wall = 0.06
-    for y0, y1 in ((Y0, Y0 + wall), (Y1 - wall, Y1)):
-        box(X0, X1, y0, y1, 0.1, TOP, STEEL, bevel=0.025)
-    for x0, x1 in ((X0, X0 + wall), (X1 - wall, X1)):
-        box(x0, x1, Y0, Y1, 0.1, TOP, STEEL, bevel=0.025)
-    # A rolled lip along the top of every wall, and rack ears at the front.
-    for y in (Y0 + wall / 2, Y1 - wall / 2):
-        box(X0 - 0.01, X1 + 0.01, y - 0.05, y + 0.05, TOP - 0.03, TOP + 0.02, STEEL, bevel=0.02)
-    for x in (X0 - 0.06, X1 + 0.06):
-        box(x - 0.05, x + 0.05, Y0 - 0.02, Y0 + 0.18, 0.18, TOP - 0.04, BLACK, bevel=0.02)
-        rivets([(x, Y0 - 0.02, z) for z in (0.24, 0.36)], r=0.03)
-    # Vent slots punched in the back wall.
-    for k in range(9):
-        x = X0 + 0.35 + k * 0.38
-        box(x - 0.11, x + 0.11, Y1 + 0.005, Y1 + 0.02, 0.24, 0.32, VOID, bevel=0.01)
+def extrusion(a, b):
+    """A square aluminium extrusion between two points along one axis."""
+    lo = [min(p, q) - PROFILE / 2 for p, q in zip(a, b)]
+    hi = [max(p, q) + PROFILE / 2 for p, q in zip(a, b)]
+    box(lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], ALU, bevel=0.012)
 
 
-def build_fan_wall():
-    """Four big fans across the chassis in a black carrier, yellow pull tabs."""
-    box(X0 + 0.06, X1 - 0.06, FAN_Y, FAN_Y + 0.18, 0.13, TOP - 0.02, DARK, bevel=0.03)
-    rotors = []
+def build_frame():
+    for x in (X0, X1):
+        for y in (Y0, Y1):
+            extrusion((x, y, 0.04), (x, y, TOP))
+            box(x - 0.08, x + 0.08, y - 0.08, y + 0.08, 0.0, 0.04, BLACK, bevel=0.015)
+    for z in (0.06, TOP):
+        for y in (Y0, Y1):
+            extrusion((X0, y, z), (X1, y, z))
+        for x in (X0, X1):
+            extrusion((x, Y0, z), (x, Y1, z))
+    # The rail the cards' brackets screw to.
+    extrusion((X0, CARD_FRONT - 0.04, CARD_BOTTOM + 0.2), (X1, CARD_FRONT - 0.04, CARD_BOTTOM + 0.2))
+    extrusion((X0, CARD_BACK + 0.06, CARD_BOTTOM - 0.02), (X1, CARD_BACK + 0.06, CARD_BOTTOM - 0.02))
+    # Corner brackets where rails meet posts.
+    for x in (X0, X1):
+        for y in (Y0, Y1):
+            for z in (0.12, TOP - 0.07):
+                box(x - 0.05, x + 0.05, y - 0.05, y + 0.05, z - 0.04, z + 0.04, STEEL, bevel=0.01)
+
+
+def build_base():
+    """Tray, board and power supply under the cards."""
+    box(X0 + 0.04, X1 - 0.04, Y0 + 0.04, Y1 - 0.04, 0.06, 0.1, ALU, bevel=0.015)
+    box(-1.75, -0.15, -0.78, 0.1, 0.1, 0.13, DARK, bevel=0.01)
+    box(-1.45, -1.05, -0.45, -0.1, 0.13, 0.3, FIN, bevel=0.03)
     for k in range(4):
-        x = -1.2 + k * 0.8
-        box(x - 0.36, x + 0.36, FAN_Y - 0.05, FAN_Y, 0.13, TOP - 0.02, BLACK, bevel=0.025)
-        rotors.append(fan((x, FAN_Y - 0.05, 0.29), 0.15, None))
-        box(x - 0.24, x + 0.24, FAN_Y - 0.08, FAN_Y + 0.02, TOP - 0.05, TOP + 0.03, YELLOW, bevel=0.02)
-        box(x + 0.22, x + 0.3, FAN_Y - 0.1, FAN_Y - 0.02, TOP - 0.1, TOP + 0.05, YELLOW, bevel=0.02)
-    return rotors
-
-
-def build_back():
-    """Behind the fans, sheet-metal air ducts over the GPUs, with yellow
-    grab strips, and a row of memory between them."""
-    for x0, x1 in ((X0 + 0.1, -0.15), (0.15, X1 - 0.75)):
-        box(x0, x1, FAN_Y + 0.24, Y1 - 0.1, 0.13, TOP - 0.06, STEEL, bevel=0.03)
-        box(x0 + 0.08, x1 - 0.08, FAN_Y + 0.3, Y1 - 0.16, TOP - 0.06, TOP - 0.02, STEEL, bevel=0.02)
-        mid = (x0 + x1) / 2
-        box(mid - 0.35, mid + 0.35, 0.38, 0.46, TOP - 0.02, TOP + 0.01, YELLOW, bevel=0.015)
-        for k in range(3):
-            xx = x0 + 0.2 + k * 0.18
-            box(xx - 0.06, xx + 0.06, FAN_Y + 0.33, FAN_Y + 0.5, TOP - 0.025, TOP - 0.015, VOID, bevel=0.005)
+        x = -0.85 + k * 0.08
+        box(x - 0.025, x + 0.025, -0.5, -0.05, 0.13, 0.24, BLUE if k % 2 else BLACK, bevel=0.01)
+    # Port panel at the front edge of the board.
+    box(-1.7, -0.9, -0.82, -0.74, 0.13, 0.3, STEEL, bevel=0.015)
     for k in range(4):
-        x = -0.11 + k * 0.075
-        box(x - 0.025, x + 0.025, FAN_Y + 0.26, Y1 - 0.12, 0.13, 0.36, BLUE if k % 2 else BLACK, bevel=0.01)
-    # Two power supplies at the back right, handles out of the back wall.
-    for k in range(2):
-        y = 0.2 + k * 0.28
-        box(X1 - 0.68, X1 - 0.07, y - 0.12, y + 0.12, 0.13, 0.4, GUNMETAL, bevel=0.025)
-        box(X1 - 0.6, X1 - 0.2, y - 0.08, y + 0.08, 0.4, 0.42, VOID, bevel=0.01)
-        box(X1 - 0.02, X1 + 0.1, y - 0.08, y + 0.08, 0.2, 0.26, BLACK, bevel=0.02)
+        x = -1.6 + k * 0.2
+        box(x - 0.06, x + 0.06, -0.835, -0.815, 0.18, 0.25, VOID, bevel=0.005)
+        box(x + 0.04, x + 0.07, -0.84, -0.82, 0.26, 0.28, LED, bevel=0)
+    # The power supply, its fan up.
+    box(0.5, 1.75, 0.15, 0.78, 0.1, 0.4, BLACK, bevel=0.03)
+    ring((1.1, 0.46, 0.4), (1.1, 0.46, 0.42), 0.2, 0.03, ALU)
+    tube((1.1, 0.46, 0.395), (1.1, 0.46, 0.4), 0.18, VOID)
+    for k in range(3):
+        box(0.92 + k * 0.12, 0.98 + k * 0.12, 0.3, 0.62, 0.41, 0.425, ALU, bevel=0.005)
+    box(1.62, 1.76, 0.25, 0.68, 0.14, 0.36, ALU, bevel=0.015)
 
 
-def build_front():
-    """In front of the fans the board, heat sinks and looms; on the front
-    panel drive bays with orange tabs, ports and cables spilling out."""
-    box(X0 + 0.06, X1 - 0.06, Y0 + 0.06, FAN_Y - 0.05, 0.13, 0.16, DARK, bevel=0.01)
-    for x in (-1.1, 0.4):
-        box(x - 0.3, x + 0.3, -0.62, -0.22, 0.16, 0.22, GUNMETAL, bevel=0.02)
-        for k in range(5):
-            xx = x - 0.24 + k * 0.12
-            box(xx - 0.035, xx + 0.035, -0.6, -0.24, 0.22, 0.36, FIN, bevel=0.015)
-    for x, y in ((-0.45, -0.35), (-0.3, -0.5), (1.15, -0.35), (1.3, -0.5)):
-        tube((x, y, 0.16), (x, y, 0.28), 0.055, BLUE, segments=14)
-        tube((x, y, 0.28), (x, y, 0.3), 0.045, STEEL, segments=14)
-    # Looms from the fan wall's power to the board.
-    for k, colour in enumerate(("black", "red", "black", "black")):
-        x = 1.55 + k * 0.07
-        cable([(x, FAN_Y - 0.06, 0.26), (x, -0.3, 0.21), (x - 0.4, -0.55, 0.2), (x - 0.9, -0.66, 0.2)], 0.035, CABLES[colour])
+def build_card(x):
+    """A thick card standing on the rails: dark shroud, aluminium end caps,
+    a vented bracket at the front and its power socket on top."""
+    w = 0.14
+    box(x - w, x + w, CARD_FRONT + 0.06, CARD_BACK - 0.06, CARD_BOTTOM, TOP - 0.08, DARK, bevel=0.035)
+    for y0, y1 in ((CARD_FRONT, CARD_FRONT + 0.16), (CARD_BACK - 0.12, CARD_BACK)):
+        box(x - w - 0.01, x + w + 0.01, y0, y1, CARD_BOTTOM - 0.01, TOP - 0.06, BRIGHT, bevel=0.04)
+    box(x - w, x + w, CARD_FRONT - 0.03, CARD_FRONT, CARD_BOTTOM - 0.05, TOP - 0.1, STEEL, bevel=0.01)
+    for k in range(3):
+        z = CARD_BOTTOM + 0.04 + k * 0.13
+        box(x - w + 0.04, x + w - 0.04, CARD_FRONT - 0.04, CARD_FRONT - 0.025, z, z + 0.08, VOID, bevel=0.005)
+    box(x + w - 0.08, x + w - 0.03, CARD_FRONT - 0.045, CARD_FRONT - 0.03, TOP - 0.2, TOP - 0.15, LED, bevel=0)
+    box(x - 0.08, x + 0.08, 0.05, 0.25, TOP - 0.08, TOP - 0.02, BLACK, bevel=0.015)
+    return (x, 0.15, TOP - 0.02)
 
-    # The front panel: a bay cage on the left half, ports on the right.
-    yf = Y0 - 0.01
-    box(X0 + 0.12, -0.15, yf - 0.06, yf, 0.15, TOP - 0.06, BLACK, bevel=0.02)
+
+def build_cables(sockets):
+    """Braided power looms arch from each card to the supply, risers drop to
+    the board, and spare runs sag in loops along the front."""
+    rng = [(-0.04, 0.0), (0.0, 0.04), (0.04, -0.02)]
+    for i, (x, y, z) in enumerate(sockets):
+        for k, (dx, dz) in enumerate(rng):
+            sx = x + dx
+            cable([(sx, y, z), (sx, y + 0.02, z + 0.2 + dz), (sx + 0.05, CARD_BACK + 0.05, z + 0.24 + dz),
+                   (sx + 0.1, Y1 + 0.06, z), (sx + 0.12, Y1 - 0.06, 0.45)], 0.05, CABLES["black"])
+        # The riser from the board up to the card's foot.
+        cable([(x, -0.3, CARD_BOTTOM - 0.01), (x, -0.42, CARD_BOTTOM - 0.12), (x * 0.6 - 0.5, -0.4, 0.2),
+               (-0.6 - i * 0.05, -0.3, 0.14)], 0.045, CABLES["black"])
     for k in range(5):
-        x = X0 + 0.38 + k * 0.32
-        box(x - 0.13, x + 0.13, yf - 0.09, yf - 0.04, 0.18, TOP - 0.08, GUNMETAL, bevel=0.02)
-        box(x - 0.1, x + 0.1, yf - 0.11, yf - 0.08, 0.3, 0.35, ORANGE, bevel=0.012)
-        box(x + 0.06, x + 0.1, yf - 0.115, yf - 0.09, 0.21, 0.25, LED, bevel=0)
-    ports = []
-    for k in range(6):
-        x = 0.1 + k * 0.28
-        box(x - 0.1, x + 0.1, yf - 0.05, yf, 0.2, 0.36, STEEL, bevel=0.015)
-        box(x - 0.06, x + 0.06, yf - 0.06, yf - 0.04, 0.24, 0.32, VOID, bevel=0.005)
-        ports.append((x, yf - 0.06, 0.28))
-    # Thick cables loop out of the ports and sag to the ground in front.
-    for k in range(0, 6, 2):
-        a, b = ports[k], ports[k + 1]
-        for j, colour in enumerate(("black", "black")):
-            dy = -0.12 - j * 0.08
-            cable([a, (a[0], a[1] + dy, a[2] - 0.08), ((a[0] + b[0]) / 2, a[1] + dy - 0.06, 0.05),
-                   (b[0], b[1] + dy, b[2] - 0.08), b], 0.04, CABLES[colour])
-    box(-0.1, 0.0, yf - 0.06, yf, 0.15, TOP - 0.06, YELLOW, bevel=0.015)
+        x0 = -1.6 + k * 0.7
+        cable([(x0, -0.7, 0.14), (x0 + 0.15, Y0 - 0.12, 0.12), (x0 + 0.35, Y0 - 0.2, 0.05),
+               (x0 + 0.55, Y0 - 0.1, 0.12), (x0 + 0.7, -0.7, 0.14)], 0.045, CABLES["black"])
+    # Looms snaking across the floor in front of the cards.
+    for k in range(4):
+        y = -0.72 + k * 0.07
+        points = [(-0.9, y, 0.15)]
+        for j in range(1, 6):
+            points.append((-0.9 + j * 0.5, y + (0.06 if (j + k) % 2 else -0.04), 0.15 + 0.03 * (j % 2)))
+        points.append((1.75, y + 0.15, 0.2))
+        cable(points, 0.05, CABLES["black"])
 
 
 def build_horizontal():
-    build_chassis()
-    rotors = build_fan_wall()
-    build_back()
-    build_front()
-    return rotors
+    build_frame()
+    build_base()
+    sockets = [build_card(x) for x in CARD_XS]
+    build_cables(sockets)
+    return []
 
 
 def setup_scene():
