@@ -1010,8 +1010,10 @@ local function source_items(item)
   return items
 end
 
+-- A finished plan's belts belong to its factory, so only an unfinished
+-- plan's are removed.
 local function remove_plan_markers(state)
-  for _, unit_number in ipairs(state.plan and state.plan.markers or {}) do
+  for _, unit_number in ipairs(state.plan and not state.plan.done and state.plan.markers or {}) do
     local entity = game.get_entity_by_unit_number(unit_number)
     if entity and entity.valid then entity.destroy({ raise_destroy = true }) end
   end
