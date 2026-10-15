@@ -52,7 +52,7 @@ local ENDPOINT_SIGNALS = "Instead of source and sink belts, each item signal on 
 -- settings.
 M.on_load = function(_) end
 M.describe = function(_) return "", false, "" end
-M.on_predict = function(_, _) return "" end
+M.on_predict = function(_, _, _) return "", false end
 M.on_clear = function(_, _) return "" end
 M.info = function(_)
   return { status = "idle", caption = "", utilisation = 0, power_kw = 0, wired = false }
