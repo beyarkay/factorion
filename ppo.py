@@ -772,8 +772,8 @@ class FactorioEnv(gym.Env):
             # by LessonKind(int).name.
             'kind': self._kind.value,
             # thput_raw: raw items/second (reference-free). thput_normed:
-            # raw / per-factory max, clamped to [0, 1] (1.0 == matched the
-            # factory's reference throughput).
+            # raw / per-factory max (1.0 == matched the factory's reference
+            # throughput; above it, beat it).
             'thput_raw': self._thput_raw,
             'thput_normed': self._thput_normed,
             'frac_reachable': self._frac_reachable,
@@ -981,12 +981,12 @@ class FactorioEnv(gym.Env):
         # The dense reward pays the per-step score delta, so the throughput sim
         # (and the cheap numpy diagnostics that ride along) runs on every step.
         frac_hallucin = 0
-        # thput_raw is items/second; thput_normed in [0, 1] is raw / per-factory
-        # max (a perfectly-rebuilt factory scores 1.0 regardless of belt speed).
+        # thput_raw is items/second; thput_normed is raw / per-factory max (a
+        # perfectly-rebuilt factory scores 1.0 regardless of belt speed).
         # self._max_throughput comes from the factory generator — see reset().
         thput_raw, num_unreachable = factorion_rs.simulate_throughput(self._world_CWH.permute(1, 2, 0).to(torch.int64).numpy())
         thput_normed = (
-            min(1.0, thput_raw / self._max_throughput)
+            thput_raw / self._max_throughput
             if self._max_throughput > 0
             else 0.0
         )

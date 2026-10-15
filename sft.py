@@ -258,7 +258,7 @@ def run_rollout_eval(
     the env finishes (throughput==1.0 or max_steps) without it ever firing.
     Throughput is the last `info['thput_normed']` the env reported for the
     state the model stopped at: raw items/sec divided by the per-factory
-    max, in [0, 1], so a perfectly-rebuilt factory scores 1.0 regardless of
+    max, so a perfectly-rebuilt factory scores 1.0 regardless of
     its absolute belt speed (the env already calls the Rust solver every
     step, so we don't re-run it).
 
