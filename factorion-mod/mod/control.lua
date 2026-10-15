@@ -1208,6 +1208,7 @@ local function entity_built(event)
     if copied then
       local state = server_state(entity)
       state.conditions, state.read_state = copied.conditions, copied.read_state
+      state.circuit_endpoints = copied.circuit_endpoints
     end
     draw_mask_outline(entity.surface)
   end
@@ -1234,7 +1235,10 @@ end)
 
 local function gpu_settings(entity)
   local state = storage.servers and storage.servers[entity.unit_number]
-  return state and { conditions = state.conditions, read_state = state.read_state }
+  return state and {
+    conditions = state.conditions, read_state = state.read_state,
+    circuit_endpoints = state.circuit_endpoints,
+  }
 end
 
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
@@ -1249,6 +1253,7 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
     ---@diagnostic disable-next-line: undefined-field
     state.conditions = table.deepcopy(copied.conditions)
     state.read_state = copied.read_state
+    state.circuit_endpoints = copied.circuit_endpoints
   end
 end)
 
@@ -1281,6 +1286,12 @@ local function endpoint_entity_removed(event)
     cancel_pending(server)
     for _, cable in ipairs(server.cables or {}) do destroy_cable(cable) end
     if server.signals and server.signals.valid then server.signals.destroy() end
+    for _, endpoint in pairs(server.virtual or {}) do
+      for _, id in pairs(endpoint.render_ids) do
+        local object = rendering.get_object_by_id(id)
+        if object then object.destroy() end
+      end
+    end
     storage.servers[entity.unit_number] = nil
   end
   if storage.entity_alerts then storage.entity_alerts[entity.unit_number] = nil end
@@ -1307,11 +1318,11 @@ script.on_event(defines.events.on_robot_mined_entity, endpoint_entity_removed)
 script.on_event(defines.events.on_entity_died, endpoint_entity_removed)
 script.on_event(defines.events.script_raised_destroy, endpoint_entity_removed)
 
--- How many of the endpoint's item newly reached its tile since the last
--- tick. Transport lines run past the tile, so only items on it count.
-local function count_arrivals(config, entity)
-  local left, right = entity.position.x - 0.51, entity.position.x + 0.51
-  local top, bottom = entity.position.y - 0.51, entity.position.y + 0.51
+-- How many of the endpoint's item newly reached tile x, y of belt entity
+-- since the last tick. Transport lines run past the tile, so only items on
+-- it count.
+local function count_arrivals(config, entity, x, y)
+  local left, right, top, bottom = x - 0.01, x + 1.01, y - 0.01, y + 1.01
   local previous, present, arrived = config.on_tile or {}, {}, 0
   for line_index = 1, entity.get_max_transport_line_index() do
     local line = entity.get_transport_line(line_index)
@@ -1343,9 +1354,22 @@ local function service_endpoint_belts()
       storage.endpoints[unit_number] = nil
     else
       config.throughput_rate = (config.throughput_rate or 0) * decay
-        + count_arrivals(config, entity) * 60 * (1 - decay)
+        + count_arrivals(config, entity, math.floor(entity.position.x),
+          math.floor(entity.position.y)) * 60 * (1 - decay)
       if config.role == "sink" and game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
         refresh_sink_rate_label(entity, config)
+      end
+    end
+  end
+  -- Circuit endpoints measure whatever belt the player runs over their tile.
+  for _, state in pairs(storage.servers or {}) do
+    for _, endpoint in pairs(state.virtual or {}) do
+      local arrived = endpoint.belt and endpoint.belt.valid
+        and count_arrivals(endpoint, endpoint.belt, endpoint.x, endpoint.y) or 0
+      endpoint.throughput_rate = (endpoint.throughput_rate or 0) * decay + arrived * 60 * (1 - decay)
+      if endpoint.label and game.tick % SINK_LABEL_REFRESH_TICKS == 0 then
+        local label = rendering.get_object_by_id(endpoint.label)
+        if label then label.text = string.format("%.1f/s", endpoint.throughput_rate) end
       end
     end
   end
@@ -1431,14 +1455,15 @@ end
 
 -- The entities wholly inside fp, as the model sees them: the player's, and
 -- what this GPU server built before.
-local function gather_existing_entities(predicted, surface, fp)
+local function gather_existing_entities(predicted, surface, fp, endpoint_tiles)
   local result, previous = {}, {}
   local candidates = surface.find_entities_filtered({
     area = { { fp.x, fp.y }, { fp.x + fp.w, fp.y + fp.h } },
     name = MODEL_ENTITY_NAMES,
   })
   for _, entity in pairs(candidates) do
-    if not entity.to_be_deconstructed() then
+    local at = tile_key(math.floor(entity.position.x), math.floor(entity.position.y))
+    if not entity.to_be_deconstructed() and not endpoint_tiles[at] then
       local facingless = entity.type == "assembling-machine" or entity.type == "electric-pole"
       local direction = facingless and 0 or FACTORIO_TO_DIRECTION[entity.direction]
       if direction then
@@ -1486,8 +1511,37 @@ local function gather_existing_entities(predicted, surface, fp)
   return result, previous
 end
 
--- The server's painted areas, the source and sink belts on or beside them,
--- and the model's grid around them all; or nil and why not.
+-- A server reading endpoints from its circuit takes each item signal on its
+-- red wire as a source and on its green wire as a sink, valued D YYY XXX:
+-- D is 1-4 for north, east, south or west, and X and Y count tiles from
+-- the painted area's top-left corner, so 0 is just outside it. Returns the
+-- endpoints, in world tiles, and the item signals that don't decode.
+local function circuit_endpoints(server, min_x, min_y)
+  local endpoints, ignored = {}, {}
+  for role, wire in pairs({
+    source = defines.wire_connector_id.circuit_red,
+    sink = defines.wire_connector_id.circuit_green,
+  }) do
+    for _, signal in ipairs(server.get_signals(wire) or {}) do
+      if (signal.signal.type or "item") == "item" then
+        local value = signal.count
+        local d = math.floor(value / 1000000)
+        if d >= 1 and d <= 4 then
+          table.insert(endpoints, {
+            x = min_x + value % 1000 - 1, y = min_y + math.floor(value / 1000) % 1000 - 1,
+            role = role, item = signal.signal.name, direction = d,
+          })
+        else
+          table.insert(ignored, "[item=" .. signal.signal.name .. "]")
+        end
+      end
+    end
+  end
+  return endpoints, ignored
+end
+
+-- The server's painted areas, the sources and sinks on or beside them, and
+-- the model's grid around them all; or nil and why not.
 local function region_for(server)
   if not storage.model then
     request_model_load()
@@ -1519,17 +1573,30 @@ local function region_for(server)
     end
     return false
   end
+  local candidates, ignored = {}, {}
+  if server_state(server).circuit_endpoints then
+    candidates, ignored = circuit_endpoints(server, min_x, min_y)
+  else
+    for _, entity in pairs(server.surface.find_entities_filtered({
+      area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
+      name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
+    })) do
+      local config = register_endpoint(entity)
+      table.insert(candidates, {
+        x = math.floor(entity.position.x), y = math.floor(entity.position.y),
+        role = config.role, item = config.item,
+        direction = FACTORIO_TO_DIRECTION[entity.direction], unit = entity.unit_number,
+      })
+    end
+  end
   local endpoints = {}
-  for _, entity in pairs(server.surface.find_entities_filtered({
-    area = { { min_x - 1, min_y - 1 }, { max_x + 2, max_y + 2 } },
-    name = { ENDPOINT_ENTITY_NAMES.source, ENDPOINT_ENTITY_NAMES.sink },
-  })) do
-    local x, y = math.floor(entity.position.x), math.floor(entity.position.y)
-    local config = touches(x, y) and register_endpoint(entity)
-    if config then
-      table.insert(endpoints, { x = x, y = y, entity = entity, config = config })
-      min_x, max_x = math.min(min_x, x), math.max(max_x, x)
-      min_y, max_y = math.min(min_y, y), math.max(max_y, y)
+  for _, endpoint in ipairs(candidates) do
+    if touches(endpoint.x, endpoint.y) then
+      table.insert(endpoints, endpoint)
+      min_x, max_x = math.min(min_x, endpoint.x), math.max(max_x, endpoint.x)
+      min_y, max_y = math.min(min_y, endpoint.y), math.max(max_y, endpoint.y)
+    elseif not endpoint.unit then
+      table.insert(ignored, "[item=" .. endpoint.item .. "]")
     end
   end
   local span_x, span_y = max_x - min_x + 1, max_y - min_y + 1
@@ -1542,18 +1609,17 @@ local function region_for(server)
     y = min_y - math.floor((size - span_y) / 2),
     w = size, h = size,
   }
-  local region = { fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {}, sink_units = {} }
+  local region = {
+    fp = fp, tiles = tiles, allowed = {}, sources = {}, sinks = {}, endpoints = endpoints,
+    ignored = ignored,
+  }
   for _, tile in pairs(area) do
     table.insert(region.allowed, { x = tile.x - fp.x, y = tile.y - fp.y })
   end
   for _, endpoint in ipairs(endpoints) do
-    if endpoint.config.role == "sink" then
-      table.insert(region.sink_units, endpoint.entity.unit_number)
-    end
-    table.insert(endpoint.config.role == "source" and region.sources or region.sinks, {
+    table.insert(endpoint.role == "source" and region.sources or region.sinks, {
       x = endpoint.x - fp.x, y = endpoint.y - fp.y,
-      direction = FACTORIO_TO_DIRECTION[endpoint.entity.direction],
-      item = endpoint.config.item,
+      direction = endpoint.direction, item = endpoint.item,
     })
   end
   return region
@@ -1583,10 +1649,10 @@ local function predictable_region(server)
   local region, reason = region_for(server)
   if not region then return nil, "Can't predict: " .. reason .. "." end
   if #region.sources == 0 then
-    return nil, "No source belt on or beside the painted area."
+    return nil, "No source on or beside the painted area."
   end
   if #region.sinks == 0 then
-    return nil, "No sink belt on or beside the painted area."
+    return nil, "No sink on or beside the painted area."
   end
   return region
 end
@@ -1605,8 +1671,13 @@ inference.describe = function(server)
     or string.format("Cluster of %d GPU servers sharing this paint, %s.", #members, speed)
   local region, reason = predictable_region(server)
   if not region then return reason, false, cluster_caption end
-  return string.format("Painted area of %d tiles, converting %s to %s.",
-    region.tiles, icons(region.sources), icons(region.sinks)), true, cluster_caption
+  local caption = string.format("Painted area of %d tiles, converting %s to %s.",
+    region.tiles, icons(region.sources), icons(region.sinks))
+  if #region.ignored > 0 then
+    caption = caption .. " Ignoring " .. table.concat(region.ignored, " ") ..
+      " on the wires: not a D YYY XXX value on or beside the paint."
+  end
+  return caption, true, cluster_caption
 end
 
 local function gather_request(state, region, members)
@@ -1614,7 +1685,8 @@ local function gather_request(state, region, members)
   for _, member in ipairs(members) do
     for unit, entity in pairs(server_state(member).model_entities or {}) do predicted[unit] = entity end
   end
-  local model_entities, previous = gather_existing_entities(predicted, state.entity.surface, region.fp)
+  local model_entities, previous = gather_existing_entities(predicted, state.entity.surface,
+    region.fp, state.endpoint_tiles)
   local description = string.format("converting %s to %s on %d painted tiles",
     icons(region.sources), icons(region.sinks), region.tiles)
   if #model_entities > 0 then
@@ -1657,6 +1729,11 @@ inference.on_predict = function(player, server, quiet)
   if not region then return reason, false end
   local state = server_state(server)
   local members = powered(cluster(server))
+  -- The player's own belts feed circuit endpoints, so the model leaves them.
+  state.endpoint_tiles = {}
+  for _, endpoint in ipairs(region.endpoints) do
+    state.endpoint_tiles[tile_key(endpoint.x, endpoint.y)] = true
+  end
   local request, description = gather_request(state, region, members)
   local request_json = helpers.table_to_json(request)
   table.insert(storage.outbox, request_json)
@@ -1718,6 +1795,10 @@ local function deconstruct_region(server, player)
     cancel_pending(state)
     state.model_entities = {}
   end
+  local feeds = {}
+  for _, endpoint in pairs(server_state(server).virtual or {}) do
+    feeds[tile_key(endpoint.x, endpoint.y)] = true
+  end
   local marked = 0
   for _, piece in ipairs(server_pieces(server, storage.model.grid_size) or {}) do
     local min_x, min_y, max_x, max_y = math.huge, math.huge, -math.huge, -math.huge
@@ -1732,7 +1813,7 @@ local function deconstruct_region(server, player)
     end
     for _, entity in pairs(found) do
       local at = tile_key(math.floor(entity.position.x), math.floor(entity.position.y))
-      if piece.area[at] then
+      if piece.area[at] and not feeds[at] then
         if entity.type == "entity-ghost" then
           entity.destroy({ raise_destroy = true })
         elseif not entity.to_be_deconstructed() then
@@ -1785,6 +1866,9 @@ local function write_state_signals(state)
   for _, unit in ipairs(state.sink_units or {}) do
     local config = storage.endpoints[unit]
     if config then throughput = throughput + (config.throughput_rate or 0) end
+  end
+  for _, endpoint in pairs(state.virtual or {}) do
+    if endpoint.role == "sink" then throughput = throughput + (endpoint.throughput_rate or 0) end
   end
   local filters = {}
   for _, entry in ipairs(state.read_state ~= false and {
@@ -1856,7 +1940,7 @@ local function check_circuit_conditions()
       state.fired = state.fired or {}
       for key, action in pairs(CIRCUIT_ACTIONS) do
         local condition = state.conditions[key]
-        local now = condition ~= nil and gui.fulfilled(state.entity, condition)
+        local now = condition ~= nil and gui.fulfilled(state.entity, condition, state.circuit_endpoints)
         if now and not state.fired[key] then
           action(state.entity, state.circuit_player and game.get_player(state.circuit_player))
         end
@@ -1864,6 +1948,88 @@ local function check_circuit_conditions()
       end
     end
   end
+end
+
+local ENDPOINT_COLORS = {
+  source = { r = 0.2, g = 1.0, b = 0.25, a = 0.9 },
+  sink = { r = 1.0, g = 0.32, b = 0.08, a = 0.9 },
+}
+local ARROWS = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
+local BELT_TYPES = { "transport-belt", "underground-belt", "splitter" }
+
+local function destroy_objects(ids)
+  for _, id in pairs(ids) do
+    local object = rendering.get_object_by_id(id)
+    if object then object.destroy() end
+  end
+end
+
+-- An outline in the endpoint belt's colour, its item and its direction.
+local function draw_virtual_endpoint(surface, endpoint)
+  local x, y = endpoint.x, endpoint.y
+  local cx, cy = x + 0.5, y + 0.5
+  local color = ENDPOINT_COLORS[endpoint.role]
+  local d = ARROWS[endpoint.direction]
+  local tip = { cx + d[1] * 0.42, cy + d[2] * 0.42 }
+  local back = { cx + d[1] * 0.27, cy + d[2] * 0.27 }
+  local ids = {
+    rendering.draw_rectangle({
+      surface = surface, color = color, width = 3, draw_on_ground = true,
+      left_top = { x + 0.06, y + 0.06 }, right_bottom = { x + 0.94, y + 0.94 },
+    }).id,
+    rendering.draw_sprite({
+      sprite = "item/" .. endpoint.item, surface = surface, target = { cx, cy },
+      x_scale = 0.4, y_scale = 0.4,
+    }).id,
+  }
+  for _, side in ipairs({ 1, -1 }) do
+    table.insert(ids, rendering.draw_line({
+      surface = surface, color = color, width = 3, from = tip,
+      to = { back[1] - d[2] * 0.14 * side, back[2] + d[1] * 0.14 * side },
+    }).id)
+  end
+  if endpoint.role == "sink" then
+    endpoint.label = rendering.draw_text({
+      text = "0.0/s", surface = surface, target = { cx, cy - 0.7 },
+      color = { r = 1.0, g = 0.72, b = 0.2, a = 1.0 }, scale = 0.8,
+      alignment = "center", vertical_alignment = "bottom", only_in_alt_mode = true,
+    }).id
+    table.insert(ids, endpoint.label)
+  end
+  return ids
+end
+
+-- Keeps the server's circuit endpoints drawn, measured from whatever belt
+-- is on their tile, and flagged when a source has nothing arriving.
+local function sync_virtual_endpoints(server, state, endpoints)
+  local kept = {}
+  for _, endpoint in ipairs(endpoints) do
+    if not endpoint.unit then
+      local key = table.concat({ endpoint.role, endpoint.x, endpoint.y, endpoint.item, endpoint.direction }, ",")
+      local entry = state.virtual and state.virtual[key]
+      if not entry then
+        entry = endpoint
+        entry.seen_tick = game.tick
+        entry.render_ids = draw_virtual_endpoint(server.surface, entry)
+      end
+      entry.belt = server.surface.find_entities_filtered({
+        position = { entry.x + 0.5, entry.y + 0.5 }, type = BELT_TYPES,
+      })[1]
+      local empty = entry.role == "source" and game.tick - entry.seen_tick >= SOURCE_EMPTY_TICKS
+      if empty and not (entry.alert and rendering.get_object_by_id(entry.alert)) then
+        entry.alert = draw_alert("source-empty", { entry.x + 0.5, entry.y + 0.5 }, server.surface)
+        entry.render_ids.alert = entry.alert
+      elseif not empty and entry.alert then
+        destroy_objects({ entry.alert })
+        entry.alert, entry.render_ids.alert = nil, nil
+      end
+      kept[key] = entry
+    end
+  end
+  for key, entry in pairs(state.virtual or {}) do
+    if not kept[key] then destroy_objects(entry.render_ids) end
+  end
+  state.virtual = kept
 end
 
 local function set_alert(entity, kind, offset)
@@ -1907,7 +2073,11 @@ local function survey()
         if member.energy > 0 then state.cluster_size = state.cluster_size + 1 end
       end
       local region = pieces[server] and region_for(server)
-      state.sink_units = region and region.sink_units or {}
+      state.sink_units = {}
+      for _, endpoint in ipairs(region and region.endpoints or {}) do
+        if endpoint.unit and endpoint.role == "sink" then table.insert(state.sink_units, endpoint.unit) end
+      end
+      sync_virtual_endpoints(server, state, region and region.endpoints or {})
       state.ready = not state.computing and server.energy > 0 and server_alive()
         and region and #region.sources > 0 and #region.sinks > 0 or false
       set_alert(server, offline and "gpu-offline" or (size and not pieces[server] and "unlinked") or nil,
@@ -2007,7 +2177,8 @@ local function clear_placement_area(player, state, fp, placement)
   end
   for _, entity in pairs(overlapped) do
     local box = entity.bounding_box
-    if box.left_top.x >= fp.x and box.left_top.y >= fp.y
+    local at = tile_key(math.floor(entity.position.x), math.floor(entity.position.y))
+    if not (state.endpoint_tiles or {})[at] and box.left_top.x >= fp.x and box.left_top.y >= fp.y
         and box.right_bottom.x <= fp.x + fp.w
         and box.right_bottom.y <= fp.y + fp.h then
       remove_entity(entity, player, predicted[entity.unit_number] ~= nil)

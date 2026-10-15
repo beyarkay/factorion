@@ -37,6 +37,14 @@ local STATE_SIGNALS = "[virtual-signal=factorion-predicting] 1 while predicting,
   "[virtual-signal=factorion-step] denoising steps placed so far, " ..
   "[virtual-signal=factorion-throughput] the sinks' throughput in items per minute."
 
+local ENDPOINT_SIGNALS = "Instead of source and sink belts, each item signal on the red wire is " ..
+  "a source of that item and each on the green wire a sink, drawn on its tile. Its value is " ..
+  "D YYY XXX: D is 1, 2, 3 or 4 for a belt facing north, east, south or west, and X and Y " ..
+  "count tiles from the painted area's top-left corner, so 0 is the column or row just " ..
+  "outside it. For example 2 003 000 is a source entering from the left, three rows down, " ..
+  "facing east. Belt the items over those tiles as you would into source belts. Conditions " ..
+  "then ignore item signals."
+
 -- Set by control.lua: on_load gets the new checkpoint when the player presses
 -- Load; describe, on_predict and on_clear get the window's GPU server and
 -- return a message (describe also returns whether Predict can run and its
@@ -156,6 +164,11 @@ function M.open(player, server)
     type = "checkbox", caption = "Read state", state = settings.read_state ~= false,
     tooltip = STATE_SIGNALS, tags = { factorion_gpu = "read_state" },
   })
+  circuit.add({
+    type = "checkbox", caption = "Sources on the red wire, sinks on the green",
+    state = settings.circuit_endpoints or false, tooltip = ENDPOINT_SIGNALS,
+    tags = { factorion_gpu = "circuit_endpoints" },
+  })
 
   gui.heading(circuit, "Model, shared by every GPU server")
   local table_ = circuit.add({ type = "table", name = "settings", column_count = 2 })
@@ -226,8 +239,9 @@ function M.on_gui_checked_state_changed(event)
   if condition_edited(event) then return true end
   local player = game.get_player(event.player_index)
   local server = player and window_server(player)
-  if not (server and event.element.tags.factorion_gpu == "read_state") then return false end
-  M.settings(server).read_state = event.element.state
+  local tag = event.element.tags.factorion_gpu
+  if not (server and (tag == "read_state" or tag == "circuit_endpoints")) then return false end
+  M.settings(server)[tag] = event.element.state
   return true
 end
 
