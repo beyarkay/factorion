@@ -1958,6 +1958,7 @@ local function networks(server)
     if network then
       table.insert(result, {
         wire = wire == defines.wire_connector_id.circuit_red and "red" or "green", id = network.network_id,
+        signals = network.signals,
       })
     end
   end
