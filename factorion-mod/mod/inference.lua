@@ -87,6 +87,15 @@ local function signal_line(signal)
   return line
 end
 
+-- Like vanilla's slot counts: 950, 1.2k, 34k, 1.5M.
+local function compact(value)
+  local size = math.abs(value)
+  if size >= 1e6 then return string.format("%.1fM", value / 1e6) end
+  if size >= 1e4 then return string.format("%dk", math.floor(value / 1e3)) end
+  if size >= 1e3 then return string.format("%.1fk", value / 1e3) end
+  return tostring(value)
+end
+
 local function fill(flow, lines)
   flow.clear()
   for _, line in ipairs(lines) do
@@ -132,7 +141,7 @@ M.describe = function(_) return "", false, "" end
 M.on_predict = function(_, _, _) return "", false end
 M.on_clear = function(_, _) return "" end
 M.info = function(_)
-  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, networks = {}, powered = false }
+  return { status = "idle", caption = "", utilisation = 0, power_kw = 0, networks = {}, powered = false, readings = {} }
 end
 M.settings = function(_) return { conditions = {} } end
 M.settings_changed = function(_) end
@@ -185,6 +194,11 @@ function M.refresh(player, full)
   main.utilisation_label.caption = string.format("Utilisation %d%%, drawing %.1f kW",
     math.floor(info.utilisation * 100 + 0.5), info.power_kw)
   gui.set_networks(frame.panels.circuit.inner, info.networks)
+  local read_state = frame.panels.circuit.inner.read_state
+  for _, row in ipairs(M.STATE_SIGNALS) do
+    local value = read_state.active.state and info.readings[row.key] or 0
+    read_state["row_" .. row.key].count.caption = value == 0 and "" or compact(value)
+  end
   if not full then return end
   main.settings.model_status.caption = model_caption()
   local caption, can_predict, cluster, region = M.describe(server)
@@ -277,6 +291,12 @@ function M.open(player, server)
       signal = M.state_signal(settings, row.key), style = "slot_button_in_shallow_frame",
       tags = { factorion_state = row.key },
     })
+    -- The live value over the slot's bottom-right corner, as vanilla's are.
+    local count = flow.add({ type = "label", name = "count", style = "count_label", ignored_by_interaction = true })
+    count.style.width = 36
+    count.style.horizontal_align = "right"
+    count.style.left_margin = -40
+    count.style.top_margin = 16
   end
   grey_state_rows(read_state)
   local endpoints = gui.circuit_section(circuit, "endpoints", "Set sources and sinks",
